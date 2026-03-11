@@ -88,6 +88,12 @@ from .types import (
     ToolMode,
     ContextMode,
     WorkflowHookListResponse,
+    WorkflowPlan,
+    WorkflowPlanApplyResponse,
+    WorkflowPlanChatResponse,
+    WorkflowPlanConversation,
+    WorkflowPlanPackBuilderExportRequest,
+    WorkflowPlanPreviewResponse,
     WorkflowListResponse,
     WorkflowRecord,
     WorkflowRunListResponse,
@@ -136,6 +142,7 @@ class TandemClient:
         self.routines = _Routines(self._base_url, self._token, self._http)
         self.automations = _Automations(self._base_url, self._token, self._http)
         self.automations_v2 = _AutomationsV2(self._base_url, self._token, self._http)
+        self.workflow_plans = _WorkflowPlans(self._http)
         self.memory = _Memory(self._http)
         self.skills = _Skills(self._http)
         self.packs = _Packs(self._http)
@@ -1548,6 +1555,110 @@ class _Routines:
     def events(self, *, routine_id: Optional[str] = None) -> AsyncGenerator[EngineEvent, None]:
         qs = f"?routine_id={quote(routine_id)}" if routine_id else ""
         return stream_sse(f"{self._base_url}/routines/events{qs}", self._token, client=self._http)
+
+
+class _WorkflowPlans:
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self._http = http
+
+    async def preview(
+        self,
+        *,
+        prompt: str,
+        schedule: Optional[dict[str, Any]] = None,
+        plan_source: Optional[str] = None,
+        allowed_mcp_servers: Optional[list[str]] = None,
+        workspace_root: Optional[str] = None,
+        operator_preferences: Optional[dict[str, Any]] = None,
+    ) -> WorkflowPlanPreviewResponse:
+        payload: dict[str, Any] = {"prompt": prompt}
+        if schedule is not None:
+            payload["schedule"] = schedule
+        if plan_source is not None:
+            payload["plan_source"] = plan_source
+        if allowed_mcp_servers is not None:
+            payload["allowed_mcp_servers"] = allowed_mcp_servers
+        if workspace_root is not None:
+            payload["workspace_root"] = workspace_root
+        if operator_preferences is not None:
+            payload["operator_preferences"] = operator_preferences
+        res = await self._http.post("/workflow-plans/preview", json=payload)
+        res.raise_for_status()
+        return WorkflowPlanPreviewResponse.model_validate(res.json())
+
+    async def apply(
+        self,
+        *,
+        plan_id: Optional[str] = None,
+        plan: Optional[WorkflowPlan | dict[str, Any]] = None,
+        creator_id: Optional[str] = None,
+        pack_builder_export: Optional[
+            WorkflowPlanPackBuilderExportRequest | dict[str, Any]
+        ] = None,
+    ) -> WorkflowPlanApplyResponse:
+        payload: dict[str, Any] = {}
+        if plan_id is not None:
+            payload["plan_id"] = plan_id
+        if plan is not None:
+            payload["plan"] = (
+                plan.model_dump(by_alias=True, exclude_none=True)
+                if isinstance(plan, BaseModel)
+                else plan
+            )
+        if creator_id is not None:
+            payload["creator_id"] = creator_id
+        if pack_builder_export is not None:
+            payload["pack_builder_export"] = (
+                pack_builder_export.model_dump(by_alias=True, exclude_none=True)
+                if isinstance(pack_builder_export, BaseModel)
+                else pack_builder_export
+            )
+        res = await self._http.post("/workflow-plans/apply", json=payload)
+        res.raise_for_status()
+        return WorkflowPlanApplyResponse.model_validate(res.json())
+
+    async def chat_start(
+        self,
+        *,
+        prompt: str,
+        schedule: Optional[dict[str, Any]] = None,
+        plan_source: Optional[str] = None,
+        allowed_mcp_servers: Optional[list[str]] = None,
+        workspace_root: Optional[str] = None,
+        operator_preferences: Optional[dict[str, Any]] = None,
+    ) -> WorkflowPlanChatResponse:
+        payload: dict[str, Any] = {"prompt": prompt}
+        if schedule is not None:
+            payload["schedule"] = schedule
+        if plan_source is not None:
+            payload["plan_source"] = plan_source
+        if allowed_mcp_servers is not None:
+            payload["allowed_mcp_servers"] = allowed_mcp_servers
+        if workspace_root is not None:
+            payload["workspace_root"] = workspace_root
+        if operator_preferences is not None:
+            payload["operator_preferences"] = operator_preferences
+        res = await self._http.post("/workflow-plans/chat/start", json=payload)
+        res.raise_for_status()
+        return WorkflowPlanChatResponse.model_validate(res.json())
+
+    async def get(self, plan_id: str) -> WorkflowPlanChatResponse:
+        res = await self._http.get(f"/workflow-plans/{quote(plan_id)}")
+        res.raise_for_status()
+        return WorkflowPlanChatResponse.model_validate(res.json())
+
+    async def chat_message(self, *, plan_id: str, message: str) -> WorkflowPlanChatResponse:
+        res = await self._http.post(
+            "/workflow-plans/chat/message",
+            json={"plan_id": plan_id, "message": message},
+        )
+        res.raise_for_status()
+        return WorkflowPlanChatResponse.model_validate(res.json())
+
+    async def chat_reset(self, *, plan_id: str) -> WorkflowPlanChatResponse:
+        res = await self._http.post("/workflow-plans/chat/reset", json={"plan_id": plan_id})
+        res.raise_for_status()
+        return WorkflowPlanChatResponse.model_validate(res.json())
 
 
 # ─── Automations ──────────────────────────────────────────────────────────────

@@ -141,6 +141,76 @@ async def test_high_value_sdk_parity_routes() -> None:
     assert add_artifact_route.called
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_workflow_plans_namespace_routes() -> None:
+    preview_route = respx.post("http://localhost:39731/workflow-plans/preview").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "plan": {
+                    "plan_id": "plan-1",
+                    "title": "Release checklist",
+                    "schedule": {"type": "manual"},
+                    "steps": [{"step_id": "step-1", "kind": "task", "objective": "Review changelog"}],
+                }
+            },
+        )
+    )
+    chat_start_route = respx.post("http://localhost:39731/workflow-plans/chat/start").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "plan": {
+                    "plan_id": "plan-1",
+                    "title": "Release checklist",
+                    "schedule": {"type": "manual"},
+                    "steps": [{"step_id": "step-1", "kind": "task", "objective": "Review changelog"}],
+                },
+                "conversation": {
+                    "conversation_id": "conv-1",
+                    "plan_id": "plan-1",
+                    "messages": [{"role": "assistant", "text": "Drafted plan."}],
+                },
+            },
+        )
+    )
+    chat_message_route = respx.post("http://localhost:39731/workflow-plans/chat/message").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "plan": {
+                    "plan_id": "plan-1",
+                    "title": "Release checklist",
+                    "schedule": {"type": "manual"},
+                    "steps": [{"step_id": "step-1", "kind": "task", "objective": "Review changelog"}],
+                },
+                "conversation": {
+                    "conversation_id": "conv-1",
+                    "plan_id": "plan-1",
+                    "messages": [{"role": "user", "text": "Add smoke tests."}],
+                },
+                "change_summary": ["Added smoke-test step."],
+            },
+        )
+    )
+
+    async with TandemClient(base_url="http://localhost:39731", token="token") as client:
+        preview = await client.workflow_plans.preview(prompt="Create a release checklist")
+        started = await client.workflow_plans.chat_start(prompt="Create a release checklist")
+        messaged = await client.workflow_plans.chat_message(
+            plan_id="plan-1", message="Add smoke tests."
+        )
+
+    assert preview.plan.plan_id == "plan-1"
+    assert preview.plan.steps[0].objective == "Review changelog"
+    assert started.conversation.conversation_id == "conv-1"
+    assert messaged.change_summary == ["Added smoke-test step."]
+    assert preview_route.called
+    assert chat_start_route.called
+    assert chat_message_route.called
+
+
 @respx.mock
 def test_sync_wrapper_supports_browser_namespace() -> None:
     from tandem_client import SyncTandemClient
@@ -152,5 +222,30 @@ def test_sync_wrapper_supports_browser_namespace() -> None:
     try:
         status = client.browser.status()
         assert status.runnable is True
+    finally:
+        client.close()
+
+
+@respx.mock
+def test_sync_wrapper_supports_workflow_plans_namespace() -> None:
+    from tandem_client import SyncTandemClient
+
+    respx.post("http://localhost:39731/workflow-plans/preview").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "plan": {
+                    "plan_id": "plan-1",
+                    "title": "Release checklist",
+                    "schedule": {"type": "manual"},
+                    "steps": [{"step_id": "step-1", "kind": "task", "objective": "Review changelog"}],
+                }
+            },
+        )
+    )
+    client = SyncTandemClient(base_url="http://localhost:39731", token="token")
+    try:
+        preview = client.workflow_plans.preview(prompt="Create a release checklist")
+        assert preview.plan.plan_id == "plan-1"
     finally:
         client.close()

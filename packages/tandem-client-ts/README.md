@@ -124,6 +124,25 @@ await client.routines.create({
 });
 ```
 
+### `client.workflowPlans`
+
+```typescript
+const started = await client.workflowPlans.chatStart({
+  prompt: "Create a release checklist automation",
+  planSource: "chat",
+});
+
+const updated = await client.workflowPlans.chatMessage({
+  planId: started.plan.plan_id!,
+  message: "Add a smoke-test step before rollout.",
+});
+
+await client.workflowPlans.apply({
+  planId: updated.plan.plan_id,
+  creatorId: "operator-1",
+});
+```
+
 ### `client.mcp`
 
 | Method                      | Description                 |

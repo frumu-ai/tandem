@@ -11,6 +11,8 @@ npm install @frumu/tandem-client
 
 Requires **Node.js 18+** (uses native `fetch` and `ReadableStream`).
 
+For recurring jobs and scheduled automations, see [Scheduling Workflows And Automations](./scheduling-automations/).
+
 ## Engine prerequisite
 
 The SDK talks to a running `tandem-engine` over HTTP/SSE. Install and start the engine first:
@@ -356,6 +358,27 @@ await client.automationsV2.create({
 const runs = await client.automationsV2.listRuns("automation-v2-id", 20);
 await client.automationsV2.pauseRun(runs.runs[0].run_id!);
 await client.automationsV2.resumeRun(runs.runs[0].run_id!);
+```
+
+### `client.workflowPlans`
+
+Use workflow plans when you want the engine planner to draft an automation, iterate on it in chat, then apply it.
+
+```typescript
+const started = await client.workflowPlans.chatStart({
+  prompt: "Create a release checklist automation",
+  planSource: "chat",
+});
+
+const updated = await client.workflowPlans.chatMessage({
+  planId: started.plan.plan_id!,
+  message: "Add a smoke-test step before rollout.",
+});
+
+await client.workflowPlans.apply({
+  planId: updated.plan.plan_id,
+  creatorId: "operator-1",
+});
 ```
 
 ### `client.agentTeams`

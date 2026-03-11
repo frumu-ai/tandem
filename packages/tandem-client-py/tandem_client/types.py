@@ -938,6 +938,151 @@ class AutomationV2RunListResponse(BaseModel):
     count: int = 0
 
 
+# ─── Workflow Plans ───────────────────────────────────────────────────────────
+
+
+class WorkflowPlanInputRef(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    from_step_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("fromStepId", "from_step_id")
+    )
+    alias: str
+
+
+class WorkflowPlanOutputContract(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    kind: Optional[str] = None
+
+
+class WorkflowPlanStep(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    step_id: Optional[str] = Field(None, validation_alias=AliasChoices("stepId", "step_id"))
+    kind: str
+    objective: str
+    depends_on: list[str] = Field(
+        default_factory=list, validation_alias=AliasChoices("dependsOn", "depends_on")
+    )
+    agent_role: Optional[str] = Field(None, validation_alias=AliasChoices("agentRole", "agent_role"))
+    input_refs: list[WorkflowPlanInputRef] = Field(
+        default_factory=list, validation_alias=AliasChoices("inputRefs", "input_refs")
+    )
+    output_contract: Optional[WorkflowPlanOutputContract] = Field(
+        None, validation_alias=AliasChoices("outputContract", "output_contract")
+    )
+
+
+class WorkflowPlan(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    plan_id: Optional[str] = Field(None, validation_alias=AliasChoices("planId", "plan_id"))
+    planner_version: Optional[str] = Field(
+        None, validation_alias=AliasChoices("plannerVersion", "planner_version")
+    )
+    plan_source: Optional[str] = Field(None, validation_alias=AliasChoices("planSource", "plan_source"))
+    original_prompt: Optional[str] = Field(
+        None, validation_alias=AliasChoices("originalPrompt", "original_prompt")
+    )
+    normalized_prompt: Optional[str] = Field(
+        None, validation_alias=AliasChoices("normalizedPrompt", "normalized_prompt")
+    )
+    confidence: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    schedule: Optional[dict[str, Any]] = None
+    execution_target: Optional[str] = Field(
+        None, validation_alias=AliasChoices("executionTarget", "execution_target")
+    )
+    workspace_root: Optional[str] = Field(
+        None, validation_alias=AliasChoices("workspaceRoot", "workspace_root")
+    )
+    steps: list[WorkflowPlanStep] = []
+    allowed_mcp_servers: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("allowedMcpServers", "allowed_mcp_servers"),
+    )
+    operator_preferences: Optional[dict[str, Any]] = Field(
+        None, validation_alias=AliasChoices("operatorPreferences", "operator_preferences")
+    )
+    metadata: Optional[dict[str, Any]] = None
+
+
+class WorkflowPlanPackBuilderExportRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    enabled: Optional[bool] = None
+    session_id: Optional[str] = Field(None, validation_alias=AliasChoices("sessionId", "session_id"))
+    thread_key: Optional[str] = Field(None, validation_alias=AliasChoices("threadKey", "thread_key"))
+    auto_apply: Optional[bool] = Field(None, validation_alias=AliasChoices("autoApply", "auto_apply"))
+
+
+class WorkflowPlanPackBuilderExportResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    status: Optional[str] = None
+    error: Optional[str] = None
+    http_status: Optional[int] = Field(None, validation_alias=AliasChoices("httpStatus", "http_status"))
+    plan_id: Optional[str] = Field(None, validation_alias=AliasChoices("planId", "plan_id"))
+    session_id: Optional[str] = Field(None, validation_alias=AliasChoices("sessionId", "session_id"))
+    thread_key: Optional[str] = Field(None, validation_alias=AliasChoices("threadKey", "thread_key"))
+    auto_apply_requested: Optional[bool] = Field(
+        None, validation_alias=AliasChoices("autoApplyRequested", "auto_apply_requested")
+    )
+    auto_apply_ready: Optional[bool] = Field(
+        None, validation_alias=AliasChoices("autoApplyReady", "auto_apply_ready")
+    )
+
+
+class WorkflowPlanChatMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    role: str
+    text: str
+    created_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("createdAtMs", "created_at_ms")
+    )
+
+
+class WorkflowPlanConversation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    conversation_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("conversationId", "conversation_id")
+    )
+    plan_id: Optional[str] = Field(None, validation_alias=AliasChoices("planId", "plan_id"))
+    created_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("createdAtMs", "created_at_ms")
+    )
+    updated_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("updatedAtMs", "updated_at_ms")
+    )
+    messages: list[WorkflowPlanChatMessage] = []
+
+
+class WorkflowPlanPreviewResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    plan: WorkflowPlan
+    clarifier: Optional[dict[str, Any]] = None
+    assistant_message: Optional[dict[str, Any]] = None
+    planner_diagnostics: Optional[dict[str, Any]] = None
+
+
+class WorkflowPlanApplyResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    ok: Optional[bool] = None
+    plan: Optional[WorkflowPlan] = None
+    automation: Optional[dict[str, Any]] = None
+    pack_builder_export: Optional[WorkflowPlanPackBuilderExportResult] = Field(
+        None, validation_alias=AliasChoices("packBuilderExport", "pack_builder_export")
+    )
+
+
+class WorkflowPlanChatResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    plan: WorkflowPlan
+    conversation: WorkflowPlanConversation
+    assistant_message: Optional[dict[str, Any]] = None
+    change_summary: list[str] = Field(
+        default_factory=list, validation_alias=AliasChoices("changeSummary", "change_summary")
+    )
+    clarifier: Optional[dict[str, Any]] = None
+    planner_diagnostics: Optional[dict[str, Any]] = None
+
+
 # ─── Missions ─────────────────────────────────────────────────────────────────
 
 

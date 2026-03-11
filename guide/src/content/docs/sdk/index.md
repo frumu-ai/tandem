@@ -7,7 +7,7 @@ import { LinkCard, CardGrid } from "@astrojs/starlight/components";
 
 The Tandem engine exposes a full HTTP + SSE API. The official SDKs wrap this API with typed, ergonomic interfaces for TypeScript (Node.js) and Python.
 
-Both SDKs cover every engine endpoint — sessions, streaming, memory, skills, channels, MCP, routines, automations, agent teams, and missions.
+Both SDKs cover the main engine namespaces, including sessions, streaming, memory, skills, channels, MCP, workflows, workflow plans, routines, automations, agent teams, and missions.
 
 ## Prerequisites
 
@@ -23,6 +23,16 @@ tandem-engine serve --api-token $(tandem-engine token generate)
 <CardGrid>
   <LinkCard title="TypeScript SDK" href="./typescript/" description="@frumu/tandem-client — Node.js 18+" />
   <LinkCard title="Python SDK" href="./python/" description="tandem-client — Python 3.10+" />
+</CardGrid>
+
+## Guides
+
+<CardGrid>
+  <LinkCard
+    title="Scheduling Automations"
+    href="./scheduling-automations/"
+    description="Create recurring routines, legacy automations, V2 automations, and planner-backed schedules."
+  />
 </CardGrid>
 
 ## Common event types
@@ -53,11 +63,16 @@ All namespaces exist on both the TypeScript and Python clients.
 | `providers`                        | Catalog, config, set API keys and defaults                         |
 | `channels`                         | Telegram, Discord, Slack integration config                        |
 | `mcp`                              | Register, connect, refresh MCP servers and tools                   |
+| `browser`                          | Browser sidecar status, install, and smoke testing                 |
 | `memory`                           | Global memory: put, search, list, promote, demote, delete, audit   |
 | `skills`                           | Agent skill packs: list, import, preview, install templates        |
 | `resources`                        | Key-value resource store (shared agent state)                      |
+| `workflows`                        | Workflow registry, runs, hooks, and event streams                  |
+| `workflowPlans` / `workflow_plans` | Planner chat, preview, and apply flows for automation generation   |
 | `routines`                         | Scheduled routines: create, run, approve/deny/pause/resume runs    |
 | `automations`                      | Legacy mission-scoped automations (compatibility path)             |
 | `automationsV2` / `automations_v2` | Persistent multi-agent DAG automations with per-agent model policy |
+| `bugMonitor` / `bug_monitor`       | Incident triage, drafts, approval, and publishing helpers          |
+| `coder`                            | Coder runs, artifacts, review summaries, and memory candidates     |
 | `agentTeams`                       | Spawn and manage multi-agent teams                                 |
 | `missions`                         | Multi-agent goals and work item tracking                           |

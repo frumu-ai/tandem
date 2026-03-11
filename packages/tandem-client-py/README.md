@@ -157,6 +157,29 @@ automation = await client.automations_v2.create({
 run = await client.automations_v2.run_now(automation.automation_id or "")
 ```
 
+### `client.workflow_plans`
+
+```python
+preview = await client.workflow_plans.preview(
+    prompt="Create a release checklist automation",
+    plan_source="chat",
+)
+
+started = await client.workflow_plans.chat_start(
+    prompt="Create a release checklist automation",
+)
+
+updated = await client.workflow_plans.chat_message(
+    plan_id=started.plan.plan_id or "",
+    message="Add a smoke-test step before rollout.",
+)
+
+applied = await client.workflow_plans.apply(
+    plan_id=updated.plan.plan_id,
+    creator_id="operator-1",
+)
+```
+
 ### `client.agent_teams` template management
 
 ```python

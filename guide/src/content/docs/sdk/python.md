@@ -11,6 +11,8 @@ pip install tandem-client
 
 Requires **Python 3.10+**.
 
+For recurring jobs and scheduled automations, see [Scheduling Workflows And Automations](./scheduling-automations/).
+
 ## Engine prerequisite
 
 The SDK talks to a running `tandem-engine` over HTTP/SSE. Install and start the engine first:
@@ -355,6 +357,27 @@ automation = await client.automations_v2.create({
 runs = await client.automations_v2.list_runs(automation.automation_id or "", limit=20)
 await client.automations_v2.pause_run(runs.runs[0].run_id or "")
 await client.automations_v2.resume_run(runs.runs[0].run_id or "")
+```
+
+### `client.workflow_plans`
+
+Use workflow plans when you want the engine planner to draft an automation, iterate on it in chat, then apply it.
+
+```python
+started = await client.workflow_plans.chat_start(
+    prompt="Create a release checklist automation",
+    plan_source="chat",
+)
+
+updated = await client.workflow_plans.chat_message(
+    plan_id=started.plan.plan_id or "",
+    message="Add a smoke-test step before rollout.",
+)
+
+await client.workflow_plans.apply(
+    plan_id=updated.plan.plan_id,
+    creator_id="operator-1",
+)
 ```
 
 ### `client.agent_teams`
