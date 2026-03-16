@@ -121,6 +121,66 @@ export function workflowCurrentTaskId(
   );
 }
 
+export function workflowProjectionFromRunSnapshot(run: any, activeTaskId = "") {
+  const snapshotNodes = Array.isArray(run?.automation_snapshot?.flow?.nodes)
+    ? run.automation_snapshot.flow.nodes
+    : [];
+  if (!snapshotNodes.length) {
+    return { currentTaskId: "", taskSource: "empty" as const, tasks: [] as any[] };
+  }
+  const completed = new Set(workflowCompletedNodeIds(run));
+  const tasks = snapshotNodes.map((node: any) => {
+    const nodeId = String(node?.node_id || "").trim();
+    const taskId = `node-${nodeId}`;
+    const dependencies = Array.isArray(node?.depends_on)
+      ? node.depends_on.map((dep: unknown) => `node-${String(dep || "").trim()}`).filter(Boolean)
+      : [];
+    const ready = dependencies.every((depId) => completed.has(depId.replace(/^node-/, "")));
+    const state = workflowTaskState(run, nodeId, ready ? [] : dependencies);
+    const output = workflowNodeOutput(run, nodeId) || {};
+    const inferredState =
+      activeTaskId === taskId &&
+      String(run?.status || "")
+        .trim()
+        .toLowerCase() === "running"
+        ? "in_progress"
+        : state === "pending" && ready
+          ? "runnable"
+          : state;
+    const builder = node?.metadata?.builder || {};
+    return {
+      id: taskId,
+      title: String(node?.objective || nodeId || "Workflow node"),
+      description: String(node?.agent_id ? `agent: ${node.agent_id}` : ""),
+      dependencies,
+      state: inferredState,
+      retry_count: workflowNodeAttemptCount(run, nodeId),
+      error_message: String(output?.error || output?.content?.error || ""),
+      runtime_status: String(output?.status || output?.content?.status || ""),
+      runtime_detail: String(output?.summary || output?.content?.message || ""),
+      assigned_role: String(node?.agent_id || ""),
+      workflow_id: String(run?.automation_id || ""),
+      session_id: workflowNodeOutputSessionId(run, nodeId),
+      projects_backlog_tasks: Boolean(builder?.project_backlog_tasks),
+      backlog_task_id: String(builder?.task_id || ""),
+      task_kind: String(builder?.task_kind || ""),
+      repo_root: String(builder?.repo_root || ""),
+      write_scope: String(builder?.write_scope || ""),
+      acceptance_criteria: String(builder?.acceptance_criteria || ""),
+      task_dependencies: String(builder?.task_dependencies || ""),
+      verification_state: String(builder?.verification_state || ""),
+      task_owner: String(builder?.task_owner || ""),
+      verification_command: String(builder?.verification_command || ""),
+      output_path: String(builder?.output_path || ""),
+    };
+  });
+  return {
+    currentTaskId: workflowCurrentTaskId(tasks, activeTaskId),
+    taskSource: "checkpoint" as const,
+    tasks,
+  };
+}
+
 export function workflowLifecycleHistory(run: any): any[] {
   const checkpoint = workflowCheckpoint(run);
   if (Array.isArray(checkpoint?.lifecycle_history)) return checkpoint.lifecycle_history;

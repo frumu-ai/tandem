@@ -39,6 +39,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - shared control-panel workflow selectors now also own active-session counts so workflow headers stop reading session arrays directly
   - shared control-panel workflow selectors now also own node attempt counts and node-output session ids so the workflow board projection stops reading nested checkpoint fields directly
   - shared control-panel workflow selectors now also own checkpoint-based current-task selection so workflow focus stops being decided inside `AutomationsPage`
+  - shared control-panel workflow selectors now also own the checkpoint-based workflow board projection so `AutomationsPage` no longer rebuilds task rows inline
 
 - Repo coding backlog workflows now have real task operations
   - projected backlog items can now be claimed and manually requeued through `automation_v2` run APIs

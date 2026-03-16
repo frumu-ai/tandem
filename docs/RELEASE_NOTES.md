@@ -39,6 +39,7 @@
 - Shared control-panel workflow selectors now also own active-session counts so workflow headers stop reading session arrays directly.
 - Shared control-panel workflow selectors now also own node attempt counts and node-output session ids so the workflow board projection stops reading nested checkpoint fields directly.
 - Shared control-panel workflow selectors now also own checkpoint-based current-task selection so workflow focus stops being decided inside `AutomationsPage`.
+- Shared control-panel workflow selectors now also own the checkpoint-based workflow board projection so `AutomationsPage` no longer rebuilds task rows inline.
 - Added projected backlog-task operations in the debugger:
   - projected coding backlog items can now be claimed and manually requeued through `automation_v2`
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions
