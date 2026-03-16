@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - shared control-panel workflow selectors now also own node attempt counts and node-output session ids so the workflow board projection stops reading nested checkpoint fields directly
   - shared control-panel workflow selectors now also own checkpoint-based current-task selection so workflow focus stops being decided inside `AutomationsPage`
   - shared control-panel workflow selectors now also own the checkpoint-based workflow board projection so `AutomationsPage` no longer rebuilds task rows inline
+  - shared control-panel workflow selectors now also own the first-pending-task fallback used by active workflow focus detection
 - **Workflow Studio model configuration**:
   - replaced free-text workflow model inputs with provider-backed selectors
   - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs

@@ -121,6 +121,13 @@ export function workflowCurrentTaskId(
   );
 }
 
+export function workflowFirstPendingTaskId(run: any) {
+  const pending = workflowPendingNodeIds(run);
+  const nodeId = String(pending[0] || "").trim();
+  if (!nodeId) return "";
+  return nodeId.startsWith("node-") ? nodeId : `node-${nodeId}`;
+}
+
 export function workflowProjectionFromRunSnapshot(run: any, activeTaskId = "") {
   const snapshotNodes = Array.isArray(run?.automation_snapshot?.flow?.nodes)
     ? run.automation_snapshot.flow.nodes

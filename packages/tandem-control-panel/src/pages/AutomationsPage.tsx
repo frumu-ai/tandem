@@ -12,12 +12,12 @@ import {
   workflowCompletedNodeCount,
   workflowCompletedNodeIds,
   workflowEventSummary,
+  workflowFirstPendingTaskId,
   workflowNodeOutputEntries,
   workflowNodeOutputText,
   workflowNodeToolTelemetry,
   workflowNodeOutput,
   workflowPendingNodeCount,
-  workflowPendingNodeIds,
   workflowNodeStability,
   workflowProjectionFromRunSnapshot,
   workflowRecentNodeEvents,
@@ -979,8 +979,7 @@ function detectWorkflowActiveTaskId(
     const fromText = workflowNodeIdFromText(sessionMessageText(sessionMessages[i]?.message));
     if (fromText) return fromText;
   }
-  const pending = workflowPendingNodeIds(run);
-  return pending.length ? normalizeWorkflowTaskId(String(pending[0] || "")) : "";
+  return workflowFirstPendingTaskId(run);
 }
 
 function eventReason(event: any) {
