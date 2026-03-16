@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - failed automation runs now preserve the latest linked session id so the debugger can still link back to the most recent transcript context
   - workflow node outputs now expose typed stability metadata including `workflow_class`, `phase`, `failure_kind`, and artifact-candidate summaries so the debugger is driven by backend state instead of transcript inference
   - workflow runs now emit typed node-scoped lifecycle events such as `workflow_state_changed`, `artifact_accepted`, `artifact_rejected`, `research_coverage_failed`, and verification/repair events so stability state can be consumed from shared runtime history
+  - desktop/TUI coder run summaries now include typed workflow stability fields and recent workflow events per task so the developer inspector follows the same backend contract as the control panel
 - **Workflow Studio model configuration**:
   - replaced free-text workflow model inputs with provider-backed selectors
   - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs

@@ -62,11 +62,25 @@ use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize)]
+struct CoderWorkflowEventTelemetry {
+    event: String,
+    recorded_at_ms: Option<u64>,
+    reason: Option<String>,
+    workflow_class: Option<String>,
+    phase: Option<String>,
+    status: Option<String>,
+    failure_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct CoderTaskTelemetry {
     task_id: String,
     label: String,
     status: String,
     owner: Option<String>,
+    workflow_class: Option<String>,
+    phase: Option<String>,
+    failure_kind: Option<String>,
     changed_files: Vec<String>,
     diff_files: Vec<String>,
     verification_commands: Vec<String>,
@@ -76,6 +90,7 @@ struct CoderTaskTelemetry {
     latest_failing_command: Option<String>,
     failure_detail: Option<String>,
     artifact_paths: Vec<String>,
+    workflow_events: Vec<CoderWorkflowEventTelemetry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +99,7 @@ struct CoderRunTelemetrySummary {
     verification_commands: Vec<String>,
     patch_summaries: Vec<String>,
     validation_failures: Vec<String>,
+    workflow_events: Vec<CoderWorkflowEventTelemetry>,
     task_summaries: Vec<CoderTaskTelemetry>,
 }
 
@@ -112,6 +128,52 @@ fn json_text(value: Option<&serde_json::Value>) -> Option<String> {
         Some(serde_json::Value::Bool(flag)) => Some(flag.to_string()),
         _ => None,
     }
+}
+
+fn summarize_workflow_event(event: &serde_json::Value) -> Option<CoderWorkflowEventTelemetry> {
+    let record = json_record(event)?;
+    let metadata = record.get("metadata").and_then(json_record);
+    Some(CoderWorkflowEventTelemetry {
+        event: json_text(record.get("event")).unwrap_or_else(|| "event".to_string()),
+        recorded_at_ms: record
+            .get("recorded_at_ms")
+            .and_then(|value| value.as_u64()),
+        reason: json_text(record.get("reason")),
+        workflow_class: metadata.and_then(|value| json_text(value.get("workflow_class"))),
+        phase: metadata.and_then(|value| json_text(value.get("phase"))),
+        status: metadata.and_then(|value| json_text(value.get("status"))),
+        failure_kind: metadata.and_then(|value| json_text(value.get("failure_kind"))),
+    })
+}
+
+fn workflow_event_matches_task(task: &serde_json::Value, event: &serde_json::Value) -> bool {
+    let task_record = match json_record(task) {
+        Some(value) => value,
+        None => return false,
+    };
+    let event_record = match json_record(event) {
+        Some(value) => value,
+        None => return false,
+    };
+    let metadata = match event_record.get("metadata").and_then(json_record) {
+        Some(value) => value,
+        None => return false,
+    };
+    let event_node_id = json_text(metadata.get("node_id"))
+        .map(|value| value.to_lowercase())
+        .unwrap_or_default();
+    if event_node_id.is_empty() {
+        return false;
+    }
+    [
+        json_text(task_record.get("id")),
+        json_text(task_record.get("workflow_node_id")),
+        json_text(task_record.get("task_type")),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|value| value.to_lowercase())
+    .any(|value| value == event_node_id)
 }
 
 fn collect_json_strings(value: &serde_json::Value, depth: usize, out: &mut Vec<String>) {
@@ -391,6 +453,17 @@ fn summarize_coder_run_telemetry(
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
+    let lifecycle_history = run_record
+        .get("checkpoint")
+        .and_then(json_record)
+        .and_then(|checkpoint| {
+            checkpoint
+                .get("lifecycle_history")
+                .or_else(|| checkpoint.get("lifecycleHistory"))
+        })
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     let mut artifacts_by_step: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
         std::collections::BTreeMap::new();
@@ -483,6 +556,10 @@ fn summarize_coder_run_telemetry(
             .collect::<Vec<_>>(),
         8,
     );
+    let workflow_events = lifecycle_history
+        .iter()
+        .filter_map(summarize_workflow_event)
+        .collect::<Vec<_>>();
 
     let task_summaries = tasks
         .iter()
@@ -493,6 +570,11 @@ fn summarize_coder_run_telemetry(
                 .or_else(|| json_text(record.get("workflow_node_id")))
                 .or_else(|| json_text(record.get("task_type")))
                 .unwrap_or_else(|| "task".to_string());
+            let task_workflow_events = lifecycle_history
+                .iter()
+                .filter(|event| workflow_event_matches_task(task, event))
+                .filter_map(summarize_workflow_event)
+                .collect::<Vec<_>>();
             let related_artifacts = artifacts_by_step.get(&task_id).cloned().unwrap_or_default();
             let artifact_paths = unique_strings(
                 related_artifacts
@@ -600,6 +682,15 @@ fn summarize_coder_run_telemetry(
                     .unwrap_or_else(|| "task".to_string()),
                 status: json_text(record.get("status")).unwrap_or_else(|| "unknown".to_string()),
                 owner,
+                workflow_class: task_workflow_events
+                    .iter()
+                    .find_map(|event| event.workflow_class.clone()),
+                phase: task_workflow_events
+                    .iter()
+                    .find_map(|event| event.phase.clone()),
+                failure_kind: task_workflow_events
+                    .iter()
+                    .find_map(|event| event.failure_kind.clone()),
                 changed_files: unique_strings(
                     extract_changed_files(task, 8)
                         .into_iter()
@@ -635,6 +726,7 @@ fn summarize_coder_run_telemetry(
                 latest_failing_command,
                 failure_detail,
                 artifact_paths,
+                workflow_events: task_workflow_events,
             })
         })
         .collect::<Vec<_>>();
@@ -644,6 +736,7 @@ fn summarize_coder_run_telemetry(
         verification_commands,
         patch_summaries,
         validation_failures,
+        workflow_events,
         task_summaries,
     })
 }

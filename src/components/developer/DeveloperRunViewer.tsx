@@ -3159,7 +3159,25 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                 "Owner",
                                 selectedTaskSummary?.owner || taskOwner(selectedTask) || "Unknown",
                               ],
+                              ["Workflow", selectedTaskSummary?.workflow_class || "Unknown"],
+                              ["Phase", selectedTaskSummary?.phase || "Unknown"],
                               ["Outcome", selectedTaskSummary?.verification_outcome || "Unknown"],
+                              ["Failure Kind", selectedTaskSummary?.failure_kind || "None"],
+                            ].map(([label, value]) => (
+                              <div
+                                key={label}
+                                className="rounded-2xl border border-border bg-surface-elevated/40 p-3"
+                              >
+                                <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                                  {label}
+                                </p>
+                                <p className="mt-1 text-sm font-medium text-text">{value}</p>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {[
                               [
                                 "Passed",
                                 selectedTaskSummary?.verification_passed === undefined ||
@@ -3338,6 +3356,41 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                 {selectedTaskSummary?.failure_detail ||
                                   taskFailureDetail(selectedTask)}
                               </p>
+                            </div>
+                          ) : null}
+
+                          {(selectedTaskSummary?.workflow_events ?? []).length > 0 ? (
+                            <div className="space-y-2">
+                              <p className="text-sm font-medium text-text">
+                                Recent Workflow Events
+                              </p>
+                              {(selectedTaskSummary?.workflow_events ?? [])
+                                .slice(0, 6)
+                                .map((event, index) => (
+                                  <div
+                                    key={`${event.event}-${event.recorded_at_ms ?? index}`}
+                                    className="rounded-xl border border-border bg-surface-elevated/40 px-3 py-2"
+                                  >
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="rounded-full border border-border bg-surface px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                                        {event.event}
+                                      </span>
+                                      {event.phase ? (
+                                        <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-sky-200">
+                                          {event.phase}
+                                        </span>
+                                      ) : null}
+                                      {event.failure_kind ? (
+                                        <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-amber-100">
+                                          {event.failure_kind}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <p className="mt-2 text-[11px] text-text-muted">
+                                      {event.reason || "No reason recorded"}
+                                    </p>
+                                  </div>
+                                ))}
                             </div>
                           ) : null}
 

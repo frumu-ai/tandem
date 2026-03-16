@@ -1195,6 +1195,9 @@ export interface CoderTaskTelemetry {
   label: string;
   status: string;
   owner?: string | null;
+  workflow_class?: string | null;
+  phase?: string | null;
+  failure_kind?: string | null;
   changed_files: string[];
   diff_files: string[];
   verification_commands: string[];
@@ -1204,6 +1207,15 @@ export interface CoderTaskTelemetry {
   latest_failing_command?: string | null;
   failure_detail?: string | null;
   artifact_paths: string[];
+  workflow_events: Array<{
+    event: string;
+    recorded_at_ms?: number | null;
+    reason?: string | null;
+    workflow_class?: string | null;
+    phase?: string | null;
+    status?: string | null;
+    failure_kind?: string | null;
+  }>;
 }
 
 export interface CoderRunTelemetrySummary {
@@ -1211,6 +1223,15 @@ export interface CoderRunTelemetrySummary {
   verification_commands: string[];
   patch_summaries: string[];
   validation_failures: string[];
+  workflow_events: Array<{
+    event: string;
+    recorded_at_ms?: number | null;
+    reason?: string | null;
+    workflow_class?: string | null;
+    phase?: string | null;
+    status?: string | null;
+    failure_kind?: string | null;
+  }>;
   task_summaries: CoderTaskTelemetry[];
 }
 
