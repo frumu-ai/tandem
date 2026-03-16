@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added initial canonical workflow smoke coverage in `tandem-server` HTTP integration tests for research, artifact, and coding workflow state contracts
   - shared desktop workflow-run helpers now also normalize lifecycle-derived recovery, failure-chain, promotion, and repair event slices so agent-automation views stop reimplementing workflow-event filtering
   - shared workflow-event summary helpers now normalize phase, failure-kind, and fallback reason rendering across the control-panel debugger and desktop developer inspector
+  - shared control-panel workflow selectors now own completed, blocked, and pending node-id extraction so `AutomationsPage` stops hand-parsing checkpoint node arrays
 - **Workflow Studio model configuration**:
   - replaced free-text workflow model inputs with provider-backed selectors
   - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs

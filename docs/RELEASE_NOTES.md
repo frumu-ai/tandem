@@ -34,6 +34,7 @@
 - Added initial canonical workflow smoke coverage in `tandem-server` HTTP integration tests for research, artifact, and coding workflow state contracts.
 - Shared desktop workflow-run helpers now also normalize lifecycle-derived recovery, failure-chain, promotion, and repair event slices so agent-automation views stop reimplementing workflow-event filtering.
 - Shared workflow-event summary helpers now normalize phase, failure-kind, and fallback reason rendering across the control-panel debugger and desktop developer inspector.
+- Shared control-panel workflow selectors now own completed, blocked, and pending node-id extraction so `AutomationsPage` stops hand-parsing checkpoint node arrays.
 - Added projected backlog-task operations in the debugger:
   - projected coding backlog items can now be claimed and manually requeued through `automation_v2`
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions

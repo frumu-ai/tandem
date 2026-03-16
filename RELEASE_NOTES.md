@@ -34,6 +34,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - added initial canonical workflow smoke coverage in `tandem-server` HTTP integration tests for research, artifact, and coding workflow state contracts
   - shared desktop workflow-run helpers now also normalize lifecycle-derived recovery, failure-chain, promotion, and repair event slices so agent-automation views stop reimplementing workflow-event filtering
   - shared workflow-event summary helpers now normalize phase, failure-kind, and fallback reason rendering across the control-panel debugger and desktop developer inspector
+  - shared control-panel workflow selectors now own completed, blocked, and pending node-id extraction so `AutomationsPage` stops hand-parsing checkpoint node arrays
 
 - Repo coding backlog workflows now have real task operations
   - projected backlog items can now be claimed and manually requeued through `automation_v2` run APIs

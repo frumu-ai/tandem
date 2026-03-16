@@ -7,11 +7,14 @@ import { TaskBoard } from "../features/orchestration/TaskBoard";
 import {
   workflowArtifactCandidates,
   workflowArtifactValidation,
+  workflowBlockedNodeIds,
+  workflowCompletedNodeIds,
   workflowEventSummary,
   workflowNodeOutputEntries,
   workflowNodeOutputText,
   workflowNodeToolTelemetry,
   workflowNodeOutput,
+  workflowPendingNodeIds,
   workflowNodeStability,
   workflowRecentNodeEvents,
   workflowSessionIds,
@@ -953,15 +956,10 @@ function workflowTaskStateFromCheckpoint(
   checkpoint: any,
   dependencyTaskIds: string[]
 ): "pending" | "runnable" | "done" | "failed" | "blocked" {
-  const completed = new Set(
-    Array.isArray(checkpoint?.completed_nodes) ? checkpoint.completed_nodes.map(String) : []
-  );
-  const blocked = new Set(
-    Array.isArray(checkpoint?.blocked_nodes) ? checkpoint.blocked_nodes.map(String) : []
-  );
-  const pending = new Set(
-    Array.isArray(checkpoint?.pending_nodes) ? checkpoint.pending_nodes.map(String) : []
-  );
+  const checkpointLike = { checkpoint };
+  const completed = new Set(workflowCompletedNodeIds(checkpointLike));
+  const blocked = new Set(workflowBlockedNodeIds(checkpointLike));
+  const pending = new Set(workflowPendingNodeIds(checkpointLike));
   const taskId = String(nodeId || "").trim();
   if (completed.has(taskId)) return "done";
   const output = checkpoint?.node_outputs?.[taskId] || checkpoint?.nodeOutputs?.[taskId];
@@ -995,9 +993,7 @@ function buildWorkflowProjectionFromRunSnapshot(run: any, activeTaskId = "") {
     return { currentTaskId: "", taskSource: "empty" as const, tasks: [] };
   }
   const checkpoint = run?.checkpoint || {};
-  const completed = new Set(
-    Array.isArray(checkpoint?.completed_nodes) ? checkpoint.completed_nodes.map(String) : []
-  );
+  const completed = new Set(workflowCompletedNodeIds(run));
   const tasks = snapshotNodes.map((node: any) => {
     const nodeId = String(node?.node_id || "").trim();
     const taskId = `node-${nodeId}`;
@@ -1077,7 +1073,7 @@ function detectWorkflowActiveTaskId(
     const fromText = workflowNodeIdFromText(sessionMessageText(sessionMessages[i]?.message));
     if (fromText) return fromText;
   }
-  const pending = Array.isArray(run?.checkpoint?.pending_nodes) ? run.checkpoint.pending_nodes : [];
+  const pending = workflowPendingNodeIds(run);
   return pending.length ? normalizeWorkflowTaskId(String(pending[0] || "")) : "";
 }
 

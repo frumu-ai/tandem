@@ -2,6 +2,27 @@ export function workflowCheckpoint(run: any) {
   return run?.checkpoint || {};
 }
 
+function checkpointStringArray(checkpoint: any, snakeKey: string, camelKey: string) {
+  const raw = Array.isArray(checkpoint?.[snakeKey])
+    ? checkpoint[snakeKey]
+    : Array.isArray(checkpoint?.[camelKey])
+      ? checkpoint[camelKey]
+      : [];
+  return raw.map((value: any) => String(value || "").trim()).filter(Boolean);
+}
+
+export function workflowCompletedNodeIds(run: any) {
+  return checkpointStringArray(workflowCheckpoint(run), "completed_nodes", "completedNodes");
+}
+
+export function workflowBlockedNodeIds(run: any) {
+  return checkpointStringArray(workflowCheckpoint(run), "blocked_nodes", "blockedNodes");
+}
+
+export function workflowPendingNodeIds(run: any) {
+  return checkpointStringArray(workflowCheckpoint(run), "pending_nodes", "pendingNodes");
+}
+
 export function workflowNodeOutputs(run: any): Record<string, any> {
   const checkpoint = workflowCheckpoint(run);
   return (checkpoint?.node_outputs || checkpoint?.nodeOutputs || {}) as Record<string, any>;
