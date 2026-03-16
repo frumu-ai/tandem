@@ -138,6 +138,31 @@ function timestampLabel(value: unknown) {
   }
 }
 
+function latestLifecycleEventForRun(run: any) {
+  const lifecycleHistory = Array.isArray(run?.checkpoint?.lifecycle_history)
+    ? run.checkpoint.lifecycle_history
+    : Array.isArray(run?.checkpoint?.lifecycleHistory)
+      ? run.checkpoint.lifecycleHistory
+      : [];
+  if (!lifecycleHistory.length) return null;
+  return (
+    [...lifecycleHistory]
+      .sort(
+        (a: any, b: any) =>
+          Number(b?.recorded_at_ms || b?.recordedAtMs || 0) -
+          Number(a?.recorded_at_ms || a?.recordedAtMs || 0)
+      )
+      .find((event: any) => safeString(event?.event)) || null
+  );
+}
+
+function latestNodeOutputForRun(run: any) {
+  const outputs = run?.checkpoint?.node_outputs || run?.checkpoint?.nodeOutputs || {};
+  const values = Object.values(outputs || {}).filter(Boolean);
+  if (!values.length) return null;
+  return values[values.length - 1] as any;
+}
+
 function splitCsv(value: string) {
   return String(value || "")
     .split(",")
@@ -953,7 +978,6 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
     queryFn: () => client.mcp.list().catch(() => ({})),
     refetchInterval: 15000,
   });
-
   const defaultWorkspaceRoot = safeString(
     (healthQuery.data as any)?.workspaceRoot || (healthQuery.data as any)?.workspace_root
   );
@@ -995,6 +1019,54 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
       }),
     [automationsQuery.data]
   );
+  const studioWorkflowRunIds = useMemo(
+    () =>
+      studioAutomations
+        .map((automation: any) =>
+          safeString(automation?.automation_id || automation?.automationId || automation?.id)
+        )
+        .filter(Boolean),
+    [studioAutomations]
+  );
+  const studioWorkflowRunsQuery = useQuery({
+    queryKey: ["studio", "workflow-runs", studioWorkflowRunIds],
+    enabled: !!client?.automationsV2?.listRuns && studioWorkflowRunIds.length > 0,
+    queryFn: async () => {
+      const results = await Promise.all(
+        studioWorkflowRunIds.map(async (automationId) => {
+          const response = await client.automationsV2
+            .listRuns(automationId, 6)
+            .catch(() => ({ runs: [] }));
+          return Array.isArray((response as any)?.runs) ? (response as any).runs : [];
+        })
+      );
+      return { runs: results.flat() };
+    },
+    refetchInterval: 12000,
+  });
+  const studioWorkflowLatestRuns = useMemo(() => {
+    const rows = toArray(studioWorkflowRunsQuery.data, "runs");
+    const map = new Map<string, any>();
+    rows.forEach((run: any) => {
+      const automationId = safeString(run?.automation_id || run?.automationId);
+      if (!automationId) return;
+      const current = map.get(automationId);
+      const currentTime = Number(
+        current?.updated_at_ms ||
+          current?.updatedAtMs ||
+          current?.created_at_ms ||
+          current?.createdAtMs ||
+          0
+      );
+      const nextTime = Number(
+        run?.updated_at_ms || run?.updatedAtMs || run?.created_at_ms || run?.createdAtMs || 0
+      );
+      if (!current || nextTime >= currentTime) {
+        map.set(automationId, run);
+      }
+    });
+    return map;
+  }, [studioWorkflowRunsQuery.data]);
   const mcpServers = useMemo(() => extractMcpServers(mcpQuery.data), [mcpQuery.data]);
 
   const [draft, setDraft] = useState<StudioWorkflowDraft>(() =>
@@ -1718,6 +1790,24 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                       const automationId = safeString(
                         automation?.automation_id || automation?.automationId || automation?.id
                       );
+                      const latestRun = studioWorkflowLatestRuns.get(automationId) || null;
+                      const latestOutput = latestNodeOutputForRun(latestRun);
+                      const latestEvent = latestLifecycleEventForRun(latestRun);
+                      const latestRunStatus = safeString(
+                        latestRun?.status || latestOutput?.status || "never_run"
+                      );
+                      const latestFailureKind = safeString(
+                        latestOutput?.failure_kind || latestEvent?.metadata?.failure_kind
+                      );
+                      const latestPhase = safeString(
+                        latestOutput?.phase || latestEvent?.metadata?.phase
+                      );
+                      const latestRunLabel = timestampLabel(
+                        latestRun?.updated_at_ms ||
+                          latestRun?.updatedAtMs ||
+                          latestRun?.created_at_ms ||
+                          latestRun?.createdAtMs
+                      );
                       const studio = automation?.metadata?.studio || {};
                       const health = analyzeAutomationTemplateHealth(automation, templateMap);
                       const templateId = safeString(
@@ -1760,6 +1850,32 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                               <span className="tcp-badge-muted">updated: {updatedLabel}</span>
                             ) : null}
                           </div>
+                          {latestRun ? (
+                            <div className="mt-2 rounded-lg border border-slate-700/50 bg-slate-950/20 p-2">
+                              <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                                Latest Run Stability
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                                <span className="tcp-badge-info">status: {latestRunStatus}</span>
+                                {latestPhase ? (
+                                  <span className="tcp-badge-muted">phase: {latestPhase}</span>
+                                ) : null}
+                                {latestFailureKind ? (
+                                  <span className="tcp-badge-warn">
+                                    failure: {latestFailureKind}
+                                  </span>
+                                ) : null}
+                                {latestRunLabel ? (
+                                  <span className="tcp-badge-muted">run: {latestRunLabel}</span>
+                                ) : null}
+                              </div>
+                              {safeString(latestEvent?.reason || latestOutput?.blocked_reason) ? (
+                                <div className="mt-2 text-xs text-slate-300">
+                                  {safeString(latestEvent?.reason || latestOutput?.blocked_reason)}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
                           <div className="mt-2 flex flex-wrap gap-2">
                             <button
                               className="tcp-btn inline-flex h-7 items-center gap-2 px-2 text-xs"

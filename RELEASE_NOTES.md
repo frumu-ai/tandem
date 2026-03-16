@@ -17,6 +17,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - workflow nodes now expose typed stability metadata (`workflow_class`, `phase`, `failure_kind`, and artifact candidates) so the debugger can rely less on transcript parsing
   - workflow lifecycle history now includes typed node-scoped stability events for artifact acceptance/rejection, research coverage failures, and verification/repair transitions
   - desktop/TUI coder summaries now include typed workflow stability fields and recent workflow events per task so task inspectors can follow the same backend state contract
+  - Studio saved workflows now show the latest run’s typed stability snapshot for faster authoring/debugging loops
 
 - Repo coding backlog workflows now have real task operations
   - projected backlog items can now be claimed and manually requeued through `automation_v2` run APIs
