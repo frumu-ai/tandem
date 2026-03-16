@@ -82,6 +82,30 @@ export function extractSessionIdsFromRun(run: AutomationV2RunRecord | null) {
   );
 }
 
+export function extractRunNodeOutputs(run: AutomationV2RunRecord | null) {
+  const checkpoint = (run?.checkpoint as Record<string, unknown> | undefined) || {};
+  const outputs =
+    (checkpoint.node_outputs as Record<string, Record<string, unknown>>) ||
+    (checkpoint.nodeOutputs as Record<string, Record<string, unknown>>) ||
+    {};
+  return Object.entries(outputs).map(([nodeId, value]) => ({
+    nodeId,
+    value,
+  }));
+}
+
+export function nodeOutputText(value: Record<string, unknown>) {
+  const summary = String(value?.summary || "").trim();
+  const status = String(value?.status || "").trim();
+  const blockedReason = String(value?.blocked_reason || value?.blockedReason || "").trim();
+  const content = (value?.content as Record<string, unknown> | undefined) || {};
+  const text = String(content.text || content.raw_text || "").trim();
+  return [summary, status ? `status: ${status}` : "", blockedReason, text]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
 export function formatTimestamp(value: unknown) {
   const asNumber = Number(value || 0);
   if (!Number.isFinite(asNumber) || asNumber <= 0) return "Unknown";
@@ -93,25 +117,38 @@ export function runSortTimestamp(run: AutomationV2RunRecord | null | undefined) 
 }
 
 export function canPauseRun(run: AutomationV2RunRecord) {
-  const status = String(run.status || "").trim().toLowerCase();
+  const status = String(run.status || "")
+    .trim()
+    .toLowerCase();
   return status === "queued" || status === "running" || status === "awaiting_approval";
 }
 
 export function canResumeRun(run: AutomationV2RunRecord) {
-  return String(run.status || "").trim().toLowerCase() === "paused";
+  return (
+    String(run.status || "")
+      .trim()
+      .toLowerCase() === "paused"
+  );
 }
 
 export function canCancelRun(run: AutomationV2RunRecord) {
-  const status = String(run.status || "").trim().toLowerCase();
+  const status = String(run.status || "")
+    .trim()
+    .toLowerCase();
   return ["queued", "running", "pausing", "paused", "awaiting_approval"].includes(status);
 }
 
 export function canRecoverRun(run: AutomationV2RunRecord) {
-  const status = String(run.status || "").trim().toLowerCase();
+  const status = String(run.status || "")
+    .trim()
+    .toLowerCase();
   return ["failed", "cancelled", "paused"].includes(status);
 }
 
-export function matchesActiveProject(automation: AutomationV2Spec, activeProject: UserProject | null) {
+export function matchesActiveProject(
+  automation: AutomationV2Spec,
+  activeProject: UserProject | null
+) {
   if (!activeProject?.path) return true;
   const workspaceRoot = String(automation.workspace_root || "").trim();
   if (!workspaceRoot) return true;

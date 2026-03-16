@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Input } from "@/components/ui";
 import { ProjectSwitcher } from "@/components/sidebar";
+import {
+  extractRunNodeOutputs,
+  extractSessionIdsFromRun,
+  nodeOutputText,
+} from "@/components/coder/shared/coderRunUtils";
 import { AdvancedMissionBuilder } from "@/components/agent-automation/AdvancedMissionBuilder";
 import {
   automationsV2Delete,
@@ -430,48 +435,6 @@ function runDisplayTitle(run: AutomationV2RunRecord | null) {
   if (objective) return shortText(objective, 96);
   const automationId = String(run?.automation_id || "").trim();
   return automationId || "Run";
-}
-
-function extractSessionIdsFromRun(run: AutomationV2RunRecord | null) {
-  const direct = Array.isArray(run?.active_session_ids) ? run.active_session_ids : [];
-  const checkpoint = (run?.checkpoint as Record<string, unknown> | undefined) || {};
-  const latest = [
-    String((run as Record<string, unknown> | null)?.latest_session_id || "").trim(),
-    String((run as Record<string, unknown> | null)?.latestSessionId || "").trim(),
-    String(checkpoint.latest_session_id || checkpoint.latestSessionId || "").trim(),
-  ].filter(Boolean);
-  const nodeOutputs =
-    (checkpoint.node_outputs as Record<string, Record<string, unknown>>) ||
-    (checkpoint.nodeOutputs as Record<string, Record<string, unknown>>) ||
-    {};
-  const nodeSessionIds = Object.values(nodeOutputs)
-    .map((entry) => {
-      const content = (entry?.content as Record<string, unknown> | undefined) || {};
-      return String(content.session_id || content.sessionId || "").trim();
-    })
-    .filter(Boolean);
-  return Array.from(
-    new Set([...latest, ...direct.map((row) => String(row || "").trim()), ...nodeSessionIds])
-  );
-}
-
-function extractRunNodeOutputs(run: AutomationV2RunRecord | null) {
-  const checkpoint = (run?.checkpoint as Record<string, unknown> | undefined) || {};
-  const outputs =
-    (checkpoint.node_outputs as Record<string, Record<string, unknown>>) ||
-    (checkpoint.nodeOutputs as Record<string, Record<string, unknown>>) ||
-    {};
-  return Object.entries(outputs).map(([nodeId, value]) => ({
-    nodeId,
-    value,
-  }));
-}
-
-function nodeOutputText(value: Record<string, unknown>) {
-  const summary = String(value?.summary || "").trim();
-  const content = (value?.content as Record<string, unknown> | undefined) || {};
-  const text = String(content.text || content.raw_text || "").trim();
-  return [summary, text].filter(Boolean).join("\n").trim();
 }
 
 function sessionMessageText(message: SessionMessage) {

@@ -21,6 +21,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - artifact finalization now deterministically selects the strongest candidate from verified output, session writes, and preexisting output instead of relying on placeholder-phrase rejection
   - Studio and the Run Debugger now share workflow-stability selectors instead of reimplementing node-output and lifecycle parsing separately
   - more control-panel workflow views now use the shared workflow-stability selector layer for session IDs, latest stability snapshots, node-output text, and telemetry extraction
+  - desktop agent-automation views now reuse the shared coder workflow-run parsers for session IDs and node outputs instead of duplicating local extraction logic
 
 - Repo coding backlog workflows now have real task operations
   - projected backlog items can now be claimed and manually requeued through `automation_v2` run APIs
