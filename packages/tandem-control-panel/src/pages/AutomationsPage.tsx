@@ -11,6 +11,7 @@ import {
   workflowBlockedNodeIds,
   workflowCompletedNodeCount,
   workflowCompletedNodeIds,
+  workflowCurrentTaskId,
   workflowEventSummary,
   workflowNodeAttemptCount,
   workflowNodeOutputEntries,
@@ -1011,11 +1012,7 @@ function buildWorkflowProjectionFromRunSnapshot(run: any, activeTaskId = "") {
       output_path: String(builder?.output_path || ""),
     };
   });
-  const currentTaskId =
-    activeTaskId ||
-    tasks.find((task) => task.state === "in_progress" || task.state === "assigned")?.id ||
-    tasks.find((task) => task.state === "runnable")?.id ||
-    "";
+  const currentTaskId = workflowCurrentTaskId(tasks, activeTaskId);
   return { currentTaskId, taskSource: "checkpoint" as const, tasks };
 }
 

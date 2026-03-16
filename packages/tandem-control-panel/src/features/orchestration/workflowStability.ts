@@ -107,6 +107,20 @@ export function workflowTaskState(
   return dependencyTaskIds.length ? "pending" : "runnable";
 }
 
+export function workflowCurrentTaskId(
+  tasks: Array<{ id: string; state: string }> | null | undefined,
+  activeTaskId = ""
+) {
+  const explicit = String(activeTaskId || "").trim();
+  if (explicit) return explicit;
+  const rows = Array.isArray(tasks) ? tasks : [];
+  return (
+    rows.find((task) => task.state === "in_progress" || task.state === "assigned")?.id ||
+    rows.find((task) => task.state === "runnable")?.id ||
+    ""
+  );
+}
+
 export function workflowLifecycleHistory(run: any): any[] {
   const checkpoint = workflowCheckpoint(run);
   if (Array.isArray(checkpoint?.lifecycle_history)) return checkpoint.lifecycle_history;
