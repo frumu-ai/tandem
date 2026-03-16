@@ -14,6 +14,7 @@ import {
   runGateHistory,
   runLastFailure,
   runNodeOutputMap,
+  runStatusLabel,
   runSummary,
   runAwaitingGate,
   runUsageMetrics,
@@ -398,19 +399,6 @@ function modelLabel(provider: string, model: string) {
   const modelValue = String(model || "").trim();
   if (!providerValue || !modelValue) return "Engine default";
   return `${providerValue}/${modelValue}`;
-}
-
-function runStatusLabel(run: AutomationV2RunRecord | null) {
-  const status = String(run?.status || "")
-    .trim()
-    .toLowerCase();
-  const stopKind = String((run as Record<string, unknown> | null)?.stop_kind || "")
-    .trim()
-    .toLowerCase();
-  if (status === "cancelled" && stopKind === "operator_stopped") return "operator stopped";
-  if (status === "cancelled" && stopKind === "guardrail_stopped") return "guardrail stopped";
-  if (status === "cancelled" && stopKind === "cancelled") return "cancelled";
-  return status || "unknown";
 }
 
 function shortText(raw: unknown, max = 160) {

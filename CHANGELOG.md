@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - shared desktop coder detail views now also read gate state through the same workflow-run helper contract instead of reaching into checkpoint payloads directly
   - shared desktop coder workflow-run helpers now also provide usage metrics and summary text so agent-automation views can drop more local checkpoint/detail parsing
   - shared desktop coder workflow-run helpers now also own run display titles and failed-run recovery checks so agent-automation views stop duplicating that workflow logic
+  - shared desktop coder workflow-run helpers now also provide status-label formatting so agent-automation views stop carrying their own run-status mapping
 - **Workflow Studio model configuration**:
   - replaced free-text workflow model inputs with provider-backed selectors
   - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs
