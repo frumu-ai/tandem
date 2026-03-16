@@ -623,13 +623,13 @@ impl EngineLoop {
                 }
                 if requested_write_required
                     && required_write_retry_count > 0
-                    && prewrite_requirements_satisfied(
+                    && (prewrite_requirements_satisfied(
                         &requested_prewrite_requirements,
                         productive_workspace_inspection_total > 0,
                         productive_concrete_read_total > 0,
                         productive_web_research_total > 0,
                         successful_web_research_total > 0,
-                    )
+                    ) || unmet_prewrite_repair_retry_count > 0)
                 {
                     tool_schemas.retain(|schema| is_workspace_write_tool(&schema.name));
                 }

@@ -13,6 +13,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - blocked/failed runs now expose `Continue`, `Continue From Here`, `Retry`, and `Retry Workflow`
   - task details now show semantic node status, blocked reason, approval, tool telemetry, and artifact-validation results
   - coding task details now show per-step verification results, and successfully verified code nodes finish as `done` instead of generic `completed`
+  - failed automation runs now preserve the latest linked session id so the debugger can still surface transcript context after a node failure
 
 - Repo coding backlog workflows now have real task operations
   - projected backlog items can now be claimed and manually requeued through `automation_v2` run APIs
@@ -37,6 +38,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - substantive blocked artifacts remain on disk for inspection
   - fresh workflow reruns now preserve prior declared outputs until a replacement artifact is actually produced, so a failed retry does not leave the workspace empty
   - when a later placeholder write overwrites a real earlier write in the same node, the engine now restores the best substantive write from session history
+
+- Workflow Studio model selection is now aligned with the rest of the app
+  - per-agent workflow models now use provider-backed selectors instead of raw text inputs
+  - workflows can optionally use one shared provider/model across all agents to keep multi-agent runs cheaper
 
 - Saved Studio workflow deletion finally persists across restarts
   - deleting an `automation_v2` workflow now also deletes its stored run history so old run snapshots cannot recreate deleted workflows on engine boot

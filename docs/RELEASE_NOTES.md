@@ -13,6 +13,7 @@
 - Added richer task details including semantic node status, blocked reason, approval state, tool telemetry, and artifact-validation details.
 - Added `Continue`, `Continue From Here`, `Retry`, and `Retry Workflow` actions for blocked/failed workflow runs.
 - Added richer coding-task verification details in task inspection, including per-step verification results and explicit `done` status for successfully verified code tasks.
+- Failed automation runs now preserve the latest linked session id so the debugger can still surface transcript context after a node failure.
 - Added projected backlog-task operations in the debugger:
   - projected coding backlog items can now be claimed and manually requeued through `automation_v2`
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions
@@ -38,6 +39,11 @@
 - Added rejection and cleanup of undeclared touch/status/marker files created by workflow agents.
 - Preserved substantive blocked artifacts on disk for inspection instead of deleting them just because the node was semantically blocked.
 - Fresh workflow reruns now preserve prior declared outputs until a replacement artifact is actually produced, so a failed retry does not leave the workspace empty.
+
+### Workflow Studio Models
+
+- Replaced workflow agent model text boxes with provider-backed selectors.
+- Added an optional shared-model mode so one provider/model choice can be applied across every agent in a workflow to reduce multi-agent cost.
 - Added recovery from session-local write history so if a node writes a real artifact and later overwrites it with a useless preservation note, the engine restores the best substantive write.
 - `Continue` on a blocked node now clears stale descendant outputs while preserving valid upstream artifacts.
 

@@ -65,6 +65,9 @@ export type StudioWorkflowDraft = {
   cronExpression: string;
   intervalSeconds: string;
   maxParallelAgents: string;
+  useSharedModel: boolean;
+  sharedModelProvider: string;
+  sharedModelId: string;
   outputTargets: string[];
   agents: StudioAgentDraft[];
   nodes: StudioNodeDraft[];

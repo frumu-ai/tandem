@@ -202,6 +202,10 @@ function resolveDefaultModel(
   return { provider, model };
 }
 
+function modelsForProvider(providerOptions: ProviderOption[], providerId: string) {
+  return providerOptions.find((entry) => entry.id === providerId)?.models || [];
+}
+
 function applyDefaultModelToAgents(
   agents: StudioAgentDraft[],
   fallback: { provider: string; model: string }
@@ -216,6 +220,38 @@ function applyDefaultModelToAgents(
           modelId: safeString(agent.modelId) || fallback.model,
         }
   );
+}
+
+function inferSharedModelFromAgents(agents: StudioAgentDraft[]) {
+  const normalized = agents
+    .map((agent) => ({
+      provider: safeString(agent.modelProvider),
+      model: safeString(agent.modelId),
+    }))
+    .filter((entry) => entry.provider && entry.model);
+  if (!normalized.length) {
+    return { useSharedModel: false, provider: "", model: "" };
+  }
+  const first = normalized[0];
+  const allSame = normalized.every(
+    (entry) => entry.provider === first.provider && entry.model === first.model
+  );
+  return {
+    useSharedModel: allSame,
+    provider: allSame ? first.provider : "",
+    model: allSame ? first.model : "",
+  };
+}
+
+function applySharedModelToAgents(agents: StudioAgentDraft[], provider: string, model: string) {
+  const normalizedProvider = safeString(provider);
+  const normalizedModel = safeString(model);
+  if (!normalizedProvider || !normalizedModel) return agents;
+  return agents.map((agent) => ({
+    ...agent,
+    modelProvider: normalizedProvider,
+    modelId: normalizedModel,
+  }));
 }
 
 function buildSchedulePayload(draft: StudioWorkflowDraft) {
@@ -748,6 +784,9 @@ function draftFromAutomation(
         workflowMeta?.max_parallel_agents ||
         1
     ),
+    useSharedModel: false,
+    sharedModelProvider: "",
+    sharedModelId: "",
     outputTargets: Array.isArray(automation?.output_targets || automation?.outputTargets)
       ? (automation.output_targets || automation.outputTargets)
           .map((entry: any) => safeString(entry))
@@ -758,6 +797,10 @@ function draftFromAutomation(
     agents: studioAgents.length ? studioAgents : automationAgents,
     nodes: studioNodes.length ? studioNodes : automationNodes,
   };
+  const sharedModel = inferSharedModelFromAgents(draft.agents);
+  draft.useSharedModel = sharedModel.useSharedModel;
+  draft.sharedModelProvider = sharedModel.provider;
+  draft.sharedModelId = sharedModel.model;
   const repaired = repairDraftTemplateLinks(draft, templateMap);
   return repaired;
 }
@@ -996,6 +1039,25 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
       return changed ? { ...current, agents: nextAgents } : current;
     });
   }, [studioDefaultModel]);
+
+  useEffect(() => {
+    if (!draft.useSharedModel) return;
+    if (!safeString(draft.sharedModelProvider) || !safeString(draft.sharedModelId)) return;
+    setDraft((current) => {
+      if (!current.useSharedModel) return current;
+      const nextAgents = applySharedModelToAgents(
+        current.agents,
+        current.sharedModelProvider,
+        current.sharedModelId
+      );
+      const changed = nextAgents.some(
+        (agent, index) =>
+          agent.modelProvider !== current.agents[index]?.modelProvider ||
+          agent.modelId !== current.agents[index]?.modelId
+      );
+      return changed ? { ...current, agents: nextAgents } : current;
+    });
+  }, [draft.useSharedModel, draft.sharedModelProvider, draft.sharedModelId]);
 
   useEffect(() => {
     const nodeIds = new Set(draft.nodes.map((node) => node.nodeId));
@@ -1311,10 +1373,24 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
       const repairedDraft = !saveReusableTemplates
         ? repairDraftTemplateLinks(draft, templateMap).draft
         : draft;
-      const workingDraft = {
+      let workingDraft = {
         ...repairedDraft,
         agents: applyDefaultModelToAgents(repairedDraft.agents, studioDefaultModel),
       };
+      if (
+        workingDraft.useSharedModel &&
+        safeString(workingDraft.sharedModelProvider) &&
+        safeString(workingDraft.sharedModelId)
+      ) {
+        workingDraft = {
+          ...workingDraft,
+          agents: applySharedModelToAgents(
+            workingDraft.agents,
+            workingDraft.sharedModelProvider,
+            workingDraft.sharedModelId
+          ),
+        };
+      }
       const workspaceError = validateWorkspaceRootInput(workingDraft.workspaceRoot);
       if (workspaceError) throw new Error(workspaceError);
       if (!safeString(workingDraft.name)) throw new Error("Workflow name is required.");
@@ -1937,6 +2013,95 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                     ? `${studioDefaultModel.provider}/${studioDefaultModel.model}`
                     : "No provider default configured in Settings."}
                 </div>
+                <label className="flex items-center gap-2 text-sm text-slate-300 md:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={draft.useSharedModel}
+                    onInput={(event) => {
+                      const checked = (event.target as HTMLInputElement).checked;
+                      const inferred = inferSharedModelFromAgents(draft.agents);
+                      updateDraft({
+                        useSharedModel: checked,
+                        sharedModelProvider: checked
+                          ? safeString(draft.sharedModelProvider) ||
+                            inferred.provider ||
+                            studioDefaultModel.provider
+                          : draft.sharedModelProvider,
+                        sharedModelId: checked
+                          ? safeString(draft.sharedModelId) ||
+                            inferred.model ||
+                            studioDefaultModel.model
+                          : draft.sharedModelId,
+                      });
+                    }}
+                  />
+                  Use one model for all agents in this workflow
+                </label>
+                {draft.useSharedModel ? (
+                  <>
+                    <label className="grid gap-1">
+                      <span className="text-xs text-slate-400">Shared Model Provider</span>
+                      <select
+                        className="tcp-input text-sm"
+                        value={draft.sharedModelProvider}
+                        onInput={(event) => {
+                          const provider = (event.target as HTMLSelectElement).value;
+                          const models = modelsForProvider(providerOptions, provider);
+                          updateDraft({
+                            sharedModelProvider: provider,
+                            sharedModelId: models.includes(draft.sharedModelId)
+                              ? draft.sharedModelId
+                              : models[0] || draft.sharedModelId,
+                          });
+                        }}
+                      >
+                        <option value="">Select provider...</option>
+                        {providerOptions.map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="grid gap-1">
+                      <span className="text-xs text-slate-400">Shared Model</span>
+                      {modelsForProvider(providerOptions, draft.sharedModelProvider).length ? (
+                        <select
+                          className="tcp-input text-sm"
+                          value={draft.sharedModelId}
+                          onInput={(event) =>
+                            updateDraft({
+                              sharedModelId: (event.target as HTMLSelectElement).value,
+                            })
+                          }
+                        >
+                          {modelsForProvider(providerOptions, draft.sharedModelProvider).map(
+                            (model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            )
+                          )}
+                        </select>
+                      ) : (
+                        <input
+                          className="tcp-input text-sm"
+                          value={draft.sharedModelId}
+                          onInput={(event) =>
+                            updateDraft({
+                              sharedModelId: (event.target as HTMLInputElement).value,
+                            })
+                          }
+                          placeholder="provider-specific model id"
+                        />
+                      )}
+                    </label>
+                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-xs text-amber-100 md:col-span-2">
+                      Shared model mode applies the same provider/model to every agent on save and
+                      while editing.
+                    </div>
+                  </>
+                ) : null}
                 <label className="flex items-center gap-2 text-sm text-slate-300 md:col-span-2">
                   <input
                     type="checkbox"
@@ -2596,30 +2761,75 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="grid gap-1">
                       <span className="text-xs text-slate-400">Model Provider</span>
-                      <input
+                      <select
                         className="tcp-input text-sm"
                         value={selectedAgent.modelProvider}
+                        disabled={draft.useSharedModel}
                         onInput={(event) =>
-                          updateAgent(selectedAgent.agentId, {
-                            modelProvider: (event.target as HTMLInputElement).value,
-                          })
+                          updateAgent(
+                            selectedAgent.agentId,
+                            (() => {
+                              const provider = (event.target as HTMLSelectElement).value;
+                              const models = modelsForProvider(providerOptions, provider);
+                              return {
+                                modelProvider: provider,
+                                modelId: models.includes(selectedAgent.modelId)
+                                  ? selectedAgent.modelId
+                                  : models[0] || selectedAgent.modelId,
+                              };
+                            })()
+                          )
                         }
-                        placeholder="openrouter"
-                      />
+                      >
+                        <option value="">Select provider...</option>
+                        {providerOptions.map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.id}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                     <label className="grid gap-1">
                       <span className="text-xs text-slate-400">Model ID</span>
-                      <input
-                        className="tcp-input text-sm"
-                        value={selectedAgent.modelId}
-                        onInput={(event) =>
-                          updateAgent(selectedAgent.agentId, {
-                            modelId: (event.target as HTMLInputElement).value,
-                          })
-                        }
-                        placeholder="openai/gpt-4o-mini"
-                      />
+                      {modelsForProvider(providerOptions, selectedAgent.modelProvider).length ? (
+                        <select
+                          className="tcp-input text-sm"
+                          value={selectedAgent.modelId}
+                          disabled={draft.useSharedModel}
+                          onInput={(event) =>
+                            updateAgent(selectedAgent.agentId, {
+                              modelId: (event.target as HTMLSelectElement).value,
+                            })
+                          }
+                        >
+                          {modelsForProvider(providerOptions, selectedAgent.modelProvider).map(
+                            (model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            )
+                          )}
+                        </select>
+                      ) : (
+                        <input
+                          className="tcp-input text-sm"
+                          value={selectedAgent.modelId}
+                          disabled={draft.useSharedModel}
+                          onInput={(event) =>
+                            updateAgent(selectedAgent.agentId, {
+                              modelId: (event.target as HTMLInputElement).value,
+                            })
+                          }
+                          placeholder="provider-specific model id"
+                        />
+                      )}
                     </label>
+                    {draft.useSharedModel ? (
+                      <div className="text-xs text-amber-200 md:col-span-2">
+                        Per-agent model controls are locked because this workflow is using one
+                        shared model for all agents.
+                      </div>
+                    ) : null}
                     <label className="grid gap-1 md:col-span-2">
                       <span className="text-xs text-slate-400">Tool Allowlist</span>
                       <input

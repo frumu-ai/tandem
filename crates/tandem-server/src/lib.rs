@@ -899,6 +899,8 @@ pub struct AutomationV2RunRecord {
     pub finished_at_ms: Option<u64>,
     #[serde(default)]
     pub active_session_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_session_id: Option<String>,
     #[serde(default)]
     pub active_instance_ids: Vec<String>,
     pub checkpoint: AutomationRunCheckpoint,
@@ -3656,6 +3658,7 @@ impl AppState {
             started_at_ms: None,
             finished_at_ms: None,
             active_session_ids: Vec::new(),
+            latest_session_id: None,
             active_instance_ids: Vec::new(),
             checkpoint: AutomationRunCheckpoint {
                 completed_nodes: Vec::new(),
@@ -3767,6 +3770,7 @@ impl AppState {
                 if !row.active_session_ids.iter().any(|id| id == session_id) {
                     row.active_session_ids.push(session_id.to_string());
                 }
+                row.latest_session_id = Some(session_id.to_string());
             })
             .await;
         self.automation_v2_session_runs
@@ -10137,6 +10141,7 @@ mod tests {
             started_at_ms: None,
             finished_at_ms: None,
             active_session_ids: Vec::new(),
+            latest_session_id: None,
             active_instance_ids: Vec::new(),
             checkpoint: AutomationRunCheckpoint {
                 completed_nodes: completed_nodes.into_iter().map(str::to_string).collect(),

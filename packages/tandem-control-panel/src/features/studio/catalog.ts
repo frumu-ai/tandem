@@ -963,6 +963,9 @@ export function createWorkflowDraftFromTemplate(
     cronExpression: "",
     intervalSeconds: "3600",
     maxParallelAgents: "1",
+    useSharedModel: false,
+    sharedModelProvider: "",
+    sharedModelId: "",
     outputTargets: [...template.suggestedOutputs],
     agents: template.agents.map((entry) => ({
       ...entry,

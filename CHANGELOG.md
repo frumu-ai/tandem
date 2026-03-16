@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - made desktop workflow lanes horizontally scrollable with jump-to-active controls instead of clipping off-screen columns
   - surfaced offered/executed tools, workspace-inspection usage, web-research usage, and artifact-validation details directly in task inspection
   - added richer coding-task verification details in the Run Debugger, including per-step verification results and `done` status for successfully verified code tasks
+  - failed automation runs now preserve the latest linked session id so the debugger can still link back to the most recent transcript context
+- **Workflow Studio model configuration**:
+  - replaced free-text workflow model inputs with provider-backed selectors
+  - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs
 - **Automation execution now prefers deterministic file-backed workflow behavior**:
   - `automation_v2` nodes now run with explicit required tool sets instead of relying on the generic auto-router alone
   - normalized workflow tool exposure so `read` implies `glob` for workspace discovery
