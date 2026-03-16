@@ -36,6 +36,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - shared workflow-event summary helpers now normalize phase, failure-kind, and fallback reason rendering across the control-panel debugger and desktop developer inspector
   - shared control-panel workflow selectors now own completed, blocked, and pending node-id extraction so `AutomationsPage` stops hand-parsing checkpoint node arrays
   - shared control-panel workflow selectors now also own workflow task-state calculation plus completed/pending node counts so `AutomationsPage` drops more page-local checkpoint logic
+  - shared control-panel workflow selectors now also own active-session counts so workflow headers stop reading session arrays directly
 
 - Repo coding backlog workflows now have real task operations
   - projected backlog items can now be claimed and manually requeued through `automation_v2` run APIs

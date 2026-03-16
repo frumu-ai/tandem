@@ -36,6 +36,7 @@
 - Shared workflow-event summary helpers now normalize phase, failure-kind, and fallback reason rendering across the control-panel debugger and desktop developer inspector.
 - Shared control-panel workflow selectors now own completed, blocked, and pending node-id extraction so `AutomationsPage` stops hand-parsing checkpoint node arrays.
 - Shared control-panel workflow selectors now also own workflow task-state calculation plus completed/pending node counts so `AutomationsPage` drops more page-local checkpoint logic.
+- Shared control-panel workflow selectors now also own active-session counts so workflow headers stop reading session arrays directly.
 - Added projected backlog-task operations in the debugger:
   - projected coding backlog items can now be claimed and manually requeued through `automation_v2`
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions

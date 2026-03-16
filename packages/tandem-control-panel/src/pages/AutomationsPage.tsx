@@ -5,6 +5,7 @@ import { renderIcons } from "../app/icons.js";
 import { projectOrchestrationRun } from "../features/orchestrator/blackboardProjection";
 import { TaskBoard } from "../features/orchestration/TaskBoard";
 import {
+  workflowActiveSessionCount,
   workflowArtifactCandidates,
   workflowArtifactValidation,
   workflowBlockedNodeIds,
@@ -5202,10 +5203,7 @@ function MyAutomations({
                   {isWorkflowRun ? (
                     <div className="tcp-subtle text-xs">
                       completed nodes: {workflowCompletedNodeCount(selectedRun)}
-                      {" · "}active sessions:{" "}
-                      {Array.isArray(selectedRun?.active_session_ids)
-                        ? selectedRun.active_session_ids.length
-                        : 0}
+                      {" · "}active sessions: {workflowActiveSessionCount(selectedRun)}
                     </div>
                   ) : null}
                 </div>

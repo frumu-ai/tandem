@@ -31,6 +31,15 @@ export function workflowPendingNodeCount(run: any) {
   return workflowPendingNodeIds(run).length;
 }
 
+export function workflowActiveSessionCount(run: any) {
+  const direct = Array.isArray(run?.active_session_ids)
+    ? run.active_session_ids
+    : Array.isArray(run?.activeSessionIds)
+      ? run.activeSessionIds
+      : [];
+  return direct.length;
+}
+
 export function workflowNodeOutputs(run: any): Record<string, any> {
   const checkpoint = workflowCheckpoint(run);
   return (checkpoint?.node_outputs || checkpoint?.nodeOutputs || {}) as Record<string, any>;
