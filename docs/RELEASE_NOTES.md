@@ -29,6 +29,7 @@
 - Shared desktop coder workflow-run helpers now also own run display titles and failed-run recovery checks so agent-automation views stop duplicating that workflow logic.
 - Shared desktop coder workflow-run helpers now also provide status-label formatting so agent-automation views stop carrying their own run-status mapping.
 - Shared desktop coder workflow-run helpers now also provide node-output summaries and session-id extraction so agent-automation diagnostics stop hand-parsing output payloads.
+- Shared desktop coder workflow-run helpers now also provide stop-reason and node-attempt helpers so agent-automation views drop more direct run/checkpoint field access.
 - Added projected backlog-task operations in the debugger:
   - projected coding backlog items can now be claimed and manually requeued through `automation_v2`
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions

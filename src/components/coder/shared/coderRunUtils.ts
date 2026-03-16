@@ -59,6 +59,10 @@ export function runSummary(run: AutomationV2RunRecord | null) {
   ).trim();
 }
 
+export function runStopReason(run: AutomationV2RunRecord | null) {
+  return String((run as Record<string, unknown> | null)?.stop_reason || "").trim();
+}
+
 export function runDisplayTitle(run: AutomationV2RunRecord | null) {
   const explicitName = String((run as Record<string, unknown> | null)?.name || "").trim();
   if (explicitName) return explicitName;
@@ -161,6 +165,15 @@ export function runNodeOutputMap(run: AutomationV2RunRecord | null) {
   return (
     (checkpoint.node_outputs as Record<string, Record<string, unknown>>) ||
     (checkpoint.nodeOutputs as Record<string, Record<string, unknown>>) ||
+    {}
+  );
+}
+
+export function runNodeAttempts(run: AutomationV2RunRecord | null) {
+  const checkpoint = runCheckpoint(run);
+  return (
+    (checkpoint.node_attempts as Record<string, number>) ||
+    (checkpoint.nodeAttempts as Record<string, number>) ||
     {}
   );
 }

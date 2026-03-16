@@ -12,11 +12,12 @@ import {
   nodeOutputText,
   pendingNodeIds,
   runDisplayTitle,
-  runCheckpoint,
   runGateHistory,
   runLastFailure,
+  runNodeAttempts,
   runNodeOutputMap,
   runStatusLabel,
+  runStopReason,
   runSummary,
   runAwaitingGate,
   runUsageMetrics,
@@ -503,11 +504,10 @@ function buildStepStatusDiagnostics(
   sessionMessagesBySession: Record<string, SessionMessage[]>
 ) {
   if (!run || !automation) return [];
-  const checkpoint = runCheckpoint(run);
   const completedNodes = completedNodeIds(run);
   const pendingNodes = pendingNodeIds(run);
   const blockedNodes = blockedNodeIds(run);
-  const attempts = (checkpoint.node_attempts as Record<string, number> | undefined) || {};
+  const attempts = runNodeAttempts(run);
   const outputs = runNodeOutputMap(run);
 
   return (automation.flow?.nodes || []).map((node) => {
@@ -2571,7 +2571,7 @@ export function AgentAutomationPage({
                     </div>
                     <div>
                       <span className="font-medium text-text">Stop Reason:</span>{" "}
-                      {selectedRunDetail.stop_reason || "n/a"}
+                      {runStopReason(selectedRunDetail) || "n/a"}
                     </div>
                     <div>
                       <span className="font-medium text-text">Pause Reason:</span>{" "}
