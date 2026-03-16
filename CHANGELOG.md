@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - control-panel Studio and Run Debugger now consume shared workflow-stability selectors instead of duplicating node-output and lifecycle parsing per page
   - more control-panel workflow surfaces now use the shared workflow-stability selector layer for session IDs, latest stability snapshots, node-output text, and telemetry extraction
   - desktop agent-automation views now reuse the shared coder workflow-run parsers for session IDs and node outputs instead of duplicating local extraction logic
+  - shared desktop coder workflow-run helpers now also normalize checkpoint and lifecycle-history access so agent-automation views stop hand-rolling those workflow records
 - **Workflow Studio model configuration**:
   - replaced free-text workflow model inputs with provider-backed selectors
   - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs

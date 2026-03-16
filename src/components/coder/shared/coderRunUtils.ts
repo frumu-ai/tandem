@@ -59,9 +59,16 @@ export function runSummary(run: AutomationV2RunRecord | null) {
   ).trim();
 }
 
+export function runCheckpoint(run: AutomationV2RunRecord | null) {
+  return ((run?.checkpoint as Record<string, unknown> | undefined) || {}) as Record<
+    string,
+    unknown
+  >;
+}
+
 export function extractSessionIdsFromRun(run: AutomationV2RunRecord | null) {
   const direct = Array.isArray(run?.active_session_ids) ? run.active_session_ids : [];
-  const checkpoint = (run?.checkpoint as Record<string, unknown> | undefined) || {};
+  const checkpoint = runCheckpoint(run);
   const latest = [
     String((run as Record<string, unknown> | null)?.latest_session_id || "").trim(),
     String((run as Record<string, unknown> | null)?.latestSessionId || "").trim(),
@@ -83,7 +90,7 @@ export function extractSessionIdsFromRun(run: AutomationV2RunRecord | null) {
 }
 
 export function extractRunNodeOutputs(run: AutomationV2RunRecord | null) {
-  const checkpoint = (run?.checkpoint as Record<string, unknown> | undefined) || {};
+  const checkpoint = runCheckpoint(run);
   const outputs =
     (checkpoint.node_outputs as Record<string, Record<string, unknown>>) ||
     (checkpoint.nodeOutputs as Record<string, Record<string, unknown>>) ||
@@ -104,6 +111,27 @@ export function nodeOutputText(value: Record<string, unknown>) {
     .filter(Boolean)
     .join("\n")
     .trim();
+}
+
+export function runNodeOutputMap(run: AutomationV2RunRecord | null) {
+  const checkpoint = runCheckpoint(run);
+  return (
+    (checkpoint.node_outputs as Record<string, Record<string, unknown>>) ||
+    (checkpoint.nodeOutputs as Record<string, Record<string, unknown>>) ||
+    {}
+  );
+}
+
+export function extractRunLifecycleHistory(run: AutomationV2RunRecord | null) {
+  const checkpoint = runCheckpoint(run);
+  const history = Array.isArray(checkpoint.lifecycle_history)
+    ? checkpoint.lifecycle_history
+    : Array.isArray(checkpoint.lifecycleHistory)
+      ? checkpoint.lifecycleHistory
+      : [];
+  return history.map(
+    (entry) => ((entry as Record<string, unknown>) || {}) as Record<string, unknown>
+  );
 }
 
 export function formatTimestamp(value: unknown) {

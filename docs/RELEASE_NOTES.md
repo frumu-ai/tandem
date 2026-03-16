@@ -22,6 +22,7 @@
 - Studio and the Run Debugger now share workflow-stability selectors instead of reimplementing node-output and lifecycle parsing separately.
 - More control-panel workflow views now use the shared workflow-stability selector layer for session IDs, latest stability snapshots, node-output text, and telemetry extraction.
 - Desktop agent-automation views now reuse the shared coder workflow-run parsers for session IDs and node outputs instead of duplicating local extraction logic.
+- Shared desktop coder workflow-run helpers now also normalize checkpoint and lifecycle-history access so agent-automation views stop hand-rolling those workflow records.
 - Added projected backlog-task operations in the debugger:
   - projected coding backlog items can now be claimed and manually requeued through `automation_v2`
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions

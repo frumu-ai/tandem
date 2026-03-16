@@ -2,9 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Button, Input } from "@/components/ui";
 import { ProjectSwitcher } from "@/components/sidebar";
 import {
+  extractRunLifecycleHistory,
   extractRunNodeOutputs,
   extractSessionIdsFromRun,
   nodeOutputText,
+  runCheckpoint,
+  runNodeOutputMap,
 } from "@/components/coder/shared/coderRunUtils";
 import { AdvancedMissionBuilder } from "@/components/agent-automation/AdvancedMissionBuilder";
 import {
@@ -552,8 +555,7 @@ function buildStepStatusDiagnostics(
     ? checkpoint.blocked_nodes.map((value) => String(value || "").trim()).filter(Boolean)
     : [];
   const attempts = (checkpoint.node_attempts as Record<string, number> | undefined) || {};
-  const outputs =
-    (checkpoint.node_outputs as Record<string, Record<string, unknown>> | undefined) || {};
+  const outputs = runNodeOutputMap(run);
 
   return (automation.flow?.nodes || []).map((node) => {
     const output = outputs[node.node_id];
@@ -901,10 +903,7 @@ function canRecoverRun(run: AutomationV2RunRecord) {
 }
 
 function selectedRunCheckpoint(run: AutomationV2RunRecord | null) {
-  return ((run?.checkpoint as Record<string, unknown> | undefined) || {}) as Record<
-    string,
-    unknown
-  >;
+  return runCheckpoint(run);
 }
 
 function readNumber(raw: unknown) {
@@ -1594,24 +1593,18 @@ export function AgentAutomationPage({
     };
   }, [selectedRunDetail]);
   const selectedLifecycleHistory = useMemo<StepLifecycleEntry[]>(() => {
-    const checkpoint = selectedRunCheckpoint(selectedRunDetail);
-    return Array.isArray(checkpoint.lifecycle_history)
-      ? checkpoint.lifecycle_history
-          .map((entry) => {
-            const row = ((entry as Record<string, unknown>) || {}) as Record<string, unknown>;
-            return {
-              event: String(row.event || "").trim(),
-              recorded_at_ms: Number(row.recorded_at_ms || 0),
-              reason: row.reason ? String(row.reason) : null,
-              stop_kind: row.stop_kind ? String(row.stop_kind) : null,
-              metadata: ((row.metadata as Record<string, unknown> | undefined) || null) as Record<
-                string,
-                unknown
-              > | null,
-            };
-          })
-          .sort((a, b) => Number(b.recorded_at_ms || 0) - Number(a.recorded_at_ms || 0))
-      : [];
+    return extractRunLifecycleHistory(selectedRunDetail)
+      .map((row) => ({
+        event: String(row.event || "").trim(),
+        recorded_at_ms: Number(row.recorded_at_ms || 0),
+        reason: row.reason ? String(row.reason) : null,
+        stop_kind: row.stop_kind ? String(row.stop_kind) : null,
+        metadata: ((row.metadata as Record<string, unknown> | undefined) || null) as Record<
+          string,
+          unknown
+        > | null,
+      }))
+      .sort((a, b) => Number(b.recorded_at_ms || 0) - Number(a.recorded_at_ms || 0));
   }, [selectedRunDetail]);
   const selectedGateHistory = useMemo(() => {
     const checkpoint = selectedRunCheckpoint(selectedRunDetail);
