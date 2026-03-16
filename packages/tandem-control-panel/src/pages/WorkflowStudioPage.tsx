@@ -1,6 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { renderIcons } from "../app/icons.js";
+import {
+  workflowLatestLifecycleEvent,
+  workflowLatestNodeOutput,
+} from "../features/orchestration/workflowStability";
 import { useSystemHealth } from "../features/system/queries";
 import {
   STUDIO_TEMPLATE_CATALOG,
@@ -136,31 +140,6 @@ function timestampLabel(value: unknown) {
   } catch {
     return "";
   }
-}
-
-function latestLifecycleEventForRun(run: any) {
-  const lifecycleHistory = Array.isArray(run?.checkpoint?.lifecycle_history)
-    ? run.checkpoint.lifecycle_history
-    : Array.isArray(run?.checkpoint?.lifecycleHistory)
-      ? run.checkpoint.lifecycleHistory
-      : [];
-  if (!lifecycleHistory.length) return null;
-  return (
-    [...lifecycleHistory]
-      .sort(
-        (a: any, b: any) =>
-          Number(b?.recorded_at_ms || b?.recordedAtMs || 0) -
-          Number(a?.recorded_at_ms || a?.recordedAtMs || 0)
-      )
-      .find((event: any) => safeString(event?.event)) || null
-  );
-}
-
-function latestNodeOutputForRun(run: any) {
-  const outputs = run?.checkpoint?.node_outputs || run?.checkpoint?.nodeOutputs || {};
-  const values = Object.values(outputs || {}).filter(Boolean);
-  if (!values.length) return null;
-  return values[values.length - 1] as any;
 }
 
 function splitCsv(value: string) {

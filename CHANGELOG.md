@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - desktop/TUI coder run summaries now include typed workflow stability fields and recent workflow events per task so the developer inspector follows the same backend contract as the control panel
   - Studio saved-workflow cards now surface the latest run’s typed stability snapshot so authoring views can see recent status, phase, and failure-kind state without leaving Studio
   - artifact finalization now scores verified output, session writes, and preexisting output so the strongest candidate wins deterministically instead of depending on late placeholder-phrase rejection
+  - control-panel Studio and Run Debugger now consume shared workflow-stability selectors instead of duplicating node-output and lifecycle parsing per page
 - **Workflow Studio model configuration**:
   - replaced free-text workflow model inputs with provider-backed selectors
   - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs

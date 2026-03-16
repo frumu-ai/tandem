@@ -4,6 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { renderIcons } from "../app/icons.js";
 import { projectOrchestrationRun } from "../features/orchestrator/blackboardProjection";
 import { TaskBoard } from "../features/orchestration/TaskBoard";
+import {
+  workflowArtifactCandidates,
+  workflowArtifactValidation,
+  workflowNodeOutput,
+  workflowNodeStability,
+  workflowRecentNodeEvents,
+} from "../features/orchestration/workflowStability";
 import { useEngineStream } from "../features/stream/useEngineStream";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { AdvancedMissionBuilderPanel } from "./AdvancedMissionBuilderPanel";
@@ -4102,18 +4109,16 @@ function MyAutomations({
   const selectedBoardTaskOutput = useMemo(() => {
     if (!selectedBoardTask) return null;
     const nodeId = String(selectedBoardTask.id || "").replace(/^node-/, "");
-    return (
-      selectedRun?.checkpoint?.node_outputs?.[nodeId] ||
-      selectedRun?.checkpoint?.nodeOutputs?.[nodeId] ||
-      null
-    );
+    return workflowNodeOutput(selectedRun, nodeId);
   }, [selectedBoardTask, selectedRun]);
   const selectedBoardTaskTelemetry = useMemo(
     () => nodeOutputToolTelemetry(selectedBoardTaskOutput),
     [selectedBoardTaskOutput]
   );
   const selectedBoardTaskArtifactValidation = useMemo(
-    () => nodeOutputArtifactValidation(selectedBoardTaskOutput),
+    () =>
+      workflowArtifactValidation(selectedBoardTaskOutput) ||
+      nodeOutputArtifactValidation(selectedBoardTaskOutput),
     [selectedBoardTaskOutput]
   );
   const selectedBoardTaskTouchedFiles = useMemo(
@@ -4321,51 +4326,25 @@ function MyAutomations({
     [selectedBoardTask, selectedBoardTaskArtifactValidation, selectedBoardTaskOutput]
   );
   const selectedBoardTaskWorkflowClass = useMemo(
-    () =>
-      String(
-        selectedBoardTaskOutput?.workflow_class ||
-          selectedBoardTaskOutput?.workflowClass ||
-          selectedBoardTaskArtifactValidation?.execution_policy?.workflow_class ||
-          ""
-      ).trim(),
-    [selectedBoardTaskArtifactValidation, selectedBoardTaskOutput]
+    () => workflowNodeStability(selectedBoardTaskOutput).workflowClass,
+    [selectedBoardTaskOutput]
   );
   const selectedBoardTaskPhase = useMemo(
-    () =>
-      String(selectedBoardTaskOutput?.phase || selectedBoardTaskOutput?.node_phase || "").trim(),
+    () => workflowNodeStability(selectedBoardTaskOutput).phase,
     [selectedBoardTaskOutput]
   );
   const selectedBoardTaskFailureKind = useMemo(
-    () =>
-      String(
-        selectedBoardTaskOutput?.failure_kind || selectedBoardTaskOutput?.failureKind || ""
-      ).trim(),
+    () => workflowNodeStability(selectedBoardTaskOutput).failureKind,
     [selectedBoardTaskOutput]
   );
   const selectedBoardTaskArtifactCandidates = useMemo(
-    () =>
-      Array.isArray(selectedBoardTaskArtifactValidation?.artifact_candidates)
-        ? selectedBoardTaskArtifactValidation.artifact_candidates
-        : [],
-    [selectedBoardTaskArtifactValidation]
+    () => workflowArtifactCandidates(selectedBoardTaskOutput),
+    [selectedBoardTaskOutput]
   );
-  const selectedBoardTaskLifecycleEvents = useMemo(() => {
-    if (!selectedBoardTaskNodeId) return [];
-    const lifecycleHistory = Array.isArray(selectedRun?.checkpoint?.lifecycle_history)
-      ? selectedRun.checkpoint.lifecycle_history
-      : Array.isArray(selectedRun?.checkpoint?.lifecycleHistory)
-        ? selectedRun.checkpoint.lifecycleHistory
-        : [];
-    return lifecycleHistory
-      .filter((event: any) => {
-        const metadataNodeId = String(
-          event?.metadata?.node_id || event?.metadata?.nodeId || ""
-        ).trim();
-        return metadataNodeId === selectedBoardTaskNodeId;
-      })
-      .slice(-8)
-      .reverse();
-  }, [selectedBoardTaskNodeId, selectedRun]);
+  const selectedBoardTaskLifecycleEvents = useMemo(
+    () => workflowRecentNodeEvents(selectedRun, selectedBoardTaskNodeId, 8),
+    [selectedBoardTaskNodeId, selectedRun]
+  );
   const selectedBoardTaskResetTaskIds = useMemo(
     () => workflowDescendantTaskIds(workflowProjection.tasks, selectedBoardTask?.id || ""),
     [selectedBoardTask, workflowProjection.tasks]
