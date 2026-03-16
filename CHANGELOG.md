@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - shared control-panel workflow selectors now own completed, blocked, and pending node-id extraction so `AutomationsPage` stops hand-parsing checkpoint node arrays
   - shared control-panel workflow selectors now also own workflow task-state calculation plus completed/pending node counts so `AutomationsPage` drops more page-local checkpoint logic
   - shared control-panel workflow selectors now also own active-session counts so workflow headers stop reading session arrays directly
+  - shared control-panel workflow selectors now also own node attempt counts and node-output session ids so the workflow board projection stops reading nested checkpoint fields directly
 - **Workflow Studio model configuration**:
   - replaced free-text workflow model inputs with provider-backed selectors
   - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs

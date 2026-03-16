@@ -59,6 +59,20 @@ export function workflowNodeOutput(run: any, nodeId: string) {
   return outputs[normalized] || null;
 }
 
+export function workflowNodeAttemptCount(run: any, nodeId: string) {
+  const checkpoint = workflowCheckpoint(run);
+  const normalized = String(nodeId || "").trim();
+  if (!normalized) return 0;
+  return Number(
+    checkpoint?.node_attempts?.[normalized] || checkpoint?.nodeAttempts?.[normalized] || 0
+  );
+}
+
+export function workflowNodeOutputSessionId(run: any, nodeId: string) {
+  const output = workflowNodeOutput(run, nodeId);
+  return String(output?.content?.session_id || output?.content?.sessionId || "").trim();
+}
+
 export function workflowTaskState(
   run: any,
   nodeId: string,
