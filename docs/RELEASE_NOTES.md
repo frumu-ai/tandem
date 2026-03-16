@@ -31,6 +31,7 @@
 - Shared desktop coder workflow-run helpers now also provide node-output summaries and session-id extraction so agent-automation diagnostics stop hand-parsing output payloads.
 - Shared desktop coder workflow-run helpers now also provide stop-reason and node-attempt helpers so agent-automation views drop more direct run/checkpoint field access.
 - Shared desktop coder workflow-run helpers now also provide blocker extraction so desktop automation and coder detail views surface the same run issues.
+- Added initial canonical workflow smoke coverage in `tandem-server` HTTP integration tests for research, artifact, and coding workflow state contracts.
 - Added projected backlog-task operations in the debugger:
   - projected coding backlog items can now be claimed and manually requeued through `automation_v2`
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions

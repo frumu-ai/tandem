@@ -2650,3 +2650,483 @@ async fn automations_v2_run_task_continue_minimally_resets_blocked_node() {
         Some("review")
     );
 }
+
+#[tokio::test]
+async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let automation = crate::AutomationV2Spec {
+        automation_id: "auto-v2-smoke-research".to_string(),
+        name: "Research Smoke".to_string(),
+        description: Some("Canonical research workflow smoke test".to_string()),
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        agents: vec![crate::AutomationAgentProfile {
+            agent_id: "researcher".to_string(),
+            template_id: None,
+            display_name: "Researcher".to_string(),
+            avatar_url: None,
+            model_policy: None,
+            skills: Vec::new(),
+            tool_policy: crate::AutomationAgentToolPolicy {
+                allowlist: vec![
+                    "glob".to_string(),
+                    "read".to_string(),
+                    "websearch".to_string(),
+                    "write".to_string(),
+                ],
+                denylist: Vec::new(),
+            },
+            mcp_policy: crate::AutomationAgentMcpPolicy {
+                allowed_servers: Vec::new(),
+                allowed_tools: None,
+            },
+            approval_policy: None,
+        }],
+        flow: crate::AutomationFlowSpec {
+            nodes: vec![
+                crate::AutomationFlowNode {
+                    node_id: "research-brief".to_string(),
+                    agent_id: "researcher".to_string(),
+                    objective: "Write the marketing brief".to_string(),
+                    depends_on: Vec::new(),
+                    input_refs: Vec::new(),
+                    output_contract: None,
+                    retry_policy: None,
+                    timeout_ms: None,
+                    stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
+                    gate: None,
+                    metadata: Some(json!({
+                        "builder": {
+                            "title": "Research Brief",
+                            "role": "researcher",
+                            "output_path": "marketing-brief.md"
+                        }
+                    })),
+                },
+                crate::AutomationFlowNode {
+                    node_id: "draft-copy".to_string(),
+                    agent_id: "researcher".to_string(),
+                    objective: "Draft the post".to_string(),
+                    depends_on: vec!["research-brief".to_string()],
+                    input_refs: vec![crate::AutomationFlowInputRef {
+                        from_step_id: "research-brief".to_string(),
+                        alias: "marketing_brief".to_string(),
+                    }],
+                    output_contract: None,
+                    retry_policy: None,
+                    timeout_ms: None,
+                    stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
+                    gate: None,
+                    metadata: Some(json!({
+                        "builder": {
+                            "title": "Draft Copy",
+                            "role": "copywriter",
+                            "output_path": "draft-post.md"
+                        }
+                    })),
+                },
+            ],
+        },
+        execution: crate::AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: vec![
+            "marketing-brief.md".to_string(),
+            "draft-post.md".to_string(),
+        ],
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+    };
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("store automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    state
+        .add_automation_v2_session(&run.run_id, "sess-research-smoke")
+        .await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Blocked;
+            row.detail = Some("research coverage requirements were not met".to_string());
+            row.checkpoint.pending_nodes = vec![
+                "research-brief".to_string(),
+                "draft-copy".to_string(),
+            ];
+            row.checkpoint.blocked_nodes = vec![
+                "research-brief".to_string(),
+                "draft-copy".to_string(),
+            ];
+            row.checkpoint.node_outputs.insert(
+                "research-brief".to_string(),
+                json!({
+                    "node_id": "research-brief",
+                    "status": "blocked",
+                    "workflow_class": "research",
+                    "phase": "blocked",
+                    "failure_kind": "research_missing_reads",
+                    "summary": "Blocked research brief preserved for inspection.",
+                    "artifact_validation": {
+                        "accepted_artifact_path": "marketing-brief.md",
+                        "recovered_from_session_write": true,
+                        "repair_attempted": true,
+                        "repair_succeeded": false,
+                        "unmet_requirements": ["concrete_read_required", "coverage_mode"]
+                    },
+                    "content": {
+                        "path": "marketing-brief.md",
+                        "text": "# Marketing Brief\n\n## Files reviewed\n\n## Files not reviewed\n- tandem-reference/readmes/repo-README.md: not read in this run.\n\n## Research status\nBlocked pending concrete file reads.",
+                        "session_id": "sess-research-smoke"
+                    }
+                }),
+            );
+        })
+        .await
+        .expect("update run");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/automations/v2/runs/{}", run.run_id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let run_payload = payload.get("run").expect("run payload");
+    assert_eq!(
+        run_payload.get("status").and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(
+        run_payload.get("latest_session_id").and_then(Value::as_str),
+        Some("sess-research-smoke")
+    );
+    let research_output = run_payload
+        .get("checkpoint")
+        .and_then(|value| value.get("node_outputs"))
+        .and_then(|value| value.get("research-brief"))
+        .expect("research output");
+    assert_eq!(
+        research_output
+            .get("workflow_class")
+            .and_then(Value::as_str),
+        Some("research")
+    );
+    assert_eq!(
+        research_output.get("failure_kind").and_then(Value::as_str),
+        Some("research_missing_reads")
+    );
+    assert_eq!(
+        research_output
+            .get("artifact_validation")
+            .and_then(|value| value.get("accepted_artifact_path"))
+            .and_then(Value::as_str),
+        Some("marketing-brief.md")
+    );
+    assert!(run_payload
+        .get("checkpoint")
+        .and_then(|value| value.get("node_outputs"))
+        .and_then(|value| value.get("draft-copy"))
+        .is_none());
+}
+
+#[tokio::test]
+async fn automation_v2_artifact_workflow_smoke_exposes_completed_output_state() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-smoke-artifact").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    state
+        .add_automation_v2_session(&run.run_id, "sess-artifact-smoke")
+        .await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Completed;
+            row.checkpoint.completed_nodes = vec![
+                "draft".to_string(),
+                "review".to_string(),
+                "approval".to_string(),
+            ];
+            row.checkpoint.node_outputs.insert(
+                "draft".to_string(),
+                json!({
+                    "node_id": "draft",
+                    "status": "completed",
+                    "workflow_class": "artifact",
+                    "phase": "completed",
+                    "summary": "Draft artifact accepted.",
+                    "artifact_validation": {
+                        "accepted_artifact_path": "artifact.md"
+                    },
+                    "content": {
+                        "path": "artifact.md",
+                        "text": "# Artifact\n\nReady for review.",
+                        "session_id": "sess-artifact-smoke"
+                    }
+                }),
+            );
+        })
+        .await
+        .expect("update run");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/automations/v2/runs/{}", run.run_id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let run_payload = payload.get("run").expect("run payload");
+    assert_eq!(
+        run_payload.get("status").and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        run_payload.get("latest_session_id").and_then(Value::as_str),
+        Some("sess-artifact-smoke")
+    );
+    assert_eq!(
+        run_payload
+            .get("checkpoint")
+            .and_then(|value| value.get("node_outputs"))
+            .and_then(|value| value.get("draft"))
+            .and_then(|value| value.get("artifact_validation"))
+            .and_then(|value| value.get("accepted_artifact_path"))
+            .and_then(Value::as_str),
+        Some("artifact.md")
+    );
+
+    let context_run_id = payload
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .expect("context run id");
+    let blackboard_resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/context/runs/{context_run_id}/blackboard"))
+                .body(Body::empty())
+                .expect("blackboard request"),
+        )
+        .await
+        .expect("blackboard response");
+    assert_eq!(blackboard_resp.status(), StatusCode::OK);
+    let blackboard_body = to_bytes(blackboard_resp.into_body(), usize::MAX)
+        .await
+        .expect("blackboard body");
+    let blackboard_payload: Value =
+        serde_json::from_slice(&blackboard_body).expect("blackboard json");
+    let tasks = blackboard_payload
+        .get("blackboard")
+        .and_then(|value| value.get("tasks"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(tasks.iter().any(|task| {
+        task.get("id").and_then(Value::as_str) == Some("node-draft")
+            && task.get("status").and_then(Value::as_str) == Some("done")
+    }));
+}
+
+#[tokio::test]
+async fn automation_v2_code_workflow_smoke_exposes_verify_failed_state() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let automation = crate::AutomationV2Spec {
+        automation_id: "auto-v2-smoke-code".to_string(),
+        name: "Code Smoke".to_string(),
+        description: Some("Canonical coding workflow smoke test".to_string()),
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        agents: vec![crate::AutomationAgentProfile {
+            agent_id: "coder".to_string(),
+            template_id: None,
+            display_name: "Coder".to_string(),
+            avatar_url: None,
+            model_policy: None,
+            skills: Vec::new(),
+            tool_policy: crate::AutomationAgentToolPolicy {
+                allowlist: vec![
+                    "glob".to_string(),
+                    "read".to_string(),
+                    "edit".to_string(),
+                    "apply_patch".to_string(),
+                    "write".to_string(),
+                    "bash".to_string(),
+                ],
+                denylist: Vec::new(),
+            },
+            mcp_policy: crate::AutomationAgentMcpPolicy {
+                allowed_servers: Vec::new(),
+                allowed_tools: None,
+            },
+            approval_policy: None,
+        }],
+        flow: crate::AutomationFlowSpec {
+            nodes: vec![crate::AutomationFlowNode {
+                node_id: "implement-fix".to_string(),
+                agent_id: "coder".to_string(),
+                objective: "Implement the repo fix and verify it".to_string(),
+                depends_on: Vec::new(),
+                input_refs: Vec::new(),
+                output_contract: None,
+                retry_policy: None,
+                timeout_ms: None,
+                stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
+                gate: None,
+                metadata: Some(json!({
+                    "builder": {
+                        "title": "Implement Fix",
+                        "role": "coder",
+                        "task_kind": "code_change",
+                        "verification_command": "cargo test -p tandem-server"
+                    }
+                })),
+            }],
+        },
+        execution: crate::AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: vec!["crates/tandem-server/src/lib.rs".to_string()],
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+    };
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("store automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    state
+        .add_automation_v2_session(&run.run_id, "sess-code-smoke")
+        .await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Blocked;
+            row.detail = Some("verification failed".to_string());
+            row.checkpoint.pending_nodes = vec!["implement-fix".to_string()];
+            row.checkpoint.blocked_nodes = vec!["implement-fix".to_string()];
+            row.checkpoint.node_outputs.insert(
+                "implement-fix".to_string(),
+                json!({
+                    "node_id": "implement-fix",
+                    "status": "verify_failed",
+                    "workflow_class": "code",
+                    "phase": "verification_failed",
+                    "failure_kind": "verification_failed",
+                    "summary": "Implementation landed but verification failed.",
+                    "artifact_validation": {
+                        "verification": {
+                            "verification_expected": true,
+                            "verification_ran": true,
+                            "verification_failed": true,
+                            "latest_verification_command": "cargo test -p tandem-server",
+                            "latest_verification_failure": "1 test failed"
+                        }
+                    },
+                    "content": {
+                        "path": "crates/tandem-server/src/lib.rs",
+                        "text": "patched content",
+                        "session_id": "sess-code-smoke"
+                    }
+                }),
+            );
+        })
+        .await
+        .expect("update run");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/automations/v2/runs/{}", run.run_id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let code_output = payload
+        .get("run")
+        .and_then(|value| value.get("checkpoint"))
+        .and_then(|value| value.get("node_outputs"))
+        .and_then(|value| value.get("implement-fix"))
+        .expect("code output");
+    assert_eq!(
+        code_output.get("status").and_then(Value::as_str),
+        Some("verify_failed")
+    );
+    assert_eq!(
+        code_output.get("workflow_class").and_then(Value::as_str),
+        Some("code")
+    );
+    assert_eq!(
+        code_output.get("failure_kind").and_then(Value::as_str),
+        Some("verification_failed")
+    );
+    assert_eq!(
+        code_output
+            .get("artifact_validation")
+            .and_then(|value| value.get("verification"))
+            .and_then(|value| value.get("latest_verification_command"))
+            .and_then(Value::as_str),
+        Some("cargo test -p tandem-server")
+    );
+}
