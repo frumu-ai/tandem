@@ -5597,9 +5597,11 @@ fn automation_node_prewrite_requirements(
         && requested_tools.iter().any(|tool| tool == "websearch");
     let brief_research_node = automation_output_validator_kind(node)
         == crate::AutomationOutputValidatorKind::ResearchBrief;
+    let strict_source_coverage =
+        brief_research_node && automation_node_source_coverage_required(node);
     let concrete_read_required =
-        brief_research_node && requested_tools.iter().any(|tool| tool == "read");
-    let successful_web_research_required = brief_research_node
+        strict_source_coverage && requested_tools.iter().any(|tool| tool == "read");
+    let successful_web_research_required = strict_source_coverage
         && automation_node_web_research_expected(node)
         && requested_tools.iter().any(|tool| tool == "websearch");
     Some(PrewriteRequirements {
@@ -5607,7 +5609,7 @@ fn automation_node_prewrite_requirements(
         web_research_required,
         concrete_read_required,
         successful_web_research_required,
-        repair_on_unmet_requirements: brief_research_node,
+        repair_on_unmet_requirements: strict_source_coverage,
         coverage_mode: if brief_research_node {
             PrewriteCoverageMode::ResearchCorpus
         } else {
@@ -5651,6 +5653,16 @@ fn automation_node_web_research_expected(node: &AutomationFlowNode) -> bool {
         .and_then(|metadata| metadata.get("builder"))
         .and_then(Value::as_object)
         .and_then(|builder| builder.get("web_research_expected"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn automation_node_source_coverage_required(node: &AutomationFlowNode) -> bool {
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(Value::as_object)
+        .and_then(|builder| builder.get("source_coverage_required"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
 }
@@ -6863,6 +6875,7 @@ fn validate_automation_artifact_output(
             == crate::AutomationOutputValidatorKind::ResearchBrief
             && requested_has_read
         {
+            let strict_source_coverage = automation_node_source_coverage_required(node);
             let missing_concrete_reads = !executed_has_read;
             let files_reviewed_backed = selected_assessment.is_some_and(|assessment| {
                 !assessment.reviewed_paths.is_empty()
@@ -6901,11 +6914,12 @@ fn validate_automation_artifact_output(
             if missing_web_research {
                 unmet_requirements.push("missing_successful_web_research".to_string());
             }
-            if missing_concrete_reads
-                || missing_citations
-                || missing_file_coverage
-                || missing_web_sources_reviewed
-                || missing_web_research
+            if strict_source_coverage
+                && (missing_concrete_reads
+                    || missing_citations
+                    || missing_file_coverage
+                    || missing_web_sources_reviewed
+                    || missing_web_research)
             {
                 semantic_block_reason = Some(if missing_concrete_reads {
                     "research completed without concrete file reads or required source coverage"
@@ -7535,15 +7549,16 @@ fn detect_automation_node_failure_kind(
             .iter()
             .any(|value| value.as_str() == Some(needle))
     };
-    let research_requirements_blocked = has_unmet("no_concrete_reads")
-        || has_unmet("concrete_read_required")
-        || has_unmet("missing_successful_web_research")
-        || has_unmet("citations_missing")
-        || has_unmet("web_sources_reviewed_missing")
-        || has_unmet("files_reviewed_missing")
-        || has_unmet("files_reviewed_not_backed_by_read")
-        || has_unmet("relevant_files_not_reviewed_or_skipped")
-        || has_unmet("coverage_mode");
+    let research_requirements_blocked = automation_node_source_coverage_required(node)
+        && (has_unmet("no_concrete_reads")
+            || has_unmet("concrete_read_required")
+            || has_unmet("missing_successful_web_research")
+            || has_unmet("citations_missing")
+            || has_unmet("web_sources_reviewed_missing")
+            || has_unmet("files_reviewed_missing")
+            || has_unmet("files_reviewed_not_backed_by_read")
+            || has_unmet("relevant_files_not_reviewed_or_skipped")
+            || has_unmet("coverage_mode"));
     let editorial_requirements_blocked = has_unmet("editorial_substance_missing")
         || has_unmet("markdown_structure_missing")
         || has_unmet("editorial_clearance_required");
@@ -7828,7 +7843,8 @@ fn detect_automation_node_phase(
                 .and_then(|value| value.get("semantic_block_reason"))
                 .and_then(Value::as_str)
                 .is_some()
-                || (normalized_status == "blocked"
+                || (automation_node_source_coverage_required(node)
+                    && normalized_status == "blocked"
                     && (has_unmet("no_concrete_reads")
                         || has_unmet("concrete_read_required")
                         || has_unmet("missing_successful_web_research")
@@ -10045,7 +10061,8 @@ mod tests {
             metadata: Some(json!({
                 "builder": {
                     "output_path": "marketing-brief.md",
-                    "web_research_expected": true
+                    "web_research_expected": true,
+                    "source_coverage_required": true
                 }
             })),
         };
@@ -10099,7 +10116,8 @@ mod tests {
             metadata: Some(json!({
                 "builder": {
                     "output_path": "marketing-brief.md",
-                    "web_research_expected": true
+                    "web_research_expected": true,
+                    "source_coverage_required": true
                 }
             })),
         };
@@ -10171,7 +10189,8 @@ mod tests {
             metadata: Some(json!({
                 "builder": {
                     "output_path": "marketing-brief.md",
-                    "web_research_expected": true
+                    "web_research_expected": true,
+                    "source_coverage_required": true
                 }
             })),
         };
@@ -10197,6 +10216,54 @@ mod tests {
         assert_eq!(
             detect_automation_node_phase(&node, "blocked", Some(&artifact_validation)),
             "research_validation"
+        );
+    }
+
+    #[test]
+    fn research_workflow_defaults_to_warning_without_strict_source_coverage() {
+        let node = AutomationFlowNode {
+            node_id: "research".to_string(),
+            agent_id: "agent-a".to_string(),
+            objective: "Research".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "web_research_expected": true
+                }
+            })),
+        };
+        let artifact_validation = json!({
+            "unmet_requirements": ["no_concrete_reads", "citations_missing", "missing_successful_web_research"],
+            "verification": {
+                "verification_failed": false
+            }
+        });
+
+        assert_eq!(
+            detect_automation_node_failure_kind(
+                &node,
+                "completed",
+                None,
+                None,
+                Some(&artifact_validation)
+            ),
+            None
+        );
+        assert_eq!(
+            detect_automation_node_phase(&node, "completed", Some(&artifact_validation)),
+            "completed"
         );
     }
 
@@ -10251,7 +10318,8 @@ mod tests {
             metadata: Some(json!({
                 "builder": {
                     "output_path": "marketing-brief.md",
-                    "web_research_expected": true
+                    "web_research_expected": true,
+                    "source_coverage_required": true
                 }
             })),
         };
@@ -10339,7 +10407,8 @@ mod tests {
             metadata: Some(json!({
                 "builder": {
                     "output_path": "marketing-brief.md",
-                    "web_research_expected": true
+                    "web_research_expected": true,
+                    "source_coverage_required": true
                 }
             })),
         };

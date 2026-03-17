@@ -79,6 +79,7 @@
 - Timed-out `websearch` attempts no longer satisfy required current-market research for workflow briefs; those runs now block at the research stage instead of drifting into later copy/review steps.
 - Blocked research nodes now record structured coverage/debug metadata including actual `read` paths, discovered relevant files, unread relevant files, and repair-pass state so the Run Debugger can show the real failure cause.
 - Research/editorial artifact validation now propagates repair-attempt counts, attempts remaining, and exhaustion state into `artifact_validation`, validator summaries, and workflow lifecycle events.
+- Research brief workflows now default to warning-only source coverage gaps; hard blocking and repair enforcement only apply when a node explicitly opts into `metadata.builder.source_coverage_required = true`.
 - `automation_v2` terminal run status now derives from blocked/failed node outputs instead of trusting checkpoint `blocked_nodes` alone, so blocked research nodes no longer show up as completed runs.
 - The control-panel Run Debugger now derives blocked/failed run status from workflow node outputs as a guardrail and shows repair-attempt progress when the backend status and task board disagree.
 - The Automations Tasks tab now reads workflow runs from a canonical `/automations/v2/runs` all-runs API, so mirrored workflow runs no longer disappear just because they were not discovered through the saved workflow-definition list.

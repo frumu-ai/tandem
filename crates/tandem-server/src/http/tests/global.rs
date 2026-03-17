@@ -3966,7 +3966,8 @@ async fn automation_v2_research_workflow_smoke_exposes_citation_validation_state
                 metadata: Some(json!({
                     "builder": {
                         "output_path": "marketing-brief.md",
-                        "web_research_expected": true
+                        "web_research_expected": true,
+                        "source_coverage_required": true
                     }
                 })),
             }],

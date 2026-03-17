@@ -78,6 +78,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - evidence-repair passes now temporarily remove `write` tools and expose only the still-missing inspection/research tools, so nodes that wrote too early must gather the missing evidence before the next write pass
   - repair followups that still skip the required reads or web research now stay inside the repair loop instead of bouncing straight back into another write-required retry
   - research/editorial artifact validation now propagates repair-attempt counts, attempts remaining, and exhaustion state into `artifact_validation`, validator summaries, and workflow lifecycle events
+  - research brief workflows now default to warning-only source coverage gaps; hard blocking and repair enforcement only apply when a node explicitly opts into `metadata.builder.source_coverage_required = true`
   - `automation_v2` terminal run status now derives from blocked/failed node outputs instead of trusting checkpoint `blocked_nodes` alone, so blocked research nodes no longer show up as completed runs
   - the control-panel Run Debugger now derives blocked/failed run status from node outputs as a guardrail and shows repair-attempt progress when the backend status and task board disagree
   - code workflows now support multi-step build/test/lint verification summaries, with partial verification blocking completion and failed verification surfacing as `verify_failed`

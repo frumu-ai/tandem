@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Evidence-gated workflow nodes now use a stricter repair spine**:
   - artifact-producing nodes with unmet prewrite requirements now emit structured repair attempt metadata and terminate with explicit `PREWRITE_REQUIREMENTS_EXHAUSTED` blocked state when bounded repair retries are exhausted
   - research/editorial artifact validation now propagates repair attempt counts, attempts remaining, and exhaustion state into `artifact_validation`, validator summaries, and workflow lifecycle metadata
+  - research brief workflows now treat missing reads, citations, and web coverage as visible validation warnings by default; hard blocking/repair enforcement only kicks in when a node explicitly sets `metadata.builder.source_coverage_required = true`
   - `automation_v2` terminal run status now derives from blocked/failed node outputs instead of trusting checkpoint `blocked_nodes` alone, so blocked research nodes no longer surface as completed runs
   - the control-panel Run Debugger now derives blocked/failed status from workflow node outputs as a guardrail and shows repair-attempt progress when backend status and node reality disagree
   - evidence-repair passes now temporarily remove `write` tools and expose only the still-missing inspection/research tools, so a node that wrote too early must gather the missing evidence before it can reach the next write pass
