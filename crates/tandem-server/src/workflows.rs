@@ -305,6 +305,7 @@ async fn execute_actions(
         ));
         match execute_action(
             state,
+            &run.run_id,
             workflow_id,
             action_spec,
             action_row,
@@ -416,6 +417,7 @@ async fn execute_actions(
 
 async fn execute_action(
     state: &AppState,
+    run_id: &str,
     workflow_id: &str,
     action_spec: &WorkflowActionSpec,
     action_row: &WorkflowActionRunRecord,
@@ -476,11 +478,32 @@ async fn execute_action(
             Ok(json!({ "key": key, "deleted": deleted.is_some() }))
         }
         ParsedWorkflowAction::Tool { tool_name } => {
-            let result = state
-                .tools
-                .execute(&tool_name, action_payload(action_spec, action_row))
-                .await?;
-            Ok(json!({ "tool": tool_name, "output": result.output, "metadata": result.metadata }))
+            let payload = action_payload(action_spec, action_row);
+            let result = state.tools.execute(&tool_name, payload.clone()).await?;
+            let mut response = json!({
+                "tool": tool_name,
+                "output": result.output,
+                "metadata": result.metadata,
+            });
+            if let Some(external_action) = record_workflow_external_action(
+                state,
+                run_id,
+                workflow_id,
+                action_row,
+                trigger_event.clone(),
+                WorkflowExternalActionExecution::Tool {
+                    tool_name: tool_name.clone(),
+                },
+                &payload,
+                &response,
+            )
+            .await?
+            {
+                if let Some(obj) = response.as_object_mut() {
+                    obj.insert("external_action".to_string(), external_action);
+                }
+            }
+            Ok(response)
         }
         ParsedWorkflowAction::Capability { capability_id } => {
             let bindings = state.capability_resolver.list_bindings().await?;
@@ -490,16 +513,34 @@ async fn execute_action(
                 .find(|binding| binding.capability_id == capability_id)
                 .map(|binding| binding.tool_name.clone())
                 .unwrap_or_else(|| capability_id.clone());
-            let result = state
-                .tools
-                .execute(&tool_name, action_payload(action_spec, action_row))
-                .await?;
-            Ok(json!({
+            let payload = action_payload(action_spec, action_row);
+            let result = state.tools.execute(&tool_name, payload.clone()).await?;
+            let mut response = json!({
                 "capability": capability_id,
                 "tool": tool_name,
                 "output": result.output,
                 "metadata": result.metadata,
-            }))
+            });
+            if let Some(external_action) = record_workflow_external_action(
+                state,
+                run_id,
+                workflow_id,
+                action_row,
+                trigger_event.clone(),
+                WorkflowExternalActionExecution::Capability {
+                    capability_id: capability_id.clone(),
+                    tool_name: tool_name.clone(),
+                },
+                &payload,
+                &response,
+            )
+            .await?
+            {
+                if let Some(obj) = response.as_object_mut() {
+                    obj.insert("external_action".to_string(), external_action);
+                }
+            }
+            Ok(response)
         }
         ParsedWorkflowAction::Workflow { workflow_id } => {
             anyhow::bail!("nested workflow action `{workflow_id}` is not supported in this slice")
@@ -540,6 +581,116 @@ async fn execute_action(
             Ok(json!({ "agentID": agent_id, "sessionID": session_id }))
         }
     }
+}
+
+enum WorkflowExternalActionExecution {
+    Tool {
+        tool_name: String,
+    },
+    Capability {
+        capability_id: String,
+        tool_name: String,
+    },
+}
+
+async fn record_workflow_external_action(
+    state: &AppState,
+    run_id: &str,
+    workflow_id: &str,
+    action_row: &WorkflowActionRunRecord,
+    trigger_event: Option<String>,
+    execution: WorkflowExternalActionExecution,
+    payload: &Value,
+    result: &Value,
+) -> anyhow::Result<Option<Value>> {
+    let bindings = state.capability_resolver.list_bindings().await?;
+    let binding = match execution {
+        WorkflowExternalActionExecution::Tool { ref tool_name } => bindings
+            .bindings
+            .iter()
+            .find(|binding| workflow_binding_matches_tool_name(binding, tool_name)),
+        WorkflowExternalActionExecution::Capability {
+            ref capability_id,
+            ref tool_name,
+        } => bindings.bindings.iter().find(|binding| {
+            binding.capability_id == *capability_id
+                && workflow_binding_matches_tool_name(binding, tool_name)
+        }),
+    };
+    let Some(binding) = binding else {
+        return Ok(None);
+    };
+
+    let target = workflow_external_action_target(payload, result);
+    let source_id = format!("{run_id}:{}", action_row.action_id);
+    let idempotency_key = crate::sha256_hex(&[
+        workflow_id,
+        run_id,
+        &action_row.action_id,
+        &action_row.action,
+        &payload.to_string(),
+    ]);
+    let action = crate::ExternalActionRecord {
+        action_id: format!("workflow-external-{}", &idempotency_key[..16]),
+        operation: binding.capability_id.clone(),
+        status: "posted".to_string(),
+        source_kind: Some("workflow".to_string()),
+        source_id: Some(source_id.clone()),
+        routine_run_id: None,
+        context_run_id: Some(crate::http::context_runs::workflow_context_run_id(run_id)),
+        capability_id: Some(binding.capability_id.clone()),
+        provider: Some(binding.provider.clone()),
+        target,
+        approval_state: Some("executed".to_string()),
+        idempotency_key: Some(idempotency_key),
+        receipt: Some(result.clone()),
+        error: None,
+        metadata: Some(json!({
+            "workflowID": workflow_id,
+            "workflowRunID": run_id,
+            "actionID": action_row.action_id,
+            "action": action_row.action,
+            "taskID": action_row.task_id,
+            "triggerEvent": trigger_event,
+            "tool": binding.tool_name,
+            "provider": binding.provider,
+            "input": payload,
+        })),
+        created_at_ms: action_row.updated_at_ms,
+        updated_at_ms: action_row.updated_at_ms,
+    };
+    let recorded = state.record_external_action(action).await?;
+    Ok(Some(serde_json::to_value(&recorded)?))
+}
+
+fn workflow_binding_matches_tool_name(
+    binding: &crate::capability_resolver::CapabilityBinding,
+    tool_name: &str,
+) -> bool {
+    binding.tool_name.eq_ignore_ascii_case(tool_name)
+        || binding
+            .tool_name_aliases
+            .iter()
+            .any(|alias| alias.eq_ignore_ascii_case(tool_name))
+}
+
+fn workflow_external_action_target(payload: &Value, result: &Value) -> Option<String> {
+    for candidate in [
+        payload.pointer("/owner_repo").and_then(Value::as_str),
+        payload.pointer("/repo").and_then(Value::as_str),
+        payload.pointer("/repository").and_then(Value::as_str),
+        payload.pointer("/channel").and_then(Value::as_str),
+        payload.pointer("/channel_id").and_then(Value::as_str),
+        payload.pointer("/thread_ts").and_then(Value::as_str),
+        result.pointer("/metadata/channel").and_then(Value::as_str),
+        result.pointer("/metadata/repo").and_then(Value::as_str),
+    ] {
+        let trimmed = candidate.map(str::trim).unwrap_or_default();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
 }
 
 fn action_payload(action_spec: &WorkflowActionSpec, action_row: &WorkflowActionRunRecord) -> Value {

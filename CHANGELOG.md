@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added a shared `ExternalActionRecord` contract plus `/external-actions` read APIs for outbound action receipts, idempotency keys, targets, approval state, and receipt metadata
   - Bug Monitor GitHub publishes now mirror into the shared external-action path while keeping the existing Bug Monitor post APIs intact
   - coder real PR submit and merge submit now also emit shared external-action receipts linked back to the canonical coder context run
+  - workflow hook and manual workflow actions that map to a bound outbound capability now emit the same shared external-action receipts, linked to the canonical workflow context run and visible in workflow action outputs
 
 ### Changed
 

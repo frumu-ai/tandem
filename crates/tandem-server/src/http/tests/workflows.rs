@@ -86,6 +86,32 @@ async fn register_recording_tool(state: &AppState, name: &str) -> Arc<Mutex<Vec<
     calls
 }
 
+async fn seed_workflow_test_slack_binding(state: &AppState) {
+    let mut bindings = state
+        .capability_resolver
+        .list_bindings()
+        .await
+        .expect("list bindings");
+    bindings
+        .bindings
+        .push(crate::capability_resolver::CapabilityBinding {
+            capability_id: "slack.post_message".to_string(),
+            provider: "custom".to_string(),
+            tool_name: "workflow_test.slack".to_string(),
+            tool_name_aliases: Vec::new(),
+            request_transform: None,
+            response_transform: None,
+            metadata: json!({
+                "source": "workflow_test",
+            }),
+        });
+    state
+        .capability_resolver
+        .set_bindings(bindings)
+        .await
+        .expect("set bindings");
+}
+
 async fn workflow_test_state() -> AppState {
     let state = test_state().await;
     let state_dir = state
@@ -220,6 +246,7 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
     let app = app_router(state.clone());
     let kanban_calls = register_recording_tool(&state, "workflow_test.kanban").await;
     let slack_calls = register_recording_tool(&state, "workflow_test.slack").await;
+    seed_workflow_test_slack_binding(&state).await;
     let mut rx = state.event_bus.subscribe();
 
     crate::dispatch_workflow_event(
@@ -282,6 +309,74 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
             .iter()
             .all(|action| action.task_id.as_deref() == Some("task-1"))
     }));
+    let slack_run = runs
+        .iter()
+        .find(|run| {
+            run.actions
+                .iter()
+                .any(|action| action.action == "tool:workflow_test.slack")
+        })
+        .expect("slack workflow run");
+    let slack_action_output = slack_run.actions[0]
+        .output
+        .clone()
+        .expect("slack workflow output");
+    assert_eq!(
+        slack_action_output["external_action"]["capability_id"].as_str(),
+        Some("slack.post_message")
+    );
+    assert_eq!(
+        slack_action_output["external_action"]["source_kind"].as_str(),
+        Some("workflow")
+    );
+    let external_actions_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/external-actions?limit=10")
+                .body(Body::empty())
+                .expect("external actions request"),
+        )
+        .await
+        .expect("external actions response");
+    assert_eq!(external_actions_resp.status(), StatusCode::OK);
+    let external_actions_body = to_bytes(external_actions_resp.into_body(), usize::MAX)
+        .await
+        .expect("external actions body");
+    let external_actions_payload: Value =
+        serde_json::from_slice(&external_actions_body).expect("external actions json");
+    assert!(external_actions_payload["actions"]
+        .as_array()
+        .map(|rows| rows.iter().any(|row| {
+            row["source_kind"].as_str() == Some("workflow")
+                && row["capability_id"].as_str() == Some("slack.post_message")
+        }))
+        .unwrap_or(false));
+    let slack_context_run_id = crate::http::workflow_context_run_id(&slack_run.run_id);
+    let slack_blackboard_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/context/runs/{slack_context_run_id}/blackboard"))
+                .body(Body::empty())
+                .expect("slack workflow blackboard request"),
+        )
+        .await
+        .expect("slack workflow blackboard response");
+    assert_eq!(slack_blackboard_resp.status(), StatusCode::OK);
+    let slack_blackboard_body = to_bytes(slack_blackboard_resp.into_body(), usize::MAX)
+        .await
+        .expect("slack workflow blackboard body");
+    let slack_blackboard_payload: Value =
+        serde_json::from_slice(&slack_blackboard_body).expect("slack workflow blackboard json");
+    assert!(slack_blackboard_payload["blackboard"]["artifacts"]
+        .as_array()
+        .map(|rows| rows
+            .iter()
+            .any(|row| { row["artifact_type"].as_str() == Some("external_action_receipt") }))
+        .unwrap_or(false));
     let workflow_context_run_id = crate::http::workflow_context_run_id(&runs[0].run_id);
     let blackboard_resp = app
         .clone()
