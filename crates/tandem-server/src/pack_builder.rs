@@ -303,7 +303,7 @@ fn build_pack_builder_automation(
     execution_mode: &str,
     max_agents: u32,
     registered_servers: &[String],
-    enabled: bool,
+    routine_enabled: bool,
 ) -> crate::AutomationV2Spec {
     let now = now_ms();
     let automation_id = format!("automation.{}", routine_id);
@@ -314,11 +314,10 @@ fn build_pack_builder_automation(
             "Pack Builder automation for `{}` generated from plan `{}`.",
             plan.pack_name, plan.plan_id
         )),
-        status: if enabled {
-            crate::AutomationV2Status::Active
-        } else {
-            crate::AutomationV2Status::Paused
-        },
+        // Pack Builder still uses the routine as the active trigger wrapper today.
+        // Keep the mirrored automation paused so apply does not double-register
+        // two active schedulable runtimes for the same pack.
+        status: crate::AutomationV2Status::Paused,
         schedule: automation_v2_schedule_from_routine(
             &plan.routine_template.schedule,
             &plan.routine_template.timezone,
@@ -395,6 +394,8 @@ fn build_pack_builder_automation(
             "goal": plan.goal,
             "execution_mode": execution_mode,
             "routine_id": routine_id,
+            "activation_mode": "routine_wrapper_mirror",
+            "routine_enabled": routine_enabled,
             "registered_servers": registered_servers,
         })),
         next_fire_at_ms: None,
@@ -2567,7 +2568,7 @@ mod tests {
             automation.automation_id,
             "automation.routine.daily_digest_pack"
         );
-        assert_eq!(automation.status, crate::AutomationV2Status::Active);
+        assert_eq!(automation.status, crate::AutomationV2Status::Paused);
         assert_eq!(
             automation.schedule.schedule_type,
             crate::AutomationV2ScheduleType::Cron
@@ -2593,6 +2594,22 @@ mod tests {
                 .and_then(|v| v.get("origin"))
                 .and_then(|v| v.as_str()),
             Some("pack_builder")
+        );
+        assert_eq!(
+            automation
+                .metadata
+                .as_ref()
+                .and_then(|v| v.get("activation_mode"))
+                .and_then(|v| v.as_str()),
+            Some("routine_wrapper_mirror")
+        );
+        assert_eq!(
+            automation
+                .metadata
+                .as_ref()
+                .and_then(|v| v.get("routine_enabled"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
         assert_eq!(
             automation

@@ -99,7 +99,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `skills_compile` now emits an additive `automation_preview` for installed skill workflows by compiling `workflow.yaml` recipes through the shared `WorkflowPlan -> AutomationV2Spec` path
   - installed `pack_builder_recipe` skills now expose the same runtime-spec preview shape as mission builder and workflow planner instead of stopping at an abstract execution summary
   - workflow registry list/get surfaces now also expose additive `automation_preview` payloads compiled through the same shared plan compiler
-  - pack-builder apply now persists a mirrored `AutomationV2Spec` alongside the existing routine wrapper and returns the registered automation ids in its apply result
+  - pack-builder apply now persists a mirrored `AutomationV2Spec` alongside the existing routine wrapper, returns the registered automation ids in its apply result, and keeps that mirrored automation paused until the routine wrapper delegates into the canonical runtime so one pack does not register two active schedules
   - manual workflow runs and workflow-hook dispatches now mirror into linked `automation_v2` specs/runs, and workflow run records surface `automation_id` / `automation_run_id` so operators can jump straight into the canonical runtime
 
 - Artifact integrity protections for workflow outputs

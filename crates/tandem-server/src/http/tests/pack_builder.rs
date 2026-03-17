@@ -605,6 +605,15 @@ async fn pack_builder_apply_endpoint_honors_thread_scoped_pending_plan() {
                 .and_then(|v| v.as_str()),
             Some("pack_builder")
         );
+        assert_eq!(automation.status, crate::AutomationV2Status::Paused);
+        assert_eq!(
+            automation
+                .metadata
+                .as_ref()
+                .and_then(|v| v.get("activation_mode"))
+                .and_then(|v| v.as_str()),
+            Some("routine_wrapper_mirror")
+        );
         assert_eq!(
             automation
                 .metadata
