@@ -7470,8 +7470,9 @@ fn detect_automation_node_failure_kind(
         || has_unmet("files_reviewed_not_backed_by_read")
         || has_unmet("relevant_files_not_reviewed_or_skipped")
         || has_unmet("coverage_mode");
-    let editorial_requirements_blocked =
-        has_unmet("editorial_substance_missing") || has_unmet("markdown_structure_missing");
+    let editorial_requirements_blocked = has_unmet("editorial_substance_missing")
+        || has_unmet("markdown_structure_missing")
+        || has_unmet("editorial_clearance_required");
     let verification_failed = artifact_validation
         .and_then(|value| value.get("verification"))
         .and_then(|value| value.get("verification_failed"))
@@ -7784,7 +7785,8 @@ fn detect_automation_node_phase(
                     .any(|value| value.as_str() == Some(needle))
             };
             let editorial_validation_blocked = (has_unmet("editorial_substance_missing")
-                || has_unmet("markdown_structure_missing"))
+                || has_unmet("markdown_structure_missing")
+                || has_unmet("editorial_clearance_required"))
                 && (artifact_validation
                     .and_then(|value| value.get("semantic_block_reason"))
                     .and_then(Value::as_str)
@@ -8046,6 +8048,62 @@ fn automation_node_is_outbound_action(node: &AutomationFlowNode) -> bool {
     ]
     .iter()
     .any(|needle| objective.contains(needle))
+}
+
+fn automation_publish_editorial_block_reason(
+    run: &AutomationV2RunRecord,
+    node: &AutomationFlowNode,
+) -> Option<String> {
+    if !automation_node_is_outbound_action(node) {
+        return None;
+    }
+    let mut upstream_ids = node.depends_on.clone();
+    for input in &node.input_refs {
+        if !upstream_ids
+            .iter()
+            .any(|value| value == &input.from_step_id)
+        {
+            upstream_ids.push(input.from_step_id.clone());
+        }
+    }
+    let blocked_upstreams = upstream_ids
+        .into_iter()
+        .filter(|node_id| {
+            let Some(output) = run.checkpoint.node_outputs.get(node_id) else {
+                return false;
+            };
+            output
+                .get("failure_kind")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "editorial_quality_failed")
+                || output
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "editorial_validation")
+                || output
+                    .get("validator_summary")
+                    .and_then(|value| value.get("unmet_requirements"))
+                    .and_then(Value::as_array)
+                    .is_some_and(|requirements| {
+                        requirements.iter().any(|value| {
+                            matches!(
+                                value.as_str(),
+                                Some("editorial_substance_missing")
+                                    | Some("markdown_structure_missing")
+                                    | Some("editorial_clearance_required")
+                            )
+                        })
+                    })
+        })
+        .collect::<Vec<_>>();
+    if blocked_upstreams.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "publish step blocked until upstream editorial issues are resolved: {}",
+            blocked_upstreams.join(", ")
+        ))
+    }
 }
 
 fn automation_binding_matches_tool_name(
@@ -8392,7 +8450,7 @@ pub(crate) async fn execute_automation_v2_node(
         None
     };
     let tool_telemetry = summarize_automation_tool_activity(node, &session, &requested_tools);
-    let (verified_output, artifact_validation, artifact_rejected_reason) =
+    let (verified_output, mut artifact_validation, artifact_rejected_reason) =
         validate_automation_artifact_output(
             node,
             &session,
@@ -8404,16 +8462,42 @@ pub(crate) async fn execute_automation_v2_node(
             &workspace_snapshot_before,
         );
     let _ = artifact_rejected_reason;
-    let external_actions = record_automation_external_actions_for_session(
-        state,
-        run_id,
-        automation,
-        node,
-        attempt,
-        &session_id,
-        &session,
-    )
-    .await?;
+    let editorial_publish_block_reason = state
+        .get_automation_v2_run(run_id)
+        .await
+        .and_then(|run| automation_publish_editorial_block_reason(&run, node));
+    if let Some(reason) = editorial_publish_block_reason.as_ref() {
+        if let Some(object) = artifact_validation.as_object_mut() {
+            let unmet = object
+                .entry("unmet_requirements".to_string())
+                .or_insert_with(|| json!([]));
+            if let Some(rows) = unmet.as_array_mut() {
+                if !rows
+                    .iter()
+                    .any(|value| value.as_str() == Some("editorial_clearance_required"))
+                {
+                    rows.push(json!("editorial_clearance_required"));
+                }
+            }
+            object
+                .entry("semantic_block_reason".to_string())
+                .or_insert_with(|| Value::String(reason.clone()));
+        }
+    }
+    let external_actions = if editorial_publish_block_reason.is_some() {
+        Vec::new()
+    } else {
+        record_automation_external_actions_for_session(
+            state,
+            run_id,
+            automation,
+            node,
+            attempt,
+            &session_id,
+            &session,
+        )
+        .await?
+    };
     let mut output = wrap_automation_node_output(
         node,
         &session,
@@ -10271,6 +10355,47 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&workspace_root);
+    }
+
+    #[test]
+    fn publish_node_blocks_when_upstream_editorial_validation_failed() {
+        let publish = AutomationFlowNode {
+            node_id: "publish".to_string(),
+            agent_id: "publisher".to_string(),
+            objective: "Publish final output".to_string(),
+            depends_on: vec!["draft".to_string()],
+            input_refs: vec![AutomationFlowInputRef {
+                from_step_id: "draft".to_string(),
+                alias: "draft".to_string(),
+            }],
+            output_contract: None,
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: Some(AutomationNodeStageKind::Workstream),
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "role": "publisher"
+                }
+            })),
+        };
+        let mut run = test_phase_run(vec!["publish"], vec!["draft"]);
+        run.checkpoint.node_outputs.insert(
+            "draft".to_string(),
+            json!({
+                "node_id": "draft",
+                "failure_kind": "editorial_quality_failed",
+                "phase": "editorial_validation",
+                "validator_summary": {
+                    "unmet_requirements": ["editorial_substance_missing", "markdown_structure_missing"]
+                }
+            }),
+        );
+
+        let reason =
+            automation_publish_editorial_block_reason(&run, &publish).expect("publish block");
+        assert!(reason.contains("draft"));
+        assert!(reason.contains("editorial"));
     }
 
     #[test]
