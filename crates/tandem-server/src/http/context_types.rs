@@ -17,7 +17,7 @@ pub(super) struct ContextRunListQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum ContextRunStatus {
+pub(crate) enum ContextRunStatus {
     Queued,
     Planning,
     Running,
@@ -125,13 +125,13 @@ pub(super) struct ContextRunEventRecord {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct ContextRunEventAppendInput {
+pub(crate) struct ContextRunEventAppendInput {
     #[serde(rename = "type")]
-    pub(super) event_type: String,
-    pub(super) status: ContextRunStatus,
-    pub(super) step_id: Option<String>,
+    pub(crate) event_type: String,
+    pub(crate) status: ContextRunStatus,
+    pub(crate) step_id: Option<String>,
     #[serde(default)]
-    pub(super) payload: Value,
+    pub(crate) payload: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

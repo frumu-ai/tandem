@@ -9,6 +9,10 @@ use crate::app::state::{
     derive_status_index_update, extract_persistable_tool_part, sha256_hex, truncate_text, AppState,
 };
 use crate::bug_monitor::types::{BugMonitorConfig, BugMonitorIncidentRecord, BugMonitorSubmission};
+use crate::http::context_runs::{
+    append_context_run_event, ensure_session_context_run, session_run_status_to_context,
+};
+use crate::http::context_types::{ContextRunEventAppendInput, ContextRunStatus};
 use crate::routines::types::{RoutineHistoryEvent, RoutineRunRecord, RoutineRunStatus};
 use crate::util::time::now_ms;
 
@@ -31,6 +35,82 @@ fn extract_event_session_id(properties: &Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn session_context_run_event_input(event: &EngineEvent) -> Option<ContextRunEventAppendInput> {
+    match event.event_type.as_str() {
+        "session.run.started" => Some(ContextRunEventAppendInput {
+            event_type: "session_run_started".to_string(),
+            status: ContextRunStatus::Running,
+            step_id: Some("session-run".to_string()),
+            payload: serde_json::json!({
+                "sessionID": event.properties.get("sessionID").cloned().unwrap_or(Value::Null),
+                "runID": event.properties.get("runID").cloned().unwrap_or(Value::Null),
+                "agentID": event.properties.get("agentID").cloned().unwrap_or(Value::Null),
+                "agentProfile": event.properties.get("agentProfile").cloned().unwrap_or(Value::Null),
+                "why_next_step": "session run in progress",
+                "step_status": "in_progress",
+            }),
+        }),
+        "message.part.updated" => {
+            let part = event.properties.get("part")?;
+            let part_type = part
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if !matches!(part_type, "tool" | "tool-invocation" | "tool-result") {
+                return None;
+            }
+            let tool_name = part
+                .get("tool")
+                .and_then(|value| value.as_str())
+                .unwrap_or("tool");
+            let tool_state = part
+                .get("state")
+                .and_then(|value| value.as_str())
+                .unwrap_or("running");
+            let why_next_step = match tool_state {
+                "completed" => format!("tool `{tool_name}` completed"),
+                "failed" => format!("tool `{tool_name}` failed"),
+                _ => format!("tool `{tool_name}` running"),
+            };
+            Some(ContextRunEventAppendInput {
+                event_type: "session_tool_updated".to_string(),
+                status: ContextRunStatus::Running,
+                step_id: Some("session-run".to_string()),
+                payload: serde_json::json!({
+                    "sessionID": event.properties.get("sessionID").cloned().unwrap_or(Value::Null),
+                    "runID": event.properties.get("runID").cloned().unwrap_or(Value::Null),
+                    "part": part.clone(),
+                    "toolCallDelta": event.properties.get("toolCallDelta").cloned().unwrap_or(Value::Null),
+                    "why_next_step": why_next_step,
+                    "step_status": if tool_state == "completed" { "done" } else { "in_progress" },
+                    "error": part.get("error").cloned().unwrap_or(Value::Null),
+                }),
+            })
+        }
+        "session.run.finished" => {
+            let status = event
+                .properties
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("completed");
+            Some(ContextRunEventAppendInput {
+                event_type: "session_run_finished".to_string(),
+                status: session_run_status_to_context(status),
+                step_id: Some("session-run".to_string()),
+                payload: serde_json::json!({
+                    "sessionID": event.properties.get("sessionID").cloned().unwrap_or(Value::Null),
+                    "runID": event.properties.get("runID").cloned().unwrap_or(Value::Null),
+                    "status": status,
+                    "error": event.properties.get("error").cloned().unwrap_or(Value::Null),
+                    "why_next_step": format!("session run finished with status `{status}`"),
+                    "step_status": if matches!(status, "completed") { "done" } else if matches!(status, "cancelled") { "blocked" } else { "failed" },
+                }),
+            })
+        }
+        _ => None,
+    }
+}
+
 pub async fn run_session_part_persister(state: AppState) {
     if !state.wait_until_ready_or_failed(120, 250).await {
         tracing::warn!("session part persister: skipped because runtime did not become ready");
@@ -42,9 +122,6 @@ pub async fn run_session_part_persister(state: AppState) {
     };
     while let Some(event) = rx.recv().await {
         if event.event_type != "message.part.updated" {
-            continue;
-        }
-        if event.properties.get("toolCallDelta").is_some() {
             continue;
         }
         let Some(session_id) = extract_event_session_id(&event.properties) else {
@@ -89,6 +166,47 @@ pub async fn run_status_indexer(state: AppState) {
                     {
                         tracing::warn!("status indexer failed to persist update: {error:?}");
                     }
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
+    }
+}
+
+pub async fn run_session_context_run_journaler(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        tracing::warn!(
+            "session context run journaler: skipped because runtime did not become ready"
+        );
+        return;
+    }
+    let mut rx = state.event_bus.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                let Some(session_id) = extract_event_session_id(&event.properties) else {
+                    continue;
+                };
+                let Some(input) = session_context_run_event_input(&event) else {
+                    continue;
+                };
+                let Some(session) = state.storage.get_session(&session_id).await else {
+                    continue;
+                };
+                let Ok(run_id) = ensure_session_context_run(&state, &session).await else {
+                    tracing::warn!(
+                        "session context run journaler could not ensure context run for session={session_id}"
+                    );
+                    continue;
+                };
+                if let Err(error) = append_context_run_event(&state, &run_id, input).await {
+                    tracing::warn!(
+                        "session context run journaler failed for session={} run={}: {:?}",
+                        session_id,
+                        run_id,
+                        error
+                    );
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

@@ -379,6 +379,7 @@ impl EngineLoop {
                     &user_message_id,
                     tool.clone(),
                     args,
+                    None,
                     active_agent.skills.as_deref(),
                     &text,
                     requested_write_required,
@@ -957,6 +958,7 @@ impl EngineLoop {
                                         "id": id,
                                         "tool": tool_name,
                                         "argsDelta": truncate_text(&args_delta, 1_000),
+                                        "rawArgsPreview": truncate_text(&entry.args, 2_000),
                                         "parsedArgsPreview": parsed_preview
                                     }
                                 }),
@@ -974,18 +976,29 @@ impl EngineLoop {
                     .values()
                     .any(|call| !call.args.trim().is_empty() && call.name.trim().is_empty());
                 let mut tool_calls = streamed_tool_calls
-                    .into_values()
-                    .filter_map(|call| {
+                    .into_iter()
+                    .filter_map(|(call_id, call)| {
                         if call.name.trim().is_empty() {
                             return None;
                         }
                         let tool_name = normalize_tool_name(&call.name);
                         let parsed_args = parse_streamed_tool_args(&tool_name, &call.args);
-                        Some((tool_name, parsed_args))
+                        Some(ParsedToolCall {
+                            tool: tool_name,
+                            args: parsed_args,
+                            call_id: Some(call_id),
+                        })
                     })
                     .collect::<Vec<_>>();
                 if tool_calls.is_empty() {
-                    tool_calls = parse_tool_invocations_from_response(&completion);
+                    tool_calls = parse_tool_invocations_from_response(&completion)
+                        .into_iter()
+                        .map(|(tool, args)| ParsedToolCall {
+                            tool,
+                            args,
+                            call_id: None,
+                        })
+                        .collect::<Vec<_>>();
                 }
                 let provider_tool_parse_failed = tool_calls.is_empty()
                     && (streamed_tool_call_parse_failed
@@ -1028,7 +1041,11 @@ impl EngineLoop {
                     && allowed_tool_names.contains("glob")
                 {
                     auto_workspace_probe_attempted = true;
-                    tool_calls = vec![("glob".to_string(), json!({ "pattern": "*" }))];
+                    tool_calls = vec![ParsedToolCall {
+                        tool: "glob".to_string(),
+                        args: json!({ "pattern": "*" }),
+                        call_id: None,
+                    }];
                 }
                 if !tool_calls.is_empty() {
                     let saw_tool_call_candidate = true;
@@ -1039,7 +1056,12 @@ impl EngineLoop {
                     let mut guard_budget_hit_in_cycle = false;
                     let mut duplicate_signature_hit_in_cycle = false;
                     let mut rejected_tool_call_in_cycle = false;
-                    for (tool, args) in tool_calls {
+                    for ParsedToolCall {
+                        tool,
+                        args,
+                        call_id,
+                    } in tool_calls
+                    {
                         if !agent_can_use_tool(&active_agent, &tool) {
                             rejected_tool_call_in_cycle = true;
                             continue;
@@ -1227,6 +1249,9 @@ impl EngineLoop {
                             tool.clone(),
                             effective_args.clone(),
                         );
+                        if let Some(call_id) = call_id.clone() {
+                            finalized_part.id = Some(call_id);
+                        }
                         finalized_part.state = Some("pending".to_string());
                         self.event_bus.publish(EngineEvent::new(
                             "message.part.updated",
@@ -1241,6 +1266,7 @@ impl EngineLoop {
                                 &user_message_id,
                                 tool,
                                 effective_args,
+                                call_id,
                                 active_agent.skills.as_deref(),
                                 &text,
                                 requested_write_required,
@@ -1850,6 +1876,7 @@ impl EngineLoop {
         message_id: &str,
         tool: String,
         args: Value,
+        initial_tool_call_id: Option<String>,
         equipped_skills: Option<&[String]>,
         latest_user_text: &str,
         write_required: bool,
@@ -1869,6 +1896,8 @@ impl EngineLoop {
                 WritePathRecoveryMode::Heuristic
             },
         );
+        let raw_args_preview = truncate_text(&raw_args.to_string(), 2_000);
+        let normalized_args_preview = truncate_text(&normalized.args.to_string(), 2_000);
         self.event_bus.publish(EngineEvent::new(
             "tool.args.normalized",
             json!({
@@ -1878,6 +1907,8 @@ impl EngineLoop {
                 "argsSource": normalized.args_source,
                 "argsIntegrity": normalized.args_integrity,
                 "rawArgsState": normalized.raw_args_state.as_str(),
+                "rawArgsPreview": raw_args_preview,
+                "normalizedArgsPreview": normalized_args_preview,
                 "query": normalized.query,
                 "queryHash": normalized.query.as_ref().map(|q| stable_hash(q)),
                 "requestID": Value::Null
@@ -1891,6 +1922,8 @@ impl EngineLoop {
                     "messageID": message_id,
                     "tool": tool,
                     "argsSource": normalized.args_source,
+                    "rawArgsPreview": raw_args_preview,
+                    "normalizedArgsPreview": normalized_args_preview,
                     "query": normalized.query,
                     "queryHash": normalized.query.as_ref().map(|q| stable_hash(q)),
                     "requestID": Value::Null
@@ -1902,8 +1935,6 @@ impl EngineLoop {
                 .missing_terminal_reason
                 .clone()
                 .unwrap_or_else(|| "TOOL_ARGUMENTS_MISSING".to_string());
-            let raw_args_preview = truncate_text(&raw_args.to_string(), 2_000);
-            let normalized_args_preview = truncate_text(&normalized.args.to_string(), 2_000);
             let latest_user_preview = truncate_text(latest_user_text, 500);
             let latest_assistant_preview =
                 truncate_text(latest_assistant_context.unwrap_or_default(), 500);
@@ -1940,11 +1971,12 @@ impl EngineLoop {
                     "write tool arguments missing terminal field"
                 );
             }
+            let best_effort_args = persisted_failed_tool_args(&raw_args, &normalized.args);
             let mut failed_part = WireMessagePart::tool_result(
                 session_id,
                 message_id,
                 tool.clone(),
-                Some(raw_args.clone()),
+                Some(best_effort_args),
                 json!(null),
             );
             failed_part.state = Some("failed".to_string());
@@ -2003,7 +2035,7 @@ impl EngineLoop {
                 return Ok(Some(reason));
             }
         }
-        let mut tool_call_id: Option<String> = None;
+        let mut tool_call_id: Option<String> = initial_tool_call_id;
         if let Some(violation) = self
             .workspace_sandbox_violation(session_id, &tool, &args)
             .await
@@ -3779,6 +3811,13 @@ struct NormalizedToolArgs {
     missing_terminal_reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ParsedToolCall {
+    tool: String,
+    args: Value,
+    call_id: Option<String>,
+}
+
 #[cfg(test)]
 fn normalize_tool_args(
     tool_name: &str,
@@ -4017,6 +4056,24 @@ fn classify_raw_tool_args_state(raw_args: &Value) -> RawToolArgsState {
             RawToolArgsState::Present
         }
         _ => RawToolArgsState::Present,
+    }
+}
+
+fn args_missing_or_empty(args: &Value) -> bool {
+    match args {
+        Value::Null => true,
+        Value::Object(obj) => obj.is_empty(),
+        Value::Array(items) => items.is_empty(),
+        Value::String(raw) => raw.trim().is_empty(),
+        _ => false,
+    }
+}
+
+fn persisted_failed_tool_args(raw_args: &Value, normalized_args: &Value) -> Value {
+    if args_missing_or_empty(raw_args) && !args_missing_or_empty(normalized_args) {
+        normalized_args.clone()
+    } else {
+        raw_args.clone()
     }
 }
 
@@ -6148,9 +6205,17 @@ async fn load_chat_history(
                 .map(|part| match part {
                     MessagePart::Text { text } => text,
                     MessagePart::Reasoning { text } => text,
-                    MessagePart::ToolInvocation { tool, result, .. } => {
-                        format!("Tool {tool} => {}", result.unwrap_or_else(|| json!({})))
-                    }
+                    MessagePart::ToolInvocation {
+                        tool,
+                        args,
+                        result,
+                        error,
+                    } => summarize_tool_invocation_for_history(
+                        &tool,
+                        &args,
+                        result.as_ref(),
+                        error.as_deref(),
+                    ),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -6162,6 +6227,34 @@ async fn load_chat_history(
         })
         .collect::<Vec<_>>();
     compact_chat_history(messages, profile)
+}
+
+fn summarize_tool_invocation_for_history(
+    tool: &str,
+    args: &Value,
+    result: Option<&Value>,
+    error: Option<&str>,
+) -> String {
+    let mut segments = vec![format!("Tool {tool}")];
+    if !args.is_null()
+        && !args.as_object().is_some_and(|value| value.is_empty())
+        && !args
+            .as_str()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(false)
+    {
+        segments.push(format!("args={args}"));
+    }
+    if let Some(error) = error.map(str::trim).filter(|value| !value.is_empty()) {
+        segments.push(format!("error={error}"));
+    }
+    if let Some(result) = result.filter(|value| !value.is_null()) {
+        segments.push(format!("result={result}"));
+    }
+    if segments.len() == 1 {
+        segments.push("result={}".to_string());
+    }
+    segments.join(" ")
 }
 
 fn attach_to_last_user_message(messages: &mut [ChatMessage], attachments: &[ChatAttachment]) {
@@ -6539,6 +6632,7 @@ mod tests {
     use super::*;
     use crate::{EventBus, Storage};
     use std::sync::{Mutex, OnceLock};
+    use tandem_types::Session;
     use uuid::Uuid;
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -6653,6 +6747,84 @@ mod tests {
         assert_eq!(compacted[0].role, "system");
         assert!(compacted[0].content.contains("history compacted"));
         assert!(compacted.iter().any(|m| m.content.contains("message-59")));
+    }
+
+    #[tokio::test]
+    async fn load_chat_history_preserves_tool_args_and_error_context() {
+        let base = std::env::temp_dir().join(format!(
+            "tandem-core-load-chat-history-error-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+        let session = Session::new(Some("chat history".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let message = Message::new(
+            MessageRole::User,
+            vec![
+                MessagePart::Text {
+                    text: "build the page".to_string(),
+                },
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"game.html","content":"<html>draft</html>"}),
+                    result: None,
+                    error: Some("WRITE_ARGS_EMPTY_FROM_PROVIDER".to_string()),
+                },
+            ],
+        );
+        storage
+            .append_message(&session_id, message)
+            .await
+            .expect("append message");
+
+        let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
+        let content = history
+            .iter()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+        assert!(content.contains("build the page"));
+        assert!(content.contains("Tool write"));
+        assert!(content.contains(r#"args={"content":"<html>draft</html>","path":"game.html"}"#));
+        assert!(content.contains("error=WRITE_ARGS_EMPTY_FROM_PROVIDER"));
+    }
+
+    #[tokio::test]
+    async fn load_chat_history_preserves_tool_args_and_result_context() {
+        let base = std::env::temp_dir().join(format!(
+            "tandem-core-load-chat-history-result-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+        let session = Session::new(Some("chat history".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let message = Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::ToolInvocation {
+                tool: "glob".to_string(),
+                args: json!({"pattern":"src/**/*.rs"}),
+                result: Some(json!({"output":"src/lib.rs\nsrc/main.rs"})),
+                error: None,
+            }],
+        );
+        storage
+            .append_message(&session_id, message)
+            .await
+            .expect("append message");
+
+        let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
+        let content = history
+            .iter()
+            .find(|message| message.role == "assistant")
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+        assert!(content.contains("Tool glob"));
+        assert!(content.contains(r#"args={"pattern":"src/**/*.rs"}"#));
+        assert!(content.contains(r#"result={"output":"src/lib.rs\nsrc/main.rs"}"#));
     }
 
     #[test]
@@ -7030,6 +7202,25 @@ Call: todowrite(task_id=3, status="in_progress")
             normalized.missing_terminal_reason.as_deref(),
             Some("FILE_PATH_MISSING")
         );
+    }
+
+    #[test]
+    fn persisted_failed_tool_args_prefers_normalized_when_raw_is_empty() {
+        let args = persisted_failed_tool_args(
+            &json!({}),
+            &json!({"path":"game.html","content":"<html></html>"}),
+        );
+        assert_eq!(args["path"], "game.html");
+        assert_eq!(args["content"], "<html></html>");
+    }
+
+    #[test]
+    fn persisted_failed_tool_args_keeps_non_empty_raw_payload() {
+        let args = persisted_failed_tool_args(
+            &json!("path=game.html content"),
+            &json!({"path":"game.html"}),
+        );
+        assert_eq!(args, json!("path=game.html content"));
     }
 
     #[test]

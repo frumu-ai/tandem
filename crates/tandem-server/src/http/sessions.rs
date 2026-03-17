@@ -511,9 +511,11 @@ pub(super) async fn prompt_async(
     headers: HeaderMap,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<Response, StatusCode> {
-    if state.storage.get_session(&id).await.is_none() {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    let session = state
+        .storage
+        .get_session(&id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
     let session_id = id.clone();
     let correlation_id = headers
         .get("x-tandem-correlation-id")
@@ -524,6 +526,8 @@ pub(super) async fn prompt_async(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
     let run_id = Uuid::new_v4().to_string();
+    let linked_context_run_id =
+        super::context_runs::ensure_session_context_run(&state, &session).await?;
 
     let active_run = match state
         .run_registry
@@ -587,6 +591,8 @@ pub(super) async fn prompt_async(
             StatusCode::ACCEPTED,
             Json(json!({
                 "runID": run_id,
+                "contextRunID": linked_context_run_id,
+                "linked_context_run_id": linked_context_run_id,
                 "attachEventStream": attach_event_stream_path(&id, &run_id),
             })),
         )
@@ -1194,12 +1200,20 @@ pub(super) async fn get_active_run(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    if state.storage.get_session(&id).await.is_none() {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    let session = state
+        .storage
+        .get_session(&id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let linked_context_run_id =
+        super::context_runs::ensure_session_context_run(&state, &session).await?;
     let active = state.run_registry.get(&id).await;
     match active {
-        Some(run) => Ok(Json(json!({ "active": run }))),
+        Some(run) => Ok(Json(json!({
+            "active": run,
+            "contextRunID": linked_context_run_id,
+            "linked_context_run_id": linked_context_run_id,
+        }))),
         None => Ok(Json(json!({ "active": Value::Null }))),
     }
 }

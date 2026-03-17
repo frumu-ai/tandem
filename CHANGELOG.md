@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Session and coder runs now point at one canonical journal**:
+  - interactive session runs now create deterministic `session-<sessionID>` context runs before `contextRunID` is returned, so replay/debug links do not race durable state creation
+  - added a session context-run journal bridge that maps `session.run.started`, `message.part.updated`, and `session.run.finished` into durable context-run lineage
+  - coder worker-session artifacts and downstream approval/review payloads now carry durable worker-session context-run ids alongside transient session ids
 - **Workflow board and debugger usability**:
   - moved the workflow board onto its own full-width row in the Run Debugger
   - made desktop workflow lanes horizontally scrollable with jump-to-active controls instead of clipping off-screen columns
@@ -81,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Strict write recovery and replay fidelity**:
+  - fixed streamed write-arg previews being dropped before session persistence, so malformed or partially streamed provider tool calls now retain recoverable args
+  - fixed failed malformed write calls persisting empty `{}` args when normalized best-effort args were already available
+  - fixed session-history merge behavior so stronger structured tool args replace weaker raw-string or partial-arg snapshots when later evidence arrives
+  - fixed repo-aware session summaries and model-facing chat replay to preserve recovered tool args, errors, and write lineage instead of silently dropping malformed-write context
 - **Artifact integrity for file-backed workflows**:
   - fixed agents overwriting declared artifacts with placeholder status notes such as “completed previously” / “preserving file creation requirement”
   - fixed declared workflow artifacts being replaced by stray touch/status/marker files created by the model

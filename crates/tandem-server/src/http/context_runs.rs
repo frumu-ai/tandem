@@ -35,7 +35,7 @@ pub(crate) struct ContextRunEngine {
     locks: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
-pub(super) fn context_run_engine() -> &'static ContextRunEngine {
+pub(crate) fn context_run_engine() -> &'static ContextRunEngine {
     static ENGINE: std::sync::OnceLock<ContextRunEngine> = std::sync::OnceLock::new();
     ENGINE.get_or_init(ContextRunEngine::default)
 }
@@ -1819,6 +1819,49 @@ pub(super) fn apply_context_event_transition(
         .filter(|v| !v.is_empty())
         .map(ToString::to_string);
     match event_type.as_str() {
+        "session_run_started" => {
+            run.status = ContextRunStatus::Running;
+            run.started_at_ms = run.started_at_ms.or(Some(crate::now_ms()));
+            run.ended_at_ms = None;
+            run.last_error = None;
+            let target_step_id = event_step_id
+                .clone()
+                .unwrap_or_else(|| "session-run".to_string());
+            if let Some(step) = run
+                .steps
+                .iter_mut()
+                .find(|step| step.step_id == target_step_id)
+            {
+                step.status = ContextStepStatus::InProgress;
+            }
+            run.why_next_step = context_event_payload_text(&input.payload, "why_next_step")
+                .or_else(|| Some("session run in progress".to_string()));
+        }
+        "session_run_finished" => {
+            run.status = input.status.clone();
+            let target_step_id = event_step_id
+                .clone()
+                .unwrap_or_else(|| "session-run".to_string());
+            if let Some(step) = run
+                .steps
+                .iter_mut()
+                .find(|step| step.step_id == target_step_id)
+            {
+                step.status = match &input.status {
+                    ContextRunStatus::Completed => ContextStepStatus::Done,
+                    ContextRunStatus::Cancelled
+                    | ContextRunStatus::Blocked
+                    | ContextRunStatus::Paused => ContextStepStatus::Blocked,
+                    ContextRunStatus::Failed => ContextStepStatus::Failed,
+                    _ => ContextStepStatus::Done,
+                };
+            }
+            if let Some(err_text) = context_event_payload_text(&input.payload, "error") {
+                run.last_error = Some(err_text);
+            }
+            run.why_next_step = context_event_payload_text(&input.payload, "why_next_step")
+                .or_else(|| Some("session run finished".to_string()));
+        }
         "planning_started" => {
             if run.steps.is_empty() {
                 run.steps = materialize_plan_steps_from_objective(&run.objective);
@@ -1966,6 +2009,17 @@ pub(super) async fn context_run_event_append(
         .commit_run_event(&state, &run_id, input, None)
         .await?;
     Ok(Json(json!({ "ok": true, "event": outcome.event })))
+}
+
+pub(crate) async fn append_context_run_event(
+    state: &AppState,
+    run_id: &str,
+    input: ContextRunEventAppendInput,
+) -> Result<(), StatusCode> {
+    let _ = context_run_engine()
+        .commit_run_event(state, run_id, input, None)
+        .await?;
+    Ok(())
 }
 
 pub(super) async fn context_run_events(
@@ -3530,6 +3584,78 @@ pub(super) async fn sync_automation_v2_run_blackboard(
 
 pub(super) fn automation_v2_context_run_id(run_id: &str) -> String {
     format!("automation-v2-{run_id}")
+}
+
+pub(crate) fn session_context_run_id(session_id: &str) -> String {
+    format!("session-{session_id}")
+}
+
+pub(crate) fn session_run_status_to_context(status: &str) -> ContextRunStatus {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "completed" => ContextRunStatus::Completed,
+        "cancelled" => ContextRunStatus::Cancelled,
+        "timeout" | "error" | "failed" => ContextRunStatus::Failed,
+        _ => ContextRunStatus::Running,
+    }
+}
+
+pub(crate) async fn ensure_session_context_run(
+    state: &AppState,
+    session: &tandem_types::Session,
+) -> Result<String, StatusCode> {
+    let run_id = session_context_run_id(&session.id);
+    if load_context_run_state(state, &run_id).await.is_ok() {
+        return Ok(run_id);
+    }
+    let now = crate::now_ms();
+    let workspace = session
+        .workspace_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|path| ContextWorkspaceLease {
+            workspace_id: session
+                .project_id
+                .clone()
+                .unwrap_or_else(|| session.id.clone()),
+            canonical_path: path.to_string(),
+            lease_epoch: 0,
+        })
+        .unwrap_or_default();
+    let run = ContextRunState {
+        run_id: run_id.clone(),
+        run_type: "session".to_string(),
+        source_client: Some("session_api".to_string()),
+        model_provider: session.provider.clone(),
+        model_id: session.model.as_ref().map(|model| model.model_id.clone()),
+        mcp_servers: Vec::new(),
+        status: ContextRunStatus::Queued,
+        objective: {
+            let title = session.title.trim();
+            if title.is_empty() {
+                format!("Interactive session {}", session.id)
+            } else {
+                format!("Interactive session: {title}")
+            }
+        },
+        workspace,
+        steps: vec![ContextRunStep {
+            step_id: "session-run".to_string(),
+            title: "Execute interactive session work".to_string(),
+            status: ContextStepStatus::Pending,
+        }],
+        tasks: Vec::new(),
+        why_next_step: Some("waiting for session run activity".to_string()),
+        revision: 1,
+        last_event_seq: 0,
+        created_at_ms: now,
+        started_at_ms: None,
+        ended_at_ms: None,
+        last_error: None,
+        updated_at_ms: now,
+    };
+    save_context_run_state(state, &run).await?;
+    Ok(run_id)
 }
 
 pub(crate) fn workflow_context_run_id(run_id: &str) -> String {

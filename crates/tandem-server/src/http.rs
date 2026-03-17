@@ -54,8 +54,8 @@ mod capabilities;
 mod channels_api;
 mod coder;
 mod config_providers;
-mod context_runs;
-mod context_types;
+pub(crate) mod context_runs;
+pub(crate) mod context_types;
 mod global;
 mod mcp;
 mod middleware;
@@ -110,6 +110,8 @@ use setup_understanding::*;
 use skills_memory::*;
 use system_api::*;
 
+#[cfg(test)]
+pub(crate) use context_runs::session_context_run_id;
 pub(crate) use context_runs::sync_workflow_run_blackboard;
 #[cfg(test)]
 pub(crate) use context_runs::workflow_context_run_id;
@@ -212,6 +214,7 @@ struct ErrorEnvelope {
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let reaper_state = state.clone();
     let session_part_persister_state = state.clone();
+    let session_context_run_journaler_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
     let routine_executor_state = state.clone();
@@ -253,6 +256,9 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     });
     let session_part_persister = tokio::spawn(crate::run_session_part_persister(
         session_part_persister_state,
+    ));
+    let session_context_run_journaler = tokio::spawn(crate::run_session_context_run_journaler(
+        session_context_run_journaler_state,
     ));
     let status_indexer = tokio::spawn(crate::run_status_indexer(status_indexer_state));
     let routine_scheduler = tokio::spawn(crate::run_routine_scheduler(routine_scheduler_state));
@@ -328,6 +334,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .await;
     reaper.abort();
     session_part_persister.abort();
+    session_context_run_journaler.abort();
     status_indexer.abort();
     routine_scheduler.abort();
     routine_executor.abort();

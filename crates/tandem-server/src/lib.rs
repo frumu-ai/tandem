@@ -144,7 +144,8 @@ pub use crate::app::state::{
 };
 pub use crate::app::tasks::{
     run_agent_team_supervisor, run_automation_v2_scheduler, run_bug_monitor, run_routine_executor,
-    run_routine_scheduler, run_session_part_persister, run_status_indexer, run_usage_aggregator,
+    run_routine_scheduler, run_session_context_run_journaler, run_session_part_persister,
+    run_status_indexer, run_usage_aggregator,
 };
 pub use config::channels::normalize_allowed_tools;
 pub use config::channels::normalize_allowed_users_or_wildcard;

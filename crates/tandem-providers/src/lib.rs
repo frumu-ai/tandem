@@ -654,6 +654,15 @@ impl ProviderRegistry {
         };
         Ok(provider.clone())
     }
+
+    pub async fn replace_for_test(
+        &self,
+        providers: Vec<Arc<dyn Provider>>,
+        default_provider: Option<String>,
+    ) {
+        *self.providers.write().await = providers;
+        *self.default_provider.write().await = default_provider;
+    }
 }
 
 fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {

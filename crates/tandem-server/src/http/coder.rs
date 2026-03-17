@@ -3381,8 +3381,10 @@ async fn dispatch_issue_fix_task(
                         "validation_worker_artifact_path": validation_worker_artifact.path,
                         "worker_session_id": worker_session.as_ref().and_then(|payload| payload.get("session_id")).cloned(),
                         "worker_session_run_id": worker_session.as_ref().and_then(|payload| payload.get("session_run_id")).cloned(),
+                        "worker_session_context_run_id": worker_session.as_ref().and_then(|payload| payload.get("session_context_run_id")).cloned(),
                         "validation_session_id": validation_worker_payload.get("session_id").cloned(),
                         "validation_session_run_id": validation_worker_payload.get("session_run_id").cloned(),
+                        "validation_session_context_run_id": validation_worker_payload.get("session_context_run_id").cloned(),
                         "worker_assistant_excerpt": worker_summary,
                     })],
                     memory_hits_used,
@@ -3482,6 +3484,10 @@ async fn dispatch_issue_fix_task(
                             .unwrap_or_else(|| "Validation completed through the coder engine worker bridge.".to_string()),
                         "validation_session_id": validation_session.as_ref().and_then(|payload| payload.get("session_id")).cloned(),
                         "validation_session_run_id": validation_session.as_ref().and_then(|payload| payload.get("session_run_id")).cloned(),
+                        "validation_session_context_run_id": validation_session
+                            .as_ref()
+                            .and_then(|payload| payload.get("session_context_run_id"))
+                            .cloned(),
                     })],
                     memory_hits_used,
                     notes: Some(format!(
@@ -5673,6 +5679,11 @@ async fn write_worker_failure_run_outcome_candidate(
                 .and_then(|row| row.get("session_run_id"))
                 .cloned()
                 .unwrap_or(Value::Null),
+            "worker_session_context_run_id": worker_payload
+                .as_ref()
+                .and_then(|row| row.get("session_context_run_id"))
+                .cloned()
+                .unwrap_or(Value::Null),
             "worker_error": worker_payload
                 .as_ref()
                 .and_then(|row| row.get("error"))
@@ -6241,6 +6252,7 @@ fn parse_issue_fix_plan_from_worker_payload(worker_payload: &Value) -> Value {
         "validation_steps": validation_steps,
         "worker_session_id": worker_payload.get("session_id").cloned(),
         "worker_session_run_id": worker_payload.get("session_run_id").cloned(),
+        "worker_session_context_run_id": worker_payload.get("session_context_run_id").cloned(),
         "worker_model": worker_payload.get("model").cloned(),
         "assistant_text": worker_payload.get("assistant_text").cloned(),
     })
@@ -6283,6 +6295,7 @@ fn parse_pr_review_from_worker_payload(worker_payload: &Value) -> Value {
         "regression_signals": regression_signals,
         "worker_session_id": worker_payload.get("session_id").cloned(),
         "worker_session_run_id": worker_payload.get("session_run_id").cloned(),
+        "worker_session_context_run_id": worker_payload.get("session_context_run_id").cloned(),
         "worker_model": worker_payload.get("model").cloned(),
         "assistant_text": worker_payload.get("assistant_text").cloned(),
     })
@@ -6318,6 +6331,7 @@ fn parse_issue_triage_from_worker_payload(worker_payload: &Value) -> Value {
         "observed_logs": observed_logs,
         "worker_session_id": worker_payload.get("session_id").cloned(),
         "worker_session_run_id": worker_payload.get("session_run_id").cloned(),
+        "worker_session_context_run_id": worker_payload.get("session_context_run_id").cloned(),
         "worker_model": worker_payload.get("model").cloned(),
         "assistant_text": worker_payload.get("assistant_text").cloned(),
     })
@@ -6349,6 +6363,7 @@ fn parse_merge_recommendation_from_worker_payload(worker_payload: &Value) -> Val
         "required_approvals": required_approvals,
         "worker_session_id": worker_payload.get("session_id").cloned(),
         "worker_session_run_id": worker_payload.get("session_run_id").cloned(),
+        "worker_session_context_run_id": worker_payload.get("session_context_run_id").cloned(),
         "worker_model": worker_payload.get("model").cloned(),
         "assistant_text": worker_payload.get("assistant_text").cloned(),
     })
@@ -6426,6 +6441,7 @@ async fn write_issue_fix_changed_file_evidence_artifact(
         "workspace_snapshots": workspace_snapshots,
         "worker_session_id": worker_payload.get("session_id").cloned(),
         "worker_session_run_id": worker_payload.get("session_run_id").cloned(),
+        "worker_session_context_run_id": worker_payload.get("session_context_run_id").cloned(),
         "created_at_ms": crate::now_ms(),
     });
     let artifact = write_coder_artifact(
@@ -6493,8 +6509,10 @@ async fn write_issue_fix_patch_summary_artifact(
         "validation_results": validation_results,
         "worker_session_id": worker_session.and_then(|payload| payload.get("session_id")).cloned(),
         "worker_session_run_id": worker_session.and_then(|payload| payload.get("session_run_id")).cloned(),
+        "worker_session_context_run_id": worker_session.and_then(|payload| payload.get("session_context_run_id")).cloned(),
         "validation_session_id": validation_session.and_then(|payload| payload.get("session_id")).cloned(),
         "validation_session_run_id": validation_session.and_then(|payload| payload.get("session_run_id")).cloned(),
+        "validation_session_context_run_id": validation_session.and_then(|payload| payload.get("session_context_run_id")).cloned(),
         "created_at_ms": crate::now_ms(),
     });
     let artifact = write_coder_artifact(
@@ -7284,6 +7302,20 @@ pub(super) async fn coder_issue_fix_pr_draft_create(
                 .rev()
                 .find(|artifact| artifact.artifact_type == "coder_validation_report")
                 .map(|artifact| artifact.path.clone())),
+        "worker_session_context_run_id": patch_summary_payload
+            .as_ref()
+            .and_then(|payload| payload.get("worker_session_context_run_id"))
+            .cloned(),
+        "validation_session_context_run_id": patch_summary_payload
+            .as_ref()
+            .and_then(|payload| payload.get("validation_session_context_run_id"))
+            .cloned()
+            .or_else(|| {
+                validation_payload
+                    .as_ref()
+                    .and_then(|payload| payload.get("validation_session_context_run_id"))
+                    .cloned()
+            }),
         "created_at_ms": crate::now_ms(),
     });
     let artifact = write_coder_artifact(
@@ -7407,6 +7439,14 @@ pub(super) async fn coder_issue_fix_pr_submit(
         "dry_run": dry_run,
         "requested_spawn_follow_on_runs": requested_follow_on_modes,
         "allow_auto_merge_recommendation": allow_auto_merge_recommendation,
+        "worker_session_context_run_id": draft_payload
+            .get("worker_session_context_run_id")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "validation_session_context_run_id": draft_payload
+            .get("validation_session_context_run_id")
+            .cloned()
+            .unwrap_or(Value::Null),
         "submitted_github_ref": Value::Null,
         "skipped_follow_on_runs": skipped_follow_on_runs,
         "spawned_follow_on_runs": [],
@@ -8011,9 +8051,11 @@ async fn run_issue_fix_worker_session(
     let session_id = session.id.clone();
     state
         .storage
-        .save_session(session)
+        .save_session(session.clone())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let worker_context_run_id =
+        super::context_runs::ensure_session_context_run(state, &session).await?;
 
     let run_id = Uuid::new_v4().to_string();
     let client_id = Some(record.coder_run_id.clone());
@@ -8101,6 +8143,7 @@ async fn run_issue_fix_worker_session(
         "worker_kind": worker_kind,
         "session_id": session_id,
         "session_run_id": run_id,
+        "session_context_run_id": worker_context_run_id,
         "status": if run_result.is_ok() { "completed" } else { "error" },
         "model": model,
         "agent_id": agent_id,
@@ -8131,6 +8174,9 @@ async fn run_issue_fix_worker_session(
         }
         if let Some(session_run_id) = payload.get("session_run_id").cloned() {
             extra.insert("session_run_id".to_string(), session_run_id);
+        }
+        if let Some(session_context_run_id) = payload.get("session_context_run_id").cloned() {
+            extra.insert("session_context_run_id".to_string(), session_context_run_id);
         }
         extra.insert("worker_kind".to_string(), json!(worker_kind));
         extra

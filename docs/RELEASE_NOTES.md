@@ -56,6 +56,12 @@
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions
 - Overlapping code-task write scopes are now filtered out of the same runnable batch so parallel coding workflows stay conservative by default.
 
+### Session and Coder Runtime Journal Convergence
+
+- Interactive session runs now create deterministic `session-<sessionID>` context runs before `contextRunID` is returned, so replay/debug links resolve against durable state immediately instead of racing the background journal path.
+- Added a session context-run journal bridge that records `session.run.started`, `message.part.updated`, and `session.run.finished` as replayable context-run events.
+- Coder worker-session artifacts and downstream review/approval payloads now carry durable worker-session context-run ids in addition to transient `session_id` / `session_run_id` values, making it easier to pivot from coder outcomes into the canonical run journal.
+
 ### Workflow Runtime Hardening
 
 - `automation_v2` nodes now run with deterministic required tool sets instead of leaning only on the generic auto-router.
@@ -77,6 +83,7 @@
 - Added rejection and cleanup of undeclared touch/status/marker files created by workflow agents.
 - Preserved substantive blocked artifacts on disk for inspection instead of deleting them just because the node was semantically blocked.
 - Fresh workflow reruns now preserve prior declared outputs until a replacement artifact is actually produced, so a failed retry does not leave the workspace empty.
+- Streamed malformed write calls now preserve raw/parsed arg previews, recover normalized best-effort args on failed writes, upgrade persisted tool args when stronger structured evidence arrives later, and keep recovered tool args/errors visible in session replay and repo-aware mutation summaries.
 
 ### Workflow Studio Models
 

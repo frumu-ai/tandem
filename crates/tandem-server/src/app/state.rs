@@ -3557,6 +3557,17 @@ pub fn extract_persistable_tool_part(properties: &Value) -> Option<(String, Mess
                 args = preview;
             }
         }
+        if args.is_null() || args.as_object().is_some_and(|value| value.is_empty()) {
+            if let Some(raw_preview) = properties
+                .get("toolCallDelta")
+                .and_then(|delta| delta.get("rawArgsPreview"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                args = Value::String(raw_preview.to_string());
+            }
+        }
     }
     if tool == "write" && (args.is_null() || args.as_object().is_some_and(|value| value.is_empty()))
     {
@@ -3625,17 +3636,9 @@ pub fn derive_status_index_update(event: &EngineEvent) -> Option<StatusIndexUpda
             })
         }
         "message.part.updated" => {
-            let part_type = event
-                .properties
-                .get("part")
-                .and_then(|v| v.get("type"))
-                .and_then(|v| v.as_str())?;
-            let part_state = event
-                .properties
-                .get("part")
-                .and_then(|v| v.get("state"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let part = event.properties.get("part")?;
+            let part_type = part.get("type").and_then(|v| v.as_str())?;
+            let part_state = part.get("state").and_then(|v| v.as_str()).unwrap_or("");
             let (phase, tool_active) = match (part_type, part_state) {
                 ("tool-invocation", _) | ("tool", "running") | ("tool", "") => ("tool", true),
                 ("tool-result", _) | ("tool", "completed") | ("tool", "failed") => ("run", false),
@@ -3644,13 +3647,53 @@ pub fn derive_status_index_update(event: &EngineEvent) -> Option<StatusIndexUpda
             base.insert("state".to_string(), Value::String("running".to_string()));
             base.insert("phase".to_string(), Value::String(phase.to_string()));
             base.insert("toolActive".to_string(), Value::Bool(tool_active));
-            if let Some(tool_name) = event
-                .properties
-                .get("part")
-                .and_then(|v| v.get("tool"))
-                .and_then(|v| v.as_str())
-            {
+            if let Some(tool_name) = part.get("tool").and_then(|v| v.as_str()) {
                 base.insert("tool".to_string(), Value::String(tool_name.to_string()));
+            }
+            if let Some(tool_state) = part.get("state").and_then(|v| v.as_str()) {
+                base.insert(
+                    "toolState".to_string(),
+                    Value::String(tool_state.to_string()),
+                );
+            }
+            if let Some(tool_error) = part
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                base.insert(
+                    "toolError".to_string(),
+                    Value::String(tool_error.to_string()),
+                );
+            }
+            if let Some(tool_call_id) = part
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                base.insert(
+                    "toolCallID".to_string(),
+                    Value::String(tool_call_id.to_string()),
+                );
+            }
+            if let Some(args_preview) = part
+                .get("args")
+                .filter(|value| {
+                    !value.is_null()
+                        && !value.as_object().is_some_and(|map| map.is_empty())
+                        && !value
+                            .as_str()
+                            .map(|text| text.trim().is_empty())
+                            .unwrap_or(false)
+                })
+                .map(|value| truncate_text(&value.to_string(), 500))
+            {
+                base.insert(
+                    "toolArgsPreview".to_string(),
+                    Value::String(args_preview.to_string()),
+                );
             }
             base.insert(
                 "eventType".to_string(),
@@ -5933,6 +5976,21 @@ fn normalize_workspace_display_path(workspace_root: &str, raw_path: &str) -> Opt
         .filter(|value| !value.is_empty())
 }
 
+fn tool_args_object(args: &Value) -> Option<std::borrow::Cow<'_, serde_json::Map<String, Value>>> {
+    match args {
+        Value::Object(map) => Some(std::borrow::Cow::Borrowed(map)),
+        Value::String(raw) => {
+            serde_json::from_str::<Value>(raw)
+                .ok()
+                .and_then(|value| match value {
+                    Value::Object(map) => Some(std::borrow::Cow::Owned(map)),
+                    _ => None,
+                })
+        }
+        _ => None,
+    }
+}
+
 fn session_read_paths(session: &Session, workspace_root: &str) -> Vec<String> {
     let mut paths = Vec::new();
     for message in &session.messages {
@@ -5948,6 +6006,9 @@ fn session_read_paths(session: &Session, workspace_root: &str) -> Vec<String> {
             {
                 continue;
             }
+            let Some(args) = tool_args_object(args) else {
+                continue;
+            };
             let Some(path) = args.get("path").and_then(Value::as_str) else {
                 continue;
             };
@@ -6048,6 +6109,9 @@ fn session_write_candidates_for_output(
             {
                 continue;
             }
+            let Some(args) = tool_args_object(args) else {
+                continue;
+            };
             let Some(path) = args.get("path").and_then(Value::as_str).map(str::trim) else {
                 continue;
             };
@@ -6102,8 +6166,11 @@ fn session_file_mutation_summary(session: &Session, workspace_root: &str) -> Val
                 continue;
             }
             let tool_name = tool.trim().to_ascii_lowercase().replace('-', "_");
+            let parsed_args = tool_args_object(args);
             let candidate_paths = if tool_name == "apply_patch" {
-                args.get("patchText")
+                parsed_args
+                    .as_ref()
+                    .and_then(|args| args.get("patchText"))
                     .and_then(Value::as_str)
                     .map(|patch| {
                         patch
@@ -6122,7 +6189,9 @@ fn session_file_mutation_summary(session: &Session, workspace_root: &str) -> Val
                     })
                     .unwrap_or_default()
             } else {
-                args.get("path")
+                parsed_args
+                    .as_ref()
+                    .and_then(|args| args.get("path"))
                     .and_then(Value::as_str)
                     .map(|value| vec![value.trim().to_string()])
                     .unwrap_or_default()
@@ -8060,6 +8129,61 @@ mod tests {
     }
 
     #[test]
+    fn derive_status_index_update_for_failed_write_includes_recovery_snapshot() {
+        let event = EngineEvent::new(
+            "message.part.updated",
+            serde_json::json!({
+                "sessionID": "s-3",
+                "runID": "r-3",
+                "part": {
+                    "id": "call_stream_1",
+                    "type": "tool",
+                    "state": "failed",
+                    "tool": "write",
+                    "args": {
+                        "path": "game.html",
+                        "content": "<html>draft</html>"
+                    },
+                    "error": "WRITE_ARGS_EMPTY_FROM_PROVIDER"
+                }
+            }),
+        );
+        let update = derive_status_index_update(&event).expect("update");
+        assert_eq!(update.key, "run/s-3/status");
+        assert_eq!(
+            update.value.get("phase").and_then(|v| v.as_str()),
+            Some("run")
+        );
+        assert_eq!(
+            update.value.get("toolActive").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            update.value.get("tool").and_then(|v| v.as_str()),
+            Some("write")
+        );
+        assert_eq!(
+            update.value.get("toolState").and_then(|v| v.as_str()),
+            Some("failed")
+        );
+        assert_eq!(
+            update.value.get("toolError").and_then(|v| v.as_str()),
+            Some("WRITE_ARGS_EMPTY_FROM_PROVIDER")
+        );
+        assert_eq!(
+            update.value.get("toolCallID").and_then(|v| v.as_str()),
+            Some("call_stream_1")
+        );
+        let preview = update
+            .value
+            .get("toolArgsPreview")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(preview.contains("game.html"));
+        assert!(preview.contains("<html>draft</html>"));
+    }
+
+    #[test]
     fn misfire_skip_drops_runs_and_advances_next_fire() {
         let (count, next_fire) =
             compute_misfire_plan(10_500, 5_000, 1_000, &RoutineMisfirePolicy::Skip);
@@ -9337,6 +9461,142 @@ mod tests {
             Some("coding task completed with only 2 of 3 declared verification commands run")
         );
         assert_eq!(approved, None);
+    }
+
+    #[test]
+    fn session_read_paths_accepts_json_string_tool_args() {
+        let workspace_root = std::env::temp_dir().join(format!(
+            "tandem-session-read-paths-json-string-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(workspace_root.join("src")).expect("create workspace");
+        std::fs::write(workspace_root.join("src/lib.rs"), "pub fn demo() {}\n").expect("seed file");
+
+        let mut session = Session::new(
+            Some("json string read args".to_string()),
+            Some(
+                workspace_root
+                    .to_str()
+                    .expect("workspace root string")
+                    .to_string(),
+            ),
+        );
+        session.messages.push(tandem_types::Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::ToolInvocation {
+                tool: "read".to_string(),
+                args: json!("{\"path\":\"src/lib.rs\"}"),
+                result: Some(json!({"ok": true})),
+                error: None,
+            }],
+        ));
+
+        let paths = session_read_paths(
+            &session,
+            workspace_root.to_str().expect("workspace root string"),
+        );
+
+        assert_eq!(paths, vec!["src/lib.rs".to_string()]);
+    }
+
+    #[test]
+    fn session_write_candidates_accepts_json_string_tool_args() {
+        let workspace_root = std::env::temp_dir().join(format!(
+            "tandem-session-write-candidates-json-string-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&workspace_root).expect("create workspace");
+
+        let mut session = Session::new(
+            Some("json string write args".to_string()),
+            Some(
+                workspace_root
+                    .to_str()
+                    .expect("workspace root string")
+                    .to_string(),
+            ),
+        );
+        session.messages.push(tandem_types::Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::ToolInvocation {
+                tool: "write".to_string(),
+                args: json!("{\"path\":\"brief.md\",\"content\":\"Draft body\"}"),
+                result: Some(json!({"ok": true})),
+                error: None,
+            }],
+        ));
+
+        let candidates = session_write_candidates_for_output(
+            &session,
+            workspace_root.to_str().expect("workspace root string"),
+            "brief.md",
+        );
+
+        assert_eq!(candidates, vec!["Draft body".to_string()]);
+    }
+
+    #[test]
+    fn session_file_mutation_summary_accepts_json_string_tool_args() {
+        let workspace_root = std::env::temp_dir().join(format!(
+            "tandem-session-mutation-summary-json-string-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(workspace_root.join("src")).expect("create workspace");
+
+        let mut session = Session::new(
+            Some("json string mutation args".to_string()),
+            Some(
+                workspace_root
+                    .to_str()
+                    .expect("workspace root string")
+                    .to_string(),
+            ),
+        );
+        session.messages.push(tandem_types::Message::new(
+            MessageRole::Assistant,
+            vec![
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!("{\"path\":\"src/lib.rs\",\"content\":\"pub fn demo() {}\\n\"}"),
+                    result: Some(json!({"ok": true})),
+                    error: None,
+                },
+                MessagePart::ToolInvocation {
+                    tool: "apply_patch".to_string(),
+                    args: json!("{\"patchText\":\"*** Begin Patch\\n*** Update File: src/other.rs\\n@@\\n-old\\n+new\\n*** End Patch\\n\"}"),
+                    result: Some(json!({"ok": true})),
+                    error: None,
+                },
+            ],
+        ));
+
+        let summary = session_file_mutation_summary(
+            &session,
+            workspace_root.to_str().expect("workspace root string"),
+        );
+
+        assert_eq!(
+            summary
+                .get("touched_files")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            vec![json!("src/lib.rs"), json!("src/other.rs")]
+        );
+        assert_eq!(
+            summary
+                .get("mutation_tool_by_file")
+                .and_then(|value| value.get("src/lib.rs"))
+                .cloned(),
+            Some(json!(["write"]))
+        );
+        assert_eq!(
+            summary
+                .get("mutation_tool_by_file")
+                .and_then(|value| value.get("src/other.rs"))
+                .cloned(),
+            Some(json!(["apply_patch"]))
+        );
     }
 
     #[test]

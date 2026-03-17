@@ -1,4 +1,70 @@
 use super::*;
+use async_trait::async_trait;
+use futures::stream;
+use futures::Stream;
+use std::pin::Pin;
+use std::sync::Arc;
+use tandem_providers::{ChatMessage, Provider, StreamChunk};
+use tandem_types::{ModelInfo, ModelSpec, ProviderInfo, ToolMode, ToolSchema};
+use tokio_util::sync::CancellationToken;
+
+struct StreamedWriteTestProvider;
+
+#[async_trait]
+impl Provider for StreamedWriteTestProvider {
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo {
+            id: "streamed-test".to_string(),
+            name: "Streamed Test".to_string(),
+            models: vec![ModelInfo {
+                id: "streamed-test-1".to_string(),
+                provider_id: "streamed-test".to_string(),
+                display_name: "Streamed Test 1".to_string(),
+                context_window: 8192,
+            }],
+        }
+    }
+
+    async fn complete(
+        &self,
+        _prompt: &str,
+        _model_override: Option<&str>,
+    ) -> anyhow::Result<String> {
+        Ok(String::new())
+    }
+
+    async fn stream(
+        &self,
+        _messages: Vec<ChatMessage>,
+        _model_override: Option<&str>,
+        _tool_mode: ToolMode,
+        _tools: Option<Vec<ToolSchema>>,
+        _cancel: CancellationToken,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        let chunks = vec![
+            Ok(StreamChunk::ToolCallStart {
+                id: "call_stream_1".to_string(),
+                name: "write".to_string(),
+            }),
+            Ok(StreamChunk::ToolCallDelta {
+                id: "call_stream_1".to_string(),
+                args_delta: r#"{"path":"game.html","content":"<html>"#.to_string(),
+            }),
+            Ok(StreamChunk::ToolCallDelta {
+                id: "call_stream_1".to_string(),
+                args_delta: r#"draft</html>"}"#.to_string(),
+            }),
+            Ok(StreamChunk::ToolCallEnd {
+                id: "call_stream_1".to_string(),
+            }),
+            Ok(StreamChunk::Done {
+                finish_reason: "tool_calls".to_string(),
+                usage: None,
+            }),
+        ];
+        Ok(Box::pin(stream::iter(chunks)))
+    }
+}
 
 #[tokio::test]
 async fn session_todo_route_returns_normalized_items() {
@@ -18,7 +84,7 @@ async fn session_todo_route_returns_normalized_items() {
         .await
         .expect("set todos");
 
-    let app = app_router(state);
+    let app = app_router(state.clone());
     let req = Request::builder()
         .method("GET")
         .uri(format!("/session/{session_id}/todo"))
@@ -87,7 +153,7 @@ async fn session_part_persister_stores_tool_parts_in_session_history() {
         }),
     ));
 
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let session = state
                 .storage
@@ -306,6 +372,218 @@ async fn session_part_persister_stores_result_args_without_prior_invoke() {
 }
 
 #[tokio::test]
+async fn session_part_persister_preserves_streamed_preview_args_across_failed_write_result() {
+    let state = test_state().await;
+    let task = tokio::spawn(crate::run_session_part_persister(state.clone()));
+    let session = Session::new(
+        Some("persist streamed preview write args".to_string()),
+        Some(".".to_string()),
+    );
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.expect("save");
+    let message = Message::new(
+        MessageRole::User,
+        vec![MessagePart::Text {
+            text: "build game".to_string(),
+        }],
+    );
+    let message_id = message.id.clone();
+    state
+        .storage
+        .append_message(&session_id, message)
+        .await
+        .expect("append");
+
+    state.event_bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "sessionID": session_id,
+            "part": {
+                "type": "tool",
+                "messageID": message_id,
+                "tool": "write",
+                "args": {},
+                "state": "running"
+            },
+            "toolCallDelta": {
+                "id": "call_123",
+                "tool": "write",
+                "parsedArgsPreview": {
+                    "path": "game.html",
+                    "content": "<html>draft</html>"
+                }
+            }
+        }),
+    ));
+    state.event_bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "sessionID": session_id,
+            "part": {
+                "type": "tool",
+                "messageID": message_id,
+                "tool": "write",
+                "args": {},
+                "state": "failed",
+                "error": "WRITE_ARGS_EMPTY_FROM_PROVIDER"
+            }
+        }),
+    ));
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let session = state
+                .storage
+                .get_session(&session_id)
+                .await
+                .expect("session");
+            let message = session
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .expect("message");
+            if message.parts.len() > 1 {
+                match &message.parts[1] {
+                    MessagePart::ToolInvocation { args, error, .. }
+                        if args.get("path").and_then(|value| value.as_str())
+                            == Some("game.html")
+                            && error.as_deref() == Some("WRITE_ARGS_EMPTY_FROM_PROVIDER") =>
+                    {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("tool preview + failure persisted");
+
+    let session = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .expect("session");
+    let message = session
+        .messages
+        .iter()
+        .find(|message| message.id == message_id)
+        .expect("message");
+    match &message.parts[1] {
+        MessagePart::ToolInvocation {
+            tool, args, error, ..
+        } => {
+            assert_eq!(tool, "write");
+            assert_eq!(args["path"], "game.html");
+            assert_eq!(args["content"], "<html>draft</html>");
+            assert_eq!(error.as_deref(), Some("WRITE_ARGS_EMPTY_FROM_PROVIDER"));
+        }
+        other => panic!("expected tool invocation, got {other:?}"),
+    }
+
+    task.abort();
+}
+
+#[tokio::test]
+async fn session_part_persister_falls_back_to_streamed_raw_args_preview_when_parse_preview_missing()
+{
+    let state = test_state().await;
+    let task = tokio::spawn(crate::run_session_part_persister(state.clone()));
+    let session = Session::new(
+        Some("persist streamed raw write args".to_string()),
+        Some(".".to_string()),
+    );
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.expect("save");
+    let message = Message::new(
+        MessageRole::User,
+        vec![MessagePart::Text {
+            text: "build game".to_string(),
+        }],
+    );
+    let message_id = message.id.clone();
+    state
+        .storage
+        .append_message(&session_id, message)
+        .await
+        .expect("append");
+
+    state.event_bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "sessionID": session_id,
+            "part": {
+                "type": "tool",
+                "messageID": message_id,
+                "tool": "write",
+                "args": {},
+                "state": "running"
+            },
+            "toolCallDelta": {
+                "id": "call_raw_only",
+                "tool": "write",
+                "rawArgsPreview": "{\"path\":\"game.html\",\"content\":\"<html>draft</html>\"}"
+            }
+        }),
+    ));
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let session = state
+                .storage
+                .get_session(&session_id)
+                .await
+                .expect("session");
+            let message = session
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .expect("message");
+            if message.parts.len() > 1 {
+                match &message.parts[1] {
+                    MessagePart::ToolInvocation { args, .. }
+                        if args.as_str()
+                            == Some(
+                                "{\"path\":\"game.html\",\"content\":\"<html>draft</html>\"}",
+                            ) =>
+                    {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("tool raw preview persisted");
+
+    let session = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .expect("session");
+    let message = session
+        .messages
+        .iter()
+        .find(|message| message.id == message_id)
+        .expect("message");
+    match &message.parts[1] {
+        MessagePart::ToolInvocation { tool, args, .. } => {
+            assert_eq!(tool, "write");
+            assert_eq!(
+                args.as_str(),
+                Some("{\"path\":\"game.html\",\"content\":\"<html>draft</html>\"}")
+            );
+        }
+        other => panic!("expected tool invocation, got {other:?}"),
+    }
+
+    task.abort();
+}
+
+#[tokio::test]
 async fn answer_question_alias_route_returns_ok() {
     let state = test_state().await;
     let session = Session::new(Some("q".to_string()), Some(".".to_string()));
@@ -321,7 +599,7 @@ async fn answer_question_alias_route_returns_ok() {
         .await
         .expect("question");
 
-    let app = app_router(state);
+    let app = app_router(state.clone());
     let req = Request::builder()
         .method("POST")
         .uri(format!(
@@ -343,7 +621,7 @@ async fn api_session_alias_lists_sessions() {
     let state = test_state().await;
     let session = Session::new(Some("alias".to_string()), Some(".".to_string()));
     state.storage.save_session(session).await.expect("save");
-    let app = app_router(state);
+    let app = app_router(state.clone());
     let req = Request::builder()
         .method("GET")
         .uri("/api/session")
@@ -597,6 +875,125 @@ async fn message_part_updated_event_contains_required_wire_fields() {
     assert!(part.get("type").and_then(|v| v.as_str()).is_some());
 }
 
+#[tokio::test]
+async fn prompt_async_streamed_write_preserves_provider_call_id_and_args_lineage() {
+    let state = test_state().await;
+    state
+        .providers
+        .replace_for_test(
+            vec![Arc::new(StreamedWriteTestProvider)],
+            Some("streamed-test".to_string()),
+        )
+        .await;
+    let task = tokio::spawn(crate::run_session_part_persister(state.clone()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut rx = state.event_bus.subscribe();
+    let workspace_root =
+        std::env::temp_dir().join(format!("tandem-streamed-write-lineage-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut session = Session::new(
+        Some("streamed write lineage".to_string()),
+        Some(
+            workspace_root
+                .to_str()
+                .expect("workspace root string")
+                .to_string(),
+        ),
+    );
+    session.model = Some(ModelSpec {
+        provider_id: "streamed-test".to_string(),
+        model_id: "streamed-test-1".to_string(),
+    });
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.expect("save");
+    state
+        .engine_loop
+        .set_session_allowed_tools(&session_id, vec!["write".to_string()])
+        .await;
+    state
+        .engine_loop
+        .set_session_auto_approve_permissions(&session_id, true)
+        .await;
+
+    state
+        .engine_loop
+        .run_prompt_async(
+            session_id.clone(),
+            SendMessageRequest {
+                parts: vec![MessagePartInput::Text {
+                    text: "create game.html now".to_string(),
+                }],
+                model: Some(ModelSpec {
+                    provider_id: "streamed-test".to_string(),
+                    model_id: "streamed-test-1".to_string(),
+                }),
+                agent: None,
+                tool_mode: Some(ToolMode::Required),
+                tool_allowlist: None,
+                context_mode: None,
+                write_required: None,
+                prewrite_requirements: None,
+            },
+        )
+        .await
+        .expect("run prompt");
+
+    let mut saw_delta_preview = false;
+    let mut saw_pending_or_result_with_call_id = false;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !saw_delta_preview || !saw_pending_or_result_with_call_id {
+            let event = rx.recv().await.expect("event");
+            if event.event_type != "message.part.updated" {
+                continue;
+            }
+            if !saw_delta_preview {
+                if let Some(delta) = event.properties.get("toolCallDelta") {
+                    if delta.get("id").and_then(|value| value.as_str()) == Some("call_stream_1")
+                        && delta.get("tool").and_then(|value| value.as_str()) == Some("write")
+                        && delta
+                            .get("rawArgsPreview")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|value| value.contains("game.html"))
+                        && delta
+                            .get("parsedArgsPreview")
+                            .and_then(|value| value.get("path"))
+                            .and_then(|value| value.as_str())
+                            == Some("game.html")
+                    {
+                        saw_delta_preview = true;
+                    }
+                }
+            }
+            if !saw_pending_or_result_with_call_id {
+                if let Some(part) = event.properties.get("part") {
+                    if part.get("id").and_then(|value| value.as_str()) == Some("call_stream_1")
+                        && part.get("tool").and_then(|value| value.as_str()) == Some("write")
+                        && part
+                            .get("args")
+                            .and_then(|value| value.get("path"))
+                            .and_then(|value| value.as_str())
+                            == Some("game.html")
+                    {
+                        saw_pending_or_result_with_call_id = true;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("streamed call id + args lineage events");
+
+    let written = std::fs::read_to_string(workspace_root.join("game.html")).expect("written file");
+    assert_eq!(written, "<html>draft</html>");
+
+    state
+        .engine_loop
+        .clear_session_auto_approve_permissions(&session_id)
+        .await;
+    task.abort();
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
 #[test]
 fn normalize_run_event_adds_required_fields() {
     let event = EngineEvent::new(
@@ -780,7 +1177,7 @@ async fn prompt_async_return_run_returns_202_with_run_id_and_attach_stream() {
     let session = Session::new(Some("return-run".to_string()), Some(".".to_string()));
     let session_id = session.id.clone();
     state.storage.save_session(session).await.expect("save");
-    let app = app_router(state);
+    let app = app_router(state.clone());
     let req = Request::builder()
         .method("POST")
         .uri(format!("/session/{session_id}/prompt_async?return=run"))
@@ -798,11 +1195,30 @@ async fn prompt_async_return_run_returns_202_with_run_id_and_attach_stream() {
         .get("attachEventStream")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    let context_run_id = payload
+        .get("contextRunID")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert!(!run_id.is_empty());
+    assert_eq!(
+        context_run_id,
+        crate::http::session_context_run_id(&session_id)
+    );
     assert_eq!(
         attach,
         format!("/event?sessionID={session_id}&runID={run_id}")
     );
+    let context_run_resp = app_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/context/runs/{context_run_id}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(context_run_resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -855,6 +1271,26 @@ async fn get_session_run_returns_active_metadata_while_run_is_in_flight() {
         active.get("runID").and_then(|v| v.as_str()),
         Some(run_id.as_str())
     );
+    assert_eq!(
+        run_payload
+            .get("linked_context_run_id")
+            .and_then(|v| v.as_str()),
+        Some(crate::http::session_context_run_id(&session_id).as_str())
+    );
+    let context_run_resp = app_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/context/runs/{}",
+                    crate::http::session_context_run_id(&session_id)
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(context_run_resp.status(), StatusCode::OK);
 
     let cancel_req = Request::builder()
         .method("POST")
@@ -866,6 +1302,115 @@ async fn get_session_run_returns_active_metadata_while_run_is_in_flight() {
         .await
         .expect("cancel response");
     assert_eq!(cancel_resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn session_context_run_journaler_persists_session_run_lineage() {
+    let state = test_state().await;
+    let task = tokio::spawn(crate::run_session_context_run_journaler(state.clone()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut session = Session::new(
+        Some("journal interactive run".to_string()),
+        Some(".".to_string()),
+    );
+    session.workspace_root = Some("/tmp/tandem-session-journal".to_string());
+    session.project_id = Some("proj-session-journal".to_string());
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.expect("save");
+
+    state.event_bus.publish(EngineEvent::new(
+        "session.run.started",
+        json!({
+            "sessionID": session_id,
+            "runID": "run-session-journal-1",
+            "agentID": "interactive",
+            "agentProfile": "interactive",
+        }),
+    ));
+    state.event_bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "sessionID": session_id,
+            "runID": "run-session-journal-1",
+            "part": {
+                "type": "tool",
+                "tool": "read",
+                "state": "running",
+                "args": { "path": "README.md" }
+            }
+        }),
+    ));
+    state.event_bus.publish(EngineEvent::new(
+        "session.run.finished",
+        json!({
+            "sessionID": session_id,
+            "runID": "run-session-journal-1",
+            "status": "completed",
+        }),
+    ));
+
+    let context_run_id = crate::http::session_context_run_id(&session_id);
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let run = crate::http::context_runs::load_context_run_state(&state, &context_run_id)
+                .await
+                .expect("context run");
+            if run.last_event_seq >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("context run journal persisted");
+
+    let run = crate::http::context_runs::load_context_run_state(&state, &context_run_id)
+        .await
+        .expect("context run");
+    assert_eq!(run.run_id, context_run_id);
+    assert_eq!(run.run_type, "session");
+    assert_eq!(
+        run.status,
+        crate::http::context_types::ContextRunStatus::Completed
+    );
+    assert_eq!(run.workspace.canonical_path, "/tmp/tandem-session-journal");
+    assert!(run.started_at_ms.is_some());
+
+    let app = app_router(state.clone());
+    let events_resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/context/runs/{context_run_id}/events"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(events_resp.status(), StatusCode::OK);
+    let events_body = to_bytes(events_resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let events_payload: Value = serde_json::from_slice(&events_body).expect("json");
+    let events = events_payload
+        .get("events")
+        .and_then(|value| value.as_array())
+        .expect("events array");
+    let event_types = events
+        .iter()
+        .filter_map(|row| row.get("type").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        event_types,
+        vec![
+            "session_run_started",
+            "session_tool_updated",
+            "session_run_finished",
+        ]
+    );
+
+    task.abort();
 }
 
 #[tokio::test]

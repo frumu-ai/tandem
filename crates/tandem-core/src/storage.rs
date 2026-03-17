@@ -132,8 +132,7 @@ fn merge_message_part(message: &mut Message, part: MessagePart) {
             result,
             error,
         } => {
-            let args_are_empty =
-                args.is_null() || args.as_object().is_some_and(|value| value.is_empty());
+            let args_are_empty = tool_args_are_empty(&args);
             if result.is_none() && error.is_none() {
                 if let Some(existing) = message.parts.iter_mut().rev().find(|existing| {
                     matches!(
@@ -151,11 +150,8 @@ fn merge_message_part(message: &mut Message, part: MessagePart) {
                         ..
                     } = existing
                     {
-                        let existing_args_are_empty = existing_args.is_null()
-                            || existing_args
-                                .as_object()
-                                .is_some_and(|value| value.is_empty());
-                        if !args_are_empty || existing_args_are_empty {
+                        if should_replace_tool_args(existing_args, &args) || existing_args == &args
+                        {
                             *existing_args = args;
                         }
                         return;
@@ -181,11 +177,7 @@ fn merge_message_part(message: &mut Message, part: MessagePart) {
                         ..
                     } = existing
                     {
-                        let existing_args_are_empty = existing_args.is_null()
-                            || existing_args
-                                .as_object()
-                                .is_some_and(|value| value.is_empty());
-                        if existing_args_are_empty {
+                        if should_replace_tool_args(existing_args, &args) {
                             if tool == "write" && args_are_empty {
                                 tracing::info!(
                                     tool = %tool,
@@ -209,6 +201,41 @@ fn merge_message_part(message: &mut Message, part: MessagePart) {
         }
         other => message.parts.push(other),
     }
+}
+
+fn tool_args_are_empty(args: &Value) -> bool {
+    match args {
+        Value::Null => true,
+        Value::Object(values) => values.is_empty(),
+        Value::Array(values) => values.is_empty(),
+        Value::String(value) => value.trim().is_empty(),
+        _ => false,
+    }
+}
+
+fn tool_args_have_more_structure(existing: &Value, incoming: &Value) -> bool {
+    match (existing, incoming) {
+        (Value::String(current), Value::Object(values)) => {
+            !current.trim().is_empty() && !values.is_empty()
+        }
+        (Value::Object(current), Value::Object(next)) => {
+            next.len() > current.len()
+                && current
+                    .iter()
+                    .all(|(key, value)| next.get(key) == Some(value))
+        }
+        _ => false,
+    }
+}
+
+fn should_replace_tool_args(existing: &Value, incoming: &Value) -> bool {
+    if tool_args_are_empty(incoming) {
+        return tool_args_are_empty(existing);
+    }
+    if tool_args_are_empty(existing) {
+        return true;
+    }
+    tool_args_have_more_structure(existing, incoming)
 }
 
 impl Storage {
@@ -1746,6 +1773,225 @@ mod tests {
                 assert_eq!(tool, "write");
                 assert_eq!(args["path"], "game.html");
                 assert_eq!(args["content"], "<html></html>");
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn append_message_part_upgrades_raw_string_args_to_structured_invocation_args() {
+        let base =
+            std::env::temp_dir().join(format!("tandem-core-tool-raw-upgrade-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let session = Session::new(Some("tool raw upgrade".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let user = Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: "build ui".to_string(),
+            }],
+        );
+        let message_id = user.id.clone();
+        storage
+            .append_message(&session_id, user)
+            .await
+            .expect("append user");
+
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!("{\"path\":\"game.html\",\"content\":\"<html>draft</html>\"}"),
+                    result: None,
+                    error: None,
+                },
+            )
+            .await
+            .expect("append raw invocation");
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"game.html","content":"<html>draft</html>"}),
+                    result: None,
+                    error: None,
+                },
+            )
+            .await
+            .expect("append structured invocation");
+
+        let session = storage.get_session(&session_id).await.expect("session");
+        let message = session
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("message");
+        assert_eq!(message.parts.len(), 2);
+        match &message.parts[1] {
+            MessagePart::ToolInvocation { tool, args, .. } => {
+                assert_eq!(tool, "write");
+                assert_eq!(args["path"], "game.html");
+                assert_eq!(args["content"], "<html>draft</html>");
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn append_message_part_upgrades_raw_string_args_when_result_arrives_with_structure() {
+        let base = std::env::temp_dir().join(format!(
+            "tandem-core-tool-raw-result-upgrade-{}",
+            Uuid::new_v4()
+        ));
+        let storage = Storage::new(&base).await.expect("storage");
+        let session = Session::new(
+            Some("tool raw result upgrade".to_string()),
+            Some(".".to_string()),
+        );
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let user = Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: "build ui".to_string(),
+            }],
+        );
+        let message_id = user.id.clone();
+        storage
+            .append_message(&session_id, user)
+            .await
+            .expect("append user");
+
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!("{\"path\":\"game.html\",\"content\":\"<html>draft</html>\"}"),
+                    result: None,
+                    error: None,
+                },
+            )
+            .await
+            .expect("append raw invocation");
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"game.html","content":"<html>draft</html>"}),
+                    result: Some(json!("ok")),
+                    error: None,
+                },
+            )
+            .await
+            .expect("append structured result");
+
+        let session = storage.get_session(&session_id).await.expect("session");
+        let message = session
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("message");
+        assert_eq!(message.parts.len(), 2);
+        match &message.parts[1] {
+            MessagePart::ToolInvocation {
+                tool,
+                args,
+                result,
+                error,
+            } => {
+                assert_eq!(tool, "write");
+                assert_eq!(args["path"], "game.html");
+                assert_eq!(args["content"], "<html>draft</html>");
+                assert_eq!(result.as_ref(), Some(&json!("ok")));
+                assert_eq!(error.as_deref(), None);
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn append_message_part_upgrades_partial_structured_args_when_result_adds_fields() {
+        let base = std::env::temp_dir().join(format!(
+            "tandem-core-tool-structured-result-upgrade-{}",
+            Uuid::new_v4()
+        ));
+        let storage = Storage::new(&base).await.expect("storage");
+        let session = Session::new(
+            Some("tool structured result upgrade".to_string()),
+            Some(".".to_string()),
+        );
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let user = Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: "build ui".to_string(),
+            }],
+        );
+        let message_id = user.id.clone();
+        storage
+            .append_message(&session_id, user)
+            .await
+            .expect("append user");
+
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"game.html"}),
+                    result: None,
+                    error: None,
+                },
+            )
+            .await
+            .expect("append partial invocation");
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"game.html","content":"<html>draft</html>"}),
+                    result: Some(json!("ok")),
+                    error: None,
+                },
+            )
+            .await
+            .expect("append richer result");
+
+        let session = storage.get_session(&session_id).await.expect("session");
+        let message = session
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("message");
+        assert_eq!(message.parts.len(), 2);
+        match &message.parts[1] {
+            MessagePart::ToolInvocation {
+                tool,
+                args,
+                result,
+                error,
+            } => {
+                assert_eq!(tool, "write");
+                assert_eq!(args["path"], "game.html");
+                assert_eq!(args["content"], "<html>draft</html>");
+                assert_eq!(result.as_ref(), Some(&json!("ok")));
+                assert_eq!(error.as_deref(), None);
             }
             other => panic!("expected tool part, got {other:?}"),
         }

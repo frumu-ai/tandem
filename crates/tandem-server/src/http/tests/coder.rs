@@ -1097,6 +1097,13 @@ async fn coder_issue_fix_worker_failure_writes_run_outcome() {
             .and_then(Value::as_str),
         Some("coder_issue_fix_worker_session")
     );
+    assert_eq!(
+        run_outcome_payload
+            .get("worker_session_context_run_id")
+            .and_then(Value::as_str)
+            .map(|value| value.starts_with("session-")),
+        Some(true)
+    );
 }
 
 #[tokio::test]
