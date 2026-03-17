@@ -1,5 +1,6 @@
 use super::context_runs::context_run_engine;
 use super::*;
+use tandem_skills::SkillContent;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct SkillLocationQuery {
@@ -459,6 +460,124 @@ pub(super) fn detect_skill_workflow_kind(base_dir: &str) -> Option<String> {
         .map(|v| v.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+struct SkillWorkflowRecipe {
+    kind: String,
+    #[serde(default)]
+    skill_id: Option<String>,
+    #[serde(default)]
+    execution_mode: Option<String>,
+    #[serde(default)]
+    goal_template: Option<String>,
+}
+
+fn load_skill_workflow_recipe(base_dir: &str) -> Option<SkillWorkflowRecipe> {
+    let workflow_path = PathBuf::from(base_dir).join("workflow.yaml");
+    let raw = std::fs::read_to_string(&workflow_path).ok()?;
+    serde_yaml::from_str::<SkillWorkflowRecipe>(&raw).ok()
+}
+
+fn compile_skill_workflow_plan(
+    skill: &SkillContent,
+    recipe: &SkillWorkflowRecipe,
+    goal: Option<&str>,
+    schedule: Option<&Value>,
+) -> crate::WorkflowPlan {
+    let now = crate::now_ms();
+    let normalized_goal = goal
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            recipe
+                .goal_template
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| skill.info.description.clone());
+    let schedule = schedule
+        .and_then(super::workflow_planner::schedule_from_value)
+        .unwrap_or(crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        });
+    let execution_mode = recipe
+        .execution_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("single");
+    let skill_ref = recipe
+        .skill_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(skill.info.name.as_str());
+    let agent_role = match execution_mode {
+        "team" => "specialist",
+        "swarm" => "researcher",
+        _ => "worker",
+    };
+    let output_contract = match recipe.kind.as_str() {
+        "pack_builder_recipe" => Some(crate::AutomationFlowOutputContract {
+            kind: "generic_artifact".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            schema: None,
+            summary_guidance: None,
+        }),
+        "automation_v2_dag" => None,
+        _ => None,
+    };
+    crate::WorkflowPlan {
+        plan_id: format!("skill-plan-{}-{now}", skill.info.name),
+        planner_version: "skills_compile_v1".to_string(),
+        plan_source: "skills_compile".to_string(),
+        original_prompt: normalized_goal.clone(),
+        normalized_prompt: normalized_goal.clone(),
+        confidence: "high".to_string(),
+        title: format!("{} Workflow", skill.info.name.replace('-', " ")),
+        description: Some(format!(
+            "Compiled from skill `{}` workflow `{}`.",
+            skill.info.name, recipe.kind
+        )),
+        schedule,
+        execution_target: "automation_v2".to_string(),
+        workspace_root: std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .to_string_lossy()
+            .to_string(),
+        steps: vec![crate::WorkflowPlanStep {
+            step_id: "run_skill".to_string(),
+            kind: recipe.kind.clone(),
+            objective: format!(
+                "Use the `{skill_ref}` skill to complete this goal: {normalized_goal}"
+            ),
+            depends_on: Vec::new(),
+            agent_role: agent_role.to_string(),
+            input_refs: Vec::new(),
+            output_contract,
+        }],
+        requires_integrations: Vec::new(),
+        allowed_mcp_servers: Vec::new(),
+        operator_preferences: Some(json!({
+            "execution_mode": execution_mode,
+            "tool_access_mode": "auto",
+            "skill_ref": skill_ref,
+            "workflow_kind": recipe.kind,
+            "source": "skills_compile",
+        })),
+        save_options: json!({
+            "origin": "skills_compile",
+            "workflow_kind": recipe.kind,
+        }),
+    }
+}
+
 pub(super) fn slugify_skill_name(input: &str) -> String {
     let cleaned = input
         .to_ascii_lowercase()
@@ -578,12 +697,43 @@ pub(super) async fn skills_compile(
         .map_err(|e| skill_error(StatusCode::BAD_REQUEST, e))?;
     let workflow_kind = detect_skill_workflow_kind(&skill.base_dir)
         .unwrap_or_else(|| "pack_builder_recipe".to_string());
+    let automation_preview = load_skill_workflow_recipe(&skill.base_dir).map(|recipe| {
+        let mut automation = super::workflow_planner::compile_plan_to_automation_v2(
+            &compile_skill_workflow_plan(
+                &skill,
+                &recipe,
+                input.goal.as_deref(),
+                input.schedule.as_ref(),
+            ),
+            "skills_compile",
+        );
+        if let Some(agent) = automation.agents.first_mut() {
+            agent.skills = vec![skill.info.name.clone()];
+            if recipe.kind == "pack_builder_recipe" {
+                agent.tool_policy.allowlist = vec!["*".to_string()];
+            }
+        }
+        if let Some(metadata) = automation.metadata.as_mut().and_then(Value::as_object_mut) {
+            metadata.insert("skill_name".to_string(), json!(skill.info.name));
+            metadata.insert("skill_path".to_string(), json!(skill.info.path));
+            metadata.insert("skill_workflow_kind".to_string(), json!(recipe.kind));
+            metadata.insert(
+                "skill_goal_template".to_string(),
+                json!(recipe.goal_template),
+            );
+            metadata.insert(
+                "skill_execution_mode".to_string(),
+                json!(recipe.execution_mode),
+            );
+        }
+        automation
+    });
 
     let execution_plan = json!({
         "workflow_kind": workflow_kind,
         "goal": input.goal,
         "schedule": input.schedule,
-        "default_action": if workflow_kind == "automation_v2_dag" {
+        "default_action": if automation_preview.is_some() || workflow_kind == "automation_v2_dag" {
             "create_automation_v2"
         } else {
             "pack_builder_preview"
@@ -594,6 +744,7 @@ pub(super) async fn skills_compile(
         "skill_name": skill.info.name,
         "workflow_kind": execution_plan.get("workflow_kind"),
         "validation": validation,
+        "automation_preview": automation_preview,
         "execution_plan": execution_plan,
         "status": "compiled"
     });

@@ -95,6 +95,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - scheduled `automation_v2` runs now sync their canonical context runs before any outbound receipt is persisted, so receipt links are immediately dereferenceable even when the scheduler created the run
   - retried `automation_v2` publish nodes now include attempt-aware receipt identity, so external-action history preserves each retry instead of collapsing multiple attempts into one record
 
+- Skill workflow compilation now exposes the shared runtime spec
+  - `skills_compile` now emits an additive `automation_preview` for installed skill workflows by compiling `workflow.yaml` recipes through the shared `WorkflowPlan -> AutomationV2Spec` path
+  - installed `pack_builder_recipe` skills now expose the same runtime-spec preview shape as mission builder and workflow planner instead of stopping at an abstract execution summary
+
 - Artifact integrity protections for workflow outputs
   - placeholder/status-note overwrites no longer silently replace declared output artifacts
   - undeclared touch/status/marker files are rejected and cleaned up

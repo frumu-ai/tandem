@@ -1161,6 +1161,95 @@ async fn skills_endpoints_return_expected_shapes() {
 }
 
 #[tokio::test]
+async fn skills_compile_pack_builder_recipe_emits_automation_preview() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let install_req = Request::builder()
+        .method("POST")
+        .uri("/skills/generate/install")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "location":"global",
+                "artifacts":{
+                    "SKILL.md":"---\nname: recipe-compiler-test\ndescription: Recipe compiler test skill.\nversion: 0.1.0\n---\n\n# Skill: recipe compiler test\n\n## Purpose\nCompile into automation preview.\n\n## Inputs\n- user prompt\n\n## Agents\n- worker\n\n## Tools\n- webfetch\n\n## Workflow\n1. Interpret user intent\n2. Execute workflow steps\n3. Return result\n\n## Outputs\n- completed task result\n\n## Schedule compatibility\n- manual\n",
+                    "workflow.yaml":"kind: pack_builder_recipe\nskill_id: recipe-compiler-test\nexecution_mode: team\ngoal_template: \"Research '{{query}}' and produce a cited report.\"\n"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("install request");
+    let install_resp = app
+        .clone()
+        .oneshot(install_req)
+        .await
+        .expect("install response");
+    assert_eq!(install_resp.status(), StatusCode::OK);
+
+    let compile_req = Request::builder()
+        .method("POST")
+        .uri("/skills/compile")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "skill_name":"recipe-compiler-test",
+                "goal":"Research tandem autonomous runtime patterns and produce a cited report.",
+                "schedule":{"type":"manual"}
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let compile_resp = app.oneshot(compile_req).await.expect("response");
+    assert_eq!(compile_resp.status(), StatusCode::OK);
+    let compile_body = to_bytes(compile_resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let compile_payload: Value = serde_json::from_slice(&compile_body).expect("json");
+    assert_eq!(
+        compile_payload.get("workflow_kind").and_then(Value::as_str),
+        Some("pack_builder_recipe")
+    );
+    assert_eq!(
+        compile_payload
+            .pointer("/execution_plan/default_action")
+            .and_then(Value::as_str),
+        Some("create_automation_v2")
+    );
+    let automation_preview = compile_payload
+        .get("automation_preview")
+        .expect("automation preview");
+    assert_eq!(
+        automation_preview.get("creator_id").and_then(Value::as_str),
+        Some("skills_compile")
+    );
+    assert_eq!(
+        automation_preview
+            .pointer("/metadata/skill_name")
+            .and_then(Value::as_str),
+        Some("recipe-compiler-test")
+    );
+    assert_eq!(
+        automation_preview
+            .pointer("/metadata/skill_workflow_kind")
+            .and_then(Value::as_str),
+        Some("pack_builder_recipe")
+    );
+    assert_eq!(
+        automation_preview
+            .pointer("/metadata/operator_preferences/execution_mode")
+            .and_then(Value::as_str),
+        Some("team")
+    );
+    assert_eq!(
+        automation_preview
+            .pointer("/agents/0/skills/0")
+            .and_then(Value::as_str),
+        Some("recipe-compiler-test")
+    );
+}
+
+#[tokio::test]
 async fn admin_and_channel_routes_require_auth_when_api_token_enabled() {
     let state = test_state().await;
     state.set_api_token(Some("tk_test".to_string())).await;

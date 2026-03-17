@@ -2068,7 +2068,7 @@ fn manual_schedule() -> crate::AutomationV2Schedule {
     }
 }
 
-fn schedule_from_value(value: &Value) -> Option<crate::AutomationV2Schedule> {
+pub(super) fn schedule_from_value(value: &Value) -> Option<crate::AutomationV2Schedule> {
     let timezone = value
         .get("timezone")
         .and_then(Value::as_str)
@@ -2214,7 +2214,7 @@ fn plan_title(prompt: &str, schedule_type: &crate::AutomationV2ScheduleType) -> 
     }
 }
 
-fn compile_plan_to_automation_v2(
+pub(super) fn compile_plan_to_automation_v2(
     plan: &crate::WorkflowPlan,
     creator_id: &str,
 ) -> crate::AutomationV2Spec {
