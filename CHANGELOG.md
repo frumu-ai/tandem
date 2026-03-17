@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - control-panel task inspection now consumes pre-normalized recent workflow event summaries from the shared workflow stability layer instead of re-summarizing raw lifecycle entries inline
   - workflow run-history normalization for context events, blackboard patches, and persisted run events now lives in the shared workflow stability layer instead of `AutomationsPage`
   - workflow debugger telemetry seed normalization for persisted and context events now lives in the shared workflow stability layer instead of `AutomationsPage`
+  - control-panel workflow event accessors for run ids, event types, timestamps, and reason text now live in the shared workflow stability layer instead of `AutomationsPage`
 - **Workflow Studio model configuration**:
   - replaced free-text workflow model inputs with provider-backed selectors
   - added an optional shared-model mode so one provider/model choice can be applied across every workflow agent for cheaper runs

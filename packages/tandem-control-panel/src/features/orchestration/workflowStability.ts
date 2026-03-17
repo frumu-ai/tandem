@@ -8,6 +8,50 @@ function workflowTimestamp(raw: any) {
   return value < 1_000_000_000_000 ? value * 1000 : value;
 }
 
+export function workflowEventRunId(event: any) {
+  const props = event?.properties || {};
+  return String(
+    event?.run_id ||
+      event?.runId ||
+      event?.runID ||
+      props?.run_id ||
+      props?.runId ||
+      props?.runID ||
+      props?.run?.id ||
+      ""
+  ).trim();
+}
+
+export function workflowEventType(event: any) {
+  return String(event?.type || event?.event_type || event?.event || "").trim();
+}
+
+export function workflowEventAt(event: any) {
+  const props = event?.properties || {};
+  const raw =
+    event?.timestamp_ms ||
+    event?.timestampMs ||
+    props?.timestamp_ms ||
+    props?.timestampMs ||
+    props?.firedAtMs ||
+    Date.now();
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : Date.now();
+}
+
+export function workflowEventReason(event: any) {
+  const props = event?.properties || event || {};
+  return String(
+    props?.reason ||
+      props?.detail ||
+      props?.error?.message ||
+      props?.error ||
+      props?.message ||
+      props?.status ||
+      ""
+  ).trim();
+}
+
 function checkpointStringArray(checkpoint: any, snakeKey: string, camelKey: string) {
   const raw = Array.isArray(checkpoint?.[snakeKey])
     ? checkpoint[snakeKey]
@@ -366,20 +410,14 @@ export function workflowContextHistoryEntries(events: any[], patches: any[]) {
   return [...eventRows, ...patchRows].sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
 }
 
-export function workflowPersistedHistoryEntries(
-  events: any[],
-  eventType: (event: any) => string,
-  eventReason: (event: any) => string,
-  eventAt: (event: any) => number,
-  runId = ""
-) {
+export function workflowPersistedHistoryEntries(events: any[], runId = "") {
   return (Array.isArray(events) ? events : [])
     .map((event: any, index: number) => ({
       id: `persisted:${String(runId || "")}:${index}`,
       family: "run_event",
-      type: String(eventType(event) || "run.event"),
-      detail: String(eventReason(event) || "").trim(),
-      at: eventAt(event),
+      type: String(workflowEventType(event) || "run.event"),
+      detail: String(workflowEventReason(event) || "").trim(),
+      at: workflowEventAt(event),
       raw: event,
     }))
     .sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
@@ -389,15 +427,13 @@ export function workflowTelemetrySeedEvents(
   persistedEvents: any[],
   contextEvents: any[],
   isWorkflowRun: boolean,
-  eventType: (event: any) => string,
-  eventAt: (event: any) => number,
   runId = ""
 ) {
   const persisted = (Array.isArray(persistedEvents) ? persistedEvents : []).map(
     (event: any, index: number) => ({
-      id: `persisted:${String(runId || "")}:${String(event?.seq || index)}:${String(eventType(event) || "")}`,
+      id: `persisted:${String(runId || "")}:${String(event?.seq || index)}:${String(workflowEventType(event) || "")}`,
       source: "automations" as const,
-      at: eventAt(event),
+      at: workflowEventAt(event),
       event,
     })
   );

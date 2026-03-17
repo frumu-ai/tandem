@@ -13,7 +13,11 @@ import {
   workflowCompletedNodeCount,
   workflowCompletedNodeIds,
   workflowContextHistoryEntries,
+  workflowEventAt,
+  workflowEventReason,
+  workflowEventRunId,
   workflowEventSummary,
+  workflowEventType,
   workflowFirstPendingTaskId,
   workflowLatestLifecycleTaskId,
   workflowNodeOutputEntries,
@@ -706,37 +710,6 @@ function deriveRunDebugHints(run: any, artifacts: any[]) {
   return hints;
 }
 
-function eventRunId(event: any) {
-  const props = event?.properties || {};
-  return String(
-    event?.run_id ||
-      event?.runId ||
-      event?.runID ||
-      props?.run_id ||
-      props?.runId ||
-      props?.runID ||
-      props?.run?.id ||
-      ""
-  ).trim();
-}
-
-function eventType(event: any) {
-  return String(event?.type || event?.event_type || event?.event || "").trim();
-}
-
-function eventAt(event: any) {
-  const props = event?.properties || {};
-  const raw =
-    event?.timestamp_ms ||
-    event?.timestampMs ||
-    props?.timestamp_ms ||
-    props?.timestampMs ||
-    props?.firedAtMs ||
-    Date.now();
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : Date.now();
-}
-
 function normalizeTimestamp(raw: any) {
   const value = Number(raw || 0);
   if (!Number.isFinite(value) || value <= 0) return Date.now();
@@ -954,19 +927,6 @@ function detectWorkflowActiveTaskId(
   return workflowFirstPendingTaskId(run);
 }
 
-function eventReason(event: any) {
-  const props = event?.properties || event || {};
-  return String(
-    props?.reason ||
-      props?.detail ||
-      props?.error?.message ||
-      props?.error ||
-      props?.message ||
-      props?.status ||
-      ""
-  ).trim();
-}
-
 function explainRunFailure(run: any) {
   const detail = String(run?.detail || "").trim();
   if (!detail) return "";
@@ -1103,9 +1063,9 @@ function buildRunBlockers(run: any, sessionEvents: any[], runEvents: any[]) {
   }
 
   [...sessionEvents, ...runEvents].forEach((row: any) => {
-    const type = String(eventType(row?.event || row) || "").trim();
-    const reason = eventReason(row?.event || row);
-    const at = Number(row?.at || eventAt(row?.event || row) || 0);
+    const type = String(workflowEventType(row?.event || row) || "").trim();
+    const reason = workflowEventReason(row?.event || row);
+    const at = Number(row?.at || workflowEventAt(row?.event || row) || 0);
     if (
       type === "permission.asked" ||
       type === "approval.required" ||
@@ -4400,10 +4360,10 @@ function MyAutomations({
       try {
         const payload = JSON.parse(String(msg?.data || "{}"));
         if (!payload || payload.status === "ready") return;
-        const runId = eventRunId(payload);
+        const runId = workflowEventRunId(payload);
         if (!runId || runId !== selectedRunId) return;
-        const type = eventType(payload);
-        const at = eventAt(payload);
+        const type = workflowEventType(payload);
+        const at = workflowEventAt(payload);
         const id = `automations:${runId}:${type}:${at}:${Math.random().toString(16).slice(2, 8)}`;
         setRunEvents((prev) => [
           ...prev.slice(-299),
@@ -4448,8 +4408,8 @@ function MyAutomations({
       try {
         const payload = JSON.parse(String(msg?.data || "{}"));
         if (!payload) return;
-        const type = eventType(payload);
-        const at = eventAt(payload);
+        const type = workflowEventType(payload);
+        const at = workflowEventAt(payload);
         const id = [
           type || "event",
           String(payload?.properties?.sessionID || payload?.sessionID || selectedSessionId || ""),
@@ -4475,11 +4435,11 @@ function MyAutomations({
     (msg) => {
       try {
         const payload = JSON.parse(String(msg?.data || "{}"));
-        const runId = eventRunId(payload);
+        const runId = workflowEventRunId(payload);
         if (!runId || runId !== selectedRunId) return;
-        const type = eventType(payload);
+        const type = workflowEventType(payload);
         if (!type || type === "server.connected" || type === "engine.lifecycle.ready") return;
-        const at = eventAt(payload);
+        const at = workflowEventAt(payload);
         const id = `global:${runId}:${type}:${at}:${Math.random().toString(16).slice(2, 8)}`;
         setRunEvents((prev) => [...prev.slice(-299), { id, source: "global", at, event: payload }]);
       } catch {
@@ -4585,13 +4545,13 @@ function MyAutomations({
       ).trim(),
       at: item.at,
       variant:
-        eventType(item.event) === "session.error"
+        workflowEventType(item.event) === "session.error"
           ? "error"
-          : eventType(item.event).startsWith("session.")
+          : workflowEventType(item.event).startsWith("session.")
             ? "system"
             : "tool",
-      label: eventType(item.event) || "event",
-      body: eventReason(item.event),
+      label: workflowEventType(item.event) || "event",
+      body: workflowEventReason(item.event),
       raw: item.event,
       parts: [],
       sessionLabel: sessionLabel(
@@ -6479,14 +6439,14 @@ function MyAutomations({
                                   <summary className="cursor-pointer list-none">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="text-xs font-medium text-slate-200">
-                                        {eventType(item.event) || "event"}
+                                        {workflowEventType(item.event) || "event"}
                                       </span>
                                       <span className="tcp-subtle text-[11px]">
                                         {formatTimestampLabel(item.at)} · {item.source}
                                       </span>
                                     </div>
                                     <div className="tcp-subtle mt-1 text-xs">
-                                      {eventReason(item.event) || "No summary available."}
+                                      {workflowEventReason(item.event) || "No summary available."}
                                     </div>
                                   </summary>
                                   <pre className="tcp-code mt-2 max-h-40 overflow-auto text-[11px]">

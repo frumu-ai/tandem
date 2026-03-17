@@ -46,6 +46,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - control-panel task inspection now consumes pre-normalized recent workflow event summaries from the shared workflow stability layer instead of re-summarizing raw lifecycle entries inline
   - workflow run-history normalization for context events, blackboard patches, and persisted run events now lives in the shared workflow stability layer instead of `AutomationsPage`
   - workflow debugger telemetry seed normalization for persisted and context events now lives in the shared workflow stability layer instead of `AutomationsPage`
+  - control-panel workflow event accessors for run ids, event types, timestamps, and reason text now live in the shared workflow stability layer instead of `AutomationsPage`
 
 - Repo coding backlog workflows now have real task operations
   - projected backlog items can now be claimed and manually requeued through `automation_v2` run APIs

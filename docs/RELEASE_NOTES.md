@@ -46,6 +46,7 @@
 - Control-panel task inspection now consumes pre-normalized recent workflow event summaries from the shared workflow stability layer instead of re-summarizing raw lifecycle entries inline.
 - Workflow run-history normalization for context events, blackboard patches, and persisted run events now lives in the shared workflow stability layer instead of `AutomationsPage`.
 - Workflow debugger telemetry seed normalization for persisted and context events now lives in the shared workflow stability layer instead of `AutomationsPage`.
+- Control-panel workflow event accessors for run ids, event types, timestamps, and reason text now live in the shared workflow stability layer instead of `AutomationsPage`.
 - Added projected backlog-task operations in the debugger:
   - projected coding backlog items can now be claimed and manually requeued through `automation_v2`
   - backlog task details now show lease expiry / stale-state visibility and direct `Claim Task` / `Requeue Backlog Task` actions
