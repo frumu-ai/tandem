@@ -1534,7 +1534,8 @@ impl EngineLoop {
                             if requested_write_required
                                 && productive_write_tool_calls_total > 0
                                 && requested_prewrite_requirements.repair_on_unmet_requirements
-                                && unmet_prewrite_repair_retry_count == 0
+                                && unmet_prewrite_repair_retry_count
+                                    < prewrite_repair_retry_max_attempts()
                                 && !prewrite_requirements_satisfied(
                                     &requested_prewrite_requirements,
                                     productive_workspace_inspection_total > 0,
@@ -3452,16 +3453,21 @@ fn build_prewrite_repair_retry_context(
     web_research_satisfied: bool,
     successful_web_research_satisfied: bool,
 ) -> String {
-    let mut prompt = build_write_required_retry_context(
-        offered_tool_preview,
-        previous_reason,
-        latest_user_text,
+    let mut prompt = build_required_tool_retry_context(offered_tool_preview, previous_reason);
+    let unmet = describe_unmet_prewrite_requirements(
         prewrite_requirements,
         workspace_inspection_satisfied,
         concrete_read_satisfied,
         web_research_satisfied,
         successful_web_research_satisfied,
     );
+    if !unmet.is_empty() {
+        prompt.push(' ');
+        prompt.push_str(&format!(
+            "Before the final write, you still need to {}.",
+            unmet.join(" and ")
+        ));
+    }
     let mut repair_notes = Vec::new();
     if prewrite_requirements.concrete_read_required && !concrete_read_satisfied {
         repair_notes.push(
@@ -3488,6 +3494,10 @@ fn build_prewrite_repair_retry_context(
         prompt.push_str(&repair_notes.join(" "));
     }
     if let Some(path) = infer_required_output_target_path_from_text(latest_user_text) {
+        prompt.push(' ');
+        prompt.push_str(&format!(
+            "Use `glob`, `read`, and `websearch` as needed to repair coverage first, then write the corrected artifact back to `{path}`."
+        ));
         prompt.push(' ');
         prompt.push_str(&format!(
             "Even if the result is blocked, you must still write the blocked-but-substantive artifact into `{path}` before you finish."
@@ -3547,6 +3557,10 @@ fn is_web_research_tool(tool_name: &str) -> bool {
 }
 
 fn invalid_tool_args_retry_max_attempts() -> usize {
+    2
+}
+
+fn prewrite_repair_retry_max_attempts() -> usize {
     2
 }
 
@@ -8059,6 +8073,43 @@ Required output target:
     fn invalid_tool_args_retry_context_ignores_unrelated_outputs() {
         let outputs = vec!["Tool `read` result:\nok".to_string()];
         assert!(build_invalid_tool_args_retry_context_from_outputs(&outputs, 0).is_none());
+    }
+
+    #[test]
+    fn prewrite_repair_retry_context_prioritizes_research_tools_before_write() {
+        let requirements = PrewriteRequirements {
+            workspace_inspection_required: true,
+            web_research_required: true,
+            concrete_read_required: true,
+            successful_web_research_required: true,
+            repair_on_unmet_requirements: true,
+            coverage_mode: PrewriteCoverageMode::ResearchCorpus,
+        };
+        let prompt = build_prewrite_repair_retry_context(
+            "glob, read, websearch, write",
+            RequiredToolFailureKind::WriteRequiredNotSatisfied,
+            r#"Required output target:
+{
+  "path": "marketing-brief.md",
+  "kind": "artifact"
+}"#,
+            &requirements,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(prompt.contains("use `read` on the concrete files you cite"));
+        assert!(prompt.contains("obtain at least one successful web research result"));
+        assert!(prompt
+            .contains("Use `glob`, `read`, and `websearch` as needed to repair coverage first"));
+        assert!(!prompt.contains("Your next response must be a `write` tool call"));
+        assert!(!prompt.contains("Do not call `glob`, `read`, or `websearch` again"));
+    }
+
+    #[test]
+    fn prewrite_repair_retry_budget_allows_two_repair_attempts() {
+        assert_eq!(prewrite_repair_retry_max_attempts(), 2);
     }
 
     #[test]
