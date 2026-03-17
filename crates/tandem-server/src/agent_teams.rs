@@ -195,6 +195,9 @@ impl SpawnAgentHook for ServerSpawnAgentHook {
                     "runID": instance.run_id,
                     "status": instance.status,
                     "skillHash": instance.skill_hash,
+                    "workspaceRoot": instance_workspace_root(&instance),
+                    "workspaceRepoRoot": instance_workspace_repo_root(&instance),
+                    "managedWorktree": instance_managed_worktree(&instance),
                 }),
             })
         })
@@ -766,13 +769,35 @@ impl AgentTeamRuntime {
             &req.role,
         );
 
+        let instance_id = format!("ins_{}", Uuid::new_v4().simple());
+        let managed_worktree = prepare_agent_instance_workspace(
+            state,
+            &workspace_root,
+            req.mission_id.as_deref(),
+            &instance_id,
+            &template.template_id,
+        )
+        .await;
+        let workspace_repo_root = managed_worktree
+            .as_ref()
+            .map(|row| row.record.repo_root.clone())
+            .or_else(|| crate::runtime::worktrees::resolve_git_repo_root(&workspace_root))
+            .unwrap_or_else(|| workspace_root.clone());
+        let worker_workspace_root = managed_worktree
+            .as_ref()
+            .map(|row| row.record.path.clone())
+            .unwrap_or_else(|| workspace_root.clone());
         let mut session = Session::new(
             Some(format!("Agent Team {}", template.template_id)),
-            Some(workspace_root.clone()),
+            Some(worker_workspace_root.clone()),
         );
-        session.workspace_root = Some(workspace_root.clone());
+        session.workspace_root = Some(worker_workspace_root.clone());
         let session_id = session.id.clone();
         if let Err(err) = state.storage.save_session(session).await {
+            if let Some(worktree) = managed_worktree.as_ref() {
+                let _ = crate::runtime::worktrees::delete_managed_worktree(state, &worktree.record)
+                    .await;
+            }
             return SpawnResult {
                 decision: SpawnDecision {
                     allowed: false,
@@ -785,7 +810,7 @@ impl AgentTeamRuntime {
         }
 
         let instance = AgentInstance {
-            instance_id: format!("ins_{}", Uuid::new_v4().simple()),
+            instance_id: instance_id.clone(),
             mission_id: mission_id.clone(),
             parent_instance_id: req.parent_instance_id.clone(),
             role: template.role.clone(),
@@ -799,6 +824,15 @@ impl AgentTeamRuntime {
             metadata: Some(json!({
                 "source": req.source,
                 "justification": req.justification,
+                "workspaceRoot": worker_workspace_root,
+                "workspaceRepoRoot": workspace_repo_root,
+                "managedWorktree": managed_worktree.as_ref().map(|row| json!({
+                    "path": row.record.path,
+                    "branch": row.record.branch,
+                    "repoRoot": row.record.repo_root,
+                    "cleanupBranch": row.record.cleanup_branch,
+                    "reused": row.reused,
+                })).unwrap_or(Value::Null),
             })),
         };
 
@@ -883,6 +917,7 @@ impl AgentTeamRuntime {
         let snapshot = instance.clone();
         drop(instances);
         let _ = state.cancellations.cancel(&snapshot.session_id).await;
+        cleanup_instance_managed_worktree(state, &snapshot).await;
         let _ = self.append_audit("instance.cancelled", &snapshot).await;
         emit_instance_cancelled(state, &snapshot, reason);
         Some(snapshot)
@@ -991,6 +1026,7 @@ impl AgentTeamRuntime {
         instance.status = status.clone();
         let snapshot = instance.clone();
         drop(instances);
+        cleanup_instance_managed_worktree(state, &snapshot).await;
         match status {
             AgentInstanceStatus::Completed => emit_instance_completed(state, &snapshot),
             AgentInstanceStatus::Failed => emit_instance_failed(state, &snapshot),
@@ -1359,6 +1395,9 @@ impl AgentTeamRuntime {
             "templateID": instance.template_id,
             "sessionID": instance.session_id,
             "skillHash": instance.skill_hash,
+            "workspaceRoot": instance_workspace_root(instance),
+            "workspaceRepoRoot": instance_workspace_repo_root(instance),
+            "managedWorktree": instance_managed_worktree(instance),
             "timestampMs": crate::now_ms(),
         });
         let mut existing = if path.exists() {
@@ -1394,6 +1433,9 @@ impl AgentTeamRuntime {
             "templateID": instance.map(|v| v.template_id.clone()),
             "sessionID": instance.map(|v| v.session_id.clone()),
             "skillHash": instance.map(|v| v.skill_hash.clone()),
+            "workspaceRoot": instance.and_then(instance_workspace_root),
+            "workspaceRepoRoot": instance.and_then(instance_workspace_repo_root),
+            "managedWorktree": instance.and_then(instance_managed_worktree),
             "timestampMs": crate::now_ms(),
         });
         let mut existing = if path.exists() {
@@ -1780,6 +1822,97 @@ fn merge_metadata_usage(
     Value::Object(base)
 }
 
+fn instance_workspace_root(instance: &AgentInstance) -> Option<Value> {
+    instance
+        .metadata
+        .as_ref()
+        .and_then(|row| row.get("workspaceRoot"))
+        .cloned()
+}
+
+fn instance_workspace_repo_root(instance: &AgentInstance) -> Option<Value> {
+    instance
+        .metadata
+        .as_ref()
+        .and_then(|row| row.get("workspaceRepoRoot"))
+        .cloned()
+}
+
+fn instance_managed_worktree(instance: &AgentInstance) -> Option<Value> {
+    instance
+        .metadata
+        .as_ref()
+        .and_then(|row| row.get("managedWorktree"))
+        .cloned()
+}
+
+async fn prepare_agent_instance_workspace(
+    state: &AppState,
+    workspace_root: &str,
+    mission_id: Option<&str>,
+    instance_id: &str,
+    template_id: &str,
+) -> Option<crate::runtime::worktrees::ManagedWorktreeEnsureResult> {
+    let repo_root = crate::runtime::worktrees::resolve_git_repo_root(workspace_root)?;
+    crate::runtime::worktrees::ensure_managed_worktree(
+        state,
+        crate::runtime::worktrees::ManagedWorktreeEnsureInput {
+            repo_root,
+            task_id: mission_id.map(ToString::to_string),
+            owner_run_id: Some(instance_id.to_string()),
+            lease_id: None,
+            branch_hint: Some(template_id.to_string()),
+            base: "HEAD".to_string(),
+            cleanup_branch: true,
+        },
+    )
+    .await
+    .ok()
+}
+
+async fn cleanup_instance_managed_worktree(state: &AppState, instance: &AgentInstance) {
+    let Some(metadata) = instance.metadata.as_ref() else {
+        return;
+    };
+    let Some(worktree) = metadata.get("managedWorktree").and_then(Value::as_object) else {
+        return;
+    };
+    let Some(path) = worktree.get("path").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(branch) = worktree.get("branch").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(repo_root) = worktree.get("repoRoot").and_then(Value::as_str) else {
+        return;
+    };
+    let record = crate::ManagedWorktreeRecord {
+        key: crate::runtime::worktrees::managed_worktree_key(
+            repo_root,
+            instance.mission_id.as_str().into(),
+            Some(instance.instance_id.as_str()),
+            None,
+            path,
+            branch,
+        ),
+        repo_root: repo_root.to_string(),
+        path: path.to_string(),
+        branch: branch.to_string(),
+        base: "HEAD".to_string(),
+        managed: true,
+        task_id: Some(instance.mission_id.clone()),
+        owner_run_id: Some(instance.instance_id.clone()),
+        lease_id: None,
+        cleanup_branch: worktree
+            .get("cleanupBranch")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+    };
+    let _ = crate::runtime::worktrees::delete_managed_worktree(state, &record).await;
+}
+
 fn normalize_tool_name(name: &str) -> String {
     match name.trim().to_lowercase().replace('-', "_").as_str() {
         "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
@@ -2125,6 +2258,9 @@ pub fn emit_spawn_approved_with_context(
             "requestedRole": req.role,
             "templateID": instance.template_id,
             "skillHash": instance.skill_hash,
+            "workspaceRoot": instance_workspace_root(instance),
+            "workspaceRepoRoot": instance_workspace_repo_root(instance),
+            "managedWorktree": instance_managed_worktree(instance),
             "timestampMs": crate::now_ms(),
         }),
     ));
@@ -2141,6 +2277,9 @@ pub fn emit_spawn_approved_with_context(
             "status": instance.status,
             "budgetLimit": instance.budget,
             "skillHash": instance.skill_hash,
+            "workspaceRoot": instance_workspace_root(instance),
+            "workspaceRepoRoot": instance_workspace_repo_root(instance),
+            "managedWorktree": instance_managed_worktree(instance),
             "timestampMs": crate::now_ms(),
         }),
     ));
@@ -2216,6 +2355,9 @@ pub fn emit_instance_cancelled(state: &AppState, instance: &AgentInstance, reaso
             "role": instance.role,
             "status": instance.status,
             "reason": reason,
+            "workspaceRoot": instance_workspace_root(instance),
+            "workspaceRepoRoot": instance_workspace_repo_root(instance),
+            "managedWorktree": instance_managed_worktree(instance),
             "timestampMs": crate::now_ms(),
         }),
     ));
@@ -2233,6 +2375,9 @@ pub fn emit_instance_completed(state: &AppState, instance: &AgentInstance) {
             "parentInstanceID": instance.parent_instance_id,
             "role": instance.role,
             "status": instance.status,
+            "workspaceRoot": instance_workspace_root(instance),
+            "workspaceRepoRoot": instance_workspace_repo_root(instance),
+            "managedWorktree": instance_managed_worktree(instance),
             "timestampMs": crate::now_ms(),
         }),
     ));
@@ -2250,6 +2395,9 @@ pub fn emit_instance_failed(state: &AppState, instance: &AgentInstance) {
             "parentInstanceID": instance.parent_instance_id,
             "role": instance.role,
             "status": instance.status,
+            "workspaceRoot": instance_workspace_root(instance),
+            "workspaceRepoRoot": instance_workspace_repo_root(instance),
+            "managedWorktree": instance_managed_worktree(instance),
             "timestampMs": crate::now_ms(),
         }),
     ));

@@ -131,6 +131,44 @@ async fn spawn_fake_github_mcp_server() -> (String, tokio::task::JoinHandle<()>)
     (format!("http://{addr}"), server)
 }
 
+fn init_coder_git_repo() -> std::path::PathBuf {
+    let repo_root =
+        std::env::temp_dir().join(format!("tandem-coder-worktree-test-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&repo_root).expect("create repo dir");
+    let status = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repo_root)
+        .status()
+        .expect("git init");
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args(["config", "user.email", "tests@tandem.local"])
+        .current_dir(&repo_root)
+        .status()
+        .expect("git config email");
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args(["config", "user.name", "Tandem Tests"])
+        .current_dir(&repo_root)
+        .status()
+        .expect("git config name");
+    assert!(status.success());
+    std::fs::write(repo_root.join("README.md"), "# coder test\n").expect("seed readme");
+    let status = std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(&repo_root)
+        .status()
+        .expect("git add");
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&repo_root)
+        .status()
+        .expect("git commit");
+    assert!(status.success());
+    repo_root
+}
+
 async fn create_coder_run_for_replay(app: axum::Router, body: Value) -> (Value, String) {
     let create_req = Request::builder()
         .method("POST")
@@ -1104,6 +1142,14 @@ async fn coder_issue_fix_worker_failure_writes_run_outcome() {
             .map(|value| value.starts_with("session-")),
         Some(true)
     );
+    assert_eq!(
+        run_outcome_payload
+            .get("worker_run_reference")
+            .and_then(Value::as_str),
+        run_outcome_payload
+            .get("worker_session_context_run_id")
+            .and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
@@ -1223,6 +1269,19 @@ async fn coder_pr_review_worker_failure_writes_run_outcome() {
             .and_then(Value::as_str),
         Some("coder_pr_review_worker_session")
     );
+    assert_eq!(
+        run_outcome_payload
+            .get("worker_run_reference")
+            .and_then(Value::as_str),
+        run_outcome_payload
+            .get("worker_session_context_run_id")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                run_outcome_payload
+                    .get("worker_session_id")
+                    .and_then(Value::as_str)
+            })
+    );
 }
 
 #[tokio::test]
@@ -1336,6 +1395,18 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
                 execute_payload
                     .get("dispatch_result")
                     .and_then(|row| row.get("worker_session"))
+                    .and_then(|row| row.get("worker_run_reference"))
+                    .and_then(Value::as_str),
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("worker_session"))
+                    .and_then(|row| row.get("session_context_run_id"))
+                    .and_then(Value::as_str)
+            );
+            assert_eq!(
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("worker_session"))
                     .and_then(|row| row.get("status"))
                     .and_then(Value::as_str),
                 Some("completed")
@@ -1434,6 +1505,19 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
                 .expect("read changed file artifact"),
         )
         .expect("parse changed file artifact");
+        assert_eq!(
+            changed_file_payload
+                .get("worker_run_reference")
+                .and_then(Value::as_str),
+            changed_file_payload
+                .get("worker_session_context_run_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    changed_file_payload
+                        .get("worker_session_id")
+                        .and_then(Value::as_str)
+                })
+        );
         assert!(changed_file_payload
             .get("entries")
             .and_then(Value::as_array)
@@ -1457,6 +1541,32 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
                 .expect("read patch summary artifact"),
         )
         .expect("parse patch summary artifact");
+        assert_eq!(
+            patch_summary_payload
+                .get("worker_run_reference")
+                .and_then(Value::as_str),
+            patch_summary_payload
+                .get("worker_session_context_run_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    patch_summary_payload
+                        .get("worker_session_id")
+                        .and_then(Value::as_str)
+                })
+        );
+        assert_eq!(
+            patch_summary_payload
+                .get("validation_run_reference")
+                .and_then(Value::as_str),
+            patch_summary_payload
+                .get("validation_session_context_run_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    patch_summary_payload
+                        .get("validation_session_id")
+                        .and_then(Value::as_str)
+                })
+        );
         assert!(patch_summary_payload
             .get("changed_file_entries")
             .and_then(Value::as_array)
@@ -1465,6 +1575,124 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
                     == Some("crates/tandem-server/src/http/coder.rs")
             })));
     }
+}
+
+#[tokio::test]
+async fn coder_issue_fix_worker_uses_managed_worktree_for_git_repo() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+    let repo_root = init_coder_git_repo();
+    let nested_workspace_root = repo_root.join("nested").join("workspace");
+    std::fs::create_dir_all(&nested_workspace_root).expect("create nested workspace");
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-issue-fix-managed-worktree",
+                "workflow_mode": "issue_fix",
+                "model_provider": "local",
+                "model_id": "echo-1",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": nested_workspace_root.to_string_lossy(),
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 200
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let mut saw_prepare_fix = false;
+    for _ in 0..2 {
+        let execute_req = Request::builder()
+            .method("POST")
+            .uri("/coder/runs/coder-issue-fix-managed-worktree/execute-next")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "agent_id": "coder_engine_worker_test"
+                })
+                .to_string(),
+            ))
+            .expect("execute request");
+        let execute_resp = app
+            .clone()
+            .oneshot(execute_req)
+            .await
+            .expect("execute response");
+        assert_eq!(execute_resp.status(), StatusCode::OK);
+        let execute_payload: Value = serde_json::from_slice(
+            &to_bytes(execute_resp.into_body(), usize::MAX)
+                .await
+                .expect("execute body"),
+        )
+        .expect("execute json");
+        if execute_payload
+            .get("task")
+            .and_then(|row| row.get("workflow_node_id"))
+            .and_then(Value::as_str)
+            == Some("prepare_fix")
+        {
+            saw_prepare_fix = true;
+            let worker_session = execute_payload
+                .get("dispatch_result")
+                .and_then(|row| row.get("worker_session"))
+                .cloned()
+                .expect("worker session");
+            let worker_workspace_root = worker_session
+                .get("worker_workspace_root")
+                .and_then(Value::as_str)
+                .expect("worker workspace root")
+                .to_string();
+            assert!(worker_workspace_root.contains("/.tandem/worktrees/"));
+            assert_eq!(
+                worker_session
+                    .get("worker_workspace_repo_root")
+                    .and_then(Value::as_str),
+                Some(repo_root.to_string_lossy().as_ref())
+            );
+            assert_eq!(
+                worker_session.get("task_id").and_then(Value::as_str),
+                execute_payload
+                    .get("task")
+                    .and_then(|row| row.get("id"))
+                    .and_then(Value::as_str)
+            );
+            assert!(!std::path::Path::new(&worker_workspace_root).exists());
+
+            let managed_root = repo_root.join(".tandem").join("worktrees");
+            if managed_root.exists() {
+                let entries = std::fs::read_dir(&managed_root)
+                    .expect("list managed root")
+                    .filter_map(Result::ok)
+                    .collect::<Vec<_>>();
+                assert!(entries.is_empty());
+            }
+            break;
+        }
+    }
+    assert!(saw_prepare_fix, "expected prepare_fix task to run");
+
+    let _ = std::fs::remove_dir_all(repo_root);
 }
 
 #[tokio::test]
@@ -2148,11 +2376,21 @@ async fn coder_issue_fix_pr_submit_dry_run_writes_submission_artifact() {
     );
     assert_eq!(
         submit_payload
-            .get("duplicate_linkage_candidate")
-            .and_then(|row| row.get("kind"))
+            .get("external_action")
+            .and_then(|row| row.get("capability_id"))
             .and_then(Value::as_str),
-        Some("duplicate_linkage")
+        Some("github.create_pull_request")
     );
+    assert_eq!(
+        submit_payload
+            .get("external_action")
+            .and_then(|row| row.get("source_kind"))
+            .and_then(Value::as_str),
+        Some("coder")
+    );
+    assert!(submit_payload
+        .get("duplicate_linkage_candidate")
+        .is_some_and(Value::is_null));
     assert_eq!(
         submit_payload.get("submitted").and_then(Value::as_bool),
         Some(false)
@@ -2160,6 +2398,22 @@ async fn coder_issue_fix_pr_submit_dry_run_writes_submission_artifact() {
     assert_eq!(
         submit_payload.get("dry_run").and_then(Value::as_bool),
         Some(true)
+    );
+    assert_eq!(
+        submit_payload
+            .get("worker_run_reference")
+            .and_then(Value::as_str),
+        submit_payload
+            .get("worker_session_context_run_id")
+            .and_then(Value::as_str)
+    );
+    assert_eq!(
+        submit_payload
+            .get("validation_run_reference")
+            .and_then(Value::as_str),
+        submit_payload
+            .get("validation_session_context_run_id")
+            .and_then(Value::as_str)
     );
     assert!(submit_payload
         .get("submitted_github_ref")
@@ -2185,15 +2439,33 @@ async fn coder_issue_fix_pr_submit_dry_run_writes_submission_artifact() {
             .map(|rows| rows.len()),
         Some(0)
     );
+    let submission_artifact_payload = submit_payload
+        .get("artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|body| serde_json::from_str::<Value>(&body).ok())
+        .expect("submission artifact payload");
     assert_eq!(
-        submit_payload
-            .get("artifact")
-            .and_then(|row| row.get("path"))
+        submission_artifact_payload
+            .get("worker_run_reference")
+            .and_then(Value::as_str),
+        submission_artifact_payload
+            .get("worker_session_context_run_id")
             .and_then(Value::as_str)
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|body| serde_json::from_str::<Value>(&body).ok())
-            .and_then(|payload| payload.get("follow_on_runs").cloned())
-            .and_then(|rows| rows.as_array().cloned())
+    );
+    assert_eq!(
+        submission_artifact_payload
+            .get("validation_run_reference")
+            .and_then(Value::as_str),
+        submission_artifact_payload
+            .get("validation_session_context_run_id")
+            .and_then(Value::as_str)
+    );
+    assert_eq!(
+        submission_artifact_payload
+            .get("follow_on_runs")
+            .and_then(Value::as_array)
             .map(|rows| rows.len()),
         Some(0)
     );
@@ -2822,6 +3094,7 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
             .cloned(),
         Some(json!([
             "review_memory",
+            "merge_recommendation_memory",
             "duplicate_linkage",
             "regression_signal",
             "run_outcome"
@@ -3651,6 +3924,32 @@ async fn coder_issue_fix_summary_writes_patch_summary_without_changed_files() {
             .map(|rows| rows.len()),
         Some(1)
     );
+    assert_eq!(
+        patch_summary_payload
+            .get("worker_run_reference")
+            .and_then(Value::as_str),
+        patch_summary_payload
+            .get("worker_session_context_run_id")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                patch_summary_payload
+                    .get("worker_session_id")
+                    .and_then(Value::as_str)
+            })
+    );
+    assert_eq!(
+        patch_summary_payload
+            .get("validation_run_reference")
+            .and_then(Value::as_str),
+        patch_summary_payload
+            .get("validation_session_context_run_id")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                patch_summary_payload
+                    .get("validation_session_id")
+                    .and_then(Value::as_str)
+            })
+    );
 }
 
 #[tokio::test]
@@ -4049,6 +4348,12 @@ async fn coder_pr_review_evidence_advances_review_run() {
             .and_then(Value::as_str),
         Some("artifact_write")
     );
+    assert!(evidence_payload
+        .get("worker_run_reference")
+        .is_some_and(Value::is_null));
+    assert!(evidence_payload
+        .get("worker_session_context_run_id")
+        .is_some_and(Value::is_null));
 
     let run = load_context_run_state(&state, &linked_context_run_id)
         .await
@@ -4164,6 +4469,24 @@ async fn coder_pr_review_execute_next_drives_task_runtime_to_completion() {
                 .and_then(Value::as_str),
             Some(expected)
         );
+        if expected != "inspect_pull_request" {
+            assert_eq!(
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("worker_run_reference"))
+                    .and_then(Value::as_str),
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("worker_session_context_run_id"))
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        execute_payload
+                            .get("dispatch_result")
+                            .and_then(|row| row.get("worker_session_id"))
+                            .and_then(Value::as_str)
+                    })
+            );
+        }
     }
 
     let run = load_context_run_state(&state, &linked_context_run_id)
@@ -4314,6 +4637,9 @@ async fn coder_pr_review_summary_create_writes_artifact_and_outcome() {
             .and_then(Value::as_str),
         Some("coder_validation_report")
     );
+    assert!(summary_payload
+        .get("worker_run_reference")
+        .is_some_and(Value::is_null));
     assert!(summary_payload
         .get("review_evidence_artifact")
         .and_then(|row| row.get("path"))
@@ -4940,6 +5266,12 @@ async fn coder_merge_readiness_report_advances_merge_run() {
             .and_then(Value::as_str),
         Some("running")
     );
+    assert!(readiness_payload
+        .get("worker_run_reference")
+        .is_some_and(Value::is_null));
+    assert!(readiness_payload
+        .get("worker_session_context_run_id")
+        .is_some_and(Value::is_null));
     assert_eq!(
         readiness_payload
             .get("coder_run")
@@ -5061,6 +5393,24 @@ async fn coder_merge_recommendation_execute_next_drives_task_runtime_to_completi
                 .and_then(Value::as_str),
             Some(expected)
         );
+        if expected != "inspect_repo" {
+            assert_eq!(
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("worker_run_reference"))
+                    .and_then(Value::as_str),
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("worker_session_context_run_id"))
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        execute_payload
+                            .get("dispatch_result")
+                            .and_then(|row| row.get("worker_session_id"))
+                            .and_then(Value::as_str)
+                    })
+            );
+        }
     }
 
     let run = load_context_run_state(&state, &linked_context_run_id)
@@ -5212,6 +5562,9 @@ async fn coder_merge_recommendation_summary_create_writes_artifact() {
             .and_then(Value::as_str),
         Some("completed")
     );
+    assert!(summary_payload
+        .get("worker_run_reference")
+        .is_some_and(Value::is_null));
     assert_eq!(
         summary_payload
             .get("generated_candidates")
@@ -5513,6 +5866,18 @@ async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
             .and_then(Value::as_str),
         Some("merge")
     );
+    assert!(approve_payload
+        .get("worker_run_reference")
+        .is_some_and(Value::is_null));
+    assert!(approve_payload
+        .get("worker_session_context_run_id")
+        .is_some_and(Value::is_null));
+    assert!(approve_payload
+        .get("validation_run_reference")
+        .is_some_and(Value::is_null));
+    assert!(approve_payload
+        .get("validation_session_context_run_id")
+        .is_some_and(Value::is_null));
     assert_eq!(
         approve_payload
             .get("merge_execution_artifact")
@@ -5846,6 +6211,32 @@ async fn coder_merge_submit_real_submit_writes_merge_artifact() {
             .and_then(Value::as_str),
         Some("coder_merge_submission")
     );
+    assert_eq!(
+        submit_payload
+            .get("external_action")
+            .and_then(|row| row.get("capability_id"))
+            .and_then(Value::as_str),
+        Some("github.merge_pull_request")
+    );
+    assert_eq!(
+        submit_payload
+            .get("external_action")
+            .and_then(|row| row.get("source_kind"))
+            .and_then(Value::as_str),
+        Some("coder")
+    );
+    assert!(submit_payload
+        .get("worker_run_reference")
+        .is_some_and(Value::is_null));
+    assert!(submit_payload
+        .get("worker_session_context_run_id")
+        .is_some_and(Value::is_null));
+    assert!(submit_payload
+        .get("validation_run_reference")
+        .is_some_and(Value::is_null));
+    assert!(submit_payload
+        .get("validation_session_context_run_id")
+        .is_some_and(Value::is_null));
 
     let merge_submit_event = next_event_of_type(&mut rx, "coder.merge.submitted").await;
     assert_eq!(
@@ -10211,6 +10602,24 @@ async fn coder_issue_triage_execute_next_drives_task_runtime_to_completion() {
                 .and_then(Value::as_str),
             Some(expected)
         );
+        if expected != "inspect_pull_request" {
+            assert_eq!(
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("worker_run_reference"))
+                    .and_then(Value::as_str),
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("worker_session_context_run_id"))
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        execute_payload
+                            .get("dispatch_result")
+                            .and_then(|row| row.get("worker_session_id"))
+                            .and_then(Value::as_str)
+                    })
+            );
+        }
     }
 
     let run = load_context_run_state(&state, &linked_context_run_id)

@@ -86,34 +86,16 @@ async fn write_bug_monitor_artifact(
     relative_path: &str,
     payload: &serde_json::Value,
 ) -> Result<(), StatusCode> {
-    let path =
-        super::context_runs::context_run_dir(state, linked_context_run_id).join(relative_path);
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
-    let raw =
-        serde_json::to_string_pretty(payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    tokio::fs::write(&path, raw)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let artifact = ContextBlackboardArtifact {
-        id: artifact_id.to_string(),
-        ts_ms: crate::now_ms(),
-        path: path.to_string_lossy().to_string(),
-        artifact_type: artifact_type.to_string(),
-        step_id: None,
-        source_event_id: None,
-    };
-    super::context_runs::context_run_engine()
-        .commit_blackboard_patch(
-            state,
-            linked_context_run_id,
-            super::context_types::ContextBlackboardPatchOp::AddArtifact,
-            serde_json::to_value(&artifact).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-        )
-        .await?;
+    super::context_runs::append_json_artifact_to_context_run(
+        state,
+        linked_context_run_id,
+        artifact_id,
+        artifact_type,
+        relative_path,
+        payload,
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(())
 }
 
@@ -1761,20 +1743,27 @@ pub(super) async fn approve_bug_monitor_draft(
             )
             .await
             {
-                Ok(outcome) => Json(json!({
-                    "ok": true,
-                    "draft": outcome.draft,
-                    "action": outcome.action,
-                    "failure_pattern_memory": approval_failure_pattern_memory,
-                    "issue_draft": issue_draft,
-                    "duplicate_summary": duplicate_summary,
-                    "duplicate_matches": duplicate_matches,
-                    "triage_summary_artifact": triage_summary_artifact,
-                    "issue_draft_artifact": issue_draft_artifact,
-                    "duplicate_matches_artifact": duplicate_matches_artifact,
-                    "post": outcome.post,
-                }))
-                .into_response(),
+                Ok(outcome) => {
+                    let external_action = match outcome.post.as_ref() {
+                        Some(post) => state.get_external_action(&post.post_id).await,
+                        None => None,
+                    };
+                    Json(json!({
+                        "ok": true,
+                        "draft": outcome.draft,
+                        "action": outcome.action,
+                        "failure_pattern_memory": approval_failure_pattern_memory,
+                        "issue_draft": issue_draft,
+                        "duplicate_summary": duplicate_summary,
+                        "duplicate_matches": duplicate_matches,
+                        "triage_summary_artifact": triage_summary_artifact,
+                        "issue_draft_artifact": issue_draft_artifact,
+                        "duplicate_matches_artifact": duplicate_matches_artifact,
+                        "post": outcome.post,
+                        "external_action": external_action,
+                    }))
+                    .into_response()
+                }
                 Err(error) => {
                     let detail = error.to_string();
                     let mut updated_draft = state
@@ -1962,6 +1951,10 @@ pub(super) async fn publish_bug_monitor_draft(
                 Some(loader) => loader.await,
                 None => None,
             };
+            let external_action = match outcome.post.as_ref() {
+                Some(post) => state.get_external_action(&post.post_id).await,
+                None => None,
+            };
             Json(json!({
                 "ok": true,
                 "draft": outcome.draft,
@@ -1974,6 +1967,7 @@ pub(super) async fn publish_bug_monitor_draft(
                 "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_matches_artifact": duplicate_matches_artifact,
                 "post": outcome.post,
+                "external_action": external_action,
             }))
             .into_response()
         }

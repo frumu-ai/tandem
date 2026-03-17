@@ -254,6 +254,16 @@ async fn routines_allowlist_is_persisted_and_copied_to_runs() {
         .get("runID")
         .and_then(|v| v.as_str())
         .expect("runID");
+    let context_run_id = run_now_payload
+        .get("contextRunID")
+        .and_then(|v| v.as_str())
+        .expect("context run id");
+    assert_eq!(
+        run_now_payload
+            .get("linked_context_run_id")
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
 
     let run_get_req = Request::builder()
         .method("GET")
@@ -270,6 +280,17 @@ async fn routines_allowlist_is_persisted_and_copied_to_runs() {
         .await
         .expect("run get body");
     let run_get_payload: Value = serde_json::from_slice(&run_get_body).expect("run get json");
+    assert_eq!(
+        run_get_payload.get("contextRunID").and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        run_get_payload
+            .get("run")
+            .and_then(|v| v.get("contextRunID"))
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
     assert_eq!(
         run_get_payload
             .get("run")
@@ -295,6 +316,18 @@ async fn routines_allowlist_is_persisted_and_copied_to_runs() {
                 .collect::<Vec<_>>()),
         Some(vec!["https://storage.example/run/output.md".to_string()])
     );
+
+    let context_run_req = Request::builder()
+        .method("GET")
+        .uri(format!("/context/runs/{context_run_id}"))
+        .body(Body::empty())
+        .expect("context run request");
+    let context_run_resp = app
+        .clone()
+        .oneshot(context_run_req)
+        .await
+        .expect("context run response");
+    assert_eq!(context_run_resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -390,6 +423,308 @@ async fn routines_runs_all_can_filter_by_routine() {
         })
         .unwrap_or(false);
     assert!(all_match_routine);
+    assert!(filtered_payload
+        .get("runs")
+        .and_then(|v| v.as_array())
+        .is_some_and(|rows| rows.iter().all(|row| {
+            row.get("contextRunID")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| !id.is_empty())
+                && row
+                    .get("linked_context_run_id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| !id.is_empty())
+        })));
+}
+
+#[tokio::test]
+async fn routine_run_operator_routes_expose_context_run_links() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/routines")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "routine_id": "routine-ops-links",
+                "name": "Routine Operator Links",
+                "schedule": { "interval_seconds": { "seconds": 60 } },
+                "entrypoint": "mission.default",
+                "requires_approval": true
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let routine = state
+        .get_routine("routine-ops-links")
+        .await
+        .expect("stored routine");
+    let approval_run = state
+        .create_routine_run(
+            &routine,
+            "manual",
+            1,
+            crate::RoutineRunStatus::PendingApproval,
+            None,
+        )
+        .await;
+    crate::http::context_runs::sync_routine_run_blackboard(&state, &approval_run)
+        .await
+        .expect("sync approval context");
+    let approval_run_id = approval_run.run_id.clone();
+    let approval_context_run_id =
+        crate::http::context_runs::routine_context_run_id(&approval_run_id);
+
+    let approve_req = Request::builder()
+        .method("POST")
+        .uri(format!("/routines/runs/{approval_run_id}/approve"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "reason": "approved for execution" }).to_string(),
+        ))
+        .expect("approve request");
+    let approve_resp = app
+        .clone()
+        .oneshot(approve_req)
+        .await
+        .expect("approve response");
+    assert_eq!(approve_resp.status(), StatusCode::OK);
+    let approve_body = to_bytes(approve_resp.into_body(), usize::MAX)
+        .await
+        .expect("approve body");
+    let approve_payload: Value = serde_json::from_slice(&approve_body).expect("approve json");
+    assert_eq!(
+        approve_payload.get("contextRunID").and_then(Value::as_str),
+        Some(approval_context_run_id.as_str())
+    );
+    assert_eq!(
+        approve_payload
+            .get("linked_context_run_id")
+            .and_then(Value::as_str),
+        Some(approval_context_run_id.as_str())
+    );
+    assert_eq!(
+        approve_payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(approval_context_run_id.as_str())
+    );
+    let approve_context_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/context/runs/{approval_context_run_id}"))
+                .body(Body::empty())
+                .expect("approve context request"),
+        )
+        .await
+        .expect("approve context response");
+    assert_eq!(approve_context_resp.status(), StatusCode::OK);
+
+    let running = state
+        .create_routine_run(
+            &routine,
+            "manual",
+            2,
+            crate::RoutineRunStatus::Running,
+            None,
+        )
+        .await;
+    crate::http::context_runs::sync_routine_run_blackboard(&state, &running)
+        .await
+        .expect("sync running context");
+    let running_context_run_id = crate::http::context_runs::routine_context_run_id(&running.run_id);
+
+    let pause_req = Request::builder()
+        .method("POST")
+        .uri(format!("/routines/runs/{}/pause", running.run_id))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "reason": "pause for inspection" }).to_string(),
+        ))
+        .expect("pause request");
+    let pause_resp = app
+        .clone()
+        .oneshot(pause_req)
+        .await
+        .expect("pause response");
+    assert_eq!(pause_resp.status(), StatusCode::OK);
+    let pause_body = to_bytes(pause_resp.into_body(), usize::MAX)
+        .await
+        .expect("pause body");
+    let pause_payload: Value = serde_json::from_slice(&pause_body).expect("pause json");
+    assert_eq!(
+        pause_payload.get("contextRunID").and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    assert_eq!(
+        pause_payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    let pause_context_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/context/runs/{running_context_run_id}"))
+                .body(Body::empty())
+                .expect("pause context request"),
+        )
+        .await
+        .expect("pause context response");
+    assert_eq!(pause_context_resp.status(), StatusCode::OK);
+
+    let resume_req = Request::builder()
+        .method("POST")
+        .uri(format!("/routines/runs/{}/resume", running.run_id))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "reason": "resume after inspection" }).to_string(),
+        ))
+        .expect("resume request");
+    let resume_resp = app
+        .clone()
+        .oneshot(resume_req)
+        .await
+        .expect("resume response");
+    assert_eq!(resume_resp.status(), StatusCode::OK);
+    let resume_body = to_bytes(resume_resp.into_body(), usize::MAX)
+        .await
+        .expect("resume body");
+    let resume_payload: Value = serde_json::from_slice(&resume_body).expect("resume json");
+    assert_eq!(
+        resume_payload.get("contextRunID").and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    assert_eq!(
+        resume_payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    let resume_context_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/context/runs/{running_context_run_id}"))
+                .body(Body::empty())
+                .expect("resume context request"),
+        )
+        .await
+        .expect("resume context response");
+    assert_eq!(resume_context_resp.status(), StatusCode::OK);
+
+    let add_artifact_req = Request::builder()
+        .method("POST")
+        .uri(format!("/routines/runs/{}/artifacts", running.run_id))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "uri": "file://reports/routine-ops-links.md",
+                "kind": "report",
+                "label": "Routine Report"
+            })
+            .to_string(),
+        ))
+        .expect("add artifact request");
+    let add_artifact_resp = app
+        .clone()
+        .oneshot(add_artifact_req)
+        .await
+        .expect("add artifact response");
+    assert_eq!(add_artifact_resp.status(), StatusCode::OK);
+    let add_artifact_body = to_bytes(add_artifact_resp.into_body(), usize::MAX)
+        .await
+        .expect("add artifact body");
+    let add_artifact_payload: Value =
+        serde_json::from_slice(&add_artifact_body).expect("add artifact json");
+    assert_eq!(
+        add_artifact_payload
+            .get("contextRunID")
+            .and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    assert_eq!(
+        add_artifact_payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    let artifact_blackboard_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/context/runs/{running_context_run_id}/blackboard"))
+                .body(Body::empty())
+                .expect("artifact blackboard request"),
+        )
+        .await
+        .expect("artifact blackboard response");
+    assert_eq!(artifact_blackboard_resp.status(), StatusCode::OK);
+    let artifact_blackboard_body = to_bytes(artifact_blackboard_resp.into_body(), usize::MAX)
+        .await
+        .expect("artifact blackboard body");
+    let artifact_blackboard_payload: Value =
+        serde_json::from_slice(&artifact_blackboard_body).expect("artifact blackboard json");
+    assert!(artifact_blackboard_payload
+        .get("blackboard")
+        .and_then(|value| value.get("artifacts"))
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|row| {
+            row.get("path").and_then(Value::as_str) == Some("file://reports/routine-ops-links.md")
+                && row.get("artifact_type").and_then(Value::as_str) == Some("report")
+        })));
+
+    let list_artifacts_req = Request::builder()
+        .method("GET")
+        .uri(format!("/routines/runs/{}/artifacts", running.run_id))
+        .body(Body::empty())
+        .expect("list artifacts request");
+    let list_artifacts_resp = app
+        .clone()
+        .oneshot(list_artifacts_req)
+        .await
+        .expect("list artifacts response");
+    assert_eq!(list_artifacts_resp.status(), StatusCode::OK);
+    let list_artifacts_body = to_bytes(list_artifacts_resp.into_body(), usize::MAX)
+        .await
+        .expect("list artifacts body");
+    let list_artifacts_payload: Value =
+        serde_json::from_slice(&list_artifacts_body).expect("list artifacts json");
+    assert_eq!(
+        list_artifacts_payload
+            .get("contextRunID")
+            .and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    assert_eq!(
+        list_artifacts_payload
+            .get("linked_context_run_id")
+            .and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    assert_eq!(
+        list_artifacts_payload.get("count").and_then(Value::as_u64),
+        Some(1)
+    );
 }
 
 #[tokio::test]
@@ -513,6 +848,23 @@ async fn automations_create_and_run_now_roundtrip() {
             .and_then(|v| v.as_str()),
         Some("auto-digest")
     );
+    let context_run_id = run_now_payload
+        .get("contextRunID")
+        .and_then(|v| v.as_str())
+        .expect("automation context run id");
+    assert_eq!(
+        run_now_payload
+            .get("linked_context_run_id")
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        run_now_payload
+            .get("run")
+            .and_then(|v| v.get("contextRunID"))
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
     assert_eq!(
         run_now_payload
             .get("run")
@@ -527,6 +879,46 @@ async fn automations_create_and_run_now_roundtrip() {
         .and_then(|v| v.as_str())
         .expect("automation run_id in run_now response")
         .to_string();
+
+    let run_get_req = Request::builder()
+        .method("GET")
+        .uri(format!("/automations/runs/{run_id}"))
+        .body(Body::empty())
+        .expect("automation run get request");
+    let run_get_resp = app
+        .clone()
+        .oneshot(run_get_req)
+        .await
+        .expect("automation run get response");
+    assert_eq!(run_get_resp.status(), StatusCode::OK);
+    let run_get_body = to_bytes(run_get_resp.into_body(), usize::MAX)
+        .await
+        .expect("automation run get body");
+    let run_get_payload: Value =
+        serde_json::from_slice(&run_get_body).expect("automation run get json");
+    assert_eq!(
+        run_get_payload.get("contextRunID").and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        run_get_payload
+            .get("run")
+            .and_then(|v| v.get("contextRunID"))
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
+
+    let context_run_req = Request::builder()
+        .method("GET")
+        .uri(format!("/context/runs/{context_run_id}"))
+        .body(Body::empty())
+        .expect("automation context run request");
+    let context_run_resp = app
+        .clone()
+        .oneshot(context_run_req)
+        .await
+        .expect("automation context run response");
+    assert_eq!(context_run_resp.status(), StatusCode::OK);
 
     let history_req = Request::builder()
         .method("GET")
@@ -568,6 +960,30 @@ async fn automations_create_and_run_now_roundtrip() {
         .await
         .expect("automation add artifact response");
     assert_eq!(add_artifact_resp.status(), StatusCode::OK);
+    let add_artifact_body = to_bytes(add_artifact_resp.into_body(), usize::MAX)
+        .await
+        .expect("automation add artifact body");
+    let add_artifact_payload: Value =
+        serde_json::from_slice(&add_artifact_body).expect("automation add artifact json");
+    assert_eq!(
+        add_artifact_payload
+            .get("contextRunID")
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        add_artifact_payload
+            .get("linked_context_run_id")
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        add_artifact_payload
+            .get("run")
+            .and_then(|v| v.get("contextRunID"))
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
 
     let list_artifacts_req = Request::builder()
         .method("GET")
@@ -590,6 +1006,18 @@ async fn automations_create_and_run_now_roundtrip() {
             .get("automationRunID")
             .and_then(|v| v.as_str()),
         Some(run_id.as_str())
+    );
+    assert_eq!(
+        list_artifacts_payload
+            .get("contextRunID")
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        list_artifacts_payload
+            .get("linked_context_run_id")
+            .and_then(|v| v.as_str()),
+        Some(context_run_id)
     );
     assert!(list_artifacts_payload
         .get("count")
@@ -623,6 +1051,204 @@ async fn automations_create_and_run_now_roundtrip() {
             .and_then(|v| v.get("mode"))
             .and_then(|v| v.as_str()),
         Some("orchestrated")
+    );
+}
+
+#[tokio::test]
+async fn automation_run_operator_wrappers_expose_context_run_links() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/automations")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "automation_id": "auto-ops-links",
+                "name": "Automation Operator Links",
+                "schedule": { "interval_seconds": { "seconds": 300 } },
+                "mission": {
+                    "objective": "Verify legacy automation operator linkage."
+                },
+                "policy": {
+                    "approval": {
+                        "requires_approval": true
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .expect("automation create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("automation create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let routine = state
+        .get_routine("auto-ops-links")
+        .await
+        .expect("stored automation routine");
+
+    let approval_run = state
+        .create_routine_run(
+            &routine,
+            "manual",
+            1,
+            crate::RoutineRunStatus::PendingApproval,
+            None,
+        )
+        .await;
+    crate::http::context_runs::sync_routine_run_blackboard(&state, &approval_run)
+        .await
+        .expect("sync approval context");
+    let approval_context_run_id =
+        crate::http::context_runs::routine_context_run_id(&approval_run.run_id);
+
+    let approve_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/runs/{}/approve", approval_run.run_id))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "reason": "approved from legacy wrapper" }).to_string(),
+        ))
+        .expect("approve request");
+    let approve_resp = app
+        .clone()
+        .oneshot(approve_req)
+        .await
+        .expect("approve response");
+    assert_eq!(approve_resp.status(), StatusCode::OK);
+    let approve_body = to_bytes(approve_resp.into_body(), usize::MAX)
+        .await
+        .expect("approve body");
+    let approve_payload: Value = serde_json::from_slice(&approve_body).expect("approve json");
+    assert_eq!(
+        approve_payload.get("contextRunID").and_then(Value::as_str),
+        Some(approval_context_run_id.as_str())
+    );
+    assert_eq!(
+        approve_payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(approval_context_run_id.as_str())
+    );
+
+    let running = state
+        .create_routine_run(
+            &routine,
+            "manual",
+            2,
+            crate::RoutineRunStatus::Running,
+            None,
+        )
+        .await;
+    crate::http::context_runs::sync_routine_run_blackboard(&state, &running)
+        .await
+        .expect("sync running context");
+    let running_context_run_id = crate::http::context_runs::routine_context_run_id(&running.run_id);
+
+    let pause_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/runs/{}/pause", running.run_id))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "reason": "pause from legacy wrapper" }).to_string(),
+        ))
+        .expect("pause request");
+    let pause_resp = app
+        .clone()
+        .oneshot(pause_req)
+        .await
+        .expect("pause response");
+    assert_eq!(pause_resp.status(), StatusCode::OK);
+    let pause_body = to_bytes(pause_resp.into_body(), usize::MAX)
+        .await
+        .expect("pause body");
+    let pause_payload: Value = serde_json::from_slice(&pause_body).expect("pause json");
+    assert_eq!(
+        pause_payload.get("contextRunID").and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    assert_eq!(
+        pause_payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+
+    let resume_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/runs/{}/resume", running.run_id))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "reason": "resume from legacy wrapper" }).to_string(),
+        ))
+        .expect("resume request");
+    let resume_resp = app
+        .clone()
+        .oneshot(resume_req)
+        .await
+        .expect("resume response");
+    assert_eq!(resume_resp.status(), StatusCode::OK);
+    let resume_body = to_bytes(resume_resp.into_body(), usize::MAX)
+        .await
+        .expect("resume body");
+    let resume_payload: Value = serde_json::from_slice(&resume_body).expect("resume json");
+    assert_eq!(
+        resume_payload.get("contextRunID").and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+    assert_eq!(
+        resume_payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(running_context_run_id.as_str())
+    );
+
+    let deny_run = state
+        .create_routine_run(
+            &routine,
+            "manual",
+            3,
+            crate::RoutineRunStatus::PendingApproval,
+            None,
+        )
+        .await;
+    crate::http::context_runs::sync_routine_run_blackboard(&state, &deny_run)
+        .await
+        .expect("sync deny context");
+    let deny_context_run_id = crate::http::context_runs::routine_context_run_id(&deny_run.run_id);
+
+    let deny_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/runs/{}/deny", deny_run.run_id))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "reason": "deny from legacy wrapper" }).to_string(),
+        ))
+        .expect("deny request");
+    let deny_resp = app.clone().oneshot(deny_req).await.expect("deny response");
+    assert_eq!(deny_resp.status(), StatusCode::OK);
+    let deny_body = to_bytes(deny_resp.into_body(), usize::MAX)
+        .await
+        .expect("deny body");
+    let deny_payload: Value = serde_json::from_slice(&deny_body).expect("deny json");
+    assert_eq!(
+        deny_payload.get("contextRunID").and_then(Value::as_str),
+        Some(deny_context_run_id.as_str())
+    );
+    assert_eq!(
+        deny_payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(deny_context_run_id.as_str())
     );
 }
 

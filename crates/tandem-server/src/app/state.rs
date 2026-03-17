@@ -65,6 +65,7 @@ use crate::runtime::{
     lease::EngineLease,
     runs::{ActiveRun, RunRegistry},
     state::RuntimeState,
+    worktrees::ManagedWorktreeRecord,
 };
 use crate::shared_resources::{
     self,
@@ -88,6 +89,7 @@ pub struct AppState {
     pub in_process_mode: Arc<AtomicBool>,
     pub api_token: Arc<RwLock<Option<String>>>,
     pub engine_leases: Arc<RwLock<std::collections::HashMap<String, EngineLease>>>,
+    pub managed_worktrees: Arc<RwLock<std::collections::HashMap<String, ManagedWorktreeRecord>>>,
     pub run_registry: RunRegistry,
     pub run_stale_ms: u64,
     pub memory_records: Arc<RwLock<std::collections::HashMap<String, GovernedMemoryRecord>>>,
@@ -108,6 +110,7 @@ pub struct AppState {
     pub bug_monitor_incidents:
         Arc<RwLock<std::collections::HashMap<String, BugMonitorIncidentRecord>>>,
     pub bug_monitor_posts: Arc<RwLock<std::collections::HashMap<String, BugMonitorPostRecord>>>,
+    pub external_actions: Arc<RwLock<std::collections::HashMap<String, ExternalActionRecord>>>,
     pub bug_monitor_runtime_status: Arc<RwLock<BugMonitorRuntimeStatus>>,
     pub workflows: Arc<RwLock<WorkflowRegistry>>,
     pub workflow_runs: Arc<RwLock<std::collections::HashMap<String, WorkflowRunRecord>>>,
@@ -126,6 +129,7 @@ pub struct AppState {
     pub bug_monitor_drafts_path: PathBuf,
     pub bug_monitor_incidents_path: PathBuf,
     pub bug_monitor_posts_path: PathBuf,
+    pub external_actions_path: PathBuf,
     pub workflow_runs_path: PathBuf,
     pub workflow_hook_overrides_path: PathBuf,
     pub agent_teams: AgentTeamRuntime,
@@ -184,6 +188,7 @@ impl AppState {
             in_process_mode: Arc::new(AtomicBool::new(in_process)),
             api_token: Arc::new(RwLock::new(None)),
             engine_leases: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            managed_worktrees: Arc::new(RwLock::new(std::collections::HashMap::new())),
             run_registry: RunRegistry::new(),
             run_stale_ms: config::env::resolve_run_stale_ms(),
             memory_records: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -204,6 +209,7 @@ impl AppState {
             bug_monitor_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             bug_monitor_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
             bug_monitor_posts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            external_actions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             bug_monitor_runtime_status: Arc::new(RwLock::new(BugMonitorRuntimeStatus::default())),
             workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
             workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -220,6 +226,7 @@ impl AppState {
             bug_monitor_drafts_path: config::paths::resolve_bug_monitor_drafts_path(),
             bug_monitor_incidents_path: config::paths::resolve_bug_monitor_incidents_path(),
             bug_monitor_posts_path: config::paths::resolve_bug_monitor_posts_path(),
+            external_actions_path: config::paths::resolve_external_actions_path(),
             workflow_runs_path: config::paths::resolve_workflow_runs_path(),
             workflow_hook_overrides_path: config::paths::resolve_workflow_hook_overrides_path(),
             agent_teams: AgentTeamRuntime::new(config::paths::resolve_agent_team_audit_path()),
@@ -369,6 +376,7 @@ impl AppState {
         let _ = self.load_bug_monitor_drafts().await;
         let _ = self.load_bug_monitor_incidents().await;
         let _ = self.load_bug_monitor_posts().await;
+        let _ = self.load_external_actions().await;
         let _ = self.load_workflow_runs().await;
         let _ = self.load_workflow_hook_overrides().await;
         let _ = self.reload_workflows().await;
@@ -1548,6 +1556,30 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn load_external_actions(&self) -> anyhow::Result<()> {
+        if !self.external_actions_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.external_actions_path).await?;
+        let parsed =
+            serde_json::from_str::<std::collections::HashMap<String, ExternalActionRecord>>(&raw)
+                .unwrap_or_default();
+        *self.external_actions.write().await = parsed;
+        Ok(())
+    }
+
+    pub async fn persist_external_actions(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.external_actions_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.external_actions.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.external_actions_path, payload).await?;
+        Ok(())
+    }
+
     pub async fn list_bug_monitor_incidents(&self, limit: usize) -> Vec<BugMonitorIncidentRecord> {
         let mut rows = self
             .bug_monitor_incidents
@@ -1611,6 +1643,93 @@ impl AppState {
             .insert(post.post_id.clone(), post.clone());
         self.persist_bug_monitor_posts().await?;
         Ok(post)
+    }
+
+    pub async fn list_external_actions(&self, limit: usize) -> Vec<ExternalActionRecord> {
+        let mut rows = self
+            .external_actions
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.truncate(limit.clamp(1, 200));
+        rows
+    }
+
+    pub async fn get_external_action(&self, action_id: &str) -> Option<ExternalActionRecord> {
+        self.external_actions.read().await.get(action_id).cloned()
+    }
+
+    pub async fn put_external_action(
+        &self,
+        action: ExternalActionRecord,
+    ) -> anyhow::Result<ExternalActionRecord> {
+        self.external_actions
+            .write()
+            .await
+            .insert(action.action_id.clone(), action.clone());
+        self.persist_external_actions().await?;
+        Ok(action)
+    }
+
+    pub async fn record_external_action(
+        &self,
+        action: ExternalActionRecord,
+    ) -> anyhow::Result<ExternalActionRecord> {
+        let action = self.put_external_action(action).await?;
+        if let Some(run_id) = action.routine_run_id.as_deref() {
+            let artifact = RoutineRunArtifact {
+                artifact_id: format!("external-action-{}", action.action_id),
+                uri: format!("external-action://{}", action.action_id),
+                kind: "external_action_receipt".to_string(),
+                label: Some(format!("external action receipt: {}", action.operation)),
+                created_at_ms: action.updated_at_ms,
+                metadata: Some(json!({
+                    "actionID": action.action_id,
+                    "operation": action.operation,
+                    "status": action.status,
+                    "sourceKind": action.source_kind,
+                    "sourceID": action.source_id,
+                    "capabilityID": action.capability_id,
+                    "target": action.target,
+                })),
+            };
+            let _ = self
+                .append_routine_run_artifact(run_id, artifact.clone())
+                .await;
+            if let Some(runtime) = self.runtime.get() {
+                runtime.event_bus.publish(EngineEvent::new(
+                    "routine.run.artifact_added",
+                    json!({
+                        "runID": run_id,
+                        "artifact": artifact,
+                    }),
+                ));
+            }
+        }
+        if let Some(context_run_id) = action.context_run_id.as_deref() {
+            let payload = serde_json::to_value(&action)?;
+            if let Err(error) = crate::http::context_runs::append_json_artifact_to_context_run(
+                self,
+                context_run_id,
+                &format!("external-action-{}", action.action_id),
+                "external_action_receipt",
+                &format!("external-actions/{}.json", action.action_id),
+                &payload,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "failed to append external action artifact {} to context run {}: {}",
+                    action.action_id,
+                    context_run_id,
+                    error
+                );
+            }
+        }
+        Ok(action)
     }
 
     pub async fn update_bug_monitor_runtime_status(
@@ -5293,6 +5412,32 @@ fn automation_node_is_code_workflow(node: &AutomationFlowNode) -> bool {
     code_extensions.contains(&extension.as_str())
 }
 
+fn automation_output_validator_kind(
+    node: &AutomationFlowNode,
+) -> crate::AutomationOutputValidatorKind {
+    if let Some(validator) = node
+        .output_contract
+        .as_ref()
+        .and_then(|contract| contract.validator)
+    {
+        return validator;
+    }
+    if automation_node_is_code_workflow(node) {
+        return crate::AutomationOutputValidatorKind::CodePatch;
+    }
+    match node
+        .output_contract
+        .as_ref()
+        .map(|contract| contract.kind.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("brief") => crate::AutomationOutputValidatorKind::ResearchBrief,
+        Some("review") => crate::AutomationOutputValidatorKind::ReviewDecision,
+        Some("structured_json") => crate::AutomationOutputValidatorKind::StructuredJson,
+        _ => crate::AutomationOutputValidatorKind::GenericArtifact,
+    }
+}
+
 fn path_looks_like_source_file(path: &str) -> bool {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -5427,10 +5572,8 @@ fn automation_node_prewrite_requirements(
         .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list" | "read"));
     let web_research_required = automation_node_web_research_expected(node)
         && requested_tools.iter().any(|tool| tool == "websearch");
-    let brief_research_node = node
-        .output_contract
-        .as_ref()
-        .is_some_and(|contract| contract.kind == "brief");
+    let brief_research_node = automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ResearchBrief;
     let concrete_read_required =
         brief_research_node && requested_tools.iter().any(|tool| tool == "read");
     let successful_web_research_required = brief_research_node
@@ -5747,10 +5890,8 @@ struct ArtifactCandidateAssessment {
 
 fn artifact_required_section_count(node: &AutomationFlowNode, text: &str) -> usize {
     let lowered = text.to_ascii_lowercase();
-    let headings = if node
-        .output_contract
-        .as_ref()
-        .is_some_and(|contract| contract.kind == "brief")
+    let headings = if automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ResearchBrief
     {
         vec![
             "workspace source audit",
@@ -6643,10 +6784,8 @@ fn validate_automation_artifact_output(
                     .unwrap_or(0)
                     > 1);
         let selected_assessment = best_candidate.as_ref();
-        if node
-            .output_contract
-            .as_ref()
-            .is_some_and(|contract| contract.kind == "brief")
+        if automation_output_validator_kind(node)
+            == crate::AutomationOutputValidatorKind::ResearchBrief
             && requested_has_read
         {
             let missing_concrete_reads = !executed_has_read;
@@ -7058,10 +7197,8 @@ fn detect_automation_node_status(
         .any(|marker| lowered.contains(marker))
     {
         let reason = explicit_reason.or_else(|| {
-            if node
-                .output_contract
-                .as_ref()
-                .is_some_and(|contract| contract.kind == "review")
+            if automation_output_validator_kind(node)
+                == crate::AutomationOutputValidatorKind::ReviewDecision
             {
                 Some("review output was not approved".to_string())
             } else {
@@ -7086,10 +7223,8 @@ fn detect_automation_node_status(
     let executed_has_read = executed_tools
         .iter()
         .any(|value| value.as_str() == Some("read"));
-    let is_brief_contract = node
-        .output_contract
-        .as_ref()
-        .is_some_and(|contract| contract.kind == "brief");
+    let is_brief_contract = automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ResearchBrief;
     let verification_expected = tool_telemetry
         .get("verification_expected")
         .and_then(Value::as_bool)
@@ -7181,10 +7316,8 @@ fn detect_automation_node_status(
 fn automation_node_workflow_class(node: &AutomationFlowNode) -> String {
     if automation_node_is_code_workflow(node) {
         "code".to_string()
-    } else if node
-        .output_contract
-        .as_ref()
-        .is_some_and(|contract| contract.kind == "brief")
+    } else if automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ResearchBrief
     {
         "research".to_string()
     } else {
@@ -7214,6 +7347,13 @@ fn detect_automation_node_failure_kind(
             .iter()
             .any(|value| value.as_str() == Some(needle))
     };
+    let research_requirements_blocked = has_unmet("no_concrete_reads")
+        || has_unmet("concrete_read_required")
+        || has_unmet("missing_successful_web_research")
+        || has_unmet("files_reviewed_missing")
+        || has_unmet("files_reviewed_not_backed_by_read")
+        || has_unmet("relevant_files_not_reviewed_or_skipped")
+        || has_unmet("coverage_mode");
     let verification_failed = artifact_validation
         .and_then(|value| value.get("verification"))
         .and_then(|value| value.get("verification_failed"))
@@ -7242,8 +7382,12 @@ fn detect_automation_node_failure_kind(
         .and_then(|value| value.get("semantic_block_reason"))
         .and_then(Value::as_str)
         .is_some()
+        || (automation_output_validator_kind(node)
+            == crate::AutomationOutputValidatorKind::ResearchBrief
+            && normalized_status == "blocked"
+            && research_requirements_blocked)
     {
-        if has_unmet("no_concrete_reads") {
+        if has_unmet("no_concrete_reads") || has_unmet("concrete_read_required") {
             return Some("research_missing_reads".to_string());
         }
         if has_unmet("missing_successful_web_research") {
@@ -7252,6 +7396,7 @@ fn detect_automation_node_failure_kind(
         if has_unmet("files_reviewed_missing")
             || has_unmet("files_reviewed_not_backed_by_read")
             || has_unmet("relevant_files_not_reviewed_or_skipped")
+            || has_unmet("coverage_mode")
         {
             return Some("research_coverage_failed".to_string());
         }
@@ -7272,6 +7417,174 @@ fn detect_automation_node_failure_kind(
     None
 }
 
+fn build_automation_validator_summary(
+    validator_kind: crate::AutomationOutputValidatorKind,
+    status: &str,
+    blocked_reason: Option<&str>,
+    artifact_validation: Option<&Value>,
+) -> crate::AutomationValidatorSummary {
+    let normalized_status = status.trim().to_ascii_lowercase();
+    let verification_outcome = artifact_validation
+        .and_then(|value| value.get("verification"))
+        .and_then(|value| {
+            value
+                .get("verification_outcome")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    if value
+                        .get("verification_failed")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        Some("failed".to_string())
+                    } else if value
+                        .get("verification_ran")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        Some("passed".to_string())
+                    } else {
+                        None
+                    }
+                })
+        });
+    let unmet_requirements = artifact_validation
+        .and_then(|value| value.get("unmet_requirements"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let accepted_candidate_source = artifact_validation
+        .and_then(|value| value.get("accepted_candidate_source"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let repair_attempted = artifact_validation
+        .and_then(|value| value.get("repair_attempted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let repair_succeeded = artifact_validation
+        .and_then(|value| value.get("repair_succeeded"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let reason = blocked_reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            artifact_validation
+                .and_then(|value| value.get("rejected_artifact_reason"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            artifact_validation
+                .and_then(|value| value.get("semantic_block_reason"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+    let outcome = match normalized_status.as_str() {
+        "completed" | "done" => "passed",
+        "verify_failed" => "verify_failed",
+        "blocked" => "blocked",
+        "failed" => "failed",
+        other => other,
+    }
+    .to_string();
+    crate::AutomationValidatorSummary {
+        kind: validator_kind,
+        outcome,
+        reason,
+        unmet_requirements,
+        accepted_candidate_source,
+        verification_outcome,
+        repair_attempted,
+        repair_succeeded,
+    }
+}
+
+pub(crate) fn enrich_automation_node_output_for_contract(
+    node: &AutomationFlowNode,
+    output: &Value,
+) -> Value {
+    let Some(mut object) = output.as_object().cloned() else {
+        return output.clone();
+    };
+    let status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed")
+        .to_string();
+    let blocked_reason = object
+        .get("blocked_reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let approved = object
+        .get("approved")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let artifact_validation = object.get("artifact_validation").cloned();
+    let validator_kind = automation_output_validator_kind(node);
+
+    object.insert(
+        "contract_kind".to_string(),
+        json!(node
+            .output_contract
+            .as_ref()
+            .map(|row| row.kind.clone())
+            .unwrap_or_else(|| "structured_json".to_string())),
+    );
+    object.insert("validator_kind".to_string(), json!(validator_kind));
+    object.insert(
+        "workflow_class".to_string(),
+        json!(automation_node_workflow_class(node)),
+    );
+    object.insert(
+        "phase".to_string(),
+        json!(detect_automation_node_phase(
+            node,
+            &status,
+            artifact_validation.as_ref()
+        )),
+    );
+    object.insert(
+        "failure_kind".to_string(),
+        detect_automation_node_failure_kind(
+            node,
+            &status,
+            Some(approved),
+            blocked_reason.as_deref(),
+            artifact_validation.as_ref(),
+        )
+        .map(Value::String)
+        .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "validator_summary".to_string(),
+        json!(build_automation_validator_summary(
+            validator_kind,
+            &status,
+            blocked_reason.as_deref(),
+            artifact_validation.as_ref(),
+        )),
+    );
+    Value::Object(object)
+}
+
 fn detect_automation_node_phase(
     node: &AutomationFlowNode,
     status: &str,
@@ -7281,11 +7594,29 @@ fn detect_automation_node_phase(
     let normalized_status = status.trim().to_ascii_lowercase();
     match workflow_class.as_str() {
         "research" => {
-            if artifact_validation
+            let unmet_requirements = artifact_validation
+                .and_then(|value| value.get("unmet_requirements"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let has_unmet = |needle: &str| {
+                unmet_requirements
+                    .iter()
+                    .any(|value| value.as_str() == Some(needle))
+            };
+            let research_validation_blocked = artifact_validation
                 .and_then(|value| value.get("semantic_block_reason"))
                 .and_then(Value::as_str)
                 .is_some()
-            {
+                || (normalized_status == "blocked"
+                    && (has_unmet("no_concrete_reads")
+                        || has_unmet("concrete_read_required")
+                        || has_unmet("missing_successful_web_research")
+                        || has_unmet("files_reviewed_missing")
+                        || has_unmet("files_reviewed_not_backed_by_read")
+                        || has_unmet("relevant_files_not_reviewed_or_skipped")
+                        || has_unmet("coverage_mode")));
+            if research_validation_blocked {
                 "research_validation".to_string()
             } else if normalized_status == "completed" {
                 "completed".to_string()
@@ -7369,11 +7700,18 @@ fn wrap_automation_node_output(
         artifact_validation.as_ref(),
     );
     let workflow_class = automation_node_workflow_class(node);
+    let validator_kind = automation_output_validator_kind(node);
     let phase = detect_automation_node_phase(node, &status, artifact_validation.as_ref());
     let failure_kind = detect_automation_node_failure_kind(
         node,
         &status,
         approved,
+        blocked_reason.as_deref(),
+        artifact_validation.as_ref(),
+    );
+    let validator_summary = build_automation_validator_summary(
+        validator_kind,
+        &status,
         blocked_reason.as_deref(),
         artifact_validation.as_ref(),
     );
@@ -7411,6 +7749,8 @@ fn wrap_automation_node_output(
     };
     json!(AutomationNodeOutput {
         contract_kind,
+        validator_kind: Some(validator_kind),
+        validator_summary: Some(validator_summary),
         summary,
         content,
         created_at_ms: now_ms(),
@@ -7929,6 +8269,7 @@ mod tests {
         state.routines_path = tmp_routines_file("shared-state");
         state.routine_history_path = tmp_routines_file("routine-history");
         state.routine_runs_path = tmp_routines_file("routine-runs");
+        state.external_actions_path = tmp_routines_file("external-actions");
         state
     }
 
@@ -8480,6 +8821,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_external_action_appends_routine_receipt_artifact() {
+        let state = test_state_with_path(tmp_resource_file("external-action-artifact"));
+        let run = RoutineRunRecord {
+            run_id: "run-1".to_string(),
+            routine_id: "routine-1".to_string(),
+            trigger_type: "manual".to_string(),
+            run_count: 1,
+            status: RoutineRunStatus::Completed,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            fired_at_ms: Some(1),
+            started_at_ms: Some(1),
+            finished_at_ms: Some(1),
+            requires_approval: false,
+            approval_reason: None,
+            denial_reason: None,
+            paused_reason: None,
+            detail: None,
+            entrypoint: "workflow.publish".to_string(),
+            args: Value::Null,
+            allowed_tools: Vec::new(),
+            output_targets: Vec::new(),
+            artifacts: Vec::new(),
+            active_session_ids: Vec::new(),
+            latest_session_id: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+        };
+        state
+            .routine_runs
+            .write()
+            .await
+            .insert(run.run_id.clone(), run);
+
+        state
+            .record_external_action(ExternalActionRecord {
+                action_id: "action-1".to_string(),
+                operation: "create_issue".to_string(),
+                status: "posted".to_string(),
+                source_kind: Some("bug_monitor".to_string()),
+                source_id: Some("draft-1".to_string()),
+                routine_run_id: Some("run-1".to_string()),
+                context_run_id: None,
+                capability_id: Some("github.create_issue".to_string()),
+                provider: Some("bug-monitor".to_string()),
+                target: Some("acme/platform".to_string()),
+                approval_state: Some("executed".to_string()),
+                idempotency_key: Some("idem-1".to_string()),
+                receipt: Some(json!({"issue_number": 101})),
+                error: None,
+                metadata: None,
+                created_at_ms: 10,
+                updated_at_ms: 10,
+            })
+            .await
+            .expect("record external action");
+
+        let updated = state.get_routine_run("run-1").await.expect("routine run");
+        assert_eq!(updated.artifacts.len(), 1);
+        assert_eq!(updated.artifacts[0].kind, "external_action_receipt");
+        assert_eq!(updated.artifacts[0].uri, "external-action://action-1");
+        assert_eq!(
+            updated.artifacts[0]
+                .metadata
+                .as_ref()
+                .and_then(|row| row.get("actionID"))
+                .and_then(Value::as_str),
+            Some("action-1")
+        );
+        assert_eq!(
+            state
+                .get_external_action("action-1")
+                .await
+                .and_then(|row| row.capability_id),
+            Some("github.create_issue".to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn claim_next_queued_routine_run_marks_oldest_running() {
         let mut state = AppState::new_starting("routine-claim".to_string(), true);
         state.routine_runs_path = tmp_routines_file("routine-claim-runs");
@@ -8872,6 +9294,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -8896,6 +9319,171 @@ mod tests {
             .map(|node| node.node_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["code", "brief"]);
+    }
+
+    #[test]
+    fn output_validator_defaults_follow_existing_runtime_heuristics() {
+        let code = AutomationFlowNode {
+            node_id: "code".to_string(),
+            agent_id: "agent-a".to_string(),
+            objective: "Implement fix".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "report_markdown".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: Some(AutomationNodeStageKind::Workstream),
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "task_kind": "code_change",
+                    "output_path": "src/lib.rs"
+                }
+            })),
+        };
+        let brief = AutomationFlowNode {
+            node_id: "brief".to_string(),
+            agent_id: "agent-b".to_string(),
+            objective: "Draft research brief".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: Some(AutomationNodeStageKind::Workstream),
+            gate: None,
+            metadata: None,
+        };
+        let review = AutomationFlowNode {
+            node_id: "review".to_string(),
+            agent_id: "agent-c".to_string(),
+            objective: "Approve draft".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "review".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: Some(AutomationNodeStageKind::Review),
+            gate: None,
+            metadata: None,
+        };
+
+        assert_eq!(
+            automation_output_validator_kind(&code),
+            crate::AutomationOutputValidatorKind::CodePatch
+        );
+        assert_eq!(
+            automation_output_validator_kind(&brief),
+            crate::AutomationOutputValidatorKind::ResearchBrief
+        );
+        assert_eq!(
+            automation_output_validator_kind(&review),
+            crate::AutomationOutputValidatorKind::ReviewDecision
+        );
+    }
+
+    #[test]
+    fn output_validator_explicit_override_wins() {
+        let node = AutomationFlowNode {
+            node_id: "report".to_string(),
+            agent_id: "agent-a".to_string(),
+            objective: "Write report".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "report_markdown".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: Some(AutomationNodeStageKind::Workstream),
+            gate: None,
+            metadata: None,
+        };
+
+        assert_eq!(
+            automation_output_validator_kind(&node),
+            crate::AutomationOutputValidatorKind::StructuredJson
+        );
+    }
+
+    #[test]
+    fn enrich_automation_node_output_overwrites_stale_validator_metadata() {
+        let node = AutomationFlowNode {
+            node_id: "brief".to_string(),
+            agent_id: "agent-a".to_string(),
+            objective: "Draft research brief".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: Some(AutomationNodeStageKind::Workstream),
+            gate: None,
+            metadata: None,
+        };
+        let output = json!({
+            "node_id": "brief",
+            "status": "blocked",
+            "workflow_class": "artifact",
+            "phase": "completed",
+            "failure_kind": "verification_failed",
+            "validator_kind": "generic_artifact",
+            "validator_summary": {
+                "kind": "generic_artifact",
+                "outcome": "passed"
+            },
+            "artifact_validation": {
+                "unmet_requirements": ["concrete_read_required"]
+            }
+        });
+
+        let enriched = enrich_automation_node_output_for_contract(&node, &output);
+        assert_eq!(
+            enriched.get("validator_kind").and_then(Value::as_str),
+            Some("research_brief")
+        );
+        assert_eq!(
+            enriched.get("workflow_class").and_then(Value::as_str),
+            Some("research")
+        );
+        assert_eq!(
+            enriched.get("phase").and_then(Value::as_str),
+            Some("research_validation")
+        );
+        assert_eq!(
+            enriched.get("failure_kind").and_then(Value::as_str),
+            Some("research_missing_reads")
+        );
+        assert_eq!(
+            enriched
+                .get("validator_summary")
+                .and_then(|value| value.get("outcome"))
+                .and_then(Value::as_str),
+            Some("blocked")
+        );
     }
 
     #[test]
@@ -8930,6 +9518,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -8983,6 +9572,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9020,6 +9610,60 @@ mod tests {
             detect_automation_node_phase(&node, "blocked", Some(&artifact_validation)),
             "research_validation"
         );
+        let summary = build_automation_validator_summary(
+            crate::AutomationOutputValidatorKind::ResearchBrief,
+            "blocked",
+            Some("research completed without concrete file reads or required source coverage"),
+            Some(&artifact_validation),
+        );
+        assert_eq!(
+            summary.kind,
+            crate::AutomationOutputValidatorKind::ResearchBrief
+        );
+        assert_eq!(summary.outcome, "blocked");
+        assert_eq!(
+            summary.reason.as_deref(),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+        assert_eq!(
+            summary.unmet_requirements,
+            vec![
+                "no_concrete_reads".to_string(),
+                "files_reviewed_not_backed_by_read".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn validator_summary_tracks_verification_and_repair_state() {
+        let artifact_validation = json!({
+            "accepted_candidate_source": "session_write",
+            "repair_attempted": true,
+            "repair_succeeded": true,
+            "verification": {
+                "verification_outcome": "passed"
+            }
+        });
+
+        let summary = build_automation_validator_summary(
+            crate::AutomationOutputValidatorKind::CodePatch,
+            "done",
+            None,
+            Some(&artifact_validation),
+        );
+
+        assert_eq!(
+            summary.kind,
+            crate::AutomationOutputValidatorKind::CodePatch
+        );
+        assert_eq!(summary.outcome, "passed");
+        assert_eq!(
+            summary.accepted_candidate_source.as_deref(),
+            Some("session_write")
+        );
+        assert_eq!(summary.verification_outcome.as_deref(), Some("passed"));
+        assert!(summary.repair_attempted);
+        assert!(summary.repair_succeeded);
     }
 
     #[test]
@@ -9032,6 +9676,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9053,6 +9698,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "report_markdown".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9203,6 +9849,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "report_markdown".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9252,6 +9899,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "report_markdown".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9300,6 +9948,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "report_markdown".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9394,6 +10043,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "report_markdown".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9623,6 +10273,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "report_markdown".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9725,6 +10376,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9855,6 +10507,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -9952,6 +10605,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -10004,6 +10658,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -10140,6 +10795,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),
@@ -10201,6 +10857,7 @@ mod tests {
             input_refs: Vec::new(),
             output_contract: Some(AutomationFlowOutputContract {
                 kind: "brief".to_string(),
+                validator: None,
                 schema: None,
                 summary_guidance: None,
             }),

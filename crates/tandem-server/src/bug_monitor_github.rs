@@ -5,7 +5,7 @@ use tandem_types::EngineEvent;
 
 use crate::{
     now_ms, sha256_hex, truncate_text, AppState, BugMonitorConfig, BugMonitorDraftRecord,
-    BugMonitorPostRecord,
+    BugMonitorPostRecord, ExternalActionRecord,
 };
 
 const BUG_MONITOR_LABEL: &str = "bug-monitor";
@@ -57,7 +57,65 @@ pub async fn record_post_failure(
         created_at_ms: now,
         updated_at_ms: now,
     };
-    state.put_bug_monitor_post(post).await
+    let post = state.put_bug_monitor_post(post).await?;
+    mirror_bug_monitor_post_as_external_action(state, draft, &post).await;
+    Ok(post)
+}
+
+async fn mirror_bug_monitor_post_as_external_action(
+    state: &AppState,
+    draft: &BugMonitorDraftRecord,
+    post: &BugMonitorPostRecord,
+) {
+    let capability_id = match post.operation.as_str() {
+        "comment_issue" => Some("github.comment_on_issue".to_string()),
+        "create_issue" => Some("github.create_issue".to_string()),
+        _ => None,
+    };
+    let action = ExternalActionRecord {
+        action_id: post.post_id.clone(),
+        operation: post.operation.clone(),
+        status: post.status.clone(),
+        source_kind: Some("bug_monitor".to_string()),
+        source_id: Some(draft.draft_id.clone()),
+        routine_run_id: None,
+        context_run_id: draft.triage_run_id.clone(),
+        capability_id,
+        provider: Some(BUG_MONITOR_LABEL.to_string()),
+        target: Some(draft.repo.clone()),
+        approval_state: Some(if draft.status.eq_ignore_ascii_case("approval_required") {
+            "approval_required".to_string()
+        } else {
+            "executed".to_string()
+        }),
+        idempotency_key: Some(post.idempotency_key.clone()),
+        receipt: Some(json!({
+            "post_id": post.post_id,
+            "draft_id": post.draft_id,
+            "incident_id": post.incident_id,
+            "issue_number": post.issue_number,
+            "issue_url": post.issue_url,
+            "comment_id": post.comment_id,
+            "comment_url": post.comment_url,
+            "response_excerpt": post.response_excerpt,
+        })),
+        error: post.error.clone(),
+        metadata: Some(json!({
+            "repo": post.repo,
+            "fingerprint": post.fingerprint,
+            "evidence_digest": post.evidence_digest,
+            "bug_monitor_operation": post.operation,
+        })),
+        created_at_ms: post.created_at_ms,
+        updated_at_ms: post.updated_at_ms,
+    };
+    if let Err(error) = state.record_external_action(action).await {
+        tracing::warn!(
+            "failed to persist external action mirror for bug monitor post {}: {}",
+            post.post_id,
+            error
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,7 +156,7 @@ pub async fn publish_draft(
     if config.paused && mode == PublishMode::Auto {
         anyhow::bail!("Bug Monitor is paused");
     }
-    if !status.readiness.runtime_ready && mode != PublishMode::ManualPublish {
+    if !status.readiness.runtime_ready && mode == PublishMode::Auto {
         anyhow::bail!(
             "{}",
             status
@@ -134,6 +192,25 @@ pub async fn publish_draft(
     };
     let evidence_digest = compute_evidence_digest(&draft, incident.as_ref());
     draft.evidence_digest = Some(evidence_digest.clone());
+    if mode != PublishMode::RecheckOnly {
+        if let Some(existing) =
+            successful_post_for_draft(state, &draft.draft_id, Some(&evidence_digest)).await
+        {
+            draft.github_status = Some("duplicate_skipped".to_string());
+            draft.issue_number = existing.issue_number;
+            draft.github_issue_url = existing.issue_url.clone();
+            draft.github_comment_url = existing.comment_url.clone();
+            draft.github_posted_at_ms = Some(existing.updated_at_ms);
+            draft.last_post_error = None;
+            mirror_bug_monitor_post_as_external_action(state, &draft, &existing).await;
+            let draft = state.put_bug_monitor_draft(draft).await?;
+            return Ok(PublishOutcome {
+                action: "skip_duplicate".to_string(),
+                draft,
+                post: Some(existing),
+            });
+        }
+    }
     let issue_draft = if mode == PublishMode::RecheckOnly {
         None
     } else if draft.triage_run_id.is_none() {
@@ -207,6 +284,7 @@ pub async fn publish_draft(
                 draft.github_comment_url = existing.comment_url.clone();
                 draft.github_posted_at_ms = Some(existing.updated_at_ms);
                 draft.last_post_error = None;
+                mirror_bug_monitor_post_as_external_action(state, &draft, &existing).await;
                 let draft = state.put_bug_monitor_draft(draft).await?;
                 return Ok(PublishOutcome {
                     action: "skip_duplicate".to_string(),
@@ -244,6 +322,7 @@ pub async fn publish_draft(
                 updated_at_ms: now_ms(),
             };
             let post = state.put_bug_monitor_post(post).await?;
+            mirror_bug_monitor_post_as_external_action(state, &draft, &post).await;
             draft.status = "github_comment_posted".to_string();
             draft.github_status = Some("github_comment_posted".to_string());
             draft.github_issue_url = issue.html_url.clone();
@@ -359,6 +438,7 @@ async fn create_issue_from_draft(
         draft.github_issue_url = existing.issue_url.clone();
         draft.github_posted_at_ms = Some(existing.updated_at_ms);
         draft.last_post_error = None;
+        mirror_bug_monitor_post_as_external_action(state, &draft, &existing).await;
         let draft = state.put_bug_monitor_draft(draft).await?;
         return Ok(PublishOutcome {
             action: "skip_duplicate".to_string(),
@@ -404,6 +484,7 @@ async fn create_issue_from_draft(
         updated_at_ms: now_ms(),
     };
     let post = state.put_bug_monitor_post(post).await?;
+    mirror_bug_monitor_post_as_external_action(state, &draft, &post).await;
     draft.status = "github_issue_created".to_string();
     draft.github_status = Some("github_issue_created".to_string());
     draft.github_issue_url = created.html_url.clone();
@@ -441,7 +522,10 @@ async fn resolve_github_tool_set(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("Bug Monitor MCP server is not configured"))?
         .to_string();
-    let server_tools = state.mcp.server_tools(&server_name).await;
+    let mut server_tools = state.mcp.server_tools(&server_name).await;
+    if server_tools.is_empty() && state.mcp.connect(&server_name).await {
+        server_tools = state.mcp.server_tools(&server_name).await;
+    }
     if server_tools.is_empty() {
         anyhow::bail!("no MCP tools were discovered for selected Bug Monitor server");
     }
@@ -449,7 +533,7 @@ async fn resolve_github_tool_set(
         .capability_resolver
         .discover_from_runtime(server_tools.clone(), Vec::new())
         .await;
-    let resolved = state
+    let mut resolved = state
         .capability_resolver
         .resolve(
             crate::capability_resolver::CapabilityResolveInput {
@@ -468,10 +552,29 @@ async fn resolve_github_tool_set(
         )
         .await?;
     if !resolved.missing_required.is_empty() {
-        anyhow::bail!(
-            "selected MCP server is missing required GitHub capabilities: {}",
-            resolved.missing_required.join(", ")
-        );
+        let _ = state.capability_resolver.refresh_builtin_bindings().await;
+        let discovered = state
+            .capability_resolver
+            .discover_from_runtime(server_tools.clone(), Vec::new())
+            .await;
+        resolved = state
+            .capability_resolver
+            .resolve(
+                crate::capability_resolver::CapabilityResolveInput {
+                    workflow_id: Some("bug-monitor-github".to_string()),
+                    required_capabilities: vec![
+                        "github.list_issues".to_string(),
+                        "github.get_issue".to_string(),
+                        "github.create_issue".to_string(),
+                        "github.comment_on_issue".to_string(),
+                    ],
+                    optional_capabilities: Vec::new(),
+                    provider_preference: vec!["mcp".to_string()],
+                    available_tools: discovered,
+                },
+                Vec::new(),
+            )
+            .await?;
     }
     let tool_name = |capability_id: &str| -> anyhow::Result<String> {
         let namespaced = resolved
@@ -482,12 +585,43 @@ async fn resolve_github_tool_set(
             .ok_or_else(|| anyhow::anyhow!("missing resolved tool for {capability_id}"))?;
         map_namespaced_to_raw_tool(&server_tools, &namespaced)
     };
+    let direct_tool_name_fallback = |candidates: &[&str]| -> Option<String> {
+        server_tools
+            .iter()
+            .find(|row| {
+                candidates.iter().any(|candidate| {
+                    row.tool_name.eq_ignore_ascii_case(candidate)
+                        || row.namespaced_name.eq_ignore_ascii_case(candidate)
+                })
+            })
+            .map(|row| row.tool_name.clone())
+    };
+    let list_issues = tool_name("github.list_issues").or_else(|_| {
+        direct_tool_name_fallback(&["list_repository_issues", "mcp.github.list_issues"])
+            .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.list_issues"))
+    })?;
+    let get_issue = tool_name("github.get_issue").or_else(|_| {
+        direct_tool_name_fallback(&["get_issue", "mcp.github.get_issue"])
+            .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.get_issue"))
+    })?;
+    let create_issue = tool_name("github.create_issue").or_else(|_| {
+        direct_tool_name_fallback(&["mcp.github.create_issue", "create_issue"])
+            .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.create_issue"))
+    })?;
+    let comment_on_issue = tool_name("github.comment_on_issue").or_else(|_| {
+        direct_tool_name_fallback(&[
+            "mcp.github.create_issue_comment",
+            "create_issue_comment",
+            "github.comment_on_issue",
+        ])
+        .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.comment_on_issue"))
+    })?;
     Ok(GithubToolSet {
         server_name,
-        list_issues: tool_name("github.list_issues")?,
-        get_issue: tool_name("github.get_issue")?,
-        create_issue: tool_name("github.create_issue")?,
-        comment_on_issue: tool_name("github.comment_on_issue")?,
+        list_issues,
+        get_issue,
+        create_issue,
+        comment_on_issue,
     })
 }
 
@@ -552,6 +686,23 @@ async fn successful_post_by_idempotency(
         .values()
         .find(|row| row.idempotency_key == idempotency_key && row.status == "posted")
         .cloned()
+}
+
+async fn successful_post_for_draft(
+    state: &AppState,
+    draft_id: &str,
+    evidence_digest: Option<&str>,
+) -> Option<BugMonitorPostRecord> {
+    let mut rows = state.list_bug_monitor_posts(200).await;
+    rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    rows.into_iter().find(|row| {
+        row.draft_id == draft_id
+            && row.status == "posted"
+            && match evidence_digest {
+                Some(expected) => row.evidence_digest.as_deref() == Some(expected),
+                None => true,
+            }
+    })
 }
 
 fn compute_evidence_digest(

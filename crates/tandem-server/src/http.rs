@@ -56,6 +56,7 @@ mod coder;
 mod config_providers;
 pub(crate) mod context_runs;
 pub(crate) mod context_types;
+mod external_actions;
 mod global;
 mod mcp;
 mod middleware;
@@ -72,6 +73,7 @@ mod routes_capabilities;
 mod routes_coder;
 mod routes_config_providers;
 mod routes_context;
+mod routes_external_actions;
 mod routes_global;
 mod routes_mcp;
 mod routes_mission_builder;
@@ -192,9 +194,21 @@ struct WorkspaceOverrideInput {
 
 #[derive(Debug, Deserialize, Default)]
 struct WorktreeInput {
+    repo_root: Option<String>,
     path: Option<String>,
     branch: Option<String>,
     base: Option<String>,
+    task_id: Option<String>,
+    owner_run_id: Option<String>,
+    lease_id: Option<String>,
+    managed: Option<bool>,
+    cleanup_branch: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct WorktreeListQuery {
+    repo_root: Option<String>,
+    managed_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

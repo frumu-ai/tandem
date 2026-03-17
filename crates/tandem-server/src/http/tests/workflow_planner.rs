@@ -104,6 +104,12 @@ fn step_json(
     input_refs: Value,
     output_kind: &str,
 ) -> Value {
+    let validator = match output_kind {
+        "brief" => "research_brief",
+        "review" | "review_summary" | "approval_gate" => "review_decision",
+        "structured_json" => "structured_json",
+        _ => "generic_artifact",
+    };
     json!({
         "step_id": step_id,
         "kind": kind,
@@ -112,7 +118,8 @@ fn step_json(
         "agent_role": agent_role,
         "input_refs": input_refs,
         "output_contract": {
-            "kind": output_kind
+            "kind": output_kind,
+            "validator": validator
         }
     })
 }
@@ -340,6 +347,88 @@ async fn workflow_plan_preview_accepts_valid_llm_created_plan() {
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
         Some(3)
+    );
+    let steps = payload
+        .get("plan")
+        .and_then(|row| row.get("steps"))
+        .and_then(Value::as_array)
+        .expect("steps");
+    assert_eq!(
+        steps[0]
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("structured_json")
+    );
+    assert_eq!(
+        steps[2]
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("generic_artifact")
+    );
+}
+
+#[tokio::test]
+async fn workflow_plan_preview_accepts_research_and_review_validators_from_llm() {
+    let state = test_state().await;
+    configure_openai_provider(&state).await;
+    let app = app_router(state);
+    let _guard = PlannerEnvGuard::new(&[
+        "TANDEM_WORKFLOW_PLANNER_TEST_BUILD_RESPONSE",
+        "TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE",
+    ]);
+    _guard.set(
+        "TANDEM_WORKFLOW_PLANNER_TEST_BUILD_RESPONSE",
+        json!({
+            "action": "build",
+            "assistant_text": "Built a research and review workflow plan.",
+            "plan": llm_plan_json(
+                "Research And Review Workflow",
+                "Research a topic and route it through review.",
+                manual_schedule_json(),
+                "/tmp/ignored-by-normalizer",
+                vec![
+                    step_json("research_sources", "research", "Draft the research brief.", &[], "researcher", json!([]), "brief"),
+                    step_json("generate_report", "review", "Review the research brief.", &["research_sources"], "reviewer", json!([
+                        {"from_step_id":"research_sources","alias":"brief"}
+                    ]), "review")
+                ],
+                None
+            )
+        })
+        .to_string(),
+    );
+
+    let resp = app
+        .oneshot(preview_request(json!({
+            "prompt": "Research the topic and require review before approval",
+            "workspace_root": "/tmp/custom-workspace",
+            "operator_preferences": planner_preferences()
+        })))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let steps = payload
+        .get("plan")
+        .and_then(|row| row.get("steps"))
+        .and_then(Value::as_array)
+        .expect("steps");
+    assert_eq!(
+        steps[0]
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("research_brief")
+    );
+    assert_eq!(
+        steps[1]
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("review_decision")
     );
 }
 
@@ -1044,6 +1133,32 @@ async fn workflow_plan_chat_message_uses_llm_revision_when_planner_model_is_conf
             .and_then(|row| row.get("cron_expression"))
             .and_then(Value::as_str),
         Some("0 9 * * 1")
+    );
+    let steps = message_payload
+        .get("plan")
+        .and_then(|row| row.get("steps"))
+        .and_then(Value::as_array)
+        .expect("steps");
+    assert_eq!(
+        steps[0]
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("structured_json")
+    );
+    assert_eq!(
+        steps[2]
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("generic_artifact")
+    );
+    assert_eq!(
+        steps[3]
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("generic_artifact")
     );
 }
 

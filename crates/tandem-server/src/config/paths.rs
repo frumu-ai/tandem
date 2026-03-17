@@ -130,6 +130,16 @@ pub(crate) fn resolve_bug_monitor_posts_path() -> PathBuf {
     default_state_dir().join("bug_monitor_posts.json")
 }
 
+pub(crate) fn resolve_external_actions_path() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("external_actions.json");
+        }
+    }
+    default_state_dir().join("external_actions.json")
+}
+
 pub(crate) fn legacy_failure_reporter_path(file_name: &str) -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();

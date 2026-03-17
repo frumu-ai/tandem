@@ -1263,11 +1263,28 @@ fn decode_planner_plan_value_relaxed(mut value: Value) -> Option<crate::Workflow
                     _ => None,
                 });
             if let Some(kind) = inferred_kind {
-                step_obj.insert("output_contract".to_string(), json!({ "kind": kind }));
+                step_obj.insert(
+                    "output_contract".to_string(),
+                    json!({
+                        "kind": kind,
+                        "validator": output_validator_kind_for_kind(&kind),
+                    }),
+                );
             }
         }
     }
     serde_json::from_value::<crate::WorkflowPlan>(value).ok()
+}
+
+fn output_validator_kind_for_kind(kind: &str) -> crate::AutomationOutputValidatorKind {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "brief" => crate::AutomationOutputValidatorKind::ResearchBrief,
+        "review" | "review_summary" | "approval_gate" => {
+            crate::AutomationOutputValidatorKind::ReviewDecision
+        }
+        "structured_json" => crate::AutomationOutputValidatorKind::StructuredJson,
+        _ => crate::AutomationOutputValidatorKind::GenericArtifact,
+    }
 }
 
 fn merge_create_operator_preferences(
@@ -1899,7 +1916,7 @@ fn build_llm_workflow_creation_prompt(
             "- each step must use fields: step_id, kind, objective, agent_role, depends_on, input_refs, output_contract\n",
             "- do not use alternate keys like id, type, label, or config as the primary step schema\n",
             "- input_refs must be objects shaped like {{\"from_step_id\":\"...\",\"alias\":\"...\"}}\n",
-            "- output_contract must be either null or {{\"kind\":\"structured_json|report_markdown|text_summary|urls|citations\"}}\n",
+            "- output_contract must be either null or {{\"kind\":\"structured_json|report_markdown|text_summary|urls|citations|brief|review|review_summary|approval_gate\",\"validator\":\"structured_json|generic_artifact|research_brief|review_decision\"}}\n",
             "Schedule schema:\n",
             "- manual: {{\"type\":\"manual\",\"timezone\":\"UTC\",\"misfire_policy\":{{\"type\":\"run_once\"}}}}\n",
             "- cron: {{\"type\":\"cron\",\"cron_expression\":\"...\",\"timezone\":\"UTC\",\"misfire_policy\":{{\"type\":\"run_once\"}}}}\n",
@@ -1971,7 +1988,7 @@ fn build_llm_workflow_revision_prompt(
             "- each step must use fields: step_id, kind, objective, agent_role, depends_on, input_refs, output_contract\n",
             "- do not use alternate keys like id, type, label, or config as the primary step schema\n",
             "- input_refs must be objects shaped like {{\"from_step_id\":\"...\",\"alias\":\"...\"}}\n",
-            "- output_contract must be either null or {{\"kind\":\"structured_json|report_markdown|text_summary|urls|citations\"}}\n",
+            "- output_contract must be either null or {{\"kind\":\"structured_json|report_markdown|text_summary|urls|citations|brief|review|review_summary|approval_gate\",\"validator\":\"structured_json|generic_artifact|research_brief|review_decision\"}}\n",
             "You may revise title, description, schedule, workspace_root, allowed_mcp_servers, operator_preferences, steps, dependencies, input_refs, and output_contracts.\n",
             "Schedule schema:\n",
             "- manual | cron | interval using the same shape already present on WorkflowPlan.schedule\n",
@@ -2170,6 +2187,7 @@ fn plan_step_with_dep(
         input_refs,
         output_contract: output_contract.map(|kind| crate::AutomationFlowOutputContract {
             kind: kind.to_string(),
+            validator: Some(output_validator_kind_for_kind(kind)),
             schema: None,
             summary_guidance: None,
         }),

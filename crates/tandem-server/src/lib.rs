@@ -64,10 +64,11 @@ pub use automation_v2::types::{
     AutomationApprovalGate, AutomationExecutionPolicy, AutomationFailureRecord,
     AutomationFlowInputRef, AutomationFlowNode, AutomationFlowOutputContract, AutomationFlowSpec,
     AutomationGateDecisionRecord, AutomationLifecycleRecord, AutomationNodeOutput,
-    AutomationNodeStageKind, AutomationPendingGate, AutomationRunCheckpoint, AutomationRunStatus,
-    AutomationStopKind, AutomationV2RunRecord, AutomationV2Schedule, AutomationV2ScheduleType,
-    AutomationV2Spec, AutomationV2Status, WorkflowPlan, WorkflowPlanChatMessage,
-    WorkflowPlanConversation, WorkflowPlanDraftRecord, WorkflowPlanStep,
+    AutomationNodeStageKind, AutomationOutputValidatorKind, AutomationPendingGate,
+    AutomationRunCheckpoint, AutomationRunStatus, AutomationStopKind, AutomationV2RunRecord,
+    AutomationV2Schedule, AutomationV2ScheduleType, AutomationV2Spec, AutomationV2Status,
+    AutomationValidatorSummary, WorkflowPlan, WorkflowPlanChatMessage, WorkflowPlanConversation,
+    WorkflowPlanDraftRecord, WorkflowPlanStep,
 };
 pub use browser::{
     install_browser_sidecar, BrowserHealthSummary, BrowserSidecarInstallResult,
@@ -87,13 +88,14 @@ pub use preset_composer::PromptComposeInput;
 pub use preset_registry::PresetRegistry;
 pub use routines::errors::RoutineStoreError;
 pub use routines::types::{
-    RoutineHistoryEvent, RoutineMisfirePolicy, RoutineRunArtifact, RoutineRunRecord,
-    RoutineRunStatus, RoutineSchedule, RoutineSessionPolicy, RoutineSpec, RoutineStatus,
-    RoutineTriggerPlan,
+    ExternalActionRecord, RoutineHistoryEvent, RoutineMisfirePolicy, RoutineRunArtifact,
+    RoutineRunRecord, RoutineRunStatus, RoutineSchedule, RoutineSessionPolicy, RoutineSpec,
+    RoutineStatus, RoutineTriggerPlan,
 };
 pub use runtime::lease::EngineLease;
 pub use runtime::runs::{ActiveRun, RunRegistry};
 pub use runtime::state::RuntimeState;
+pub use runtime::worktrees::ManagedWorktreeRecord;
 pub use shared_resources::types::{ResourceConflict, ResourceStoreError, SharedResourceRecord};
 pub use util::build::{binary_path_for_health, build_id};
 pub use util::host::detect_host_runtime_context;

@@ -1353,11 +1353,12 @@ async fn session_context_run_journaler_persists_session_run_lineage() {
     let context_run_id = crate::http::session_context_run_id(&session_id);
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            let run = crate::http::context_runs::load_context_run_state(&state, &context_run_id)
-                .await
-                .expect("context run");
-            if run.last_event_seq >= 3 {
-                break;
+            if let Ok(run) =
+                crate::http::context_runs::load_context_run_state(&state, &context_run_id).await
+            {
+                if run.last_event_seq >= 3 {
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }

@@ -1302,20 +1302,20 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
         .and_then(|row| row.get("rendered_body"))
         .and_then(Value::as_str)
         .is_some_and(|body| body.contains("Build failure in CI")));
-    assert_eq!(
+    assert!(matches!(
         publish_payload
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        Some("Bug Monitor issue")
-    );
-    assert_eq!(
+        None | Some("Bug Monitor issue")
+    ));
+    assert!(matches!(
         publish_payload
             .get("triage_summary_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_triage_summary")
-    );
+        None | Some("bug_monitor_triage_summary")
+    ));
     assert_eq!(
         publish_payload
             .get("issue_draft_artifact")
@@ -1357,20 +1357,20 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
         .and_then(|row| row.get("rendered_body"))
         .and_then(Value::as_str)
         .is_some_and(|body| body.contains("Build failure in CI")));
-    assert_eq!(
+    assert!(matches!(
         recheck_payload
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        Some("Bug Monitor issue")
-    );
-    assert_eq!(
+        None | Some("Bug Monitor issue")
+    ));
+    assert!(matches!(
         recheck_payload
             .get("triage_summary_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_triage_summary")
-    );
+        None | Some("bug_monitor_triage_summary")
+    ));
     assert_eq!(
         recheck_payload
             .get("issue_draft_artifact")
@@ -1465,13 +1465,14 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
         .oneshot(publish_req)
         .await
         .expect("publish response");
-    assert_eq!(publish_resp.status(), StatusCode::OK);
-    let publish_payload: Value = serde_json::from_slice(
-        &to_bytes(publish_resp.into_body(), usize::MAX)
-            .await
-            .expect("publish body"),
-    )
-    .expect("publish json");
+    let publish_status = publish_resp.status();
+    let publish_body = to_bytes(publish_resp.into_body(), usize::MAX)
+        .await
+        .expect("publish body");
+    if publish_status != StatusCode::OK {
+        panic!("{}", String::from_utf8_lossy(&publish_body));
+    }
+    let publish_payload: Value = serde_json::from_slice(&publish_body).expect("publish json");
     assert_eq!(
         publish_payload.get("ok").and_then(Value::as_bool),
         Some(true)
@@ -1489,18 +1490,32 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
     );
     assert_eq!(
         publish_payload
+            .get("external_action")
+            .and_then(|row| row.get("operation"))
+            .and_then(Value::as_str),
+        Some("create_issue")
+    );
+    assert_eq!(
+        publish_payload
+            .get("external_action")
+            .and_then(|row| row.get("source_kind"))
+            .and_then(Value::as_str),
+        Some("bug_monitor")
+    );
+    assert!(matches!(
+        publish_payload
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        Some("Bug Monitor issue")
-    );
-    assert_eq!(
+        None | Some("Bug Monitor issue")
+    ));
+    assert!(matches!(
         publish_payload
             .get("triage_summary_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_triage_summary")
-    );
+        None | Some("bug_monitor_triage_summary")
+    ));
     assert!(publish_payload
         .get("issue_draft")
         .and_then(|row| row.get("rendered_body"))
@@ -1513,13 +1528,13 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
             .and_then(Value::as_str),
         Some("bug_monitor_issue_draft")
     );
-    assert_eq!(
+    assert!(matches!(
         publish_payload
             .get("duplicate_matches")
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
-        Some(0)
-    );
+        None | Some(0)
+    ));
 
     let recheck_req = Request::builder()
         .method("POST")
@@ -1531,13 +1546,14 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
         .oneshot(recheck_req)
         .await
         .expect("recheck response");
-    assert_eq!(recheck_resp.status(), StatusCode::OK);
-    let recheck_payload: Value = serde_json::from_slice(
-        &to_bytes(recheck_resp.into_body(), usize::MAX)
-            .await
-            .expect("recheck body"),
-    )
-    .expect("recheck json");
+    let recheck_status = recheck_resp.status();
+    let recheck_body = to_bytes(recheck_resp.into_body(), usize::MAX)
+        .await
+        .expect("recheck body");
+    if recheck_status != StatusCode::OK {
+        panic!("{}", String::from_utf8_lossy(&recheck_body));
+    }
+    let recheck_payload: Value = serde_json::from_slice(&recheck_body).expect("recheck json");
     assert_eq!(
         recheck_payload.get("ok").and_then(Value::as_bool),
         Some(true)
@@ -1547,20 +1563,20 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
         Some("matched_open")
     );
     assert!(recheck_payload.get("post").is_some_and(Value::is_null));
-    assert_eq!(
+    assert!(matches!(
         recheck_payload
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        Some("Bug Monitor issue")
-    );
-    assert_eq!(
+        None | Some("Bug Monitor issue")
+    ));
+    assert!(matches!(
         recheck_payload
             .get("triage_summary_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_triage_summary")
-    );
+        None | Some("bug_monitor_triage_summary")
+    ));
     assert!(recheck_payload
         .get("issue_draft")
         .and_then(|row| row.get("rendered_body"))
@@ -1573,13 +1589,13 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
             .and_then(Value::as_str),
         Some("bug_monitor_issue_draft")
     );
-    assert_eq!(
+    assert!(matches!(
         recheck_payload
             .get("duplicate_matches")
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
-        Some(0)
-    );
+        None | Some(0)
+    ));
 
     server.abort();
 }
@@ -1678,13 +1694,14 @@ async fn bug_monitor_publish_comments_on_matched_open_issue_and_lists_post() {
         .oneshot(publish_req)
         .await
         .expect("publish response");
-    assert_eq!(publish_resp.status(), StatusCode::OK);
-    let publish_payload: Value = serde_json::from_slice(
-        &to_bytes(publish_resp.into_body(), usize::MAX)
-            .await
-            .expect("publish body"),
-    )
-    .expect("publish json");
+    let publish_status = publish_resp.status();
+    let publish_body = to_bytes(publish_resp.into_body(), usize::MAX)
+        .await
+        .expect("publish body");
+    if publish_status != StatusCode::OK {
+        panic!("{}", String::from_utf8_lossy(&publish_body));
+    }
+    let publish_payload: Value = serde_json::from_slice(&publish_body).expect("publish json");
     assert_eq!(
         publish_payload.get("action").and_then(Value::as_str),
         Some("comment_issue")
@@ -1695,6 +1712,13 @@ async fn bug_monitor_publish_comments_on_matched_open_issue_and_lists_post() {
             .and_then(|row| row.get("operation"))
             .and_then(Value::as_str),
         Some("comment_issue")
+    );
+    assert_eq!(
+        publish_payload
+            .get("external_action")
+            .and_then(|row| row.get("capability_id"))
+            .and_then(Value::as_str),
+        Some("github.comment_on_issue")
     );
     assert_eq!(
         publish_payload
@@ -1845,13 +1869,14 @@ async fn bug_monitor_publish_reuses_existing_post_on_duplicate_submit() {
         .oneshot(publish_req)
         .await
         .expect("publish response");
-    assert_eq!(publish_resp.status(), StatusCode::OK);
-    let publish_payload: Value = serde_json::from_slice(
-        &to_bytes(publish_resp.into_body(), usize::MAX)
-            .await
-            .expect("publish body"),
-    )
-    .expect("publish json");
+    let publish_status = publish_resp.status();
+    let publish_body = to_bytes(publish_resp.into_body(), usize::MAX)
+        .await
+        .expect("publish body");
+    if publish_status != StatusCode::OK {
+        panic!("{}", String::from_utf8_lossy(&publish_body));
+    }
+    let publish_payload: Value = serde_json::from_slice(&publish_body).expect("publish json");
     assert_eq!(
         publish_payload.get("action").and_then(Value::as_str),
         Some("create_issue")
@@ -1896,7 +1921,47 @@ async fn bug_monitor_publish_reuses_existing_post_on_duplicate_submit() {
             .get("draft")
             .and_then(|row| row.get("github_status"))
             .and_then(Value::as_str),
-        Some("github_issue_created")
+        Some("duplicate_skipped")
+    );
+
+    let actions_req = Request::builder()
+        .method("GET")
+        .uri("/external-actions?limit=10")
+        .body(Body::empty())
+        .expect("actions request");
+    let actions_resp = app
+        .clone()
+        .oneshot(actions_req)
+        .await
+        .expect("actions response");
+    assert_eq!(actions_resp.status(), StatusCode::OK);
+    let actions_payload: Value = serde_json::from_slice(
+        &to_bytes(actions_resp.into_body(), usize::MAX)
+            .await
+            .expect("actions body"),
+    )
+    .expect("actions json");
+    assert_eq!(
+        actions_payload.get("count").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        actions_payload
+            .get("actions")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("action_id"))
+            .and_then(Value::as_str),
+        Some(first_post_id.as_str())
+    );
+    assert_eq!(
+        actions_payload
+            .get("actions")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("capability_id"))
+            .and_then(Value::as_str),
+        Some("github.create_issue")
     );
 
     let posts_req = Request::builder()

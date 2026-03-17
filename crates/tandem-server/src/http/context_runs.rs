@@ -181,6 +181,40 @@ pub(super) fn context_run_dir(state: &AppState, run_id: &str) -> PathBuf {
     context_runs_root(state).join(run_id)
 }
 
+pub(crate) async fn append_json_artifact_to_context_run(
+    state: &AppState,
+    run_id: &str,
+    artifact_id: &str,
+    artifact_type: &str,
+    relative_path: &str,
+    payload: &Value,
+) -> anyhow::Result<()> {
+    let path = context_run_dir(state, run_id).join(relative_path);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let raw = serde_json::to_string_pretty(payload)?;
+    tokio::fs::write(&path, raw).await?;
+    let artifact = ContextBlackboardArtifact {
+        id: artifact_id.to_string(),
+        ts_ms: crate::now_ms(),
+        path: path.to_string_lossy().to_string(),
+        artifact_type: artifact_type.to_string(),
+        step_id: None,
+        source_event_id: None,
+    };
+    context_run_engine()
+        .commit_blackboard_patch(
+            state,
+            run_id,
+            ContextBlackboardPatchOp::AddArtifact,
+            serde_json::to_value(&artifact)?,
+        )
+        .await
+        .map_err(|status| anyhow::anyhow!("context blackboard patch failed: {status}"))?;
+    Ok(())
+}
+
 pub(super) fn context_run_state_path(state: &AppState, run_id: &str) -> PathBuf {
     context_run_dir(state, run_id).join("run_state.json")
 }
@@ -3586,6 +3620,10 @@ pub(super) fn automation_v2_context_run_id(run_id: &str) -> String {
     format!("automation-v2-{run_id}")
 }
 
+pub(crate) fn routine_context_run_id(run_id: &str) -> String {
+    format!("routine-{run_id}")
+}
+
 pub(crate) fn session_context_run_id(session_id: &str) -> String {
     format!("session-{session_id}")
 }
@@ -3676,6 +3714,116 @@ pub(super) fn automation_run_status_to_context(
         crate::AutomationRunStatus::Failed => ContextRunStatus::Failed,
         crate::AutomationRunStatus::Cancelled => ContextRunStatus::Cancelled,
     }
+}
+
+fn routine_run_status_to_context(status: &crate::RoutineRunStatus) -> ContextRunStatus {
+    match status {
+        crate::RoutineRunStatus::Queued => ContextRunStatus::Queued,
+        crate::RoutineRunStatus::PendingApproval
+        | crate::RoutineRunStatus::Running
+        | crate::RoutineRunStatus::Paused => ContextRunStatus::Running,
+        crate::RoutineRunStatus::BlockedPolicy => ContextRunStatus::Blocked,
+        crate::RoutineRunStatus::Denied => ContextRunStatus::Cancelled,
+        crate::RoutineRunStatus::Completed => ContextRunStatus::Completed,
+        crate::RoutineRunStatus::Failed => ContextRunStatus::Failed,
+        crate::RoutineRunStatus::Cancelled => ContextRunStatus::Cancelled,
+    }
+}
+
+fn routine_run_status_to_step(status: &crate::RoutineRunStatus) -> ContextStepStatus {
+    match status {
+        crate::RoutineRunStatus::Queued => ContextStepStatus::Pending,
+        crate::RoutineRunStatus::PendingApproval
+        | crate::RoutineRunStatus::Paused
+        | crate::RoutineRunStatus::BlockedPolicy
+        | crate::RoutineRunStatus::Denied
+        | crate::RoutineRunStatus::Cancelled => ContextStepStatus::Blocked,
+        crate::RoutineRunStatus::Running => ContextStepStatus::InProgress,
+        crate::RoutineRunStatus::Completed => ContextStepStatus::Done,
+        crate::RoutineRunStatus::Failed => ContextStepStatus::Failed,
+    }
+}
+
+pub(crate) async fn sync_routine_run_blackboard(
+    state: &AppState,
+    run: &crate::RoutineRunRecord,
+) -> Result<String, StatusCode> {
+    let run_id = routine_context_run_id(&run.run_id);
+
+    if load_context_run_state(state, &run_id).await.is_err() {
+        let now = crate::now_ms();
+        let context_run = ContextRunState {
+            run_id: run_id.clone(),
+            run_type: "routine".to_string(),
+            source_client: Some("routine_runtime".to_string()),
+            model_provider: None,
+            model_id: None,
+            mcp_servers: Vec::new(),
+            status: routine_run_status_to_context(&run.status),
+            objective: format!("Routine {} ({})", run.routine_id, run.entrypoint),
+            workspace: ContextWorkspaceLease::default(),
+            steps: vec![ContextRunStep {
+                step_id: "routine-run".to_string(),
+                title: format!("Execute routine {}", run.entrypoint),
+                status: routine_run_status_to_step(&run.status),
+            }],
+            tasks: Vec::new(),
+            why_next_step: Some("Track routine run lifecycle and output artifacts".to_string()),
+            revision: 1,
+            last_event_seq: 0,
+            created_at_ms: run.created_at_ms.max(now),
+            started_at_ms: run.started_at_ms.or(run.fired_at_ms),
+            ended_at_ms: run.finished_at_ms,
+            last_error: run.detail.clone(),
+            updated_at_ms: run.updated_at_ms.max(now),
+        };
+        save_context_run_state(state, &context_run).await?;
+    }
+
+    let mut run_state = load_context_run_state(state, &run_id).await?;
+    let now = crate::now_ms();
+    run_state.status = routine_run_status_to_context(&run.status);
+    run_state.objective = format!("Routine {} ({})", run.routine_id, run.entrypoint);
+    run_state.updated_at_ms = run.updated_at_ms.max(now);
+    run_state.started_at_ms = run_state
+        .started_at_ms
+        .or(run.started_at_ms)
+        .or(run.fired_at_ms);
+    run_state.ended_at_ms = run.finished_at_ms;
+    run_state.last_error = run.detail.clone();
+    run_state.steps = vec![ContextRunStep {
+        step_id: "routine-run".to_string(),
+        title: format!("Execute routine {}", run.entrypoint),
+        status: routine_run_status_to_step(&run.status),
+    }];
+    save_context_run_state(state, &run_state).await?;
+
+    let mut blackboard = load_context_blackboard(state, &run_id);
+    for artifact_row in &run.artifacts {
+        let artifact_id = format!("routine-artifact-{}", artifact_row.artifact_id);
+        if blackboard.artifacts.iter().any(|row| row.id == artifact_id) {
+            continue;
+        }
+        let artifact = ContextBlackboardArtifact {
+            id: artifact_id,
+            ts_ms: artifact_row.created_at_ms,
+            path: artifact_row.uri.clone(),
+            artifact_type: artifact_row.kind.clone(),
+            step_id: Some("routine-run".to_string()),
+            source_event_id: None,
+        };
+        let _ = context_run_engine()
+            .commit_blackboard_patch(
+                state,
+                &run_id,
+                ContextBlackboardPatchOp::AddArtifact,
+                serde_json::to_value(&artifact).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            )
+            .await?;
+        blackboard.artifacts.push(artifact);
+    }
+
+    Ok(run_id)
 }
 
 fn workflow_run_status_to_context(status: &crate::WorkflowRunStatus) -> ContextRunStatus {

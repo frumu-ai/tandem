@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Agent context component manifests**:
   - added first-party component manifests for Tandem engine, desktop, TUI, control panel, and SDK clients under `manifests/components/`
   - bundled matching agent-context manifest copies into the desktop resources so runtime agents can use the same conservative component map
+- **Runtime-owned external action receipts**:
+  - added a shared `ExternalActionRecord` contract plus `/external-actions` read APIs for outbound action receipts, idempotency keys, targets, approval state, and receipt metadata
+  - Bug Monitor GitHub publishes now mirror into the shared external-action path while keeping the existing Bug Monitor post APIs intact
+  - coder real PR submit and merge submit now also emit shared external-action receipts linked back to the canonical coder context run
 
 ### Changed
 
@@ -30,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - interactive session runs now create deterministic `session-<sessionID>` context runs before `contextRunID` is returned, so replay/debug links do not race durable state creation
   - added a session context-run journal bridge that maps `session.run.started`, `message.part.updated`, and `session.run.finished` into durable context-run lineage
   - coder worker-session artifacts and downstream approval/review payloads now carry durable worker-session context-run ids alongside transient session ids
+- **Managed worktree isolation is now runtime-owned**:
+  - raw `/worktree` flows now allocate deterministic managed worktrees under `.tandem/worktrees` with lease validation, cleanup on release/expiry, and managed-path boundary enforcement
+  - coder workers and agent-team child sessions now run in manager-issued isolated worktrees for real git repos instead of sharing one mutable workspace by convention
+  - failure-path cleanup now removes managed worktrees even when coder or child-session setup fails before the happy-path teardown
+- **Automation output validation is now an explicit contract**:
+  - `automation_v2` output contracts now declare validator kinds explicitly, and node outputs persist validator kind plus a typed validator summary instead of relying on ad hoc inference alone
+  - mission builder, workflow planner, and standup composer now emit explicit validator intent for research, review, structured JSON, and generic artifacts
+  - `automation_v2` read APIs now normalize older node outputs to the current validator contract so operator views converge on one interpretation
+- **Outbound action producers now reuse one receipt path**:
+  - Bug Monitor GitHub publish/recheck now falls back to directly discovered MCP tools when capability bindings lag, so read/write GitHub actions do not fail just because bindings are stale
+  - repeated Bug Monitor publish calls now reuse the existing posted receipt instead of drifting into a second GitHub side effect
+  - read-only Bug Monitor recheck no longer inherits the fail-closed posting gate, so inspection can proceed without pretending it is a write
 - **Workflow board and debugger usability**:
   - moved the workflow board onto its own full-width row in the Run Debugger
   - made desktop workflow lanes horizontally scrollable with jump-to-active controls instead of clipping off-screen columns
@@ -90,6 +106,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - fixed failed malformed write calls persisting empty `{}` args when normalized best-effort args were already available
   - fixed session-history merge behavior so stronger structured tool args replace weaker raw-string or partial-arg snapshots when later evidence arrives
   - fixed repo-aware session summaries and model-facing chat replay to preserve recovered tool args, errors, and write lineage instead of silently dropping malformed-write context
+- **Canonical journal linkage and operator surfacing**:
+  - fixed routine, legacy automation, and `automation_v2` operator routes so any returned `contextRunID` is immediately dereferenceable instead of being an eventually-consistent hint
+  - routine/artifact operator routes now eagerly sync the canonical context-run blackboard before returning linkage to operators
+  - coder operator and approval surfaces now consistently expose one preferred durable run reference instead of privileging transient worker session ids
 - **Artifact integrity for file-backed workflows**:
   - fixed agents overwriting declared artifacts with placeholder status notes such as “completed previously” / “preserving file creation requirement”
   - fixed declared workflow artifacts being replaced by stray touch/status/marker files created by the model

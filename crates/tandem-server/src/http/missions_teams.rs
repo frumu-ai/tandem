@@ -14,6 +14,15 @@ use tandem_orchestrator::{
 use tandem_types::EngineEvent;
 use uuid::Uuid;
 
+fn instance_metadata_field(instance: &tandem_orchestrator::AgentInstance, key: &str) -> Value {
+    instance
+        .metadata
+        .as_ref()
+        .and_then(|row| row.get(key))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct AgentTeamToolApprovalOutput {
     #[serde(rename = "approvalID")]
@@ -739,6 +748,7 @@ pub(super) async fn agent_standup_compose(
             input_refs: Vec::new(),
             output_contract: Some(crate::AutomationFlowOutputContract {
                 kind: "structured_json".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
                 schema: None,
                 summary_guidance: None,
             }),
@@ -787,6 +797,7 @@ pub(super) async fn agent_standup_compose(
             .collect(),
         output_contract: Some(crate::AutomationFlowOutputContract {
             kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
             schema: None,
             summary_guidance: None,
         }),
@@ -935,6 +946,9 @@ pub(super) async fn agent_team_spawn(
         "runID": instance.run_id,
         "status": instance.status,
         "skillHash": instance.skill_hash,
+        "workspaceRoot": instance_metadata_field(&instance, "workspaceRoot"),
+        "workspaceRepoRoot": instance_metadata_field(&instance, "workspaceRepoRoot"),
+        "managedWorktree": instance_metadata_field(&instance, "managedWorktree"),
     })))
 }
 
@@ -981,6 +995,9 @@ pub(super) async fn agent_team_approve_spawn(
         "sessionID": instance.session_id,
         "missionID": instance.mission_id,
         "status": instance.status,
+        "workspaceRoot": instance_metadata_field(&instance, "workspaceRoot"),
+        "workspaceRepoRoot": instance_metadata_field(&instance, "workspaceRepoRoot"),
+        "managedWorktree": instance_metadata_field(&instance, "managedWorktree"),
     })))
 }
 

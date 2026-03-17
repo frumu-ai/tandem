@@ -119,9 +119,21 @@ pub struct AutomationFlowInputRef {
 pub struct AutomationFlowOutputContract {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator: Option<AutomationOutputValidatorKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_guidance: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationOutputValidatorKind {
+    CodePatch,
+    ResearchBrief,
+    ReviewDecision,
+    StructuredJson,
+    GenericArtifact,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,6 +251,10 @@ pub struct WorkflowPlanDraftRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationNodeOutput {
     pub contract_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator_kind: Option<AutomationOutputValidatorKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator_summary: Option<AutomationValidatorSummary>,
     pub summary: String,
     pub content: Value,
     pub created_at_ms: u64,
@@ -259,6 +275,24 @@ pub struct AutomationNodeOutput {
     pub tool_telemetry: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_validation: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationValidatorSummary {
+    pub kind: AutomationOutputValidatorKind,
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub unmet_requirements: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_candidate_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_outcome: Option<String>,
+    #[serde(default)]
+    pub repair_attempted: bool,
+    #[serde(default)]
+    pub repair_succeeded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

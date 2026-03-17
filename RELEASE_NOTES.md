@@ -62,6 +62,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - interactive session runs now create deterministic `session-<sessionID>` context runs before `contextRunID` is returned
   - a session context-run journal bridge now records session run lifecycle and tool activity as replayable context-run events
   - coder worker-session artifacts and approval/review payloads now carry durable worker-session context-run ids alongside transient session identifiers
+  - routine, legacy automation, and `automation_v2` operator routes now only return canonical `contextRunID` links after the journal/blackboard projection is synced, so returned links are immediately dereferenceable
 
 - File-backed workflow runtime hardening
   - `automation_v2` nodes now use deterministic required tool sets
@@ -74,6 +75,21 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - brief/research nodes now require concrete `read` coverage, successful web research when expected, and get one automatic repair pass before they finalize as blocked
   - blocked research nodes now expose structured coverage/debug metadata including actual `read` paths, discovered relevant files, missing file coverage, and repair-pass state
   - code workflows now support multi-step build/test/lint verification summaries, with partial verification blocking completion and failed verification surfacing as `verify_failed`
+
+- Managed worktree isolation is now runtime-owned
+  - `.tandem/worktrees` now acts as a manager-owned allocation area with deterministic paths, lease validation, cleanup on release/expiry, and managed-path boundary enforcement
+  - coder workers and `agent_teams` child sessions now use manager-issued isolated worktrees for real git repos
+  - failure-path cleanup now removes managed worktrees even when setup fails before the normal teardown
+
+- Workflow outputs now use explicit validator contracts
+  - `automation_v2` output contracts now declare validator kinds explicitly and node outputs persist typed validator summaries
+  - mission builder, workflow planner, and standup composer now emit explicit research/review/structured/generic validator intent
+  - `automation_v2` read APIs normalize older node outputs to the current validator contract so operator views converge on one interpretation
+
+- Outbound side effects now have a shared runtime receipt path
+  - added a shared `ExternalActionRecord` plus `/external-actions` APIs for outbound action receipts, targets, approval state, idempotency keys, and receipt metadata
+  - Bug Monitor GitHub publish/failure receipts now mirror into that shared path, publish falls back to directly discovered MCP GitHub tools when bindings lag, duplicate publish reuses the prior receipt, and read-only recheck is no longer blocked by the fail-closed posting gate
+  - coder real PR submit and merge submit now also emit shared external-action receipts linked back to the canonical coder context run
 
 - Artifact integrity protections for workflow outputs
   - placeholder/status-note overwrites no longer silently replace declared output artifacts

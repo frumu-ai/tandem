@@ -32,6 +32,7 @@ async fn agent_team_spawn_denied_when_policy_missing() {
 async fn agent_team_spawn_approved_with_policy_and_template() {
     let state = test_state().await;
     let workspace_root = state.workspace_index.snapshot().await.root;
+    let canonical_repo_root = crate::runtime::worktrees::resolve_git_repo_root(&workspace_root);
     state
         .agent_teams
         .set_for_test(
@@ -100,16 +101,29 @@ async fn agent_team_spawn_approved_with_policy_and_template() {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     assert!(skill_hash.starts_with("sha256:"));
+    let managed_worktree = payload
+        .get("managedWorktree")
+        .and_then(Value::as_object)
+        .expect("managed worktree payload");
+    assert_eq!(
+        payload.get("workspaceRepoRoot").and_then(Value::as_str),
+        canonical_repo_root.as_deref()
+    );
+    assert!(managed_worktree
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("/.tandem/worktrees/"));
 }
 
 #[tokio::test]
-async fn agent_team_spawn_agent_tool_uses_same_policy_gate() {
+async fn agent_team_spawn_uses_managed_worktree_and_cancel_cleans_it_up() {
     let state = test_state().await;
     let workspace_root = state.workspace_index.snapshot().await.root;
     state
         .agent_teams
         .set_for_test(
-            Some(workspace_root),
+            Some(workspace_root.clone()),
             Some(tandem_orchestrator::SpawnPolicy {
                 enabled: true,
                 require_justification: true,
@@ -146,87 +160,192 @@ async fn agent_team_spawn_agent_tool_uses_same_policy_gate() {
             }],
         )
         .await;
-    let session = Session::new(Some("spawn tool".to_string()), Some(".".to_string()));
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/agent-team/spawn")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "missionID": "m-worktree",
+                "role": "worker",
+                "templateID": "worker-default",
+                "source": "ui_action",
+                "justification": "need isolated worker workspace"
+            })
+            .to_string(),
+        ))
+        .expect("spawn request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let instance_id = payload
+        .get("instanceID")
+        .and_then(Value::as_str)
+        .expect("instance id")
+        .to_string();
+    let session_id = payload
+        .get("sessionID")
+        .and_then(Value::as_str)
+        .expect("session id")
+        .to_string();
+
+    let session = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .expect("child session");
+    let worker_workspace_root = session.workspace_root.expect("worker workspace root");
+    assert!(worker_workspace_root.contains("/.tandem/worktrees/"));
+    assert!(std::path::Path::new(&worker_workspace_root).exists());
+
+    let instance = state
+        .agent_teams
+        .instance_for_session(&session_id)
+        .await
+        .expect("instance for session");
+    let managed_worktree = instance
+        .metadata
+        .as_ref()
+        .and_then(|row| row.get("managedWorktree"))
+        .cloned()
+        .expect("managed worktree metadata");
+    assert_eq!(
+        managed_worktree.get("path").and_then(Value::as_str),
+        Some(worker_workspace_root.as_str())
+    );
+    assert_eq!(
+        managed_worktree.get("repoRoot").and_then(Value::as_str),
+        crate::runtime::worktrees::resolve_git_repo_root(&workspace_root).as_deref()
+    );
+
+    let cancel_req = Request::builder()
+        .method("POST")
+        .uri(format!("/agent-team/instance/{instance_id}/cancel"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "reason": "cleanup managed workspace"
+            })
+            .to_string(),
+        ))
+        .expect("cancel request");
+    let cancel_resp = app
+        .clone()
+        .oneshot(cancel_req)
+        .await
+        .expect("cancel response");
+    assert_eq!(cancel_resp.status(), StatusCode::OK);
+    assert!(!std::path::Path::new(&worker_workspace_root).exists());
+}
+
+#[tokio::test]
+async fn agent_team_spawn_agent_tool_uses_same_policy_gate() {
+    let state = test_state().await;
+    let workspace_root = state.workspace_index.snapshot().await.root;
+    state
+        .agent_teams
+        .set_for_test(
+            Some(workspace_root.clone()),
+            Some(tandem_orchestrator::SpawnPolicy {
+                enabled: true,
+                require_justification: true,
+                max_agents: Some(20),
+                max_concurrent: Some(10),
+                child_budget_percent_of_parent_remaining: Some(50),
+                spawn_edges: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(
+                        tandem_orchestrator::AgentRole::Orchestrator,
+                        tandem_orchestrator::RoleSpawnRule {
+                            behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                            can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                        },
+                    );
+                    map
+                },
+                required_skills: std::collections::HashMap::new(),
+                role_defaults: std::collections::HashMap::new(),
+                mission_total_budget: None,
+                cost_per_1k_tokens_usd: None,
+                skill_sources: Default::default(),
+            }),
+            vec![tandem_orchestrator::AgentTemplate {
+                template_id: "worker-default".to_string(),
+                display_name: None,
+                avatar_url: None,
+                role: tandem_orchestrator::AgentRole::Worker,
+                system_prompt: Some("You are a worker".to_string()),
+                default_model: None,
+                skills: vec![],
+                default_budget: tandem_orchestrator::BudgetLimit::default(),
+                capabilities: tandem_orchestrator::CapabilitySpec::default(),
+            }],
+        )
+        .await;
+    let session = Session::new(Some("spawn tool".to_string()), Some(workspace_root.clone()));
     let session_id = session.id.clone();
     state
         .storage
         .save_session(session)
         .await
         .expect("save session");
-    let mut rx = state.event_bus.subscribe();
-    let app = app_router(state.clone());
-
-    let prompt_body = json!({
-        "parts": [
-            {
-                "type": "text",
-                "text": "/tool spawn_agent {\"missionID\":\"m2\",\"role\":\"worker\",\"templateID\":\"worker-default\",\"source\":\"tool_call\",\"justification\":\"parallelize task\"}"
-            }
-        ]
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/session/{session_id}/prompt_async"))
-        .header("content-type", "application/json")
-        .body(Body::from(prompt_body.to_string()))
-        .expect("request");
-    let resp = app.clone().oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    let request_id = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let event = rx.recv().await.expect("event");
-            if event.event_type == "permission.asked" {
-                let id = event
-                    .properties
-                    .get("requestID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !id.is_empty() {
-                    return id;
-                }
-            }
-        }
-    })
+    let hook = crate::agent_teams::ServerSpawnAgentHook::new(state.clone());
+    let result = tandem_core::SpawnAgentHook::spawn_agent(
+        &hook,
+        tandem_core::SpawnAgentToolContext {
+            session_id: session_id.clone(),
+            message_id: "msg-tool-spawn".to_string(),
+            tool_call_id: Some("tool-call-1".to_string()),
+            args: json!({
+                "missionID": "m2",
+                "role": "worker",
+                "templateID": "worker-default",
+                "source": "tool_call",
+                "justification": "parallelize task"
+            }),
+        },
+    )
     .await
-    .expect("permission asked timeout");
+    .expect("spawn agent hook result");
 
-    let approve_req = Request::builder()
-        .method("POST")
-        .uri(format!(
-            "/sessions/{}/tools/{}/approve",
-            session_id, request_id
-        ))
-        .body(Body::empty())
-        .expect("approve request");
-    let approve_resp = app.clone().oneshot(approve_req).await.expect("approve");
-    assert_eq!(approve_resp.status(), StatusCode::OK);
-
-    let spawn_event = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let event = rx.recv().await.expect("event");
-            if event.event_type == "agent_team.spawn.approved" {
-                return event;
-            }
-        }
-    })
-    .await
-    .expect("spawn event timeout");
     assert_eq!(
-        spawn_event
-            .properties
-            .get("sessionID")
-            .and_then(|v| v.as_str()),
-        Some(session_id.as_str())
+        result.metadata.get("ok").and_then(Value::as_bool),
+        Some(true)
+    );
+    let child_session_id = result
+        .metadata
+        .get("sessionID")
+        .and_then(Value::as_str)
+        .expect("child session id");
+    assert_ne!(child_session_id, session_id.as_str());
+    assert!(
+        state.storage.get_session(child_session_id).await.is_some(),
+        "spawn hook should create a child session"
+    );
+    let managed_worktree = result
+        .metadata
+        .get("managedWorktree")
+        .and_then(Value::as_object)
+        .expect("managed worktree metadata");
+    assert_eq!(
+        managed_worktree.get("repoRoot").and_then(Value::as_str),
+        crate::runtime::worktrees::resolve_git_repo_root(&workspace_root).as_deref()
     );
     assert_eq!(
-        spawn_event
-            .properties
-            .get("source")
-            .and_then(|v| v.as_str()),
-        Some("tool_call")
+        result
+            .metadata
+            .get("workspaceRepoRoot")
+            .and_then(Value::as_str),
+        crate::runtime::worktrees::resolve_git_repo_root(&workspace_root).as_deref()
     );
+    assert!(managed_worktree
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("/.tandem/worktrees/"));
 }
 
 #[tokio::test]

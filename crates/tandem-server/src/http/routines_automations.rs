@@ -21,6 +21,39 @@ use crate::{
 };
 use tandem_types::EngineEvent;
 
+fn routine_run_with_context_links(run: &RoutineRunRecord) -> Value {
+    let context_run_id = super::context_runs::routine_context_run_id(&run.run_id);
+    let mut payload = serde_json::to_value(run).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("contextRunID".to_string(), json!(context_run_id));
+        obj.insert("linked_context_run_id".to_string(), json!(context_run_id));
+    }
+    payload
+}
+
+fn automation_v2_run_with_context_links(run: &crate::AutomationV2RunRecord) -> Value {
+    let mut normalized_run = run.clone();
+    if let Some(automation) = normalized_run.automation_snapshot.clone() {
+        for node in &automation.flow.nodes {
+            if let Some(output) = normalized_run
+                .checkpoint
+                .node_outputs
+                .get_mut(&node.node_id)
+            {
+                *output =
+                    crate::app::state::enrich_automation_node_output_for_contract(node, output);
+            }
+        }
+    }
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run.run_id);
+    let mut payload = serde_json::to_value(&normalized_run).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("contextRunID".to_string(), json!(context_run_id.clone()));
+        obj.insert("linked_context_run_id".to_string(), json!(context_run_id));
+    }
+    payload
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct RoutineCreateInput {
     pub routine_id: Option<String>,
@@ -515,6 +548,9 @@ pub(super) async fn routines_run_now(
                     "run": run,
                 }),
             ));
+            let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
+                .await
+                .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
             Ok(Json(json!({
                 "ok": true,
                 "status": "queued",
@@ -522,6 +558,8 @@ pub(super) async fn routines_run_now(
                 "runID": run.run_id,
                 "runCount": run_count,
                 "firedAtMs": now,
+                "contextRunID": context_run_id,
+                "linked_context_run_id": context_run_id,
             })))
         }
         RoutineExecutionDecision::RequiresApproval { reason } => {
@@ -560,12 +598,17 @@ pub(super) async fn routines_run_now(
                     "run": run,
                 }),
             ));
+            let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
+                .await
+                .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
             Ok(Json(json!({
                 "ok": true,
                 "status": "pending_approval",
                 "routineID": id,
                 "runID": run.run_id,
                 "runCount": run_count,
+                "contextRunID": context_run_id,
+                "linked_context_run_id": context_run_id,
             })))
         }
         RoutineExecutionDecision::Blocked { reason } => {
@@ -604,6 +647,9 @@ pub(super) async fn routines_run_now(
                     "run": run,
                 }),
             ));
+            let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
+                .await
+                .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
             Err((
                 StatusCode::FORBIDDEN,
                 Json(json!({
@@ -612,6 +658,8 @@ pub(super) async fn routines_run_now(
                     "routineID": id,
                     "runID": run.run_id,
                     "reason": reason,
+                    "contextRunID": context_run_id,
+                    "linked_context_run_id": context_run_id,
                 })),
             ))
         }
@@ -639,9 +687,12 @@ pub(super) async fn routines_runs(
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     let runs = state.list_routine_runs(Some(&id), limit).await;
+    for run in &runs {
+        let _ = super::context_runs::sync_routine_run_blackboard(&state, run).await;
+    }
     Json(json!({
         "routineID": id,
-        "runs": runs,
+        "runs": runs.iter().map(routine_run_with_context_links).collect::<Vec<_>>(),
         "count": runs.len(),
     }))
 }
@@ -654,8 +705,11 @@ pub(super) async fn routines_runs_all(
     let runs = state
         .list_routine_runs(query.routine_id.as_deref(), limit)
         .await;
+    for run in &runs {
+        let _ = super::context_runs::sync_routine_run_blackboard(&state, run).await;
+    }
     Json(json!({
-        "runs": runs,
+        "runs": runs.iter().map(routine_run_with_context_links).collect::<Vec<_>>(),
         "count": runs.len(),
     }))
 }
@@ -674,7 +728,14 @@ pub(super) async fn routines_run_get(
             })),
         ));
     };
-    Ok(Json(json!({ "run": run })))
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
+    Ok(Json(json!({
+        "run": routine_run_with_context_links(&run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) fn reason_or_default(input: Option<String>, fallback: &str) -> String {
@@ -731,7 +792,15 @@ pub(super) async fn routines_run_approve(
             "reason": reason,
         }),
     ));
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_with_context_links(&updated),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn routines_run_deny(
@@ -781,7 +850,15 @@ pub(super) async fn routines_run_deny(
             "reason": reason,
         }),
     ));
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_with_context_links(&updated),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn routines_run_pause(
@@ -844,10 +921,15 @@ pub(super) async fn routines_run_pause(
             "cancelledSessionIDs": cancelled_sessions,
         }),
     ));
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
     Ok(Json(json!({
         "ok": true,
-        "run": updated,
+        "run": routine_run_with_context_links(&updated),
         "cancelledSessionIDs": cancelled_sessions,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -898,7 +980,15 @@ pub(super) async fn routines_run_resume(
             "reason": reason,
         }),
     ));
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_with_context_links(&updated),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn routines_run_artifacts(
@@ -915,10 +1005,15 @@ pub(super) async fn routines_run_artifacts(
             })),
         ));
     };
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
     Ok(Json(json!({
         "runID": run_id,
         "artifacts": run.artifacts,
         "count": run.artifacts.len(),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -968,7 +1063,16 @@ pub(super) async fn routines_run_artifact_add(
             "artifact": artifact,
         }),
     ));
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_with_context_links(&updated),
+        "artifact": artifact,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 fn routines_sse_stream(
@@ -1144,6 +1248,7 @@ pub(super) fn routine_to_automation_wire(routine: RoutineSpec) -> Value {
 }
 
 pub(super) fn routine_run_to_automation_wire(run: RoutineRunRecord) -> Value {
+    let context_run_id = super::context_runs::routine_context_run_id(&run.run_id);
     let latest_session_id = run
         .latest_session_id
         .clone()
@@ -1185,6 +1290,8 @@ pub(super) fn routine_run_to_automation_wire(run: RoutineRunRecord) -> Value {
         "output_targets": run.output_targets,
         "artifacts": run.artifacts,
         "correlation_id": run.run_id,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
         "active_session_ids": run.active_session_ids,
         "latest_session_id": latest_session_id,
         "attach_event_stream": attach_event_stream,
@@ -1511,10 +1618,15 @@ pub(super) async fn automations_run_now(
             Json(json!({"error": "Run lookup failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
         )
     })?;
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
     Ok(Json(json!({
         "ok": true,
         "status": payload.get("status").cloned().unwrap_or(Value::String("queued".to_string())),
         "run": routine_run_to_automation_wire(run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -1538,9 +1650,11 @@ pub(super) async fn automations_runs(
     Query(query): Query<RoutineRunsQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(25).clamp(1, 200);
-    let rows = state
-        .list_routine_runs(Some(&id), limit)
-        .await
+    let runs = state.list_routine_runs(Some(&id), limit).await;
+    for run in &runs {
+        let _ = super::context_runs::sync_routine_run_blackboard(&state, run).await;
+    }
+    let rows = runs
         .into_iter()
         .map(routine_run_to_automation_wire)
         .collect::<Vec<_>>();
@@ -1555,9 +1669,13 @@ pub(super) async fn automations_runs_all(
     Query(query): Query<RoutineRunsQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(25).clamp(1, 200);
-    let rows = state
+    let runs = state
         .list_routine_runs(query.routine_id.as_deref(), limit)
-        .await
+        .await;
+    for run in &runs {
+        let _ = super::context_runs::sync_routine_run_blackboard(&state, run).await;
+    }
+    let rows = runs
         .into_iter()
         .map(routine_run_to_automation_wire)
         .collect::<Vec<_>>();
@@ -1581,8 +1699,13 @@ pub(super) async fn automations_run_get(
             })),
         )
     })?;
+    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
+        .await
+        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
     Ok(Json(json!({
-        "run": routine_run_to_automation_wire(run)
+        "run": routine_run_to_automation_wire(run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -1604,9 +1727,18 @@ pub(super) async fn automations_run_approve(
                 ),
             )
         })?;
-    Ok(Json(
-        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
-    ))
+    let context_run_id = response
+        .0
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| super::context_runs::routine_context_run_id(&run.run_id));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_to_automation_wire(run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_run_deny(
@@ -1627,9 +1759,18 @@ pub(super) async fn automations_run_deny(
                 ),
             )
         })?;
-    Ok(Json(
-        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
-    ))
+    let context_run_id = response
+        .0
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| super::context_runs::routine_context_run_id(&run.run_id));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_to_automation_wire(run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_run_pause(
@@ -1650,9 +1791,18 @@ pub(super) async fn automations_run_pause(
                 ),
             )
         })?;
-    Ok(Json(
-        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
-    ))
+    let context_run_id = response
+        .0
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| super::context_runs::routine_context_run_id(&run.run_id));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_to_automation_wire(run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_run_resume(
@@ -1673,9 +1823,18 @@ pub(super) async fn automations_run_resume(
                 ),
             )
         })?;
-    Ok(Json(
-        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
-    ))
+    let context_run_id = response
+        .0
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| super::context_runs::routine_context_run_id(&run.run_id));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_to_automation_wire(run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_run_artifacts(
@@ -1709,9 +1868,24 @@ pub(super) async fn automations_run_artifact_add(
                 ),
             )
         })?;
-    Ok(Json(
-        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
-    ))
+    let context_run_id = response
+        .0
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| super::context_runs::routine_context_run_id(&run.run_id));
+    let artifact = response
+        .0
+        .get("artifact")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Ok(Json(json!({
+        "ok": true,
+        "run": routine_run_to_automation_wire(run),
+        "artifact": artifact,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 fn automations_sse_stream(
@@ -1995,7 +2169,13 @@ pub(super) async fn automations_v2_run_now(
             )
         })?;
     let _ = super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &run).await;
-    Ok(Json(json!({ "ok": true, "run": run })))
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run.run_id);
+    Ok(Json(json!({
+        "ok": true,
+        "run": automation_v2_run_with_context_links(&run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_v2_pause(
@@ -2093,7 +2273,11 @@ pub(super) async fn automations_v2_runs(
                     .await;
         }
     }
-    Json(json!({ "automationID": id, "runs": rows, "count": rows.len() }))
+    let runs = rows
+        .iter()
+        .map(automation_v2_run_with_context_links)
+        .collect::<Vec<_>>();
+    Json(json!({ "automationID": id, "runs": runs, "count": rows.len() }))
 }
 
 pub(super) async fn automations_v2_run_get(
@@ -2112,10 +2296,11 @@ pub(super) async fn automations_v2_run_get(
         let _ =
             super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &run).await;
     }
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
     Ok(Json(json!({
-        "run": run,
-        "contextRunID": super::context_runs::automation_v2_context_run_id(&run_id),
-        "linked_context_run_id": super::context_runs::automation_v2_context_run_id(&run_id),
+        "run": automation_v2_run_with_context_links(&run),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -2191,7 +2376,13 @@ pub(super) async fn automations_v2_run_pause(
                 ),
             )
         })?;
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
+    Ok(Json(json!({
+        "ok": true,
+        "run": automation_v2_run_with_context_links(&updated),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_v2_run_resume(
@@ -2238,7 +2429,13 @@ pub(super) async fn automations_v2_run_resume(
                 ),
             )
         })?;
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
+    Ok(Json(json!({
+        "ok": true,
+        "run": automation_v2_run_with_context_links(&updated),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_v2_run_cancel(
@@ -2303,7 +2500,13 @@ pub(super) async fn automations_v2_run_cancel(
                 ),
             )
         })?;
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
+    Ok(Json(json!({
+        "ok": true,
+        "run": automation_v2_run_with_context_links(&updated),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_v2_run_gate_decide(
@@ -2478,7 +2681,13 @@ pub(super) async fn automations_v2_run_gate_decide(
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
     let _ = node;
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
+    Ok(Json(json!({
+        "ok": true,
+        "run": automation_v2_run_with_context_links(&updated),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_v2_run_recover(
@@ -2584,7 +2793,13 @@ pub(super) async fn automations_v2_run_recover(
         })?;
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
+    Ok(Json(json!({
+        "ok": true,
+        "run": automation_v2_run_with_context_links(&updated),
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 pub(super) async fn automations_v2_run_repair(
@@ -2796,9 +3011,14 @@ pub(super) async fn automations_v2_run_repair(
         &updated,
     )
     .await;
-    Ok(Json(
-        json!({ "ok": true, "run": updated, "automation": stored_automation }),
-    ))
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
+    Ok(Json(json!({
+        "ok": true,
+        "run": automation_v2_run_with_context_links(&updated),
+        "automation": stored_automation,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 async fn automation_v2_reset_task_subtree(
@@ -3077,9 +3297,12 @@ pub(super) async fn automations_v2_run_task_reset_preview(
         ));
     }
     let preview = automation_v2_task_reset_preview(&state, &run_id, &node_id).await?;
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
     Ok(Json(json!({
         "ok": true,
         "preview": preview,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -3250,11 +3473,14 @@ pub(super) async fn automations_v2_run_task_continue(
         })?;
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
     Ok(Json(json!({
         "ok": true,
-        "run": updated,
+        "run": automation_v2_run_with_context_links(&updated),
         "node_id": node_id,
         "reset_nodes": vec![node_id],
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -3282,12 +3508,15 @@ pub(super) async fn automations_v2_run_task_retry(
             .await?;
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
     Ok(Json(json!({
         "ok": true,
-        "run": updated,
+        "run": automation_v2_run_with_context_links(&updated),
         "node_id": node_id,
         "reset_nodes": reset_nodes,
         "cleared_outputs": cleared_outputs,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -3315,12 +3544,15 @@ pub(super) async fn automations_v2_run_task_requeue(
             .await?;
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
     Ok(Json(json!({
         "ok": true,
-        "run": updated,
+        "run": automation_v2_run_with_context_links(&updated),
         "node_id": node_id,
         "reset_nodes": reset_nodes,
         "cleared_outputs": cleared_outputs,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -3385,6 +3617,8 @@ pub(super) async fn automations_v2_run_backlog_task_claim(
             &format!("claimed backlog task `{}`", task_id),
         ),
         "blackboard": blackboard,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 
@@ -3445,6 +3679,8 @@ pub(super) async fn automations_v2_run_backlog_task_requeue(
         "task": task,
         "reason": reason,
         "blackboard": blackboard,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
     })))
 }
 

@@ -90,6 +90,34 @@ async fn mission_builder_preview_returns_compiled_automation() {
             .map(|rows| rows.len()),
         Some(3)
     );
+    let nodes = payload
+        .get("automation")
+        .and_then(|row| row.get("flow"))
+        .and_then(|row| row.get("nodes"))
+        .and_then(Value::as_array)
+        .expect("nodes");
+    let research = nodes
+        .iter()
+        .find(|row| row.get("node_id").and_then(Value::as_str) == Some("research"))
+        .expect("research node");
+    assert_eq!(
+        research
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("generic_artifact")
+    );
+    let approval = nodes
+        .iter()
+        .find(|row| row.get("node_id").and_then(Value::as_str) == Some("approval"))
+        .expect("approval node");
+    assert_eq!(
+        approval
+            .get("output_contract")
+            .and_then(|row| row.get("validator"))
+            .and_then(Value::as_str),
+        Some("review_decision")
+    );
 }
 
 #[tokio::test]

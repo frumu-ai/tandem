@@ -61,6 +61,7 @@
 - Interactive session runs now create deterministic `session-<sessionID>` context runs before `contextRunID` is returned, so replay/debug links resolve against durable state immediately instead of racing the background journal path.
 - Added a session context-run journal bridge that records `session.run.started`, `message.part.updated`, and `session.run.finished` as replayable context-run events.
 - Coder worker-session artifacts and downstream review/approval payloads now carry durable worker-session context-run ids in addition to transient `session_id` / `session_run_id` values, making it easier to pivot from coder outcomes into the canonical run journal.
+- Routine, legacy automation, and `automation_v2` operator routes now only return canonical `contextRunID` links after the underlying journal/blackboard projection is synced, so operator-facing links are immediately dereferenceable instead of eventually consistent.
 
 ### Workflow Runtime Hardening
 
@@ -77,6 +78,12 @@
 - Code workflows now support multi-step build/test/lint verification summaries, with partial verification blocking completion, failed verification emitting `verify_failed`, and fully verified code tasks finishing as `done`.
 - Added stale-lease recovery for long-running coding backlog work so expired `in_progress` context tasks automatically return to the runnable queue before the next claim.
 
+### Managed Worktree Runtime
+
+- Added a manager-owned worktree path under `.tandem/worktrees` with deterministic allocation, lease validation, cleanup on release/expiry, and managed-path boundary enforcement.
+- Coder workers and `agent_teams` child sessions now use manager-issued isolated worktrees for real git repos instead of sharing one mutable workspace by convention.
+- Failure-path cleanup now removes managed worktrees even when coder or child-session setup fails before the normal happy-path teardown.
+
 ### Artifact Integrity and File Safety
 
 - Added artifact-validation checks for declared workflow outputs so placeholder/status-note overwrites no longer silently win.
@@ -84,6 +91,19 @@
 - Preserved substantive blocked artifacts on disk for inspection instead of deleting them just because the node was semantically blocked.
 - Fresh workflow reruns now preserve prior declared outputs until a replacement artifact is actually produced, so a failed retry does not leave the workspace empty.
 - Streamed malformed write calls now preserve raw/parsed arg previews, recover normalized best-effort args on failed writes, upgrade persisted tool args when stronger structured evidence arrives later, and keep recovered tool args/errors visible in session replay and repo-aware mutation summaries.
+
+### Explicit Output Validation Contracts
+
+- `automation_v2` output contracts now declare validator kinds explicitly, and node outputs persist validator kind plus a typed validator summary.
+- Mission builder, workflow planner, and standup composer now emit explicit research/review/structured/generic validator intent instead of leaning on fallback inference everywhere.
+- `automation_v2` read APIs normalize older node outputs to the current validator contract so operator views converge on one interpretation.
+
+### External Action Receipts
+
+- Added a shared `ExternalActionRecord` runtime contract plus `/external-actions` read APIs for outbound action receipts, targets, idempotency keys, approval state, and receipt metadata.
+- Bug Monitor GitHub publish/failure receipts now mirror into that shared external-action path while keeping the existing Bug Monitor post APIs intact.
+- Bug Monitor publish now falls back to directly discovered MCP GitHub tools when capability bindings lag, repeated publish calls reuse the existing receipt instead of triggering another side effect, and read-only recheck is no longer blocked by the fail-closed posting gate.
+- Coder real PR submit and merge submit now also emit shared external-action receipts linked back to the canonical coder context run.
 
 ### Workflow Studio Models
 

@@ -597,6 +597,17 @@ fn derive_node_previews(
 fn output_contract(contract: &OutputContractBlueprint) -> crate::AutomationFlowOutputContract {
     crate::AutomationFlowOutputContract {
         kind: contract.kind.clone(),
+        validator: Some(match contract.kind.trim().to_ascii_lowercase().as_str() {
+            "brief" => crate::AutomationOutputValidatorKind::ResearchBrief,
+            "review" | "review_summary" | "approval_gate" => {
+                crate::AutomationOutputValidatorKind::ReviewDecision
+            }
+            "structured_json" => crate::AutomationOutputValidatorKind::StructuredJson,
+            "report_markdown" | "text_summary" | "urls" | "citations" => {
+                crate::AutomationOutputValidatorKind::GenericArtifact
+            }
+            _ => crate::AutomationOutputValidatorKind::GenericArtifact,
+        }),
         schema: contract.schema.clone(),
         summary_guidance: contract.summary_guidance.clone(),
     }

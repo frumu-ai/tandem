@@ -363,6 +363,25 @@ async fn agent_standup_compose_builds_workflow_automation_from_templates() {
             .map(|rows| rows.len()),
         Some(2)
     );
+    let nodes = automation
+        .get("flow")
+        .and_then(|value| value.get("nodes"))
+        .and_then(Value::as_array)
+        .expect("nodes");
+    assert_eq!(
+        nodes[0]
+            .get("output_contract")
+            .and_then(|value| value.get("validator"))
+            .and_then(Value::as_str),
+        Some("structured_json")
+    );
+    assert_eq!(
+        nodes[1]
+            .get("output_contract")
+            .and_then(|value| value.get("validator"))
+            .and_then(Value::as_str),
+        Some("generic_artifact")
+    );
     assert_eq!(
         automation
             .get("agents")
