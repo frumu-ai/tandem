@@ -4077,9 +4077,9 @@ function MyAutomations({
         if (contextHistory.length) return contextHistory;
         return workflowPersistedHistoryEntries(
           Array.isArray(persistedRunEventsQuery.data) ? persistedRunEventsQuery.data : [],
-          eventType,
-          eventReason,
-          eventAt,
+          workflowEventType,
+          workflowEventReason,
+          workflowEventAt,
           selectedRunId
         );
       })()
@@ -4093,8 +4093,8 @@ function MyAutomations({
       Array.isArray(persistedRunEventsQuery.data) ? persistedRunEventsQuery.data : [],
       workflowContextEvents,
       isWorkflowRun,
-      eventType,
-      eventAt,
+      workflowEventType,
+      workflowEventAt,
       selectedRunId
     );
   }, [isWorkflowRun, persistedRunEventsQuery.data, selectedRunId, workflowContextEvents]);

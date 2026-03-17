@@ -83,6 +83,7 @@
 - The control-panel Run Debugger now derives blocked/failed run status from workflow node outputs as a guardrail and shows repair-attempt progress when the backend status and task board disagree.
 - The Automations Tasks tab now reads workflow runs from a canonical `/automations/v2/runs` all-runs API, so mirrored workflow runs no longer disappear just because they were not discovered through the saved workflow-definition list.
 - Blocked workflow runs now surface as task issues in the Tasks tab instead of being silently excluded from the failed-run bucket.
+- Fixed an `AutomationsPage` runtime render regression where stale `eventType`/`eventReason`/`eventAt` references crashed the Tasks tab and left the page appearing empty and non-interactive.
 - Code workflows now support multi-step build/test/lint verification summaries, with partial verification blocking completion, failed verification emitting `verify_failed`, and fully verified code tasks finishing as `done`.
 - Added stale-lease recovery for long-running coding backlog work so expired `in_progress` context tasks automatically return to the runnable queue before the next claim.
 
