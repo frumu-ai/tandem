@@ -164,6 +164,41 @@ async fn workflows_list_validate_and_manual_run() {
         list_payload["workflows"][0]["workflow_id"].as_str(),
         Some("build_feature")
     );
+    assert_eq!(
+        list_payload["automation_previews"]["build_feature"]["creator_id"].as_str(),
+        Some("workflow_registry")
+    );
+    assert_eq!(
+        list_payload["automation_previews"]["build_feature"]["metadata"]["workflow_id"].as_str(),
+        Some("build_feature")
+    );
+
+    let get_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/workflows/build_feature")
+                .body(Body::empty())
+                .expect("get request"),
+        )
+        .await
+        .expect("get response");
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let get_body = to_bytes(get_resp.into_body(), usize::MAX)
+        .await
+        .expect("get body");
+    let get_payload: Value = serde_json::from_slice(&get_body).expect("get json");
+    assert_eq!(
+        get_payload["automation_preview"]["metadata"]["workflow_id"].as_str(),
+        Some("build_feature")
+    );
+    assert_eq!(
+        get_payload["automation_preview"]["flow"]["nodes"][0]["objective"]
+            .as_str()
+            .map(|value| value.contains("tool:workflow_test.executor")),
+        Some(true)
+    );
 
     let validate_resp = app
         .clone()

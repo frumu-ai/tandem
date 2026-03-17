@@ -13,8 +13,92 @@ use tokio_stream::StreamExt;
 
 use crate::{execute_workflow, simulate_workflow_event};
 use tandem_types::EngineEvent;
+use tandem_workflows::WorkflowStepSpec;
 
 use super::AppState;
+
+fn manual_schedule() -> crate::AutomationV2Schedule {
+    crate::AutomationV2Schedule {
+        schedule_type: crate::AutomationV2ScheduleType::Manual,
+        cron_expression: None,
+        interval_seconds: None,
+        timezone: "UTC".to_string(),
+        misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+    }
+}
+
+fn workflow_step_objective(step: &WorkflowStepSpec) -> String {
+    match &step.with {
+        Some(with) if !with.is_null() => format!(
+            "Execute workflow action `{}` with payload {}.",
+            step.action, with
+        ),
+        _ => format!("Execute workflow action `{}`.", step.action),
+    }
+}
+
+fn compile_workflow_spec_to_automation_preview(
+    workflow: &crate::WorkflowSpec,
+) -> crate::AutomationV2Spec {
+    let plan = crate::WorkflowPlan {
+        plan_id: format!("workflow-preview-{}", workflow.workflow_id),
+        planner_version: "workflow_registry_v1".to_string(),
+        plan_source: "workflow_registry".to_string(),
+        original_prompt: workflow
+            .description
+            .clone()
+            .unwrap_or_else(|| workflow.name.clone()),
+        normalized_prompt: workflow
+            .description
+            .clone()
+            .unwrap_or_else(|| workflow.name.clone()),
+        confidence: "high".to_string(),
+        title: workflow.name.clone(),
+        description: workflow.description.clone(),
+        schedule: manual_schedule(),
+        execution_target: "automation_v2".to_string(),
+        workspace_root: std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .to_string_lossy()
+            .to_string(),
+        steps: workflow
+            .steps
+            .iter()
+            .map(|step| crate::WorkflowPlanStep {
+                step_id: step.step_id.clone(),
+                kind: "workflow_action".to_string(),
+                objective: workflow_step_objective(step),
+                depends_on: Vec::new(),
+                agent_role: "operator".to_string(),
+                input_refs: Vec::new(),
+                output_contract: Some(crate::AutomationFlowOutputContract {
+                    kind: "generic_artifact".to_string(),
+                    validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+                    schema: None,
+                    summary_guidance: None,
+                }),
+            })
+            .collect(),
+        requires_integrations: Vec::new(),
+        allowed_mcp_servers: Vec::new(),
+        operator_preferences: Some(json!({
+            "source": "workflow_registry",
+            "tool_access_mode": "auto",
+        })),
+        save_options: json!({
+            "origin": "workflow_registry",
+        }),
+    };
+    let mut automation =
+        super::workflow_planner::compile_plan_to_automation_v2(&plan, "workflow_registry");
+    if let Some(metadata) = automation.metadata.as_mut().and_then(Value::as_object_mut) {
+        metadata.insert("workflow_id".to_string(), json!(workflow.workflow_id));
+        metadata.insert("workflow_name".to_string(), json!(workflow.name));
+        metadata.insert("workflow_source".to_string(), json!(workflow.source));
+        metadata.insert("workflow_enabled".to_string(), json!(workflow.enabled));
+    }
+    automation
+}
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct WorkflowRunsQuery {
@@ -57,9 +141,21 @@ pub(super) struct WorkflowSimulateInput {
 }
 
 pub(super) async fn workflows_list(State(state): State<AppState>) -> Json<Value> {
+    let workflows = state.list_workflows().await;
+    let automation_previews = workflows
+        .iter()
+        .map(|workflow| {
+            (
+                workflow.workflow_id.clone(),
+                serde_json::to_value(compile_workflow_spec_to_automation_preview(workflow))
+                    .unwrap_or(Value::Null),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
     Json(json!({
-        "workflows": state.list_workflows().await,
-        "count": state.list_workflows().await.len(),
+        "workflows": workflows,
+        "automation_previews": automation_previews,
+        "count": automation_previews.len(),
     }))
 }
 
@@ -69,7 +165,12 @@ pub(super) async fn workflows_get(
 ) -> Result<Json<Value>, StatusCode> {
     let workflow = state.get_workflow(&id).await.ok_or(StatusCode::NOT_FOUND)?;
     let hooks = state.list_workflow_hooks(Some(&id)).await;
-    Ok(Json(json!({ "workflow": workflow, "hooks": hooks })))
+    let automation_preview = compile_workflow_spec_to_automation_preview(&workflow);
+    Ok(Json(json!({
+        "workflow": workflow,
+        "hooks": hooks,
+        "automation_preview": automation_preview
+    })))
 }
 
 pub(super) async fn workflows_validate(

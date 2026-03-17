@@ -98,6 +98,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Skill workflow compilation now exposes the shared runtime spec
   - `skills_compile` now emits an additive `automation_preview` for installed skill workflows by compiling `workflow.yaml` recipes through the shared `WorkflowPlan -> AutomationV2Spec` path
   - installed `pack_builder_recipe` skills now expose the same runtime-spec preview shape as mission builder and workflow planner instead of stopping at an abstract execution summary
+  - workflow registry list/get surfaces now also expose additive `automation_preview` payloads compiled through the same shared plan compiler, so installed workflows share the same preview model without replacing the existing workflow executor yet
 
 - Artifact integrity protections for workflow outputs
   - placeholder/status-note overwrites no longer silently replace declared output artifacts
