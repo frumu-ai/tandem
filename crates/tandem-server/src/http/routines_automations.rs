@@ -31,6 +31,56 @@ fn routine_run_with_context_links(run: &RoutineRunRecord) -> Value {
     payload
 }
 
+fn automation_v2_node_repair_guidance(output: &Value) -> Option<Value> {
+    let validator_summary = output.get("validator_summary");
+    let artifact_validation = output.get("artifact_validation");
+    let required_next_tool_actions = artifact_validation
+        .and_then(|value| value.get("required_next_tool_actions"))
+        .and_then(Value::as_array)
+        .filter(|rows| !rows.is_empty())
+        .cloned()
+        .unwrap_or_default();
+    let validator_reason = validator_summary
+        .and_then(|value| value.get("reason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let unmet_requirements = validator_summary
+        .and_then(|value| value.get("unmet_requirements"))
+        .and_then(Value::as_array)
+        .filter(|rows| !rows.is_empty())
+        .cloned()
+        .unwrap_or_default();
+    let blocking_classification = artifact_validation
+        .and_then(|value| value.get("blocking_classification"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if required_next_tool_actions.is_empty()
+        && validator_reason.is_none()
+        && unmet_requirements.is_empty()
+        && blocking_classification.is_none()
+    {
+        return None;
+    }
+
+    Some(json!({
+        "status": output.get("status").and_then(Value::as_str),
+        "failureKind": output.get("failure_kind").and_then(Value::as_str),
+        "reason": validator_reason,
+        "unmetRequirements": unmet_requirements,
+        "blockingClassification": blocking_classification,
+        "requiredNextToolActions": required_next_tool_actions,
+        "repairAttempt": artifact_validation
+            .and_then(|value| value.get("repair_attempt"))
+            .and_then(Value::as_u64),
+        "repairAttemptsRemaining": artifact_validation
+            .and_then(|value| value.get("repair_attempts_remaining"))
+            .and_then(Value::as_u64),
+    }))
+}
+
 fn automation_v2_run_with_context_links(run: &crate::AutomationV2RunRecord) -> Value {
     let mut normalized_run = run.clone();
     if let Some(automation) = normalized_run.automation_snapshot.clone() {
@@ -45,11 +95,33 @@ fn automation_v2_run_with_context_links(run: &crate::AutomationV2RunRecord) -> V
             }
         }
     }
+    let mut node_repair_guidance = serde_json::Map::new();
+    let mut needs_repair_node_ids = Vec::new();
+    for (node_id, output) in &normalized_run.checkpoint.node_outputs {
+        if output
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("needs_repair"))
+        {
+            needs_repair_node_ids.push(node_id.clone());
+        }
+        if let Some(guidance) = automation_v2_node_repair_guidance(output) {
+            node_repair_guidance.insert(node_id.clone(), guidance);
+        }
+    }
     let context_run_id = super::context_runs::automation_v2_context_run_id(&run.run_id);
     let mut payload = serde_json::to_value(&normalized_run).unwrap_or_else(|_| json!({}));
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("contextRunID".to_string(), json!(context_run_id.clone()));
         obj.insert("linked_context_run_id".to_string(), json!(context_run_id));
+        obj.insert(
+            "nodeRepairGuidance".to_string(),
+            Value::Object(node_repair_guidance),
+        );
+        obj.insert(
+            "needsRepairNodeIDs".to_string(),
+            json!(needs_repair_node_ids),
+        );
     }
     payload
 }

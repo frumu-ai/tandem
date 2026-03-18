@@ -3472,14 +3472,59 @@ pub(crate) async fn sync_automation_v2_run_blackboard(
 
         let status = automation_node_task_status(run, &node.node_id, &depends_on);
 
+        let output = run.checkpoint.node_outputs.get(&node.node_id);
+        let payload = automation_node_task_payload(node, output);
+        let attempt = run
+            .checkpoint
+            .node_attempts
+            .get(&node.node_id)
+            .copied()
+            .unwrap_or(0);
+        let max_attempts = crate::app::state::automation_node_max_attempts(node);
+        let last_error = output
+            .and_then(|value| {
+                value
+                    .get("blocked_reason")
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        value
+                            .get("validator_summary")
+                            .and_then(|summary| summary.get("reason"))
+                            .and_then(Value::as_str)
+                    })
+                    .or_else(|| {
+                        value
+                            .get("artifact_validation")
+                            .and_then(|validation| validation.get("semantic_block_reason"))
+                            .and_then(Value::as_str)
+                    })
+            })
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
         let existing = run_state.tasks.iter().find(|t| t.id == task_id).cloned();
         if let Some(task) = existing {
-            if task.status != status {
+            if task.status != status
+                || task.payload != payload
+                || task.attempt != attempt
+                || task.max_attempts != max_attempts
+                || task.last_error != last_error
+            {
                 let next_task = ContextBlackboardTask {
+                    payload: payload.clone(),
                     status: status.clone(),
+                    attempt,
+                    max_attempts,
+                    last_error: last_error.clone(),
                     task_rev: task.task_rev.saturating_add(1),
                     updated_ts: now,
                     ..task.clone()
+                };
+                let event_type = if task.status != status {
+                    context_task_status_event_name(&status).to_string()
+                } else {
+                    "context.task.updated".to_string()
                 };
                 let _ = context_run_engine()
                     .commit_task_mutation(
@@ -3490,14 +3535,22 @@ pub(crate) async fn sync_automation_v2_run_blackboard(
                         json!({
                             "task_id": task_id,
                             "status": status,
+                            "payload": payload,
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "last_error": last_error,
                             "task_rev": next_task.task_rev,
                         }),
-                        context_task_status_event_name(&status).to_string(),
+                        event_type,
                         automation_run_status_to_context(&run.status),
                         None,
                         json!({
                             "task_id": task_id,
                             "status": status,
+                            "payload": next_task.payload,
+                            "attempt": next_task.attempt,
+                            "max_attempts": next_task.max_attempts,
+                            "last_error": next_task.last_error,
                             "task_rev": next_task.task_rev,
                             "source": "automation_v2",
                             "automation_id": automation.automation_id,
@@ -3514,7 +3567,7 @@ pub(crate) async fn sync_automation_v2_run_blackboard(
             let task = ContextBlackboardTask {
                 id: task_id.clone(),
                 task_type: "automation_node".to_string(),
-                payload: automation_node_task_payload(node),
+                payload,
                 status,
                 workflow_id: Some(automation.automation_id.clone()),
                 workflow_node_id: Some(node.node_id.clone()),
@@ -3524,9 +3577,9 @@ pub(crate) async fn sync_automation_v2_run_blackboard(
                 artifact_ids: Vec::new(),
                 assigned_agent: Some(node.agent_id.clone()),
                 priority: 0,
-                attempt: 0,
-                max_attempts: 3,
-                last_error: None,
+                attempt,
+                max_attempts,
+                last_error,
                 next_retry_at_ms: None,
                 lease_owner: None,
                 lease_token: None,
@@ -3859,8 +3912,8 @@ fn automation_node_builder_bool(node: &crate::AutomationFlowNode, key: &str) -> 
         .unwrap_or(false)
 }
 
-fn automation_node_task_payload(node: &crate::AutomationFlowNode) -> Value {
-    json!({
+fn automation_node_task_payload(node: &crate::AutomationFlowNode, output: Option<&Value>) -> Value {
+    let mut payload = json!({
         "node_id": node.node_id,
         "title": automation_node_builder_string(node, "title").unwrap_or_else(|| node.objective.clone()),
         "name": node.objective,
@@ -3877,7 +3930,78 @@ fn automation_node_task_payload(node: &crate::AutomationFlowNode) -> Value {
         "verification_command": automation_node_builder_string(node, "verification_command"),
         "output_path": automation_node_builder_string(node, "output_path"),
         "projects_backlog_tasks": automation_node_builder_bool(node, "project_backlog_tasks"),
-    })
+    });
+    if let Some(object) = payload.as_object_mut() {
+        if let Some(output) = output {
+            if let Some(status) = output.get("status").and_then(Value::as_str) {
+                object.insert("node_status".to_string(), json!(status));
+            }
+            if let Some(failure_kind) = output.get("failure_kind").and_then(Value::as_str) {
+                object.insert("failure_kind".to_string(), json!(failure_kind));
+            }
+            if let Some(reason) = output
+                .get("validator_summary")
+                .and_then(|value| value.get("reason"))
+                .and_then(Value::as_str)
+                .or_else(|| output.get("blocked_reason").and_then(Value::as_str))
+            {
+                let reason = reason.trim();
+                if !reason.is_empty() {
+                    object.insert("validator_reason".to_string(), json!(reason));
+                }
+            }
+            if let Some(unmet) = output
+                .get("validator_summary")
+                .and_then(|value| value.get("unmet_requirements"))
+                .and_then(Value::as_array)
+                .filter(|value| !value.is_empty())
+            {
+                object.insert(
+                    "unmet_requirements".to_string(),
+                    Value::Array(unmet.clone()),
+                );
+            }
+            if let Some(actions) = output
+                .get("artifact_validation")
+                .and_then(|value| value.get("required_next_tool_actions"))
+                .and_then(Value::as_array)
+                .filter(|value| !value.is_empty())
+            {
+                object.insert(
+                    "required_next_tool_actions".to_string(),
+                    Value::Array(actions.clone()),
+                );
+            }
+            if let Some(classification) = output
+                .get("artifact_validation")
+                .and_then(|value| value.get("blocking_classification"))
+                .and_then(Value::as_str)
+            {
+                let classification = classification.trim();
+                if !classification.is_empty() {
+                    object.insert("blocking_classification".to_string(), json!(classification));
+                }
+            }
+            if let Some(repair_attempt) = output
+                .get("artifact_validation")
+                .and_then(|value| value.get("repair_attempt"))
+                .and_then(Value::as_u64)
+            {
+                object.insert("repair_attempt".to_string(), json!(repair_attempt));
+            }
+            if let Some(repair_attempts_remaining) = output
+                .get("artifact_validation")
+                .and_then(|value| value.get("repair_attempts_remaining"))
+                .and_then(Value::as_u64)
+            {
+                object.insert(
+                    "repair_attempts_remaining".to_string(),
+                    json!(repair_attempts_remaining),
+                );
+            }
+        }
+    }
+    payload
 }
 
 fn extract_markdown_json_blocks(text: &str) -> Vec<String> {
@@ -4373,4 +4497,87 @@ pub(super) fn automation_node_task_status(
         return ContextBlackboardTaskStatus::Runnable;
     }
     ContextBlackboardTaskStatus::Pending
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn automation_node_task_payload_includes_repair_guidance_from_output() {
+        let node = crate::AutomationFlowNode {
+            node_id: "research-brief".to_string(),
+            agent_id: "research".to_string(),
+            objective: "Write marketing-brief.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: None,
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "title": "Research Brief",
+                    "output_path": "marketing-brief.md"
+                }
+            })),
+        };
+        let output = json!({
+            "status": "needs_repair",
+            "failure_kind": "research_missing_reads",
+            "validator_summary": {
+                "reason": "research brief did not read concrete workspace files, so source-backed validation is incomplete",
+                "unmet_requirements": ["no_concrete_reads"]
+            },
+            "artifact_validation": {
+                "blocking_classification": "tool_available_but_not_used",
+                "required_next_tool_actions": [
+                    "Use `read` on concrete workspace files before finalizing the brief."
+                ],
+                "repair_attempt": 1,
+                "repair_attempts_remaining": 2
+            }
+        });
+
+        let payload = automation_node_task_payload(&node, Some(&output));
+
+        assert_eq!(
+            payload.get("node_status").and_then(Value::as_str),
+            Some("needs_repair")
+        );
+        assert_eq!(
+            payload.get("failure_kind").and_then(Value::as_str),
+            Some("research_missing_reads")
+        );
+        assert_eq!(
+            payload.get("validator_reason").and_then(Value::as_str),
+            Some("research brief did not read concrete workspace files, so source-backed validation is incomplete")
+        );
+        assert_eq!(
+            payload
+                .get("blocking_classification")
+                .and_then(Value::as_str),
+            Some("tool_available_but_not_used")
+        );
+        assert_eq!(
+            payload
+                .get("required_next_tool_actions")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(Value::as_str),
+            Some("Use `read` on concrete workspace files before finalizing the brief.")
+        );
+        assert_eq!(
+            payload.get("repair_attempt").and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            payload
+                .get("repair_attempts_remaining")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+    }
 }

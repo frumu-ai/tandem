@@ -1198,9 +1198,13 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
   ]);
 
   const attachedCount = uploads.length;
+  const messagePaneEmpty = !messagesLoading && !messages.length && !showThinking && !streamingText;
 
   return (
-    <div ref={rootRef} className="chat-layout chat-layout-fill min-w-0 min-h-0 h-full flex-1">
+    <div
+      ref={rootRef}
+      className="chat-layout chat-layout-fill min-w-0 min-h-0 h-full w-full flex-1"
+    >
       <motion.aside
         className={`chat-sessions-panel ${sessionsOpen ? "open" : ""}`}
         initial={false}
@@ -1382,14 +1386,18 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
 
           <div
             ref={messagesRef}
-            className="chat-messages mb-2 min-h-0 min-w-0 flex-1 space-y-2 overflow-auto p-3"
+            className={`chat-messages mb-2 min-h-0 min-w-0 flex-1 overflow-auto p-3 ${
+              messagePaneEmpty ? "chat-messages-empty" : "space-y-2"
+            }`}
           >
             {messagesLoading && !messages.length ? (
               <p className="chat-rail-empty">Loading messages...</p>
             ) : null}
 
-            {!messagesLoading && !messages.length && !showThinking && !streamingText ? (
-              <p className="chat-rail-empty">No messages yet. Send a prompt to start.</p>
+            {messagePaneEmpty ? (
+              <div className="chat-empty-state">
+                <p className="chat-rail-empty">No messages yet. Send a prompt to start.</p>
+              </div>
             ) : null}
 
             <AnimatePresence initial={false}>

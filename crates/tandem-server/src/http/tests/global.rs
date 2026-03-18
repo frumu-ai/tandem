@@ -3737,7 +3737,8 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
                         "builder": {
                             "title": "Research Brief",
                             "role": "researcher",
-                            "output_path": "marketing-brief.md"
+                            "output_path": "marketing-brief.md",
+                            "source_coverage_required": true
                         }
                     })),
                 },
@@ -3821,6 +3822,13 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
                         "recovered_from_session_write": true,
                         "repair_attempted": true,
                         "repair_succeeded": false,
+                        "blocking_classification": "tool_available_but_not_used",
+                        "required_next_tool_actions": [
+                            "Use `read` on concrete workspace files before finalizing the brief.",
+                            "Move every discovered relevant file into either `Files reviewed` after `read`, or `Files not reviewed` with a reason."
+                        ],
+                        "repair_attempt": 1,
+                        "repair_attempts_remaining": 4,
                         "unmet_requirements": ["concrete_read_required", "coverage_mode"]
                     },
                     "content": {
@@ -3899,6 +3907,45 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
             .and_then(|value| value.get("accepted_artifact_path"))
             .and_then(Value::as_str),
         Some("marketing-brief.md")
+    );
+    let repair_guidance = run_payload
+        .get("nodeRepairGuidance")
+        .and_then(|value| value.get("research-brief"))
+        .expect("repair guidance");
+    assert_eq!(
+        repair_guidance.get("status").and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(
+        repair_guidance
+            .get("blockingClassification")
+            .and_then(Value::as_str),
+        Some("tool_available_but_not_used")
+    );
+    assert_eq!(
+        repair_guidance.get("repairAttempt").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        repair_guidance
+            .get("repairAttemptsRemaining")
+            .and_then(Value::as_u64),
+        Some(4)
+    );
+    assert_eq!(
+        repair_guidance
+            .get("requiredNextToolActions")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Value::as_str),
+        Some("Use `read` on concrete workspace files before finalizing the brief.")
+    );
+    assert_eq!(
+        run_payload
+            .get("needsRepairNodeIDs")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(0)
     );
     assert!(run_payload
         .get("checkpoint")

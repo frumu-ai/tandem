@@ -228,11 +228,16 @@ cargo test -p tandem sidecar::tests::mission_apply_event_posts_event_payload -- 
 cargo test -p tandem-tui cancel_run_by_id_posts_expected_endpoint -- --nocapture
 ```
 
+Example MCP auth challenge shape:
+
+```text
 Authorization is required before I can continue with this action.
 
-Tool mcp.arcade.jira_getboards result: Authorization required for mcp.arcade.jira_getboards. {"authorization_url":"https://auth.atlassian.com/authorize?audience=api.atlassian.com\u0026client_id=8knCcTexXDI6gDKhyuglJsL1S7KiefJT\u0026prompt=consent\u0026redirect_uri=https%3A%2F%2Fcloud.arcade.dev%2Fapi%2Fv1%2Foauth%2Ff4c6b_aps_arcade-atlassian%2Fcallback\u0026response_type=code\u0026scope=offline_access+read%3Aboard-scope%3Ajira-software+read%3Aproject%3Ajira+read%3Aissue-details%3Ajira+read%3Ajira-user+manage%3Ajira-configuration+read%3Ajira-work+write%3Ajira-work\u0026state=f910d54d-befc-4e32-968d-245adf6b627b","llm_instructions":"Please show the following link to the end user formatted as markdown: https://auth.atlassian.com/authorize?audience=api.atlassian.com\u0026client_id=8knCcTexXDI6gDKhyuglJsL1S7KiefJT\u0026prompt=consent\u0026redirect_uri=https%3A%2F%2Fcloud.arcade.dev%2Fapi%2Fv1%2Foauth%2Ff4c6b_aps_arcade-atlassian%2Fcallback\u0026response_type=code\u0026scope=offline_access+read%3Aboard-scope%3Ajira-software+read%3Aproject%3Ajira+read%3Aissue-details%3Ajira+read%3Ajira-user+manage%3Ajira-configuration+read%3Ajira-work+write%3Ajira-work\u0026state=f910d54d-befc-4e32-968d-245adf6b627b \nInform the end user that the tool requires their authorization to be completed before the tool can be executed.","message":"The tool was not executed because it requires authorization. This is not an error, but the end user must click the link to authorize before the tool can be executed."}
+Tool mcp.arcade.jira_getboards result: Authorization required for mcp.arcade.jira_getboards.
+Authorize here: https://example.com/oauth/start
+```
 
-Authorize here: https://auth.atlassian.com/authorize?audience=api.atlassian.com&client_id=8knCcTexXDI6gDKhyuglJsL1S7KiefJT&prompt=consent&redirect_uri=https%3A%2F%2Fcloud.arcade.dev%2Fapi%2Fv1%2Foauth%2Ff4c6b_aps_arcade-atlassian%2Fcallback&response_type=code&scope=offline_access+read%3Aboard-scope%3Ajira-software+read%3Aproject%3Ajira+read%3Aissue-details%3Ajira+read%3Ajira-user+manage%3Ajira-configuration+read%3Ajira-work+write%3Ajira-work&state=f910d54d-befc-4e32-968d-245adf6b627b
+Use a sanitized example in docs. Do not paste live OAuth challenge payloads with real redirect URIs, scopes, or state values into committed documentation.
 MCP-focused regression checks:
 
 ```bash

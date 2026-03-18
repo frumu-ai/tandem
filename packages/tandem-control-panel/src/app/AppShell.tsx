@@ -349,7 +349,7 @@ export function AppShell({
   );
 
   return (
-    <div className="tcp-shell">
+    <div className={`tcp-shell ${currentRoute === "chat" ? "tcp-shell-chat" : ""}`.trim()}>
       <GlowLayer className="tcp-shell-background">
         <div className="tcp-shell-glow tcp-shell-glow-a"></div>
         <div className="tcp-shell-glow tcp-shell-glow-b"></div>
@@ -378,7 +378,9 @@ export function AppShell({
 
       <aside className="tcp-context-rail hidden lg:flex xl:hidden">{contextRail(false)}</aside>
 
-      <main className="tcp-main-shell">
+      <main
+        className={`tcp-main-shell ${currentRoute === "chat" ? "tcp-main-shell-fill" : ""}`.trim()}
+      >
         <section className="tcp-mobile-topbar lg:hidden">
           <button
             type="button"
@@ -454,7 +456,7 @@ export function AppShell({
         <AnimatePresence mode="wait">
           <motion.section
             key={routeKey}
-            className="tcp-main-content"
+            className={`tcp-main-content ${currentRoute === "chat" ? "tcp-main-content-fill" : ""}`.trim()}
             initial={reducedMotion ? false : { opacity: 0, y: 18 }}
             animate={reducedMotion ? undefined : { opacity: 1, y: 0 }}
             exit={reducedMotion ? undefined : { opacity: 0, y: -14 }}

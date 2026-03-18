@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { renderIcons } from "../app/icons.js";
 import { workflowLatestStabilitySnapshot } from "../features/orchestration/workflowStability";
@@ -39,6 +40,8 @@ type ProviderOption = {
   id: string;
   models: string[];
 };
+
+const AUTOMATIONS_STUDIO_HANDOFF_KEY = "tandem.automations.studioHandoff";
 
 function toArray(input: any, key: string) {
   if (Array.isArray(input)) return input;
@@ -168,6 +171,19 @@ function validateWorkspaceRootInput(raw: string) {
   if (!value) return "Workspace root is required.";
   if (!value.startsWith("/")) return "Workspace root must be an absolute path.";
   return "";
+}
+
+function seedAutomationsStudioHandoff(payload: {
+  tab: "running";
+  runId?: string;
+  automationId?: string;
+  openTaskInspector?: boolean;
+}) {
+  try {
+    sessionStorage.setItem(AUTOMATIONS_STUDIO_HANDOFF_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
 }
 
 function composePromptSections(prompt: StudioPromptSections) {
@@ -1057,6 +1073,8 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
   const [selectedTemplateLoadId, setSelectedTemplateLoadId] = useState("");
   const [saveReusableTemplates, setSaveReusableTemplates] = useState(false);
   const [runAfterSave, setRunAfterSave] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(true);
+  const [savedWorkflowsOpen, setSavedWorkflowsOpen] = useState(true);
   const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
   const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
   const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
@@ -1129,6 +1147,8 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
     draft,
     selectedNodeId,
     selectedTemplateLoadId,
+    templatesOpen,
+    savedWorkflowsOpen,
     studioAutomations.length,
     templateRows.length,
     workspaceBrowserOpen,
@@ -1413,6 +1433,12 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
         ? `Workflow run started: ${runId}. Opening Automations.`
         : "Workflow run started. Opening Automations."
     );
+    seedAutomationsStudioHandoff({
+      tab: "running",
+      runId,
+      automationId,
+      openTaskInspector: true,
+    });
     navigate("automations");
   };
 
@@ -1531,6 +1557,16 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
             const agent = workingDraft.agents.find((entry) => entry.agentId === node.agentId);
             const outputPath = safeString(node.outputPath);
             const codeLike = isCodeLikeNode(node);
+            const toolAllowlist = normalizeNodeAwareToolAllowlist(
+              agent?.toolAllowlist || [],
+              normalizedNodes.filter((entry) => entry.agentId === node.agentId)
+            );
+            const requiredTools = outputPath
+              ? [
+                  toolAllowlist.includes("read") ? "read" : null,
+                  toolAllowlist.includes("websearch") ? "websearch" : null,
+                ].filter((value): value is string => Boolean(value))
+              : [];
             return {
               node_id: safeString(node.nodeId),
               agent_id: safeString(node.agentId),
@@ -1557,6 +1593,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                   role: safeString(agent?.role) || "worker",
                   output_path: outputPath || undefined,
                   write_required: !!outputPath,
+                  required_tools: requiredTools,
                   web_research_expected: !!agent?.toolAllowlist?.includes("websearch"),
                   task_kind: safeString(node.taskKind) || undefined,
                   project_backlog_tasks: isBacklogProjectingNode(node) || undefined,
@@ -1609,12 +1646,22 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
       const automationId = safeString(
         (response as any)?.automation?.automation_id || (response as any)?.automation?.automationId
       );
+      let startedRunId = "";
       if (runAfterSave && automationId) {
-        await client.automationsV2.runNow(automationId);
+        const runResponse = await client.automationsV2.runNow(automationId);
+        startedRunId = safeString(
+          (runResponse as any)?.run?.run_id || (runResponse as any)?.run?.runId
+        );
       }
-      return { response, automationId, linkedTemplateIds, workingDraft };
+      return { response, automationId, linkedTemplateIds, workingDraft, startedRunId };
     },
-    onSuccess: async ({ response, automationId, linkedTemplateIds, workingDraft }) => {
+    onSuccess: async ({
+      response,
+      automationId,
+      linkedTemplateIds,
+      workingDraft,
+      startedRunId,
+    }) => {
       toast(
         "ok",
         runAfterSave ? "Studio workflow saved and run started." : "Studio workflow saved."
@@ -1653,6 +1700,20 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
             }
           : null
       );
+      if (runAfterSave) {
+        seedAutomationsStudioHandoff({
+          tab: "running",
+          runId: startedRunId,
+          automationId:
+            automationId ||
+            safeString(
+              (response as any)?.automation?.automation_id ||
+                (response as any)?.automation?.automationId
+            ),
+          openTaskInspector: true,
+        });
+        navigate("automations");
+      }
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
@@ -1717,185 +1778,257 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
           </div>
         }
       >
-        <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)_360px]">
-          <div className="grid gap-4">
-            <PageCard title="Starter Templates" subtitle="Begin with a proven workflow shape.">
-              <div className="grid gap-2">
-                {STUDIO_TEMPLATE_CATALOG.map((template) => (
+        <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)_360px] xl:items-start">
+          <div className="grid auto-rows-max content-start self-start gap-4">
+            <PageCard title="Studio Library" subtitle="Templates and saved workflows in one place.">
+              <div className="grid gap-4">
+                <section className="grid gap-2">
                   <button
-                    key={template.id}
-                    className={`tcp-list-item text-left ${draft.starterTemplateId === template.id ? "border-emerald-400/60 bg-emerald-500/10" : ""}`}
-                    onClick={() => applyTemplate(template.id)}
+                    type="button"
+                    className="flex w-full items-center gap-2 text-left"
+                    aria-expanded={templatesOpen}
+                    onClick={() => setTemplatesOpen((open) => !open)}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <strong>{template.name}</strong>
-                      <span className="tcp-badge-info">{template.icon}</span>
+                    <i
+                      data-lucide={templatesOpen ? "chevron-down" : "chevron-right"}
+                      className="text-slate-400"
+                    ></i>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-100">Starter Templates</div>
+                      <div className="text-xs text-slate-400">
+                        Begin with a proven workflow shape.
+                      </div>
                     </div>
-                    <div className="mt-1 text-sm text-slate-300">{template.summary}</div>
                   </button>
-                ))}
-              </div>
-            </PageCard>
+                  <AnimatePresence initial={false}>
+                    {templatesOpen ? (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.16, ease: "easeOut" }}
+                        className="grid gap-2 overflow-hidden pl-5"
+                      >
+                        {STUDIO_TEMPLATE_CATALOG.map((template) => (
+                          <button
+                            key={template.id}
+                            className={`tcp-list-item text-left ${draft.starterTemplateId === template.id ? "border-emerald-400/60 bg-emerald-500/10" : ""}`}
+                            onClick={() => applyTemplate(template.id)}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <strong>{template.name}</strong>
+                              <span className="tcp-badge-info">{template.icon}</span>
+                            </div>
+                            <div className="mt-1 text-sm text-slate-300">{template.summary}</div>
+                          </button>
+                        ))}
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                </section>
 
-            <PageCard
-              title="Saved Studio Workflows"
-              subtitle="Reopen workflows created from Studio metadata."
-            >
-              <div className="grid gap-2">
-                {studioAutomations.length ? (
-                  [...studioAutomations]
-                    .sort((a: any, b: any) => {
-                      const aTime = Number(
-                        a?.updated_at_ms ||
-                          a?.updatedAtMs ||
-                          a?.created_at_ms ||
-                          a?.createdAtMs ||
-                          0
-                      );
-                      const bTime = Number(
-                        b?.updated_at_ms ||
-                          b?.updatedAtMs ||
-                          b?.created_at_ms ||
-                          b?.createdAtMs ||
-                          0
-                      );
-                      return bTime - aTime;
-                    })
-                    .slice(0, 12)
-                    .map((automation: any) => {
-                      const automationId = safeString(
-                        automation?.automation_id || automation?.automationId || automation?.id
-                      );
-                      const latestRun = studioWorkflowLatestRuns.get(automationId) || null;
-                      const latestStability = workflowLatestStabilitySnapshot(latestRun);
-                      const latestRunStatus = safeString(latestStability.status);
-                      const latestFailureKind = safeString(latestStability.failureKind);
-                      const latestPhase = safeString(latestStability.phase);
-                      const latestRunLabel = timestampLabel(
-                        latestRun?.updated_at_ms ||
-                          latestRun?.updatedAtMs ||
-                          latestRun?.created_at_ms ||
-                          latestRun?.createdAtMs
-                      );
-                      const studio = automation?.metadata?.studio || {};
-                      const health = analyzeAutomationTemplateHealth(automation, templateMap);
-                      const templateId = safeString(
-                        studio?.template_id ||
-                          studio?.templateId ||
-                          studio?.starter_template_id ||
-                          studio?.starterTemplateId
-                      );
-                      const updatedLabel = timestampLabel(
-                        automation?.updated_at_ms ||
-                          automation?.updatedAtMs ||
-                          automation?.created_at_ms ||
-                          automation?.createdAtMs
-                      );
-                      const isDeleting =
-                        deleteAutomationMutation.isPending &&
-                        deleteAutomationMutation.variables === automationId;
-                      return (
-                        <div key={automationId} className="tcp-list-item">
-                          <div className="flex items-center justify-between gap-2">
-                            <strong>{safeString(automation?.name) || automationId}</strong>
-                            <div className="flex flex-wrap items-center justify-end gap-2">
-                              {health.isBroken ? (
-                                <span className="tcp-badge-warn">broken links</span>
-                              ) : null}
-                              <span className="tcp-badge-info">
-                                {safeString(automation?.status) || "draft"}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="mt-1 text-xs text-slate-400">
-                            {safeString(studio?.summary) || "Studio workflow"}
-                          </div>
-                          <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                            {templateId ? (
-                              <span className="tcp-badge-info">template: {templateId}</span>
-                            ) : null}
-                            <span className="tcp-badge-muted">id: {shortId(automationId)}</span>
-                            {updatedLabel ? (
-                              <span className="tcp-badge-muted">updated: {updatedLabel}</span>
-                            ) : null}
-                          </div>
-                          {latestRun ? (
-                            <div className="mt-2 rounded-lg border border-slate-700/50 bg-slate-950/20 p-2">
-                              <div className="text-[11px] uppercase tracking-wide text-slate-500">
-                                Latest Run Stability
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-                                <span className="tcp-badge-info">status: {latestRunStatus}</span>
-                                {latestPhase ? (
-                                  <span className="tcp-badge-muted">phase: {latestPhase}</span>
-                                ) : null}
-                                {latestFailureKind ? (
-                                  <span className="tcp-badge-warn">
-                                    failure: {latestFailureKind}
-                                  </span>
-                                ) : null}
-                                {latestRunLabel ? (
-                                  <span className="tcp-badge-muted">run: {latestRunLabel}</span>
-                                ) : null}
-                              </div>
-                              {safeString(latestStability.reason) ? (
-                                <div className="mt-2 text-xs text-slate-300">
-                                  {safeString(latestStability.reason)}
+                <section className="grid gap-2 border-t border-slate-800/80 pt-3">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 text-left"
+                    aria-expanded={savedWorkflowsOpen}
+                    onClick={() => setSavedWorkflowsOpen((open) => !open)}
+                  >
+                    <i
+                      data-lucide={savedWorkflowsOpen ? "chevron-down" : "chevron-right"}
+                      className="text-slate-400"
+                    ></i>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-100">
+                        Saved Studio Workflows
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        Reopen workflows created from Studio metadata.
+                      </div>
+                    </div>
+                  </button>
+                  <AnimatePresence initial={false}>
+                    {savedWorkflowsOpen ? (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.16, ease: "easeOut" }}
+                        className="grid gap-2 overflow-hidden pl-5"
+                      >
+                        {studioAutomations.length ? (
+                          [...studioAutomations]
+                            .sort((a: any, b: any) => {
+                              const aTime = Number(
+                                a?.updated_at_ms ||
+                                  a?.updatedAtMs ||
+                                  a?.created_at_ms ||
+                                  a?.createdAtMs ||
+                                  0
+                              );
+                              const bTime = Number(
+                                b?.updated_at_ms ||
+                                  b?.updatedAtMs ||
+                                  b?.created_at_ms ||
+                                  b?.createdAtMs ||
+                                  0
+                              );
+                              return bTime - aTime;
+                            })
+                            .slice(0, 12)
+                            .map((automation: any) => {
+                              const automationId = safeString(
+                                automation?.automation_id ||
+                                  automation?.automationId ||
+                                  automation?.id
+                              );
+                              const latestRun = studioWorkflowLatestRuns.get(automationId) || null;
+                              const latestStability = workflowLatestStabilitySnapshot(latestRun);
+                              const latestRunStatus = safeString(latestStability.status);
+                              const latestFailureKind = safeString(latestStability.failureKind);
+                              const latestPhase = safeString(latestStability.phase);
+                              const latestRunLabel = timestampLabel(
+                                latestRun?.updated_at_ms ||
+                                  latestRun?.updatedAtMs ||
+                                  latestRun?.created_at_ms ||
+                                  latestRun?.createdAtMs
+                              );
+                              const studio = automation?.metadata?.studio || {};
+                              const health = analyzeAutomationTemplateHealth(
+                                automation,
+                                templateMap
+                              );
+                              const templateId = safeString(
+                                studio?.template_id ||
+                                  studio?.templateId ||
+                                  studio?.starter_template_id ||
+                                  studio?.starterTemplateId
+                              );
+                              const updatedLabel = timestampLabel(
+                                automation?.updated_at_ms ||
+                                  automation?.updatedAtMs ||
+                                  automation?.created_at_ms ||
+                                  automation?.createdAtMs
+                              );
+                              const isDeleting =
+                                deleteAutomationMutation.isPending &&
+                                deleteAutomationMutation.variables === automationId;
+                              return (
+                                <div key={automationId} className="tcp-list-item">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <strong>{safeString(automation?.name) || automationId}</strong>
+                                    <div className="flex flex-wrap items-center justify-end gap-2">
+                                      {health.isBroken ? (
+                                        <span className="tcp-badge-warn">broken links</span>
+                                      ) : null}
+                                      <span className="tcp-badge-info">
+                                        {safeString(automation?.status) || "draft"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="mt-1 text-xs text-slate-400">
+                                    {safeString(studio?.summary) || "Studio workflow"}
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                    {templateId ? (
+                                      <span className="tcp-badge-info">template: {templateId}</span>
+                                    ) : null}
+                                    <span className="tcp-badge-muted">
+                                      id: {shortId(automationId)}
+                                    </span>
+                                    {updatedLabel ? (
+                                      <span className="tcp-badge-muted">
+                                        updated: {updatedLabel}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  {latestRun ? (
+                                    <div className="mt-2 rounded-lg border border-slate-700/50 bg-slate-950/20 p-2">
+                                      <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                                        Latest Run Stability
+                                      </div>
+                                      <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                                        <span className="tcp-badge-info">
+                                          status: {latestRunStatus}
+                                        </span>
+                                        {latestPhase ? (
+                                          <span className="tcp-badge-muted">
+                                            phase: {latestPhase}
+                                          </span>
+                                        ) : null}
+                                        {latestFailureKind ? (
+                                          <span className="tcp-badge-warn">
+                                            failure: {latestFailureKind}
+                                          </span>
+                                        ) : null}
+                                        {latestRunLabel ? (
+                                          <span className="tcp-badge-muted">
+                                            run: {latestRunLabel}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      {safeString(latestStability.reason) ? (
+                                        <div className="mt-2 text-xs text-slate-300">
+                                          {safeString(latestStability.reason)}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                      className="tcp-btn inline-flex h-7 items-center gap-2 px-2 text-xs"
+                                      onClick={() => {
+                                        openAutomationInStudio(automation);
+                                      }}
+                                    >
+                                      <i data-lucide="folder-open"></i>
+                                      Open
+                                    </button>
+                                    <button
+                                      className="tcp-btn inline-flex h-7 items-center gap-2 px-2 text-xs"
+                                      onClick={async () => {
+                                        try {
+                                          await runSavedAutomation(automation);
+                                        } catch (error) {
+                                          toast(
+                                            "err",
+                                            error instanceof Error ? error.message : String(error)
+                                          );
+                                        }
+                                      }}
+                                    >
+                                      <i data-lucide="play"></i>
+                                      {health.isBroken ? "Repair & Open" : "Run Now"}
+                                    </button>
+                                    <button
+                                      className="tcp-btn inline-flex h-7 items-center gap-2 px-2 text-xs text-rose-200"
+                                      disabled={isDeleting}
+                                      onClick={() => {
+                                        setDeleteConfirm({
+                                          automationId,
+                                          title: safeString(automation?.name) || automationId,
+                                        });
+                                      }}
+                                    >
+                                      <i data-lucide="trash-2"></i>
+                                      {isDeleting ? "Deleting..." : "Delete"}
+                                    </button>
+                                  </div>
                                 </div>
-                              ) : null}
-                            </div>
-                          ) : null}
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            <button
-                              className="tcp-btn inline-flex h-7 items-center gap-2 px-2 text-xs"
-                              onClick={() => {
-                                openAutomationInStudio(automation);
-                              }}
-                            >
-                              <i data-lucide="folder-open"></i>
-                              Open
-                            </button>
-                            <button
-                              className="tcp-btn inline-flex h-7 items-center gap-2 px-2 text-xs"
-                              onClick={async () => {
-                                try {
-                                  await runSavedAutomation(automation);
-                                } catch (error) {
-                                  toast(
-                                    "err",
-                                    error instanceof Error ? error.message : String(error)
-                                  );
-                                }
-                              }}
-                            >
-                              <i data-lucide="play"></i>
-                              {health.isBroken ? "Repair & Open" : "Run Now"}
-                            </button>
-                            <button
-                              className="tcp-btn inline-flex h-7 items-center gap-2 px-2 text-xs text-rose-200"
-                              disabled={isDeleting}
-                              onClick={() => {
-                                setDeleteConfirm({
-                                  automationId,
-                                  title: safeString(automation?.name) || automationId,
-                                });
-                              }}
-                            >
-                              <i data-lucide="trash-2"></i>
-                              {isDeleting ? "Deleting..." : "Delete"}
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })
-                ) : (
-                  <EmptyState text="No Studio-created workflows yet." />
-                )}
+                              );
+                            })
+                        ) : (
+                          <EmptyState text="No Studio-created workflows yet." />
+                        )}
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                </section>
               </div>
             </PageCard>
           </div>
 
-          <div className="grid gap-4">
+          <div className="grid auto-rows-max content-start self-start gap-4">
             {repairState?.requiresSave &&
             (repairState?.repairedAgentIds.length || repairState?.missingNodeAgentIds.length) ? (
               <PageCard
@@ -1935,272 +2068,295 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
               title="Workflow Settings"
               subtitle="Name, schedule, workspace, and save behavior."
             >
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1">
-                  <span className="text-xs text-slate-400">Name</span>
-                  <input
-                    className="tcp-input text-sm"
-                    value={draft.name}
-                    onInput={(event) =>
-                      updateDraft({ name: (event.target as HTMLInputElement).value })
-                    }
-                  />
-                </label>
-                <label className="grid gap-1">
-                  <span className="text-xs text-slate-400">Status</span>
-                  <select
-                    className="tcp-input text-sm"
-                    value={draft.status}
-                    onInput={(event) =>
-                      updateDraft({
-                        status: (event.target as HTMLSelectElement).value as
-                          | "draft"
-                          | "active"
-                          | "paused",
-                      })
-                    }
-                  >
-                    <option value="draft">draft</option>
-                    <option value="active">active</option>
-                    <option value="paused">paused</option>
-                  </select>
-                </label>
-                <label className="grid gap-1 md:col-span-2">
-                  <span className="text-xs text-slate-400">Description</span>
-                  <textarea
-                    className="tcp-input min-h-[88px] text-sm"
-                    value={draft.description}
-                    onInput={(event) =>
-                      updateDraft({ description: (event.target as HTMLTextAreaElement).value })
-                    }
-                  />
-                </label>
-                <label className="grid gap-1 md:col-span-2">
-                  <span className="text-xs text-slate-400">Workspace Root</span>
-                  <div className="grid gap-2 md:grid-cols-[auto_1fr_auto]">
-                    <button
-                      className="tcp-btn h-10 px-3"
-                      type="button"
-                      onClick={() => {
-                        const seed = safeString(draft.workspaceRoot || defaultWorkspaceRoot || "/");
-                        setWorkspaceBrowserDir(seed || "/");
-                        setWorkspaceBrowserSearch("");
-                        setWorkspaceBrowserOpen(true);
-                      }}
-                    >
-                      <i data-lucide="folder-open"></i>
-                      Browse
-                    </button>
-                    <input
-                      className={`tcp-input text-sm ${workspaceRootError ? "border-red-500/60 text-red-100" : ""}`}
-                      value={draft.workspaceRoot}
-                      readOnly
-                      placeholder="No local directory selected. Use Browse."
-                    />
-                    <button
-                      className="tcp-btn h-10 px-3"
-                      type="button"
-                      onClick={() => updateDraft({ workspaceRoot: "" })}
-                      disabled={!draft.workspaceRoot}
-                    >
-                      <i data-lucide="x"></i>
-                      Clear
-                    </button>
-                  </div>
-                  {workspaceRootError ? (
-                    <span className="text-xs text-red-300">{workspaceRootError}</span>
-                  ) : null}
-                </label>
-                <label className="grid gap-1">
-                  <span className="text-xs text-slate-400">Schedule</span>
-                  <select
-                    className="tcp-input text-sm"
-                    value={draft.scheduleType}
-                    onInput={(event) =>
-                      updateDraft({
-                        scheduleType: (event.target as HTMLSelectElement).value as
-                          | "manual"
-                          | "cron"
-                          | "interval",
-                      })
-                    }
-                  >
-                    <option value="manual">manual</option>
-                    <option value="cron">cron</option>
-                    <option value="interval">interval</option>
-                  </select>
-                </label>
-                <label className="grid gap-1">
-                  <span className="text-xs text-slate-400">Max Parallel Agents</span>
-                  <input
-                    className="tcp-input text-sm"
-                    value={draft.maxParallelAgents}
-                    onInput={(event) =>
-                      updateDraft({ maxParallelAgents: (event.target as HTMLInputElement).value })
-                    }
-                  />
-                </label>
-                {draft.scheduleType === "cron" ? (
-                  <label className="grid gap-1 md:col-span-2">
-                    <span className="text-xs text-slate-400">Cron Expression</span>
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(18rem,0.95fr)]">
+                <div className="grid content-start gap-3">
+                  <label className="grid gap-1">
+                    <span className="text-xs text-slate-400">Name</span>
                     <input
                       className="tcp-input text-sm"
-                      value={draft.cronExpression}
+                      value={draft.name}
                       onInput={(event) =>
-                        updateDraft({ cronExpression: (event.target as HTMLInputElement).value })
-                      }
-                      placeholder="0 9 * * 1"
-                    />
-                  </label>
-                ) : null}
-                {draft.scheduleType === "interval" ? (
-                  <label className="grid gap-1 md:col-span-2">
-                    <span className="text-xs text-slate-400">Interval Seconds</span>
-                    <input
-                      className="tcp-input text-sm"
-                      value={draft.intervalSeconds}
-                      onInput={(event) =>
-                        updateDraft({ intervalSeconds: (event.target as HTMLInputElement).value })
+                        updateDraft({ name: (event.target as HTMLInputElement).value })
                       }
                     />
                   </label>
-                ) : null}
-                <label className="grid gap-1 md:col-span-2">
-                  <span className="text-xs text-slate-400">Output Targets</span>
-                  <input
-                    className="tcp-input text-sm"
-                    value={joinCsv(draft.outputTargets)}
-                    onInput={(event) =>
-                      updateDraft({
-                        outputTargets: splitCsv((event.target as HTMLInputElement).value),
-                      })
-                    }
-                    placeholder="content-brief.md, approved-post.md"
-                  />
-                </label>
-                <label className="flex items-center gap-2 text-sm text-slate-300 md:col-span-2">
-                  <input
-                    type="checkbox"
-                    checked={saveReusableTemplates}
-                    onInput={(event) =>
-                      setSaveReusableTemplates((event.target as HTMLInputElement).checked)
-                    }
-                  />
-                  Save agent prompts as reusable templates
-                </label>
-                <div className="text-xs text-slate-400 md:col-span-2">
-                  Off: this workflow runs from Studio-local prompts only. On: Studio also creates
-                  shared Agent Team templates and links the workflow to them at runtime.
-                </div>
-                <div className="text-xs text-slate-500 md:col-span-2">
-                  Default model fallback:{" "}
-                  {studioDefaultModel.provider && studioDefaultModel.model
-                    ? `${studioDefaultModel.provider}/${studioDefaultModel.model}`
-                    : "No provider default configured in Settings."}
-                </div>
-                <label className="flex items-center gap-2 text-sm text-slate-300 md:col-span-2">
-                  <input
-                    type="checkbox"
-                    checked={draft.useSharedModel}
-                    onInput={(event) => {
-                      const checked = (event.target as HTMLInputElement).checked;
-                      const inferred = inferSharedModelFromAgents(draft.agents);
-                      updateDraft({
-                        useSharedModel: checked,
-                        sharedModelProvider: checked
-                          ? safeString(draft.sharedModelProvider) ||
-                            inferred.provider ||
-                            studioDefaultModel.provider
-                          : draft.sharedModelProvider,
-                        sharedModelId: checked
-                          ? safeString(draft.sharedModelId) ||
-                            inferred.model ||
-                            studioDefaultModel.model
-                          : draft.sharedModelId,
-                      });
-                    }}
-                  />
-                  Use one model for all agents in this workflow
-                </label>
-                {draft.useSharedModel ? (
-                  <>
-                    <label className="grid gap-1">
-                      <span className="text-xs text-slate-400">Shared Model Provider</span>
-                      <select
-                        className="tcp-input text-sm"
-                        value={draft.sharedModelProvider}
-                        onInput={(event) => {
-                          const provider = (event.target as HTMLSelectElement).value;
-                          const models = modelsForProvider(providerOptions, provider);
-                          updateDraft({
-                            sharedModelProvider: provider,
-                            sharedModelId: models.includes(draft.sharedModelId)
-                              ? draft.sharedModelId
-                              : models[0] || draft.sharedModelId,
-                          });
+                  <label className="grid gap-1">
+                    <span className="text-xs text-slate-400">Description</span>
+                    <textarea
+                      className="tcp-input min-h-[88px] text-sm"
+                      value={draft.description}
+                      onInput={(event) =>
+                        updateDraft({ description: (event.target as HTMLTextAreaElement).value })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="text-xs text-slate-400">Workspace Root</span>
+                    <div className="grid gap-2 md:grid-cols-[auto_1fr_auto]">
+                      <button
+                        className="tcp-btn h-10 px-3"
+                        type="button"
+                        onClick={() => {
+                          const seed = safeString(
+                            draft.workspaceRoot || defaultWorkspaceRoot || "/"
+                          );
+                          setWorkspaceBrowserDir(seed || "/");
+                          setWorkspaceBrowserSearch("");
+                          setWorkspaceBrowserOpen(true);
                         }}
                       >
-                        <option value="">Select provider...</option>
-                        {providerOptions.map((provider) => (
-                          <option key={provider.id} value={provider.id}>
-                            {provider.id}
-                          </option>
-                        ))}
+                        <i data-lucide="folder-open"></i>
+                        Browse
+                      </button>
+                      <input
+                        className={`tcp-input text-sm ${workspaceRootError ? "border-red-500/60 text-red-100" : ""}`}
+                        value={draft.workspaceRoot}
+                        readOnly
+                        placeholder="No local directory selected. Use Browse."
+                      />
+                      <button
+                        className="tcp-btn h-10 px-3"
+                        type="button"
+                        onClick={() => updateDraft({ workspaceRoot: "" })}
+                        disabled={!draft.workspaceRoot}
+                      >
+                        <i data-lucide="x"></i>
+                        Clear
+                      </button>
+                    </div>
+                    {workspaceRootError ? (
+                      <span className="text-xs text-red-300">{workspaceRootError}</span>
+                    ) : null}
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="text-xs text-slate-400">Output Targets</span>
+                    <input
+                      className="tcp-input text-sm"
+                      value={joinCsv(draft.outputTargets)}
+                      onInput={(event) =>
+                        updateDraft({
+                          outputTargets: splitCsv((event.target as HTMLInputElement).value),
+                        })
+                      }
+                      placeholder="content-brief.md, approved-post.md"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid content-start gap-3">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                    <label className="grid gap-1">
+                      <span className="text-xs text-slate-400">Status</span>
+                      <select
+                        className="tcp-input text-sm"
+                        value={draft.status}
+                        onInput={(event) =>
+                          updateDraft({
+                            status: (event.target as HTMLSelectElement).value as
+                              | "draft"
+                              | "active"
+                              | "paused",
+                          })
+                        }
+                      >
+                        <option value="draft">draft</option>
+                        <option value="active">active</option>
+                        <option value="paused">paused</option>
                       </select>
                     </label>
                     <label className="grid gap-1">
-                      <span className="text-xs text-slate-400">Shared Model</span>
-                      {modelsForProvider(providerOptions, draft.sharedModelProvider).length ? (
-                        <select
-                          className="tcp-input text-sm"
-                          value={draft.sharedModelId}
-                          onInput={(event) =>
-                            updateDraft({
-                              sharedModelId: (event.target as HTMLSelectElement).value,
-                            })
-                          }
-                        >
-                          {modelsForProvider(providerOptions, draft.sharedModelProvider).map(
-                            (model) => (
-                              <option key={model} value={model}>
-                                {model}
-                              </option>
-                            )
-                          )}
-                        </select>
-                      ) : (
-                        <input
-                          className="tcp-input text-sm"
-                          value={draft.sharedModelId}
-                          onInput={(event) =>
-                            updateDraft({
-                              sharedModelId: (event.target as HTMLInputElement).value,
-                            })
-                          }
-                          placeholder="provider-specific model id"
-                        />
-                      )}
+                      <span className="text-xs text-slate-400">Max Parallel Agents</span>
+                      <input
+                        className="tcp-input text-sm"
+                        value={draft.maxParallelAgents}
+                        onInput={(event) =>
+                          updateDraft({
+                            maxParallelAgents: (event.target as HTMLInputElement).value,
+                          })
+                        }
+                      />
                     </label>
-                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-xs text-amber-100 md:col-span-2">
-                      Shared model mode applies the same provider/model to every agent on save and
-                      while editing.
-                    </div>
-                  </>
-                ) : null}
-                <label className="flex items-center gap-2 text-sm text-slate-300 md:col-span-2">
-                  <input
-                    type="checkbox"
-                    checked={runAfterSave}
-                    onInput={(event) => setRunAfterSave((event.target as HTMLInputElement).checked)}
-                  />
-                  Run workflow immediately after save
-                </label>
-                {repairState && !repairState.requiresSave && repairState.repairedAgentIds.length ? (
-                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/8 px-3 py-2 text-xs text-emerald-100 md:col-span-2">
-                    Repaired template links were saved successfully. This workflow is now using
-                    local Studio prompts and can run normally.
                   </div>
-                ) : null}
+
+                  <label className="grid gap-1">
+                    <span className="text-xs text-slate-400">Schedule</span>
+                    <select
+                      className="tcp-input text-sm"
+                      value={draft.scheduleType}
+                      onInput={(event) =>
+                        updateDraft({
+                          scheduleType: (event.target as HTMLSelectElement).value as
+                            | "manual"
+                            | "cron"
+                            | "interval",
+                        })
+                      }
+                    >
+                      <option value="manual">manual</option>
+                      <option value="cron">cron</option>
+                      <option value="interval">interval</option>
+                    </select>
+                  </label>
+                  {draft.scheduleType === "cron" ? (
+                    <label className="grid gap-1">
+                      <span className="text-xs text-slate-400">Cron Expression</span>
+                      <input
+                        className="tcp-input text-sm"
+                        value={draft.cronExpression}
+                        onInput={(event) =>
+                          updateDraft({ cronExpression: (event.target as HTMLInputElement).value })
+                        }
+                        placeholder="0 9 * * 1"
+                      />
+                    </label>
+                  ) : null}
+                  {draft.scheduleType === "interval" ? (
+                    <label className="grid gap-1">
+                      <span className="text-xs text-slate-400">Interval Seconds</span>
+                      <input
+                        className="tcp-input text-sm"
+                        value={draft.intervalSeconds}
+                        onInput={(event) =>
+                          updateDraft({
+                            intervalSeconds: (event.target as HTMLInputElement).value,
+                          })
+                        }
+                      />
+                    </label>
+                  ) : null}
+
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={saveReusableTemplates}
+                      onInput={(event) =>
+                        setSaveReusableTemplates((event.target as HTMLInputElement).checked)
+                      }
+                    />
+                    Save agent prompts as reusable templates
+                  </label>
+                  <div className="text-xs text-slate-400">
+                    Off: this workflow runs from Studio-local prompts only. On: Studio also creates
+                    shared Agent Team templates and links the workflow to them at runtime.
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    Default model fallback:{" "}
+                    {studioDefaultModel.provider && studioDefaultModel.model
+                      ? `${studioDefaultModel.provider}/${studioDefaultModel.model}`
+                      : "No provider default configured in Settings."}
+                  </div>
+
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={draft.useSharedModel}
+                      onInput={(event) => {
+                        const checked = (event.target as HTMLInputElement).checked;
+                        const inferred = inferSharedModelFromAgents(draft.agents);
+                        updateDraft({
+                          useSharedModel: checked,
+                          sharedModelProvider: checked
+                            ? safeString(draft.sharedModelProvider) ||
+                              inferred.provider ||
+                              studioDefaultModel.provider
+                            : draft.sharedModelProvider,
+                          sharedModelId: checked
+                            ? safeString(draft.sharedModelId) ||
+                              inferred.model ||
+                              studioDefaultModel.model
+                            : draft.sharedModelId,
+                        });
+                      }}
+                    />
+                    Use one model for all agents in this workflow
+                  </label>
+                  {draft.useSharedModel ? (
+                    <>
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                        <label className="grid gap-1">
+                          <span className="text-xs text-slate-400">Shared Model Provider</span>
+                          <select
+                            className="tcp-input text-sm"
+                            value={draft.sharedModelProvider}
+                            onInput={(event) => {
+                              const provider = (event.target as HTMLSelectElement).value;
+                              const models = modelsForProvider(providerOptions, provider);
+                              updateDraft({
+                                sharedModelProvider: provider,
+                                sharedModelId: models.includes(draft.sharedModelId)
+                                  ? draft.sharedModelId
+                                  : models[0] || draft.sharedModelId,
+                              });
+                            }}
+                          >
+                            <option value="">Select provider...</option>
+                            {providerOptions.map((provider) => (
+                              <option key={provider.id} value={provider.id}>
+                                {provider.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-xs text-slate-400">Shared Model</span>
+                          {modelsForProvider(providerOptions, draft.sharedModelProvider).length ? (
+                            <select
+                              className="tcp-input text-sm"
+                              value={draft.sharedModelId}
+                              onInput={(event) =>
+                                updateDraft({
+                                  sharedModelId: (event.target as HTMLSelectElement).value,
+                                })
+                              }
+                            >
+                              {modelsForProvider(providerOptions, draft.sharedModelProvider).map(
+                                (model) => (
+                                  <option key={model} value={model}>
+                                    {model}
+                                  </option>
+                                )
+                              )}
+                            </select>
+                          ) : (
+                            <input
+                              className="tcp-input text-sm"
+                              value={draft.sharedModelId}
+                              onInput={(event) =>
+                                updateDraft({
+                                  sharedModelId: (event.target as HTMLInputElement).value,
+                                })
+                              }
+                              placeholder="provider-specific model id"
+                            />
+                          )}
+                        </label>
+                      </div>
+                      <div className="rounded-lg border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-xs text-amber-100">
+                        Shared model mode applies the same provider/model to every agent on save and
+                        while editing.
+                      </div>
+                    </>
+                  ) : null}
+
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={runAfterSave}
+                      onInput={(event) =>
+                        setRunAfterSave((event.target as HTMLInputElement).checked)
+                      }
+                    />
+                    Run workflow immediately after save
+                  </label>
+                  {repairState &&
+                  !repairState.requiresSave &&
+                  repairState.repairedAgentIds.length ? (
+                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/8 px-3 py-2 text-xs text-emerald-100">
+                      Repaired template links were saved successfully. This workflow is now using
+                      local Studio prompts and can run normally.
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </PageCard>
 
@@ -2342,9 +2498,9 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
               subtitle="Select a stage to edit its objective, dependencies, and bound agent."
             >
               {graphColumns.length ? (
-                <div className="grid items-stretch gap-3 xl:grid-cols-4">
+                <div className="grid gap-3 xl:grid-cols-4 xl:items-start">
                   {graphColumns.map(([depth, nodes]) => (
-                    <div key={depth} className="grid auto-rows-fr gap-2">
+                    <div key={depth} className="grid content-start gap-2">
                       <div className="text-xs uppercase tracking-wide text-slate-500">
                         Column {depth + 1}
                       </div>
@@ -2354,7 +2510,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                         return (
                           <button
                             key={node.nodeId}
-                            className={`tcp-list-item flex h-full min-h-[198px] flex-col text-left ${active ? "border-emerald-400/60 bg-emerald-500/10" : ""}`}
+                            className={`tcp-list-item flex flex-col text-left ${active ? "border-emerald-400/60 bg-emerald-500/10" : ""}`}
                             onClick={() => {
                               setSelectedNodeId(node.nodeId);
                               setSelectedAgentId(node.agentId);
@@ -2444,7 +2600,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
             </PageCard>
           </div>
 
-          <div className="grid gap-4">
+          <div className="grid auto-rows-max content-start self-start gap-4">
             <PageCard
               title={selectedNode ? `Stage: ${selectedNode.title}` : "Stage"}
               subtitle="Edit stage behavior, dependencies, and handoff aliases."

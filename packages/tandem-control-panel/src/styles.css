@@ -78,6 +78,12 @@
       );
   }
 
+  .tcp-shell-chat {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
   @screen lg {
     .tcp-shell {
       grid-template-columns: 300px minmax(0, 1fr);
@@ -370,6 +376,13 @@
     padding: 1rem;
   }
 
+  .tcp-main-shell-fill {
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   @screen lg {
     .tcp-shell {
       min-height: 100dvh;
@@ -510,9 +523,22 @@
     padding-bottom: 1rem;
   }
 
+  .tcp-main-content-fill {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    padding-bottom: 0;
+  }
+
   @screen lg {
     .tcp-main-content {
       flex: 0 0 auto;
+    }
+
+    .tcp-main-content-fill {
+      flex: 1 1 auto;
     }
   }
 
@@ -1547,13 +1573,9 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-layout-fill {
-    min-height: calc(100vh - 10.5rem);
-  }
-
-  @media (max-width: 1023px) {
-    .chat-layout-fill {
-      min-height: calc(100vh - 7.5rem);
-    }
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
   }
 
   .chat-workspace {
@@ -1656,6 +1678,16 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 
   .chat-messages {
     background: color-mix(in srgb, var(--color-surface) 84%, #000 16%);
+  }
+
+  .chat-messages-empty {
+    display: flex;
+  }
+
+  .chat-empty-state {
+    width: min(100%, 28rem);
+    margin: auto;
+    text-align: center;
   }
 
   .chat-right-rail {

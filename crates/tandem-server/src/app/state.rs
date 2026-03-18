@@ -4262,7 +4262,7 @@ pub fn record_automation_workflow_state_events(
                 .map(ToString::to_string)
         });
 
-    let base_metadata = automation_lifecycle_event_metadata_for_node(
+    let mut base_metadata = automation_lifecycle_event_metadata_for_node(
         node_id,
         attempt,
         session_id,
@@ -4273,6 +4273,24 @@ pub fn record_automation_workflow_state_events(
         status,
         failure_kind,
     );
+    if let Some(classification) = artifact_validation
+        .and_then(|value| value.get("blocking_classification"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        base_metadata.insert("blocking_classification".to_string(), json!(classification));
+    }
+    if let Some(actions) = artifact_validation
+        .and_then(|value| value.get("required_next_tool_actions"))
+        .and_then(Value::as_array)
+        .filter(|value| !value.is_empty())
+    {
+        base_metadata.insert(
+            "required_next_tool_actions".to_string(),
+            Value::Array(actions.clone()),
+        );
+    }
     record_automation_lifecycle_event_with_metadata(
         run,
         "workflow_state_changed",
@@ -4942,6 +4960,7 @@ fn render_automation_v2_prompt(
     workspace_root: &str,
     run_id: &str,
     node: &AutomationFlowNode,
+    attempt: u32,
     agent: &AutomationAgentProfile,
     upstream_inputs: &[Value],
     template_system_prompt: Option<&str>,
@@ -5138,10 +5157,169 @@ fn render_automation_v2_prompt(
             project_id
         ));
     }
-    prompt.push_str(
-        "\n\nFinal response requirements:\n- Return a concise completion.\n- Include a final compact JSON object in the response body with at least `status` (`completed` or `blocked`).\n- For review-style nodes, also include `approved` (`true` or `false`).\n- If blocked, include a short `reason`.\n- Do not claim semantic success if the output is blocked or not approved.",
-    );
+    let validator_kind = automation_output_validator_kind(node);
+    let enforce_completed_first_attempt = (validator_kind
+        == crate::AutomationOutputValidatorKind::ResearchBrief
+        || !automation_node_required_tools(node).is_empty())
+        && attempt <= 1;
+    if enforce_completed_first_attempt {
+        prompt.push_str(
+            "\n\nFinal response requirements:\n- Return a concise completion.\n- Include a final compact JSON object in the response body with `status` set to `completed`.\n- Do not declare the output blocked while the required workflow tools remain available; use them first and finish the work.\n- Do not claim success unless the write tool actually created the output file.",
+        );
+    } else {
+        prompt.push_str(
+            "\n\nFinal response requirements:\n- Return a concise completion.\n- Include a final compact JSON object in the response body with at least `status` (`completed` or `blocked`).\n- For review-style nodes, also include `approved` (`true` or `false`).\n- If blocked, include a short `reason`.\n- Do not claim semantic success if the output is blocked or not approved.",
+        );
+    }
     prompt
+}
+
+fn render_automation_repair_brief(
+    node: &AutomationFlowNode,
+    prior_output: Option<&Value>,
+    attempt: u32,
+    max_attempts: u32,
+) -> Option<String> {
+    if attempt <= 1 {
+        return None;
+    }
+    let prior_output = prior_output?;
+    if !automation_output_needs_repair(prior_output) {
+        return None;
+    }
+
+    let validator_summary = prior_output.get("validator_summary");
+    let artifact_validation = prior_output.get("artifact_validation");
+    let tool_telemetry = prior_output.get("tool_telemetry");
+    let reason = validator_summary
+        .and_then(|value| value.get("reason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            artifact_validation
+                .and_then(|value| value.get("semantic_block_reason"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("the previous attempt did not satisfy the runtime validator");
+    let unmet_requirements = validator_summary
+        .and_then(|value| value.get("unmet_requirements"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let blocking_classification = artifact_validation
+        .and_then(|value| value.get("blocking_classification"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unspecified");
+    let required_next_tool_actions = artifact_validation
+        .and_then(|value| value.get("required_next_tool_actions"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let tools_offered = tool_telemetry
+        .and_then(|value| value.get("requested_tools"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let tools_executed = tool_telemetry
+        .and_then(|value| value.get("executed_tools"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let unreviewed_relevant_paths = artifact_validation
+        .and_then(|value| value.get("unreviewed_relevant_paths"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let repair_attempt = artifact_validation
+        .and_then(|value| value.get("repair_attempt"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(attempt.saturating_sub(1));
+    let repair_attempts_remaining = artifact_validation
+        .and_then(|value| value.get("repair_attempts_remaining"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_else(|| max_attempts.saturating_sub(attempt.saturating_sub(1)));
+
+    let unmet_line = if unmet_requirements.is_empty() {
+        "none recorded".to_string()
+    } else {
+        unmet_requirements.join(", ")
+    };
+    let tools_offered_line = if tools_offered.is_empty() {
+        "none recorded".to_string()
+    } else {
+        tools_offered.join(", ")
+    };
+    let tools_executed_line = if tools_executed.is_empty() {
+        "none recorded".to_string()
+    } else {
+        tools_executed.join(", ")
+    };
+    let unreviewed_line = if unreviewed_relevant_paths.is_empty() {
+        "none recorded".to_string()
+    } else {
+        unreviewed_relevant_paths.join(", ")
+    };
+    let next_actions_line = if required_next_tool_actions.is_empty() {
+        "none recorded".to_string()
+    } else {
+        required_next_tool_actions.join(" | ")
+    };
+
+    Some(format!(
+        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.",
+        node.node_id,
+        reason,
+        unmet_line,
+        blocking_classification,
+        next_actions_line,
+        tools_offered_line,
+        tools_executed_line,
+        unreviewed_line,
+        repair_attempt,
+        repair_attempts_remaining.saturating_sub(1),
+    ))
 }
 
 fn is_agent_standup_automation(automation: &AutomationV2Spec) -> bool {
@@ -5597,11 +5775,13 @@ fn automation_node_prewrite_requirements(
         && requested_tools.iter().any(|tool| tool == "websearch");
     let brief_research_node = automation_output_validator_kind(node)
         == crate::AutomationOutputValidatorKind::ResearchBrief;
-    let strict_source_coverage =
-        brief_research_node && automation_node_source_coverage_required(node);
-    let concrete_read_required =
-        strict_source_coverage && requested_tools.iter().any(|tool| tool == "read");
-    let successful_web_research_required = strict_source_coverage
+    let required_tools = automation_node_required_tools(node);
+    let has_required_read = required_tools.iter().any(|tool| tool == "read");
+    let has_required_websearch = required_tools.iter().any(|tool| tool == "websearch");
+    let has_any_required_tools = !required_tools.is_empty();
+    let concrete_read_required = (brief_research_node || has_required_read)
+        && requested_tools.iter().any(|tool| tool == "read");
+    let successful_web_research_required = (brief_research_node || has_required_websearch)
         && automation_node_web_research_expected(node)
         && requested_tools.iter().any(|tool| tool == "websearch");
     Some(PrewriteRequirements {
@@ -5609,7 +5789,7 @@ fn automation_node_prewrite_requirements(
         web_research_required,
         concrete_read_required,
         successful_web_research_required,
-        repair_on_unmet_requirements: strict_source_coverage,
+        repair_on_unmet_requirements: brief_research_node || has_any_required_tools,
         coverage_mode: if brief_research_node {
             PrewriteCoverageMode::ResearchCorpus
         } else {
@@ -5657,14 +5837,21 @@ fn automation_node_web_research_expected(node: &AutomationFlowNode) -> bool {
         .unwrap_or(false)
 }
 
-fn automation_node_source_coverage_required(node: &AutomationFlowNode) -> bool {
+fn automation_node_required_tools(node: &AutomationFlowNode) -> Vec<String> {
     node.metadata
         .as_ref()
         .and_then(|metadata| metadata.get("builder"))
-        .and_then(Value::as_object)
-        .and_then(|builder| builder.get("source_coverage_required"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+        .and_then(|builder| builder.get("required_tools"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn automation_node_execution_policy(node: &AutomationFlowNode, workspace_root: &str) -> Value {
@@ -6871,11 +7058,16 @@ fn validate_automation_artifact_output(
                     .unwrap_or(0)
                     > 1);
         let selected_assessment = best_candidate.as_ref();
-        if automation_output_validator_kind(node)
-            == crate::AutomationOutputValidatorKind::ResearchBrief
-            && requested_has_read
-        {
-            let strict_source_coverage = automation_node_source_coverage_required(node);
+        let validator_kind = automation_output_validator_kind(node);
+        let is_research_brief =
+            validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief;
+        let required_tools_for_node = automation_node_required_tools(node);
+        let has_required_tools = !required_tools_for_node.is_empty();
+        let requires_read = required_tools_for_node.iter().any(|tool| tool == "read");
+        let requires_websearch = required_tools_for_node
+            .iter()
+            .any(|tool| tool == "websearch");
+        if is_research_brief && requested_has_read {
             let missing_concrete_reads = !executed_has_read;
             let files_reviewed_backed = selected_assessment.is_some_and(|assessment| {
                 !assessment.reviewed_paths.is_empty()
@@ -6914,32 +7106,44 @@ fn validate_automation_artifact_output(
             if missing_web_research {
                 unmet_requirements.push("missing_successful_web_research".to_string());
             }
-            if strict_source_coverage
-                && (missing_concrete_reads
-                    || missing_citations
-                    || missing_file_coverage
-                    || missing_web_sources_reviewed
-                    || missing_web_research)
+            if missing_concrete_reads
+                || missing_citations
+                || missing_file_coverage
+                || missing_web_sources_reviewed
+                || missing_web_research
             {
                 semantic_block_reason = Some(if missing_concrete_reads {
                     "research completed without concrete file reads or required source coverage"
                         .to_string()
-                } else if missing_citations {
-                    "research completed without citation-backed claims".to_string()
-                } else if missing_web_sources_reviewed {
-                    "research completed without a web sources reviewed section".to_string()
                 } else if missing_web_research {
                     "research completed without required current web research".to_string()
                 } else if !unreviewed_relevant_paths.is_empty() {
                     "research completed without covering or explicitly skipping relevant discovered files".to_string()
+                } else if missing_citations {
+                    "research completed without citation-backed claims".to_string()
+                } else if missing_web_sources_reviewed {
+                    "research completed without a web sources reviewed section".to_string()
                 } else {
                     "research completed without a source-backed files reviewed section".to_string()
                 });
             }
         }
-        if automation_output_validator_kind(node)
-            == crate::AutomationOutputValidatorKind::GenericArtifact
-        {
+        if !is_research_brief && has_required_tools {
+            let missing_concrete_reads = requires_read && !executed_has_read;
+            let missing_web_research =
+                requires_websearch && web_research_expected && !web_research_succeeded;
+            if missing_concrete_reads {
+                unmet_requirements.push("no_concrete_reads".to_string());
+            }
+            if missing_web_research {
+                unmet_requirements.push("missing_successful_web_research".to_string());
+            }
+            if missing_concrete_reads || missing_web_research {
+                semantic_block_reason =
+                    Some("artifact finalized without using required tools".to_string());
+            }
+        }
+        if validator_kind == crate::AutomationOutputValidatorKind::GenericArtifact {
             let contract_kind = node
                 .output_contract
                 .as_ref()
@@ -7026,6 +7230,64 @@ fn validate_automation_artifact_output(
         semantic_block_reason.as_deref(),
         tool_telemetry,
     );
+    let validator_kind = automation_output_validator_kind(node);
+    let has_required_tools = !automation_node_required_tools(node).is_empty();
+    let validation_outcome = if ((validator_kind
+        == crate::AutomationOutputValidatorKind::ResearchBrief)
+        || has_required_tools)
+        && semantic_block_reason.is_some()
+    {
+        if repair_exhausted {
+            "blocked"
+        } else {
+            "needs_repair"
+        }
+    } else if semantic_block_reason.is_some() {
+        "blocked"
+    } else {
+        "passed"
+    };
+    let should_classify =
+        validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief || has_required_tools;
+    let blocking_classification = if should_classify {
+        classify_research_validation_state(
+            &tool_telemetry
+                .get("requested_tools")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            &tool_telemetry
+                .get("executed_tools")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            automation_node_web_research_expected(node),
+            &unmet_requirements,
+            repair_exhausted,
+        )
+        .map(str::to_string)
+    } else {
+        None
+    };
+    let required_next_tool_actions = if should_classify {
+        research_required_next_tool_actions(
+            &tool_telemetry
+                .get("requested_tools")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            &tool_telemetry
+                .get("executed_tools")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            automation_node_web_research_expected(node),
+            &unmet_requirements,
+            &unreviewed_relevant_paths,
+        )
+    } else {
+        Vec::new()
+    };
 
     let metadata = json!({
         "accepted_artifact_path": accepted_output.as_ref().map(|(path, _)| path.clone()),
@@ -7055,6 +7317,9 @@ fn validate_automation_artifact_output(
         "repair_attempts_remaining": repair_attempts_remaining,
         "repair_succeeded": repair_succeeded,
         "repair_exhausted": repair_exhausted,
+        "validation_outcome": validation_outcome,
+        "blocking_classification": blocking_classification,
+        "required_next_tool_actions": required_next_tool_actions,
         "unmet_requirements": unmet_requirements,
         "artifact_candidates": artifact_candidates,
     });
@@ -7278,6 +7543,124 @@ fn summarize_automation_tool_activity(
     })
 }
 
+fn classify_research_validation_state(
+    requested_tools: &[Value],
+    executed_tools: &[Value],
+    web_research_expected: bool,
+    unmet_requirements: &[String],
+    repair_exhausted: bool,
+) -> Option<&'static str> {
+    if unmet_requirements.is_empty() {
+        return None;
+    }
+    let requested_has_read = requested_tools
+        .iter()
+        .any(|value| value.as_str() == Some("read"));
+    let requested_has_websearch = requested_tools
+        .iter()
+        .any(|value| value.as_str() == Some("websearch"));
+    let executed_has_read = executed_tools
+        .iter()
+        .any(|value| value.as_str() == Some("read"));
+    let executed_has_websearch = executed_tools
+        .iter()
+        .any(|value| value.as_str() == Some("websearch"));
+    if repair_exhausted {
+        return Some("coverage_incomplete_after_retry");
+    }
+    if (!requested_has_read
+        && unmet_requirements.iter().any(|value| {
+            matches!(
+                value.as_str(),
+                "no_concrete_reads" | "concrete_read_required"
+            )
+        }))
+        || (web_research_expected
+            && !requested_has_websearch
+            && unmet_requirements
+                .iter()
+                .any(|value| value == "missing_successful_web_research"))
+    {
+        return Some("tool_unavailable");
+    }
+    if (requested_has_read && !executed_has_read)
+        || (web_research_expected && requested_has_websearch && !executed_has_websearch)
+    {
+        return Some("tool_available_but_not_used");
+    }
+    Some("tool_attempted_but_failed")
+}
+
+fn research_required_next_tool_actions(
+    requested_tools: &[Value],
+    executed_tools: &[Value],
+    web_research_expected: bool,
+    unmet_requirements: &[String],
+    unreviewed_relevant_paths: &[String],
+) -> Vec<String> {
+    let requested_has_read = requested_tools
+        .iter()
+        .any(|value| value.as_str() == Some("read"));
+    let requested_has_websearch = requested_tools
+        .iter()
+        .any(|value| value.as_str() == Some("websearch"));
+    let executed_has_read = executed_tools
+        .iter()
+        .any(|value| value.as_str() == Some("read"));
+    let executed_has_websearch = executed_tools
+        .iter()
+        .any(|value| value.as_str() == Some("websearch"));
+    let has_unmet = |needle: &str| unmet_requirements.iter().any(|value| value == needle);
+
+    let mut actions = Vec::new();
+    if requested_has_read
+        && (!executed_has_read
+            || has_unmet("no_concrete_reads")
+            || has_unmet("files_reviewed_not_backed_by_read"))
+    {
+        if unreviewed_relevant_paths.is_empty() {
+            actions.push(
+                "Use `read` on concrete workspace files before finalizing the brief.".to_string(),
+            );
+        } else {
+            actions.push(format!(
+                "Use `read` on the remaining relevant workspace files: {}.",
+                unreviewed_relevant_paths.join(", ")
+            ));
+        }
+    }
+    if requested_has_websearch
+        && web_research_expected
+        && (!executed_has_websearch
+            || has_unmet("missing_successful_web_research")
+            || has_unmet("web_sources_reviewed_missing"))
+    {
+        actions.push(
+            "Use `websearch` successfully and include the resulting sources in `Web sources reviewed`."
+                .to_string(),
+        );
+    }
+    if has_unmet("citations_missing") {
+        actions.push(
+            "Add citation-backed proof points instead of unsupported claims before writing the final brief."
+                .to_string(),
+        );
+    }
+    if has_unmet("files_reviewed_missing") {
+        actions.push(
+            "Include a `Files reviewed` section that lists the exact local paths you actually read in this run."
+                .to_string(),
+        );
+    }
+    if has_unmet("relevant_files_not_reviewed_or_skipped") {
+        actions.push(
+            "Move every discovered relevant file into either `Files reviewed` after `read`, or `Files not reviewed` with a reason."
+                .to_string(),
+        );
+    }
+    actions
+}
+
 fn detect_automation_node_status(
     node: &AutomationFlowNode,
     session_text: &str,
@@ -7285,6 +7668,16 @@ fn detect_automation_node_status(
     tool_telemetry: &Value,
     artifact_validation: Option<&Value>,
 ) -> (String, Option<String>, Option<bool>) {
+    let research_repair_exhausted = artifact_validation
+        .and_then(|value| value.get("repair_exhausted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let validator_kind = automation_output_validator_kind(node);
+    let has_required_tools = !automation_node_required_tools(node).is_empty();
+    let validation_repairable = (validator_kind
+        == crate::AutomationOutputValidatorKind::ResearchBrief
+        || has_required_tools)
+        && !research_repair_exhausted;
     let parsed = parse_status_json(session_text);
     let approved = parsed
         .as_ref()
@@ -7315,7 +7708,25 @@ fn detect_automation_node_status(
         .and_then(Value::as_str)
         .is_some_and(|status| status.eq_ignore_ascii_case("blocked"))
     {
-        return ("blocked".to_string(), explicit_reason, approved);
+        let has_actionable_validation = artifact_validation
+            .and_then(|value| {
+                value
+                    .get("rejected_artifact_reason")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        value
+                            .get("semantic_block_reason")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                    })
+            })
+            .is_some();
+        if !validation_repairable || !has_actionable_validation {
+            return ("blocked".to_string(), explicit_reason, approved);
+        }
     }
     if approved == Some(false) {
         return (
@@ -7332,16 +7743,26 @@ fn detect_automation_node_status(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .or_else(|| {
-                value
-                    .get("semantic_block_reason")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-            })
     }) {
         return ("blocked".to_string(), Some(reason), approved);
+    }
+    if let Some(reason) = artifact_validation.and_then(|value| {
+        value
+            .get("semantic_block_reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }) {
+        return (
+            if validation_repairable {
+                "needs_repair".to_string()
+            } else {
+                "blocked".to_string()
+            },
+            Some(reason),
+            approved,
+        );
     }
     let output_text = verified_output
         .map(|(_, text)| text.as_str())
@@ -7425,8 +7846,10 @@ fn detect_automation_node_status(
     let executed_has_read = executed_tools
         .iter()
         .any(|value| value.as_str() == Some("read"));
-    let is_brief_contract = automation_output_validator_kind(node)
-        == crate::AutomationOutputValidatorKind::ResearchBrief;
+    let is_brief_contract = validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief;
+    let requires_read = automation_node_required_tools(node)
+        .iter()
+        .any(|value| value == "read");
     let verification_expected = tool_telemetry
         .get("verification_expected")
         .and_then(Value::as_bool)
@@ -7498,13 +7921,28 @@ fn detect_automation_node_status(
         || lowered.contains("provisional")
         || lowered.contains("this brief is blocked")
         || lowered.contains("brief is blocked");
-    if is_brief_contract && requested_has_read && !executed_has_read {
+    if (is_brief_contract && requested_has_read && !executed_has_read)
+        || (requires_read && requested_has_read && !executed_has_read)
+    {
         return (
-            "blocked".to_string(),
-            Some(if mentions_missing_file_evidence {
-                "research brief did not read concrete workspace files, so source-backed validation is incomplete".to_string()
+            if validation_repairable {
+                "needs_repair".to_string()
             } else {
-                "research brief cited workspace sources without using read, so source-backed validation is incomplete".to_string()
+                "blocked".to_string()
+            },
+            Some(if mentions_missing_file_evidence {
+                if is_brief_contract {
+                    "research brief did not read concrete workspace files, so source-backed validation is incomplete".to_string()
+                } else {
+                    "node did not use required read tool calls before finalizing the artifact"
+                        .to_string()
+                }
+            } else {
+                if is_brief_contract {
+                    "research brief cited workspace sources without using read, so source-backed validation is incomplete".to_string()
+                } else {
+                    "node finalized its artifact without required concrete file reads".to_string()
+                }
             }),
             approved,
         );
@@ -7549,7 +7987,9 @@ fn detect_automation_node_failure_kind(
             .iter()
             .any(|value| value.as_str() == Some(needle))
     };
-    let research_requirements_blocked = automation_node_source_coverage_required(node)
+    let has_required_tools = !automation_node_required_tools(node).is_empty();
+    let research_requirements_blocked = automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ResearchBrief
         && (has_unmet("no_concrete_reads")
             || has_unmet("concrete_read_required")
             || has_unmet("missing_successful_web_research")
@@ -7559,6 +7999,10 @@ fn detect_automation_node_failure_kind(
             || has_unmet("files_reviewed_not_backed_by_read")
             || has_unmet("relevant_files_not_reviewed_or_skipped")
             || has_unmet("coverage_mode"));
+    let required_tools_blocked = has_required_tools
+        && (has_unmet("no_concrete_reads")
+            || has_unmet("concrete_read_required")
+            || has_unmet("missing_successful_web_research"));
     let editorial_requirements_blocked = has_unmet("editorial_substance_missing")
         || has_unmet("markdown_structure_missing")
         || has_unmet("editorial_clearance_required");
@@ -7592,18 +8036,38 @@ fn detect_automation_node_failure_kind(
         .is_some()
         || (automation_output_validator_kind(node)
             == crate::AutomationOutputValidatorKind::ResearchBrief
-            && normalized_status == "blocked"
+            && matches!(normalized_status.as_str(), "blocked" | "needs_repair")
             && research_requirements_blocked)
+        || (has_required_tools
+            && matches!(normalized_status.as_str(), "blocked" | "needs_repair")
+            && required_tools_blocked)
         || (automation_output_validator_kind(node)
             == crate::AutomationOutputValidatorKind::GenericArtifact
             && normalized_status == "blocked"
             && editorial_requirements_blocked)
     {
+        let repair_exhausted = artifact_validation
+            .and_then(|value| value.get("repair_exhausted"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if repair_exhausted && research_requirements_blocked {
+            return Some("research_retry_exhausted".to_string());
+        }
         if has_unmet("no_concrete_reads") || has_unmet("concrete_read_required") {
-            return Some("research_missing_reads".to_string());
+            if automation_output_validator_kind(node)
+                == crate::AutomationOutputValidatorKind::ResearchBrief
+            {
+                return Some("research_missing_reads".to_string());
+            }
+            return Some("required_tool_unused_read".to_string());
         }
         if has_unmet("missing_successful_web_research") {
-            return Some("research_missing_web_research".to_string());
+            if automation_output_validator_kind(node)
+                == crate::AutomationOutputValidatorKind::ResearchBrief
+            {
+                return Some("research_missing_web_research".to_string());
+            }
+            return Some("required_tool_unused_websearch".to_string());
         }
         if has_unmet("citations_missing") || has_unmet("web_sources_reviewed_missing") {
             return Some("research_citations_missing".to_string());
@@ -7843,7 +8307,8 @@ fn detect_automation_node_phase(
                 .and_then(|value| value.get("semantic_block_reason"))
                 .and_then(Value::as_str)
                 .is_some()
-                || (automation_node_source_coverage_required(node)
+                || (automation_output_validator_kind(node)
+                    == crate::AutomationOutputValidatorKind::ResearchBrief
                     && normalized_status == "blocked"
                     && (has_unmet("no_concrete_reads")
                         || has_unmet("concrete_read_required")
@@ -8248,12 +8713,22 @@ fn automation_external_action_target(args: &Value, result: Option<&Value>) -> Op
 }
 
 pub(crate) fn automation_node_max_attempts(node: &AutomationFlowNode) -> u32 {
-    node.retry_policy
+    let explicit = node
+        .retry_policy
         .as_ref()
         .and_then(|value| value.get("max_attempts"))
         .and_then(Value::as_u64)
-        .map(|value| value.clamp(1, 10) as u32)
-        .unwrap_or(3)
+        .map(|value| value.clamp(1, 10) as u32);
+    if let Some(value) = explicit {
+        return value;
+    }
+    if automation_output_validator_kind(node) == crate::AutomationOutputValidatorKind::ResearchBrief
+        || !automation_node_required_tools(node).is_empty()
+    {
+        5
+    } else {
+        3
+    }
 }
 
 pub(crate) fn automation_output_is_blocked(output: &Value) -> bool {
@@ -8268,6 +8743,21 @@ pub(crate) fn automation_output_is_verify_failed(output: &Value) -> bool {
         .get("status")
         .and_then(Value::as_str)
         .is_some_and(|value| value.eq_ignore_ascii_case("verify_failed"))
+}
+
+pub(crate) fn automation_output_needs_repair(output: &Value) -> bool {
+    output
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("needs_repair"))
+}
+
+pub(crate) fn automation_output_repair_exhausted(output: &Value) -> bool {
+    output
+        .get("artifact_validation")
+        .and_then(|value| value.get("repair_exhausted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 pub(crate) fn automation_output_failure_reason(output: &Value) -> Option<String> {
@@ -8475,11 +8965,13 @@ pub(crate) async fn execute_automation_v2_node(
     } else {
         None
     };
-    let prompt = render_automation_v2_prompt(
+    let max_attempts = automation_node_max_attempts(node);
+    let mut prompt = render_automation_v2_prompt(
         automation,
         &workspace_root,
         run_id,
         node,
+        attempt,
         agent,
         &upstream_inputs,
         template
@@ -8492,6 +8984,15 @@ pub(crate) async fn execute_automation_v2_node(
             None
         },
     );
+    if let Some(repair_brief) = render_automation_repair_brief(
+        node,
+        run.checkpoint.node_outputs.get(&node.node_id),
+        attempt,
+        max_attempts,
+    ) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&repair_brief);
+    }
     let req = SendMessageRequest {
         parts: vec![MessagePartInput::Text { text: prompt }],
         model,
@@ -10169,6 +10670,773 @@ mod tests {
     }
 
     #[test]
+    fn research_workflow_status_is_needs_repair_before_repair_budget_is_exhausted() {
+        let node = AutomationFlowNode {
+            node_id: "research".to_string(),
+            agent_id: "agent-a".to_string(),
+            objective: "Research".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "web_research_expected": true,
+                    "source_coverage_required": true
+                }
+            })),
+        };
+        let tool_telemetry = json!({
+            "requested_tools": ["glob", "read", "websearch", "write"],
+            "executed_tools": ["glob", "write"],
+        });
+        let artifact_validation = json!({
+            "semantic_block_reason": "research completed without concrete file reads or required source coverage",
+            "unmet_requirements": ["no_concrete_reads", "missing_successful_web_research"],
+            "repair_exhausted": false,
+        });
+
+        let (status, reason, approved) = detect_automation_node_status(
+            &node,
+            "Done — `marketing-brief.md` was written.",
+            Some(&(
+                "marketing-brief.md".to_string(),
+                "# Marketing Brief".to_string(),
+            )),
+            &tool_telemetry,
+            Some(&artifact_validation),
+        );
+
+        assert_eq!(status, "needs_repair");
+        assert_eq!(
+            reason.as_deref(),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+        assert_eq!(approved, None);
+        let summary = build_automation_validator_summary(
+            crate::AutomationOutputValidatorKind::ResearchBrief,
+            &status,
+            reason.as_deref(),
+            Some(&artifact_validation),
+        );
+        assert_eq!(summary.outcome, "needs_repair");
+    }
+
+    #[test]
+    fn research_workflow_status_blocks_after_repair_budget_is_exhausted() {
+        let node = AutomationFlowNode {
+            node_id: "research".to_string(),
+            agent_id: "agent-a".to_string(),
+            objective: "Research".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "web_research_expected": true,
+                    "source_coverage_required": true
+                }
+            })),
+        };
+        let tool_telemetry = json!({
+            "requested_tools": ["glob", "read", "websearch", "write"],
+            "executed_tools": ["glob", "write"],
+        });
+        let artifact_validation = json!({
+            "semantic_block_reason": "research completed without concrete file reads or required source coverage",
+            "unmet_requirements": ["no_concrete_reads", "missing_successful_web_research"],
+            "repair_exhausted": true,
+        });
+
+        let (status, reason, approved) = detect_automation_node_status(
+            &node,
+            "Done — `marketing-brief.md` was written.",
+            Some(&(
+                "marketing-brief.md".to_string(),
+                "# Marketing Brief".to_string(),
+            )),
+            &tool_telemetry,
+            Some(&artifact_validation),
+        );
+
+        assert_eq!(status, "blocked");
+        assert_eq!(
+            detect_automation_node_failure_kind(
+                &node,
+                &status,
+                approved,
+                reason.as_deref(),
+                Some(&artifact_validation),
+            )
+            .as_deref(),
+            Some("research_retry_exhausted")
+        );
+    }
+
+    #[test]
+    fn research_workflow_status_ignores_llm_blocked_when_validation_is_repairable() {
+        let node = AutomationFlowNode {
+            node_id: "research".to_string(),
+            agent_id: "agent-a".to_string(),
+            objective: "Research".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "web_research_expected": true,
+                    "source_coverage_required": true
+                }
+            })),
+        };
+        let tool_telemetry = json!({
+            "requested_tools": ["glob", "read", "websearch", "write"],
+            "executed_tools": ["glob", "write"],
+        });
+        let artifact_validation = json!({
+            "semantic_block_reason": "research completed without concrete file reads or required source coverage",
+            "unmet_requirements": ["no_concrete_reads", "missing_successful_web_research"],
+            "repair_exhausted": false,
+        });
+
+        let (status, reason, approved) = detect_automation_node_status(
+            &node,
+            "The brief is blocked.\n\n{\"status\":\"blocked\",\"reason\":\"tools unavailable\"}",
+            Some(&(
+                "marketing-brief.md".to_string(),
+                "# Marketing Brief".to_string(),
+            )),
+            &tool_telemetry,
+            Some(&artifact_validation),
+        );
+
+        assert_eq!(status, "needs_repair");
+        assert_eq!(
+            reason.as_deref(),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+        assert_eq!(approved, None);
+    }
+
+    #[test]
+    fn research_workflow_status_keeps_blocked_when_repair_is_exhausted_even_if_llm_declares_blocked(
+    ) {
+        let node = AutomationFlowNode {
+            node_id: "research".to_string(),
+            agent_id: "agent-a".to_string(),
+            objective: "Research".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "web_research_expected": true,
+                    "source_coverage_required": true
+                }
+            })),
+        };
+        let tool_telemetry = json!({
+            "requested_tools": ["glob", "read", "websearch", "write"],
+            "executed_tools": ["glob", "write"],
+        });
+        let artifact_validation = json!({
+            "semantic_block_reason": "research completed without concrete file reads or required source coverage",
+            "unmet_requirements": ["no_concrete_reads", "missing_successful_web_research"],
+            "repair_exhausted": true,
+        });
+
+        let (status, reason, approved) = detect_automation_node_status(
+            &node,
+            "The brief is blocked.\n\n{\"status\":\"blocked\",\"reason\":\"tools unavailable\"}",
+            Some(&(
+                "marketing-brief.md".to_string(),
+                "# Marketing Brief".to_string(),
+            )),
+            &tool_telemetry,
+            Some(&artifact_validation),
+        );
+
+        assert_eq!(status, "blocked");
+        assert_eq!(reason.as_deref(), Some("tools unavailable"));
+        assert_eq!(approved, None);
+    }
+
+    #[test]
+    fn render_automation_repair_brief_summarizes_previous_research_miss() {
+        let node = AutomationFlowNode {
+            node_id: "research-brief".to_string(),
+            agent_id: "research".to_string(),
+            objective: "Write marketing-brief.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "web_research_expected": true,
+                    "source_coverage_required": true
+                }
+            })),
+        };
+        let prior_output = json!({
+            "status": "needs_repair",
+            "validator_summary": {
+                "reason": "research completed without required current web research",
+                "unmet_requirements": [
+                    "missing_successful_web_research",
+                    "web_sources_reviewed_missing"
+                ]
+            },
+            "tool_telemetry": {
+                "requested_tools": ["glob", "read", "websearch", "write"],
+                "executed_tools": ["glob", "write"]
+            },
+            "artifact_validation": {
+                "blocking_classification": "tool_available_but_not_used",
+                "unreviewed_relevant_paths": ["docs/pricing.md", "docs/customers.md"],
+                "repair_attempt": 1,
+                "repair_attempts_remaining": 4,
+                "required_next_tool_actions": [
+                    "Use `read` on the remaining relevant workspace files: docs/pricing.md, docs/customers.md.",
+                    "Use `websearch` successfully and include the resulting sources in `Web sources reviewed`."
+                ]
+            }
+        });
+
+        let brief =
+            render_automation_repair_brief(&node, Some(&prior_output), 2, 5).expect("repair brief");
+
+        assert!(brief.contains("needs_repair"));
+        assert!(brief.contains("missing_successful_web_research"));
+        assert!(brief.contains("tool_available_but_not_used"));
+        assert!(brief.contains("Required next tool actions"));
+        assert!(brief.contains("Use `read` on the remaining relevant workspace files"));
+        assert!(brief.contains("glob, read, websearch, write"));
+        assert!(brief.contains("glob, write"));
+        assert!(brief.contains("docs/pricing.md, docs/customers.md"));
+        assert!(brief.contains("Remaining repair attempts after this run: 3"));
+    }
+
+    #[test]
+    fn research_nodes_default_to_five_attempts() {
+        let node = AutomationFlowNode {
+            node_id: "research-brief".to_string(),
+            agent_id: "research".to_string(),
+            objective: "Write marketing-brief.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: None,
+        };
+
+        assert_eq!(automation_node_max_attempts(&node), 5);
+    }
+
+    #[test]
+    fn first_attempt_research_prompt_requires_completed_status() {
+        let automation = AutomationV2Spec {
+            automation_id: "automation-1".to_string(),
+            name: "Research Automation".to_string(),
+            description: None,
+            status: crate::AutomationV2Status::Active,
+            schedule: crate::AutomationV2Schedule {
+                schedule_type: crate::AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+            },
+            agents: Vec::new(),
+            flow: crate::AutomationFlowSpec { nodes: Vec::new() },
+            execution: crate::AutomationExecutionPolicy {
+                max_parallel_agents: Some(1),
+                max_total_runtime_ms: None,
+                max_total_tool_calls: None,
+                max_total_tokens: None,
+                max_total_cost_usd: None,
+            },
+            output_targets: Vec::new(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            creator_id: "test".to_string(),
+            workspace_root: Some("/tmp".to_string()),
+            metadata: None,
+            next_fire_at_ms: None,
+            last_fired_at_ms: None,
+        };
+        let node = AutomationFlowNode {
+            node_id: "research-brief".to_string(),
+            agent_id: "research".to_string(),
+            objective: "Write marketing-brief.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "source_coverage_required": true,
+                    "web_research_expected": true
+                }
+            })),
+        };
+        let agent = AutomationAgentProfile {
+            agent_id: "research".to_string(),
+            template_id: None,
+            display_name: "Research".to_string(),
+            avatar_url: None,
+            model_policy: None,
+            skills: Vec::new(),
+            tool_policy: crate::AutomationAgentToolPolicy {
+                allowlist: vec![
+                    "glob".to_string(),
+                    "read".to_string(),
+                    "websearch".to_string(),
+                    "write".to_string(),
+                ],
+                denylist: Vec::new(),
+            },
+            mcp_policy: crate::AutomationAgentMcpPolicy {
+                allowed_servers: Vec::new(),
+                allowed_tools: None,
+            },
+            approval_policy: None,
+        };
+
+        let prompt = render_automation_v2_prompt(
+            &automation,
+            "/tmp",
+            "run-1",
+            &node,
+            1,
+            &agent,
+            &[],
+            None,
+            None,
+            None,
+        );
+
+        assert!(prompt.contains("`status` set to `completed`"));
+        assert!(prompt.contains("Do not declare the output blocked"));
+        assert!(!prompt.contains("at least `status` (`completed` or `blocked`)"));
+    }
+
+    #[test]
+    fn automation_node_required_tools_reads_builder_metadata() {
+        let node = AutomationFlowNode {
+            node_id: "artifact".to_string(),
+            agent_id: "writer".to_string(),
+            objective: "Write notes.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "artifact".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "notes.md",
+                    "required_tools": ["read", "websearch"]
+                }
+            })),
+        };
+
+        assert_eq!(
+            automation_node_required_tools(&node),
+            vec!["read".to_string(), "websearch".to_string()]
+        );
+    }
+
+    #[test]
+    fn generic_required_tools_prewrite_requirements_enable_repair() {
+        let node = AutomationFlowNode {
+            node_id: "artifact".to_string(),
+            agent_id: "writer".to_string(),
+            objective: "Write notes.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "artifact".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "notes.md",
+                    "web_research_expected": true,
+                    "required_tools": ["read", "websearch"]
+                }
+            })),
+        };
+
+        let requirements = automation_node_prewrite_requirements(
+            &node,
+            &[
+                "read".to_string(),
+                "websearch".to_string(),
+                "write".to_string(),
+            ],
+        )
+        .expect("prewrite requirements");
+
+        assert!(requirements.concrete_read_required);
+        assert!(requirements.successful_web_research_required);
+        assert!(requirements.repair_on_unmet_requirements);
+        assert_eq!(requirements.coverage_mode, PrewriteCoverageMode::None);
+    }
+
+    #[test]
+    fn generic_required_tools_validation_needs_repair_when_read_unused() {
+        let workspace_root =
+            std::env::temp_dir().join(format!("tandem-required-tools-test-{}", now_ms()));
+        std::fs::create_dir_all(&workspace_root).expect("create workspace");
+
+        let node = AutomationFlowNode {
+            node_id: "artifact".to_string(),
+            agent_id: "writer".to_string(),
+            objective: "Write notes.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "artifact".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "notes.md",
+                    "required_tools": ["read"]
+                }
+            })),
+        };
+        let mut session = Session::new(Some("required tools".to_string()), None);
+        session.messages.push(tandem_types::Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::ToolInvocation {
+                tool: "write".to_string(),
+                args: json!({
+                    "path":"notes.md",
+                    "content":"# Notes\n\nA short summary written without reading sources.\n"
+                }),
+                result: Some(json!({"output":"written"})),
+                error: None,
+            }],
+        ));
+
+        let tool_telemetry = summarize_automation_tool_activity(
+            &node,
+            &session,
+            &["read".to_string(), "write".to_string()],
+        );
+        let (_, artifact_validation, rejected) = validate_automation_artifact_output(
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root"),
+            "",
+            &tool_telemetry,
+            None,
+            Some((
+                "notes.md".to_string(),
+                "# Notes\n\nA short summary written without reading sources.\n".to_string(),
+            )),
+            &std::collections::BTreeSet::new(),
+        );
+
+        assert!(rejected.is_some());
+        assert_eq!(
+            artifact_validation
+                .get("semantic_block_reason")
+                .and_then(Value::as_str),
+            Some("artifact finalized without using required tools")
+        );
+        assert_eq!(
+            artifact_validation
+                .get("validation_outcome")
+                .and_then(Value::as_str),
+            Some("needs_repair")
+        );
+        assert_eq!(
+            artifact_validation
+                .get("blocking_classification")
+                .and_then(Value::as_str),
+            Some("tool_available_but_not_used")
+        );
+        assert_eq!(
+            artifact_validation
+                .get("required_next_tool_actions")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(Value::as_str),
+            Some("Use `read` on concrete workspace files before finalizing the brief.")
+        );
+
+        let (status, reason, approved) = detect_automation_node_status(
+            &node,
+            "Done — `notes.md` was written.",
+            Some(&(
+                "notes.md".to_string(),
+                "# Notes\n\nA short summary written without reading sources.\n".to_string(),
+            )),
+            &tool_telemetry,
+            Some(&artifact_validation),
+        );
+        assert_eq!(status, "needs_repair");
+        assert_eq!(
+            detect_automation_node_failure_kind(
+                &node,
+                &status,
+                approved,
+                reason.as_deref(),
+                Some(&artifact_validation),
+            )
+            .as_deref(),
+            Some("required_tool_unused_read")
+        );
+
+        let _ = std::fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn generic_required_tools_nodes_default_to_five_attempts() {
+        let node = AutomationFlowNode {
+            node_id: "artifact".to_string(),
+            agent_id: "writer".to_string(),
+            objective: "Write notes.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "artifact".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "notes.md",
+                    "required_tools": ["read"]
+                }
+            })),
+        };
+
+        assert_eq!(automation_node_max_attempts(&node), 5);
+    }
+
+    #[test]
+    fn first_attempt_required_tools_prompt_requires_completed_status() {
+        let automation = AutomationV2Spec {
+            automation_id: "automation-2".to_string(),
+            name: "Generic Artifact Automation".to_string(),
+            description: None,
+            status: crate::AutomationV2Status::Active,
+            schedule: crate::AutomationV2Schedule {
+                schedule_type: crate::AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+            },
+            agents: Vec::new(),
+            flow: crate::AutomationFlowSpec { nodes: Vec::new() },
+            execution: crate::AutomationExecutionPolicy {
+                max_parallel_agents: Some(1),
+                max_total_runtime_ms: None,
+                max_total_tool_calls: None,
+                max_total_tokens: None,
+                max_total_cost_usd: None,
+            },
+            output_targets: Vec::new(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            creator_id: "test".to_string(),
+            workspace_root: Some("/tmp".to_string()),
+            metadata: None,
+            next_fire_at_ms: None,
+            last_fired_at_ms: None,
+        };
+        let node = AutomationFlowNode {
+            node_id: "artifact".to_string(),
+            agent_id: "writer".to_string(),
+            objective: "Write notes.md".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "artifact".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "notes.md",
+                    "required_tools": ["read"]
+                }
+            })),
+        };
+        let agent = AutomationAgentProfile {
+            agent_id: "writer".to_string(),
+            template_id: None,
+            display_name: "Writer".to_string(),
+            avatar_url: None,
+            model_policy: None,
+            skills: Vec::new(),
+            tool_policy: crate::AutomationAgentToolPolicy {
+                allowlist: vec!["read".to_string(), "write".to_string()],
+                denylist: Vec::new(),
+            },
+            mcp_policy: crate::AutomationAgentMcpPolicy {
+                allowed_servers: Vec::new(),
+                allowed_tools: None,
+            },
+            approval_policy: None,
+        };
+
+        let prompt = render_automation_v2_prompt(
+            &automation,
+            "/tmp",
+            "run-2",
+            &node,
+            1,
+            &agent,
+            &[],
+            None,
+            None,
+            None,
+        );
+
+        assert!(prompt.contains("`status` set to `completed`"));
+        assert!(prompt.contains("required workflow tools remain available"));
+        assert!(!prompt.contains("at least `status` (`completed` or `blocked`)"));
+    }
+
+    #[test]
+    fn research_required_next_tool_actions_summarize_missing_reads_and_websearch() {
+        let requested_tools = vec![
+            json!("glob"),
+            json!("read"),
+            json!("websearch"),
+            json!("write"),
+        ];
+        let executed_tools = vec![json!("glob"), json!("write")];
+        let unmet_requirements = vec![
+            "no_concrete_reads".to_string(),
+            "missing_successful_web_research".to_string(),
+            "web_sources_reviewed_missing".to_string(),
+            "relevant_files_not_reviewed_or_skipped".to_string(),
+        ];
+        let unreviewed_relevant_paths = vec![
+            "docs/pricing.md".to_string(),
+            "docs/customers.md".to_string(),
+        ];
+
+        let actions = research_required_next_tool_actions(
+            &requested_tools,
+            &executed_tools,
+            true,
+            &unmet_requirements,
+            &unreviewed_relevant_paths,
+        );
+
+        assert!(actions
+            .iter()
+            .any(|value| value.contains("docs/pricing.md, docs/customers.md")));
+        assert!(actions
+            .iter()
+            .any(|value| value.contains("Use `websearch` successfully")));
+        assert!(actions
+            .iter()
+            .any(|value| value.contains("Files not reviewed")));
+    }
+
+    #[test]
     fn research_workflow_failure_kind_detects_missing_citations() {
         let node = AutomationFlowNode {
             node_id: "research".to_string(),
@@ -10788,6 +12056,10 @@ mod tests {
                 "repair_attempted": true,
                 "repair_succeeded": false,
                 "unmet_requirements": ["no_concrete_reads"],
+                "blocking_classification": "tool_available_but_not_used",
+                "required_next_tool_actions": [
+                    "Use `read` on concrete workspace files before finalizing the brief."
+                ],
                 "verification": {
                     "verification_expected": false,
                     "verification_ran": false,
@@ -10840,6 +12112,24 @@ mod tests {
                 .and_then(|value| value.get("failure_kind"))
                 .and_then(Value::as_str),
             Some("research_missing_reads")
+        );
+        assert_eq!(
+            state_event
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("blocking_classification"))
+                .and_then(Value::as_str),
+            Some("tool_available_but_not_used")
+        );
+        assert_eq!(
+            state_event
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("required_next_tool_actions"))
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(Value::as_str),
+            Some("Use `read` on concrete workspace files before finalizing the brief.")
         );
     }
 
@@ -11754,7 +13044,10 @@ mod tests {
             &snapshot,
         );
 
-        assert!(rejected.is_none());
+        assert_eq!(
+            rejected.as_deref(),
+            Some("research completed without concrete file reads or required source coverage")
+        );
         assert_eq!(
             metadata
                 .get("recovered_from_session_write")
@@ -11779,12 +13072,10 @@ mod tests {
             }),
             Some(&metadata),
         );
-        assert_eq!(status, "blocked");
+        assert_eq!(status, "needs_repair");
         assert_eq!(
             reason.as_deref(),
-            Some(
-                "research brief cited workspace sources without using read, so source-backed validation is incomplete"
-            )
+            Some("research completed without concrete file reads or required source coverage")
         );
         assert_eq!(approved, Some(true));
 
@@ -11887,7 +13178,10 @@ mod tests {
             &snapshot,
         );
 
-        assert!(rejected.is_none());
+        assert_eq!(
+            rejected.as_deref(),
+            Some("research completed without citation-backed claims")
+        );
         assert_eq!(
             metadata
                 .get("accepted_candidate_source")
@@ -11947,7 +13241,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(status, "blocked");
+        assert_eq!(status, "needs_repair");
         assert_eq!(
             reason.as_deref(),
             Some(
@@ -12084,7 +13378,7 @@ mod tests {
             &tool_telemetry,
             Some(&metadata),
         );
-        assert_eq!(status, "blocked");
+        assert_eq!(status, "needs_repair");
         assert_eq!(
             reason.as_deref(),
             Some("research completed without required current web research")
@@ -12251,6 +13545,235 @@ mod tests {
             .is_some_and(|values| values
                 .iter()
                 .any(|value| value.as_str() == Some("relevant_files_not_reviewed_or_skipped"))));
+
+        let _ = std::fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn research_brief_without_source_coverage_flag_gets_semantic_block_reason_and_needs_repair() {
+        let workspace_root = std::env::temp_dir().join(format!(
+            "tandem-research-no-coverage-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&workspace_root).expect("create workspace");
+        let brief_text =
+            "# Marketing Brief\n\n## Workspace source audit\nPrepared from workspace sources.\n"
+                .to_string();
+        std::fs::write(workspace_root.join("marketing-brief.md"), &brief_text).expect("seed brief");
+        let node = AutomationFlowNode {
+            node_id: "research-brief".to_string(),
+            agent_id: "researcher".to_string(),
+            objective: "Write marketing brief".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "web_research_expected": true
+                }
+            })),
+        };
+        let mut session = Session::new(
+            Some("research-no-coverage".to_string()),
+            Some(
+                workspace_root
+                    .to_str()
+                    .expect("workspace root string")
+                    .to_string(),
+            ),
+        );
+        session.messages.push(tandem_types::Message::new(
+            MessageRole::Assistant,
+            vec![
+                MessagePart::ToolInvocation {
+                    tool: "glob".to_string(),
+                    args: json!({"pattern":"docs/**/*.md"}),
+                    result: Some(json!({"output": ""})),
+                    error: None,
+                },
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"marketing-brief.md","content":brief_text}),
+                    result: Some(json!({"ok": true})),
+                    error: None,
+                },
+            ],
+        ));
+        let requested_tools = vec![
+            "glob".to_string(),
+            "read".to_string(),
+            "websearch".to_string(),
+            "write".to_string(),
+        ];
+        let tool_telemetry = summarize_automation_tool_activity(&node, &session, &requested_tools);
+        let (_accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root string"),
+            "Done\n\n{\"status\":\"completed\"}",
+            &tool_telemetry,
+            None,
+            Some(("marketing-brief.md".to_string(), brief_text.clone())),
+            &std::collections::BTreeSet::new(),
+        );
+
+        assert_eq!(
+            rejected.as_deref(),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+        assert_eq!(
+            artifact_validation
+                .get("semantic_block_reason")
+                .and_then(Value::as_str),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+        assert_eq!(
+            artifact_validation
+                .get("validation_outcome")
+                .and_then(Value::as_str),
+            Some("needs_repair")
+        );
+
+        let (status, reason, approved) = detect_automation_node_status(
+            &node,
+            "Done — `marketing-brief.md` was written.",
+            Some(&("marketing-brief.md".to_string(), brief_text)),
+            &tool_telemetry,
+            Some(&artifact_validation),
+        );
+
+        assert_eq!(status, "needs_repair");
+        assert_eq!(
+            reason.as_deref(),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+        assert_eq!(approved, None);
+
+        let _ = std::fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn research_brief_full_pipeline_overrides_llm_blocked_to_needs_repair_without_source_coverage_flag(
+    ) {
+        let workspace_root = std::env::temp_dir().join(format!(
+            "tandem-research-full-pipeline-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&workspace_root).expect("create workspace");
+        let brief_text =
+            "# Marketing Brief\n\n## Workspace source audit\nPrepared from workspace sources.\n"
+                .to_string();
+        std::fs::write(workspace_root.join("marketing-brief.md"), &brief_text).expect("seed brief");
+        let node = AutomationFlowNode {
+            node_id: "research-brief".to_string(),
+            agent_id: "researcher".to_string(),
+            objective: "Write marketing brief".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": "marketing-brief.md",
+                    "web_research_expected": true
+                }
+            })),
+        };
+        let mut session = Session::new(
+            Some("research-full-pipeline".to_string()),
+            Some(
+                workspace_root
+                    .to_str()
+                    .expect("workspace root string")
+                    .to_string(),
+            ),
+        );
+        session.messages.push(tandem_types::Message::new(
+            MessageRole::Assistant,
+            vec![
+                MessagePart::ToolInvocation {
+                    tool: "glob".to_string(),
+                    args: json!({"pattern":"docs/**/*.md"}),
+                    result: Some(json!({"output": ""})),
+                    error: None,
+                },
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"marketing-brief.md","content":brief_text}),
+                    result: Some(json!({"ok": true})),
+                    error: None,
+                },
+            ],
+        ));
+        let requested_tools = vec![
+            "glob".to_string(),
+            "read".to_string(),
+            "websearch".to_string(),
+            "write".to_string(),
+        ];
+        let session_text =
+            "The brief is blocked.\n\n{\"status\":\"blocked\",\"reason\":\"tools unavailable\"}";
+        let tool_telemetry = summarize_automation_tool_activity(&node, &session, &requested_tools);
+        let (accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root string"),
+            session_text,
+            &tool_telemetry,
+            None,
+            Some(("marketing-brief.md".to_string(), brief_text.clone())),
+            &std::collections::BTreeSet::new(),
+        );
+        assert_eq!(
+            rejected.as_deref(),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+        assert_eq!(
+            artifact_validation
+                .get("semantic_block_reason")
+                .and_then(Value::as_str),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+
+        let output = wrap_automation_node_output(
+            &node,
+            &session,
+            &requested_tools,
+            "sess-research-full-pipeline",
+            session_text,
+            accepted_output,
+            Some(artifact_validation),
+        );
+
+        assert_eq!(
+            output.get("status").and_then(Value::as_str),
+            Some("needs_repair")
+        );
+        assert_eq!(
+            output.get("blocked_reason").and_then(Value::as_str),
+            Some("research completed without concrete file reads or required source coverage")
+        );
+        assert!(!automation_output_is_blocked(&output));
+        assert!(automation_output_needs_repair(&output));
+        assert!(!automation_output_repair_exhausted(&output));
 
         let _ = std::fs::remove_dir_all(workspace_root);
     }

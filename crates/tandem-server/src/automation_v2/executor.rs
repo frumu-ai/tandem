@@ -46,10 +46,7 @@ fn node_output_failure_kind(value: &Value) -> String {
 fn blocked_failure_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "research_missing_reads"
-            | "research_missing_web_research"
-            | "research_citations_missing"
-            | "research_coverage_failed"
+        "research_retry_exhausted"
             | "editorial_quality_failed"
             | "semantic_blocked"
             | "review_not_approved"
@@ -444,6 +441,7 @@ pub async fn run_automation_v2_executor(state: AppState) {
             for (node_id, result) in outcomes {
                 match result {
                     Ok(output) => {
+                        let mut output = output;
                         let can_accept = state
                             .get_automation_v2_run(&run.run_id)
                             .await
@@ -473,11 +471,51 @@ pub async fn run_automation_v2_executor(state: AppState) {
                         let blocked = crate::app::state::automation_output_is_blocked(&output);
                         let verify_failed =
                             crate::app::state::automation_output_is_verify_failed(&output);
-                        let blocked_reason =
+                        let needs_repair =
+                            crate::app::state::automation_output_needs_repair(&output);
+                        let repair_exhausted =
+                            crate::app::state::automation_output_repair_exhausted(&output);
+                        let mut blocked_reason =
                             crate::app::state::automation_output_blocked_reason(&output);
-                        let failure_reason =
+                        let mut failure_reason =
                             crate::app::state::automation_output_failure_reason(&output);
                         let attempt = latest_attempts.get(&node_id).copied().unwrap_or(1);
+                        let max_attempts = automation
+                            .flow
+                            .nodes
+                            .iter()
+                            .find(|row| row.node_id == node_id)
+                            .map(crate::app::state::automation_node_max_attempts)
+                            .unwrap_or(1);
+                        let terminal_repair_block =
+                            needs_repair && (repair_exhausted || attempt >= max_attempts);
+                        if terminal_repair_block {
+                            if let Some(object) = output.as_object_mut() {
+                                object.insert("status".to_string(), json!("blocked"));
+                                if object
+                                    .get("blocked_reason")
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .unwrap_or_default()
+                                    .is_empty()
+                                {
+                                    object.insert(
+                                        "blocked_reason".to_string(),
+                                        json!(failure_reason.clone().unwrap_or_else(|| {
+                                            format!(
+                                                "node `{}` exhausted repair attempts without satisfying validation",
+                                                node_id
+                                            )
+                                        })),
+                                    );
+                                }
+                            }
+                            blocked_reason =
+                                crate::app::state::automation_output_blocked_reason(&output);
+                            failure_reason =
+                                crate::app::state::automation_output_failure_reason(&output);
+                        }
+                        let blocked = blocked || terminal_repair_block;
                         let _ = state
                             .update_automation_v2_run(&run.run_id, |row| {
                                 let blocked_descendants = if blocked || verify_failed {
@@ -489,9 +527,20 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                     std::collections::HashSet::new()
                                 };
                                 row.checkpoint.pending_nodes.retain(|id| {
-                                    id != &node_id && !blocked_descendants.contains(id)
+                                    if id == &node_id {
+                                        needs_repair && !terminal_repair_block
+                                    } else {
+                                        !blocked_descendants.contains(id)
+                                    }
                                 });
+                                if needs_repair && !terminal_repair_block {
+                                    if !row.checkpoint.pending_nodes.iter().any(|id| id == &node_id)
+                                    {
+                                        row.checkpoint.pending_nodes.push(node_id.clone());
+                                    }
+                                }
                                 if !blocked
+                                    && !needs_repair
                                     && !verify_failed
                                     && !row
                                         .checkpoint
@@ -553,6 +602,8 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                     row,
                                     if verify_failed {
                                         "node_verify_failed"
+                                    } else if needs_repair && !terminal_repair_block {
+                                        "node_repair_requested"
                                     } else if blocked {
                                         "node_blocked"
                                     } else {
@@ -560,6 +611,11 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                     },
                                     Some(if verify_failed {
                                         format!("node `{}` failed verification", node_id)
+                                    } else if needs_repair && !terminal_repair_block {
+                                        format!(
+                                            "node `{}` requested another repair attempt",
+                                            node_id
+                                        )
                                     } else if blocked {
                                         format!("node `{}` blocked downstream execution", node_id)
                                     } else {
@@ -574,17 +630,20 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                         "contract_kind": contract_kind,
                                         "status": if verify_failed {
                                             "verify_failed"
+                                        } else if needs_repair && !terminal_repair_block {
+                                            "needs_repair"
                                         } else if blocked {
                                             "blocked"
                                         } else {
                                             "completed"
                                         },
+                                        "max_attempts": max_attempts,
                                         "blocked_reason": blocked_reason,
                                         "failure_reason": failure_reason,
                                         "blocked_descendants": blocked_descendants,
                                     })),
                                 );
-                                if !blocked && !verify_failed {
+                                if !blocked && !needs_repair && !verify_failed {
                                     crate::app::state::record_milestone_promotions(
                                         &automation,
                                         row,
@@ -819,6 +878,22 @@ mod tests {
                 blocked_nodes: Vec::new(),
                 detail: "automation run failed from node outcomes: research-brief".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn derive_terminal_run_state_does_not_block_repairable_research_outputs() {
+        let automation = test_automation();
+        let run = test_run_with_output(json!({
+            "status": "needs_repair",
+            "failure_kind": "research_missing_reads",
+            "artifact_validation": {
+                "repair_exhausted": false
+            }
+        }));
+        assert_eq!(
+            derive_terminal_run_state(&automation, &run, false),
+            DerivedTerminalRunState::Completed
         );
     }
 }
