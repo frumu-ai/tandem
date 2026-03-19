@@ -8,6 +8,16 @@ Full web control center for Tandem Engine (non-desktop entry point).
 npm i -g @frumu/tandem-panel
 ```
 
+## Editable App Scaffold
+
+```bash
+npm create tandem-panel@latest my-panel
+```
+
+Use the global install when you want the official ready-to-run panel.
+
+Use the scaffold when you want the actual app source in your own folder so you can edit routes, pages, themes, styles, and runtime behavior without customizing files inside `node_modules`.
+
 ## Official Bootstrap
 
 ```bash

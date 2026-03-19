@@ -18,8 +18,10 @@ Use this if you want `tandem-engine` and `tandem-tui` from the terminal.
 
 Use this if you want a browser-first workflow for chat, routines, channels, and memory.
 
-- npm package:
+- npm package for the official ready-to-run panel:
   - `@frumu/tandem-panel`
+- npm scaffold for a fully editable app:
+  - `create-tandem-panel`
 - Install + run: [Control Panel (Web Admin)](./control-panel/)
 
 ## Path 3: Build from Source

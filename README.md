@@ -49,14 +49,26 @@ It provides durable coordination primitives—blackboards, workboards, explicit 
 ### Headless (server/VPS)
 
 **Option 1: Quick Start (Run instantly)**
-Run the pre-built control panel directly (it automatically downloads and starts the engine):
+Run the official pre-built control panel directly:
 
 ```bash
 npx @frumu/tandem-panel
 ```
 
-**Option 2: Hackable / Service Install (Modifiable source)**
-Clone the repo to get the control panel source code, which allows you to modify it and install it as a background systemd service:
+**Option 2: Editable App Scaffold**
+Generate a fully editable control panel app in your own folder:
+
+```bash
+npm create tandem-panel@latest my-panel
+cd my-panel
+npm install
+npm run dev
+```
+
+Use this when you want to customize routes, pages, themes, styles, or runtime behavior without editing `node_modules`.
+
+**Option 3: Repo Source / Service Install**
+Clone the repo when you are contributing to Tandem itself or want the full source tree and example deployment scripts:
 
 ```bash
 git clone https://github.com/frumu-ai/tandem.git

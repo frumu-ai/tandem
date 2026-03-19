@@ -1,0 +1,128 @@
+{
+  "id": "ai-opportunity",
+  "label": "AI Opportunities",
+  "description": "Map workflow pain points to realistic AI, copilot, and agentic opportunities.",
+  "blueprint":
+    {
+      "mission_id": "mission_ai_opportunity",
+      "title": "AI opportunity assessment",
+      "goal": "Identify the highest-value AI opportunities in the target business process and produce a prioritized implementation brief.",
+      "success_criteria":
+        [
+          "Workflow bottlenecks and repetitive work are identified",
+          "AI opportunities are ranked by value, feasibility, and risk",
+          "Final brief recommends concrete next pilots",
+        ],
+      "shared_context": "Audience is operators and product leadership. Focus on realistic AI leverage, not hype. Separate automation, copilots, and fully agentic opportunities. Flag data, tooling, and approval constraints explicitly.",
+      "workspace_root": "",
+      "orchestrator_template_id": "",
+      "phases":
+        [
+          { "phase_id": "discovery", "title": "Discovery", "execution_mode": "soft" },
+          { "phase_id": "recommendation", "title": "Recommendation", "execution_mode": "barrier" },
+        ],
+      "milestones":
+        [
+          {
+            "milestone_id": "opportunity-map-ready",
+            "title": "Opportunity map ready",
+            "phase_id": "discovery",
+            "required_stage_ids": ["workflow-analysis", "capability-map"],
+          },
+        ],
+      "team":
+        {
+          "allowed_template_ids": [],
+          "default_model_policy": null,
+          "allowed_mcp_servers": [],
+          "max_parallel_agents": 4,
+          "mission_budget": {},
+          "orchestrator_only_tool_calls": false,
+        },
+      "workstreams":
+        [
+          {
+            "workstream_id": "workflow-analysis",
+            "title": "Workflow analysis",
+            "objective": "Break down the current workflow, identify friction, handoffs, delays, and repeated manual work.",
+            "role": "analyst",
+            "prompt": "Act as an AI workflow analyst. Map the current workflow step by step, identify where humans are spending time, where handoffs fail, where decisions bottleneck, and where information must be gathered, transformed, or checked. Produce a workflow analysis memo that distinguishes repetitive work, judgment-heavy work, and coordination-heavy work.",
+            "priority": 1,
+            "phase_id": "discovery",
+            "lane": "workflow",
+            "milestone": "opportunity-map-ready",
+            "depends_on": [],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "report_markdown",
+                "summary_guidance": "Workflow steps, bottlenecks, repeated work, approval points, and observed failure modes.",
+              },
+          },
+          {
+            "workstream_id": "capability-map",
+            "title": "AI capability map",
+            "objective": "Match workflow problems to realistic AI patterns such as extraction, triage, drafting, routing, review, and autonomous follow-through.",
+            "role": "strategist",
+            "prompt": "Act as an agentic systems strategist. Review the workflow analysis context and map each major problem to practical AI patterns. Distinguish simple automation, LLM copilots, tool-using agents, and multi-agent orchestration. Be explicit about prerequisites, risks, and where human approval is still required.",
+            "priority": 2,
+            "phase_id": "discovery",
+            "lane": "capability",
+            "milestone": "opportunity-map-ready",
+            "depends_on": [],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "report_markdown",
+                "summary_guidance": "Problem-to-capability map with candidate AI patterns, prerequisites, and operational risks.",
+              },
+          },
+          {
+            "workstream_id": "opportunity-brief",
+            "title": "Opportunity brief",
+            "objective": "Synthesize the findings into a prioritized AI opportunity brief with clear next pilots.",
+            "role": "analyst",
+            "prompt": "Synthesize the workflow analysis and capability map into an executive-ready AI opportunity brief. Rank candidates by expected value, implementation complexity, operator trust requirements, and data/tool prerequisites. Recommend the best near-term pilots and explain why weaker options were not prioritized.",
+            "priority": 1,
+            "phase_id": "recommendation",
+            "lane": "synthesis",
+            "depends_on": ["workflow-analysis", "capability-map"],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "brief_markdown",
+                "summary_guidance": "Ranked AI opportunities, reasoning, operational implications, and recommended pilots.",
+              },
+          },
+        ],
+      "review_stages":
+        [
+          {
+            "stage_id": "opportunity-review",
+            "stage_kind": "review",
+            "title": "Feasibility and trust review",
+            "target_ids": ["opportunity-brief"],
+            "role": "reviewer",
+            "prompt": "Review the opportunity brief for realism. Reject vague AI claims, hidden implementation assumptions, and missing trust or approval considerations. The brief should make clear what can be automated, what needs a copilot, and what still requires strong human judgment.",
+            "checklist":
+              [
+                "Opportunities are realistically scoped",
+                "Human approval needs are explicit",
+                "Recommended pilots are specific and actionable",
+              ],
+            "priority": 1,
+            "phase_id": "recommendation",
+            "lane": "review",
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+          },
+        ],
+      "metadata": null,
+    },
+}

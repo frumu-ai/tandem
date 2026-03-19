@@ -1,0 +1,135 @@
+{
+  "id": "workflow-audit",
+  "label": "Workflow Audit",
+  "description": "Audit an existing workflow and design a safer, observable automation model.",
+  "blueprint":
+    {
+      "mission_id": "mission_workflow_audit",
+      "title": "Workflow automation audit",
+      "goal": "Audit an existing workflow and produce a concrete automation design with failure points, control points, and implementation recommendations.",
+      "success_criteria":
+        [
+          "Current-state workflow is documented",
+          "Automation candidates include controls and failure handling",
+          "A practical implementation plan is produced",
+        ],
+      "shared_context": "Focus on operational reliability. Make human approvals, logging needs, repair loops, and recovery paths explicit. Favor concrete workflow shapes over abstract transformation language.",
+      "workspace_root": "",
+      "orchestrator_template_id": "",
+      "phases":
+        [
+          { "phase_id": "audit", "title": "Audit", "execution_mode": "soft" },
+          { "phase_id": "design", "title": "Design", "execution_mode": "barrier" },
+        ],
+      "milestones":
+        [
+          {
+            "milestone_id": "audit-complete",
+            "title": "Audit complete",
+            "phase_id": "audit",
+            "required_stage_ids": ["current-state", "failure-analysis"],
+          },
+        ],
+      "team":
+        {
+          "allowed_template_ids": [],
+          "default_model_policy": null,
+          "allowed_mcp_servers": [],
+          "max_parallel_agents": 4,
+          "mission_budget": {},
+          "orchestrator_only_tool_calls": false,
+        },
+      "workstreams":
+        [
+          {
+            "workstream_id": "current-state",
+            "title": "Current-state workflow",
+            "objective": "Document the current workflow, actors, triggers, tools, and handoffs.",
+            "role": "operator",
+            "prompt": "Act as an operations architect. Document the workflow as it exists today: triggers, inputs, outputs, handoffs, approvals, tools, data dependencies, and places where work stalls or gets retried.",
+            "priority": 1,
+            "phase_id": "audit",
+            "lane": "mapping",
+            "milestone": "audit-complete",
+            "depends_on": [],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "report_markdown",
+                "summary_guidance": "Current-state workflow map, actors, tools, handoffs, and bottlenecks.",
+              },
+          },
+          {
+            "workstream_id": "failure-analysis",
+            "title": "Failure and control analysis",
+            "objective": "Identify where workflow automation can fail, what needs approval, and what must be observable.",
+            "role": "reviewer",
+            "prompt": "Act as a workflow reliability reviewer. Inspect the current-state map and identify failure modes, ambiguous steps, risky autonomous actions, missing approvals, recovery gaps, and required logging or metrics.",
+            "priority": 1,
+            "phase_id": "audit",
+            "lane": "controls",
+            "milestone": "audit-complete",
+            "depends_on": [],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "brief_markdown",
+                "summary_guidance": "Failure modes, control points, approval needs, logging, and recovery requirements.",
+              },
+          },
+          {
+            "workstream_id": "automation-design",
+            "title": "Automation design",
+            "objective": "Turn the audit into a practical automation architecture and rollout plan.",
+            "role": "planner",
+            "prompt": "Design the target workflow automation. Specify which steps remain human, which become deterministic automation, which should use agents, and where review gates, kill switches, repair loops, and observability are required. Produce a rollout plan that can be implemented incrementally.",
+            "priority": 2,
+            "phase_id": "design",
+            "lane": "design",
+            "depends_on": ["current-state", "failure-analysis"],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "plan_markdown",
+                "summary_guidance": "Target workflow design, control model, observability plan, and incremental rollout steps.",
+              },
+          },
+        ],
+      "review_stages":
+        [
+          {
+            "stage_id": "automation-review",
+            "stage_kind": "approval",
+            "title": "Automation readiness review",
+            "target_ids": ["automation-design"],
+            "role": "approver",
+            "prompt": "Review the automation design for realism, controllability, operator trust, and failure recovery. Reject designs that automate too aggressively without approvals or observability.",
+            "checklist":
+              [
+                "Control points are explicit",
+                "Failure recovery is defined",
+                "Rollout is incremental and realistic",
+              ],
+            "priority": 1,
+            "phase_id": "design",
+            "lane": "approval",
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "gate":
+              {
+                "required": true,
+                "decisions": ["approve", "rework", "cancel"],
+                "rework_targets": ["automation-design"],
+                "instructions": "Approve only when the automation design is safe, observable, and realistically deployable.",
+              },
+          },
+        ],
+      "metadata": null,
+    },
+}

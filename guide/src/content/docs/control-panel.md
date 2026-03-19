@@ -1,17 +1,34 @@
 ---
 title: Control Panel (Web Admin)
-description: Install and run the Tandem web control panel from npm.
+description: Run the official Tandem web control panel or scaffold an editable app from npm.
 ---
 
 Use the control panel when you want a browser UI for chat, orchestrator, automations, memory, live feed, packs, and runtime ops.
 
-## Install
+## Choose a path
+
+### Official ready-to-run package
+
+Use this when you want the supported packaged control panel with bootstrap and service helpers.
 
 ```bash
 npm i -g @frumu/tandem-panel
 ```
 
-## Initialize Environment (Recommended)
+### Editable app scaffold
+
+Use this when you want the actual app source in your own folder so you can customize routes, pages, themes, styles, and runtime behavior.
+
+```bash
+npm create tandem-panel@latest my-panel
+cd my-panel
+npm install
+npm run dev
+```
+
+The generated app includes editable `src/`, `server/`, local runtime scripts, and local config files.
+
+## Official package: initialize environment
 
 ```bash
 tandem-control-panel --init
@@ -19,7 +36,7 @@ tandem-control-panel --init
 
 This creates/updates `.env` and ensures an engine token is available.
 
-## Run
+## Official package: run
 
 ```bash
 tandem-control-panel
@@ -34,16 +51,26 @@ Aliases:
 - `tandem-setup`
 - `tandem-control-panel-init` (init only)
 
-## Optional: Install systemd Services (Linux)
+## Official package: optional service install (Linux)
 
 ```bash
-sudo tandem-control-panel --install-services
+sudo tandem-setup service install
 ```
 
 Useful options:
 
 - `--service-mode=both|engine|panel` (default `both`)
 - `--service-user=<linux-user>`
+
+## Editable scaffold: customize
+
+After scaffolding:
+
+- edit `src/pages/` and `src/app/` for routes and views
+- edit `src/app/themeContract.ts` and `src/app/themes.js` for themes
+- edit `server/` and `bin/setup.js` for runtime behavior
+- run `npm run build` for a production bundle
+- run `npm run start` to serve the built app locally
 
 ## Core Environment Variables
 
@@ -154,3 +181,4 @@ curl -s http://127.0.0.1:39731/global/health \
 - [Headless Service](./headless-service/)
 - [Channel Integrations](./channel-integrations/)
 - [Configuration](./configuration/)
+- [Build from Source](./build-from-source/)

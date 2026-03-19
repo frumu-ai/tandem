@@ -1,0 +1,135 @@
+{
+  "id": "agentic-design",
+  "label": "Agentic Design",
+  "description": "Design a multi-agent workflow with explicit orchestration, gates, and operator controls.",
+  "blueprint":
+    {
+      "mission_id": "mission_agentic_design",
+      "title": "Agentic system design mission",
+      "goal": "Design a multi-agent workflow for a target operation, including orchestration, handoffs, models, tools, and safeguards.",
+      "success_criteria":
+        [
+          "Agent roles and responsibilities are clearly defined",
+          "Handoffs, gates, and dependencies are explicit",
+          "The design includes observability, stop controls, and repair flow",
+        ],
+      "shared_context": "This is a design mission, not code generation. Optimize for robust orchestration, role clarity, bounded autonomy, and human trust. Make model/tool choices explicit where they matter.",
+      "workspace_root": "",
+      "orchestrator_template_id": "",
+      "phases":
+        [
+          { "phase_id": "architecture", "title": "Architecture", "execution_mode": "soft" },
+          { "phase_id": "governance", "title": "Governance", "execution_mode": "barrier" },
+        ],
+      "milestones":
+        [
+          {
+            "milestone_id": "design-basis-ready",
+            "title": "Design basis ready",
+            "phase_id": "architecture",
+            "required_stage_ids": ["role-design", "flow-design"],
+          },
+        ],
+      "team":
+        {
+          "allowed_template_ids": [],
+          "default_model_policy": null,
+          "allowed_mcp_servers": [],
+          "max_parallel_agents": 4,
+          "mission_budget": {},
+          "orchestrator_only_tool_calls": false,
+        },
+      "workstreams":
+        [
+          {
+            "workstream_id": "role-design",
+            "title": "Role and agent design",
+            "objective": "Define the orchestrator and worker roles with clear responsibilities and escalation boundaries.",
+            "role": "architect",
+            "prompt": "Design the agent roles for this system. Define the orchestrator, specialized workers, reviewers, testers, and approval actors. Be explicit about what each role owns, when it should escalate, and what outputs it produces.",
+            "priority": 1,
+            "phase_id": "architecture",
+            "lane": "roles",
+            "milestone": "design-basis-ready",
+            "depends_on": [],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "report_markdown",
+                "summary_guidance": "Agent roster, role boundaries, escalation points, and expected outputs.",
+              },
+          },
+          {
+            "workstream_id": "flow-design",
+            "title": "Flow and handoff design",
+            "objective": "Design the mission graph, dependencies, handoffs, and artifact contracts.",
+            "role": "analyst",
+            "prompt": "Design the multi-agent workflow graph. Specify phases, dependencies, artifact contracts, fan-out and fan-in points, and where review or approval gates should exist. Make the handoffs explicit and operationally understandable.",
+            "priority": 1,
+            "phase_id": "architecture",
+            "lane": "flow",
+            "milestone": "design-basis-ready",
+            "depends_on": [],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "report_markdown",
+                "summary_guidance": "Mission graph, dependencies, handoffs, and output contracts.",
+              },
+          },
+          {
+            "workstream_id": "governance-design",
+            "title": "Governance and safety design",
+            "objective": "Define runtime controls, observability, kill switches, and repair mechanisms.",
+            "role": "coordinator",
+            "prompt": "Design the governance layer for the system. Specify approval gates, model and tool boundaries, logging, token or budget guardrails, kill switch semantics, pause and resume behavior, and step-level repair expectations.",
+            "priority": 1,
+            "phase_id": "governance",
+            "lane": "governance",
+            "depends_on": ["role-design", "flow-design"],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "plan_markdown",
+                "summary_guidance": "Safety model, review points, observability, recovery, and operator controls.",
+              },
+          },
+        ],
+      "review_stages":
+        [
+          {
+            "stage_id": "design-approval",
+            "stage_kind": "approval",
+            "title": "Agentic design review",
+            "target_ids": ["governance-design"],
+            "role": "approver",
+            "prompt": "Review the complete agentic design for coherence. Reject designs with unclear role boundaries, missing observability, or unbounded autonomy.",
+            "checklist":
+              [
+                "Role boundaries are clear",
+                "Handoffs and gates are explicit",
+                "Safety and repair paths are credible",
+              ],
+            "priority": 1,
+            "phase_id": "governance",
+            "lane": "approval",
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "gate":
+              {
+                "required": true,
+                "decisions": ["approve", "rework", "cancel"],
+                "rework_targets": ["governance-design"],
+                "instructions": "Use rework if the design lacks control boundaries, clear outputs, or repairability.",
+              },
+          },
+        ],
+      "metadata": null,
+    },
+}

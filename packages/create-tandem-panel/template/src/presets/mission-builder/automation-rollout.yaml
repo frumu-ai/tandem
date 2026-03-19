@@ -1,0 +1,125 @@
+{
+  "id": "automation-rollout",
+  "label": "Rollout",
+  "description": "Plan rollout, enablement, controls, and measurement for an automation initiative.",
+  "blueprint":
+    {
+      "mission_id": "mission_automation_rollout",
+      "title": "Automation rollout mission",
+      "goal": "Plan the rollout of an AI or agentic automation initiative across process, tooling, operating model, and measurement.",
+      "success_criteria":
+        [
+          "Rollout plan includes sequencing, owners, risks, and readiness needs",
+          "Metrics and operator controls are explicit",
+          "Human change-management needs are addressed",
+        ],
+      "shared_context": "Optimize for actual operational rollout. Include enablement, communications, governance, training, and success measurement. Avoid purely technical plans.",
+      "workspace_root": "",
+      "orchestrator_template_id": "",
+      "phases":
+        [
+          { "phase_id": "readiness", "title": "Readiness", "execution_mode": "soft" },
+          { "phase_id": "launch", "title": "Launch", "execution_mode": "barrier" },
+        ],
+      "milestones": [],
+      "team":
+        {
+          "allowed_template_ids": [],
+          "default_model_policy": null,
+          "allowed_mcp_servers": [],
+          "max_parallel_agents": 4,
+          "mission_budget": {},
+          "orchestrator_only_tool_calls": false,
+        },
+      "workstreams":
+        [
+          {
+            "workstream_id": "process-readiness",
+            "title": "Process readiness",
+            "objective": "Define the target operating process, roles, and readiness gaps.",
+            "role": "operator",
+            "prompt": "Plan the operating-process changes required to adopt the automation. Identify role changes, review points, ownership, runbooks, and readiness blockers.",
+            "priority": 1,
+            "phase_id": "readiness",
+            "lane": "operations",
+            "depends_on": [],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "plan_markdown",
+                "summary_guidance": "Operating model changes, ownership, readiness blockers, and process notes.",
+              },
+          },
+          {
+            "workstream_id": "platform-readiness",
+            "title": "Platform and tooling readiness",
+            "objective": "Define the tooling, integration, data, and observability requirements for launch.",
+            "role": "planner",
+            "prompt": "Plan the platform requirements for rollout: integrations, tools, permissions, logs, metrics, data dependencies, guardrails, and monitoring expectations.",
+            "priority": 1,
+            "phase_id": "readiness",
+            "lane": "platform",
+            "depends_on": [],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "plan_markdown",
+                "summary_guidance": "Tooling, integrations, observability, and launch prerequisites.",
+              },
+          },
+          {
+            "workstream_id": "launch-plan",
+            "title": "Rollout and adoption plan",
+            "objective": "Create the rollout sequence, communications, operator enablement, and measurement plan.",
+            "role": "coordinator",
+            "prompt": "Using the readiness work, create a rollout plan with phases, launch criteria, internal communications, operator training, fallback plans, and success metrics. Make the rollout sequence explicit.",
+            "priority": 2,
+            "phase_id": "launch",
+            "lane": "rollout",
+            "depends_on": ["process-readiness", "platform-readiness"],
+            "input_refs": [],
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "output_contract":
+              {
+                "kind": "plan_markdown",
+                "summary_guidance": "Rollout sequencing, enablement, communications, fallback, and success metrics.",
+              },
+          },
+        ],
+      "review_stages":
+        [
+          {
+            "stage_id": "launch-gate",
+            "stage_kind": "approval",
+            "title": "Launch readiness gate",
+            "target_ids": ["launch-plan"],
+            "role": "approver",
+            "prompt": "Review the rollout plan for operational readiness. Confirm that controls, training, communications, fallback, and measurement are credible before launch.",
+            "checklist":
+              [
+                "Launch prerequisites are explicit",
+                "Operator enablement is covered",
+                "Fallback and measurement are defined",
+              ],
+            "priority": 1,
+            "phase_id": "launch",
+            "lane": "approval",
+            "tool_allowlist_override": [],
+            "mcp_servers_override": [],
+            "gate":
+              {
+                "required": true,
+                "decisions": ["approve", "rework", "cancel"],
+                "rework_targets": ["launch-plan"],
+                "instructions": "Use rework if the rollout plan lacks readiness criteria, operator enablement, or fallback handling.",
+              },
+          },
+        ],
+      "metadata": null,
+    },
+}

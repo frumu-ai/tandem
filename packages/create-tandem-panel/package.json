@@ -1,0 +1,31 @@
+{
+  "name": "create-tandem-panel",
+  "version": "0.4.8",
+  "description": "Scaffold an editable Tandem control panel app",
+  "type": "module",
+  "bin": {
+    "create-tandem-panel": "index.js"
+  },
+  "files": [
+    "index.js",
+    "template",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frumu-ai/tandem.git",
+    "directory": "packages/create-tandem-panel"
+  },
+  "homepage": "https://tandem.frumu.ai",
+  "author": "Frumu Ltd",
+  "license": "MIT OR Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
