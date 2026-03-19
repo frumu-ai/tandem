@@ -205,6 +205,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Fixed external mission preset loading in the control panel.
   - Fixed an engine panic during malformed automation node execution and converted node panics into normal run failures so stuck runs surface truthfully.
   - Fixed Telegram/Slack/Discord bots failing to reply after saving channel settings with a blank Allowed Users field by normalizing empty allowlists to wildcard `["*"]`.
+  - Fixed memory regression in storage layer that caused engine to use 1.5-2.7 GiB instead of ~200 MiB by removing snapshot accumulation on routine message/tool updates and adding atomic writes with temp-file rename
 
 - Coder and automation integration cleanup
   - Added typed coder metadata so coder-originated missions stay on the existing `MissionBlueprint` and `AutomationV2` contracts.

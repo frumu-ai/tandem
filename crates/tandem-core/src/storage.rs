@@ -486,12 +486,9 @@ impl Storage {
         let session = sessions
             .get_mut(session_id)
             .context("session not found for append_message")?;
-        let mut meta_guard = self.metadata.write().await;
-        snapshot_session_messages(session_id, session, &mut meta_guard);
         session.messages.push(msg);
         session.time.updated = Utc::now();
         drop(sessions);
-        drop(meta_guard);
         self.flush().await
     }
 
@@ -505,8 +502,6 @@ impl Storage {
         let session = sessions
             .get_mut(session_id)
             .context("session not found for append_message_part")?;
-        let mut meta_guard = self.metadata.write().await;
-        snapshot_session_messages(session_id, session, &mut meta_guard);
         let message = if let Some(message) = session
             .messages
             .iter_mut()
@@ -524,7 +519,6 @@ impl Storage {
         merge_message_part(message, part);
         session.time.updated = Utc::now();
         drop(sessions);
-        drop(meta_guard);
         self.flush().await
     }
 
@@ -797,15 +791,36 @@ impl Storage {
     }
 
     async fn flush(&self) -> anyhow::Result<()> {
-        let snapshot = self.sessions.read().await.clone();
-        let payload = serde_json::to_string_pretty(&snapshot)?;
-        fs::write(self.base.join("sessions.json"), payload).await?;
-        let metadata_snapshot = self.metadata.read().await.clone();
-        let metadata_payload = serde_json::to_string_pretty(&metadata_snapshot)?;
-        fs::write(self.base.join("session_meta.json"), metadata_payload).await?;
-        let questions_snapshot = self.question_requests.read().await.clone();
-        let questions_payload = serde_json::to_string_pretty(&questions_snapshot)?;
-        fs::write(self.base.join("questions.json"), questions_payload).await?;
+        {
+            let snapshot = self.sessions.read().await.clone();
+            self.flush_file("sessions.json", &snapshot).await?;
+        }
+        {
+            let metadata_snapshot = self.metadata.read().await.clone();
+            self.flush_file("session_meta.json", &metadata_snapshot)
+                .await?;
+        }
+        {
+            let questions_snapshot = self.question_requests.read().await.clone();
+            self.flush_file("questions.json", &questions_snapshot)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn flush_file(&self, filename: &str, data: &impl serde::Serialize) -> anyhow::Result<()> {
+        let path = self.base.join(filename);
+        let temp_path = self.base.join(format!("{}.tmp", filename));
+        let payload = serde_json::to_string_pretty(data)?;
+        fs::write(&temp_path, payload).await?;
+        let std_temp_path: std::path::PathBuf = temp_path.clone().try_into()?;
+        tokio::task::spawn_blocking(move || {
+            let file = std::fs::File::open(&std_temp_path)?;
+            file.sync_all()?;
+            Ok::<(), std::io::Error>(())
+        })
+        .await??;
+        tokio::fs::rename(&temp_path, &path).await?;
         Ok(())
     }
 

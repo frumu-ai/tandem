@@ -147,6 +147,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Storage memory regression fixes**:
+  - removed snapshot creation from `append_message()` and `append_message_part()` to stop accumulating full session history copies during routine message and tool updates
+  - snapshots are now only created on explicit `fork_session()` calls, preserving revert capability without memory overhead on every update
+  - added atomic writes with temp-file + rename pattern to prevent data corruption from partial writes during flush
 - **Strict write recovery and replay fidelity**:
   - fixed streamed write-arg previews being dropped before session persistence, so malformed or partially streamed provider tool calls now retain recoverable args
   - fixed failed malformed write calls persisting empty `{}` args when normalized best-effort args were already available
