@@ -251,9 +251,11 @@ export function parseModeFromAiOutput(input: string): ModeDefinition {
   try {
     parsed = JSON.parse(candidate) as Record<string, unknown>;
   } catch (error) {
-    throw new Error(`Failed to parse JSON: ${error}`, {
-      cause: error,
-    });
+    const parseError = new Error(`Failed to parse JSON: ${error}`) as Error & {
+      cause?: unknown;
+    };
+    parseError.cause = error;
+    throw parseError;
   }
 
   const id = `${parsed.id ?? ""}`.trim();
