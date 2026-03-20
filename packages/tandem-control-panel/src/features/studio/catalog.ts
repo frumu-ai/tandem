@@ -78,7 +78,7 @@ export const STUDIO_TEMPLATE_CATALOG: StudioTemplateDefinition[] = [
         displayName: "Research Discover",
         role: "watcher",
         skills: ["analysis"],
-        toolAllowlist: ["read"],
+        toolAllowlist: ["glob", "read"],
         prompt: {
           role: "You are a workspace source scout for product marketing research.",
           mission:
@@ -86,9 +86,9 @@ export const STUDIO_TEMPLATE_CATALOG: StudioTemplateDefinition[] = [
           inputs:
             "Start at the workspace root. Enumerate the folders and concrete files that look relevant to product marketing, docs, customer-facing text, manifests, READMEs, or source bundles. If a curated source index such as `SOURCES.md` exists, read it first. Perform at least one concrete `read` before finishing, but read only enough to identify the source corpus and prioritize what must be reviewed next. Treat prior generated workflow artifacts as non-authoritative.",
           outputContract:
-            "Return a structured handoff that includes `workspace_inventory_summary`, `discovered_paths`, `priority_paths`, and `skipped_paths_initial` so the next stage can perform concrete file reads.",
+            "Return a structured handoff that includes `workspace_inventory_summary`, `discovered_paths`, `priority_paths`, and `skipped_paths_initial` so the next stage can perform concrete file reads. Every path in `discovered_paths`, `priority_paths`, and `skipped_paths_initial` must be a concrete workspace-relative file path — never a glob pattern (e.g. `*.yaml`), directory placeholder (e.g. `tandem-social/`), or wildcard (e.g. `tandem/components/*`).",
           guardrails:
-            "Do not write the final brief in this stage. Do not invent file contents. Prefer broad source coverage and clear prioritization over early synthesis, and do not finish after `glob` alone.",
+            "Do not write the final brief in this stage. Do not invent file contents. Prefer broad source coverage and clear prioritization over early synthesis, and do not finish after `glob` alone. Never emit a glob pattern, wildcard, or directory path in any path field — only concrete individual file paths.",
         },
       }),
       agent({
@@ -96,7 +96,7 @@ export const STUDIO_TEMPLATE_CATALOG: StudioTemplateDefinition[] = [
         displayName: "Research Local Sources",
         role: "watcher",
         skills: ["analysis"],
-        toolAllowlist: ["read"],
+        toolAllowlist: ["glob", "read"],
         prompt: {
           role: "You are a local-source analyst preparing evidence-backed marketing notes from workspace files.",
           mission:
@@ -104,9 +104,9 @@ export const STUDIO_TEMPLATE_CATALOG: StudioTemplateDefinition[] = [
           inputs:
             "Use the upstream `source_inventory` handoff as the file plan. Perform concrete `read` calls on the prioritized local files and capture the product facts, audience clues, proof points, and messaging language supported by those reads.",
           outputContract:
-            "Return a structured handoff that includes `read_paths`, `reviewed_facts`, `files_reviewed`, `files_not_reviewed`, and `citations_local` so later stages can rely on concrete local evidence.",
+            "Return a structured handoff that includes `read_paths`, `reviewed_facts`, `files_reviewed`, `files_not_reviewed`, and `citations_local` so later stages can rely on concrete local evidence. Every path in `read_paths`, `files_reviewed`, and `files_not_reviewed` must be a concrete workspace-relative file path — never a glob pattern, wildcard, or directory placeholder.",
           guardrails:
-            "Do not invent facts from filenames alone. Every file listed in `files_reviewed` must have been actually read in this run. Any relevant discovered file you skip must appear in `files_not_reviewed` with a reason.",
+            "Do not invent facts from filenames alone. Every file listed in `files_reviewed` must have been actually read in this run. Any relevant discovered file you skip must appear in `files_not_reviewed` with a reason. Never use glob patterns, wildcards, or directory paths in any path field — only concrete individual file paths that exist in the workspace.",
         },
       }),
       agent({
@@ -140,9 +140,9 @@ export const STUDIO_TEMPLATE_CATALOG: StudioTemplateDefinition[] = [
           inputs:
             "Use the upstream `source_inventory`, `local_source_notes`, and `external_research` handoffs as the source of truth. Read `marketing-brief.md` from disk only as a fallback or verification step. Synthesize the brief from those handoffs instead of repeating discovery or fresh web research in this stage.",
           outputContract:
-            "Use the write tool to create `marketing-brief.md` in the workspace even if it does not exist yet. The file must include: a workspace source audit, campaign goal, target audience, core pain points, customer-language phrases to mirror, positioning angle, competitor context, proof points with citations, likely objections, channel considerations, a recommended message hierarchy, a comprehensive `Files reviewed` section with exact local paths, a `Files not reviewed` section for any relevant sources skipped with reasons, and a `Web sources reviewed` section with the searches or pages used. The brief should be usable even if no prior campaign brief existed.",
+            "Use the write tool to create `marketing-brief.md` in the workspace even if it does not exist yet. The file must include: a workspace source audit, campaign goal, target audience, core pain points, customer-language phrases to mirror, positioning angle, competitor context, proof points with citations, likely objections, channel considerations, a recommended message hierarchy, a comprehensive `Files reviewed` section with exact local paths, a `Files not reviewed` section for any relevant sources skipped with reasons, and a `Web sources reviewed` section with the searches or pages used. Use only exact concrete workspace-relative file paths in `Files reviewed` and `Files not reviewed`; do not use directory names, wildcard paths, or glob patterns such as `*.yaml`. The brief should be usable even if no prior campaign brief existed.",
           guardrails:
-            "Do not invent metrics, testimonials, or competitor claims. Use the upstream evidence handoffs as the basis for the final brief, clearly note research limitations, and do not claim success unless the write tool actually created `marketing-brief.md`.",
+            "Do not invent metrics, testimonials, or competitor claims. Use the upstream evidence handoffs as the basis for the final brief, clearly note research limitations, and do not claim success unless the write tool actually created `marketing-brief.md`. Never list a path in the source audit unless it is a concrete workspace-relative file path that exists or a concrete URL that was actually reviewed.",
         },
       }),
       agent({
@@ -156,7 +156,7 @@ export const STUDIO_TEMPLATE_CATALOG: StudioTemplateDefinition[] = [
           mission:
             "Translate the newly created marketing brief into copy that is specific, audience-aware, and built around one clear promise and one clear call to action.",
           inputs:
-            "Use the upstream `marketing_brief` handoff from the previous stage as the primary source of truth. Only read `marketing-brief.md` from disk as a fallback or verification step. Use that brief, the workspace source audit, product marketing context, brand voice, channel constraints, and any proof points or customer-language phrases collected during research. Treat prior generated drafts, reviews, or checklists as workflow artifacts, not as source authority.",
+            "Use the upstream `marketing_brief` handoff from the previous stage as the primary source of truth. Only read `marketing-brief.md` from disk as a fallback or verification step. Use that brief, the workspace source audit, product marketing context, brand voice, channel constraints, and any proof points or customer-language phrases collected during research. Treat prior generated drafts, reviews, or checklists as workflow artifacts, not as source authority. Do not attempt to read directory placeholders, wildcard paths, or glob patterns from the brief source audit; only concrete workspace-relative file paths are eligible for `read`.",
           outputContract:
             "Use the write tool to create `draft-post.md` in the workspace. The file must include a strong hook, concise body, proof-backed claims, a clear CTA, and 2 optional hook or CTA variants for testing. Make the message progression obvious: problem, promise, proof, action.",
           guardrails:
@@ -488,7 +488,7 @@ export const STUDIO_TEMPLATE_CATALOG: StudioTemplateDefinition[] = [
         displayName: "Market Discover",
         role: "watcher",
         skills: ["analysis"],
-        toolAllowlist: ["read"],
+        toolAllowlist: ["glob", "read"],
         prompt: {
           role: "You are a market-source scout.",
           mission:
@@ -506,7 +506,7 @@ export const STUDIO_TEMPLATE_CATALOG: StudioTemplateDefinition[] = [
         displayName: "Market Local Sources",
         role: "watcher",
         skills: ["analysis"],
-        toolAllowlist: ["read"],
+        toolAllowlist: ["glob", "read"],
         prompt: {
           role: "You are a local-source analyst for competitor intelligence.",
           mission:

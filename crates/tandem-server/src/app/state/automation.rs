@@ -18,6 +18,7 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
 fn build_automation_v2_upstream_inputs(
     run: &AutomationV2RunRecord,
     node: &AutomationFlowNode,
+    workspace_root: &str,
 ) -> anyhow::Result<Vec<Value>> {
     let mut inputs = Vec::new();
     for input_ref in &node.input_refs {
@@ -31,7 +32,7 @@ fn build_automation_v2_upstream_inputs(
         inputs.push(json!({
             "alias": input_ref.alias,
             "from_step_id": input_ref.from_step_id,
-            "output": output,
+            "output": normalize_upstream_research_output_paths(workspace_root, output),
         }));
     }
     Ok(inputs)
@@ -462,6 +463,381 @@ fn automation_node_builder_priority(node: &AutomationFlowNode) -> i32 {
         .unwrap_or(0)
 }
 
+fn automation_upstream_output_for_alias<'a>(
+    upstream_inputs: &'a [Value],
+    alias: &str,
+) -> Option<&'a Value> {
+    upstream_inputs
+        .iter()
+        .find(|input| input.get("alias").and_then(Value::as_str) == Some(alias))
+        .and_then(|input| input.get("output"))
+}
+
+fn automation_upstream_structured_handoff<'a>(output: &'a Value) -> Option<&'a Value> {
+    output
+        .pointer("/content/structured_handoff")
+        .or_else(|| output.get("structured_handoff"))
+}
+
+fn truncate_path_list_for_prompt(paths: Vec<String>, limit: usize) -> Vec<String> {
+    let mut deduped = normalize_non_empty_list(paths);
+    if deduped.len() > limit {
+        deduped.truncate(limit);
+    }
+    deduped
+}
+
+fn value_object_path_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+}
+
+fn path_looks_like_workspace_path(raw_path: &str) -> bool {
+    let trimmed = raw_path.trim().trim_matches('`');
+    !trimmed.is_empty()
+        && !trimmed.starts_with("http://")
+        && !trimmed.starts_with("https://")
+        && (trimmed.contains('/') || trimmed.ends_with(".md") || trimmed.ends_with(".yaml"))
+}
+
+fn top_level_workspace_dir(path: &str) -> Option<String> {
+    PathBuf::from(path)
+        .components()
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn workspace_relative_path_exists(workspace_root: &str, relative_path: &str) -> bool {
+    let candidate = PathBuf::from(workspace_root).join(relative_path.trim_start_matches('/'));
+    candidate.exists()
+}
+
+fn normalize_workspace_display_path_with_bases(
+    workspace_root: &str,
+    raw_path: &str,
+    base_dirs: &[String],
+) -> Option<String> {
+    if let Some(normalized) = normalize_workspace_display_path(workspace_root, raw_path) {
+        if workspace_relative_path_exists(workspace_root, &normalized) {
+            return Some(normalized);
+        }
+    }
+    if !path_looks_like_workspace_path(raw_path) {
+        return None;
+    }
+    let trimmed = raw_path
+        .trim()
+        .trim_matches('`')
+        .trim_start_matches("./")
+        .trim_start_matches('/');
+    let mut candidates = base_dirs
+        .iter()
+        .filter_map(|base_dir| {
+            let candidate = format!("{}/{}", base_dir.trim_end_matches('/'), trimmed);
+            normalize_workspace_display_path(workspace_root, &candidate)
+                .filter(|normalized| workspace_relative_path_exists(workspace_root, normalized))
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return normalize_workspace_display_path(workspace_root, raw_path);
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() == 1 {
+        candidates.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn normalize_workspace_path_annotation(
+    workspace_root: &str,
+    raw_path: &str,
+    base_dirs: &[String],
+) -> Option<String> {
+    if let Some((candidate, suffix)) = raw_path.split_once(" (") {
+        return normalize_workspace_display_path_with_bases(workspace_root, candidate, base_dirs)
+            .map(|normalized| format!("{normalized} ({suffix}"));
+    }
+    if let Some((candidate, suffix)) = raw_path.split_once(": ") {
+        return normalize_workspace_display_path_with_bases(workspace_root, candidate, base_dirs)
+            .map(|normalized| format!("{normalized}: {suffix}"));
+    }
+    normalize_workspace_display_path_with_bases(workspace_root, raw_path, base_dirs)
+}
+
+fn upstream_output_base_dirs(output: &Value, workspace_root: &str) -> Vec<String> {
+    let mut bases = Vec::new();
+    let path_arrays = [
+        output
+            .get("artifact_validation")
+            .and_then(|value| value.get("read_paths")),
+        output
+            .get("artifact_validation")
+            .and_then(|value| value.get("current_node_read_paths")),
+        output
+            .get("artifact_validation")
+            .and_then(|value| value.get("discovered_relevant_paths")),
+        output
+            .get("artifact_validation")
+            .and_then(|value| value.get("current_node_discovered_relevant_paths")),
+    ];
+    for rows in path_arrays.into_iter().flatten() {
+        let Some(rows) = rows.as_array() else {
+            continue;
+        };
+        for row in rows.iter().filter_map(Value::as_str) {
+            let Some(normalized) = normalize_workspace_display_path(workspace_root, row) else {
+                continue;
+            };
+            if let Some(parent) = PathBuf::from(&normalized)
+                .parent()
+                .and_then(|value| value.to_str())
+            {
+                let parent = parent.trim().trim_matches('/');
+                if !parent.is_empty() {
+                    bases.push(parent.to_string());
+                }
+            }
+            if let Some(top_level) = top_level_workspace_dir(&normalized) {
+                bases.push(top_level);
+            }
+        }
+    }
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+fn normalize_structured_handoff_field(
+    workspace_root: &str,
+    base_dirs: &[String],
+    key: &str,
+    value: &mut Value,
+) {
+    let Some(rows) = value.as_array_mut() else {
+        return;
+    };
+    for row in rows {
+        match row {
+            Value::String(raw) => {
+                let normalized = match key {
+                    "files_not_reviewed" | "skipped_paths_initial" => {
+                        normalize_workspace_path_annotation(workspace_root, raw, base_dirs)
+                    }
+                    _ => {
+                        normalize_workspace_display_path_with_bases(workspace_root, raw, base_dirs)
+                    }
+                };
+                if let Some(normalized) = normalized {
+                    *raw = normalized;
+                }
+            }
+            Value::Object(map) => {
+                if let Some(Value::String(path)) = map.get_mut("path") {
+                    if let Some(normalized) =
+                        normalize_workspace_display_path_with_bases(workspace_root, path, base_dirs)
+                    {
+                        *path = normalized;
+                    }
+                }
+                if matches!(
+                    key,
+                    "citations_local" | "citations_external" | "sources_reviewed"
+                ) {
+                    if let Some(Value::String(source)) = map.get_mut("source") {
+                        if let Some(normalized) = normalize_workspace_display_path_with_bases(
+                            workspace_root,
+                            source,
+                            base_dirs,
+                        ) {
+                            *source = normalized;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_upstream_research_output_paths(workspace_root: &str, output: &Value) -> Value {
+    let mut normalized = output.clone();
+    let base_dirs = upstream_output_base_dirs(&normalized, workspace_root);
+    let Some(content) = normalized.get_mut("content").and_then(Value::as_object_mut) else {
+        return normalized;
+    };
+    if let Some(handoff) = content
+        .get_mut("structured_handoff")
+        .and_then(Value::as_object_mut)
+    {
+        for key in [
+            "discovered_paths",
+            "priority_paths",
+            "skipped_paths_initial",
+            "read_paths",
+            "files_reviewed",
+            "files_not_reviewed",
+            "citations_local",
+            "citations_external",
+            "sources_reviewed",
+        ] {
+            if let Some(value) = handoff.get_mut(key) {
+                normalize_structured_handoff_field(workspace_root, &base_dirs, key, value);
+            }
+        }
+    }
+    if let Some(text) = content
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        if let Ok(mut parsed) = serde_json::from_str::<Value>(&text) {
+            if let Some(map) = parsed.as_object_mut() {
+                for key in [
+                    "discovered_paths",
+                    "priority_paths",
+                    "skipped_paths_initial",
+                    "read_paths",
+                    "files_reviewed",
+                    "files_not_reviewed",
+                    "citations_local",
+                    "citations_external",
+                    "sources_reviewed",
+                ] {
+                    if let Some(value) = map.get_mut(key) {
+                        normalize_structured_handoff_field(workspace_root, &base_dirs, key, value);
+                    }
+                }
+            }
+            content.insert("text".to_string(), json!(parsed.to_string()));
+        }
+    }
+    normalized
+}
+
+fn render_research_finalize_upstream_summary(upstream_inputs: &[Value]) -> Option<String> {
+    let source_inventory =
+        automation_upstream_output_for_alias(upstream_inputs, "source_inventory")
+            .and_then(automation_upstream_structured_handoff);
+    let local_source_notes =
+        automation_upstream_output_for_alias(upstream_inputs, "local_source_notes")
+            .and_then(automation_upstream_structured_handoff);
+    let external_research =
+        automation_upstream_output_for_alias(upstream_inputs, "external_research")
+            .and_then(automation_upstream_structured_handoff);
+
+    let discovered_files = source_inventory
+        .and_then(|handoff| handoff.get("discovered_paths"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| match row {
+                    Value::String(path) => Some(path.trim().to_string()),
+                    Value::Object(_) => value_object_path_field(row, "path"),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let priority_files = source_inventory
+        .and_then(|handoff| handoff.get("priority_paths"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| match row {
+                    Value::String(path) => Some(path.trim().to_string()),
+                    Value::Object(_) => value_object_path_field(row, "path"),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let files_reviewed = local_source_notes
+        .and_then(|handoff| handoff.get("files_reviewed"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| match row {
+                    Value::String(path) => Some(path.trim().to_string()),
+                    Value::Object(_) => value_object_path_field(row, "path"),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let files_not_reviewed = local_source_notes
+        .and_then(|handoff| handoff.get("files_not_reviewed"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| match row {
+                    Value::String(path) => Some(path.trim().to_string()),
+                    Value::Object(_) => value_object_path_field(row, "path"),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let web_sources_reviewed = external_research
+        .and_then(|handoff| handoff.get("sources_reviewed"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| match row {
+                    Value::String(path) => Some(path.trim().to_string()),
+                    Value::Object(_) => value_object_path_field(row, "url")
+                        .or_else(|| value_object_path_field(row, "path")),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let discovered_files = truncate_path_list_for_prompt(discovered_files, 12);
+    let priority_files = truncate_path_list_for_prompt(priority_files, 12);
+    let files_reviewed = truncate_path_list_for_prompt(files_reviewed, 12);
+    let files_not_reviewed = truncate_path_list_for_prompt(files_not_reviewed, 12);
+    let web_sources_reviewed = truncate_path_list_for_prompt(web_sources_reviewed, 8);
+
+    if discovered_files.is_empty()
+        && priority_files.is_empty()
+        && files_reviewed.is_empty()
+        && files_not_reviewed.is_empty()
+        && web_sources_reviewed.is_empty()
+    {
+        return None;
+    }
+
+    let list_or_none = |items: &[String]| {
+        if items.is_empty() {
+            "none recorded".to_string()
+        } else {
+            items
+                .iter()
+                .map(|item| format!("- `{}`", item))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    };
+
+    Some(format!(
+        "Research Coverage Summary:\nRelevant discovered files from upstream:\n{}\nPriority paths from upstream:\n{}\nUpstream files already reviewed:\n{}\nUpstream files already marked not reviewed:\n{}\nUpstream web sources reviewed:\n{}\nFinal brief rule: every relevant discovered file should appear in `Files reviewed` or `Files not reviewed`, and proof points must stay citation-backed.",
+        list_or_none(&discovered_files),
+        list_or_none(&priority_files),
+        list_or_none(&files_reviewed),
+        list_or_none(&files_not_reviewed),
+        list_or_none(&web_sources_reviewed),
+    ))
+}
+
 #[derive(Clone, Copy)]
 struct SplitResearchTemplateConfig {
     template_id: &'static str,
@@ -495,24 +871,20 @@ fn split_research_template_config(template_id: &str) -> Option<SplitResearchTemp
             discover_node_id: "research-discover-sources",
             discover_agent_id: "research-discover",
             discover_title: "Discover Sources",
-            discover_objective:
-                "Enumerate the workspace, identify the relevant source corpus, and prioritize which local files must be read for the marketing brief.",
+            discover_objective: "Enumerate the workspace, identify the relevant source corpus, and prioritize which local files must be read for the marketing brief.",
             discover_display_name: "Research Discover",
             local_node_id: "research-local-sources",
             local_agent_id: "research-local-sources",
             local_title: "Read Local Sources",
-            local_objective:
-                "Read the prioritized local product and marketing files and produce source-backed notes for the brief.",
+            local_objective: "Read the prioritized local product and marketing files and produce source-backed notes for the brief.",
             local_display_name: "Research Local Sources",
             external_node_id: "research-external-research",
             external_agent_id: "research-external",
             external_title: "External Research",
-            external_objective:
-                "Perform targeted external research that complements the local source notes and record what web evidence was gathered or unavailable.",
+            external_objective: "Perform targeted external research that complements the local source notes and record what web evidence was gathered or unavailable.",
             external_display_name: "Research External",
             final_title: "Research Brief",
-            final_objective:
-                "Write `marketing-brief.md` from the structured discovery, local source notes, and external research gathered earlier in the workflow.",
+            final_objective: "Write `marketing-brief.md` from the structured discovery, local source notes, and external research gathered earlier in the workflow.",
         }),
         "competitor-research-pipeline" => Some(SplitResearchTemplateConfig {
             template_id: "competitor-research-pipeline",
@@ -521,24 +893,20 @@ fn split_research_template_config(template_id: &str) -> Option<SplitResearchTemp
             discover_node_id: "scan-market-discover",
             discover_agent_id: "market-discover",
             discover_title: "Discover Market Sources",
-            discover_objective:
-                "Identify the local source corpus and file inventory that should guide the competitor scan.",
+            discover_objective: "Identify the local source corpus and file inventory that should guide the competitor scan.",
             discover_display_name: "Market Discover",
             local_node_id: "scan-market-local-sources",
             local_agent_id: "market-local-sources",
             local_title: "Read Market Sources",
-            local_objective:
-                "Read the prioritized local competitor and strategy sources before external scanning.",
+            local_objective: "Read the prioritized local competitor and strategy sources before external scanning.",
             local_display_name: "Market Local Sources",
             external_node_id: "scan-market-external-research",
             external_agent_id: "market-external",
             external_title: "Research Market",
-            external_objective:
-                "Gather current external competitor evidence guided by the local market context.",
+            external_objective: "Gather current external competitor evidence guided by the local market context.",
             external_display_name: "Market External",
             final_title: "Scan Market",
-            final_objective:
-                "Synthesize the discovered local and external evidence into the final competitor scan.",
+            final_objective: "Synthesize the discovered local and external evidence into the final competitor scan.",
         }),
         "weekly-newsletter-builder" => Some(SplitResearchTemplateConfig {
             template_id: "weekly-newsletter-builder",
@@ -547,24 +915,20 @@ fn split_research_template_config(template_id: &str) -> Option<SplitResearchTemp
             discover_node_id: "curate-issue-discover",
             discover_agent_id: "curator-discover",
             discover_title: "Discover Issue Sources",
-            discover_objective:
-                "Identify the local source corpus and candidate files that should feed this week's issue.",
+            discover_objective: "Identify the local source corpus and candidate files that should feed this week's issue.",
             discover_display_name: "Curator Discover",
             local_node_id: "curate-issue-local-sources",
             local_agent_id: "curator-local-sources",
             local_title: "Read Issue Sources",
-            local_objective:
-                "Read the prioritized local source files and extract the strongest issue candidates.",
+            local_objective: "Read the prioritized local source files and extract the strongest issue candidates.",
             local_display_name: "Curator Local Sources",
             external_node_id: "curate-issue-external-research",
             external_agent_id: "curator-external",
             external_title: "Research Issue",
-            external_objective:
-                "Gather timely external signals that should influence this week's issue.",
+            external_objective: "Gather timely external signals that should influence this week's issue.",
             external_display_name: "Curator External",
             final_title: "Curate Issue",
-            final_objective:
-                "Curate the best items for this week's issue from the staged research handoffs.",
+            final_objective: "Curate the best items for this week's issue from the staged research handoffs.",
         }),
         "sales-prospecting-team" => Some(SplitResearchTemplateConfig {
             template_id: "sales-prospecting-team",
@@ -578,18 +942,15 @@ fn split_research_template_config(template_id: &str) -> Option<SplitResearchTemp
             local_node_id: "research-account-local-sources",
             local_agent_id: "account-local-sources",
             local_title: "Read Account Sources",
-            local_objective:
-                "Read the prioritized local account and ICP files before drafting the account brief.",
+            local_objective: "Read the prioritized local account and ICP files before drafting the account brief.",
             local_display_name: "Account Local Sources",
             external_node_id: "research-account-external-research",
             external_agent_id: "account-external",
             external_title: "Research Account Externally",
-            external_objective:
-                "Gather targeted external account context and buying signals to support the brief.",
+            external_objective: "Gather targeted external account context and buying signals to support the brief.",
             external_display_name: "Account External",
             final_title: "Research Account",
-            final_objective:
-                "Prepare the final account brief from the staged discovery, local evidence, and external research.",
+            final_objective: "Prepare the final account brief from the staged discovery, local evidence, and external research.",
         }),
         _ => None,
     }
@@ -739,7 +1100,7 @@ pub(super) fn migrate_bundled_studio_research_split_automation(
     let local_prompt = "Use the upstream `source_inventory` handoff to decide which concrete local files to read. Perform concrete `read` calls, extract the product or market facts supported by those reads, and return a structured handoff with `read_paths`, `reviewed_facts`, `files_reviewed`, `files_not_reviewed`, and `citations_local`. Do not invent facts from filenames alone.".to_string();
     let external_prompt = "Use the upstream `source_inventory` and `local_source_notes` handoffs to guide targeted external research. Perform `websearch` and fetch result pages when snippets are not enough, then return `external_research_mode`, `queries_attempted`, `sources_reviewed`, `citations_external`, and `research_limitations`. If search is unavailable, record that limitation clearly instead of inventing evidence.".to_string();
     let final_prompt = match config.template_id {
-        "marketing-content-pipeline" => "Use the upstream `source_inventory`, `local_source_notes`, and `external_research` handoffs as the source of truth. Read `marketing-brief.md` from disk only as a fallback or verification step. Synthesize the final marketing brief from those handoffs instead of repeating discovery or fresh web research in this stage. Include a workspace source audit, audience, positioning, proof points with citations, `Files reviewed`, `Files not reviewed`, and `Web sources reviewed`, and clearly note any research limitations.".to_string(),
+        "marketing-content-pipeline" => "Use the upstream `source_inventory`, `local_source_notes`, and `external_research` handoffs as the source of truth. Read `marketing-brief.md` from disk only as a fallback or verification step. Synthesize the final marketing brief from those handoffs instead of repeating discovery or fresh web research in this stage. Include a workspace source audit, audience, positioning, proof points with citations, `Files reviewed`, `Files not reviewed`, and `Web sources reviewed`, and clearly note any research limitations. In source-audit sections, list only exact concrete workspace-relative file paths or exact reviewed URLs; do not use directory names, wildcard paths, or glob patterns.".to_string(),
         "competitor-research-pipeline" => "Use the upstream `source_inventory`, `local_source_notes`, and `external_research` handoffs as the source of truth for the final competitor scan. Separate observed evidence from inference, keep the scan current and signal-focused, and do not rerun discovery or fresh web research in this stage.".to_string(),
         "weekly-newsletter-builder" => "Use the upstream `source_inventory`, `local_source_notes`, and `external_research` handoffs to curate the final issue. Turn them into the final shortlist and section order without repeating discovery or fresh web research in this stage.".to_string(),
         "sales-prospecting-team" => "Use the upstream `source_inventory`, `local_source_notes`, and `external_research` handoffs as the source of truth for the final account brief. Separate observed facts from hypotheses and do not rerun discovery or fresh web research in this stage.".to_string(),
@@ -1539,6 +1900,21 @@ pub(crate) fn render_automation_v2_prompt(
         .as_ref()
         .map(|contract| contract.kind.as_str())
         .unwrap_or("structured_json");
+    let normalized_upstream_inputs = upstream_inputs
+        .iter()
+        .map(|input| {
+            let mut normalized_input = input.clone();
+            if let Some(output) = input.get("output") {
+                if let Some(object) = normalized_input.as_object_mut() {
+                    object.insert(
+                        "output".to_string(),
+                        normalize_upstream_research_output_paths(workspace_root, output),
+                    );
+                }
+            }
+            normalized_input
+        })
+        .collect::<Vec<_>>();
     let mut sections = Vec::new();
     if let Some(system_prompt) = template_system_prompt
         .map(str::trim)
@@ -1668,13 +2044,27 @@ pub(crate) fn render_automation_v2_prompt(
         };
         sections.push(output_rules);
     }
-    if automation_node_web_research_expected(node)
-        && requested_tools.iter().any(|tool| tool == "websearch")
-    {
-        sections.push(
-            "External Research Expectation:\n- Use `websearch` for current external evidence before finalizing the output file.\n- Include only evidence you can support from local files or current web findings.\n- If `websearch` returns an authorization-required or unavailable result, treat external research as unavailable for this run, continue with local file reads, and note the web-research limitation instead of stopping."
-                .to_string(),
-        );
+    if automation_node_web_research_expected(node) {
+        let requested_has_websearch = requested_tools.iter().any(|tool| tool == "websearch");
+        let requested_has_webfetch = requested_tools
+            .iter()
+            .any(|tool| matches!(tool.as_str(), "webfetch" | "webfetch_html"));
+        if requested_has_websearch {
+            sections.push(
+                "External Research Expectation:\n- Use `websearch` for current external evidence before finalizing the output file.\n- Use `webfetch` on concrete result URLs when search snippets are not enough.\n- Include only evidence you can support from local files or current web findings.\n- If `websearch` returns an authorization-required or unavailable result, treat external research as unavailable for this run, continue with local file reads, and note the web-research limitation instead of stopping."
+                    .to_string(),
+            );
+        } else if requested_has_webfetch {
+            sections.push(
+                "External Research Expectation:\n- `websearch` is not available in this run.\n- Use `webfetch` only for concrete URLs already present in local sources or upstream handoffs.\n- If you cannot validate externally without search, record that limitation in the structured handoff and finish the node.\n- Do not ask the user for clarification or permission to continue; return the required JSON handoff for this run."
+                    .to_string(),
+            );
+        } else {
+            sections.push(
+                "External Research Expectation:\n- No web research tool is available in this run.\n- Record the web-research limitation clearly in the structured handoff, continue with any allowed local reads, and finish without asking follow-up questions."
+                    .to_string(),
+            );
+        }
     }
     let validator_kind = automation_output_validator_kind(node);
     let handoff_only_structured_json = validator_kind
@@ -1682,14 +2072,14 @@ pub(crate) fn render_automation_v2_prompt(
         && automation_node_required_output_path(node).is_none();
     if handoff_only_structured_json {
         sections.push(
-            "Structured Handoff Expectation:\n- Return the requested structured JSON handoff in the final response body.\n- Do not stop after tool calls alone; include a machine-readable JSON object or array with the requested fields.\n- After the handoff, include a final compact JSON status object."
+            "Structured Handoff Expectation:\n- Return the requested structured JSON handoff in the final response body.\n- The final response body should contain JSON only: the handoff JSON, then the final compact JSON status object.\n- Do not include headings, bullets, markdown fences, prose explanations, or follow-up questions.\n- Do not stop after tool calls alone; include a machine-readable JSON object or array with the requested fields."
                 .to_string(),
         );
     }
     let mut prompt = sections.join("\n\n");
-    if !upstream_inputs.is_empty() {
+    if !normalized_upstream_inputs.is_empty() {
         prompt.push_str("\n\nUpstream Inputs:");
-        for input in upstream_inputs {
+        for input in &normalized_upstream_inputs {
             let alias = input
                 .get("alias")
                 .and_then(Value::as_str)
@@ -1711,6 +2101,14 @@ pub(crate) fn render_automation_v2_prompt(
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
+        }
+    }
+    if automation_node_is_research_finalize(node) {
+        if let Some(summary) =
+            render_research_finalize_upstream_summary(&normalized_upstream_inputs)
+        {
+            prompt.push_str("\n\n");
+            prompt.push_str(&summary);
         }
     }
     if node.node_id == "notify_user" || node.objective.to_ascii_lowercase().contains("email") {
@@ -1782,6 +2180,29 @@ pub(crate) fn render_automation_repair_brief(
     let validator_summary = prior_output.get("validator_summary");
     let artifact_validation = prior_output.get("artifact_validation");
     let tool_telemetry = prior_output.get("tool_telemetry");
+    let validator_outcome = validator_summary
+        .and_then(|value| value.get("outcome"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let unmet_requirements_from_summary = validator_summary
+        .and_then(|value| value.get("unmet_requirements"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let is_upstream_passed = validator_outcome
+        .is_some_and(|outcome| outcome.eq_ignore_ascii_case("passed"))
+        && unmet_requirements_from_summary.is_empty();
+    if is_upstream_passed {
+        return None;
+    }
     let reason = validator_summary
         .and_then(|value| value.get("reason"))
         .and_then(Value::as_str)
@@ -1795,18 +2216,7 @@ pub(crate) fn render_automation_repair_brief(
                 .filter(|value| !value.is_empty())
         })
         .unwrap_or("the previous attempt did not satisfy the runtime validator");
-    let unmet_requirements = validator_summary
-        .and_then(|value| value.get("unmet_requirements"))
-        .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let unmet_requirements = unmet_requirements_from_summary;
     let blocking_classification = artifact_validation
         .and_then(|value| value.get("blocking_classification"))
         .and_then(Value::as_str)
@@ -3054,20 +3464,60 @@ fn best_artifact_candidate(
     })
 }
 
-fn files_reviewed_section_lists_paths(text: &str) -> bool {
+fn markdown_section_lists_entries(
+    text: &str,
+    heading: &str,
+    entry_matches: impl Fn(&str) -> bool,
+) -> bool {
     let lowered = text.to_ascii_lowercase();
-    let Some(start) = lowered.find("files reviewed") else {
+    let Some(start) = lowered.find(&heading.to_ascii_lowercase()) else {
         return false;
     };
     let tail = &text[start..];
     tail.lines().skip(1).take(24).any(|line| {
         let trimmed = line.trim();
-        (trimmed.starts_with('-')
+        let bullet_like = (trimmed.starts_with('-')
             || trimmed.starts_with('*')
             || trimmed.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+            && entry_matches(trimmed);
+        let table_like = trimmed.starts_with('|')
+            && !trimmed
+                .chars()
+                .all(|ch| matches!(ch, '|' | '-' | ':' | ' ' | '\t'))
+            && entry_matches(trimmed);
+        bullet_like || table_like
+    })
+}
+
+fn concrete_workspace_path_like(value: &str) -> bool {
+    let trimmed = value.trim().trim_matches('`');
+    !trimmed.is_empty()
+        && !trimmed.contains('*')
+        && !trimmed.contains('?')
+        && !trimmed.ends_with('/')
+}
+
+fn path_contains_wildcard_or_directory_placeholder(path: &str) -> bool {
+    let trimmed = path.trim().trim_matches('`');
+    trimmed.contains('*') || trimmed.contains('?') || trimmed.ends_with('/')
+}
+
+fn validate_path_array_hygiene(paths: &[String]) -> Option<String> {
+    for path in paths {
+        if path_contains_wildcard_or_directory_placeholder(path) {
+            return Some(format!("path array contains non-concrete path: {}", path));
+        }
+    }
+    None
+}
+
+fn files_reviewed_section_lists_paths(text: &str) -> bool {
+    markdown_section_lists_entries(text, "files reviewed", |trimmed| {
+        concrete_workspace_path_like(trimmed)
             && (trimmed.contains('/')
                 || trimmed.contains(".md")
                 || trimmed.contains(".txt")
+                || trimmed.contains(".yaml")
                 || trimmed.contains("readme"))
     })
 }
@@ -3087,19 +3537,8 @@ fn markdown_citation_count(text: &str) -> usize {
 }
 
 fn web_sources_reviewed_section_lists_sources(text: &str) -> bool {
-    let lowered = text.to_ascii_lowercase();
-    let Some(start) = lowered.find("web sources reviewed") else {
-        return false;
-    };
-    let tail = &text[start..];
-    tail.lines().skip(1).take(24).any(|line| {
-        let trimmed = line.trim();
-        (trimmed.starts_with('-')
-            || trimmed.starts_with('*')
-            || trimmed.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
-            && (trimmed.contains("http://")
-                || trimmed.contains("https://")
-                || trimmed.contains("]("))
+    markdown_section_lists_entries(text, "web sources reviewed", |trimmed| {
+        trimmed.contains("http://") || trimmed.contains("https://") || trimmed.contains("](")
     })
 }
 
@@ -3130,9 +3569,10 @@ fn extract_markdown_section_paths(text: &str, heading: &str) -> Vec<String> {
             if value.contains('/')
                 || value.ends_with(".md")
                 || value.ends_with(".txt")
+                || value.ends_with(".yaml")
                 || value.to_ascii_lowercase().contains("readme")
             {
-                Some(value.to_string())
+                concrete_workspace_path_like(value).then(|| value.to_string())
             } else {
                 None
             }
@@ -3846,13 +4286,16 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
         session_discovered_relevant_paths(session, workspace_root);
     let use_upstream_evidence = automation_node_is_research_finalize(node);
     let mut read_paths = current_read_paths.clone();
-    let mut discovered_relevant_paths = current_discovered_relevant_paths.clone();
-    if use_upstream_evidence {
+    let mut discovered_relevant_paths = if use_upstream_evidence {
+        let mut paths = Vec::new();
         if let Some(upstream) = upstream_evidence {
             read_paths.extend(upstream.read_paths.clone());
-            discovered_relevant_paths.extend(upstream.discovered_relevant_paths.clone());
+            paths.extend(upstream.discovered_relevant_paths.clone());
         }
-    }
+        paths
+    } else {
+        current_discovered_relevant_paths.clone()
+    };
     read_paths.sort();
     read_paths.dedup();
     discovered_relevant_paths.sort();
@@ -4138,6 +4581,13 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
                 && !selected_assessment
                     .is_some_and(|assessment| assessment.web_sources_reviewed_present);
             unmet_requirements.clear();
+            let path_hygiene_failure = selected_assessment.and_then(|assessment| {
+                validate_path_array_hygiene(&assessment.reviewed_paths)
+                    .or_else(|| validate_path_array_hygiene(&assessment.unreviewed_relevant_paths))
+            });
+            if path_hygiene_failure.is_some() {
+                unmet_requirements.push("files_reviewed_contains_nonconcrete_paths".to_string());
+            }
             if missing_concrete_reads {
                 unmet_requirements.push("no_concrete_reads".to_string());
             }
@@ -4161,13 +4611,18 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
             if missing_web_research {
                 unmet_requirements.push("missing_successful_web_research".to_string());
             }
+            let has_path_hygiene_failure = path_hygiene_failure.is_some();
             if missing_concrete_reads
                 || missing_citations
                 || missing_file_coverage
                 || missing_web_sources_reviewed
                 || missing_web_research
+                || has_path_hygiene_failure
             {
-                semantic_block_reason = Some(if missing_concrete_reads {
+                semantic_block_reason = Some(if has_path_hygiene_failure {
+                    "research artifact contains non-concrete paths (wildcards or directory placeholders) in source audit"
+                        .to_string()
+                } else if missing_concrete_reads {
                     "research completed without concrete file reads or required source coverage"
                         .to_string()
                 } else if missing_web_research {
@@ -5239,7 +5694,7 @@ pub(crate) fn research_required_next_tool_actions(
     }
     if has_unmet("relevant_files_not_reviewed_or_skipped") {
         actions.push(
-            "Move every discovered relevant file into either `Files reviewed` after `read`, or `Files not reviewed` with a reason."
+            "Move every discovered relevant file into either `Files reviewed` after `read`, or `Files not reviewed` with a reason. Use only exact concrete workspace-relative file paths; do not use directories or glob patterns."
                 .to_string(),
         );
     }
@@ -6399,6 +6854,31 @@ pub(crate) fn automation_output_blocked_reason(output: &Value) -> Option<String>
         .map(str::to_string)
 }
 
+pub(crate) fn automation_output_is_passing(output: &Value) -> bool {
+    output
+        .get("validator_summary")
+        .and_then(|v| v.get("outcome"))
+        .and_then(Value::as_str)
+        .is_some_and(|outcome| outcome.eq_ignore_ascii_case("passed"))
+        && output
+            .get("validator_summary")
+            .and_then(|v| v.get("unmet_requirements"))
+            .and_then(Value::as_array)
+            .map(|reqs| reqs.is_empty())
+            .unwrap_or(false)
+}
+
+pub(crate) fn automation_node_has_passing_artifact(
+    node_id: &str,
+    checkpoint: &crate::automation_v2::types::AutomationRunCheckpoint,
+) -> bool {
+    checkpoint
+        .node_outputs
+        .get(node_id)
+        .map(automation_output_is_passing)
+        .unwrap_or(false)
+}
+
 async fn resolve_automation_v2_workspace_root(
     state: &AppState,
     automation: &AutomationV2Spec,
@@ -6511,8 +6991,8 @@ pub(crate) async fn execute_automation_v2_node(
         .get(&node.node_id)
         .copied()
         .unwrap_or(1);
-    let upstream_inputs = build_automation_v2_upstream_inputs(&run, node)?;
     let workspace_root = resolve_automation_v2_workspace_root(state, automation).await;
+    let upstream_inputs = build_automation_v2_upstream_inputs(&run, node, &workspace_root)?;
     let workspace_path = PathBuf::from(&workspace_root);
     if !workspace_path.exists() {
         anyhow::bail!(

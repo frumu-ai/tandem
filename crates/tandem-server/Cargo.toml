@@ -6,6 +6,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"
 
+[features]
+default = ["browser"]
+browser = ["tandem-browser"]
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
@@ -44,7 +48,7 @@ tandem-types = { path = "../tandem-types", version = "0.4.8" }
 tandem-workflows = { path = "../tandem-workflows", version = "0.4.8" }
 tandem-wire = { path = "../tandem-wire", version = "0.4.8" }
 tandem-channels = { path = "../tandem-channels", version = "0.4.8" }
-tandem-browser = { path = "../tandem-browser", version = "0.4.8" }
+tandem-browser = { path = "../tandem-browser", version = "0.4.8", optional = true }
 tandem-observability = { path = "../tandem-observability", version = "0.4.8" }
 
 [dev-dependencies]

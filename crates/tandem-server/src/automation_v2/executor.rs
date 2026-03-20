@@ -5,9 +5,7 @@ use futures::FutureExt;
 use serde_json::{json, Value};
 
 use crate::app::state::AppState;
-use crate::automation_v2::types::{
-    AutomationFlowNode, AutomationPendingGate, AutomationRunStatus, AutomationStopKind,
-};
+use crate::automation_v2::types::{AutomationRunStatus, AutomationStopKind};
 use crate::util::time::now_ms;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -640,9 +638,20 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                     }
                                 });
                                 if needs_repair && !terminal_repair_block {
-                                    if !row.checkpoint.pending_nodes.iter().any(|id| id == &node_id)
-                                    {
-                                        row.checkpoint.pending_nodes.push(node_id.clone());
+                                    if !crate::app::state::automation_node_has_passing_artifact(
+                                        &node_id,
+                                        &row.checkpoint,
+                                    ) {
+                                        if !row
+                                            .checkpoint
+                                            .pending_nodes
+                                            .iter()
+                                            .any(|id| id == &node_id)
+                                        {
+                                            row.checkpoint
+                                                .pending_nodes
+                                                .push(node_id.clone());
+                                        }
                                     }
                                 }
                                 if !blocked

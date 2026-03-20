@@ -12,6 +12,7 @@ use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::ToolRegistry;
 use tandem_types::HostRuntimeContext;
 
+#[cfg(feature = "browser")]
 use crate::BrowserSubsystem;
 
 #[derive(Clone)]
@@ -33,5 +34,6 @@ pub struct RuntimeState {
     pub cancellations: CancellationRegistry,
     pub engine_loop: EngineLoop,
     pub host_runtime_context: HostRuntimeContext,
+    #[cfg(feature = "browser")]
     pub browser: BrowserSubsystem,
 }

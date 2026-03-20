@@ -44,9 +44,11 @@ use crate::runtime::{
 use crate::shared_resources::types::{ResourceConflict, ResourceStoreError, SharedResourceRecord};
 use crate::util::{host::detect_host_runtime_context, time::now_ms};
 use crate::{
-    evaluate_phase1_promotion, optimization_snapshot_hash, parse_phase1_metrics,
-    validate_phase1_candidate_mutation, OptimizationCampaignRecord, OptimizationCampaignStatus,
-    OptimizationExperimentRecord, OptimizationExperimentStatus, OptimizationPromotionDecisionKind,
+    derive_phase1_metrics_from_run, establish_phase1_baseline, evaluate_phase1_promotion,
+    optimization_snapshot_hash, parse_phase1_metrics, phase1_baseline_replay_due,
+    validate_phase1_candidate_mutation, OptimizationBaselineReplayRecord,
+    OptimizationCampaignRecord, OptimizationCampaignStatus, OptimizationExperimentRecord,
+    OptimizationExperimentStatus, OptimizationMutableField, OptimizationPromotionDecisionKind,
 };
 
 #[derive(Clone)]
@@ -321,6 +323,7 @@ impl AppState {
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("runtime already initialized"))?;
+        #[cfg(feature = "browser")]
         self.register_browser_tools().await?;
         self.tools
             .register_tool(
@@ -2662,6 +2665,22 @@ impl AppState {
             .cloned()
     }
 
+    pub async fn list_optimization_experiments(
+        &self,
+        optimization_id: &str,
+    ) -> Vec<OptimizationExperimentRecord> {
+        let mut rows = self
+            .optimization_experiments
+            .read()
+            .await
+            .values()
+            .filter(|row| row.optimization_id == optimization_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows
+    }
+
     pub async fn count_optimization_experiments(&self, optimization_id: &str) -> usize {
         self.optimization_experiments
             .read()
@@ -2671,11 +2690,488 @@ impl AppState {
             .count()
     }
 
+    fn automation_run_is_terminal(status: &crate::AutomationRunStatus) -> bool {
+        matches!(
+            status,
+            crate::AutomationRunStatus::Completed
+                | crate::AutomationRunStatus::Blocked
+                | crate::AutomationRunStatus::Failed
+                | crate::AutomationRunStatus::Cancelled
+        )
+    }
+
+    fn optimization_mutation_field_path(field: OptimizationMutableField) -> &'static str {
+        match field {
+            OptimizationMutableField::Objective => "objective",
+            OptimizationMutableField::OutputContractSummaryGuidance => {
+                "output_contract.summary_guidance"
+            }
+            OptimizationMutableField::TimeoutMs => "timeout_ms",
+            OptimizationMutableField::RetryPolicyMaxAttempts => "retry_policy.max_attempts",
+            OptimizationMutableField::RetryPolicyRetries => "retry_policy.retries",
+        }
+    }
+
+    fn optimization_node_field_value(
+        node: &crate::AutomationFlowNode,
+        field: OptimizationMutableField,
+    ) -> Result<Value, String> {
+        match field {
+            OptimizationMutableField::Objective => Ok(Value::String(node.objective.clone())),
+            OptimizationMutableField::OutputContractSummaryGuidance => node
+                .output_contract
+                .as_ref()
+                .and_then(|contract| contract.summary_guidance.clone())
+                .map(Value::String)
+                .ok_or_else(|| {
+                    format!(
+                        "node `{}` is missing output_contract.summary_guidance",
+                        node.node_id
+                    )
+                }),
+            OptimizationMutableField::TimeoutMs => node
+                .timeout_ms
+                .map(|value| json!(value))
+                .ok_or_else(|| format!("node `{}` is missing timeout_ms", node.node_id)),
+            OptimizationMutableField::RetryPolicyMaxAttempts => node
+                .retry_policy
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|policy| policy.get("max_attempts"))
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "node `{}` is missing retry_policy.max_attempts",
+                        node.node_id
+                    )
+                }),
+            OptimizationMutableField::RetryPolicyRetries => node
+                .retry_policy
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|policy| policy.get("retries"))
+                .cloned()
+                .ok_or_else(|| format!("node `{}` is missing retry_policy.retries", node.node_id)),
+        }
+    }
+
+    fn set_optimization_node_field_value(
+        node: &mut crate::AutomationFlowNode,
+        field: OptimizationMutableField,
+        value: &Value,
+    ) -> Result<(), String> {
+        match field {
+            OptimizationMutableField::Objective => {
+                node.objective = value
+                    .as_str()
+                    .ok_or_else(|| "objective apply value must be a string".to_string())?
+                    .to_string();
+            }
+            OptimizationMutableField::OutputContractSummaryGuidance => {
+                let guidance = value
+                    .as_str()
+                    .ok_or_else(|| {
+                        "output_contract.summary_guidance apply value must be a string".to_string()
+                    })?
+                    .to_string();
+                let contract = node.output_contract.as_mut().ok_or_else(|| {
+                    format!(
+                        "node `{}` is missing output_contract for apply",
+                        node.node_id
+                    )
+                })?;
+                contract.summary_guidance = Some(guidance);
+            }
+            OptimizationMutableField::TimeoutMs => {
+                node.timeout_ms = Some(
+                    value
+                        .as_u64()
+                        .ok_or_else(|| "timeout_ms apply value must be an integer".to_string())?,
+                );
+            }
+            OptimizationMutableField::RetryPolicyMaxAttempts => {
+                let next = value.as_i64().ok_or_else(|| {
+                    "retry_policy.max_attempts apply value must be an integer".to_string()
+                })?;
+                let policy = node.retry_policy.get_or_insert_with(|| json!({}));
+                let object = policy.as_object_mut().ok_or_else(|| {
+                    format!("node `{}` retry_policy must be a JSON object", node.node_id)
+                })?;
+                object.insert("max_attempts".to_string(), json!(next));
+            }
+            OptimizationMutableField::RetryPolicyRetries => {
+                let next = value.as_i64().ok_or_else(|| {
+                    "retry_policy.retries apply value must be an integer".to_string()
+                })?;
+                let policy = node.retry_policy.get_or_insert_with(|| json!({}));
+                let object = policy.as_object_mut().ok_or_else(|| {
+                    format!("node `{}` retry_policy must be a JSON object", node.node_id)
+                })?;
+                object.insert("retries".to_string(), json!(next));
+            }
+        }
+        Ok(())
+    }
+
+    fn append_optimization_apply_metadata(
+        metadata: Option<Value>,
+        record: Value,
+    ) -> Result<Option<Value>, String> {
+        let mut root = match metadata {
+            Some(Value::Object(map)) => map,
+            Some(_) => return Err("automation metadata must be a JSON object".to_string()),
+            None => serde_json::Map::new(),
+        };
+        let history = root
+            .entry("optimization_apply_history".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let Some(entries) = history.as_array_mut() else {
+            return Err("optimization_apply_history metadata must be an array".to_string());
+        };
+        entries.push(record.clone());
+        root.insert("last_optimization_apply".to_string(), record);
+        Ok(Some(Value::Object(root)))
+    }
+
+    fn build_optimization_apply_patch(
+        baseline: &crate::AutomationV2Spec,
+        candidate: &crate::AutomationV2Spec,
+        mutation: &crate::OptimizationValidatedMutation,
+        approved_at_ms: u64,
+    ) -> Result<Value, String> {
+        let baseline_node = baseline
+            .flow
+            .nodes
+            .iter()
+            .find(|node| node.node_id == mutation.node_id)
+            .ok_or_else(|| format!("baseline node `{}` not found", mutation.node_id))?;
+        let candidate_node = candidate
+            .flow
+            .nodes
+            .iter()
+            .find(|node| node.node_id == mutation.node_id)
+            .ok_or_else(|| format!("candidate node `{}` not found", mutation.node_id))?;
+        let before = Self::optimization_node_field_value(baseline_node, mutation.field)?;
+        let after = Self::optimization_node_field_value(candidate_node, mutation.field)?;
+        Ok(json!({
+            "node_id": mutation.node_id,
+            "field": mutation.field,
+            "field_path": Self::optimization_mutation_field_path(mutation.field),
+            "expected_before": before,
+            "apply_value": after,
+            "approved_at_ms": approved_at_ms,
+        }))
+    }
+
+    pub async fn apply_optimization_winner(
+        &self,
+        optimization_id: &str,
+        experiment_id: &str,
+    ) -> Result<
+        (
+            OptimizationCampaignRecord,
+            OptimizationExperimentRecord,
+            crate::AutomationV2Spec,
+        ),
+        String,
+    > {
+        let campaign = self
+            .get_optimization_campaign(optimization_id)
+            .await
+            .ok_or_else(|| "optimization not found".to_string())?;
+        let mut experiment = self
+            .get_optimization_experiment(optimization_id, experiment_id)
+            .await
+            .ok_or_else(|| "experiment not found".to_string())?;
+        if experiment.status != OptimizationExperimentStatus::PromotionApproved {
+            return Err("only approved winner experiments may be applied".to_string());
+        }
+        if campaign.baseline_snapshot_hash != experiment.candidate_snapshot_hash {
+            return Err(
+                "only the latest approved winner may be applied to the live workflow".to_string(),
+            );
+        }
+        let patch = experiment
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("apply_patch"))
+            .cloned()
+            .ok_or_else(|| "approved experiment is missing apply_patch metadata".to_string())?;
+        let node_id = patch
+            .get("node_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "apply_patch.node_id is required".to_string())?;
+        let field: OptimizationMutableField = serde_json::from_value(
+            patch
+                .get("field")
+                .cloned()
+                .ok_or_else(|| "apply_patch.field is required".to_string())?,
+        )
+        .map_err(|error| format!("invalid apply_patch.field: {error}"))?;
+        let expected_before = patch
+            .get("expected_before")
+            .cloned()
+            .ok_or_else(|| "apply_patch.expected_before is required".to_string())?;
+        let apply_value = patch
+            .get("apply_value")
+            .cloned()
+            .ok_or_else(|| "apply_patch.apply_value is required".to_string())?;
+        let mut live = self
+            .get_automation_v2(&campaign.source_workflow_id)
+            .await
+            .ok_or_else(|| "source workflow not found".to_string())?;
+        let current_value = {
+            let live_node = live
+                .flow
+                .nodes
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .ok_or_else(|| format!("live workflow node `{node_id}` not found"))?;
+            Self::optimization_node_field_value(live_node, field)?
+        };
+        if current_value != expected_before {
+            return Err(format!(
+                "live workflow drift detected for node `{node_id}` {}",
+                Self::optimization_mutation_field_path(field)
+            ));
+        }
+        let live_node = live
+            .flow
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+            .ok_or_else(|| format!("live workflow node `{node_id}` not found"))?;
+        Self::set_optimization_node_field_value(live_node, field, &apply_value)?;
+        let applied_at_ms = now_ms();
+        let apply_record = json!({
+            "optimization_id": campaign.optimization_id,
+            "experiment_id": experiment.experiment_id,
+            "node_id": node_id,
+            "field": field,
+            "field_path": Self::optimization_mutation_field_path(field),
+            "previous_value": expected_before,
+            "new_value": apply_value,
+            "applied_at_ms": applied_at_ms,
+        });
+        live.metadata =
+            Self::append_optimization_apply_metadata(live.metadata.clone(), apply_record)?;
+        let stored_live = self
+            .put_automation_v2(live)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut metadata = match experiment.metadata.take() {
+            Some(Value::Object(map)) => map,
+            Some(_) => return Err("experiment metadata must be a JSON object".to_string()),
+            None => serde_json::Map::new(),
+        };
+        metadata.insert(
+            "applied_to_live".to_string(),
+            json!({
+                "automation_id": stored_live.automation_id,
+                "applied_at_ms": applied_at_ms,
+                "field": field,
+                "node_id": node_id,
+            }),
+        );
+        experiment.metadata = Some(Value::Object(metadata));
+        let stored_experiment = self
+            .put_optimization_experiment(experiment)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok((campaign, stored_experiment, stored_live))
+    }
+
+    async fn reconcile_pending_baseline_replays(
+        &self,
+        campaign: &mut OptimizationCampaignRecord,
+    ) -> Result<bool, String> {
+        let Some(phase1) = campaign.phase1.as_ref() else {
+            return Ok(false);
+        };
+        let mut changed = false;
+        let mut remaining = Vec::new();
+        for run_id in campaign.pending_baseline_run_ids.clone() {
+            let Some(run) = self.get_automation_v2_run(&run_id).await else {
+                campaign.status = OptimizationCampaignStatus::PausedEvaluatorUnstable;
+                campaign.last_pause_reason = Some(format!(
+                    "baseline replay run `{run_id}` was not found during optimization reconciliation"
+                ));
+                changed = true;
+                continue;
+            };
+            if !Self::automation_run_is_terminal(&run.status) {
+                remaining.push(run_id);
+                continue;
+            }
+            if run.status != crate::AutomationRunStatus::Completed {
+                campaign.status = OptimizationCampaignStatus::PausedEvaluatorUnstable;
+                campaign.last_pause_reason = Some(format!(
+                    "baseline replay run `{}` finished with status `{:?}`",
+                    run.run_id, run.status
+                ));
+                changed = true;
+                continue;
+            }
+            if run.automation_id != campaign.source_workflow_id {
+                campaign.status = OptimizationCampaignStatus::PausedEvaluatorUnstable;
+                campaign.last_pause_reason = Some(
+                    "baseline replay run must belong to the optimization source workflow"
+                        .to_string(),
+                );
+                changed = true;
+                continue;
+            }
+            let snapshot = run.automation_snapshot.as_ref().ok_or_else(|| {
+                "baseline replay run must include an automation snapshot".to_string()
+            })?;
+            if optimization_snapshot_hash(snapshot) != campaign.baseline_snapshot_hash {
+                campaign.status = OptimizationCampaignStatus::PausedEvaluatorUnstable;
+                campaign.last_pause_reason = Some(
+                    "baseline replay run does not match the current campaign baseline snapshot"
+                        .to_string(),
+                );
+                changed = true;
+                continue;
+            }
+            let metrics =
+                derive_phase1_metrics_from_run(&run, &campaign.baseline_snapshot, phase1)?;
+            campaign
+                .baseline_replays
+                .push(OptimizationBaselineReplayRecord {
+                    replay_id: format!("baseline-replay-{}", uuid::Uuid::new_v4()),
+                    automation_run_id: Some(run.run_id.clone()),
+                    phase1_metrics: metrics,
+                    experiment_count_at_recording: self
+                        .count_optimization_experiments(&campaign.optimization_id)
+                        .await as u64,
+                    recorded_at_ms: now_ms(),
+                });
+            changed = true;
+        }
+        if remaining != campaign.pending_baseline_run_ids {
+            campaign.pending_baseline_run_ids = remaining;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    pub async fn reconcile_optimization_campaigns(&self) -> Result<usize, String> {
+        let campaigns = self.list_optimization_campaigns().await;
+        let mut updated = 0usize;
+        for campaign in campaigns {
+            let Some(mut latest) = self
+                .get_optimization_campaign(&campaign.optimization_id)
+                .await
+            else {
+                continue;
+            };
+            let Some(phase1) = latest.phase1.clone() else {
+                continue;
+            };
+            let mut changed = self.reconcile_pending_baseline_replays(&mut latest).await?;
+            let experiment_count = self
+                .count_optimization_experiments(&latest.optimization_id)
+                .await;
+            if latest.pending_baseline_run_ids.is_empty() {
+                if phase1_baseline_replay_due(
+                    &latest.baseline_replays,
+                    latest.pending_baseline_run_ids.len(),
+                    &phase1,
+                    experiment_count,
+                    now_ms(),
+                ) {
+                    if self.maybe_queue_phase1_baseline_replay(&mut latest).await? {
+                        latest.status = OptimizationCampaignStatus::Draft;
+                        changed = true;
+                    }
+                } else if latest.baseline_replays.len()
+                    >= phase1.eval.campaign_start_baseline_runs.max(1) as usize
+                {
+                    match establish_phase1_baseline(&latest.baseline_replays, &phase1) {
+                        Ok(metrics) => {
+                            if latest.baseline_metrics.as_ref() != Some(&metrics) {
+                                latest.baseline_metrics = Some(metrics);
+                                changed = true;
+                            }
+                            if latest.status != OptimizationCampaignStatus::Running
+                                || latest.last_pause_reason.is_some()
+                            {
+                                latest.status = OptimizationCampaignStatus::Running;
+                                latest.last_pause_reason = None;
+                                changed = true;
+                            }
+                        }
+                        Err(error) => {
+                            if latest.status != OptimizationCampaignStatus::PausedEvaluatorUnstable
+                                || latest.last_pause_reason.as_deref() != Some(error.as_str())
+                            {
+                                latest.status = OptimizationCampaignStatus::PausedEvaluatorUnstable;
+                                latest.last_pause_reason = Some(error);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            } else if latest.last_pause_reason.as_deref()
+                != Some("waiting for phase 1 baseline replay completion")
+            {
+                latest.last_pause_reason =
+                    Some("waiting for phase 1 baseline replay completion".to_string());
+                changed = true;
+            }
+            if changed {
+                self.put_optimization_campaign(latest)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                updated = updated.saturating_add(1);
+            }
+        }
+        Ok(updated)
+    }
+
+    async fn maybe_queue_phase1_baseline_replay(
+        &self,
+        campaign: &mut OptimizationCampaignRecord,
+    ) -> Result<bool, String> {
+        let Some(phase1) = campaign.phase1.as_ref() else {
+            return Ok(false);
+        };
+        let required_runs = phase1.eval.campaign_start_baseline_runs.max(1) as usize;
+        if !campaign.pending_baseline_run_ids.is_empty() {
+            campaign.last_pause_reason =
+                Some("waiting for phase 1 baseline replay completion".into());
+            campaign.updated_at_ms = now_ms();
+            return Ok(true);
+        }
+        if campaign.baseline_replays.len() >= required_runs {
+            return Ok(false);
+        }
+        let replay_run = self
+            .create_automation_v2_run(&campaign.baseline_snapshot, "optimization_baseline_replay")
+            .await
+            .map_err(|error| error.to_string())?;
+        if !campaign
+            .pending_baseline_run_ids
+            .iter()
+            .any(|value| value == &replay_run.run_id)
+        {
+            campaign
+                .pending_baseline_run_ids
+                .push(replay_run.run_id.clone());
+        }
+        campaign.last_pause_reason = Some("waiting for phase 1 baseline replay completion".into());
+        campaign.updated_at_ms = now_ms();
+        Ok(true)
+    }
+
     pub async fn apply_optimization_action(
         &self,
         optimization_id: &str,
         action: &str,
         experiment_id: Option<&str>,
+        run_id: Option<&str>,
         reason: Option<&str>,
     ) -> Result<OptimizationCampaignRecord, String> {
         let normalized = action.trim().to_ascii_lowercase();
@@ -2685,8 +3181,34 @@ impl AppState {
             .ok_or_else(|| "optimization not found".to_string())?;
         match normalized.as_str() {
             "start" => {
-                campaign.status = OptimizationCampaignStatus::Running;
-                campaign.last_pause_reason = None;
+                if campaign.phase1.is_some() {
+                    if self
+                        .maybe_queue_phase1_baseline_replay(&mut campaign)
+                        .await?
+                    {
+                        campaign.status = OptimizationCampaignStatus::Draft;
+                    } else {
+                        let phase1 = campaign
+                            .phase1
+                            .as_ref()
+                            .ok_or_else(|| "phase 1 config is required".to_string())?;
+                        match establish_phase1_baseline(&campaign.baseline_replays, phase1) {
+                            Ok(metrics) => {
+                                campaign.baseline_metrics = Some(metrics);
+                                campaign.status = OptimizationCampaignStatus::Running;
+                                campaign.last_pause_reason = None;
+                            }
+                            Err(error) => {
+                                campaign.status =
+                                    OptimizationCampaignStatus::PausedEvaluatorUnstable;
+                                campaign.last_pause_reason = Some(error);
+                            }
+                        }
+                    }
+                } else {
+                    campaign.status = OptimizationCampaignStatus::Running;
+                    campaign.last_pause_reason = None;
+                }
             }
             "pause" => {
                 campaign.status = OptimizationCampaignStatus::PausedManual;
@@ -2696,8 +3218,80 @@ impl AppState {
                     .map(str::to_string);
             }
             "resume" => {
-                campaign.status = OptimizationCampaignStatus::Running;
-                campaign.last_pause_reason = None;
+                if self
+                    .maybe_queue_phase1_baseline_replay(&mut campaign)
+                    .await?
+                {
+                    campaign.status = OptimizationCampaignStatus::Draft;
+                } else {
+                    campaign.status = OptimizationCampaignStatus::Running;
+                    campaign.last_pause_reason = None;
+                }
+            }
+            "queue_baseline_replay" => {
+                let replay_run = self
+                    .create_automation_v2_run(
+                        &campaign.baseline_snapshot,
+                        "optimization_baseline_replay",
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if !campaign
+                    .pending_baseline_run_ids
+                    .iter()
+                    .any(|value| value == &replay_run.run_id)
+                {
+                    campaign
+                        .pending_baseline_run_ids
+                        .push(replay_run.run_id.clone());
+                }
+                campaign.updated_at_ms = now_ms();
+            }
+            "record_baseline_replay" => {
+                let run_id = run_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "run_id is required for record_baseline_replay".to_string())?;
+                let phase1 = campaign
+                    .phase1
+                    .as_ref()
+                    .ok_or_else(|| "phase 1 config is required for baseline replay".to_string())?;
+                let run = self
+                    .get_automation_v2_run(run_id)
+                    .await
+                    .ok_or_else(|| "automation run not found".to_string())?;
+                if run.automation_id != campaign.source_workflow_id {
+                    return Err(
+                        "baseline replay run must belong to the optimization source workflow"
+                            .to_string(),
+                    );
+                }
+                let snapshot = run.automation_snapshot.as_ref().ok_or_else(|| {
+                    "baseline replay run must include an automation snapshot".to_string()
+                })?;
+                if optimization_snapshot_hash(snapshot) != campaign.baseline_snapshot_hash {
+                    return Err(
+                        "baseline replay run does not match the current campaign baseline snapshot"
+                            .to_string(),
+                    );
+                }
+                let metrics =
+                    derive_phase1_metrics_from_run(&run, &campaign.baseline_snapshot, phase1)?;
+                campaign
+                    .baseline_replays
+                    .push(OptimizationBaselineReplayRecord {
+                        replay_id: format!("baseline-replay-{}", uuid::Uuid::new_v4()),
+                        automation_run_id: Some(run.run_id.clone()),
+                        phase1_metrics: metrics,
+                        experiment_count_at_recording: self
+                            .count_optimization_experiments(&campaign.optimization_id)
+                            .await as u64,
+                        recorded_at_ms: now_ms(),
+                    });
+                campaign
+                    .pending_baseline_run_ids
+                    .retain(|value| value != run_id);
+                campaign.updated_at_ms = now_ms();
             }
             "approve_winner" => {
                 let experiment_id = experiment_id
@@ -2721,8 +3315,24 @@ impl AppState {
                         phase1,
                     )?;
                     if experiment.mutation_summary.is_none() {
-                        experiment.mutation_summary = Some(validated.summary);
+                        experiment.mutation_summary = Some(validated.summary.clone());
                     }
+                    let approved_at_ms = now_ms();
+                    let apply_patch = Self::build_optimization_apply_patch(
+                        &campaign.baseline_snapshot,
+                        &experiment.candidate_snapshot,
+                        &validated,
+                        approved_at_ms,
+                    )?;
+                    let mut metadata = match experiment.metadata.take() {
+                        Some(Value::Object(map)) => map,
+                        Some(_) => {
+                            return Err("experiment metadata must be a JSON object".to_string());
+                        }
+                        None => serde_json::Map::new(),
+                    };
+                    metadata.insert("apply_patch".to_string(), apply_patch);
+                    experiment.metadata = Some(Value::Object(metadata));
                     if let Some(baseline_metrics) = campaign.baseline_metrics.as_ref() {
                         let candidate_metrics = experiment
                             .phase1_metrics
@@ -2761,6 +3371,8 @@ impl AppState {
                 }
                 campaign.baseline_snapshot = experiment.candidate_snapshot.clone();
                 campaign.baseline_snapshot_hash = experiment.candidate_snapshot_hash.clone();
+                campaign.baseline_replays.clear();
+                campaign.pending_baseline_run_ids.clear();
                 campaign.pending_promotion_experiment_id = None;
                 campaign.status = OptimizationCampaignStatus::Draft;
                 campaign.last_pause_reason = None;
@@ -4101,6 +4713,10 @@ pub async fn run_usage_aggregator(state: AppState) {
     crate::app::tasks::run_usage_aggregator(state).await
 }
 
+pub async fn run_optimization_scheduler(state: AppState) {
+    crate::app::tasks::run_optimization_scheduler(state).await
+}
+
 pub async fn process_bug_monitor_event(
     state: &AppState,
     event: &EngineEvent,
@@ -4376,6 +4992,36 @@ fn normalize_non_empty_list(raw: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(not(feature = "browser"))]
+impl AppState {
+    pub async fn close_browser_sessions_for_owner(&self, _owner_session_id: &str) -> usize {
+        0
+    }
+
+    pub async fn close_all_browser_sessions(&self) -> usize {
+        0
+    }
+
+    pub async fn browser_status(&self) -> serde_json::Value {
+        serde_json::json!({ "enabled": false, "sidecar": { "found": false }, "browser": { "found": false } })
+    }
+
+    pub async fn browser_smoke_test(
+        &self,
+        _url: Option<String>,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("browser feature disabled")
+    }
+
+    pub async fn install_browser_sidecar(&self) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("browser feature disabled")
+    }
+
+    pub async fn browser_health_summary(&self) -> serde_json::Value {
+        serde_json::json!({ "enabled": false })
+    }
 }
 
 pub mod automation;
