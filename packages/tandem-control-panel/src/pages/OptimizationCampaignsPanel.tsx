@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "./ui";
 
@@ -26,6 +26,108 @@ function prettyMetric(value: any) {
   return num.toFixed(3);
 }
 
+function buildSmokeWorkflowPayload(kind: "summary" | "extract_format", workspaceRoot: string) {
+  const root = String(workspaceRoot || "").trim();
+  const base = {
+    description:
+      kind === "summary"
+        ? "Single-node validator-backed workflow for cheap optimization smoke tests."
+        : "Two-node validator-backed workflow for cheap optimization smoke tests.",
+    status: "draft",
+    schedule: {
+      type: "manual",
+      timezone: "UTC",
+      misfire_policy: "skip",
+    },
+    agents: [
+      {
+        agent_id: "agent-1",
+        display_name: kind === "summary" ? "Summarizer" : "Extractor",
+        skills: [],
+        tool_policy: {
+          allowlist: [],
+          denylist: [],
+        },
+        mcp_policy: {
+          allowed_servers: [],
+        },
+      },
+    ],
+    execution: {},
+    output_targets: [],
+    creator_id: "optimization-smoke-pack",
+    workspace_root: root,
+  };
+  if (kind === "summary") {
+    return {
+      ...base,
+      automation_id: "wf-smoke-summary",
+      name: "Smoke Summary Workflow",
+      flow: {
+        nodes: [
+          {
+            node_id: "node-1",
+            agent_id: "agent-1",
+            objective: "Write a clear report for the team",
+            depends_on: [],
+            input_refs: [],
+            output_contract: {
+              kind: "summary",
+              validator: "generic_artifact",
+              summary_guidance: "Return a short, clean artifact that a validator can check.",
+            },
+            retry_policy: {
+              max_attempts: 1,
+            },
+            timeout_ms: 60000,
+          },
+        ],
+      },
+    };
+  }
+  return {
+    ...base,
+    automation_id: "wf-smoke-extract-format",
+    name: "Smoke Extract Format Workflow",
+    flow: {
+      nodes: [
+        {
+          node_id: "node-1",
+          agent_id: "agent-1",
+          objective: "Extract the key facts only.",
+          depends_on: [],
+          input_refs: [],
+          retry_policy: {
+            max_attempts: 1,
+          },
+          timeout_ms: 45000,
+        },
+        {
+          node_id: "node-2",
+          agent_id: "agent-1",
+          objective: "Format the extracted facts into a short structured answer.",
+          depends_on: ["node-1"],
+          input_refs: [
+            {
+              from_step_id: "node-1",
+              alias: "facts",
+            },
+          ],
+          output_contract: {
+            kind: "formatted_answer",
+            validator: "structured_json",
+            summary_guidance: "Return a small structured artifact with stable fields.",
+          },
+          retry_policy: {
+            max_attempts: 1,
+          },
+          timeout_ms: 60000,
+        },
+      ],
+    },
+  };
+}
+
 export function OptimizationCampaignsPanel({
   client,
   toast,
@@ -38,6 +140,7 @@ export function OptimizationCampaignsPanel({
   const [form, setForm] = useState({
     name: "",
     sourceWorkflowId: "",
+    smokeWorkspaceRoot: "",
     objectiveRef: "objective.md",
     evalRef: "eval.yaml",
     mutationPolicyRef: "mutation_policy.yaml",
@@ -60,6 +163,12 @@ export function OptimizationCampaignsPanel({
     queryFn: () =>
       client?.optimizations?.list?.().catch(() => ({ optimizations: [] })) ??
       Promise.resolve({ optimizations: [] }),
+  });
+
+  const healthQuery = useQuery({
+    queryKey: ["optimizations", "health"],
+    queryFn: () => client.health().catch(() => ({})),
+    refetchInterval: 30000,
   });
 
   const providersCatalogQuery = useQuery({
@@ -101,6 +210,20 @@ export function OptimizationCampaignsPanel({
     );
     return Array.isArray(provider?.models) ? provider.models : [];
   }, [form.modelProvider, providerOptions]);
+
+  useEffect(() => {
+    const workspaceRoot = String(
+      (healthQuery.data as any)?.workspaceRoot || (healthQuery.data as any)?.workspace_root || ""
+    ).trim();
+    if (!workspaceRoot) return;
+    setForm((prev) => {
+      if (String(prev.smokeWorkspaceRoot || "").trim()) return prev;
+      return {
+        ...prev,
+        smokeWorkspaceRoot: `${workspaceRoot}/docs/internal/optimization-smoke-pack`,
+      };
+    });
+  }, [healthQuery.data]);
 
   const selectedId = selectedCampaignId || String(campaigns[0]?.optimization_id || "").trim();
 
@@ -152,6 +275,41 @@ export function OptimizationCampaignsPanel({
       toast("ok", "Optimization campaign created.");
       if (optimizationId) setSelectedCampaignId(optimizationId);
       await queryClient.invalidateQueries({ queryKey: ["optimizations"] });
+    },
+    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
+  });
+
+  const createSmokeWorkflowMutation = useMutation({
+    mutationFn: async (kind: "summary" | "extract_format") => {
+      const workspaceRoot = String(form.smokeWorkspaceRoot || "").trim();
+      if (!workspaceRoot) throw new Error("Smoke workflow workspace root is required.");
+      if (!client?.automationsV2?.create) {
+        throw new Error("Workflow creation client is unavailable.");
+      }
+      const payload = buildSmokeWorkflowPayload(kind, workspaceRoot);
+      return client.automationsV2.create(payload as any);
+    },
+    onSuccess: async (payload: any, kind) => {
+      const automationId = String(
+        payload?.automation?.automation_id || payload?.automation?.automationId || ""
+      ).trim();
+      setForm((prev) => ({
+        ...prev,
+        sourceWorkflowId: automationId || prev.sourceWorkflowId,
+        name:
+          automationId && !String(prev.name || "").trim()
+            ? `Optimize ${String(payload?.automation?.name || automationId).trim()}`
+            : prev.name,
+      }));
+      toast(
+        "ok",
+        kind === "summary"
+          ? "Smoke summary workflow created and selected."
+          : "Smoke extract-format workflow created and selected."
+      );
+      await queryClient.invalidateQueries({
+        queryKey: ["optimizations", "workflows", "automations-v2"],
+      });
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
@@ -248,6 +406,40 @@ export function OptimizationCampaignsPanel({
                 ))}
               </select>
             </label>
+            <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+              <div className="text-xs font-medium text-slate-200">Need a cheap target first?</div>
+              <div className="mt-1 text-[11px] text-slate-500">
+                Create a tiny validator-backed workflow in the smoke-pack workspace, then use it as
+                the optimization source.
+              </div>
+              <label className="mt-3 grid gap-1 text-xs text-slate-300">
+                <span>Smoke workspace root</span>
+                <input
+                  className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                  value={form.smokeWorkspaceRoot}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, smokeWorkspaceRoot: e.target.value }))
+                  }
+                  placeholder="/abs/path/to/docs/internal/optimization-smoke-pack"
+                />
+              </label>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  className="tcp-btn h-9 px-3 text-xs"
+                  onClick={() => createSmokeWorkflowMutation.mutate("summary")}
+                  disabled={createSmokeWorkflowMutation.isPending}
+                >
+                  Create Smoke Summary
+                </button>
+                <button
+                  className="tcp-btn h-9 px-3 text-xs"
+                  onClick={() => createSmokeWorkflowMutation.mutate("extract_format")}
+                  disabled={createSmokeWorkflowMutation.isPending}
+                >
+                  Create Extract + Format
+                </button>
+              </div>
+            </div>
             <label className="grid gap-1 text-xs text-slate-300">
               <span>Model provider</span>
               <select
