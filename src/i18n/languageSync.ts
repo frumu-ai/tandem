@@ -49,7 +49,7 @@ export async function bootstrapLanguagePreference(): Promise<void> {
   try {
     backendLanguage = normalizeLanguage(await getLanguageSetting());
   } catch {
-    backendLanguage = null;
+    // Fall back to local or detected language when backend settings are unavailable.
   }
 
   const resolved = backendLanguage ?? localLanguage ?? detectedLanguage;

@@ -430,20 +430,20 @@ function normalizeSetupActionCard(payload: SetupUnderstandResponse): SetupAction
     pack_builder_preview: "Create Preview",
     show_setup_help: "Review options",
   };
-  let body = "";
-  if (payload.intent_kind === "provider_setup") {
-    const provider = payload.slots.provider_ids[0] || "a provider";
-    const model = payload.slots.model_ids[0];
-    body = model ? `Configure ${provider} and use ${model}.` : `Configure ${provider}.`;
-  } else if (payload.intent_kind === "integration_setup") {
-    body = `Connect ${payload.slots.integration_targets[0] || "the matching tool"} through MCP.`;
-  } else if (payload.intent_kind === "automation_create") {
-    body = payload.slots.goal || "Create an automation from this request.";
-  } else if (payload.intent_kind === "channel_setup_help") {
-    body = `Review ${payload.slots.channel_targets[0] || "channel"} settings.`;
-  } else {
-    body = payload.clarifier?.question || "Choose a setup path.";
-  }
+  const body =
+    payload.intent_kind === "provider_setup"
+      ? (() => {
+          const provider = payload.slots.provider_ids[0] || "a provider";
+          const model = payload.slots.model_ids[0];
+          return model ? `Configure ${provider} and use ${model}.` : `Configure ${provider}.`;
+        })()
+      : payload.intent_kind === "integration_setup"
+        ? `Connect ${payload.slots.integration_targets[0] || "the matching tool"} through MCP.`
+        : payload.intent_kind === "automation_create"
+          ? payload.slots.goal || "Create an automation from this request."
+          : payload.intent_kind === "channel_setup_help"
+            ? `Review ${payload.slots.channel_targets[0] || "channel"} settings.`
+            : payload.clarifier?.question || "Choose a setup path.";
   return {
     id: `${payload.intent_kind}:${Date.now()}`,
     intentKind: payload.intent_kind,

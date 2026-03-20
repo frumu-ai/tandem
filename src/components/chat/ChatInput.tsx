@@ -178,8 +178,8 @@ export function ChatInput({
 
   const addFile = useCallback(async (file: globalThis.File) => {
     const isImage = file.type.startsWith("image/");
-    let dataUrl = "";
     let size = file.size;
+    let dataUrl: string;
 
     if (isImage) {
       try {

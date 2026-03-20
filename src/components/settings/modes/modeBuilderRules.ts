@@ -251,7 +251,9 @@ export function parseModeFromAiOutput(input: string): ModeDefinition {
   try {
     parsed = JSON.parse(candidate) as Record<string, unknown>;
   } catch (error) {
-    throw new Error(`Failed to parse JSON: ${error}`);
+    throw new Error(`Failed to parse JSON: ${error}`, {
+      cause: error,
+    });
   }
 
   const id = `${parsed.id ?? ""}`.trim();
@@ -280,5 +282,3 @@ export function parseModeFromAiOutput(input: string): ModeDefinition {
 export function skillLocationForWorkspace(workspacePath?: string | null): SkillLocation {
   return workspacePath ? "project" : "global";
 }
-
-
