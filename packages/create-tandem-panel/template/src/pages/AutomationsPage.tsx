@@ -42,6 +42,7 @@ import { useEngineStream } from "../features/stream/useEngineStream";
 import { api } from "../lib/api";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { AdvancedMissionBuilderPanel } from "./AdvancedMissionBuilderPanel";
+import { OptimizationCampaignsPanel } from "./OptimizationCampaignsPanel";
 import { PageCard, EmptyState, formatJson } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 
@@ -49,7 +50,7 @@ import type { AppPageProps } from "./pageTypes";
 
 type ExecutionMode = "single" | "team" | "swarm";
 type WizardStep = 1 | 2 | 3 | 4;
-type ActiveTab = "create" | "list" | "running" | "approvals";
+type ActiveTab = "create" | "list" | "running" | "optimize" | "approvals";
 type CreateMode = "simple" | "advanced";
 type WorkflowToolAccessMode = "all" | "custom";
 
@@ -7665,6 +7666,7 @@ export function AutomationsPage({ client, api, toast, navigate, providerStatus }
     { id: "create", label: "Create", icon: "sparkles" },
     { id: "list", label: "Automations", icon: "clipboard-list" },
     { id: "running", label: "Tasks", icon: "activity" },
+    { id: "optimize", label: "Optimize", icon: "flask-conical" },
     { id: "approvals", label: "Teams", icon: "users" },
   ];
 
@@ -7806,6 +7808,13 @@ export function AutomationsPage({ client, api, toast, navigate, providerStatus }
                   setTab("create");
                 }}
               />
+            </PageCard>
+          ) : tab === "optimize" ? (
+            <PageCard
+              title="Workflow Optimization"
+              subtitle="Create and inspect overnight shadow-eval optimization campaigns"
+            >
+              <OptimizationCampaignsPanel client={client} toast={toast} />
             </PageCard>
           ) : (
             <PageCard

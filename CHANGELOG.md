@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **AutoResearch optimization control surfaces**:
+  - Tandem's AutoResearch surfaces are explicitly inspired by Andrej Karpathy's `karpathy/autoresearch` project, with Tandem adapting the core overnight-eval loop to validator-backed workflow optimization
   - added optimization campaign list and experiment-list HTTP surfaces plus explicit approved-winner apply route for workflow prompt/objective optimization campaigns
   - added first-pass AutoResearch support in the TypeScript and Python SDKs, including experiment listing, campaign actions, and winner-apply helpers
   - added an `Optimize` tab to the web control panel Automations page with campaign creation, campaign detail, experiment inspection, and approve/reject/apply controls

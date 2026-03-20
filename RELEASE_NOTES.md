@@ -5,6 +5,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 ## v0.4.8 (Unreleased)
 
 - AutoResearch workflow optimization now has first-pass product and SDK surfaces
+  - the Tandem AutoResearch adaptation is explicitly inspired by Andrej Karpathy's `karpathy/autoresearch`, but adapted here for validator-backed workflow optimization instead of direct Python training-loop mutation
   - added optimization campaign list and experiment-list HTTP surfaces plus an explicit approved-winner apply route
   - added optimization support to the TypeScript and Python SDKs so campaigns, experiments, actions, and winner-apply flows can be driven from clients instead of raw HTTP only
   - added an `Optimize` tab under Automations in the control panel with campaign creation, campaign detail, experiment inspection, and approve/reject/apply controls
