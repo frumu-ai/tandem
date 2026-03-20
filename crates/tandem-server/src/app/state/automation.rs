@@ -4602,7 +4602,14 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
             if requires_files_reviewed && !files_reviewed_backed {
                 unmet_requirements.push("files_reviewed_not_backed_by_read".to_string());
             }
-            if requires_files_not_reviewed && !unreviewed_relevant_paths.is_empty() {
+            let strict_unreviewed_check = use_upstream_evidence
+                && upstream_evidence
+                    .as_ref()
+                    .is_some_and(|e| !e.discovered_relevant_paths.is_empty());
+            if requires_files_not_reviewed
+                && !unreviewed_relevant_paths.is_empty()
+                && !strict_unreviewed_check
+            {
                 unmet_requirements.push("relevant_files_not_reviewed_or_skipped".to_string());
             }
             if missing_web_sources_reviewed {
