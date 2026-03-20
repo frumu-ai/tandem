@@ -61,7 +61,7 @@ export function DiffViewer({
         padding: "8px",
       },
       diffContainer: {
-        overflowX: "auto",
+        overflowX: "auto" as const,
       },
       contentText: {
         lineHeight: "1.5",
