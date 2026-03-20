@@ -5167,7 +5167,9 @@ async fn coder_merge_recommendation_run_create_gets_seeded_tasks() {
             .get("memory_hits")
             .and_then(|row| row.get("query"))
             .and_then(Value::as_str),
-        Some("evan/tandem pull request #91 merge recommendation regressions blockers required checks approvals")
+        Some(
+            "evan/tandem pull request #91 merge recommendation regressions blockers required checks approvals"
+        )
     );
 }
 
@@ -8847,7 +8849,9 @@ async fn coder_merge_recommendation_reuses_prior_memory_hits() {
     .expect("hits json");
     assert_eq!(
         hits_payload.get("query").and_then(Value::as_str),
-        Some("evan/tandem pull request #93 merge recommendation regressions blockers required checks approvals")
+        Some(
+            "evan/tandem pull request #93 merge recommendation regressions blockers required checks approvals"
+        )
     );
     assert_eq!(
         hits_payload
@@ -13578,7 +13582,9 @@ async fn coder_merge_recommendation_reuses_promoted_regression_signal_across_pul
     .expect("hits json");
     assert_eq!(
         hits_payload.get("query").and_then(Value::as_str),
-        Some("evan/tandem pull request #602 merge recommendation regressions blockers required checks approvals")
+        Some(
+            "evan/tandem pull request #602 merge recommendation regressions blockers required checks approvals"
+        )
     );
     let promoted_hit = hits_payload
         .get("hits")

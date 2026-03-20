@@ -2,7 +2,7 @@ use serde_json::Value;
 use tandem_types::ModelSpec;
 
 use crate::app::state::{default_model_spec_from_effective_config, AppState};
-use crate::routines::types::{RoutineRunArtifact, RoutineRunRecord, RoutineRunStatus};
+use crate::routines::types::{RoutineRunArtifact, RoutineRunRecord};
 use crate::util::time::now_ms;
 use crate::EngineEvent;
 

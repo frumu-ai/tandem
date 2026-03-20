@@ -50,8 +50,10 @@ import {
   getCustomBackground,
   getIdentityConfig,
   getProvidersConfig,
+  getSearchSettings,
   patchIdentityConfig,
   setProvidersConfig,
+  setSearchSettings,
   getUserProjects,
   getActiveProject,
   addProject,
@@ -60,6 +62,8 @@ import {
   setCustomBackgroundImage,
   setCustomBackgroundSettings,
   storeApiKey,
+  hasApiKey,
+  deleteApiKey,
   checkGitStatus,
   initializeGitRepo,
   getStorageMigrationStatus,
@@ -68,6 +72,7 @@ import {
   listModels,
   type EngineApiTokenInfo,
   type ProvidersConfig,
+  type SearchSettings,
   type CustomBackgroundInfo,
   type IdentityConfigResponse,
   type IdentityPreset,
@@ -159,6 +164,16 @@ export function Settings({
   const [customApiKey, setCustomApiKey] = useState("");
   const [customEnabled, setCustomEnabled] = useState(false);
   const [customProviderNotice, setCustomProviderNotice] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [searchSettingsState, setSearchSettingsState] = useState<SearchSettings | null>(null);
+  const [searchBraveKeyInput, setSearchBraveKeyInput] = useState("");
+  const [searchExaKeyInput, setSearchExaKeyInput] = useState("");
+  const [searchHasBraveKey, setSearchHasBraveKey] = useState(false);
+  const [searchHasExaKey, setSearchHasExaKey] = useState(false);
+  const [searchSaving, setSearchSaving] = useState(false);
+  const [searchNotice, setSearchNotice] = useState<{
     kind: "success" | "error";
     message: string;
   } | null>(null);
@@ -258,12 +273,24 @@ export function Settings({
 
   const loadSettings = async () => {
     try {
-      const [config, userProjects, activeProj, tokenInfo, identityPayload] = await Promise.all([
+      const [
+        config,
+        userProjects,
+        activeProj,
+        tokenInfo,
+        identityPayload,
+        searchPayload,
+        braveKeyPresent,
+        exaKeyPresent,
+      ] = await Promise.all([
         getProvidersConfig(),
         getUserProjects(),
         getActiveProject(),
         getEngineApiToken(false),
         getIdentityConfig().catch(() => null),
+        getSearchSettings().catch(() => null),
+        hasApiKey("brave_search").catch(() => false),
+        hasApiKey("exa_search").catch(() => false),
       ]);
       setProviders(config);
       setProjects(userProjects);
@@ -285,6 +312,19 @@ export function Settings({
       if (activeProj) {
         setActiveProjectId(activeProj.id);
       }
+      const searchConfig = searchPayload as SearchSettings | null;
+      if (searchConfig) {
+        setSearchSettingsState(searchConfig);
+      } else {
+        setSearchSettingsState({
+          backend: "auto",
+          timeout_ms: 10000,
+          tandem_url: null,
+          searxng_url: null,
+        });
+      }
+      setSearchHasBraveKey(Boolean(braveKeyPresent) || !!searchConfig?.has_brave_key);
+      setSearchHasExaKey(Boolean(exaKeyPresent) || !!searchConfig?.has_exa_key);
       const storageMigrationStatus = await getStorageMigrationStatus();
       setMigrationStatus(storageMigrationStatus);
     } catch (err) {
@@ -850,6 +890,86 @@ export function Settings({
 
       setProviders(updated);
       await setProvidersConfig(updated);
+    }
+  };
+
+  const handleSearchSettingsSave = async () => {
+    if (!searchSettingsState) return;
+    setSearchSaving(true);
+    setSearchNotice(null);
+    try {
+      const payload = await setSearchSettings({
+        backend: String(searchSettingsState.backend || "auto"),
+        tandem_url: searchSettingsState.tandem_url?.trim() || null,
+        searxng_url: searchSettingsState.searxng_url?.trim() || null,
+        timeout_ms: Number(searchSettingsState.timeout_ms || 10000),
+      });
+      setSearchSettingsState(payload);
+      setSearchHasBraveKey(!!payload.has_brave_key);
+      setSearchHasExaKey(!!payload.has_exa_key);
+      setSearchNotice({
+        kind: "success",
+        message: "Search settings saved. The engine will use the updated backend on the next run.",
+      });
+    } catch (err) {
+      setSearchNotice({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Failed to save search settings.",
+      });
+    } finally {
+      setSearchSaving(false);
+    }
+  };
+
+  const handleSearchKeySave = async (keyType: "brave_search" | "exa_search") => {
+    const value = (keyType === "brave_search" ? searchBraveKeyInput : searchExaKeyInput).trim();
+    if (!value) return;
+    setSearchSaving(true);
+    setSearchNotice(null);
+    try {
+      await storeApiKey(keyType, value);
+      if (keyType === "brave_search") {
+        setSearchBraveKeyInput("");
+        setSearchHasBraveKey(true);
+      } else {
+        setSearchExaKeyInput("");
+        setSearchHasExaKey(true);
+      }
+      setSearchNotice({
+        kind: "success",
+        message: `${keyType === "brave_search" ? "Brave" : "Exa"} search key saved.`,
+      });
+    } catch (err) {
+      setSearchNotice({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Failed to save search key.",
+      });
+    } finally {
+      setSearchSaving(false);
+    }
+  };
+
+  const handleSearchKeyDelete = async (keyType: "brave_search" | "exa_search") => {
+    setSearchSaving(true);
+    setSearchNotice(null);
+    try {
+      await deleteApiKey(keyType);
+      if (keyType === "brave_search") {
+        setSearchHasBraveKey(false);
+      } else {
+        setSearchHasExaKey(false);
+      }
+      setSearchNotice({
+        kind: "success",
+        message: `${keyType === "brave_search" ? "Brave" : "Exa"} search key removed.`,
+      });
+    } catch (err) {
+      setSearchNotice({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Failed to remove search key.",
+      });
+    } finally {
+      setSearchSaving(false);
     }
   };
 
@@ -1782,6 +1902,182 @@ export function Settings({
                 onKeyChange={onProviderChange}
                 docsUrl="https://poe.com/api"
               />
+
+              {searchSettingsState && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Web Search</CardTitle>
+                    <CardDescription>
+                      Choose the search backend for `websearch` and store Brave or Exa keys in the
+                      encrypted vault.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-text-subtle">Backend</label>
+                        <select
+                          className="w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary/40"
+                          value={searchSettingsState.backend}
+                          onChange={(e) =>
+                            setSearchSettingsState((prev) =>
+                              prev ? { ...prev, backend: e.target.value } : prev
+                            )
+                          }
+                        >
+                          <option value="auto">Auto failover</option>
+                          <option value="brave">Brave Search</option>
+                          <option value="exa">Exa</option>
+                          <option value="searxng">SearxNG</option>
+                          <option value="tandem">Tandem hosted search</option>
+                          <option value="none">Disable websearch</option>
+                        </select>
+                      </div>
+                      <Input
+                        label="Timeout (ms)"
+                        type="number"
+                        min={1000}
+                        max={120000}
+                        value={String(searchSettingsState.timeout_ms ?? 10000)}
+                        onChange={(e) =>
+                          setSearchSettingsState((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  timeout_ms: Number.parseInt(e.target.value || "10000", 10),
+                                }
+                              : prev
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Input
+                        label="Tandem search URL"
+                        placeholder="https://search.tandem.frumu.ai"
+                        value={searchSettingsState.tandem_url ?? ""}
+                        onChange={(e) =>
+                          setSearchSettingsState((prev) =>
+                            prev ? { ...prev, tandem_url: e.target.value } : prev
+                          )
+                        }
+                      />
+                      <Input
+                        label="SearxNG URL"
+                        placeholder="http://127.0.0.1:8080"
+                        value={searchSettingsState.searxng_url ?? ""}
+                        onChange={(e) =>
+                          setSearchSettingsState((prev) =>
+                            prev ? { ...prev, searxng_url: e.target.value } : prev
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2 rounded-xl border border-border bg-surface-elevated/40 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-text">Brave Search key</p>
+                            <p className="text-xs text-text-muted">
+                              Best for fast live lookups. Stored in the encrypted vault.
+                            </p>
+                          </div>
+                          <span className="text-xs text-text-muted">
+                            {searchHasBraveKey ? "Saved" : "Not saved"}
+                          </span>
+                        </div>
+                        <Input
+                          type="password"
+                          placeholder="BSA..."
+                          value={searchBraveKeyInput}
+                          onChange={(e) => setSearchBraveKeyInput(e.target.value)}
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="secondary"
+                            onClick={() => handleSearchKeySave("brave_search")}
+                            disabled={searchSaving || !searchBraveKeyInput.trim()}
+                          >
+                            Save Brave Key
+                          </Button>
+                          {searchHasBraveKey && (
+                            <Button
+                              variant="ghost"
+                              onClick={() => handleSearchKeyDelete("brave_search")}
+                              disabled={searchSaving}
+                            >
+                              Remove
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 rounded-xl border border-border bg-surface-elevated/40 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-text">Exa key</p>
+                            <p className="text-xs text-text-muted">
+                              Useful as a fallback or primary search backend. Stored in the
+                              encrypted vault.
+                            </p>
+                          </div>
+                          <span className="text-xs text-text-muted">
+                            {searchHasExaKey ? "Saved" : "Not saved"}
+                          </span>
+                        </div>
+                        <Input
+                          type="password"
+                          placeholder="Paste Exa API key"
+                          value={searchExaKeyInput}
+                          onChange={(e) => setSearchExaKeyInput(e.target.value)}
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="secondary"
+                            onClick={() => handleSearchKeySave("exa_search")}
+                            disabled={searchSaving || !searchExaKeyInput.trim()}
+                          >
+                            Save Exa Key
+                          </Button>
+                          {searchHasExaKey && (
+                            <Button
+                              variant="ghost"
+                              onClick={() => handleSearchKeyDelete("exa_search")}
+                              disabled={searchSaving}
+                            >
+                              Remove
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button onClick={handleSearchSettingsSave} disabled={searchSaving}>
+                        {searchSaving ? "Saving..." : "Save Search Settings"}
+                      </Button>
+                      {searchNotice && (
+                        <p
+                          className={
+                            searchNotice.kind === "success"
+                              ? "text-sm text-emerald-400"
+                              : "text-sm text-rose-400"
+                          }
+                        >
+                          {searchNotice.message}
+                        </p>
+                      )}
+                    </div>
+
+                    <p className="text-xs text-text-muted">
+                      `auto` will try the configured backends with failover. If Brave is
+                      rate-limited, Tandem can continue with Exa when both keys are present.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Custom Provider Section */}
               <Card className="border-2 border-dashed">

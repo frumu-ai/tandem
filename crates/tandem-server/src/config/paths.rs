@@ -50,6 +50,14 @@ pub(crate) fn resolve_automation_v2_runs_path() -> PathBuf {
     resolve_canonical_data_file_path("automation_v2_runs.json")
 }
 
+pub(crate) fn resolve_optimization_campaigns_path() -> PathBuf {
+    resolve_canonical_data_file_path("optimization_campaigns.json")
+}
+
+pub(crate) fn resolve_optimization_experiments_path() -> PathBuf {
+    resolve_canonical_data_file_path("optimization_experiments.json")
+}
+
 pub(crate) fn resolve_canonical_data_file_path(file_name: &str) -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();

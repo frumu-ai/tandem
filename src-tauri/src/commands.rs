@@ -1481,6 +1481,8 @@ fn env_var_for_key(key_type: &ApiKeyType) -> Option<&'static str> {
         ApiKeyType::Anthropic => Some("ANTHROPIC_API_KEY"),
         ApiKeyType::OpenAI => Some("OPENAI_API_KEY"),
         ApiKeyType::Poe => Some("POE_API_KEY"),
+        ApiKeyType::BraveSearch => Some("TANDEM_BRAVE_SEARCH_API_KEY"),
+        ApiKeyType::ExaSearch => Some("TANDEM_EXA_API_KEY"),
         ApiKeyType::Custom(_) => None,
     }
 }
@@ -2603,6 +2605,161 @@ pub fn clear_custom_background_image(app: AppHandle) -> Result<()> {
 // ============================================================================
 // Provider Configuration
 // ============================================================================
+
+fn default_search_backend() -> String {
+    "auto".to_string()
+}
+
+fn default_search_timeout_ms() -> u64 {
+    10_000
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchSettings {
+    #[serde(default = "default_search_backend")]
+    pub backend: String,
+    #[serde(default)]
+    pub tandem_url: Option<String>,
+    #[serde(default)]
+    pub searxng_url: Option<String>,
+    #[serde(default = "default_search_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for SearchSettings {
+    fn default() -> Self {
+        Self {
+            backend: default_search_backend(),
+            tandem_url: None,
+            searxng_url: None,
+            timeout_ms: default_search_timeout_ms(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchSettingsView {
+    pub backend: String,
+    pub tandem_url: Option<String>,
+    pub searxng_url: Option<String>,
+    pub timeout_ms: u64,
+    pub has_brave_key: bool,
+    pub has_exa_key: bool,
+}
+
+fn normalize_search_backend(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" | "" => "auto".to_string(),
+        "tandem" => "tandem".to_string(),
+        "brave" => "brave".to_string(),
+        "exa" => "exa".to_string(),
+        "searxng" => "searxng".to_string(),
+        "none" | "disabled" => "none".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn normalize_search_url(value: Option<String>) -> Option<String> {
+    value
+        .map(|raw| raw.trim().trim_end_matches('/').to_string())
+        .filter(|raw| !raw.is_empty())
+}
+
+fn normalize_search_settings(settings: SearchSettings) -> SearchSettings {
+    SearchSettings {
+        backend: normalize_search_backend(&settings.backend),
+        tandem_url: normalize_search_url(settings.tandem_url),
+        searxng_url: normalize_search_url(settings.searxng_url),
+        timeout_ms: settings.timeout_ms.clamp(1_000, 120_000),
+    }
+}
+
+pub(crate) fn load_saved_search_settings(app: &AppHandle) -> SearchSettings {
+    if let Ok(store) = app.store("settings.json") {
+        if let Some(value) = store.get("search_settings") {
+            if let Ok(settings) = serde_json::from_value::<SearchSettings>(value.clone()) {
+                return normalize_search_settings(settings);
+            }
+        }
+    }
+    SearchSettings::default()
+}
+
+fn search_key_presence(app: &AppHandle) -> (bool, bool) {
+    let Some(keystore) = app.try_state::<SecureKeyStore>() else {
+        return (false, false);
+    };
+    (
+        keystore.has(&ApiKeyType::BraveSearch.to_key_name()),
+        keystore.has(&ApiKeyType::ExaSearch.to_key_name()),
+    )
+}
+
+fn search_settings_view(app: &AppHandle, settings: SearchSettings) -> SearchSettingsView {
+    let (has_brave_key, has_exa_key) = search_key_presence(app);
+    SearchSettingsView {
+        backend: settings.backend,
+        tandem_url: settings.tandem_url,
+        searxng_url: settings.searxng_url,
+        timeout_ms: settings.timeout_ms,
+        has_brave_key,
+        has_exa_key,
+    }
+}
+
+pub(crate) async fn sync_search_settings_env(state: &AppState, settings: &SearchSettings) {
+    state
+        .sidecar
+        .set_env("TANDEM_SEARCH_BACKEND", &settings.backend)
+        .await;
+    state
+        .sidecar
+        .set_env("TANDEM_SEARCH_TIMEOUT_MS", &settings.timeout_ms.to_string())
+        .await;
+    if let Some(url) = settings.tandem_url.as_deref() {
+        state.sidecar.set_env("TANDEM_SEARCH_URL", url).await;
+    } else {
+        state.sidecar.remove_env("TANDEM_SEARCH_URL").await;
+    }
+    if let Some(url) = settings.searxng_url.as_deref() {
+        state.sidecar.set_env("TANDEM_SEARXNG_URL", url).await;
+    } else {
+        state.sidecar.remove_env("TANDEM_SEARXNG_URL").await;
+    }
+}
+
+#[tauri::command]
+pub async fn get_search_settings(app: AppHandle) -> Result<SearchSettingsView> {
+    Ok(search_settings_view(&app, load_saved_search_settings(&app)))
+}
+
+#[tauri::command]
+pub async fn set_search_settings(
+    app: AppHandle,
+    settings: SearchSettings,
+    state: State<'_, AppState>,
+) -> Result<SearchSettingsView> {
+    let normalized = normalize_search_settings(settings);
+    if let Ok(store) = app.store("settings.json") {
+        store.set(
+            "search_settings",
+            serde_json::to_value(&normalized).unwrap_or_default(),
+        );
+        let _ = store.save();
+    }
+
+    sync_search_settings_env(&state, &normalized).await;
+
+    if matches!(state.sidecar.state().await, SidecarState::Running) {
+        let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
+        state
+            .sidecar
+            .restart(sidecar_path.to_string_lossy().as_ref())
+            .await?;
+    }
+
+    Ok(search_settings_view(&app, normalized))
+}
 
 /// Get the providers configuration
 /// Get the providers configuration (with key status)

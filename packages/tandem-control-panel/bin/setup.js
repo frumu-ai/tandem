@@ -34,6 +34,10 @@ function parseDotEnv(content) {
   return out;
 }
 
+function serializeEnv(entries) {
+  return `${entries.map(([key, value]) => `${key}=${value}`).join("\n")}\n`;
+}
+
 function loadDotEnvFile(pathname) {
   if (!existsSync(pathname)) return false;
   const parsed = parseDotEnv(readFileSync(pathname, "utf8"));
@@ -748,13 +752,47 @@ async function installServices() {
     ? parseDotEnv(readFileSync(engineEnvPath, "utf8"))
     : {};
   const { TANDEM_MEMORY_DB_PATH: _legacyMemoryDbPath, ...engineEnvBase } = existingEngineEnv;
+  const searchEnv =
+    existingEngineEnv.TANDEM_SEARCH_BACKEND ||
+    existingEngineEnv.TANDEM_SEARCH_URL ||
+    existingEngineEnv.TANDEM_SEARCH_TIMEOUT_MS ||
+    existingEngineEnv.TANDEM_BRAVE_SEARCH_API_KEY ||
+    existingEngineEnv.BRAVE_SEARCH_API_KEY ||
+    existingEngineEnv.TANDEM_EXA_API_KEY ||
+    existingEngineEnv.EXA_API_KEY ||
+    existingEngineEnv.TANDEM_SEARXNG_URL
+      ? {
+          ...(existingEngineEnv.TANDEM_SEARCH_BACKEND
+            ? { TANDEM_SEARCH_BACKEND: existingEngineEnv.TANDEM_SEARCH_BACKEND }
+            : {}),
+          ...(existingEngineEnv.TANDEM_SEARCH_URL
+            ? { TANDEM_SEARCH_URL: existingEngineEnv.TANDEM_SEARCH_URL }
+            : {}),
+          ...(existingEngineEnv.TANDEM_SEARCH_TIMEOUT_MS
+            ? { TANDEM_SEARCH_TIMEOUT_MS: existingEngineEnv.TANDEM_SEARCH_TIMEOUT_MS }
+            : {}),
+          ...(existingEngineEnv.TANDEM_BRAVE_SEARCH_API_KEY
+            ? { TANDEM_BRAVE_SEARCH_API_KEY: existingEngineEnv.TANDEM_BRAVE_SEARCH_API_KEY }
+            : {}),
+          ...(existingEngineEnv.BRAVE_SEARCH_API_KEY
+            ? { BRAVE_SEARCH_API_KEY: existingEngineEnv.BRAVE_SEARCH_API_KEY }
+            : {}),
+          ...(existingEngineEnv.TANDEM_EXA_API_KEY
+            ? { TANDEM_EXA_API_KEY: existingEngineEnv.TANDEM_EXA_API_KEY }
+            : {}),
+          ...(existingEngineEnv.EXA_API_KEY
+            ? { EXA_API_KEY: existingEngineEnv.EXA_API_KEY }
+            : {}),
+          ...(existingEngineEnv.TANDEM_SEARXNG_URL
+            ? { TANDEM_SEARXNG_URL: existingEngineEnv.TANDEM_SEARXNG_URL }
+            : {}),
+        }
+      : {};
   const engineEnv = {
     ...engineEnvBase,
     TANDEM_API_TOKEN: token,
     TANDEM_STATE_DIR: stateDir,
-    TANDEM_SEARCH_BACKEND: existingEngineEnv.TANDEM_SEARCH_BACKEND || "tandem",
-    TANDEM_SEARCH_URL: existingEngineEnv.TANDEM_SEARCH_URL || DEFAULT_TANDEM_SEARCH_URL,
-    TANDEM_SEARCH_TIMEOUT_MS: existingEngineEnv.TANDEM_SEARCH_TIMEOUT_MS || "10000",
+    ...searchEnv,
     TANDEM_ENABLE_GLOBAL_MEMORY: existingEngineEnv.TANDEM_ENABLE_GLOBAL_MEMORY || "1",
     TANDEM_DISABLE_TOOL_GUARD_BUDGETS: existingEngineEnv.TANDEM_DISABLE_TOOL_GUARD_BUDGETS || "1",
     TANDEM_TOOL_ROUTER_ENABLED: existingEngineEnv.TANDEM_TOOL_ROUTER_ENABLED || "0",
@@ -971,6 +1009,127 @@ async function readJsonBody(req) {
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   if (!raw) return {};
   return JSON.parse(raw);
+}
+
+function normalizeSearchBackend(raw) {
+  switch (String(raw || "").trim().toLowerCase()) {
+    case "":
+    case "auto":
+      return "auto";
+    case "tandem":
+    case "brave":
+    case "exa":
+    case "searxng":
+      return String(raw).trim().toLowerCase();
+    case "none":
+    case "disabled":
+      return "none";
+    default:
+      return "auto";
+  }
+}
+
+function normalizeSearchUrl(raw) {
+  const value = String(raw || "").trim().replace(/\/+$/, "");
+  return value || "";
+}
+
+function getManagedEngineEnvPath() {
+  return "/etc/tandem/engine.env";
+}
+
+function readManagedSearchSettings() {
+  const envPath = getManagedEngineEnvPath();
+  const localEngine = isLocalEngineUrl(ENGINE_URL);
+  const env = existsSync(envPath) ? parseDotEnv(readFileSync(envPath, "utf8")) : {};
+  const timeoutRaw = Number.parseInt(String(env.TANDEM_SEARCH_TIMEOUT_MS || "10000"), 10);
+  const timeoutMs = Number.isFinite(timeoutRaw)
+    ? Math.min(Math.max(timeoutRaw, 1000), 120000)
+    : 10000;
+  return {
+    available: localEngine,
+    local_engine: localEngine,
+    writable: localEngine,
+    managed_env_path: envPath,
+    restart_required: false,
+    restart_hint: "Restart tandem-engine after saving search settings.",
+    settings: {
+      backend: normalizeSearchBackend(env.TANDEM_SEARCH_BACKEND || "auto"),
+      tandem_url: normalizeSearchUrl(env.TANDEM_SEARCH_URL || ""),
+      searxng_url: normalizeSearchUrl(env.TANDEM_SEARXNG_URL || ""),
+      timeout_ms: timeoutMs,
+      has_brave_key: !!String(
+        env.TANDEM_BRAVE_SEARCH_API_KEY || env.BRAVE_SEARCH_API_KEY || ""
+      ).trim(),
+      has_exa_key: !!String(env.TANDEM_EXA_API_KEY || env.EXA_API_KEY || "").trim(),
+    },
+    reason: localEngine
+      ? ""
+      : "Search settings can only be edited here when the control panel points at a local engine host.",
+  };
+}
+
+async function writeManagedSearchSettings(payload = {}) {
+  const current = readManagedSearchSettings();
+  if (!current.local_engine) {
+    const error = new Error(current.reason || "Search settings are not editable for this engine.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const envPath = current.managed_env_path;
+  const existingEnv = existsSync(envPath) ? parseDotEnv(readFileSync(envPath, "utf8")) : {};
+  const nextEnv = { ...existingEnv };
+
+  nextEnv.TANDEM_SEARCH_BACKEND = normalizeSearchBackend(payload.backend || "auto");
+  const timeoutRaw = Number.parseInt(String(payload.timeout_ms || payload.timeoutMs || "10000"), 10);
+  nextEnv.TANDEM_SEARCH_TIMEOUT_MS = String(
+    Number.isFinite(timeoutRaw) ? Math.min(Math.max(timeoutRaw, 1000), 120000) : 10000
+  );
+
+  const tandemUrl = normalizeSearchUrl(payload.tandem_url || payload.tandemUrl || "");
+  if (tandemUrl) nextEnv.TANDEM_SEARCH_URL = tandemUrl;
+  else delete nextEnv.TANDEM_SEARCH_URL;
+
+  const searxngUrl = normalizeSearchUrl(payload.searxng_url || payload.searxngUrl || "");
+  if (searxngUrl) nextEnv.TANDEM_SEARXNG_URL = searxngUrl;
+  else delete nextEnv.TANDEM_SEARXNG_URL;
+
+  const braveKey = String(payload.brave_api_key || payload.braveApiKey || "").trim();
+  if (braveKey) nextEnv.TANDEM_BRAVE_SEARCH_API_KEY = braveKey;
+  else if (payload.clear_brave_key || payload.clearBraveKey) {
+    delete nextEnv.TANDEM_BRAVE_SEARCH_API_KEY;
+    delete nextEnv.BRAVE_SEARCH_API_KEY;
+  }
+
+  const exaKey = String(payload.exa_api_key || payload.exaApiKey || "").trim();
+  if (exaKey) nextEnv.TANDEM_EXA_API_KEY = exaKey;
+  else if (payload.clear_exa_key || payload.clearExaKey) {
+    delete nextEnv.TANDEM_EXA_API_KEY;
+    delete nextEnv.EXA_API_KEY;
+  }
+
+  const preferredKeys = [
+    "TANDEM_API_TOKEN",
+    "TANDEM_STATE_DIR",
+    "TANDEM_SEARCH_BACKEND",
+    "TANDEM_SEARCH_URL",
+    "TANDEM_SEARXNG_URL",
+    "TANDEM_SEARCH_TIMEOUT_MS",
+    "TANDEM_BRAVE_SEARCH_API_KEY",
+    "TANDEM_EXA_API_KEY",
+  ];
+  const ordered = [];
+  for (const key of preferredKeys) {
+    if (nextEnv[key] !== undefined) ordered.push([key, nextEnv[key]]);
+  }
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (!preferredKeys.includes(key)) ordered.push([key, value]);
+  }
+  await writeFile(envPath, serializeEnv(ordered), "utf8");
+  return {
+    ...readManagedSearchSettings(),
+    restart_required: true,
+  };
 }
 
 function sendJson(res, code, payload) {
@@ -4372,6 +4531,29 @@ async function handleApi(req, res) {
       localEngine: isLocalEngineUrl(ENGINE_URL),
       autoStartEngine: AUTO_START_ENGINE,
     });
+    return true;
+  }
+
+  if (pathname === "/api/system/search-settings" && req.method === "GET") {
+    const session = requireSession(req, res);
+    if (!session) return true;
+    sendJson(res, 200, readManagedSearchSettings());
+    return true;
+  }
+
+  if (pathname === "/api/system/search-settings" && req.method === "PATCH") {
+    const session = requireSession(req, res);
+    if (!session) return true;
+    try {
+      const payload = await readJsonBody(req);
+      const saved = await writeManagedSearchSettings(payload);
+      sendJson(res, 200, saved);
+    } catch (error) {
+      sendJson(res, Number(error?.statusCode || 500), {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return true;
   }
 

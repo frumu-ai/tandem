@@ -3883,9 +3883,9 @@ async fn dispatch_merge_recommendation_task(
                 Ok(result) => result,
                 Err(error) => {
                     let detail = format!(
-                            "Merge-recommendation worker session failed during assess_merge_readiness with status {}.",
-                            error
-                        );
+                        "Merge-recommendation worker session failed during assess_merge_readiness with status {}.",
+                        error
+                    );
                     let generated_candidate = write_worker_failure_run_outcome_candidate(
                         &state,
                         record,

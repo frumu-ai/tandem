@@ -309,6 +309,7 @@ impl ToolRegistry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SearchBackendKind {
     Disabled,
+    Auto,
     Tandem,
     Searxng,
     Exa,
@@ -319,6 +320,9 @@ enum SearchBackendKind {
 enum SearchBackend {
     Disabled {
         reason: String,
+    },
+    Auto {
+        backends: Vec<SearchBackend>,
     },
     Tandem {
         base_url: String,
@@ -353,6 +357,9 @@ impl SearchBackend {
                     reason: "TANDEM_SEARCH_BACKEND explicitly disabled websearch".to_string(),
                 };
             }
+            Some("auto") => {
+                return search_backend_from_auto_env(timeout_ms);
+            }
             Some("tandem") => {
                 return search_backend_from_tandem_env(timeout_ms, true);
             }
@@ -383,35 +390,13 @@ impl SearchBackend {
             Some(other) => {
                 return Self::Disabled {
                     reason: format!(
-                        "TANDEM_SEARCH_BACKEND `{other}` is unsupported; expected tandem, searxng, exa, brave, or none"
+                        "TANDEM_SEARCH_BACKEND `{other}` is unsupported; expected auto, tandem, searxng, exa, brave, or none"
                     ),
                 };
             }
             None => {}
         }
-
-        if std::env::var("TANDEM_SEARCH_URL")
-            .ok()
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
-        {
-            return search_backend_from_tandem_env(timeout_ms, false);
-        }
-        if let Some(config) = search_backend_from_searxng_env(timeout_ms) {
-            return config;
-        }
-        if let Some(config) = search_backend_from_brave_env(timeout_ms) {
-            return config;
-        }
-        if let Some(config) = search_backend_from_exa_env(timeout_ms) {
-            return config;
-        }
-
-        Self::Disabled {
-            reason:
-                "set TANDEM_SEARCH_URL or configure tandem, searxng, brave, or exa to enable websearch"
-                    .to_string(),
-        }
+        search_backend_from_auto_env(timeout_ms)
     }
 
     fn is_enabled(&self) -> bool {
@@ -421,6 +406,7 @@ impl SearchBackend {
     fn kind(&self) -> SearchBackendKind {
         match self {
             Self::Disabled { .. } => SearchBackendKind::Disabled,
+            Self::Auto { .. } => SearchBackendKind::Auto,
             Self::Tandem { .. } => SearchBackendKind::Tandem,
             Self::Searxng { .. } => SearchBackendKind::Searxng,
             Self::Exa { .. } => SearchBackendKind::Exa,
@@ -431,6 +417,7 @@ impl SearchBackend {
     fn name(&self) -> &'static str {
         match self.kind() {
             SearchBackendKind::Disabled => "disabled",
+            SearchBackendKind::Auto => "auto",
             SearchBackendKind::Tandem => "tandem",
             SearchBackendKind::Searxng => "searxng",
             SearchBackendKind::Exa => "exa",
@@ -447,6 +434,10 @@ impl SearchBackend {
 
     fn schema_description(&self) -> String {
         match self {
+            Self::Auto { .. } => {
+                "Search web results using the configured search backends with automatic failover"
+                    .to_string()
+            }
             Self::Tandem { .. } => {
                 "Search web results using Tandem's hosted search backend".to_string()
             }
@@ -462,6 +453,13 @@ impl SearchBackend {
             }
         }
     }
+}
+
+fn has_nonempty_env_var(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn search_backend_timeout_ms() -> u64 {
@@ -533,6 +531,44 @@ fn search_backend_from_brave_env(timeout_ms: u64) -> Option<SearchBackend> {
         api_key,
         timeout_ms,
     })
+}
+
+fn search_backend_auto_candidates(timeout_ms: u64) -> Vec<SearchBackend> {
+    let mut backends = Vec::new();
+
+    if has_nonempty_env_var("TANDEM_SEARCH_URL") {
+        backends.push(search_backend_from_tandem_env(timeout_ms, false));
+    }
+    if let Some(config) = search_backend_from_searxng_env(timeout_ms) {
+        backends.push(config);
+    }
+    if let Some(config) = search_backend_from_brave_env(timeout_ms) {
+        backends.push(config);
+    }
+    if let Some(config) = search_backend_from_exa_env(timeout_ms) {
+        backends.push(config);
+    }
+    if backends.is_empty() {
+        backends.push(search_backend_from_tandem_env(timeout_ms, true));
+    }
+
+    backends
+        .into_iter()
+        .filter(|backend| !matches!(backend, SearchBackend::Disabled { .. }))
+        .collect()
+}
+
+fn search_backend_from_auto_env(timeout_ms: u64) -> SearchBackend {
+    let backends = search_backend_auto_candidates(timeout_ms);
+    match backends.len() {
+        0 => SearchBackend::Disabled {
+            reason:
+                "set TANDEM_SEARCH_URL or configure tandem, searxng, brave, or exa to enable websearch"
+                    .to_string(),
+        },
+        1 => backends.into_iter().next().expect("single backend"),
+        _ => SearchBackend::Auto { backends },
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -2250,11 +2286,18 @@ impl Tool for WebSearchTool {
         }
         let num_results = extract_websearch_limit(&args).unwrap_or(8);
         let outcome = execute_websearch_backend(&self.backend, &query, num_results).await?;
+        let configured_backend = self.backend.name();
+        let backend_used = outcome
+            .backend_used
+            .as_deref()
+            .unwrap_or(configured_backend);
         let mut metadata = json!({
             "query": query,
             "query_source": query_source,
             "query_hash": query_hash,
-            "backend": self.backend.name(),
+            "backend": backend_used,
+            "configured_backend": configured_backend,
+            "attempted_backends": outcome.attempted_backends,
             "loop_guard_triggered": false,
             "count": outcome.results.len(),
             "partial": outcome.partial
@@ -2272,7 +2315,9 @@ impl Tool for WebSearchTool {
 
         let output = json!({
             "query": query,
-            "backend": self.backend.name(),
+            "backend": backend_used,
+            "configured_backend": configured_backend,
+            "attempted_backends": metadata["attempted_backends"],
             "result_count": outcome.results.len(),
             "partial": outcome.partial,
             "results": outcome.results,
@@ -2290,9 +2335,54 @@ struct SearchExecutionOutcome {
     partial: bool,
     unavailable_message: Option<String>,
     unavailable_kind: Option<&'static str>,
+    backend_used: Option<String>,
+    attempted_backends: Vec<String>,
 }
 
 async fn execute_websearch_backend(
+    backend: &SearchBackend,
+    query: &str,
+    num_results: u64,
+) -> anyhow::Result<SearchExecutionOutcome> {
+    match backend {
+        SearchBackend::Auto { backends } => {
+            let mut attempted_backends = Vec::new();
+            let mut best_unavailable: Option<SearchExecutionOutcome> = None;
+
+            for candidate in backends {
+                let mut outcome =
+                    execute_websearch_backend_once(candidate, query, num_results).await?;
+                attempted_backends.extend(outcome.attempted_backends.iter().cloned());
+                if outcome.unavailable_kind.is_none() {
+                    if outcome.backend_used.is_none() {
+                        outcome.backend_used = Some(candidate.name().to_string());
+                    }
+                    outcome.attempted_backends = attempted_backends;
+                    return Ok(outcome);
+                }
+
+                let should_replace = best_unavailable
+                    .as_ref()
+                    .map(|current| {
+                        search_unavailability_priority(outcome.unavailable_kind)
+                            > search_unavailability_priority(current.unavailable_kind)
+                    })
+                    .unwrap_or(true);
+                outcome.attempted_backends = attempted_backends.clone();
+                if should_replace {
+                    best_unavailable = Some(outcome);
+                }
+            }
+
+            let mut outcome = best_unavailable.unwrap_or_else(search_backend_unavailable_outcome);
+            outcome.attempted_backends = attempted_backends;
+            Ok(outcome)
+        }
+        _ => execute_websearch_backend_once(backend, query, num_results).await,
+    }
+}
+
+async fn execute_websearch_backend_once(
     backend: &SearchBackend,
     query: &str,
     num_results: u64,
@@ -2305,6 +2395,8 @@ async fn execute_websearch_backend(
                 "Search backend is unavailable for `websearch`: {reason}"
             )),
             unavailable_kind: Some("backend_unavailable"),
+            backend_used: Some("disabled".to_string()),
+            attempted_backends: vec!["disabled".to_string()],
         }),
         SearchBackend::Tandem {
             base_url,
@@ -2332,6 +2424,7 @@ async fn execute_websearch_backend(
             api_key,
             timeout_ms,
         } => execute_brave_search(api_key, *timeout_ms, query, num_results).await,
+        SearchBackend::Auto { .. } => unreachable!("auto backend should be handled by the wrapper"),
     }
 }
 
@@ -2344,6 +2437,8 @@ fn search_backend_unavailable_outcome() -> SearchExecutionOutcome {
                 .to_string(),
         ),
         unavailable_kind: Some("backend_unavailable"),
+        backend_used: None,
+        attempted_backends: Vec::new(),
     }
 }
 
@@ -2356,6 +2451,36 @@ fn search_backend_authorization_required_outcome() -> SearchExecutionOutcome {
                 .to_string(),
         ),
         unavailable_kind: Some("authorization_required"),
+        backend_used: None,
+        attempted_backends: Vec::new(),
+    }
+}
+
+fn search_backend_rate_limited_outcome(
+    backend_name: &str,
+    retry_after_secs: Option<u64>,
+) -> SearchExecutionOutcome {
+    let retry_hint = retry_after_secs
+        .map(|value| format!("\nRetry after about {value} second(s)."))
+        .unwrap_or_default();
+    SearchExecutionOutcome {
+        results: Vec::new(),
+        partial: false,
+        unavailable_message: Some(format!(
+            "Web search is currently rate limited for `websearch` on the {backend_name} backend.\nContinue with local file reads and note that external research could not be completed in this run.{retry_hint}"
+        )),
+        unavailable_kind: Some("rate_limited"),
+        backend_used: Some(backend_name.to_string()),
+        attempted_backends: vec![backend_name.to_string()],
+    }
+}
+
+fn search_unavailability_priority(kind: Option<&'static str>) -> u8 {
+    match kind {
+        Some("authorization_required") => 3,
+        Some("rate_limited") => 2,
+        Some("backend_unavailable") => 1,
+        _ => 0,
     }
 }
 
@@ -2381,21 +2506,37 @@ async fn execute_tandem_search(
         .await
     {
         Ok(response) => response,
-        Err(_) => return Ok(search_backend_unavailable_outcome()),
+        Err(_) => {
+            let mut outcome = search_backend_unavailable_outcome();
+            outcome.backend_used = Some("tandem".to_string());
+            outcome.attempted_backends = vec!["tandem".to_string()];
+            return Ok(outcome);
+        }
     };
     let status = response.status();
     if matches!(
         status,
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
     ) {
-        return Ok(search_backend_authorization_required_outcome());
+        let mut outcome = search_backend_authorization_required_outcome();
+        outcome.backend_used = Some("tandem".to_string());
+        outcome.attempted_backends = vec!["tandem".to_string()];
+        return Ok(outcome);
     }
     if !status.is_success() {
-        return Ok(search_backend_unavailable_outcome());
+        let mut outcome = search_backend_unavailable_outcome();
+        outcome.backend_used = Some("tandem".to_string());
+        outcome.attempted_backends = vec!["tandem".to_string()];
+        return Ok(outcome);
     }
     let body: Value = match response.json().await {
         Ok(value) => value,
-        Err(_) => return Ok(search_backend_unavailable_outcome()),
+        Err(_) => {
+            let mut outcome = search_backend_unavailable_outcome();
+            outcome.backend_used = Some("tandem".to_string());
+            outcome.attempted_backends = vec!["tandem".to_string()];
+            return Ok(outcome);
+        }
     };
     let raw_results = body
         .get("results")
@@ -2412,6 +2553,8 @@ async fn execute_tandem_search(
         partial,
         unavailable_message: None,
         unavailable_kind: None,
+        backend_used: Some("tandem".to_string()),
+        attempted_backends: vec!["tandem".to_string()],
     })
 }
 
@@ -2438,15 +2581,26 @@ async fn execute_searxng_search(
 
     let status = response.status();
     if status == reqwest::StatusCode::FORBIDDEN {
-        return Ok(search_backend_authorization_required_outcome());
+        let mut outcome = search_backend_authorization_required_outcome();
+        outcome.backend_used = Some("searxng".to_string());
+        outcome.attempted_backends = vec!["searxng".to_string()];
+        return Ok(outcome);
     }
     if !status.is_success() {
-        return Ok(search_backend_unavailable_outcome());
+        let mut outcome = search_backend_unavailable_outcome();
+        outcome.backend_used = Some("searxng".to_string());
+        outcome.attempted_backends = vec!["searxng".to_string()];
+        return Ok(outcome);
     }
     let status_for_error = status;
     let body: Value = match response.json().await {
         Ok(value) => value,
-        Err(_) => return Ok(search_backend_unavailable_outcome()),
+        Err(_) => {
+            let mut outcome = search_backend_unavailable_outcome();
+            outcome.backend_used = Some("searxng".to_string());
+            outcome.attempted_backends = vec!["searxng".to_string()];
+            return Ok(outcome);
+        }
     };
     let raw_results = body
         .get("results")
@@ -2461,6 +2615,8 @@ async fn execute_searxng_search(
         partial,
         unavailable_message: None,
         unavailable_kind: None,
+        backend_used: Some("searxng".to_string()),
+        attempted_backends: vec!["searxng".to_string()],
     })
 }
 
@@ -2486,7 +2642,12 @@ async fn execute_exa_search(
         .await
     {
         Ok(response) => response,
-        Err(_) => return Ok(search_backend_unavailable_outcome()),
+        Err(_) => {
+            let mut outcome = search_backend_unavailable_outcome();
+            outcome.backend_used = Some("exa".to_string());
+            outcome.attempted_backends = vec!["exa".to_string()];
+            return Ok(outcome);
+        }
     };
     let status = response.status();
     if matches!(
@@ -2495,14 +2656,33 @@ async fn execute_exa_search(
             | reqwest::StatusCode::FORBIDDEN
             | reqwest::StatusCode::PAYMENT_REQUIRED
     ) {
-        return Ok(search_backend_authorization_required_outcome());
+        let mut outcome = search_backend_authorization_required_outcome();
+        outcome.backend_used = Some("exa".to_string());
+        outcome.attempted_backends = vec!["exa".to_string()];
+        return Ok(outcome);
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after_secs = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok());
+        return Ok(search_backend_rate_limited_outcome("exa", retry_after_secs));
     }
     if !status.is_success() {
-        return Ok(search_backend_unavailable_outcome());
+        let mut outcome = search_backend_unavailable_outcome();
+        outcome.backend_used = Some("exa".to_string());
+        outcome.attempted_backends = vec!["exa".to_string()];
+        return Ok(outcome);
     }
     let body: Value = match response.json().await {
         Ok(value) => value,
-        Err(_) => return Ok(search_backend_unavailable_outcome()),
+        Err(_) => {
+            let mut outcome = search_backend_unavailable_outcome();
+            outcome.backend_used = Some("exa".to_string());
+            outcome.attempted_backends = vec!["exa".to_string()];
+            return Ok(outcome);
+        }
     };
     let raw_results = body
         .get("results")
@@ -2515,6 +2695,8 @@ async fn execute_exa_search(
         results,
         unavailable_message: None,
         unavailable_kind: None,
+        backend_used: Some("exa".to_string()),
+        attempted_backends: vec!["exa".to_string()],
     })
 }
 
@@ -2538,7 +2720,12 @@ async fn execute_brave_search(
         .await
     {
         Ok(response) => response,
-        Err(_) => return Ok(search_backend_unavailable_outcome()),
+        Err(_) => {
+            let mut outcome = search_backend_unavailable_outcome();
+            outcome.backend_used = Some("brave".to_string());
+            outcome.attempted_backends = vec!["brave".to_string()];
+            return Ok(outcome);
+        }
     };
     let status = response.status();
     if matches!(
@@ -2547,14 +2734,36 @@ async fn execute_brave_search(
             | reqwest::StatusCode::FORBIDDEN
             | reqwest::StatusCode::PAYMENT_REQUIRED
     ) {
-        return Ok(search_backend_authorization_required_outcome());
+        let mut outcome = search_backend_authorization_required_outcome();
+        outcome.backend_used = Some("brave".to_string());
+        outcome.attempted_backends = vec!["brave".to_string()];
+        return Ok(outcome);
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after_secs = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok());
+        return Ok(search_backend_rate_limited_outcome(
+            "brave",
+            retry_after_secs,
+        ));
     }
     if !status.is_success() {
-        return Ok(search_backend_unavailable_outcome());
+        let mut outcome = search_backend_unavailable_outcome();
+        outcome.backend_used = Some("brave".to_string());
+        outcome.attempted_backends = vec!["brave".to_string()];
+        return Ok(outcome);
     }
     let body: Value = match response.json().await {
         Ok(value) => value,
-        Err(_) => return Ok(search_backend_unavailable_outcome()),
+        Err(_) => {
+            let mut outcome = search_backend_unavailable_outcome();
+            outcome.backend_used = Some("brave".to_string());
+            outcome.attempted_backends = vec!["brave".to_string()];
+            return Ok(outcome);
+        }
     };
     let raw_results = body
         .get("web")
@@ -2568,6 +2777,8 @@ async fn execute_brave_search(
         results,
         unavailable_message: None,
         unavailable_kind: None,
+        backend_used: Some("brave".to_string()),
+        attempted_backends: vec!["brave".to_string()],
     })
 }
 
@@ -5401,6 +5612,49 @@ mod tests {
     }
 
     #[test]
+    fn search_backend_explicit_auto_is_supported() {
+        let _guard = search_env_lock().lock().expect("env lock");
+        clear_search_env();
+        std::env::set_var("TANDEM_SEARCH_BACKEND", "auto");
+        std::env::set_var("TANDEM_BRAVE_SEARCH_API_KEY", "brave-test-key");
+        std::env::set_var("TANDEM_EXA_API_KEY", "exa-test-key");
+
+        let backend = SearchBackend::from_env();
+
+        match backend {
+            SearchBackend::Auto { backends } => {
+                assert_eq!(backends.len(), 2);
+                assert!(matches!(backends[0], SearchBackend::Brave { .. }));
+                assert!(matches!(backends[1], SearchBackend::Exa { .. }));
+            }
+            other => panic!("expected auto backend, got {other:?}"),
+        }
+
+        clear_search_env();
+    }
+
+    #[test]
+    fn search_backend_implicit_auto_failover_when_multiple_backends_are_configured() {
+        let _guard = search_env_lock().lock().expect("env lock");
+        clear_search_env();
+        std::env::set_var("TANDEM_BRAVE_SEARCH_API_KEY", "brave-test-key");
+        std::env::set_var("TANDEM_EXA_API_KEY", "exa-test-key");
+
+        let backend = SearchBackend::from_env();
+
+        match backend {
+            SearchBackend::Auto { backends } => {
+                assert_eq!(backends.len(), 2);
+                assert!(matches!(backends[0], SearchBackend::Brave { .. }));
+                assert!(matches!(backends[1], SearchBackend::Exa { .. }));
+            }
+            other => panic!("expected auto backend, got {other:?}"),
+        }
+
+        clear_search_env();
+    }
+
+    #[test]
     fn search_backend_explicit_none_disables_websearch() {
         let _guard = search_env_lock().lock().expect("env lock");
         clear_search_env();
@@ -5415,9 +5669,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_registry_omits_websearch_when_search_backend_disabled() {
+    async fn tool_registry_includes_websearch_by_default() {
         let _guard = search_env_lock().lock().expect("env lock");
         clear_search_env();
+
+        let registry = ToolRegistry::new();
+        let names = registry
+            .list()
+            .await
+            .into_iter()
+            .map(|schema| schema.name)
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().any(|name| name == "websearch"));
+
+        clear_search_env();
+    }
+
+    #[tokio::test]
+    async fn tool_registry_omits_websearch_when_search_backend_explicitly_disabled() {
+        let _guard = search_env_lock().lock().expect("env lock");
+        clear_search_env();
+        std::env::set_var("TANDEM_SEARCH_BACKEND", "none");
 
         let registry = ToolRegistry::new();
         let names = registry

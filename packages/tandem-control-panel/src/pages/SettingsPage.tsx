@@ -53,12 +53,31 @@ type BrowserSmokeTestResponse = {
 
 type SettingsSection =
   | "providers"
+  | "search"
   | "identity"
   | "theme"
   | "channels"
   | "mcp"
   | "bug_monitor"
   | "browser";
+
+type SearchSettingsResponse = {
+  available?: boolean;
+  local_engine?: boolean;
+  writable?: boolean;
+  managed_env_path?: string | null;
+  restart_required?: boolean;
+  restart_hint?: string | null;
+  reason?: string | null;
+  settings?: {
+    backend?: string;
+    tandem_url?: string | null;
+    searxng_url?: string | null;
+    timeout_ms?: number | null;
+    has_brave_key?: boolean;
+    has_exa_key?: boolean;
+  } | null;
+};
 
 type BugMonitorConfigRow = {
   enabled?: boolean;
@@ -455,6 +474,12 @@ export function SettingsPage({
   const [botAvatarUrl, setBotAvatarUrl] = useState(String(identity?.botAvatarUrl || ""));
   const [botControlPanelAlias, setBotControlPanelAlias] = useState("Control Center");
   const [activeSection, setActiveSection] = useState<SettingsSection>("providers");
+  const [searchBackend, setSearchBackend] = useState("auto");
+  const [searchTandemUrl, setSearchTandemUrl] = useState("");
+  const [searchSearxngUrl, setSearchSearxngUrl] = useState("");
+  const [searchTimeoutMs, setSearchTimeoutMs] = useState("10000");
+  const [searchBraveKey, setSearchBraveKey] = useState("");
+  const [searchExaKey, setSearchExaKey] = useState("");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [githubMcpGuideOpen, setGithubMcpGuideOpen] = useState(false);
   const [providerDefaultsOpen, setProviderDefaultsOpen] = useState(false);
@@ -534,6 +559,19 @@ export function SettingsPage({
     queryKey: ["settings", "providers", "config"],
     queryFn: () => client.providers.config().catch(() => ({ default: "", providers: {} })),
   });
+  const searchSettingsQuery = useQuery<SearchSettingsResponse | null>({
+    queryKey: ["settings", "search", "config"],
+    queryFn: () => api("/api/system/search-settings", { method: "GET" }).catch(() => null),
+  });
+
+  useEffect(() => {
+    const settings = searchSettingsQuery.data?.settings || null;
+    if (!settings) return;
+    setSearchBackend(String(settings.backend || "auto").trim() || "auto");
+    setSearchTandemUrl(String(settings.tandem_url || "").trim());
+    setSearchSearxngUrl(String(settings.searxng_url || "").trim());
+    setSearchTimeoutMs(String(settings.timeout_ms || 10000));
+  }, [searchSettingsQuery.data]);
 
   const browserStatus = useQuery<BrowserStatusResponse | null>({
     queryKey: ["settings", "browser", "status"],
@@ -829,6 +867,36 @@ export function SettingsPage({
     onSuccess: async () => {
       toast("ok", "API key updated.");
       await refreshProviderStatus();
+    },
+    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
+  });
+  const saveSearchSettingsMutation = useMutation({
+    mutationFn: async (
+      payload: Partial<{
+        backend: string;
+        tandem_url: string;
+        searxng_url: string;
+        timeout_ms: number;
+        brave_api_key: string;
+        exa_api_key: string;
+        clear_brave_key: boolean;
+        clear_exa_key: boolean;
+      }>
+    ) =>
+      api("/api/system/search-settings", {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: async (result: SearchSettingsResponse) => {
+      setSearchBraveKey("");
+      setSearchExaKey("");
+      await queryClient.invalidateQueries({ queryKey: ["settings", "search"] });
+      toast(
+        "ok",
+        result?.restart_required
+          ? "Search settings saved. Restart tandem-engine to apply them."
+          : "Search settings saved."
+      );
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
@@ -1246,6 +1314,7 @@ export function SettingsPage({
 
   const sectionTabs: Array<{ id: SettingsSection; label: string; icon: string }> = [
     { id: "providers", label: "Providers", icon: "cpu" },
+    { id: "search", label: "Web Search", icon: "globe" },
     { id: "identity", label: "Identity", icon: "badge-check" },
     { id: "theme", label: "Themes", icon: "paint-bucket" },
     { id: "channels", label: "Channels", icon: "message-circle" },
@@ -1282,6 +1351,7 @@ export function SettingsPage({
     bugMonitorTriageRunMutation.isPending,
     saveBugMonitorMutation.isPending,
     mcpActionMutation.isPending,
+    saveSearchSettingsMutation.isPending,
   ]);
 
   return (
@@ -1513,6 +1583,259 @@ export function SettingsPage({
                       ) : null}
                     </AnimatePresence>
                   </div>
+                </PanelCard>
+              ) : null}
+
+              {activeSection === "search" ? (
+                <PanelCard
+                  title="Web Search"
+                  subtitle="Configure the engine's `websearch` backend and provider keys."
+                  actions={
+                    <Toolbar>
+                      <Badge
+                        tone={searchSettingsQuery.data?.settings?.has_brave_key ? "ok" : "warn"}
+                      >
+                        Brave{" "}
+                        {searchSettingsQuery.data?.settings?.has_brave_key
+                          ? "configured"
+                          : "missing"}
+                      </Badge>
+                      <Badge tone={searchSettingsQuery.data?.settings?.has_exa_key ? "ok" : "warn"}>
+                        Exa{" "}
+                        {searchSettingsQuery.data?.settings?.has_exa_key ? "configured" : "missing"}
+                      </Badge>
+                      <button
+                        className="tcp-btn-primary"
+                        onClick={() =>
+                          saveSearchSettingsMutation.mutate({
+                            backend: searchBackend,
+                            tandem_url: searchTandemUrl,
+                            searxng_url: searchSearxngUrl,
+                            timeout_ms: Number.parseInt(searchTimeoutMs || "10000", 10),
+                            brave_api_key: searchBraveKey.trim() || undefined,
+                            exa_api_key: searchExaKey.trim() || undefined,
+                          })
+                        }
+                        disabled={
+                          !searchSettingsQuery.data?.available ||
+                          saveSearchSettingsMutation.isPending
+                        }
+                      >
+                        <i data-lucide="save"></i>
+                        Save
+                      </button>
+                    </Toolbar>
+                  }
+                >
+                  {!searchSettingsQuery.data?.available ? (
+                    <EmptyState
+                      text={
+                        searchSettingsQuery.data?.reason ||
+                        "Search settings are only editable here when the panel points at a local engine host."
+                      }
+                    />
+                  ) : (
+                    <div className="grid gap-4">
+                      <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4 text-sm">
+                        <div className="font-medium">Engine env file</div>
+                        <div className="tcp-subtle mt-1 break-all">
+                          {searchSettingsQuery.data?.managed_env_path || "/etc/tandem/engine.env"}
+                        </div>
+                        <div className="tcp-subtle mt-2 text-xs">
+                          {searchSettingsQuery.data?.restart_hint ||
+                            "Restart tandem-engine after saving search settings."}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="grid gap-1 text-sm">
+                          <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                            Backend
+                          </span>
+                          <select
+                            className="tcp-select"
+                            value={searchBackend}
+                            onChange={(e) =>
+                              setSearchBackend((e.target as HTMLSelectElement).value)
+                            }
+                          >
+                            <option value="auto">Auto failover</option>
+                            <option value="brave">Brave Search</option>
+                            <option value="exa">Exa</option>
+                            <option value="searxng">SearxNG</option>
+                            <option value="tandem">Tandem hosted search</option>
+                            <option value="none">Disable websearch</option>
+                          </select>
+                        </label>
+                        <label className="grid gap-1 text-sm">
+                          <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                            Timeout (ms)
+                          </span>
+                          <input
+                            className="tcp-input"
+                            type="number"
+                            min={1000}
+                            max={120000}
+                            value={searchTimeoutMs}
+                            onInput={(e) =>
+                              setSearchTimeoutMs((e.target as HTMLInputElement).value)
+                            }
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="grid gap-1 text-sm">
+                          <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                            Tandem search URL
+                          </span>
+                          <input
+                            className="tcp-input"
+                            placeholder="https://search.tandem.frumu.ai"
+                            value={searchTandemUrl}
+                            onInput={(e) =>
+                              setSearchTandemUrl((e.target as HTMLInputElement).value)
+                            }
+                          />
+                        </label>
+                        <label className="grid gap-1 text-sm">
+                          <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                            SearxNG URL
+                          </span>
+                          <input
+                            className="tcp-input"
+                            placeholder="http://127.0.0.1:8080"
+                            value={searchSearxngUrl}
+                            onInput={(e) =>
+                              setSearchSearxngUrl((e.target as HTMLInputElement).value)
+                            }
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="grid gap-2 rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-medium">Brave Search key</div>
+                            <Badge
+                              tone={
+                                searchSettingsQuery.data?.settings?.has_brave_key ? "ok" : "warn"
+                              }
+                            >
+                              {searchSettingsQuery.data?.settings?.has_brave_key
+                                ? "Saved"
+                                : "Missing"}
+                            </Badge>
+                          </div>
+                          <input
+                            className="tcp-input"
+                            type="password"
+                            placeholder="Paste Brave Search key"
+                            value={searchBraveKey}
+                            onInput={(e) => setSearchBraveKey((e.target as HTMLInputElement).value)}
+                          />
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              className="tcp-btn"
+                              onClick={() =>
+                                saveSearchSettingsMutation.mutate({
+                                  backend: searchBackend,
+                                  tandem_url: searchTandemUrl,
+                                  searxng_url: searchSearxngUrl,
+                                  timeout_ms: Number.parseInt(searchTimeoutMs || "10000", 10),
+                                  brave_api_key: searchBraveKey.trim() || undefined,
+                                })
+                              }
+                              disabled={
+                                !searchBraveKey.trim() || saveSearchSettingsMutation.isPending
+                              }
+                            >
+                              Save Brave Key
+                            </button>
+                            {searchSettingsQuery.data?.settings?.has_brave_key ? (
+                              <button
+                                className="tcp-btn"
+                                onClick={() =>
+                                  saveSearchSettingsMutation.mutate({
+                                    backend: searchBackend,
+                                    tandem_url: searchTandemUrl,
+                                    searxng_url: searchSearxngUrl,
+                                    timeout_ms: Number.parseInt(searchTimeoutMs || "10000", 10),
+                                    clear_brave_key: true,
+                                  })
+                                }
+                                disabled={saveSearchSettingsMutation.isPending}
+                              >
+                                Remove
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="grid gap-2 rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-medium">Exa key</div>
+                            <Badge
+                              tone={searchSettingsQuery.data?.settings?.has_exa_key ? "ok" : "warn"}
+                            >
+                              {searchSettingsQuery.data?.settings?.has_exa_key
+                                ? "Saved"
+                                : "Missing"}
+                            </Badge>
+                          </div>
+                          <input
+                            className="tcp-input"
+                            type="password"
+                            placeholder="Paste Exa API key"
+                            value={searchExaKey}
+                            onInput={(e) => setSearchExaKey((e.target as HTMLInputElement).value)}
+                          />
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              className="tcp-btn"
+                              onClick={() =>
+                                saveSearchSettingsMutation.mutate({
+                                  backend: searchBackend,
+                                  tandem_url: searchTandemUrl,
+                                  searxng_url: searchSearxngUrl,
+                                  timeout_ms: Number.parseInt(searchTimeoutMs || "10000", 10),
+                                  exa_api_key: searchExaKey.trim() || undefined,
+                                })
+                              }
+                              disabled={
+                                !searchExaKey.trim() || saveSearchSettingsMutation.isPending
+                              }
+                            >
+                              Save Exa Key
+                            </button>
+                            {searchSettingsQuery.data?.settings?.has_exa_key ? (
+                              <button
+                                className="tcp-btn"
+                                onClick={() =>
+                                  saveSearchSettingsMutation.mutate({
+                                    backend: searchBackend,
+                                    tandem_url: searchTandemUrl,
+                                    searxng_url: searchSearxngUrl,
+                                    timeout_ms: Number.parseInt(searchTimeoutMs || "10000", 10),
+                                    clear_exa_key: true,
+                                  })
+                                }
+                                disabled={saveSearchSettingsMutation.isPending}
+                              >
+                                Remove
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="tcp-subtle text-xs">
+                        `auto` tries the configured backends with failover. If Brave is rate-limited
+                        and Exa is configured, the engine can continue with Exa instead of returning
+                        a generic unavailable message.
+                      </div>
+                    </div>
+                  )}
                 </PanelCard>
               ) : null}
 

@@ -22,6 +22,7 @@ pub(super) fn build_router(state: AppState) -> Router {
     router = super::routes_skills_memory::apply(router);
     router = super::routes_missions_teams::apply(router);
     router = super::routes_mission_builder::apply(router);
+    router = super::routes_optimizations::apply(router);
     router = super::routes_config_providers::apply(router);
     router = super::routes_system_api::apply(router);
     router = super::routes_routines_automations::apply(router);

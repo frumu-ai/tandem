@@ -380,8 +380,8 @@ fn placeholder_artifact_text_is_rejected() {
         "Completed previously in this run; preserving file creation requirement."
     ));
     assert!(placeholder_like_artifact_text(
-            "Created/updated to satisfy workflow artifact requirement. See existing workspace research already completed in this run."
-        ));
+        "Created/updated to satisfy workflow artifact requirement. See existing workspace research already completed in this run."
+    ));
     assert!(placeholder_like_artifact_text(
         "Marketing brief completed and written to marketing-brief.md."
     ));
@@ -1097,6 +1097,349 @@ fn filter_requested_tools_to_available_removes_unconfigured_websearch() {
         filtered,
         vec!["glob".to_string(), "read".to_string(), "write".to_string()]
     );
+}
+
+#[test]
+fn structured_json_prompt_requires_json_only_without_follow_up_questions() {
+    let automation = AutomationV2Spec {
+        automation_id: "automation-json-only".to_string(),
+        name: "JSON Only".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        agents: Vec::new(),
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+    };
+    let node = AutomationFlowNode {
+        node_id: "research-external-research".to_string(),
+        agent_id: "research".to_string(),
+        objective: "Perform external research".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return structured JSON.".to_string()),
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "title": "External Research",
+                "role": "watcher",
+                "prompt": "Return structured research handoff.",
+                "research_stage": "research_external_sources"
+            }
+        })),
+    };
+    let agent = AutomationAgentProfile {
+        agent_id: "research".to_string(),
+        template_id: None,
+        display_name: "Research".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec![
+                "glob".to_string(),
+                "read".to_string(),
+                "webfetch".to_string(),
+            ],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp",
+        "run-json-only",
+        &node,
+        2,
+        &agent,
+        &[],
+        &[
+            "glob".to_string(),
+            "read".to_string(),
+            "webfetch".to_string(),
+        ],
+        None,
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("The final response body should contain JSON only"));
+    assert!(prompt.contains("Do not include headings, bullets, markdown fences, prose explanations, or follow-up questions"));
+}
+
+#[test]
+fn external_research_prompt_handles_missing_websearch_tool() {
+    let automation = AutomationV2Spec {
+        automation_id: "automation-external-fallback".to_string(),
+        name: "External Fallback".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        agents: Vec::new(),
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+    };
+    let node = AutomationFlowNode {
+        node_id: "research-external-research".to_string(),
+        agent_id: "research".to_string(),
+        objective: "Perform targeted external research".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return structured JSON.".to_string()),
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "title": "External Research",
+                "role": "watcher",
+                "prompt": "Use external tools and return structured findings.",
+                "research_stage": "research_external_sources",
+                "web_research_expected": true
+            }
+        })),
+    };
+    let agent = AutomationAgentProfile {
+        agent_id: "research".to_string(),
+        template_id: None,
+        display_name: "Research".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec![
+                "glob".to_string(),
+                "read".to_string(),
+                "webfetch".to_string(),
+            ],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp",
+        "run-external-fallback",
+        &node,
+        2,
+        &agent,
+        &[],
+        &[
+            "glob".to_string(),
+            "read".to_string(),
+            "webfetch".to_string(),
+        ],
+        None,
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("`websearch` is not available in this run"));
+    assert!(prompt.contains("Use `webfetch` only for concrete URLs already present in local sources or upstream handoffs"));
+    assert!(prompt.contains("Do not ask the user for clarification or permission to continue"));
+}
+
+#[test]
+fn render_prompt_normalizes_upstream_research_paths_from_sources_root() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-upstream-path-normalization-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(workspace_root.join("tandem-reference/readmes"))
+        .expect("create readmes dir");
+    std::fs::write(
+        workspace_root.join("tandem-reference/SOURCES.md"),
+        "# Sources",
+    )
+    .expect("seed sources");
+    std::fs::write(
+        workspace_root.join("tandem-reference/readmes/repo-README.md"),
+        "# Repo",
+    )
+    .expect("seed repo readme");
+
+    let automation = AutomationV2Spec {
+        automation_id: "automation-upstream-paths".to_string(),
+        name: "Upstream Paths".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        agents: Vec::new(),
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some(
+            workspace_root
+                .to_str()
+                .expect("workspace root string")
+                .to_string(),
+        ),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+    };
+    let node = AutomationFlowNode {
+        node_id: "research-local-sources".to_string(),
+        agent_id: "research".to_string(),
+        objective: "Read prioritized local files".to_string(),
+        depends_on: vec!["research-discover-sources".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "research-discover-sources".to_string(),
+            alias: "source_inventory".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return structured JSON.".to_string()),
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "title": "Read Local Sources",
+                "role": "watcher",
+                "prompt": "Use the upstream handoff as the file plan.",
+                "research_stage": "research_local_sources"
+            }
+        })),
+    };
+    let agent = AutomationAgentProfile {
+        agent_id: "research".to_string(),
+        template_id: None,
+        display_name: "Research".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec!["read".to_string()],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+        },
+        approval_policy: None,
+    };
+    let upstream_inputs = vec![json!({
+        "alias": "source_inventory",
+        "from_step_id": "research-discover-sources",
+        "output": {
+            "artifact_validation": {
+                "read_paths": ["tandem-reference/SOURCES.md"],
+                "current_node_read_paths": ["tandem-reference/SOURCES.md"]
+            },
+            "content": {
+                "structured_handoff": {
+                    "discovered_paths": ["readmes/repo-README.md"],
+                    "priority_paths": ["readmes/repo-README.md"]
+                },
+                "text": "{\"discovered_paths\":[\"readmes/repo-README.md\"],\"priority_paths\":[\"readmes/repo-README.md\"]}"
+            }
+        }
+    })];
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        workspace_root.to_str().expect("workspace root string"),
+        "run-upstream-paths",
+        &node,
+        1,
+        &agent,
+        &upstream_inputs,
+        &["read".to_string()],
+        None,
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("tandem-reference/readmes/repo-README.md"));
+
+    let _ = std::fs::remove_dir_all(workspace_root);
 }
 
 #[test]
@@ -3812,6 +4155,168 @@ fn code_workflow_rejects_unsafe_raw_source_rewrites() {
 }
 
 #[test]
+fn research_finalize_prompt_includes_upstream_coverage_summary() {
+    let automation = AutomationV2Spec {
+        automation_id: "automation-research-summary".to_string(),
+        name: "Research Summary".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        agents: Vec::new(),
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+    };
+    let node = AutomationFlowNode {
+        node_id: "research-brief".to_string(),
+        agent_id: "research".to_string(),
+        objective: "Write marketing brief".to_string(),
+        depends_on: vec![
+            "research-discover-sources".to_string(),
+            "research-local-sources".to_string(),
+            "research-external-research".to_string(),
+        ],
+        input_refs: vec![
+            AutomationFlowInputRef {
+                from_step_id: "research-discover-sources".to_string(),
+                alias: "source_inventory".to_string(),
+            },
+            AutomationFlowInputRef {
+                from_step_id: "research-local-sources".to_string(),
+                alias: "local_source_notes".to_string(),
+            },
+            AutomationFlowInputRef {
+                from_step_id: "research-external-research".to_string(),
+                alias: "external_research".to_string(),
+            },
+        ],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "brief".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Write `marketing-brief.md`.".to_string()),
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "title": "Research Brief",
+                "role": "watcher",
+                "output_path": "marketing-brief.md",
+                "research_stage": "research_finalize",
+                "prompt": "Finalize the brief."
+            }
+        })),
+    };
+    let agent = AutomationAgentProfile {
+        agent_id: "research".to_string(),
+        template_id: None,
+        display_name: "Research".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec!["glob".to_string(), "read".to_string(), "write".to_string()],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+        },
+        approval_policy: None,
+    };
+    let upstream_inputs = vec![
+        json!({
+            "alias": "source_inventory",
+            "from_step_id": "research-discover-sources",
+            "output": {
+                "content": {
+                    "structured_handoff": {
+                        "discovered_paths": [
+                            {"path": "tandem-reference/SOURCES.md", "type": "file"},
+                            {"path": "tandem/implementation_plan.md", "type": "file"}
+                        ],
+                        "priority_paths": [
+                            {"path": "tandem-reference/SOURCES.md", "priority": 1},
+                            {"path": "tandem/implementation_plan.md", "priority": 2}
+                        ]
+                    }
+                }
+            }
+        }),
+        json!({
+            "alias": "local_source_notes",
+            "from_step_id": "research-local-sources",
+            "output": {
+                "content": {
+                    "structured_handoff": {
+                        "files_reviewed": ["tandem-reference/SOURCES.md"],
+                        "files_not_reviewed": [
+                            {"path": "tandem/implementation_plan.md", "reason": "deferred"}
+                        ]
+                    }
+                }
+            }
+        }),
+        json!({
+            "alias": "external_research",
+            "from_step_id": "research-external-research",
+            "output": {
+                "content": {
+                    "structured_handoff": {
+                        "sources_reviewed": [
+                            {"url": "https://example.com/reference"}
+                        ]
+                    }
+                }
+            }
+        }),
+    ];
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp",
+        "run-research-summary",
+        &node,
+        1,
+        &agent,
+        &upstream_inputs,
+        &["glob".to_string(), "read".to_string(), "write".to_string()],
+        None,
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("Research Coverage Summary:"));
+    assert!(prompt.contains("`tandem-reference/SOURCES.md`"));
+    assert!(prompt.contains("`tandem/implementation_plan.md`"));
+    assert!(prompt.contains("`Files reviewed` or `Files not reviewed`"));
+    assert!(prompt.contains("citation-backed"));
+}
+
+#[test]
 fn artifact_validation_restores_substantive_session_write_over_short_completion_note() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-automation-restore-write-{}",
@@ -3888,25 +4393,23 @@ fn artifact_validation_restores_substantive_session_write_over_short_completion_
     ));
 
     let (accepted_output, metadata, rejected) = validate_automation_artifact_output(
-            &node,
-            &session,
-            workspace_root
-                .to_str()
-                .expect("workspace root string"),
-            "Done — `marketing-brief.md` was written in the workspace.\n\n{\"status\":\"completed\",\"approved\":true}",
-            &json!({
-                "requested_tools": ["glob", "read", "websearch", "write"],
-                "executed_tools": ["glob", "websearch", "write"],
-                "workspace_inspection_used": true,
-                "web_research_used": true
-            }),
-            None,
-            Some((
-                "marketing-brief.md".to_string(),
-                "Marketing brief completed and written to marketing-brief.md.".to_string(),
-            )),
-            &snapshot,
-        );
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "Done — `marketing-brief.md` was written in the workspace.\n\n{\"status\":\"completed\",\"approved\":true}",
+        &json!({
+            "requested_tools": ["glob", "read", "websearch", "write"],
+            "executed_tools": ["glob", "websearch", "write"],
+            "workspace_inspection_used": true,
+            "web_research_used": true
+        }),
+        None,
+        Some((
+            "marketing-brief.md".to_string(),
+            "Marketing brief completed and written to marketing-brief.md.".to_string(),
+        )),
+        &snapshot,
+    );
 
     assert_eq!(
         rejected.as_deref(),
@@ -3929,17 +4432,17 @@ fn artifact_validation_restores_substantive_session_write_over_short_completion_
         "Marketing brief completed and written to marketing-brief.md."
     );
     let (status, reason, approved) = detect_automation_node_status(
-            &node,
-            "Done — `marketing-brief.md` was written in the workspace.\n\n{\"status\":\"completed\",\"approved\":true}",
-            accepted_output.as_ref(),
-            &json!({
-                "requested_tools": ["glob", "read", "websearch", "write"],
-                "executed_tools": ["glob", "websearch", "write"],
-                "workspace_inspection_used": true,
-                "web_research_used": true
-            }),
-            Some(&metadata),
-        );
+        &node,
+        "Done — `marketing-brief.md` was written in the workspace.\n\n{\"status\":\"completed\",\"approved\":true}",
+        accepted_output.as_ref(),
+        &json!({
+            "requested_tools": ["glob", "read", "websearch", "write"],
+            "executed_tools": ["glob", "websearch", "write"],
+            "workspace_inspection_used": true,
+            "web_research_used": true
+        }),
+        Some(&metadata),
+    );
     assert_eq!(status, "needs_repair");
     assert_eq!(
         reason.as_deref(),
@@ -3962,9 +4465,9 @@ fn artifact_validation_blocks_session_text_recovery_until_prewrite_is_satisfied(
     );
     let placeholder = "Marketing brief completed and written to marketing-brief.md.\n";
     let substantive = format!(
-            "# Marketing Brief\n\n## Workspace source audit\n{}\n\n## Files reviewed\n- docs/source.md\n\n## Web sources reviewed\n- https://example.com\n",
-            "Unsafely recovered brief content. ".repeat(30)
-        );
+        "# Marketing Brief\n\n## Workspace source audit\n{}\n\n## Files reviewed\n- docs/source.md\n\n## Web sources reviewed\n- https://example.com\n",
+        "Unsafely recovered brief content. ".repeat(30)
+    );
     std::fs::write(workspace_root.join("marketing-brief.md"), placeholder)
         .expect("seed placeholder");
     let node = AutomationFlowNode {
@@ -4050,9 +4553,9 @@ fn research_validation_does_not_accept_preexisting_output_without_current_attemp
         workspace_root.to_str().expect("workspace root string"),
     );
     let stale_preexisting = format!(
-            "# Marketing Brief\n\n## Workspace source audit\n{}\n\n## Campaign Goal\nCarry over stale content.\n\n## Files Reviewed\nNone\n\n## Files Not Reviewed\nAll\n\n## Web Sources Reviewed\nNone\n",
-            "Stale brief content from an earlier failed run. ".repeat(30)
-        );
+        "# Marketing Brief\n\n## Workspace source audit\n{}\n\n## Campaign Goal\nCarry over stale content.\n\n## Files Reviewed\nNone\n\n## Files Not Reviewed\nAll\n\n## Web Sources Reviewed\nNone\n",
+        "Stale brief content from an earlier failed run. ".repeat(30)
+    );
     let current_disk_output = "# Marketing Brief\n\nAttempt wrote nothing new.\n".to_string();
     std::fs::write(
         workspace_root.join("marketing-brief.md"),
@@ -4094,21 +4597,24 @@ fn research_validation_does_not_accept_preexisting_output_without_current_attemp
     );
 
     let (accepted_output, metadata, rejected) = validate_automation_artifact_output(
-            &node,
-            &session,
-            workspace_root.to_str().expect("workspace root string"),
-            "I completed project analysis steps using tools, but the model returned no final narrative text.",
-            &json!({
-                "requested_tools": ["glob", "read", "websearch", "write"],
-                "executed_tools": [],
-                "workspace_inspection_used": false,
-                "web_research_used": false,
-                "web_research_succeeded": false
-            }),
-            Some(&stale_preexisting),
-            Some(("marketing-brief.md".to_string(), current_disk_output.clone())),
-            &snapshot,
-        );
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "I completed project analysis steps using tools, but the model returned no final narrative text.",
+        &json!({
+            "requested_tools": ["glob", "read", "websearch", "write"],
+            "executed_tools": [],
+            "workspace_inspection_used": false,
+            "web_research_used": false,
+            "web_research_succeeded": false
+        }),
+        Some(&stale_preexisting),
+        Some((
+            "marketing-brief.md".to_string(),
+            current_disk_output.clone(),
+        )),
+        &snapshot,
+    );
 
     assert!(accepted_output.is_none());
     assert_eq!(
@@ -4311,9 +4817,9 @@ fn artifact_validation_prefers_structurally_stronger_candidate_without_phrase_ma
         workspace_root.to_str().expect("workspace root string"),
     );
     let substantive = format!(
-            "# Marketing Brief\n\n## Workspace source audit\n{}\n\n## Files reviewed\n- docs/source.md\n\n## Files not reviewed\n- docs/extra.md (out of scope)\n",
-            "Detailed sourced content. ".repeat(50)
-        );
+        "# Marketing Brief\n\n## Workspace source audit\n{}\n\n## Files reviewed\n- docs/source.md\n\n## Files not reviewed\n- docs/extra.md (out of scope)\n",
+        "Detailed sourced content. ".repeat(50)
+    );
     let weak_final = "# Marketing Brief\n\nShort wrap-up.\n".to_string();
     std::fs::write(workspace_root.join("marketing-brief.md"), &weak_final)
         .expect("seed final weak artifact");
@@ -4563,17 +5069,15 @@ fn brief_with_timed_out_websearch_is_blocked_when_web_research_is_required() {
     );
 
     let (accepted_output, metadata, rejected) = validate_automation_artifact_output(
-            &node,
-            &session,
-            workspace_root
-                .to_str()
-                .expect("workspace root string"),
-            "Done — `marketing-brief.md` was written in the workspace.\n\n{\"status\":\"completed\",\"approved\":true}",
-            &tool_telemetry,
-            None,
-            Some(("marketing-brief.md".to_string(), brief_text.clone())),
-            &snapshot,
-        );
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "Done — `marketing-brief.md` was written in the workspace.\n\n{\"status\":\"completed\",\"approved\":true}",
+        &tool_telemetry,
+        None,
+        Some(("marketing-brief.md".to_string(), brief_text.clone())),
+        &snapshot,
+    );
 
     assert!(accepted_output.is_some());
     assert_eq!(
@@ -4587,12 +5091,12 @@ fn brief_with_timed_out_websearch_is_blocked_when_web_research_is_required() {
         Some("research completed without citation-backed claims")
     );
     let (status, reason, approved) = detect_automation_node_status(
-            &node,
-            "Done — `marketing-brief.md` was written in the workspace.\n\n{\"status\":\"completed\",\"approved\":true}",
-            accepted_output.as_ref(),
-            &tool_telemetry,
-            Some(&metadata),
-        );
+        &node,
+        "Done — `marketing-brief.md` was written in the workspace.\n\n{\"status\":\"completed\",\"approved\":true}",
+        accepted_output.as_ref(),
+        &tool_telemetry,
+        Some(&metadata),
+    );
     assert_eq!(status, "needs_repair");
     assert_eq!(
         reason.as_deref(),
@@ -5204,6 +5708,121 @@ fn research_brief_passes_local_only_when_websearch_is_not_offered() {
 }
 
 #[test]
+fn research_brief_passes_when_source_audit_uses_markdown_tables() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-research-table-audit-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(workspace_root.join("docs")).expect("create workspace");
+    let brief_text = "# Marketing Brief\n\n## Workspace source audit\nPrepared from workspace sources.\n\n### Files Reviewed\n| Local Path | Evidence Summary |\n|---|---|\n| `docs/source.md` | Core source reviewed |\n\n### Files Not Reviewed\n| Local Path | Reason |\n|---|---|\n| `docs/extra.md` | Out of scope for this run |\n\n### Web Sources Reviewed\n| URL | Status | Notes |\n|---|---|---|\n| https://example.com | Fetched | Confirmed live |\n\n## Campaign goal\nClarify positioning.\n\n## Target audience\n- Operators.\n\n## Core pain points\n- Coordination overhead.\n\n## Positioning angle\nTandem centralizes orchestration.\n\n## Competitor context\nLocal-only comparison for this run.\n\n## Proof points with citations\n1. Supported from docs/source.md. Source note: https://example.com/reference\n\n## Likely objections\n- Proof depth.\n\n## Channel considerations\n- Landing page.\n\n## Recommended message hierarchy\n1. Problem\n2. Promise\n".to_string();
+    std::fs::write(workspace_root.join("marketing-brief.md"), &brief_text).expect("seed brief");
+    let node = AutomationFlowNode {
+        node_id: "research-brief".to_string(),
+        agent_id: "researcher".to_string(),
+        objective: "Write marketing brief".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "brief".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": "marketing-brief.md",
+                "web_research_expected": true
+            }
+        })),
+    };
+    let mut session = Session::new(
+        Some("research-table-audit".to_string()),
+        Some(
+            workspace_root
+                .to_str()
+                .expect("workspace root string")
+                .to_string(),
+        ),
+    );
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![
+            MessagePart::ToolInvocation {
+                tool: "read".to_string(),
+                args: json!({"path":"docs/source.md"}),
+                result: Some(json!({"output":"source"})),
+                error: None,
+            },
+            MessagePart::ToolInvocation {
+                tool: "websearch".to_string(),
+                args: json!({"query":"tandem competitor landscape"}),
+                result: Some(json!({
+                    "output": "Authorization required for `websearch`.",
+                    "metadata": { "error": "authorization required" }
+                })),
+                error: None,
+            },
+            MessagePart::ToolInvocation {
+                tool: "write".to_string(),
+                args: json!({"path":"marketing-brief.md","content":brief_text}),
+                result: Some(json!({"ok": true})),
+                error: None,
+            },
+        ],
+    ));
+    let requested_tools = vec![
+        "glob".to_string(),
+        "read".to_string(),
+        "websearch".to_string(),
+        "write".to_string(),
+    ];
+    let tool_telemetry = summarize_automation_tool_activity(&node, &session, &requested_tools);
+    let (_accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "Done\n\n{\"status\":\"completed\"}",
+        &tool_telemetry,
+        None,
+        Some(("marketing-brief.md".to_string(), brief_text.clone())),
+        &std::collections::BTreeSet::new(),
+    );
+
+    assert!(rejected.is_none());
+    assert_eq!(
+        artifact_validation
+            .get("validation_outcome")
+            .and_then(Value::as_str),
+        Some("passed")
+    );
+    assert_eq!(
+        artifact_validation
+            .get("semantic_block_reason")
+            .and_then(Value::as_str),
+        None
+    );
+    assert_eq!(
+        artifact_validation
+            .get("web_sources_reviewed_present")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(artifact_validation
+        .get("reviewed_paths_backed_by_read")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("docs/source.md"))));
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+#[test]
 fn structured_handoff_nodes_fail_when_only_fallback_tool_summary_is_returned() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-structured-handoff-fallback-{}",
@@ -5266,15 +5885,15 @@ fn structured_handoff_nodes_fail_when_only_fallback_tool_summary_is_returned() {
     let requested_tools = vec!["glob".to_string(), "read".to_string()];
     let tool_telemetry = summarize_automation_tool_activity(&node, &session, &requested_tools);
     let (_accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
-            &node,
-            &session,
-            workspace_root.to_str().expect("workspace root string"),
-            "I completed project analysis steps using tools, but the model returned no final narrative text.\n\nTool result summary:\nTool `read` result:\n# Sources",
-            &tool_telemetry,
-            None,
-            None,
-            &std::collections::BTreeSet::new(),
-        );
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "I completed project analysis steps using tools, but the model returned no final narrative text.\n\nTool result summary:\nTool `read` result:\n# Sources",
+        &tool_telemetry,
+        None,
+        None,
+        &std::collections::BTreeSet::new(),
+    );
 
     assert_eq!(
         rejected.as_deref(),
@@ -5351,15 +5970,15 @@ fn structured_handoff_missing_is_repairable_even_without_enforcement_metadata() 
     let requested_tools = vec!["glob".to_string(), "read".to_string()];
     let tool_telemetry = summarize_automation_tool_activity(&node, &session, &requested_tools);
     let (_accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
-            &node,
-            &session,
-            workspace_root.to_str().expect("workspace root string"),
-            "I completed project analysis steps using tools, but the model returned no final narrative text.\n\nTool result summary:\nTool `read` result:\n# Sources",
-            &tool_telemetry,
-            None,
-            None,
-            &std::collections::BTreeSet::new(),
-        );
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "I completed project analysis steps using tools, but the model returned no final narrative text.\n\nTool result summary:\nTool `read` result:\n# Sources",
+        &tool_telemetry,
+        None,
+        None,
+        &std::collections::BTreeSet::new(),
+    );
 
     assert_eq!(
         rejected.as_deref(),
@@ -5385,14 +6004,14 @@ fn structured_handoff_missing_is_repairable_even_without_enforcement_metadata() 
             .is_some_and(|text| text.contains("structured JSON handoff")))));
 
     let output = wrap_automation_node_output(
-            &node,
-            &session,
-            &requested_tools,
-            "sess-structured-handoff-defaults",
-            "I completed project analysis steps using tools, but the model returned no final narrative text.\n\nTool result summary:\nTool `read` result:\n# Sources",
-            None,
-            Some(artifact_validation),
-        );
+        &node,
+        &session,
+        &requested_tools,
+        "sess-structured-handoff-defaults",
+        "I completed project analysis steps using tools, but the model returned no final narrative text.\n\nTool result summary:\nTool `read` result:\n# Sources",
+        None,
+        Some(artifact_validation),
+    );
     assert_eq!(
         output.get("status").and_then(Value::as_str),
         Some("needs_repair")
@@ -5455,15 +6074,15 @@ fn structured_handoff_nodes_require_concrete_reads_without_output_path() {
     let requested_tools = vec!["read".to_string()];
     let tool_telemetry = summarize_automation_tool_activity(&node, &session, &requested_tools);
     let (_accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
-            &node,
-            &session,
-            workspace_root.to_str().expect("workspace root string"),
-            "{\"read_paths\":[\"tandem-reference/readmes/repo-README.md\"],\"reviewed_facts\":[\"Tandem is an engine-owned workflow runtime.\"],\"files_reviewed\":[\"tandem-reference/readmes/repo-README.md\"],\"files_not_reviewed\":[],\"citations_local\":[\"tandem-reference/readmes/repo-README.md\"]}\n\n{\"status\":\"completed\"}",
-            &tool_telemetry,
-            None,
-            None,
-            &std::collections::BTreeSet::new(),
-        );
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "{\"read_paths\":[\"tandem-reference/readmes/repo-README.md\"],\"reviewed_facts\":[\"Tandem is an engine-owned workflow runtime.\"],\"files_reviewed\":[\"tandem-reference/readmes/repo-README.md\"],\"files_not_reviewed\":[],\"citations_local\":[\"tandem-reference/readmes/repo-README.md\"]}\n\n{\"status\":\"completed\"}",
+        &tool_telemetry,
+        None,
+        None,
+        &std::collections::BTreeSet::new(),
+    );
 
     assert_eq!(
         rejected.as_deref(),
@@ -5524,14 +6143,14 @@ fn wrap_automation_node_output_includes_parsed_structured_handoff() {
     ));
 
     let output = wrap_automation_node_output(
-            &node,
-            &session,
-            &["read".to_string()],
-            "sess-structured-handoff-wrap",
-            "Structured handoff ready.\n\n```json\n{\"workspace_inventory_summary\":\"Marketing source bundle found\",\"priority_paths\":[\"tandem-reference/SOURCES.md\"],\"discovered_paths\":[\"tandem-reference/SOURCES.md\"],\"skipped_paths_initial\":[]}\n```\n\n{\"status\":\"completed\"}",
-            None,
-            Some(json!({})),
-        );
+        &node,
+        &session,
+        &["read".to_string()],
+        "sess-structured-handoff-wrap",
+        "Structured handoff ready.\n\n```json\n{\"workspace_inventory_summary\":\"Marketing source bundle found\",\"priority_paths\":[\"tandem-reference/SOURCES.md\"],\"discovered_paths\":[\"tandem-reference/SOURCES.md\"],\"skipped_paths_initial\":[]}\n```\n\n{\"status\":\"completed\"}",
+        None,
+        Some(json!({})),
+    );
 
     assert_eq!(
         output.get("status").and_then(Value::as_str),

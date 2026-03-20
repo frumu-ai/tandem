@@ -222,6 +222,30 @@ Configure providers in **Settings**.
 | **Ollama**        | Local models (no remote API key required)        | [Setup Guide](docs/OLLAMA_GUIDE.md)                                  |
 | **Custom**        | OpenAI-compatible API endpoint                   | Configure endpoint URL                                               |
 
+## Web search setup
+
+`websearch` can now be configured directly from:
+
+- Desktop: **Settings -> Web Search**
+- Control panel: **Settings -> Web Search** when connected to a local managed engine
+
+Recommended default:
+
+- `Backend = auto`
+- add a Brave key, an Exa key, or both
+
+`auto` prefers configured providers and can fall through across backends instead of pinning the engine to a single hosted search path. For headless installs you can still configure this through env vars:
+
+```env
+TANDEM_SEARCH_BACKEND=auto
+TANDEM_BRAVE_SEARCH_API_KEY=...
+TANDEM_EXA_API_KEY=...
+TANDEM_SEARXNG_URL=http://127.0.0.1:8080
+TANDEM_SEARCH_URL=https://search.tandem.frumu.ai
+```
+
+If Brave is rate-limited and Exa is configured, `auto` can continue with Exa instead of immediately surfacing search as unavailable.
+
 ## Design principles
 
 - **Local-first runtime**: Data and state stay on your machine unless you send prompts/tools to configured providers.

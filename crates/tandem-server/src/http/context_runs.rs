@@ -122,7 +122,7 @@ fn normalize_context_task_payload(
             return Err((
                 "TASK_CONTRACT_INVALID".to_string(),
                 "task payload must be a JSON object for strict blackboard tasks".to_string(),
-            ))
+            ));
         }
     };
     let payload_kind = map.get("task_kind").and_then(Value::as_str);
@@ -4553,7 +4553,9 @@ mod tests {
         );
         assert_eq!(
             payload.get("validator_reason").and_then(Value::as_str),
-            Some("research brief did not read concrete workspace files, so source-backed validation is incomplete")
+            Some(
+                "research brief did not read concrete workspace files, so source-backed validation is incomplete"
+            )
         );
         assert_eq!(
             payload

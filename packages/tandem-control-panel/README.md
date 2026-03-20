@@ -95,12 +95,15 @@ Variables:
 - `TANDEM_CONTROL_PANEL_ENGINE_TOKEN` (token injected when panel auto-starts engine)
 - `TANDEM_API_TOKEN` (backward-compatible alias for engine token)
 - `TANDEM_CONTROL_PANEL_SESSION_TTL_MINUTES` (default `1440`)
-- `TANDEM_SEARCH_BACKEND` (`tandem`, `brave`, `exa`, `searxng`, or `none`; default official installs use `tandem`)
+- `TANDEM_SEARCH_BACKEND` (`auto`, `tandem`, `brave`, `exa`, `searxng`, or `none`; default official installs use `auto`)
 - `TANDEM_SEARCH_URL` (hosted Tandem search endpoint or compatible router URL)
 - `TANDEM_SEARCH_TIMEOUT_MS` (default `10000`)
 - `TANDEM_BRAVE_SEARCH_API_KEY` (optional direct Brave override when `TANDEM_SEARCH_BACKEND=brave`)
 - `TANDEM_EXA_API_KEY` (optional direct Exa override when `TANDEM_SEARCH_BACKEND=exa`)
 - `TANDEM_SEARXNG_URL` (optional self-hosted override when `TANDEM_SEARCH_BACKEND=searxng`)
+
+The desktop app now exposes these search settings directly in Settings, and the control panel exposes them under Settings -> Web Search when it is connected to a local engine host.
+
 - `TANDEM_DISABLE_TOOL_GUARD_BUDGETS` (`1` disables per-run guard budgets; default in installer/service env is `1`)
 - `TANDEM_PROMPT_CONTEXT_HOOK_TIMEOUT_MS` (default `5000`)
 - `TANDEM_PROVIDER_STREAM_CONNECT_TIMEOUT_MS` (default `30000`)

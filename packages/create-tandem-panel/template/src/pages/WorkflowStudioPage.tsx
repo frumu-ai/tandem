@@ -100,22 +100,14 @@ function isBacklogProjectingNode(node: StudioNodeDraft) {
 function normalizeWorkspaceToolAllowlist(values: string[]) {
   const normalized = values.map((entry) => safeString(entry)).filter(Boolean);
   if (normalized.includes("*")) return ["*"];
-  const withWorkspaceInspection =
-    normalized.includes("read") && !normalized.includes("glob")
-      ? [...normalized, "glob"]
-      : normalized;
-  return Array.from(new Set(withWorkspaceInspection));
+  return Array.from(new Set(normalized));
 }
 
 function normalizeNodeAwareToolAllowlist(values: string[], nodes: StudioNodeDraft[]) {
   const normalized = normalizeWorkspaceToolAllowlist(values);
   if (normalized.includes("*")) return ["*"];
   const hasCodeNode = nodes.some((node) => isCodeLikeNode(node));
-  const required = hasCodeNode
-    ? ["read", "glob", "edit", "apply_patch", "write", "bash"]
-    : normalized.includes("read")
-      ? ["glob"]
-      : [];
+  const required = hasCodeNode ? ["read", "glob", "edit", "apply_patch", "write", "bash"] : [];
   return Array.from(new Set([...normalized, ...required]));
 }
 
@@ -1612,44 +1604,37 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
             const expectsWebResearch =
               !!agent?.toolAllowlist?.includes("websearch") && !researchFinalize;
             const isResearchBrief = safeString(node.outputKind) === "brief";
-            const stageRequiredTools = stagedHandoff
+            const stageRequiresWorkspaceInspection =
+              stagedHandoff && researchStage === "research_discover";
+            const stageRequiresConcreteReads =
+              stagedHandoff &&
+              (researchStage === "research_discover" || researchStage === "research_local_sources");
+            const stageRequiresWebsearch =
+              stagedHandoff && researchStage === "research_external_sources" && expectsWebResearch;
+            const requiredTools = outputPath
               ? [
-                  researchStage === "research_discover" ||
-                  researchStage === "research_local_sources"
-                    ? "read"
-                    : null,
-                  researchStage === "research_external_sources" && expectsWebResearch
-                    ? "websearch"
-                    : null,
-                ].filter((value): value is string => Boolean(value))
-              : [];
-            const requiredTools =
-              outputPath || stagedHandoff
+                  toolAllowlist.includes("read") && !researchFinalize ? "read" : null,
+                  toolAllowlist.includes("websearch") && !researchFinalize ? "websearch" : null,
+                ]
+                  .filter((value): value is string => Boolean(value))
+                  .filter((value, index, all) => all.indexOf(value) === index)
+              : stagedHandoff
                 ? [
-                    toolAllowlist.includes("read") && !researchFinalize ? "read" : null,
-                    toolAllowlist.includes("websearch") && !researchFinalize ? "websearch" : null,
-                    ...stageRequiredTools,
-                  ]
-                    .filter((value): value is string => Boolean(value))
-                    .filter((value, index, all) => all.indexOf(value) === index)
+                    stageRequiresConcreteReads ? "read" : null,
+                    stageRequiresWebsearch ? "websearch" : null,
+                  ].filter((value): value is string => Boolean(value))
                 : [];
-            const requiredEvidence =
-              outputPath || stagedHandoff
+            const requiredEvidence = outputPath
+              ? [
+                  !researchFinalize && (requiredTools.includes("read") || isResearchBrief)
+                    ? "local_source_reads"
+                    : null,
+                  !researchFinalize && expectsWebResearch ? "external_sources" : null,
+                ].filter((value): value is string => Boolean(value))
+              : stagedHandoff
                 ? [
-                    stagedHandoff &&
-                    (researchStage === "research_discover" ||
-                      researchStage === "research_local_sources")
-                      ? "local_source_reads"
-                      : null,
-                    stagedHandoff &&
-                    researchStage === "research_external_sources" &&
-                    expectsWebResearch
-                      ? "external_sources"
-                      : null,
-                    !researchFinalize && (requiredTools.includes("read") || isResearchBrief)
-                      ? "local_source_reads"
-                      : null,
-                    !researchFinalize && expectsWebResearch ? "external_sources" : null,
+                    stageRequiresConcreteReads ? "local_source_reads" : null,
+                    stageRequiresWebsearch ? "external_sources" : null,
                   ].filter((value): value is string => Boolean(value))
                 : [];
             const requiredSections = isResearchBrief
@@ -1660,27 +1645,19 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                   expectsWebResearch || hasExternalResearchInput ? "web_sources_reviewed" : null,
                 ].filter((value): value is string => Boolean(value))
               : [];
-            const prewriteGates =
-              outputPath || stagedHandoff
+            const prewriteGates = outputPath
+              ? [
+                  !researchFinalize ? "workspace_inspection" : null,
+                  !researchFinalize && (requiredTools.includes("read") || isResearchBrief)
+                    ? "concrete_reads"
+                    : null,
+                  !researchFinalize && expectsWebResearch ? "successful_web_research" : null,
+                ].filter((value): value is string => Boolean(value))
+              : stagedHandoff
                 ? [
-                    stagedHandoff && researchStage === "research_discover"
-                      ? "workspace_inspection"
-                      : null,
-                    stagedHandoff &&
-                    (researchStage === "research_discover" ||
-                      researchStage === "research_local_sources")
-                      ? "concrete_reads"
-                      : null,
-                    stagedHandoff &&
-                    researchStage === "research_external_sources" &&
-                    expectsWebResearch
-                      ? "successful_web_research"
-                      : null,
-                    !researchFinalize ? "workspace_inspection" : null,
-                    !researchFinalize && (requiredTools.includes("read") || isResearchBrief)
-                      ? "concrete_reads"
-                      : null,
-                    !researchFinalize && expectsWebResearch ? "successful_web_research" : null,
+                    stageRequiresWorkspaceInspection ? "workspace_inspection" : null,
+                    stageRequiresConcreteReads ? "concrete_reads" : null,
+                    stageRequiresWebsearch ? "successful_web_research" : null,
                   ].filter((value): value is string => Boolean(value))
                 : [];
             const retryOnMissing = [...requiredEvidence, ...requiredSections, ...prewriteGates];

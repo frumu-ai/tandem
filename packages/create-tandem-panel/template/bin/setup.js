@@ -749,13 +749,47 @@ async function installServices() {
     ? parseDotEnv(readFileSync(engineEnvPath, "utf8"))
     : {};
   const { TANDEM_MEMORY_DB_PATH: _legacyMemoryDbPath, ...engineEnvBase } = existingEngineEnv;
+  const searchEnv =
+    existingEngineEnv.TANDEM_SEARCH_BACKEND ||
+    existingEngineEnv.TANDEM_SEARCH_URL ||
+    existingEngineEnv.TANDEM_SEARCH_TIMEOUT_MS ||
+    existingEngineEnv.TANDEM_BRAVE_SEARCH_API_KEY ||
+    existingEngineEnv.BRAVE_SEARCH_API_KEY ||
+    existingEngineEnv.TANDEM_EXA_API_KEY ||
+    existingEngineEnv.EXA_API_KEY ||
+    existingEngineEnv.TANDEM_SEARXNG_URL
+      ? {
+          ...(existingEngineEnv.TANDEM_SEARCH_BACKEND
+            ? { TANDEM_SEARCH_BACKEND: existingEngineEnv.TANDEM_SEARCH_BACKEND }
+            : {}),
+          ...(existingEngineEnv.TANDEM_SEARCH_URL
+            ? { TANDEM_SEARCH_URL: existingEngineEnv.TANDEM_SEARCH_URL }
+            : {}),
+          ...(existingEngineEnv.TANDEM_SEARCH_TIMEOUT_MS
+            ? { TANDEM_SEARCH_TIMEOUT_MS: existingEngineEnv.TANDEM_SEARCH_TIMEOUT_MS }
+            : {}),
+          ...(existingEngineEnv.TANDEM_BRAVE_SEARCH_API_KEY
+            ? { TANDEM_BRAVE_SEARCH_API_KEY: existingEngineEnv.TANDEM_BRAVE_SEARCH_API_KEY }
+            : {}),
+          ...(existingEngineEnv.BRAVE_SEARCH_API_KEY
+            ? { BRAVE_SEARCH_API_KEY: existingEngineEnv.BRAVE_SEARCH_API_KEY }
+            : {}),
+          ...(existingEngineEnv.TANDEM_EXA_API_KEY
+            ? { TANDEM_EXA_API_KEY: existingEngineEnv.TANDEM_EXA_API_KEY }
+            : {}),
+          ...(existingEngineEnv.EXA_API_KEY
+            ? { EXA_API_KEY: existingEngineEnv.EXA_API_KEY }
+            : {}),
+          ...(existingEngineEnv.TANDEM_SEARXNG_URL
+            ? { TANDEM_SEARXNG_URL: existingEngineEnv.TANDEM_SEARXNG_URL }
+            : {}),
+        }
+      : {};
   const engineEnv = {
     ...engineEnvBase,
     TANDEM_API_TOKEN: token,
     TANDEM_STATE_DIR: stateDir,
-    TANDEM_SEARCH_BACKEND: existingEngineEnv.TANDEM_SEARCH_BACKEND || "tandem",
-    TANDEM_SEARCH_URL: existingEngineEnv.TANDEM_SEARCH_URL || DEFAULT_TANDEM_SEARCH_URL,
-    TANDEM_SEARCH_TIMEOUT_MS: existingEngineEnv.TANDEM_SEARCH_TIMEOUT_MS || "10000",
+    ...searchEnv,
     TANDEM_ENABLE_GLOBAL_MEMORY: existingEngineEnv.TANDEM_ENABLE_GLOBAL_MEMORY || "1",
     TANDEM_DISABLE_TOOL_GUARD_BUDGETS: existingEngineEnv.TANDEM_DISABLE_TOOL_GUARD_BUDGETS || "1",
     TANDEM_TOOL_ROUTER_ENABLED: existingEngineEnv.TANDEM_TOOL_ROUTER_ENABLED || "0",

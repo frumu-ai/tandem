@@ -38,6 +38,15 @@ export interface ProvidersConfig {
   selected_model?: SelectedModel | null;
 }
 
+export interface SearchSettings {
+  backend: "auto" | "tandem" | "brave" | "exa" | "searxng" | "none" | string;
+  tandem_url?: string | null;
+  searxng_url?: string | null;
+  timeout_ms: number;
+  has_brave_key?: boolean;
+  has_exa_key?: boolean;
+}
+
 export interface AppStateInfo {
   workspace_path: string | null;
   has_workspace: boolean;
@@ -686,6 +695,14 @@ export async function hasApiKey(keyType: ApiKeyType): Promise<boolean> {
 
 export async function deleteApiKey(keyType: ApiKeyType): Promise<void> {
   return invoke("delete_api_key", { keyType });
+}
+
+export async function getSearchSettings(): Promise<SearchSettings> {
+  return invoke("get_search_settings");
+}
+
+export async function setSearchSettings(settings: SearchSettings): Promise<SearchSettings> {
+  return invoke("set_search_settings", { settings });
 }
 
 // ============================================================================

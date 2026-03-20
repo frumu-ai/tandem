@@ -214,6 +214,21 @@ fn openai_tool_choice(tool_mode: &ToolMode) -> &'static str {
     }
 }
 
+fn openrouter_tool_choice_retry_supported(
+    provider_id: &str,
+    tool_mode: &ToolMode,
+    detail: &str,
+) -> bool {
+    if provider_id != "openrouter" || !matches!(tool_mode, ToolMode::Required) {
+        return false;
+    }
+
+    let normalized = detail.to_ascii_lowercase();
+    normalized.contains("tool_choice")
+        && (normalized.contains("no endpoints found that support")
+            || normalized.contains("does not support the provided"))
+}
+
 #[derive(Debug, Clone)]
 struct OpenAiToolCallChunk {
     id: String,
@@ -1207,6 +1222,7 @@ impl Provider for OpenAICompatibleProvider {
                 })
             })
             .collect::<Vec<_>>();
+        let has_tools = !wire_tools.is_empty();
 
         let mut max_tokens = provider_max_tokens_for(&self.id);
         let mut body = json!({
@@ -1215,7 +1231,7 @@ impl Provider for OpenAICompatibleProvider {
             "stream": true,
             "max_tokens": max_tokens,
         });
-        if !wire_tools.is_empty() {
+        if has_tools {
             body["tools"] = serde_json::Value::Array(wire_tools);
             body["tool_choice"] = json!(openai_tool_choice(&tool_mode));
         }
@@ -1223,6 +1239,7 @@ impl Provider for OpenAICompatibleProvider {
         let mut resp_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
         let mut last_error_detail: Option<String> = None;
+        let mut downgraded_openrouter_tool_choice = false;
         for attempt in 0..3 {
             let mut req = self.client.post(url.clone()).json(&body);
             if self.id == "openrouter" {
@@ -1239,6 +1256,16 @@ impl Provider for OpenAICompatibleProvider {
                     let status = resp.status();
                     if !status.is_success() {
                         let text = resp.text().await.unwrap_or_default();
+                        if has_tools
+                            && !downgraded_openrouter_tool_choice
+                            && openrouter_tool_choice_retry_supported(&self.id, &tool_mode, &text)
+                        {
+                            body["tool_choice"] = json!("auto");
+                            downgraded_openrouter_tool_choice = true;
+                            if attempt < 2 {
+                                continue;
+                            }
+                        }
                         if let Some(affordable_max) = openrouter_affordability_retry_max_tokens(
                             &self.id, status, &text, max_tokens,
                         ) {
@@ -2142,6 +2169,25 @@ mod tests {
             ),
             Some(14_605)
         );
+    }
+
+    #[test]
+    fn openrouter_tool_choice_retry_detects_unsupported_required_mode() {
+        assert!(openrouter_tool_choice_retry_supported(
+            "openrouter",
+            &ToolMode::Required,
+            "No endpoints found that support the provided 'tool_choice' value."
+        ));
+        assert!(!openrouter_tool_choice_retry_supported(
+            "openrouter",
+            &ToolMode::Auto,
+            "No endpoints found that support the provided 'tool_choice' value."
+        ));
+        assert!(!openrouter_tool_choice_retry_supported(
+            "openai",
+            &ToolMode::Required,
+            "No endpoints found that support the provided 'tool_choice' value."
+        ));
     }
 
     #[test]

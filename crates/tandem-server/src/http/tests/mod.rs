@@ -10,6 +10,7 @@ pub(super) mod global;
 pub(super) mod memory;
 pub(super) mod mission_builder;
 pub(super) mod missions;
+pub(super) mod optimizations;
 pub(super) mod pack_builder;
 pub(super) mod packs;
 pub(super) mod permissions;

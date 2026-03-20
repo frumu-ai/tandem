@@ -19,6 +19,8 @@ pub enum ApiKeyType {
     Anthropic,
     OpenAI,
     Poe,
+    BraveSearch,
+    ExaSearch,
     Custom(String),
 }
 
@@ -30,6 +32,8 @@ impl ApiKeyType {
             ApiKeyType::Anthropic => "anthropic_key".to_string(),
             ApiKeyType::OpenAI => "openai_key".to_string(),
             ApiKeyType::Poe => "poe_api_key".to_string(),
+            ApiKeyType::BraveSearch => "brave_search_api_key".to_string(),
+            ApiKeyType::ExaSearch => "exa_search_api_key".to_string(),
             ApiKeyType::Custom(name) => format!("custom_{}", name),
         }
     }
@@ -41,6 +45,8 @@ impl ApiKeyType {
             "anthropic" => ApiKeyType::Anthropic,
             "openai" => ApiKeyType::OpenAI,
             "poe" => ApiKeyType::Poe,
+            "brave_search" | "bravesearch" => ApiKeyType::BraveSearch,
+            "exa_search" | "exasearch" => ApiKeyType::ExaSearch,
             other => ApiKeyType::Custom(other.to_string()),
         }
     }
@@ -207,6 +213,14 @@ mod tests {
         ));
         assert!(matches!(ApiKeyType::from_str("openai"), ApiKeyType::OpenAI));
         assert!(matches!(ApiKeyType::from_str("poe"), ApiKeyType::Poe));
+        assert!(matches!(
+            ApiKeyType::from_str("brave_search"),
+            ApiKeyType::BraveSearch
+        ));
+        assert!(matches!(
+            ApiKeyType::from_str("exa_search"),
+            ApiKeyType::ExaSearch
+        ));
 
         if let ApiKeyType::Custom(name) = ApiKeyType::from_str("my_provider") {
             assert_eq!(name, "my_provider");

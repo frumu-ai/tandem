@@ -317,6 +317,11 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
         (keystore::ApiKeyType::Anthropic, "ANTHROPIC_API_KEY"),
         (keystore::ApiKeyType::OpenAI, "OPENAI_API_KEY"),
         (keystore::ApiKeyType::Poe, "POE_API_KEY"),
+        (
+            keystore::ApiKeyType::BraveSearch,
+            "TANDEM_BRAVE_SEARCH_API_KEY",
+        ),
+        (keystore::ApiKeyType::ExaSearch, "TANDEM_EXA_API_KEY"),
     ];
 
     for (key_type, env_var) in mappings {
@@ -431,6 +436,12 @@ pub fn run() {
                     *app_state.providers_config.write().unwrap() = providers;
                 }
             }
+
+            let initial_search_settings = commands::load_saved_search_settings(&app.handle());
+            tauri::async_runtime::block_on(commands::sync_search_settings_env(
+                &app_state,
+                &initial_search_settings,
+            ));
 
             // Load workspace path
             if let Some(path) = store.get("workspace_path") {
@@ -598,6 +609,8 @@ pub fn run() {
             // Provider configuration
             commands::get_providers_config,
             commands::set_providers_config,
+            commands::get_search_settings,
+            commands::set_search_settings,
             commands::get_identity_config,
             commands::patch_identity_config,
             // Channel connections
