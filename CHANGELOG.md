@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added TypeScript and Python SDK support for the new coder project binding, inbox, and intake APIs
   - added engine-testing and SDK docs plus internal rollout kanban coverage for the GitHub Project intake flow
 
+## [0.4.8] - 2026-03-21
+
 - **AutoResearch optimization control surfaces**:
   - Tandem's AutoResearch surfaces are explicitly inspired by Andrej Karpathy's `karpathy/autoresearch` project, with Tandem adapting the core overnight-eval loop to validator-backed workflow optimization
   - added optimization campaign list and experiment-list HTTP surfaces plus explicit approved-winner apply route for workflow prompt/objective optimization campaigns
