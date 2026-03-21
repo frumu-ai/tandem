@@ -198,6 +198,26 @@ resources = await client.resources.list(prefix="agent-config/")
 templates = await client.skills.templates()
 ```
 
+### `client.coder`
+
+`client.coder` also includes project-scoped GitHub Project intake helpers:
+
+```python
+await client.coder.put_project_binding("repo-123", {
+    "github_project_binding": {
+        "owner": "acme-inc",
+        "project_number": 7,
+        "repo_slug": "acme-inc/tandem",
+    }
+})
+
+inbox = await client.coder.get_project_github_inbox("repo-123")
+intake = await client.coder.intake_project_item("repo-123", {
+    "project_item_id": inbox.items[0].project_item_id,
+    "source_client": "sdk_test",
+})
+```
+
 ### `client.agent_teams` template management
 
 ```python

@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input } from "@/components/ui";
+import {
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Input,
+} from "@/components/ui";
 import { ProjectSwitcher } from "@/components/sidebar";
 import { AdvancedMissionBuilder } from "@/components/agent-automation/AdvancedMissionBuilder";
 import { DeveloperRunViewer } from "@/components/developer/DeveloperRunViewer";
@@ -23,11 +31,16 @@ import {
   automationsV2RunResume,
   automationsV2Runs,
   getSessionMessages,
+  getCoderProjectBinding,
+  getCoderProjectGithubInbox,
+  listCoderRuns,
+  intakeCoderProjectItem,
   listProvidersFromSidecar,
   mcpListServers,
   onSidecarEventV2,
   orchestratorEngineLoadRun,
   orchestratorGetBlackboard,
+  putCoderProjectBinding,
   orchestratorGetBlackboardPatches,
   resolveUserRepoContext,
   toolIds,
@@ -35,7 +48,10 @@ import {
   type AutomationV2Spec,
   type Blackboard,
   type BlackboardPatchRecord,
+  type CoderGithubProjectInboxItem,
   type CoderAutomationMetadata,
+  type CoderRunRecord,
+  type CoderProjectBindingRecord,
   type McpServerRecord,
   type OrchestratorRunRecord,
   type ProviderInfo,
@@ -112,6 +128,14 @@ function TabButton({
   );
 }
 
+function syncStateLabel(value: string | null | undefined): string {
+  if (!value) return "Unknown";
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
 export function CoderWorkspacePage({
   userProjects,
@@ -126,9 +150,8 @@ export function CoderWorkspacePage({
   onOpenMcpExtensions,
 }: CoderWorkspacePageProps) {
   const [tab, setTab] = useState<CoderTab>("create");
-  const [selectedPreset, setSelectedPreset] = useState<(typeof CODER_PRESETS)[number]["id"]>(
-    "repo-task"
-  );
+  const [selectedPreset, setSelectedPreset] =
+    useState<(typeof CODER_PRESETS)[number]["id"]>("repo-task");
   const [savedTemplates, setSavedTemplates] = useState<SavedCoderTemplate[]>([]);
   const [templateEditorId, setTemplateEditorId] = useState<string | null>(null);
   const [templateNameInput, setTemplateNameInput] = useState("");
@@ -141,6 +164,7 @@ export function CoderWorkspacePage({
   const [coderRuns, setCoderRuns] = useState<DerivedCoderRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [selectedRunDetail, setSelectedRunDetail] = useState<AutomationV2RunRecord | null>(null);
+  const [selectedCoderRunRecord, setSelectedCoderRunRecord] = useState<CoderRunRecord | null>(null);
   const [selectedContextRunId, setSelectedContextRunId] = useState<string | null>(null);
   const [selectedRunMessagesBySession, setSelectedRunMessagesBySession] = useState<
     Record<string, SessionMessage[]>
@@ -149,9 +173,7 @@ export function CoderWorkspacePage({
   const [selectedContextBlackboard, setSelectedContextBlackboard] = useState<Blackboard | null>(
     null
   );
-  const [selectedContextPatches, setSelectedContextPatches] = useState<BlackboardPatchRecord[]>(
-    []
-  );
+  const [selectedContextPatches, setSelectedContextPatches] = useState<BlackboardPatchRecord[]>([]);
   const [selectedContextError, setSelectedContextError] = useState<string | null>(null);
   const [runsLoading, setRunsLoading] = useState(true);
   const [runsError, setRunsError] = useState<string | null>(null);
@@ -159,6 +181,17 @@ export function CoderWorkspacePage({
   const [repoContext, setRepoContext] = useState<UserRepoContext | null>(null);
   const [repoContextLoading, setRepoContextLoading] = useState(false);
   const [repoContextError, setRepoContextError] = useState<string | null>(null);
+  const [projectBinding, setProjectBinding] = useState<CoderProjectBindingRecord | null>(null);
+  const [projectBindingLoading, setProjectBindingLoading] = useState(false);
+  const [projectBindingError, setProjectBindingError] = useState<string | null>(null);
+  const [githubProjectOwnerInput, setGithubProjectOwnerInput] = useState("");
+  const [githubProjectNumberInput, setGithubProjectNumberInput] = useState("");
+  const [githubProjectInbox, setGithubProjectInbox] = useState<CoderGithubProjectInboxItem[]>([]);
+  const [githubProjectInboxLoading, setGithubProjectInboxLoading] = useState(false);
+  const [githubProjectInboxError, setGithubProjectInboxError] = useState<string | null>(null);
+  const [githubProjectSchemaDrift, setGithubProjectSchemaDrift] = useState(false);
+  const [githubProjectLiveSchemaFingerprint, setGithubProjectLiveSchemaFingerprint] = useState("");
+  const [githubProjectBusyKey, setGithubProjectBusyKey] = useState<string | null>(null);
 
   const metadataPatch: CoderAutomationMetadata = useMemo(() => {
     const workflowKind =
@@ -302,6 +335,86 @@ export function CoderWorkspacePage({
     };
   }, [activeProject?.id, activeProject?.path]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadProjectBinding = async () => {
+      if (!activeProject?.id) {
+        setProjectBinding(null);
+        setProjectBindingLoading(false);
+        setProjectBindingError(null);
+        setGithubProjectOwnerInput("");
+        setGithubProjectNumberInput("");
+        setGithubProjectInbox([]);
+        setGithubProjectInboxError(null);
+        setGithubProjectInboxLoading(false);
+        setGithubProjectSchemaDrift(false);
+        setGithubProjectLiveSchemaFingerprint("");
+        return;
+      }
+      setProjectBindingLoading(true);
+      try {
+        const response = await getCoderProjectBinding(activeProject.id);
+        if (cancelled) return;
+        const binding = response?.binding || null;
+        setProjectBinding(binding);
+        setProjectBindingError(null);
+        setGithubProjectOwnerInput(binding?.github_project_binding?.owner || "");
+        setGithubProjectNumberInput(
+          binding?.github_project_binding?.project_number
+            ? String(binding.github_project_binding.project_number)
+            : ""
+        );
+      } catch (error) {
+        if (cancelled) return;
+        setProjectBinding(null);
+        setProjectBindingError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!cancelled) {
+          setProjectBindingLoading(false);
+        }
+      }
+    };
+    void loadProjectBinding();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProject?.id]);
+
+  const refreshGithubProjectInbox = async (projectId: string) => {
+    setGithubProjectInboxLoading(true);
+    try {
+      const response = await getCoderProjectGithubInbox(projectId);
+      setGithubProjectInbox(Array.isArray(response?.items) ? response.items : []);
+      setGithubProjectSchemaDrift(Boolean(response?.schema_drift));
+      setGithubProjectLiveSchemaFingerprint(String(response?.live_schema_fingerprint || ""));
+      setGithubProjectInboxError(null);
+    } catch (error) {
+      setGithubProjectInbox([]);
+      setGithubProjectSchemaDrift(false);
+      setGithubProjectLiveSchemaFingerprint("");
+      setGithubProjectInboxError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGithubProjectInboxLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const binding = projectBinding?.github_project_binding;
+    if (!activeProject?.id || !binding) {
+      setGithubProjectInbox([]);
+      setGithubProjectInboxError(null);
+      setGithubProjectInboxLoading(false);
+      setGithubProjectSchemaDrift(false);
+      setGithubProjectLiveSchemaFingerprint("");
+      return;
+    }
+    void refreshGithubProjectInbox(activeProject.id);
+  }, [
+    activeProject?.id,
+    projectBinding?.github_project_binding?.owner,
+    projectBinding?.github_project_binding?.project_number,
+  ]);
+
   const refreshCoderRuns = async () => {
     setRunsLoading(true);
     try {
@@ -333,7 +446,9 @@ export function CoderWorkspacePage({
           }
         })
       );
-      const nextRuns = runRows.flat().sort((a, b) => runSortTimestamp(b.run) - runSortTimestamp(a.run));
+      const nextRuns = runRows
+        .flat()
+        .sort((a, b) => runSortTimestamp(b.run) - runSortTimestamp(a.run));
       setCoderRuns(nextRuns);
       setRunsError(null);
       setSelectedRunId((current) => {
@@ -351,6 +466,7 @@ export function CoderWorkspacePage({
     const trimmed = String(runId || "").trim();
     if (!trimmed) {
       setSelectedRunDetail(null);
+      setSelectedCoderRunRecord(null);
       setSelectedContextRunId(null);
       setSelectedContextRun(null);
       setSelectedContextBlackboard(null);
@@ -366,6 +482,23 @@ export function CoderWorkspacePage({
       setSelectedRunDetail(run);
       const linkedContextRunId = response?.linked_context_run_id || null;
       setSelectedContextRunId(linkedContextRunId);
+      if (linkedContextRunId) {
+        try {
+          const coderRunsResponse = await listCoderRuns({
+            limit: 80,
+            repoSlug: repoContext?.repo_slug || undefined,
+          });
+          const matchedCoderRun =
+            (Array.isArray(coderRunsResponse?.runs) ? coderRunsResponse.runs : []).find(
+              (record) => record.linked_context_run_id === linkedContextRunId
+            ) || null;
+          setSelectedCoderRunRecord(matchedCoderRun);
+        } catch {
+          setSelectedCoderRunRecord(null);
+        }
+      } else {
+        setSelectedCoderRunRecord(null);
+      }
       if (linkedContextRunId) {
         try {
           const [contextRun, blackboard, patches] = await Promise.all([
@@ -419,12 +552,13 @@ export function CoderWorkspacePage({
   useEffect(() => {
     if (!selectedRunId) {
       setSelectedRunDetail(null);
+      setSelectedCoderRunRecord(null);
       setSelectedContextRunId(null);
       setSelectedRunMessagesBySession({});
       return;
     }
     void loadSelectedRunDetail(selectedRunId);
-  }, [selectedRunId]);
+  }, [selectedRunId, repoContext?.repo_slug]);
 
   const openContextRunForAutomationRun = async (runId: string) => {
     if (!onOpenContextRun) return;
@@ -453,7 +587,11 @@ export function CoderWorkspacePage({
       const unlisten = await onSidecarEventV2((event) => {
         if (disposed) return;
         const payload = JSON.stringify(event || {}).toLowerCase();
-        if (!payload.includes("automation") && !payload.includes("workflow") && !payload.includes("run")) {
+        if (
+          !payload.includes("automation") &&
+          !payload.includes("workflow") &&
+          !payload.includes("run")
+        ) {
           return;
         }
         if (refreshTimeout) clearTimeout(refreshTimeout);
@@ -480,6 +618,32 @@ export function CoderWorkspacePage({
   const selectedCoderRun = useMemo(
     () => coderRuns.find((row) => row.run.run_id === selectedRunId) || null,
     [coderRuns, selectedRunId]
+  );
+
+  const githubProjectBinding = projectBinding?.github_project_binding || null;
+  const githubProjectStatusMapping = githubProjectBinding?.status_mapping || null;
+  const githubProjectServerConnected = useMemo(() => {
+    const explicitServer = String(githubProjectBinding?.mcp_server || "").trim();
+    if (explicitServer) {
+      const exact = mcpServers.find((server) => server.name === explicitServer);
+      if (exact) return exact.connected && exact.enabled;
+    }
+    const requiredTools = [
+      "mcp.github.get_project",
+      "mcp.github.list_project_items",
+      "mcp.github.update_project_item_field",
+    ];
+    return requiredTools.every((toolName) => availableToolIds.includes(toolName));
+  }, [availableToolIds, githubProjectBinding?.mcp_server, mcpServers]);
+
+  const githubProjectReadReady = useMemo(() => {
+    const requiredTools = ["mcp.github.get_project", "mcp.github.list_project_items"];
+    return requiredTools.every((toolName) => availableToolIds.includes(toolName));
+  }, [availableToolIds]);
+
+  const githubProjectWriteReady = useMemo(
+    () => availableToolIds.includes("mcp.github.update_project_item_field"),
+    [availableToolIds]
   );
 
   const selectedSessionPreview = useMemo(() => {
@@ -606,6 +770,67 @@ export function CoderWorkspacePage({
     setTemplateNotesInput("");
   };
 
+  const saveGithubProjectBinding = async () => {
+    if (!activeProject?.id) {
+      setProjectBindingError("Choose an active project before connecting a GitHub Project.");
+      return;
+    }
+    const owner = githubProjectOwnerInput.trim();
+    const projectNumber = Number(githubProjectNumberInput);
+    if (!owner || !Number.isFinite(projectNumber) || projectNumber <= 0) {
+      setProjectBindingError("Enter a GitHub owner and a valid project number.");
+      return;
+    }
+    setGithubProjectBusyKey("save-binding");
+    try {
+      const response = await putCoderProjectBinding(activeProject.id, {
+        github_project_binding: {
+          owner,
+          project_number: projectNumber,
+          repo_slug: repoContext?.repo_slug || null,
+        },
+      });
+      setProjectBinding(response.binding || null);
+      setProjectBindingError(null);
+      setGithubProjectOwnerInput(response.binding?.github_project_binding?.owner || owner);
+      setGithubProjectNumberInput(
+        response.binding?.github_project_binding?.project_number
+          ? String(response.binding.github_project_binding.project_number)
+          : String(projectNumber)
+      );
+      await refreshGithubProjectInbox(activeProject.id);
+    } catch (error) {
+      setProjectBindingError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGithubProjectBusyKey(null);
+    }
+  };
+
+  const handleIntakeProjectItem = async (item: CoderGithubProjectInboxItem) => {
+    if (!activeProject?.id) return;
+    setGithubProjectBusyKey(`intake:${item.project_item_id}`);
+    try {
+      const response = await intakeCoderProjectItem(activeProject.id, {
+        project_item_id: item.project_item_id,
+        source_client: "desktop_coder",
+      });
+      const runId = String(
+        (response as { coder_run?: { coder_run_id?: string } } | null)?.coder_run?.coder_run_id ||
+          ""
+      ).trim();
+      await refreshCoderRuns();
+      await refreshGithubProjectInbox(activeProject.id);
+      if (runId) {
+        setSelectedRunId(runId);
+        setTab("runs");
+      }
+    } catch (error) {
+      setGithubProjectInboxError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGithubProjectBusyKey(null);
+    }
+  };
+
   return (
     <div className="h-full overflow-y-auto p-4">
       <div className="mx-auto max-w-[1480px] space-y-4">
@@ -648,8 +873,8 @@ export function CoderWorkspacePage({
               </div>
               <div className="mt-1 text-sm font-medium text-text">UI-only Coder shell</div>
               <div className="mt-1 text-xs text-text-muted">
-                This slice consolidates navigation and creation UX. Automation-backed coder runs
-                are wired in the follow-on backend slices.
+                This slice consolidates navigation and creation UX. Automation-backed coder runs are
+                wired in the follow-on backend slices.
               </div>
             </div>
             <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
@@ -658,8 +883,8 @@ export function CoderWorkspacePage({
               </div>
               <div className="mt-1 text-sm font-medium text-text">Legacy coder runs remain</div>
               <div className="mt-1 text-xs text-text-muted">
-                The existing coder inspector stays available below until the unified run model is
-                in place.
+                The existing coder inspector stays available below until the unified run model is in
+                place.
               </div>
             </div>
           </CardContent>
@@ -798,7 +1023,10 @@ export function CoderWorkspacePage({
                             {template.defaultBranch ? ` • default ${template.defaultBranch}` : ""}
                           </div>
                           <div className="mt-1 text-[11px] text-text-subtle">
-                            Updated {new Date(template.updatedAtMs || template.createdAtMs).toLocaleString()}
+                            Updated{" "}
+                            {new Date(
+                              template.updatedAtMs || template.createdAtMs
+                            ).toLocaleString()}
                           </div>
                           <div className="mt-3 flex flex-wrap gap-2">
                             <Button
@@ -808,7 +1036,11 @@ export function CoderWorkspacePage({
                             >
                               Apply
                             </Button>
-                            <Button size="sm" variant="ghost" onClick={() => startEditingTemplate(template)}>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => startEditingTemplate(template)}
+                            >
                               Load Into Editor
                             </Button>
                           </div>
@@ -884,6 +1116,258 @@ export function CoderWorkspacePage({
 
             <Card>
               <CardHeader>
+                <CardTitle className="text-base">GitHub Project Intake</CardTitle>
+                <CardDescription>
+                  Connect one GitHub Project to this coder workspace, pull issue-backed TODO items
+                  into Tandem, and project key status changes back out.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {projectBindingError ? (
+                  <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                    {projectBindingError}
+                  </div>
+                ) : null}
+                {githubProjectInboxError ? (
+                  <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                    {githubProjectInboxError}
+                  </div>
+                ) : null}
+                {!githubProjectReadReady ? (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                    <div>
+                      GitHub Project tools are not ready yet. We need MCP read access before this
+                      intake flow can validate or list project items.
+                    </div>
+                    {onOpenMcpExtensions ? (
+                      <Button size="sm" variant="secondary" onClick={onOpenMcpExtensions}>
+                        Open MCP Extensions
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {githubProjectReadReady && !githubProjectWriteReady ? (
+                  <div className="rounded-lg border border-border bg-surface-elevated/20 px-4 py-3 text-xs text-text-muted">
+                    GitHub Project access is currently read-only. Inbox listing and intake can still
+                    work, but outward status projection is unavailable until update access is
+                    connected.
+                  </div>
+                ) : null}
+                <div className="grid gap-3 rounded-xl border border-border bg-surface-elevated/20 p-4 lg:grid-cols-[minmax(0,1fr)_180px_auto]">
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium uppercase tracking-wide text-text-subtle">
+                      Owner
+                    </div>
+                    <Input
+                      value={githubProjectOwnerInput}
+                      onChange={(event) => setGithubProjectOwnerInput(event.target.value)}
+                      placeholder="acme-inc"
+                      disabled={!activeProject || projectBindingLoading}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium uppercase tracking-wide text-text-subtle">
+                      Project Number
+                    </div>
+                    <Input
+                      value={githubProjectNumberInput}
+                      onChange={(event) => setGithubProjectNumberInput(event.target.value)}
+                      placeholder="12"
+                      inputMode="numeric"
+                      disabled={!activeProject || projectBindingLoading}
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => void saveGithubProjectBinding()}
+                      loading={githubProjectBusyKey === "save-binding"}
+                      disabled={!activeProject || !githubProjectReadReady}
+                    >
+                      {githubProjectBinding ? "Refresh Binding" : "Connect Project"}
+                    </Button>
+                    {githubProjectBinding && activeProject?.id ? (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => void refreshGithubProjectInbox(activeProject.id)}
+                        loading={githubProjectInboxLoading}
+                      >
+                        Refresh Inbox
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                      Repo Slug
+                    </div>
+                    <div className="mt-1 break-all text-xs text-text">
+                      {repoContext?.repo_slug || githubProjectBinding?.repo_slug || "Advisory only"}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                      MCP Transport
+                    </div>
+                    <div className="mt-1 text-xs text-text">
+                      {githubProjectBinding?.mcp_server ||
+                        (githubProjectServerConnected ? "Detected" : "Not connected")}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                      Saved Fingerprint
+                    </div>
+                    <div className="mt-1 break-all text-xs text-text">
+                      {githubProjectBinding?.schema_fingerprint || "Not bound"}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                      Live Fingerprint
+                    </div>
+                    <div className="mt-1 break-all text-xs text-text">
+                      {githubProjectLiveSchemaFingerprint || "Not checked"}
+                    </div>
+                  </div>
+                </div>
+                {githubProjectStatusMapping ? (
+                  <div className="rounded-xl border border-border bg-surface-elevated/20 p-4">
+                    <div className="text-sm font-semibold text-text">Resolved Status Mapping</div>
+                    <div className="mt-3 grid gap-2 text-xs text-text-muted md:grid-cols-2 xl:grid-cols-5">
+                      <div>
+                        TODO:{" "}
+                        <span className="font-medium text-text">
+                          {githubProjectStatusMapping.todo.name}
+                        </span>
+                      </div>
+                      <div>
+                        In Progress:{" "}
+                        <span className="font-medium text-text">
+                          {githubProjectStatusMapping.in_progress.name}
+                        </span>
+                      </div>
+                      <div>
+                        In Review:{" "}
+                        <span className="font-medium text-text">
+                          {githubProjectStatusMapping.in_review.name}
+                        </span>
+                      </div>
+                      <div>
+                        Blocked:{" "}
+                        <span className="font-medium text-text">
+                          {githubProjectStatusMapping.blocked.name}
+                        </span>
+                      </div>
+                      <div>
+                        Done:{" "}
+                        <span className="font-medium text-text">
+                          {githubProjectStatusMapping.done.name}
+                        </span>
+                      </div>
+                    </div>
+                    {githubProjectSchemaDrift ? (
+                      <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                        The live project schema no longer matches the saved binding fingerprint.
+                        Re-saving the binding will refresh the stored mapping.
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {!githubProjectBinding ? (
+                  <div className="rounded-lg border border-dashed border-border bg-surface-elevated/10 px-4 py-8 text-center text-sm text-text-muted">
+                    Connect a GitHub Project to show a live inbox of issue-backed TODO items for
+                    this coder workspace.
+                  </div>
+                ) : githubProjectInboxLoading ? (
+                  <div className="rounded-lg border border-border bg-surface px-4 py-8 text-center text-sm text-text-muted">
+                    Loading GitHub Project inbox...
+                  </div>
+                ) : githubProjectInbox.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border bg-surface-elevated/10 px-4 py-8 text-center text-sm text-text-muted">
+                    No project items are currently ready for intake.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="text-sm font-semibold text-text">Inbox</div>
+                    <div className="space-y-3">
+                      {githubProjectInbox.map((item) => {
+                        const linkedRunId = item.linked_run?.coder_run?.coder_run_id || "";
+                        const canIntake =
+                          item.actionable && (!item.linked_run || !item.linked_run.active);
+                        return (
+                          <div
+                            key={item.project_item_id}
+                            className="rounded-xl border border-border bg-surface-elevated/20 p-4"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm font-semibold text-text">{item.title}</div>
+                                <div className="mt-1 text-xs text-text-muted">
+                                  {item.issue ? `Issue #${item.issue.number}` : "Unsupported item"}
+                                  {item.issue?.html_url ? ` • ${item.issue.html_url}` : ""}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 text-xs">
+                                <span className="rounded-full border border-border bg-surface px-2 py-1 text-text-muted">
+                                  {item.status_name}
+                                </span>
+                                <span className="rounded-full border border-border bg-surface px-2 py-1 text-text-muted">
+                                  {syncStateLabel(item.remote_sync_state)}
+                                </span>
+                              </div>
+                            </div>
+                            {!item.actionable && item.unsupported_reason ? (
+                              <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-muted">
+                                {item.unsupported_reason}
+                              </div>
+                            ) : null}
+                            {item.linked_run ? (
+                              <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-muted">
+                                Linked run {item.linked_run.coder_run.coder_run_id}
+                                {item.linked_run.active
+                                  ? " is active and already owns this item."
+                                  : " is terminal, so a new intake can create a fresh run generation."}
+                              </div>
+                            ) : null}
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {canIntake ? (
+                                <Button
+                                  size="sm"
+                                  onClick={() => void handleIntakeProjectItem(item)}
+                                  loading={
+                                    githubProjectBusyKey === `intake:${item.project_item_id}`
+                                  }
+                                >
+                                  Intake Into Coder
+                                </Button>
+                              ) : null}
+                              {linkedRunId ? (
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => {
+                                    setSelectedRunId(linkedRunId);
+                                    setTab("runs");
+                                  }}
+                                >
+                                  Open Linked Run
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
                 <CardTitle className="text-base">Mission Builder</CardTitle>
                 <CardDescription>
                   The existing advanced mission builder is the authoring engine behind Coder in this
@@ -896,8 +1380,8 @@ export function CoderWorkspacePage({
                   <span className="font-medium text-text">
                     {CODER_PRESETS.find((preset) => preset.id === selectedPreset)?.title}
                   </span>
-                  . The preset cards are UI scaffolding in this slice; the builder below still
-                  emits the existing mission contract unchanged.
+                  . The preset cards are UI scaffolding in this slice; the builder below still emits
+                  the existing mission contract unchanged.
                 </div>
                 {catalogError ? (
                   <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
@@ -930,8 +1414,8 @@ export function CoderWorkspacePage({
               <CardHeader>
                 <CardTitle className="text-base">Automation-backed Coder Runs</CardTitle>
                 <CardDescription>
-                  Coder now projects runs from coder-tagged Automation V2 records instead of
-                  relying only on the legacy coder store.
+                  Coder now projects runs from coder-tagged Automation V2 records instead of relying
+                  only on the legacy coder store.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -973,6 +1457,7 @@ export function CoderWorkspacePage({
                     <CoderRunDetailCard
                       key={selectedRunId || "empty-run-detail"}
                       selectedCoderRun={selectedCoderRun}
+                      selectedCoderRunRecord={selectedCoderRunRecord}
                       selectedRunDetail={selectedRunDetail}
                       selectedContextRunId={selectedContextRunId}
                       selectedSessionPreview={selectedSessionPreview}
@@ -984,9 +1469,7 @@ export function CoderWorkspacePage({
                       busyKey={busyKey}
                       onRefreshDetail={(runId) => void loadSelectedRunDetail(runId)}
                       onRunAction={(runId, action) => void handleRunAction(runId, action)}
-                      onGateDecision={(runId, decision) =>
-                        void handleGateDecision(runId, decision)
-                      }
+                      onGateDecision={(runId, decision) => void handleGateDecision(runId, decision)}
                       onOpenAutomationRun={onOpenAutomationRun}
                       onOpenContextRun={onOpenContextRun}
                     />

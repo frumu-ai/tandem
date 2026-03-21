@@ -4644,6 +4644,81 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
+    pub async fn coder_get_project_binding(&self, project_id: &str) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/coder/projects/{}/bindings",
+            self.base_url().await?,
+            project_id
+        );
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to get coder project binding: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_put_project_binding(
+        &self,
+        project_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/coder/projects/{}/bindings",
+            self.base_url().await?,
+            project_id
+        );
+        let response = self
+            .http_client
+            .put(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to update coder project binding: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_get_project_github_inbox(
+        &self,
+        project_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/coder/projects/{}/github-project/inbox",
+            self.base_url().await?,
+            project_id
+        );
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to get coder GitHub Project inbox: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_intake_project_item(
+        &self,
+        project_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/coder/projects/{}/github-project/intake",
+            self.base_url().await?,
+            project_id
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to intake coder project item: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
     pub async fn coder_list_artifacts(&self, run_id: &str) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/coder/runs/{}/artifacts", self.base_url().await?, run_id);

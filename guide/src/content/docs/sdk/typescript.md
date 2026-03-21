@@ -272,6 +272,36 @@ const resources = await client.resources.list({ prefix: "agent-config/" });
 const catalog = await client.skills.catalog();
 ```
 
+### `client.coder`
+
+The coder namespace now includes project-scoped GitHub Project intake helpers in addition to run APIs.
+
+```typescript
+const binding = await client.coder.getProjectBinding("repo-123");
+
+await client.coder.putProjectBinding("repo-123", {
+  github_project_binding: {
+    owner: "acme-inc",
+    project_number: 7,
+    repo_slug: "acme-inc/tandem",
+  },
+});
+
+const inbox = await client.coder.getProjectGithubInbox("repo-123");
+
+const intake = await client.coder.intakeProjectItem("repo-123", {
+  project_item_id: inbox.items[0].project_item_id,
+  source_client: "sdk_test",
+});
+```
+
+Use this flow when you want Tandem to:
+
+- treat GitHub Projects as intake plus visibility
+- create Tandem-native coder runs from issue-backed TODO items
+- keep Tandem as the execution authority after intake
+- inspect schema drift through `schema_drift` / `live_schema_fingerprint`
+
 ### `client.skills`
 
 ```typescript

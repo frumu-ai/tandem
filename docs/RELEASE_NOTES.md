@@ -1,4 +1,14 @@
-# Tandem v0.4.8 Release Notes (Unreleased)
+# Tandem v0.4.9 Release Notes (Unreleased)
+
+### GitHub Projects Intake For Coder
+
+- Added engine-owned GitHub Project intake for Tandem Coder so GitHub Projects can act as an external backlog and visibility layer without becoming Tandem's runtime scheduler.
+- Added project-scoped coder binding APIs for GitHub Project owner/number setup, schema discovery, resolved status mapping, and schema fingerprint persistence.
+- Added a GitHub Project inbox and intake flow so issue-backed TODO items can be listed and ingested into Tandem-native `issue_triage` coder runs.
+- Added MCP-backed GitHub Project capability bindings and adapter flows for project discovery, inbox listing, project-item status projection, schema-drift detection, and idempotent project-item intake.
+- Added desktop Coder UI for connecting a GitHub Project, reviewing actionable versus unsupported inbox items, intaking TODO items, and inspecting GitHub Project linkage and remote sync state from run detail.
+- Added TypeScript and Python SDK coverage for coder project bindings, GitHub Project inbox reads, and project-item intake.
+- Added engine-testing and SDK documentation for validating the new GitHub Project coder flow directly against the engine before relying on desktop UI.
 
 ### Studio Workflow Builder
 

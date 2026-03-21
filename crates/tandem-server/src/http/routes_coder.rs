@@ -18,6 +18,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             get(coder_project_binding_get).put(coder_project_binding_put),
         )
         .route(
+            "/coder/projects/{project_id}/github-project/inbox",
+            get(coder_project_github_project_inbox),
+        )
+        .route(
+            "/coder/projects/{project_id}/github-project/intake",
+            post(coder_project_github_project_intake),
+        )
+        .route(
             "/coder/projects/{project_id}/policy",
             get(coder_project_policy_get).put(coder_project_policy_put),
         )

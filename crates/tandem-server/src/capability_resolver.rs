@@ -765,6 +765,36 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             ],
         ),
         make_binding(
+            "github.get_project",
+            "mcp",
+            "mcp.github.get_project",
+            &[
+                "mcp.github_get_project",
+                "github_get_project",
+                "get_project",
+            ],
+        ),
+        make_binding(
+            "github.list_project_items",
+            "mcp",
+            "mcp.github.list_project_items",
+            &[
+                "mcp.github_list_project_items",
+                "github_list_project_items",
+                "list_project_items",
+            ],
+        ),
+        make_binding(
+            "github.update_project_item_field",
+            "mcp",
+            "mcp.github.update_project_item_field",
+            &[
+                "mcp.github_update_project_item_field",
+                "github_update_project_item_field",
+                "update_project_item_field",
+            ],
+        ),
+        make_binding(
             "github.comment_on_issue",
             "composio",
             "mcp.composio.github_create_issue_comment",

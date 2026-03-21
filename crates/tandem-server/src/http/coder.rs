@@ -16,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tandem_memory::{
     types::MemoryTier, GovernedMemoryTier, MemoryClassification, MemoryContentKind, MemoryManager,
     MemoryPartition, MemoryPromoteRequest, MemoryPutRequest, PromotionReview,
@@ -59,6 +60,7 @@ pub(super) struct CoderGithubRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct CoderRepoBinding {
+    #[serde(default)]
     pub(super) project_id: String,
     pub(super) workspace_id: String,
     pub(super) workspace_root: String,
@@ -89,6 +91,10 @@ pub(super) struct CoderRunRecord {
     pub(super) origin_artifact_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) origin_policy: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) github_project_ref: Option<CoderGithubProjectRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) remote_sync_state: Option<CoderRemoteSyncState>,
     pub(super) created_at_ms: u64,
     pub(super) updated_at_ms: u64,
 }
@@ -464,8 +470,96 @@ pub(super) struct CoderProjectPolicy {
 pub(super) struct CoderProjectBinding {
     pub(super) project_id: String,
     pub(super) repo_binding: CoderRepoBinding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) github_project_binding: Option<CoderGithubProjectBinding>,
     #[serde(default)]
     pub(super) updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CoderRemoteSyncState {
+    InSync,
+    SchemaDrift,
+    RemoteStateDiverged,
+    ProjectionUnavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct CoderGithubProjectStatusOption {
+    pub(super) id: String,
+    pub(super) name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct CoderGithubProjectStatusMapping {
+    pub(super) field_id: String,
+    pub(super) field_name: String,
+    pub(super) todo: CoderGithubProjectStatusOption,
+    pub(super) in_progress: CoderGithubProjectStatusOption,
+    pub(super) in_review: CoderGithubProjectStatusOption,
+    pub(super) blocked: CoderGithubProjectStatusOption,
+    pub(super) done: CoderGithubProjectStatusOption,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct CoderGithubProjectBinding {
+    pub(super) owner: String,
+    pub(super) project_number: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) repo_slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) mcp_server: Option<String>,
+    pub(super) schema_snapshot: Value,
+    pub(super) schema_fingerprint: String,
+    pub(super) status_mapping: CoderGithubProjectStatusMapping,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct CoderGithubProjectRef {
+    pub(super) owner: String,
+    pub(super) project_number: u64,
+    pub(super) project_item_id: String,
+    pub(super) issue_number: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) issue_url: Option<String>,
+    pub(super) schema_fingerprint: String,
+    pub(super) status_mapping: CoderGithubProjectStatusMapping,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct CoderProjectBindingPutInput {
+    #[serde(default)]
+    pub(super) repo_binding: Option<CoderRepoBinding>,
+    #[serde(default)]
+    pub(super) github_project_binding: Option<CoderGithubProjectBindingRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(super) struct CoderGithubProjectBindingRequest {
+    pub(super) owner: String,
+    pub(super) project_number: u64,
+    #[serde(default)]
+    pub(super) repo_slug: Option<String>,
+    #[serde(default)]
+    pub(super) mcp_server: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct CoderGithubProjectIntakeInput {
+    pub(super) project_item_id: String,
+    #[serde(default)]
+    pub(super) coder_run_id: Option<String>,
+    #[serde(default)]
+    pub(super) source_client: Option<String>,
+    #[serde(default)]
+    pub(super) workspace: Option<ContextWorkspaceLease>,
+    #[serde(default)]
+    pub(super) model_provider: Option<String>,
+    #[serde(default)]
+    pub(super) model_id: Option<String>,
+    #[serde(default)]
+    pub(super) mcp_servers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,6 +606,39 @@ pub(super) struct CoderFollowOnRunCreateInput {
     pub(super) model_id: Option<String>,
     #[serde(default)]
     pub(super) mcp_servers: Option<Vec<String>>,
+}
+
+#[derive(Clone)]
+struct GithubProjectsAdapter<'a> {
+    state: &'a AppState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GithubProjectIssueSummary {
+    number: u64,
+    title: String,
+    html_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GithubProjectInboxItemRecord {
+    project_item_id: String,
+    title: String,
+    status_name: String,
+    status_option_id: Option<String>,
+    issue: Option<GithubProjectIssueSummary>,
+    raw: Value,
+}
+
+impl<'a> GithubProjectsAdapter<'a> {
+    fn new(state: &'a AppState) -> Self {
+        Self { state }
+    }
+}
+
+fn coder_project_intake_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn coder_runs_root(state: &AppState) -> PathBuf {
@@ -677,6 +804,117 @@ async fn load_coder_run_record(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     serde_json::from_str::<CoderRunRecord>(&raw).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn parse_coder_project_binding_put_input(
+    project_id: &str,
+    value: Value,
+) -> Result<CoderProjectBindingPutInput, StatusCode> {
+    if value.get("repo_binding").is_some() || value.get("github_project_binding").is_some() {
+        let mut parsed = serde_json::from_value::<CoderProjectBindingPutInput>(value)
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        if let Some(repo_binding) = parsed.repo_binding.as_mut() {
+            repo_binding.project_id = project_id.to_string();
+        }
+        return Ok(parsed);
+    }
+    let mut repo_binding =
+        serde_json::from_value::<CoderRepoBinding>(value).map_err(|_| StatusCode::BAD_REQUEST)?;
+    repo_binding.project_id = project_id.to_string();
+    Ok(CoderProjectBindingPutInput {
+        repo_binding: Some(repo_binding),
+        github_project_binding: None,
+    })
+}
+
+async fn find_latest_project_item_run(
+    state: &AppState,
+    project_item_id: &str,
+) -> Result<Option<(CoderRunRecord, ContextRunState)>, StatusCode> {
+    ensure_coder_runs_dir(state).await?;
+    let mut latest: Option<(CoderRunRecord, ContextRunState)> = None;
+    let mut dir = tokio::fs::read_dir(coder_runs_root(state))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        if !entry
+            .file_type()
+            .await
+            .map(|row| row.is_file())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let raw = tokio::fs::read_to_string(entry.path())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let Ok(record) = serde_json::from_str::<CoderRunRecord>(&raw) else {
+            continue;
+        };
+        if record
+            .github_project_ref
+            .as_ref()
+            .map(|row| row.project_item_id.as_str())
+            != Some(project_item_id)
+        {
+            continue;
+        }
+        let Ok(run) = load_context_run_state(state, &record.linked_context_run_id).await else {
+            continue;
+        };
+        let replace = latest
+            .as_ref()
+            .map(|(_, existing_run)| run.updated_at_ms >= existing_run.updated_at_ms)
+            .unwrap_or(true);
+        if replace {
+            latest = Some((record, run));
+        }
+    }
+    Ok(latest)
+}
+
+async fn maybe_sync_github_project_status(
+    state: &AppState,
+    record: &mut CoderRunRecord,
+    context_run: &ContextRunState,
+) -> Result<(), StatusCode> {
+    let Some(project_ref) = record.github_project_ref.clone() else {
+        return Ok(());
+    };
+    let Some(project_binding) = load_coder_project_binding(state, &record.repo_binding.project_id)
+        .await?
+        .and_then(|row| row.github_project_binding)
+    else {
+        record.remote_sync_state = Some(CoderRemoteSyncState::ProjectionUnavailable);
+        save_coder_run_record(state, record).await?;
+        return Ok(());
+    };
+    if project_binding.schema_fingerprint != project_ref.schema_fingerprint {
+        record.remote_sync_state = Some(CoderRemoteSyncState::SchemaDrift);
+        save_coder_run_record(state, record).await?;
+        return Ok(());
+    }
+    let target_option =
+        context_status_to_project_option(&project_ref.status_mapping, &context_run.status);
+    let adapter = GithubProjectsAdapter::new(state);
+    match adapter
+        .update_project_item_status(
+            &project_binding,
+            &project_ref.project_item_id,
+            &target_option,
+        )
+        .await
+    {
+        Ok(_) => {
+            record.remote_sync_state = Some(CoderRemoteSyncState::InSync);
+            save_coder_run_record(state, record).await?;
+        }
+        Err(_) => {
+            record.remote_sync_state = Some(CoderRemoteSyncState::ProjectionUnavailable);
+            save_coder_run_record(state, record).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn load_coder_memory_candidate_payload(
@@ -2555,10 +2793,12 @@ async fn finalize_coder_workflow_run(
     run.why_next_step = Some(completion_reason.to_string());
     ensure_context_run_dir(state, &record.linked_context_run_id).await?;
     save_context_run_state(state, &run).await?;
+    let mut sync_record = record.clone();
+    maybe_sync_github_project_status(state, &mut sync_record, &run).await?;
     publish_coder_run_event(
         state,
         "coder.run.phase_changed",
-        record,
+        &sync_record,
         Some(project_coder_phase(&run)),
         {
             let mut extra = serde_json::Map::new();
@@ -2704,10 +2944,12 @@ async fn advance_coder_workflow_run(
     run.why_next_step = Some(next_reason.to_string());
     ensure_context_run_dir(state, &record.linked_context_run_id).await?;
     save_context_run_state(state, &run).await?;
+    let mut sync_record = record.clone();
+    maybe_sync_github_project_status(state, &mut sync_record, &run).await?;
     publish_coder_run_event(
         state,
         "coder.run.phase_changed",
-        record,
+        &sync_record,
         Some(project_coder_phase(&run)),
         {
             let mut extra = serde_json::Map::new();
@@ -6878,6 +7120,438 @@ fn build_issue_fix_pr_draft_body(
     )
 }
 
+fn normalize_status_alias(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-', '_'], "")
+}
+
+fn status_alias_matches(name: &str, aliases: &[&str]) -> bool {
+    let normalized = normalize_status_alias(name);
+    aliases
+        .iter()
+        .any(|alias| normalized == normalize_status_alias(alias))
+}
+
+fn hash_json_fingerprint(value: &Value) -> Result<String, StatusCode> {
+    let bytes = serde_json::to_vec(value).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let digest = sha2::Sha256::digest(bytes);
+    Ok(format!("{digest:x}"))
+}
+
+fn context_status_to_project_option(
+    mapping: &CoderGithubProjectStatusMapping,
+    status: &ContextRunStatus,
+) -> CoderGithubProjectStatusOption {
+    match status {
+        ContextRunStatus::Queued | ContextRunStatus::Planning => mapping.todo.clone(),
+        ContextRunStatus::Running | ContextRunStatus::Paused => mapping.in_progress.clone(),
+        ContextRunStatus::AwaitingApproval => mapping.in_review.clone(),
+        ContextRunStatus::Completed => mapping.done.clone(),
+        ContextRunStatus::Blocked | ContextRunStatus::Failed | ContextRunStatus::Cancelled => {
+            mapping.blocked.clone()
+        }
+    }
+}
+
+fn is_terminal_context_status(status: &ContextRunStatus) -> bool {
+    matches!(
+        status,
+        ContextRunStatus::Completed
+            | ContextRunStatus::Failed
+            | ContextRunStatus::Cancelled
+            | ContextRunStatus::Blocked
+    )
+}
+
+fn coder_run_sync_state(record: &CoderRunRecord) -> CoderRemoteSyncState {
+    record
+        .remote_sync_state
+        .clone()
+        .unwrap_or(CoderRemoteSyncState::InSync)
+}
+
+impl<'a> GithubProjectsAdapter<'a> {
+    async fn resolve_project_tools(
+        &self,
+        preferred_server: Option<&str>,
+        workflow_id: &str,
+        required_capabilities: &[&str],
+    ) -> Result<(String, Vec<McpRemoteTool>, Vec<(String, String)>), StatusCode> {
+        let mut server_candidates = if let Some(server_name) = preferred_server
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            vec![server_name.to_string()]
+        } else {
+            let mut servers = self
+                .state
+                .mcp
+                .list()
+                .await
+                .into_values()
+                .filter(|server| server.enabled && server.connected)
+                .map(|server| server.name)
+                .collect::<Vec<_>>();
+            servers.sort();
+            servers
+        };
+        if server_candidates.is_empty() {
+            return Err(StatusCode::CONFLICT);
+        }
+        for server_name in server_candidates.drain(..) {
+            let server_tools = self.state.mcp.server_tools(&server_name).await;
+            if server_tools.is_empty() {
+                continue;
+            }
+            let discovered = self
+                .state
+                .capability_resolver
+                .discover_from_runtime(server_tools.clone(), Vec::new())
+                .await;
+            let resolved = self
+                .state
+                .capability_resolver
+                .resolve(
+                    crate::capability_resolver::CapabilityResolveInput {
+                        workflow_id: Some(workflow_id.to_string()),
+                        required_capabilities: required_capabilities
+                            .iter()
+                            .map(|value| value.to_string())
+                            .collect(),
+                        optional_capabilities: Vec::new(),
+                        provider_preference: vec!["mcp".to_string()],
+                        available_tools: discovered,
+                    },
+                    Vec::new(),
+                )
+                .await
+                .map_err(|_| StatusCode::BAD_GATEWAY)?;
+            let mut mapped = Vec::new();
+            let mut all_present = true;
+            for capability_id in required_capabilities {
+                let Some(namespaced) = resolved
+                    .resolved
+                    .iter()
+                    .find(|row| row.capability_id == *capability_id)
+                    .map(|row| row.tool_name.clone())
+                else {
+                    all_present = false;
+                    break;
+                };
+                let raw_tool = map_namespaced_to_raw_tool(&server_tools, &namespaced)?;
+                mapped.push(((*capability_id).to_string(), raw_tool));
+            }
+            if all_present {
+                return Ok((server_name, server_tools, mapped));
+            }
+        }
+        Err(StatusCode::CONFLICT)
+    }
+
+    fn parse_project_schema(
+        &self,
+        result: &tandem_types::ToolResult,
+    ) -> Result<(Value, CoderGithubProjectStatusMapping, String), StatusCode> {
+        let schema = tool_result_values(result)
+            .into_iter()
+            .find(|value| value.is_object())
+            .ok_or(StatusCode::BAD_GATEWAY)?;
+        let fields = schema
+            .get("fields")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let status_field = fields
+            .iter()
+            .find(|field| {
+                field
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| status_alias_matches(name, &["status"]))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .ok_or(StatusCode::BAD_GATEWAY)?;
+        let field_id = status_field
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .ok_or(StatusCode::BAD_GATEWAY)?;
+        let field_name = status_field
+            .get("name")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .ok_or(StatusCode::BAD_GATEWAY)?;
+        let options = status_field
+            .get("options")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let resolve_option =
+            |aliases: &[&str]| -> Result<CoderGithubProjectStatusOption, StatusCode> {
+                options
+                    .iter()
+                    .find_map(|option| {
+                        let name = option.get("name").and_then(Value::as_str)?;
+                        if !status_alias_matches(name, aliases) {
+                            return None;
+                        }
+                        Some(CoderGithubProjectStatusOption {
+                            id: option.get("id").and_then(Value::as_str)?.to_string(),
+                            name: name.to_string(),
+                        })
+                    })
+                    .ok_or(StatusCode::BAD_GATEWAY)
+            };
+        let mapping = CoderGithubProjectStatusMapping {
+            field_id,
+            field_name,
+            todo: resolve_option(&["todo", "todos", "backlog", "to do"])?,
+            in_progress: resolve_option(&["inprogress", "in progress", "doing", "active"])?,
+            in_review: resolve_option(&["inreview", "in review", "review"])?,
+            blocked: resolve_option(&["blocked", "onhold", "on hold", "stalled"])?,
+            done: resolve_option(&["done", "completed", "complete", "closed"])?,
+        };
+        let fingerprint = hash_json_fingerprint(&schema)?;
+        Ok((schema, mapping, fingerprint))
+    }
+
+    async fn discover_binding(
+        &self,
+        request: &CoderGithubProjectBindingRequest,
+    ) -> Result<CoderGithubProjectBinding, StatusCode> {
+        let preferred_server = request.mcp_server.as_deref();
+        let (server_name, _tools, mapped) = self
+            .resolve_project_tools(
+                preferred_server,
+                "coder_github_project_bind",
+                &[
+                    "github.get_project",
+                    "github.list_project_items",
+                    "github.update_project_item_field",
+                ],
+            )
+            .await?;
+        let get_project_tool = mapped
+            .iter()
+            .find(|(capability_id, _)| capability_id == "github.get_project")
+            .map(|(_, tool)| tool.clone())
+            .ok_or(StatusCode::BAD_GATEWAY)?;
+        let result = self
+            .state
+            .mcp
+            .call_tool(
+                &server_name,
+                &get_project_tool,
+                json!({
+                    "owner": request.owner,
+                    "project_number": request.project_number,
+                }),
+            )
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let (schema_snapshot, status_mapping, schema_fingerprint) =
+            self.parse_project_schema(&result)?;
+        Ok(CoderGithubProjectBinding {
+            owner: request.owner.clone(),
+            project_number: request.project_number,
+            repo_slug: request.repo_slug.clone(),
+            mcp_server: request.mcp_server.clone(),
+            schema_snapshot,
+            schema_fingerprint,
+            status_mapping,
+        })
+    }
+
+    async fn list_inbox_items(
+        &self,
+        binding: &CoderGithubProjectBinding,
+    ) -> Result<Vec<GithubProjectInboxItemRecord>, StatusCode> {
+        let preferred_server = binding.mcp_server.as_deref();
+        let (server_name, _tools, mapped) = self
+            .resolve_project_tools(
+                preferred_server,
+                "coder_github_project_inbox",
+                &["github.list_project_items"],
+            )
+            .await?;
+        let list_items_tool = mapped
+            .iter()
+            .find(|(capability_id, _)| capability_id == "github.list_project_items")
+            .map(|(_, tool)| tool.clone())
+            .ok_or(StatusCode::BAD_GATEWAY)?;
+        let result = self
+            .state
+            .mcp
+            .call_tool(
+                &server_name,
+                &list_items_tool,
+                json!({
+                    "owner": binding.owner,
+                    "project_number": binding.project_number,
+                }),
+            )
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let mut out = Vec::new();
+        for candidate in tool_result_values(&result) {
+            collect_project_items(&candidate, &mut out);
+        }
+        let mut deduped = Vec::new();
+        let mut seen = HashSet::new();
+        for item in out {
+            if seen.insert(item.project_item_id.clone()) {
+                deduped.push(item);
+            }
+        }
+        Ok(deduped)
+    }
+
+    async fn update_project_item_status(
+        &self,
+        binding: &CoderGithubProjectBinding,
+        project_item_id: &str,
+        option: &CoderGithubProjectStatusOption,
+    ) -> Result<(), StatusCode> {
+        let preferred_server = binding.mcp_server.as_deref();
+        let (server_name, _tools, mapped) = self
+            .resolve_project_tools(
+                preferred_server,
+                "coder_github_project_status_sync",
+                &["github.update_project_item_field"],
+            )
+            .await?;
+        let update_tool = mapped
+            .iter()
+            .find(|(capability_id, _)| capability_id == "github.update_project_item_field")
+            .map(|(_, tool)| tool.clone())
+            .ok_or(StatusCode::BAD_GATEWAY)?;
+        self.state
+            .mcp
+            .call_tool(
+                &server_name,
+                &update_tool,
+                json!({
+                    "owner": binding.owner,
+                    "project_number": binding.project_number,
+                    "project_item_id": project_item_id,
+                    "field_id": binding.status_mapping.field_id,
+                    "single_select_option_id": option.id,
+                }),
+            )
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        Ok(())
+    }
+}
+
+fn collect_project_items(value: &Value, out: &mut Vec<GithubProjectInboxItemRecord>) {
+    match value {
+        Value::Object(map) => {
+            let project_item_id = map
+                .get("id")
+                .or_else(|| map.get("item_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let title = map
+                .get("title")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .or_else(|| {
+                    map.get("content")
+                        .and_then(Value::as_object)
+                        .and_then(|content| content.get("title"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                })
+                .unwrap_or_default();
+            let status_name = map
+                .get("status")
+                .and_then(Value::as_object)
+                .and_then(|status| status.get("name"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .or_else(|| {
+                    map.get("field_values")
+                        .and_then(Value::as_object)
+                        .and_then(|fields| fields.get("status"))
+                        .and_then(Value::as_object)
+                        .and_then(|status| status.get("name"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                })
+                .unwrap_or_default();
+            let status_option_id = map
+                .get("status")
+                .and_then(Value::as_object)
+                .and_then(|status| status.get("id"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .or_else(|| {
+                    map.get("field_values")
+                        .and_then(Value::as_object)
+                        .and_then(|fields| fields.get("status"))
+                        .and_then(Value::as_object)
+                        .and_then(|status| status.get("id"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                });
+            let issue = map
+                .get("content")
+                .and_then(Value::as_object)
+                .and_then(|content| {
+                    let type_name = content
+                        .get("type")
+                        .or_else(|| content.get("__typename"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if !type_name.eq_ignore_ascii_case("issue") {
+                        return None;
+                    }
+                    Some(GithubProjectIssueSummary {
+                        number: content
+                            .get("number")
+                            .or_else(|| content.get("issue_number"))
+                            .and_then(Value::as_u64)?,
+                        title: content
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        html_url: content
+                            .get("url")
+                            .or_else(|| content.get("html_url"))
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string),
+                    })
+                });
+            if !project_item_id.is_empty() {
+                out.push(GithubProjectInboxItemRecord {
+                    project_item_id,
+                    title,
+                    status_name,
+                    status_option_id,
+                    issue,
+                    raw: value.clone(),
+                });
+                return;
+            }
+            for nested in map.values() {
+                collect_project_items(nested, out);
+            }
+        }
+        Value::Array(rows) => {
+            for row in rows {
+                collect_project_items(row, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn split_owner_repo(repo: &str) -> Result<(&str, &str), StatusCode> {
     let mut parts = repo.split('/');
     let owner = parts
@@ -8825,6 +9499,8 @@ fn coder_run_payload(record: &CoderRunRecord, context_run: &ContextRunState) -> 
         "origin": record.origin,
         "origin_artifact_type": record.origin_artifact_type,
         "origin_policy": record.origin_policy,
+        "github_project_ref": record.github_project_ref,
+        "remote_sync_state": coder_run_sync_state(record),
         "status": context_run.status,
         "phase": project_coder_phase(context_run),
         "created_at_ms": record.created_at_ms,
@@ -9402,6 +10078,8 @@ async fn coder_run_create_inner(
         origin: normalize_source_client(input.origin.as_deref()),
         origin_artifact_type: normalize_source_client(input.origin_artifact_type.as_deref()),
         origin_policy: input.origin_policy,
+        github_project_ref: None,
+        remote_sync_state: None,
         created_at_ms: now,
         updated_at_ms: now,
     };
@@ -9611,6 +10289,7 @@ async fn coder_run_create_inner(
     }
 
     let final_run = load_context_run_state(&state, &linked_context_run_id).await?;
+    maybe_sync_github_project_status(&state, &mut record, &final_run).await?;
     publish_coder_run_event(
         &state,
         "coder.run.created",
@@ -10029,20 +10708,37 @@ pub(super) async fn coder_project_run_list(
 pub(super) async fn coder_project_binding_put(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
-    Json(mut repo_binding): Json<CoderRepoBinding>,
+    Json(input): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let project_id = project_id.trim();
-    if project_id.is_empty()
-        || repo_binding.workspace_id.trim().is_empty()
+    let project_id = project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let parsed = parse_coder_project_binding_put_input(&project_id, input)?;
+    let existing = load_coder_project_binding(&state, &project_id).await?;
+    let mut repo_binding = parsed
+        .repo_binding
+        .or_else(|| existing.as_ref().map(|row| row.repo_binding.clone()))
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    if repo_binding.workspace_id.trim().is_empty()
         || repo_binding.workspace_root.trim().is_empty()
         || repo_binding.repo_slug.trim().is_empty()
     {
         return Err(StatusCode::BAD_REQUEST);
     }
     repo_binding.project_id = project_id.to_string();
+    let github_project_binding = match parsed.github_project_binding {
+        Some(request) => Some(
+            GithubProjectsAdapter::new(&state)
+                .discover_binding(&request)
+                .await?,
+        ),
+        None => existing.and_then(|row| row.github_project_binding),
+    };
     let binding = CoderProjectBinding {
         project_id: project_id.to_string(),
         repo_binding,
+        github_project_binding,
         updated_at_ms: crate::now_ms(),
     };
     save_coder_project_binding(&state, &binding).await?;
@@ -10050,6 +10746,204 @@ pub(super) async fn coder_project_binding_put(
         "ok": true,
         "binding": binding,
     })))
+}
+
+pub(super) async fn coder_project_github_project_inbox(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let binding = load_coder_project_binding(&state, project_id)
+        .await?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let github_project_binding = binding
+        .github_project_binding
+        .clone()
+        .ok_or(StatusCode::CONFLICT)?;
+    let adapter = GithubProjectsAdapter::new(&state);
+    let live_binding = adapter
+        .discover_binding(&CoderGithubProjectBindingRequest {
+            owner: github_project_binding.owner.clone(),
+            project_number: github_project_binding.project_number,
+            repo_slug: github_project_binding.repo_slug.clone(),
+            mcp_server: github_project_binding.mcp_server.clone(),
+        })
+        .await?;
+    let schema_drift = live_binding.schema_fingerprint != github_project_binding.schema_fingerprint;
+    let items = adapter.list_inbox_items(&github_project_binding).await?;
+    let mut rows = Vec::new();
+    for item in items {
+        let linked = find_latest_project_item_run(&state, &item.project_item_id).await?;
+        let actionable = item.issue.is_some()
+            && status_alias_matches(
+                &item.status_name,
+                &[&github_project_binding.status_mapping.todo.name],
+            );
+        let remote_sync_state = if schema_drift {
+            CoderRemoteSyncState::SchemaDrift
+        } else if let Some((record, run)) = linked.as_ref() {
+            let expected = context_status_to_project_option(
+                &record
+                    .github_project_ref
+                    .as_ref()
+                    .map(|row| row.status_mapping.clone())
+                    .unwrap_or_else(|| github_project_binding.status_mapping.clone()),
+                &run.status,
+            );
+            if item.status_option_id.as_deref() == Some(expected.id.as_str()) {
+                coder_run_sync_state(record)
+            } else {
+                CoderRemoteSyncState::RemoteStateDiverged
+            }
+        } else {
+            CoderRemoteSyncState::InSync
+        };
+        rows.push(json!({
+            "project_item_id": item.project_item_id,
+            "title": item.title,
+            "status_name": item.status_name,
+            "status_option_id": item.status_option_id,
+            "issue": item.issue,
+            "actionable": actionable,
+            "unsupported_reason": if item.issue.is_none() { Some("unsupported_item_type") } else { None::<&str> },
+            "linked_run": linked.as_ref().map(|(record, run)| json!({
+                "coder_run": coder_run_payload(record, run),
+                "active": !is_terminal_context_status(&run.status),
+            })),
+            "remote_sync_state": remote_sync_state,
+        }));
+    }
+    Ok(Json(json!({
+        "project_id": project_id,
+        "binding": github_project_binding,
+        "schema_drift": schema_drift,
+        "live_schema_fingerprint": live_binding.schema_fingerprint,
+        "items": rows,
+    })))
+}
+
+pub(super) async fn coder_project_github_project_intake(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(input): Json<CoderGithubProjectIntakeInput>,
+) -> Result<Response, StatusCode> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() || input.project_item_id.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let _guard = coder_project_intake_lock().lock().await;
+    let Some(binding) = load_coder_project_binding(&state, project_id).await? else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let Some(github_project_binding) = binding.github_project_binding.clone() else {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "GitHub Project binding is required before intake",
+                "code": "CODER_GITHUB_PROJECT_BINDING_REQUIRED",
+            })),
+        )
+            .into_response());
+    };
+    if let Some((record, run)) =
+        find_latest_project_item_run(&state, &input.project_item_id).await?
+    {
+        if !is_terminal_context_status(&run.status) {
+            return Ok(Json(json!({
+                "ok": true,
+                "deduped": true,
+                "coder_run": coder_run_payload(&record, &run),
+                "run": run,
+            }))
+            .into_response());
+        }
+    }
+    let adapter = GithubProjectsAdapter::new(&state);
+    let items = adapter.list_inbox_items(&github_project_binding).await?;
+    let item = items
+        .into_iter()
+        .find(|row| row.project_item_id == input.project_item_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let issue = item.issue.ok_or(StatusCode::CONFLICT)?;
+    if !status_alias_matches(
+        &item.status_name,
+        &[&github_project_binding.status_mapping.todo.name],
+    ) {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Project item is not in the configured TODO state",
+                "code": "CODER_GITHUB_PROJECT_ITEM_NOT_TODO",
+                "status_name": item.status_name,
+            })),
+        )
+            .into_response());
+    }
+    let response = coder_run_create_inner(
+        state.clone(),
+        CoderRunCreateInput {
+            coder_run_id: input.coder_run_id,
+            workflow_mode: CoderWorkflowMode::IssueTriage,
+            repo_binding: binding.repo_binding.clone(),
+            github_ref: Some(CoderGithubRef {
+                kind: CoderGithubRefKind::Issue,
+                number: issue.number,
+                url: issue.html_url.clone(),
+            }),
+            objective: None,
+            source_client: input.source_client,
+            workspace: input.workspace,
+            model_provider: input.model_provider,
+            model_id: input.model_id,
+            mcp_servers: input.mcp_servers.or_else(|| {
+                github_project_binding
+                    .mcp_server
+                    .clone()
+                    .map(|row| vec![row])
+            }),
+            parent_coder_run_id: None,
+            origin: Some("github_project_intake".to_string()),
+            origin_artifact_type: Some("github_project_item".to_string()),
+            origin_policy: Some(json!({
+                "source": "github_project_intake",
+                "project_item_id": item.project_item_id,
+            })),
+        },
+    )
+    .await?;
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut payload: Value =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let coder_run_id = payload
+        .get("coder_run")
+        .and_then(|row| row.get("coder_run_id"))
+        .and_then(Value::as_str)
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut record = load_coder_run_record(&state, coder_run_id).await?;
+    record.github_project_ref = Some(CoderGithubProjectRef {
+        owner: github_project_binding.owner.clone(),
+        project_number: github_project_binding.project_number,
+        project_item_id: item.project_item_id.clone(),
+        issue_number: issue.number,
+        issue_url: issue.html_url.clone(),
+        schema_fingerprint: github_project_binding.schema_fingerprint.clone(),
+        status_mapping: github_project_binding.status_mapping.clone(),
+    });
+    record.remote_sync_state = Some(CoderRemoteSyncState::InSync);
+    save_coder_run_record(&state, &record).await?;
+    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    maybe_sync_github_project_status(&state, &mut record, &run).await?;
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("coder_run".to_string(), coder_run_payload(&record, &run));
+        obj.insert("run".to_string(), json!(run));
+        obj.insert("deduped".to_string(), json!(false));
+    }
+    Ok(Json(payload).into_response())
 }
 
 pub(super) async fn coder_status(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
@@ -10262,6 +11156,7 @@ async fn execute_coder_run_step(
     let final_run = load_context_run_state(&state, &record.linked_context_run_id).await?;
     record.updated_at_ms = final_run.updated_at_ms;
     save_coder_run_record(&state, &record).await?;
+    maybe_sync_github_project_status(&state, record, &final_run).await?;
     Ok(json!({
         "ok": true,
         "task": task,
@@ -10388,13 +11283,20 @@ async fn coder_run_transition(
         )
         .await?;
     let run = load_context_run_state(state, &record.linked_context_run_id).await?;
-    let generated_candidate =
-        ensure_terminal_run_outcome_candidate(state, record, &run, event_type, reason.as_deref())
-            .await?;
+    let mut sync_record = record.clone();
+    maybe_sync_github_project_status(state, &mut sync_record, &run).await?;
+    let generated_candidate = ensure_terminal_run_outcome_candidate(
+        state,
+        &sync_record,
+        &run,
+        event_type,
+        reason.as_deref(),
+    )
+    .await?;
     publish_coder_run_event(
         state,
         "coder.run.phase_changed",
-        record,
+        &sync_record,
         Some(project_coder_phase(&run)),
         {
             let mut extra = serde_json::Map::new();
@@ -10409,7 +11311,7 @@ async fn coder_run_transition(
         "generated_candidates": generated_candidate
             .into_iter()
             .collect::<Vec<_>>(),
-        "coder_run": coder_run_payload(record, &run),
+        "coder_run": coder_run_payload(&sync_record, &run),
         "run": run,
     }))
 }

@@ -5,6 +5,7 @@ import type {
   Blackboard,
   BlackboardArtifactRef,
   BlackboardPatchRecord,
+  CoderRunRecord,
   OrchestratorRunRecord,
   SessionMessage,
 } from "@/lib/tauri";
@@ -22,6 +23,7 @@ import {
 
 type CoderRunDetailCardProps = {
   selectedCoderRun: DerivedCoderRun | null;
+  selectedCoderRunRecord: CoderRunRecord | null;
   selectedRunDetail: AutomationV2RunRecord | null;
   selectedContextRunId: string | null;
   selectedSessionPreview: SessionPreview | null;
@@ -87,6 +89,7 @@ function DetailStat({ label, value }: { label: string; value: string }) {
 
 export function CoderRunDetailCard({
   selectedCoderRun,
+  selectedCoderRunRecord,
   selectedRunDetail,
   selectedContextRunId,
   selectedSessionPreview,
@@ -282,6 +285,10 @@ export function CoderRunDetailCard({
                 value={selectedContextRunId || "Not returned"}
               />
               <DetailStat
+                label="Coder Run ID"
+                value={selectedCoderRunRecord?.coder_run_id || "Not resolved"}
+              />
+              <DetailStat
                 label="Workspace Root"
                 value={selectedCoderRun.automation.workspace_root || "Not set"}
               />
@@ -290,6 +297,36 @@ export function CoderRunDetailCard({
                 value={extractSessionIdsFromRun(selectedRunDetail).join(", ") || "None"}
               />
             </div>
+
+            {selectedCoderRunRecord?.github_project_ref ? (
+              <div className="rounded-lg border border-border bg-surface-elevated/30 p-3">
+                <div className="text-sm font-semibold text-text">GitHub Project Linkage</div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <DetailStat
+                    label="Project"
+                    value={`${selectedCoderRunRecord.github_project_ref.owner} #${selectedCoderRunRecord.github_project_ref.project_number}`}
+                  />
+                  <DetailStat
+                    label="Project Item"
+                    value={selectedCoderRunRecord.github_project_ref.project_item_id}
+                  />
+                  <DetailStat
+                    label="Issue"
+                    value={
+                      selectedCoderRunRecord.github_project_ref.issue_url ||
+                      `#${selectedCoderRunRecord.github_project_ref.issue_number}`
+                    }
+                  />
+                  <DetailStat
+                    label="Remote Sync"
+                    value={String(selectedCoderRunRecord.remote_sync_state || "unknown").replace(
+                      /_/g,
+                      " "
+                    )}
+                  />
+                </div>
+              </div>
+            ) : null}
 
             {runSummary(selectedRunDetail) ? (
               <div className="rounded-lg border border-border bg-surface-elevated/30 p-3 text-sm text-text-muted">

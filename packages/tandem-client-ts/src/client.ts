@@ -73,9 +73,13 @@ import type {
   BugMonitorDraftRecord,
   BugMonitorDraftListResponse,
   BugMonitorPostListResponse,
+  CoderGithubProjectInboxResponse,
+  CoderGithubProjectIntakeResponse,
   CoderRunRecord,
   CoderRunsListResponse,
   CoderRunGetResponse,
+  CoderProjectBindingGetResponse,
+  CoderProjectBindingPutResponse,
   CoderArtifactRecord,
   CoderArtifactsResponse,
   CoderMemoryHitRecord,
@@ -1867,6 +1871,78 @@ class Coder {
       ...asObj,
       coderRun: (asObj.coder_run as CoderRunRecord | undefined) ?? undefined,
       coder_run: (asObj.coder_run as CoderRunRecord | undefined) ?? undefined,
+      run: (asObj.run as JsonObject | undefined) ?? undefined,
+    };
+  }
+
+  /** Load project-scoped coder binding metadata. */
+  async getProjectBinding(projectId: string): Promise<CoderProjectBindingGetResponse> {
+    const raw = await this.req<unknown>(
+      `/coder/projects/${encodeURIComponent(projectId)}/bindings`
+    );
+    const asObj = ((raw as JsonObject | null) ?? {}) as JsonObject;
+    return {
+      ...asObj,
+      binding: (asObj.binding as CoderProjectBindingGetResponse["binding"]) ?? null,
+    };
+  }
+
+  /** Save project-scoped coder binding metadata. */
+  async putProjectBinding(
+    projectId: string,
+    payload: JsonObject
+  ): Promise<CoderProjectBindingPutResponse> {
+    const raw = await this.req<unknown>(
+      `/coder/projects/${encodeURIComponent(projectId)}/bindings`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }
+    );
+    const asObj = ((raw as JsonObject | null) ?? {}) as JsonObject;
+    return {
+      ...asObj,
+      binding: asObj.binding as unknown as CoderProjectBindingPutResponse["binding"],
+    };
+  }
+
+  /** List GitHub Project inbox items for a coder project binding. */
+  async getProjectGithubInbox(projectId: string): Promise<CoderGithubProjectInboxResponse> {
+    const raw = await this.req<unknown>(
+      `/coder/projects/${encodeURIComponent(projectId)}/github-project/inbox`
+    );
+    const asObj = ((raw as JsonObject | null) ?? {}) as JsonObject;
+    return {
+      ...asObj,
+      items: Array.isArray(asObj.items)
+        ? (asObj.items as unknown as CoderGithubProjectInboxResponse["items"])
+        : [],
+      binding: asObj.binding as unknown as CoderGithubProjectInboxResponse["binding"],
+      project_id: String(asObj.project_id || asObj.projectId || ""),
+      schema_drift: Boolean(asObj.schema_drift ?? asObj.schemaDrift),
+      live_schema_fingerprint: String(
+        asObj.live_schema_fingerprint || asObj.liveSchemaFingerprint || ""
+      ),
+    };
+  }
+
+  /** Intake a GitHub Project item into a Tandem coder run lineage. */
+  async intakeProjectItem(
+    projectId: string,
+    payload: JsonObject
+  ): Promise<CoderGithubProjectIntakeResponse> {
+    const raw = await this.req<unknown>(
+      `/coder/projects/${encodeURIComponent(projectId)}/github-project/intake`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+    const asObj = ((raw as JsonObject | null) ?? {}) as JsonObject;
+    return {
+      ...asObj,
+      coder_run: (asObj.coder_run as CoderRunRecord | undefined) ?? undefined,
+      coderRun: (asObj.coder_run as CoderRunRecord | undefined) ?? undefined,
       run: (asObj.run as JsonObject | undefined) ?? undefined,
     };
   }

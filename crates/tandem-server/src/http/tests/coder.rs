@@ -55,6 +55,21 @@ async fn spawn_fake_github_mcp_server() -> (String, tokio::task::JoinHandle<()>)
                             "name": "mcp.github.merge_pull_request",
                             "description": "Merge a GitHub pull request",
                             "inputSchema": {"type":"object"}
+                        },
+                        {
+                            "name": "mcp.github.get_project",
+                            "description": "Get a GitHub project",
+                            "inputSchema": {"type":"object"}
+                        },
+                        {
+                            "name": "mcp.github.list_project_items",
+                            "description": "List GitHub project items",
+                            "inputSchema": {"type":"object"}
+                        },
+                        {
+                            "name": "mcp.github.update_project_item_field",
+                            "description": "Update a GitHub project item field",
+                            "inputSchema": {"type":"object"}
                         }
                     ]
                 }),
@@ -96,6 +111,58 @@ async fn spawn_fake_github_mcp_server() -> (String, tokio::task::JoinHandle<()>)
                                 "state": "merged",
                                 "html_url": "https://github.com/user123/tandem/pull/314"
                             }
+                        }),
+                        "mcp.github.get_project" => json!({
+                            "id": "proj_42",
+                            "owner": "user123",
+                            "number": 42,
+                            "title": "Coder Intake",
+                            "fields": [
+                                {
+                                    "id": "status_field_1",
+                                    "name": "Status",
+                                    "options": [
+                                        {"id": "opt_todo", "name": "TODO"},
+                                        {"id": "opt_progress", "name": "In Progress"},
+                                        {"id": "opt_review", "name": "In Review"},
+                                        {"id": "opt_blocked", "name": "Blocked"},
+                                        {"id": "opt_done", "name": "Done"}
+                                    ]
+                                }
+                            ]
+                        }),
+                        "mcp.github.list_project_items" => json!({
+                            "items": [
+                                {
+                                    "id": "PVT_item_1",
+                                    "title": "Guard startup recovery config loading",
+                                    "status": {"id": "opt_todo", "name": "TODO"},
+                                    "content": {
+                                        "type": "Issue",
+                                        "number": 313,
+                                        "title": "Guard startup recovery config loading",
+                                        "url": "https://github.com/user123/tandem/issues/313"
+                                    }
+                                },
+                                {
+                                    "id": "PVT_item_2",
+                                    "title": "Draft note",
+                                    "status": {"id": "opt_todo", "name": "TODO"},
+                                    "content": {
+                                        "type": "DraftIssue",
+                                        "title": "Draft note"
+                                    }
+                                }
+                            ]
+                        }),
+                        "mcp.github.update_project_item_field" => json!({
+                            "ok": true,
+                            "item_id": request
+                                .get("params")
+                                .and_then(|row| row.get("arguments"))
+                                .and_then(|row| row.get("project_item_id"))
+                                .cloned()
+                                .unwrap_or(Value::Null)
                         }),
                         _ => json!({
                             "content": [
@@ -6643,6 +6710,283 @@ async fn coder_project_binding_get_put_and_project_list_prefers_explicit_binding
             .and_then(|row| row.get("workspace_root"))
             .and_then(Value::as_str),
         Some("/tmp/explicit-repo")
+    );
+}
+
+#[tokio::test]
+async fn coder_project_binding_put_discovers_github_project_schema() {
+    let (endpoint, server) = spawn_fake_github_mcp_server().await;
+    let state = test_state().await;
+    state
+        .mcp
+        .add_or_update(
+            "github".to_string(),
+            endpoint,
+            std::collections::HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.connect("github").await);
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let put_req = Request::builder()
+        .method("PUT")
+        .uri("/coder/projects/proj-engine/bindings")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "repo_binding": {
+                    "workspace_id": "ws-explicit",
+                    "workspace_root": "/tmp/explicit-repo",
+                    "repo_slug": "user123/tandem-explicit"
+                },
+                "github_project_binding": {
+                    "owner": "user123",
+                    "project_number": 42,
+                    "mcp_server": "github"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("put request");
+    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+    server.abort();
+    assert_eq!(put_resp.status(), StatusCode::OK);
+    let put_payload: Value = serde_json::from_slice(
+        &to_bytes(put_resp.into_body(), usize::MAX)
+            .await
+            .expect("put body"),
+    )
+    .expect("put json");
+    assert_eq!(
+        put_payload
+            .get("binding")
+            .and_then(|row| row.get("github_project_binding"))
+            .and_then(|row| row.get("schema_fingerprint"))
+            .and_then(Value::as_str)
+            .map(|row| !row.is_empty()),
+        Some(true)
+    );
+    assert_eq!(
+        put_payload
+            .get("binding")
+            .and_then(|row| row.get("github_project_binding"))
+            .and_then(|row| row.get("status_mapping"))
+            .and_then(|row| row.get("todo"))
+            .and_then(|row| row.get("name"))
+            .and_then(Value::as_str),
+        Some("TODO")
+    );
+}
+
+#[tokio::test]
+async fn coder_project_github_project_inbox_lists_actionable_and_unsupported_items() {
+    let (endpoint, server) = spawn_fake_github_mcp_server().await;
+    let state = test_state().await;
+    state
+        .mcp
+        .add_or_update(
+            "github".to_string(),
+            endpoint,
+            std::collections::HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.connect("github").await);
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let binding_req = Request::builder()
+        .method("PUT")
+        .uri("/coder/projects/proj-engine/bindings")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "repo_binding": {
+                    "workspace_id": "ws-explicit",
+                    "workspace_root": "/tmp/explicit-repo",
+                    "repo_slug": "user123/tandem-explicit"
+                },
+                "github_project_binding": {
+                    "owner": "user123",
+                    "project_number": 42,
+                    "mcp_server": "github"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("binding request");
+    let binding_resp = app
+        .clone()
+        .oneshot(binding_req)
+        .await
+        .expect("binding response");
+    assert_eq!(binding_resp.status(), StatusCode::OK);
+
+    let inbox_req = Request::builder()
+        .method("GET")
+        .uri("/coder/projects/proj-engine/github-project/inbox")
+        .body(Body::empty())
+        .expect("inbox request");
+    let inbox_resp = app
+        .clone()
+        .oneshot(inbox_req)
+        .await
+        .expect("inbox response");
+    server.abort();
+    assert_eq!(inbox_resp.status(), StatusCode::OK);
+    let inbox_payload: Value = serde_json::from_slice(
+        &to_bytes(inbox_resp.into_body(), usize::MAX)
+            .await
+            .expect("inbox body"),
+    )
+    .expect("inbox json");
+    let items = inbox_payload
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("items");
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items[0].get("actionable").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        items[1].get("unsupported_reason").and_then(Value::as_str),
+        Some("unsupported_item_type")
+    );
+}
+
+#[tokio::test]
+async fn coder_project_github_project_intake_is_idempotent_for_active_item() {
+    let (endpoint, server) = spawn_fake_github_mcp_server().await;
+    let state = test_state().await;
+    state
+        .mcp
+        .add_or_update(
+            "github".to_string(),
+            endpoint,
+            std::collections::HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.connect("github").await);
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let binding_req = Request::builder()
+        .method("PUT")
+        .uri("/coder/projects/proj-engine/bindings")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "repo_binding": {
+                    "workspace_id": "ws-explicit",
+                    "workspace_root": "/tmp/explicit-repo",
+                    "repo_slug": "user123/tandem-explicit"
+                },
+                "github_project_binding": {
+                    "owner": "user123",
+                    "project_number": 42,
+                    "mcp_server": "github"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("binding request");
+    let binding_resp = app
+        .clone()
+        .oneshot(binding_req)
+        .await
+        .expect("binding response");
+    assert_eq!(binding_resp.status(), StatusCode::OK);
+
+    let first_req = Request::builder()
+        .method("POST")
+        .uri("/coder/projects/proj-engine/github-project/intake")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "project_item_id": "PVT_item_1",
+                "mcp_servers": ["github"]
+            })
+            .to_string(),
+        ))
+        .expect("first intake request");
+    let first_resp = app
+        .clone()
+        .oneshot(first_req)
+        .await
+        .expect("first intake response");
+    assert_eq!(first_resp.status(), StatusCode::OK);
+    let first_payload: Value = serde_json::from_slice(
+        &to_bytes(first_resp.into_body(), usize::MAX)
+            .await
+            .expect("first intake body"),
+    )
+    .expect("first intake json");
+    let first_run_id = first_payload
+        .get("coder_run")
+        .and_then(|row| row.get("coder_run_id"))
+        .and_then(Value::as_str)
+        .expect("first coder run id")
+        .to_string();
+    assert_eq!(
+        first_payload
+            .get("coder_run")
+            .and_then(|row| row.get("github_project_ref"))
+            .and_then(|row| row.get("project_item_id"))
+            .and_then(Value::as_str),
+        Some("PVT_item_1")
+    );
+
+    let second_req = Request::builder()
+        .method("POST")
+        .uri("/coder/projects/proj-engine/github-project/intake")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "project_item_id": "PVT_item_1",
+                "mcp_servers": ["github"]
+            })
+            .to_string(),
+        ))
+        .expect("second intake request");
+    let second_resp = app
+        .clone()
+        .oneshot(second_req)
+        .await
+        .expect("second intake response");
+    server.abort();
+    assert_eq!(second_resp.status(), StatusCode::OK);
+    let second_payload: Value = serde_json::from_slice(
+        &to_bytes(second_resp.into_body(), usize::MAX)
+            .await
+            .expect("second intake body"),
+    )
+    .expect("second intake json");
+    assert_eq!(
+        second_payload.get("deduped").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        second_payload
+            .get("coder_run")
+            .and_then(|row| row.get("coder_run_id"))
+            .and_then(Value::as_str),
+        Some(first_run_id.as_str())
     );
 }
 

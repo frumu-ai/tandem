@@ -1104,6 +1104,105 @@ export interface CoderGithubRef {
   url?: string | null;
 }
 
+export type CoderRemoteSyncState =
+  | "in_sync"
+  | "schema_drift"
+  | "remote_state_diverged"
+  | "projection_unavailable";
+
+export interface CoderGithubProjectStatusOption {
+  id: string;
+  name: string;
+}
+
+export interface CoderGithubProjectStatusMapping {
+  fieldId?: string;
+  field_id?: string;
+  fieldName?: string;
+  field_name?: string;
+  todo: CoderGithubProjectStatusOption;
+  inProgress?: CoderGithubProjectStatusOption;
+  in_progress: CoderGithubProjectStatusOption;
+  inReview?: CoderGithubProjectStatusOption;
+  in_review: CoderGithubProjectStatusOption;
+  blocked: CoderGithubProjectStatusOption;
+  done: CoderGithubProjectStatusOption;
+}
+
+export interface CoderGithubProjectBinding {
+  owner: string;
+  projectNumber?: number;
+  project_number: number;
+  repoSlug?: string | null;
+  repo_slug?: string | null;
+  mcpServer?: string | null;
+  mcp_server?: string | null;
+  schemaSnapshot?: JsonObject;
+  schema_snapshot: JsonObject;
+  schemaFingerprint?: string;
+  schema_fingerprint: string;
+  statusMapping?: CoderGithubProjectStatusMapping;
+  status_mapping: CoderGithubProjectStatusMapping;
+}
+
+export interface CoderGithubProjectRef {
+  owner: string;
+  projectNumber?: number;
+  project_number: number;
+  projectItemId?: string;
+  project_item_id: string;
+  issueNumber?: number;
+  issue_number: number;
+  issueUrl?: string | null;
+  issue_url?: string | null;
+  schemaFingerprint?: string;
+  schema_fingerprint: string;
+  statusMapping?: CoderGithubProjectStatusMapping;
+  status_mapping: CoderGithubProjectStatusMapping;
+}
+
+export interface CoderProjectBindingRecord {
+  projectId?: string;
+  project_id: string;
+  repoBinding?: CoderRepoBinding;
+  repo_binding: CoderRepoBinding;
+  githubProjectBinding?: CoderGithubProjectBinding | null;
+  github_project_binding?: CoderGithubProjectBinding | null;
+  updatedAtMs?: number;
+  updated_at_ms: number;
+}
+
+export interface CoderGithubProjectInboxItem {
+  projectItemId?: string;
+  project_item_id: string;
+  title: string;
+  statusName?: string;
+  status_name: string;
+  statusOptionId?: string | null;
+  status_option_id?: string | null;
+  issue?: {
+    number: number;
+    title: string;
+    htmlUrl?: string | null;
+    html_url?: string | null;
+  } | null;
+  actionable: boolean;
+  unsupportedReason?: string | null;
+  unsupported_reason?: string | null;
+  linkedRun?: {
+    coderRun?: CoderRunRecord;
+    coder_run?: CoderRunRecord;
+    active: boolean;
+  } | null;
+  linked_run?: {
+    coderRun?: CoderRunRecord;
+    coder_run?: CoderRunRecord;
+    active: boolean;
+  } | null;
+  remoteSyncState?: CoderRemoteSyncState;
+  remote_sync_state: CoderRemoteSyncState;
+}
+
 export interface CoderRunRecord {
   coderRunId?: string;
   coder_run_id?: string;
@@ -1115,6 +1214,10 @@ export interface CoderRunRecord {
   repo_binding?: CoderRepoBinding;
   githubRef?: CoderGithubRef | null;
   github_ref?: CoderGithubRef | null;
+  githubProjectRef?: CoderGithubProjectRef | null;
+  github_project_ref?: CoderGithubProjectRef | null;
+  remoteSyncState?: CoderRemoteSyncState | null;
+  remote_sync_state?: CoderRemoteSyncState | null;
   sourceClient?: string | null;
   source_client?: string | null;
   status?: string;
@@ -1132,6 +1235,35 @@ export interface CoderRunsListResponse {
 }
 
 export interface CoderRunGetResponse {
+  coderRun?: CoderRunRecord;
+  coder_run?: CoderRunRecord;
+  run?: JsonObject;
+  [key: string]: unknown;
+}
+
+export interface CoderProjectBindingGetResponse {
+  binding?: CoderProjectBindingRecord | null;
+}
+
+export interface CoderProjectBindingPutResponse {
+  ok?: boolean;
+  binding: CoderProjectBindingRecord;
+}
+
+export interface CoderGithubProjectInboxResponse {
+  projectId?: string;
+  project_id: string;
+  binding: CoderGithubProjectBinding;
+  schemaDrift?: boolean;
+  schema_drift: boolean;
+  liveSchemaFingerprint?: string;
+  live_schema_fingerprint: string;
+  items: CoderGithubProjectInboxItem[];
+}
+
+export interface CoderGithubProjectIntakeResponse {
+  ok?: boolean;
+  deduped?: boolean;
   coderRun?: CoderRunRecord;
   coder_run?: CoderRunRecord;
   run?: JsonObject;

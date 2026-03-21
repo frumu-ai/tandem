@@ -1152,6 +1152,73 @@ export interface CoderGithubRef {
   url?: string | null;
 }
 
+export type CoderRemoteSyncState =
+  | "in_sync"
+  | "schema_drift"
+  | "remote_state_diverged"
+  | "projection_unavailable";
+
+export interface CoderGithubProjectStatusOption {
+  id: string;
+  name: string;
+}
+
+export interface CoderGithubProjectStatusMapping {
+  field_id: string;
+  field_name: string;
+  todo: CoderGithubProjectStatusOption;
+  in_progress: CoderGithubProjectStatusOption;
+  in_review: CoderGithubProjectStatusOption;
+  blocked: CoderGithubProjectStatusOption;
+  done: CoderGithubProjectStatusOption;
+}
+
+export interface CoderGithubProjectBinding {
+  owner: string;
+  project_number: number;
+  repo_slug?: string | null;
+  mcp_server?: string | null;
+  schema_snapshot: Record<string, unknown>;
+  schema_fingerprint: string;
+  status_mapping: CoderGithubProjectStatusMapping;
+}
+
+export interface CoderGithubProjectRef {
+  owner: string;
+  project_number: number;
+  project_item_id: string;
+  issue_number: number;
+  issue_url?: string | null;
+  schema_fingerprint: string;
+  status_mapping: CoderGithubProjectStatusMapping;
+}
+
+export interface CoderProjectBindingRecord {
+  project_id: string;
+  repo_binding: CoderRepoBinding;
+  github_project_binding?: CoderGithubProjectBinding | null;
+  updated_at_ms: number;
+}
+
+export interface CoderGithubProjectInboxItem {
+  project_item_id: string;
+  title: string;
+  status_name: string;
+  status_option_id?: string | null;
+  issue?: {
+    number: number;
+    title: string;
+    html_url?: string | null;
+  } | null;
+  actionable: boolean;
+  unsupported_reason?: string | null;
+  linked_run?: {
+    coder_run: CoderRunRecord;
+    active: boolean;
+  } | null;
+  remote_sync_state: CoderRemoteSyncState;
+}
+
 export interface CoderAutomationBranchContext {
   current_branch?: string | null;
   default_branch?: string | null;
@@ -1191,6 +1258,8 @@ export interface CoderRunRecord {
   linked_context_run_id: string;
   repo_binding: CoderRepoBinding;
   github_ref?: CoderGithubRef | null;
+  github_project_ref?: CoderGithubProjectRef | null;
+  remote_sync_state?: CoderRemoteSyncState | null;
   source_client?: string | null;
   status?: string;
   phase?: string;
@@ -1337,6 +1406,36 @@ export async function getCoderRun(runId: string): Promise<{
   coding_summary?: CoderRunTelemetrySummary;
 }> {
   return invoke("coder_get_run", { runId });
+}
+
+export async function getCoderProjectBinding(projectId: string): Promise<{
+  binding: CoderProjectBindingRecord | null;
+}> {
+  return invoke("coder_get_project_binding", { projectId });
+}
+
+export async function putCoderProjectBinding(
+  projectId: string,
+  request: Record<string, unknown>
+): Promise<{ ok: boolean; binding: CoderProjectBindingRecord }> {
+  return invoke("coder_put_project_binding", { projectId, request });
+}
+
+export async function getCoderProjectGithubInbox(projectId: string): Promise<{
+  project_id: string;
+  binding: CoderGithubProjectBinding;
+  schema_drift: boolean;
+  live_schema_fingerprint: string;
+  items: CoderGithubProjectInboxItem[];
+}> {
+  return invoke("coder_get_project_github_inbox", { projectId });
+}
+
+export async function intakeCoderProjectItem(
+  projectId: string,
+  request: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  return invoke("coder_intake_project_item", { projectId, request });
 }
 
 export async function listCoderArtifacts(runId: string): Promise<{

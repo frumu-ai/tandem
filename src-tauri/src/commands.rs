@@ -6793,6 +6793,49 @@ pub async fn coder_get_run(
 }
 
 #[tauri::command]
+pub async fn coder_get_project_binding(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.coder_get_project_binding(&project_id).await
+}
+
+#[tauri::command]
+pub async fn coder_put_project_binding(
+    state: State<'_, AppState>,
+    project_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .coder_put_project_binding(&project_id, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn coder_get_project_github_inbox(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .coder_get_project_github_inbox(&project_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn coder_intake_project_item(
+    state: State<'_, AppState>,
+    project_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .coder_intake_project_item(&project_id, request)
+        .await
+}
+
+#[tauri::command]
 pub async fn coder_list_artifacts(
     state: State<'_, AppState>,
     run_id: String,

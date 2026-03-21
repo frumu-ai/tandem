@@ -161,6 +161,26 @@ const resources = await client.resources.list({ prefix: "agent-config/" });
 const skillCatalog = await client.skills.catalog();
 ```
 
+### `client.coder`
+
+`client.coder` also includes project-scoped GitHub Project intake helpers:
+
+```typescript
+await client.coder.putProjectBinding("repo-123", {
+  github_project_binding: {
+    owner: "acme-inc",
+    project_number: 7,
+    repo_slug: "acme-inc/tandem",
+  },
+});
+
+const inbox = await client.coder.getProjectGithubInbox("repo-123");
+const intake = await client.coder.intakeProjectItem("repo-123", {
+  project_item_id: inbox.items[0].project_item_id,
+  source_client: "sdk_test",
+});
+```
+
 ### `client.mcp`
 
 | Method                      | Description                 |

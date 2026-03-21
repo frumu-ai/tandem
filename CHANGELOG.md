@@ -5,9 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.8] - Unreleased
+## [0.4.9] - Unreleased
 
 ### Added
+
+- **GitHub Projects intake for Tandem Coder**:
+  - added engine-owned GitHub Project binding, schema discovery, schema fingerprinting, and root-lineage linkage so GitHub Projects can act as coder intake plus outward visibility without becoming Tandem's scheduler
+  - added project-scoped coder HTTP routes for loading/saving bindings, listing a GitHub Project inbox, and ingesting a project item into a Tandem-native `issue_triage` coder run
+  - added MCP capability bindings plus server-side discovery/update adapters for GitHub Project read/list/update flows, including schema-drift detection, idempotent project-item intake, and remote sync-state tracking
+  - added backend regression coverage for binding discovery, inbox projection, and duplicate-intake protection
+  - added desktop Coder UI support for connecting a GitHub Project, reviewing inbox items, intaking issue-backed TODO items, and viewing GitHub Project linkage from run detail
+  - added TypeScript and Python SDK support for the new coder project binding, inbox, and intake APIs
+  - added engine-testing and SDK docs plus internal rollout kanban coverage for the GitHub Project intake flow
 
 - **AutoResearch optimization control surfaces**:
   - Tandem's AutoResearch surfaces are explicitly inspired by Andrej Karpathy's `karpathy/autoresearch` project, with Tandem adapting the core overnight-eval loop to validator-backed workflow optimization

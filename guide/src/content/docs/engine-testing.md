@@ -127,6 +127,56 @@ Optional overrides:
 HOSTNAME=127.0.0.1 PORT=39731 STATE_DIR=.tandem-smoke OUT_DIR=runtime-proof bash ./scripts/engine_smoke.sh
 ```
 
+## GitHub Project intake contract check
+
+When validating the new coder GitHub Project flow, test the engine contract first before relying on desktop UI.
+
+1. Ensure a GitHub-capable MCP server is connected and its project tools are visible.
+2. Bind a coder project to a GitHub Project.
+3. Read the inbox and confirm the resolved schema fingerprint and TODO mapping.
+4. Intake one issue-backed TODO item.
+5. Confirm the returned coder run exposes `github_project_ref` and `remote_sync_state`.
+
+Example curl flow:
+
+```bash
+TOKEN="tk_test_token"
+HOST="http://127.0.0.1:39731"
+PROJECT_ID="repo-123"
+
+curl -s "$HOST/coder/projects/$PROJECT_ID/bindings" \
+  -H "X-Agent-Token: $TOKEN" | jq .
+
+curl -s -X PUT "$HOST/coder/projects/$PROJECT_ID/bindings" \
+  -H "X-Agent-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "github_project_binding": {
+      "owner": "acme-inc",
+      "project_number": 7,
+      "repo_slug": "acme-inc/tandem"
+    }
+  }' | jq .
+
+curl -s "$HOST/coder/projects/$PROJECT_ID/github-project/inbox" \
+  -H "X-Agent-Token: $TOKEN" | jq .
+
+curl -s -X POST "$HOST/coder/projects/$PROJECT_ID/github-project/intake" \
+  -H "X-Agent-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_item_id": "PVT_ITEM_123",
+    "source_client": "engine_contract_test"
+  }' | jq .
+```
+
+SDK parity checks:
+
+```bash
+pnpm --dir packages/tandem-client-ts build
+python -m compileall packages/tandem-client-py/tandem_client
+```
+
 ## Shared Engine Mode
 
 Desktop and TUI default to shared engine mode:

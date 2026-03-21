@@ -742,6 +742,105 @@ class CoderGithubRef(BaseModel):
     url: Optional[str] = None
 
 
+class CoderGithubProjectStatusOption(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    name: str
+
+
+class CoderGithubProjectStatusMapping(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    field_id: Optional[str] = Field(None, validation_alias=AliasChoices("fieldId", "field_id"))
+    field_name: Optional[str] = Field(None, validation_alias=AliasChoices("fieldName", "field_name"))
+    todo: CoderGithubProjectStatusOption
+    in_progress: CoderGithubProjectStatusOption = Field(
+        validation_alias=AliasChoices("inProgress", "in_progress")
+    )
+    in_review: CoderGithubProjectStatusOption = Field(
+        validation_alias=AliasChoices("inReview", "in_review")
+    )
+    blocked: CoderGithubProjectStatusOption
+    done: CoderGithubProjectStatusOption
+
+
+class CoderGithubProjectBinding(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    owner: str
+    project_number: int = Field(validation_alias=AliasChoices("projectNumber", "project_number"))
+    repo_slug: Optional[str] = Field(None, validation_alias=AliasChoices("repoSlug", "repo_slug"))
+    mcp_server: Optional[str] = Field(None, validation_alias=AliasChoices("mcpServer", "mcp_server"))
+    schema_snapshot: Optional[dict[str, Any]] = Field(
+        None, validation_alias=AliasChoices("schemaSnapshot", "schema_snapshot")
+    )
+    schema_fingerprint: str = Field(
+        validation_alias=AliasChoices("schemaFingerprint", "schema_fingerprint")
+    )
+    status_mapping: CoderGithubProjectStatusMapping = Field(
+        validation_alias=AliasChoices("statusMapping", "status_mapping")
+    )
+
+
+class CoderGithubProjectRef(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    owner: str
+    project_number: int = Field(validation_alias=AliasChoices("projectNumber", "project_number"))
+    project_item_id: str = Field(validation_alias=AliasChoices("projectItemId", "project_item_id"))
+    issue_number: int = Field(validation_alias=AliasChoices("issueNumber", "issue_number"))
+    issue_url: Optional[str] = Field(None, validation_alias=AliasChoices("issueUrl", "issue_url"))
+    schema_fingerprint: str = Field(
+        validation_alias=AliasChoices("schemaFingerprint", "schema_fingerprint")
+    )
+    status_mapping: CoderGithubProjectStatusMapping = Field(
+        validation_alias=AliasChoices("statusMapping", "status_mapping")
+    )
+
+
+class CoderProjectBindingRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    project_id: str = Field(validation_alias=AliasChoices("projectId", "project_id"))
+    repo_binding: CoderRepoBinding = Field(validation_alias=AliasChoices("repoBinding", "repo_binding"))
+    github_project_binding: Optional[CoderGithubProjectBinding] = Field(
+        None, validation_alias=AliasChoices("githubProjectBinding", "github_project_binding")
+    )
+    updated_at_ms: int = Field(validation_alias=AliasChoices("updatedAtMs", "updated_at_ms"))
+
+
+class CoderLinkedProjectRun(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    coder_run: Optional["CoderRunRecord"] = Field(
+        None, validation_alias=AliasChoices("coderRun", "coder_run")
+    )
+    active: bool = False
+
+
+class CoderGithubProjectInboxIssue(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    number: int
+    title: str
+    html_url: Optional[str] = Field(None, validation_alias=AliasChoices("htmlUrl", "html_url"))
+
+
+class CoderGithubProjectInboxItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    project_item_id: str = Field(validation_alias=AliasChoices("projectItemId", "project_item_id"))
+    title: str
+    status_name: str = Field(validation_alias=AliasChoices("statusName", "status_name"))
+    status_option_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("statusOptionId", "status_option_id")
+    )
+    issue: Optional[CoderGithubProjectInboxIssue] = None
+    actionable: bool
+    unsupported_reason: Optional[str] = Field(
+        None, validation_alias=AliasChoices("unsupportedReason", "unsupported_reason")
+    )
+    linked_run: Optional[CoderLinkedProjectRun] = Field(
+        None, validation_alias=AliasChoices("linkedRun", "linked_run")
+    )
+    remote_sync_state: Optional[str] = Field(
+        None, validation_alias=AliasChoices("remoteSyncState", "remote_sync_state")
+    )
+
+
 class CoderRunRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     coder_run_id: Optional[str] = Field(None, validation_alias=AliasChoices("coderRunId", "coder_run_id"))
@@ -754,6 +853,12 @@ class CoderRunRecord(BaseModel):
     )
     github_ref: Optional[CoderGithubRef] = Field(
         None, validation_alias=AliasChoices("githubRef", "github_ref")
+    )
+    github_project_ref: Optional[CoderGithubProjectRef] = Field(
+        None, validation_alias=AliasChoices("githubProjectRef", "github_project_ref")
+    )
+    remote_sync_state: Optional[str] = Field(
+        None, validation_alias=AliasChoices("remoteSyncState", "remote_sync_state")
     )
     source_client: Optional[str] = Field(None, validation_alias=AliasChoices("sourceClient", "source_client"))
     status: Optional[str] = None
@@ -770,6 +875,38 @@ class CoderRunsListResponse(BaseModel):
 
 class CoderRunGetResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
+    coder_run: Optional[CoderRunRecord] = Field(
+        None, validation_alias=AliasChoices("coderRun", "coder_run")
+    )
+    run: Optional[dict[str, Any]] = None
+
+
+class CoderProjectBindingGetResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    binding: Optional[CoderProjectBindingRecord] = None
+
+
+class CoderProjectBindingPutResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    ok: Optional[bool] = None
+    binding: CoderProjectBindingRecord
+
+
+class CoderGithubProjectInboxResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    project_id: str = Field(validation_alias=AliasChoices("projectId", "project_id"))
+    binding: CoderGithubProjectBinding
+    schema_drift: bool = Field(validation_alias=AliasChoices("schemaDrift", "schema_drift"))
+    live_schema_fingerprint: str = Field(
+        validation_alias=AliasChoices("liveSchemaFingerprint", "live_schema_fingerprint")
+    )
+    items: list[CoderGithubProjectInboxItem] = []
+
+
+class CoderGithubProjectIntakeResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    ok: Optional[bool] = None
+    deduped: Optional[bool] = None
     coder_run: Optional[CoderRunRecord] = Field(
         None, validation_alias=AliasChoices("coderRun", "coder_run")
     )

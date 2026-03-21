@@ -2,7 +2,14 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.4.8 (Unreleased)
+## v0.4.9 (Unreleased)
+
+- GitHub Projects can now feed Tandem Coder directly as an engine-owned intake path
+  - added project-scoped coder binding APIs so one Tandem coder project can be connected to one GitHub Project with discovered schema, saved status mapping, and schema fingerprint tracking
+  - added GitHub Project inbox and intake APIs so issue-backed TODO items can be listed and turned into Tandem-native `issue_triage` coder runs without external shell-script setup
+  - added MCP-backed GitHub Project capability resolution, schema-drift detection, idempotent project-item intake, and outward remote-sync-state tracking so Tandem remains the execution authority after intake
+  - added desktop Coder UI for connecting a GitHub Project, reviewing actionable and unsupported inbox items, intaking items into coder, and inspecting GitHub Project linkage from the run detail view
+  - added TypeScript and Python SDK support plus engine-testing and SDK docs for the new binding, inbox, and intake flows
 
 - AutoResearch workflow optimization now has first-pass product and SDK surfaces
   - the Tandem AutoResearch adaptation is explicitly inspired by Andrej Karpathy's `karpathy/autoresearch`, but adapted here for validator-backed workflow optimization instead of direct Python training-loop mutation

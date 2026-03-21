@@ -32,10 +32,14 @@ from .types import (
     BugMonitorIncidentListResponse,
     BugMonitorIncidentRecord,
     BugMonitorPostListResponse,
+    CoderGithubProjectInboxResponse,
+    CoderGithubProjectIntakeResponse,
     BugMonitorStatusResponse,
     CoderArtifactsResponse,
     CoderMemoryCandidatesResponse,
     CoderMemoryHitsResponse,
+    CoderProjectBindingGetResponse,
+    CoderProjectBindingPutResponse,
     CoderRunGetResponse,
     CoderRunsListResponse,
     ChannelsConfigResponse,
@@ -1311,6 +1315,33 @@ class _Coder:
         res = await self._http.get(f"/coder/runs/{quote(run_id)}")
         res.raise_for_status()
         return CoderRunGetResponse.model_validate(res.json())
+
+    async def get_project_binding(self, project_id: str) -> CoderProjectBindingGetResponse:
+        res = await self._http.get(f"/coder/projects/{quote(project_id)}/bindings")
+        res.raise_for_status()
+        return CoderProjectBindingGetResponse.model_validate(res.json())
+
+    async def put_project_binding(
+        self, project_id: str, payload: dict[str, Any]
+    ) -> CoderProjectBindingPutResponse:
+        res = await self._http.put(f"/coder/projects/{quote(project_id)}/bindings", json=payload)
+        res.raise_for_status()
+        return CoderProjectBindingPutResponse.model_validate(res.json())
+
+    async def get_project_github_inbox(self, project_id: str) -> CoderGithubProjectInboxResponse:
+        res = await self._http.get(f"/coder/projects/{quote(project_id)}/github-project/inbox")
+        res.raise_for_status()
+        return CoderGithubProjectInboxResponse.model_validate(res.json())
+
+    async def intake_project_item(
+        self, project_id: str, payload: dict[str, Any]
+    ) -> CoderGithubProjectIntakeResponse:
+        res = await self._http.post(
+            f"/coder/projects/{quote(project_id)}/github-project/intake",
+            json=payload,
+        )
+        res.raise_for_status()
+        return CoderGithubProjectIntakeResponse.model_validate(res.json())
 
     async def execute_next(
         self, run_id: str, payload: Optional[dict[str, Any]] = None
