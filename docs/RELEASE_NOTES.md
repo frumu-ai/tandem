@@ -1,4 +1,26 @@
-# Tandem v0.4.10 Release Notes (Unreleased)
+# Tandem Upcoming Release Notes
+
+### Channel Tool Scope For Channel Sessions
+
+- Added persisted per-channel tool preferences for Telegram, Discord, and Slack sessions, including built-in tool toggles plus MCP server allowlisting.
+- Added desktop Settings controls for channel tool scope so operators can manage built-ins and MCP servers without relying only on slash commands.
+- Added control-panel and panel-template Settings controls for the same per-channel scope workflow.
+- Added TypeScript and Python SDK coverage for channel security-profile fields, channel verification, and per-channel tool preference reads and updates.
+
+### Public Channel Security Profiles
+
+- Added per-channel `security_profile` support across Telegram, Discord, and Slack configuration, runtime API surfaces, desktop settings, and panel settings.
+- Added a hardened `public_demo` mode for public-facing channel integrations that blocks file/workspace access, shell access, MCP access, model/config/operator commands, and tool-scope widening.
+- Updated `/help` for `public_demo` channels so disabled commands still appear in a dedicated security section, making Tandem’s broader capabilities visible without exposing them in an untrusted channel.
+- Added quarantined public memory for `public_demo`, scoped to a channel-specific public namespace instead of trusted project/global memory.
+- Moved public `/memory` commands onto the same semantic-memory backend used by engine memory tools so public reads, writes, and deletes stay inside the same quarantine boundary.
+
+### Post-Release Follow-Ups
+
+- Fixed the desktop sidecar/orchestrator follow-ups required by the new channel session `project_id` contract.
+- Updated docs parity coverage for the new `memory_delete` tool.
+
+# Tandem v0.4.10 Release Notes (Released 2026-03-21)
 
 ### Coding Workflows Dashboard
 
@@ -10,24 +32,9 @@
 - Documented the Tandem-native GitHub MCP path more clearly so GitHub Projects can bootstrap from PAT-backed MCP auth without relying on a separate `gh` login flow.
 - Tightened engine-first guidance so future GitHub Projects work builds on Tandem’s built-in MCP path instead of reintroducing a parallel client-side adapter.
 
-### Channel Tool Scope For Channel Sessions
+### Control-Panel Packaging And Runtime Completeness
 
-- Added persisted per-channel tool preferences for Telegram, Discord, and Slack sessions, including built-in tool toggles plus MCP server allowlisting.
-- Added desktop Settings controls for channel tool scope so operators can manage built-ins and MCP servers without relying only on slash commands.
-- Added control-panel and panel-template Settings controls for the same per-channel scope workflow.
-- Added TypeScript client and desktop Tauri bindings for reading and updating channel tool preferences.
-- Fixed the `src-tauri` sidecar integration so the new channel tool preference endpoints compile cleanly.
-
-### Public Channel Security Profiles
-
-- Added per-channel `security_profile` support across Telegram, Discord, and Slack configuration, runtime API surfaces, desktop settings, and panel settings.
-- Added a hardened `public_demo` mode for public-facing channel integrations that blocks file/workspace access, shell access, MCP access, model/config/operator commands, and tool-scope widening.
-- Updated `/help` for `public_demo` channels so disabled commands still appear in a dedicated security section, making Tandem’s broader capabilities visible without exposing them in an untrusted channel.
-- Added quarantined public memory for `public_demo`, scoped to a channel-specific public namespace instead of trusted project/global memory.
-- Moved public `/memory` commands onto the same semantic-memory backend used by engine memory tools so public reads, writes, and deletes stay inside the same quarantine boundary.
-
-### Control-Panel Package Runtime Completeness
-
+- Added Dockerfiles, entrypoints, and `docker-compose` support for the control panel and engine.
 - The control-panel package now includes the runtime `lib/` and `server/` files its CLI expects, avoiding incomplete installs.
 
 # Tandem v0.4.9 Release Notes (Released 2026-03-21)

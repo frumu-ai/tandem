@@ -2,7 +2,25 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.4.10 (Unreleased)
+## Unreleased
+
+- Channel tool scope controls for Telegram, Discord, and Slack
+  - added persisted per-channel tool preferences for built-in tools and MCP servers used by channel-created sessions
+  - added desktop Settings controls plus control-panel/template settings for managing channel tool scope
+  - added TypeScript and Python SDK support for channel security-profile fields, channel verification, and channel tool-preference reads and updates
+
+- Public channel security profiles for Telegram, Discord, and Slack
+  - added per-channel `security_profile` support across channel config, server/API responses, desktop settings, and panel settings
+  - added a hardened `public_demo` profile for public-facing integrations that blocks file/workspace access, shell access, MCP access, model/config/operator commands, and tool-scope widening
+  - `/help` in `public_demo` channels now includes a disabled-for-security section so users can see Tandem supports richer capabilities in trusted channels
+  - added quarantined public memory for `public_demo`, scoped to a channel-specific public namespace instead of trusted project/global memory
+  - moved public `/memory` commands onto the same semantic-memory backend used by engine memory tools so public reads, writes, and deletes stay inside the same quarantine boundary
+
+- Post-release desktop/docs follow-ups
+  - fixed the desktop sidecar/orchestrator follow-ups required by the new channel session `project_id` contract
+  - updated docs parity coverage for the new `memory_delete` tool
+
+## v0.4.10 (Released 2026-03-21)
 
 - Initial Coding Workflows view in the control panel
   - added a new `Coding` section in the navigation
@@ -12,21 +30,8 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - documented the Tandem-native GitHub MCP path more clearly so GitHub Projects can connect through PAT-backed MCP bootstrap instead of relying on a separate `gh` login flow
   - tightened the engine-first guidance around GitHub Projects so future client work layers on top of Tandem’s built-in MCP path
 
-- Channel tool scope controls for Telegram, Discord, and Slack
-  - added persisted per-channel tool preferences for built-in tools and MCP servers used by channel-created sessions
-  - added desktop Settings controls for managing channel tool scope without relying only on slash commands
-  - added control-panel and panel-template Settings controls for the same per-channel scope workflow
-  - added TypeScript client and desktop Tauri bindings for channel tool preference reads and updates
-  - fixed the desktop sidecar integration so the new channel tool preference endpoints compile cleanly
-
-- Public channel security profiles for Telegram, Discord, and Slack
-  - added per-channel `security_profile` support across channel config, server/API responses, desktop settings, and panel settings
-  - added a hardened `public_demo` profile for public-facing integrations that blocks file/workspace access, shell access, MCP access, model/config/operator commands, and tool-scope widening
-  - `/help` in `public_demo` channels now includes a disabled-for-security section so users can see Tandem supports richer capabilities in trusted channels
-  - added quarantined public memory for `public_demo`, scoped to a channel-specific public namespace instead of trusted project/global memory
-  - moved public `/memory` commands onto the same semantic-memory backend used by engine memory tools so public reads, writes, and deletes stay inside the same quarantine boundary
-
-- Control-panel package install fix
+- Control-panel packaging and self-hosting improvements
+  - added Dockerfiles, entrypoints, and `docker-compose` support for the control panel and engine
   - the control-panel package now ships the runtime `lib/` and `server/` files its CLI depends on, avoiding incomplete installs
 
 ## v0.4.9 (Released 2026-03-21)

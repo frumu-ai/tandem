@@ -5,21 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.10] - Unreleased
+## [Unreleased]
 
 ### Added
 
-- **Initial coding workflows section in the control panel**:
-  - added a new `Coding` navigation entry and an initial Coding Workflows page for internal run visibility
-  - added an early dashboard surface for coding-run summaries, board-oriented workflow views, manual-task scaffolding, and integration visibility
-- **GitHub Projects MCP bootstrap improvements**:
-  - documented and wired the Tandem-native GitHub MCP path so GitHub Projects can auto-bootstrap from PAT-backed auth without relying on a separate `gh` adapter
-  - clarified the engine-first guidance for GitHub Projects so client work stays on top of the built-in MCP integration instead of inventing a second adapter layer
 - **Per-channel tool scope for channel sessions**:
   - added persisted per-channel tool preferences for Telegram, Discord, and Slack sessions, including built-in tool toggles plus MCP server allowlisting
   - added desktop Settings controls for channel tool scope so operators can manage built-ins and MCP servers without relying only on slash commands
   - added control-panel and panel-template Settings controls for the same per-channel tool scope workflow
-  - added TypeScript client and desktop Tauri bindings for reading and updating channel tool preferences
+  - added TypeScript and Python SDK coverage for channel security profiles, channel verification, and per-channel tool preference reads and updates
 - **Public channel security profiles for channel integrations**:
   - added per-channel `security_profile` support across Telegram, Discord, and Slack config, API, desktop settings, and panel settings
   - added a hardened `public_demo` mode that blocks workspace/file access, shell access, MCP access, model/config/operator commands, and tool-scope widening for public-facing channels
@@ -29,10 +23,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Desktop/Tauri and docs follow-ups for post-0.4.10 channel work**:
+  - fixed the `src-tauri` sidecar integration so channel tool preference endpoints compile cleanly and can be reached from the desktop app
+  - fixed `src-tauri` orchestrator session creation after `CreateSessionRequest` gained `project_id`
+  - updated tool reference docs so docs parity includes the new `memory_delete` tool
+
+## [0.4.10] - 2026-03-21
+
+### Added
+
+- **Initial coding workflows section in the control panel**:
+  - added a new `Coding` navigation entry and an initial Coding Workflows page for internal run visibility
+  - added an early dashboard surface for coding-run summaries, board-oriented workflow views, manual-task scaffolding, and integration visibility
+- **GitHub Projects MCP bootstrap improvements**:
+  - documented and wired the Tandem-native GitHub MCP path so GitHub Projects can auto-bootstrap from PAT-backed auth without relying on a separate `gh` adapter
+  - clarified the engine-first guidance for GitHub Projects so client work stays on top of the built-in MCP integration instead of inventing a second adapter layer
+- **Control-panel packaging and runtime support**:
+  - added Dockerfiles, entrypoints, and `docker-compose` support for the control panel and engine
+  - added control-panel packaging/runtime files so published installs include the `lib/` and `server/` assets the CLI expects
+
+### Fixed
+
 - **Control-panel package runtime completeness**:
   - the published control-panel package now includes the runtime `lib/` and `server/` files its CLI expects, avoiding broken installs where the app bootstraps without its own server helpers
-- **Desktop sidecar compilation for channel tool preferences**:
-  - fixed the `src-tauri` sidecar integration so the new channel tool preference endpoints compile cleanly and can be reached from the desktop app
 
 ## [0.4.9] - 2026-03-21
 
