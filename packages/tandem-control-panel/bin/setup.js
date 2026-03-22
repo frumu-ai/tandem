@@ -951,7 +951,7 @@ function isLocalEngineUrl(url) {
   try {
     const u = new URL(url);
     const h = (u.hostname || "").toLowerCase();
-    return h === "localhost" || h === "127.0.0.1" || h === "::1";
+    return h === "localhost" || h === "::1" || h.startsWith("127.");
   } catch {
     return false;
   }
@@ -4705,8 +4705,8 @@ async function main() {
 
   server.listen(PORTAL_PORT, PANEL_HOST, () => {
     log("=========================================");
-    log(`Control Panel: http://${PANEL_HOST}:${PORTAL_PORT}`);
-    if (PANEL_PUBLIC_URL) log(`Public URL:    ${PANEL_PUBLIC_URL}`);
+    log(`Control Panel: ${PANEL_PUBLIC_URL || `http://${PANEL_HOST}:${PORTAL_PORT}`}`);
+    if (PANEL_PUBLIC_URL) log(`Bind address:  http://${PANEL_HOST}:${PORTAL_PORT}`);
     log(`Engine URL:    ${ENGINE_URL}`);
     log(`Engine mode:   ${isLocalEngineUrl(ENGINE_URL) ? "local" : "remote"}`);
     log(`Files root:    ${FILES_ROOT}`);

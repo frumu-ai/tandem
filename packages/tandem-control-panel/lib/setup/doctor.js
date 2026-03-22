@@ -2,6 +2,7 @@ import { existsSync } from "fs";
 import { createRequire } from "module";
 
 import { ensureBootstrapEnv } from "./env.js";
+import { isLoopbackHost } from "./common.js";
 const require = createRequire(import.meta.url);
 
 async function runDoctor(options = {}) {
@@ -45,7 +46,7 @@ async function runDoctor(options = {}) {
     engineHealth,
     warnings: [],
   };
-  if (bootstrap.panelHost !== "127.0.0.1" && !result.panelPublicUrl) {
+  if (!isLoopbackHost(bootstrap.panelHost) && !result.panelPublicUrl) {
     result.warnings.push("Panel binds non-loopback without TANDEM_CONTROL_PANEL_PUBLIC_URL.");
   }
   return result;
