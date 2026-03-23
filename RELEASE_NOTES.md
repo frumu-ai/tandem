@@ -13,6 +13,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - context run listing now ignores unknown run types instead of treating them as orchestrator runs
   - the chat `ORCH` badge now counts only active `orchestrator` runs (`queued`/`planning`/`running`)
   - fixes inflated orchestration counts (for example showing `20 ORCH`) right after startup when no orchestrator run is active
+- Custom OpenAI-compatible provider chat hotfix
+  - OpenAI-compatible custom providers now normalize Tandem's internal prompt/context injection into one leading `system` message before `chat/completions` dispatch
+  - fixes MiniMax-style custom-provider chat failures in the control panel where the engine previously sent multiple `system` messages and received errors like `invalid message role: system (2013)`
+  - keeps custom providers on the standard OpenAI-compatible payload shape instead of requiring provider-specific message rewrites
 
 ## v0.4.13 (Released 2026-03-23)
 

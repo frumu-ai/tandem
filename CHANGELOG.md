@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tauri orchestration run list filtering and active-count correctness**:
   - fixed context-run listing to include only known orchestration run types (`interactive`, `scheduled`, `cron`) instead of coercing unknown run types into orchestrator runs
   - fixed chat header active orchestration badge (`ORCH`) to count only active runs sourced from `orchestrator`, preventing inflated counts immediately after app startup
+- **Custom OpenAI-compatible provider chat compatibility (MiniMax / control-panel chat)**:
+  - fixed OpenAI-compatible custom-provider request normalization so multiple Tandem-injected `system` messages are collapsed into one leading system message before `chat/completions` dispatch
+  - fixes control-panel chat failures for MiniMax-style OpenAI-compatible endpoints that rejected Tandem's previous message ordering with errors like `invalid message role: system (2013)`
+  - preserves the standard OpenAI-compatible request shape for custom providers while keeping Tandem prompt/context instructions intact
 
 ## [0.4.13] - 2026-03-23
 

@@ -1198,7 +1198,7 @@ impl Provider for OpenAICompatibleProvider {
             );
         }
 
-        let wire_messages = messages
+        let wire_messages = normalize_openai_messages(messages)
             .into_iter()
             .map(chat_message_to_openai_wire)
             .collect::<Vec<_>>();
@@ -1659,6 +1659,37 @@ fn chat_message_to_openai_wire(message: ChatMessage) -> serde_json::Value {
     })
 }
 
+fn normalize_openai_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let mut merged_system: Option<ChatMessage> = None;
+    let mut out = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        if message.role.eq_ignore_ascii_case("system") {
+            let entry = merged_system.get_or_insert_with(|| ChatMessage {
+                role: "system".to_string(),
+                content: String::new(),
+                attachments: Vec::new(),
+            });
+            let next_content = message.content.trim();
+            if !next_content.is_empty() {
+                if !entry.content.is_empty() {
+                    entry.content.push_str("\n\n");
+                }
+                entry.content.push_str(next_content);
+            }
+            entry.attachments.extend(message.attachments);
+            continue;
+        }
+        out.push(message);
+    }
+
+    if let Some(system) = merged_system {
+        out.insert(0, system);
+    }
+
+    out
+}
+
 fn model_supports_vision_input(model: &str) -> bool {
     let lower = model.to_ascii_lowercase();
     [
@@ -1917,6 +1948,58 @@ mod tests {
             normalize_base("http://localhost:8080/v1/v1"),
             "http://localhost:8080/v1"
         );
+    }
+
+    #[test]
+    fn normalize_openai_messages_merges_system_messages_to_front() {
+        let normalized = normalize_openai_messages(vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "base instructions".to_string(),
+                attachments: Vec::new(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+                attachments: Vec::new(),
+            },
+            ChatMessage {
+                role: "system".to_string(),
+                content: "memory scope".to_string(),
+                attachments: Vec::new(),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "hello".to_string(),
+                attachments: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(normalized.len(), 3);
+        assert_eq!(normalized[0].role, "system");
+        assert_eq!(normalized[0].content, "base instructions\n\nmemory scope");
+        assert_eq!(normalized[1].role, "user");
+        assert_eq!(normalized[2].role, "assistant");
+    }
+
+    #[test]
+    fn normalize_openai_messages_leaves_non_system_order_unchanged() {
+        let normalized = normalize_openai_messages(vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+                attachments: Vec::new(),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "hello".to_string(),
+                attachments: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(normalized.len(), 2);
+        assert_eq!(normalized[0].role, "user");
+        assert_eq!(normalized[1].role, "assistant");
     }
 
     #[tokio::test]

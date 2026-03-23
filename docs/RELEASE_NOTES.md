@@ -15,6 +15,12 @@
 - Fixed the chat header orchestration badge (`ORCH`) to count only active runs from the `orchestrator` source.
 - Prevents inflated run counts (such as showing `20 ORCH`) immediately after app startup when no orchestration is running.
 
+### Custom OpenAI-Compatible Provider Chat Hotfix
+
+- Fixed OpenAI-compatible custom-provider request normalization so Tandem collapses multiple internally injected `system` messages into one leading `system` message before sending `chat/completions` requests.
+- Fixes MiniMax-style custom-provider chat failures in the control panel where the engine could receive errors such as `invalid message role: system (2013)`.
+- Keeps custom providers on the standard OpenAI-compatible payload shape rather than requiring provider-specific prompt serialization.
+
 ## Tandem v0.4.13 Release Notes (Released 2026-03-23)
 
 ### Secret-Safe Remote MCP And Channel Auth
