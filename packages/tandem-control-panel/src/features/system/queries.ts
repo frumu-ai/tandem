@@ -18,3 +18,24 @@ export function useSwarmStatus(enabled = true) {
     refetchInterval: enabled ? 5000 : false,
   });
 }
+
+export interface Capabilities {
+  aca_integration: boolean;
+  aca_reason: string;
+  coding_workflows: boolean;
+  missions: boolean;
+  agent_teams: boolean;
+  coder: boolean;
+  engine_healthy: boolean;
+  cached_at_ms: number;
+}
+
+export function useCapabilities(enabled = true) {
+  return useQuery({
+    queryKey: ["system", "capabilities"],
+    queryFn: () => api("/api/capabilities") as Promise<Capabilities>,
+    enabled,
+    refetchInterval: enabled ? 60000 : false,
+    staleTime: 30000,
+  });
+}

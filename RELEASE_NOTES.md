@@ -2,6 +2,37 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.4.15 (Released 2026-03-24)
+
+- Control panel ACA/Hal900 optional integration
+  - Added `/api/capabilities` endpoint with 45-second in-memory cache for ACA and engine capability detection
+  - New `ACA_BASE_URL`, `ACA_HEALTH_PATH`, `ACA_PROBE_TIMEOUT_MS`, `ACA_CAPABILITY_CACHE_TTL_MS` environment variables configure ACA integration (defaults to absent)
+  - ACA probe uses 5-second timeout with per-reason error counting (`aca_not_configured`, `aca_endpoint_not_found`, `aca_probe_timeout`, `aca_probe_error`, `aca_health_failed_xxx`)
+  - Capability transitions are logged to console with ISO timestamps
+
+- `useCapabilities` React Query hook
+  - `useCapabilities()` hook with 60-second refetch and 30-second stale time
+  - All ControlPanel queries are now gated on `coding_workflows === true` via React Query `enabled` flag
+  - `CodingWorkflowsPage` shows a non-blocking callout when the engine is absent
+
+- ACA-specific panels feature-flagged behind `aca_integration`
+  - `AgentStandupBuilder` in `TeamsPage` is hidden when ACA is not connected
+  - `AdvancedMissionBuilderPanel` in `AutomationsPage` shows a clear callout when ACA is absent; simple mode remains available
+  - All other ControlPanel pages (Studio, MCP, Memory, Packs, Channels) remain fully functional when ACA is absent
+
+- Observability and metrics instrumentation
+  - `GET /api/capabilities/metrics` exposes `detect_duration_ms`, `detect_ok`, `last_detect_at_ms`, and `aca_probe_error_counts` by reason
+  - `GET /api/system/orchestrator-metrics` exposes `streams_active`, `streams_total`, `events_received`, `stream_errors`
+  - SSE client metrics available via `getSseMetrics()`: `channels.open`, `channels.total`, `events_received`, `errors_total`
+
+- Unit and integration tests
+  - `tests/capabilities.test.mjs` — 8 test cases covering all ACA/engine probe scenarios (all passing)
+  - `tests/capabilities-integration.test.mjs` — integration tests for engine-up/ACA-absent and engine-down paths
+
+- Load test scripts for run throughput and multi-worker fan-out
+  - `scripts/loadtest/run_concurrency.mjs` — concurrent run concurrency test via session → run → SSE stream
+  - `scripts/loadtest/run_fanout.mjs` — multi-mission multi-worker fan-out via agent-team/mission APIs
+
 ## v0.4.14 (Released 2026-03-23)
 
 - Windows desktop startup hotfix for Tauri installs

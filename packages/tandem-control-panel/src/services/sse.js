@@ -1,7 +1,23 @@
 const channels = new Map();
 
+const _metrics = {
+  channels_open: 0,
+  channels_total: 0,
+  events_received: 0,
+  errors_total: 0,
+};
+
 function buildKey(url, withCredentials) {
   return `${withCredentials ? "cred" : "anon"}:${url}`;
+}
+
+function recomputeMetrics() {
+  let open = 0;
+  for (const ch of channels.values()) {
+    if (!ch.closed) open += 1;
+  }
+  _metrics.channels_open = open;
+  _metrics.channels_total = channels.size;
 }
 
 function ensureChannel(url, withCredentials = true) {
@@ -19,6 +35,7 @@ function ensureChannel(url, withCredentials = true) {
   };
 
   source.onmessage = (event) => {
+    _metrics.events_received += 1;
     for (const listener of [...channel.listeners]) {
       try {
         listener(event);
@@ -29,6 +46,7 @@ function ensureChannel(url, withCredentials = true) {
   };
 
   source.onerror = (event) => {
+    _metrics.errors_total += 1;
     for (const listener of [...channel.errorListeners]) {
       try {
         listener(event);
@@ -39,10 +57,12 @@ function ensureChannel(url, withCredentials = true) {
     if (source.readyState === EventSource.CLOSED) {
       channel.closed = true;
       channels.delete(key);
+      recomputeMetrics();
     }
   };
 
   channels.set(key, channel);
+  recomputeMetrics();
   return channel;
 }
 
@@ -64,6 +84,7 @@ export function subscribeSse(url, onMessage, options = {}) {
       current.closed = true;
       current.source.close();
       channels.delete(key);
+      recomputeMetrics();
     }
   };
 }
@@ -74,4 +95,15 @@ export function closeAllSseChannels() {
     channel.source.close();
   }
   channels.clear();
+  recomputeMetrics();
+}
+
+export function getSseMetrics() {
+  return {
+    ..._metrics,
+    channels: {
+      open: _metrics.channels_open,
+      total: _metrics.channels_total,
+    },
+  };
 }

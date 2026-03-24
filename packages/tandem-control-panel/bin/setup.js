@@ -12,7 +12,8 @@ import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { homedir } from "os";
 import { ensureBootstrapEnv, resolveEnvLoadOrder } from "../lib/setup/env.js";
-import { createSwarmApiHandler } from "../server/routes/swarm.js";
+import { createSwarmApiHandler, getOrchestratorMetrics } from "../server/routes/swarm.js";
+import { createCapabilitiesHandler, getCapabilitiesMetrics } from "../server/routes/capabilities.js";
 
 function parseDotEnv(content) {
   const out = {};
@@ -4519,6 +4520,18 @@ const handleSwarmApi = createSwarmApiHandler({
   setActiveSwarmRunId,
 });
 
+const handleCapabilities = createCapabilitiesHandler({
+  PROBE_TIMEOUT_MS: Number.parseInt(process.env.ACA_PROBE_TIMEOUT_MS || "5000", 10),
+  ACA_BASE_URL: process.env.ACA_BASE_URL || "",
+  ACA_HEALTH_PATH: "/health",
+  engineHealth: async (token) => {
+    const health = await engineHealth(token).catch(() => null);
+    return health;
+  },
+  sendJson,
+  cacheTtlMs: Number.parseInt(process.env.ACA_CAPABILITY_CACHE_TTL_MS || "45000", 10),
+});
+
 async function handleApi(req, res) {
   const pathname = new URL(req.url, `http://127.0.0.1:${PORTAL_PORT}`).pathname;
 
@@ -4531,6 +4544,21 @@ async function handleApi(req, res) {
       localEngine: isLocalEngineUrl(ENGINE_URL),
       autoStartEngine: AUTO_START_ENGINE,
     });
+    return true;
+  }
+
+  if (pathname === "/api/capabilities" && req.method === "GET") {
+    await handleCapabilities(req, res);
+    return true;
+  }
+
+  if (pathname === "/api/capabilities/metrics" && req.method === "GET") {
+    sendJson(res, 200, getCapabilitiesMetrics());
+    return true;
+  }
+
+  if (pathname === "/api/system/orchestrator-metrics" && req.method === "GET") {
+    sendJson(res, 200, getOrchestratorMetrics());
     return true;
   }
 

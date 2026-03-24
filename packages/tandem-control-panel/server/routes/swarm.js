@@ -2,6 +2,17 @@ import { readFile, readdir, stat } from "fs/promises";
 import { resolve } from "path";
 import { deriveRunBudget, inferStatusFromEvents, mapOrchestratorPath } from "../services/orchestratorService.js";
 
+const _metrics = {
+  streams_active: 0,
+  streams_total: 0,
+  events_received: 0,
+  stream_errors: 0,
+};
+
+export function getOrchestratorMetrics() {
+  return { ..._metrics };
+}
+
 export function createSwarmApiHandler(deps) {
   const {
     PORTAL_PORT,
@@ -852,20 +863,25 @@ export function createSwarmApiHandler(deps) {
             },
           });
           if (upstream.ok && upstream.body) {
+            _metrics.streams_active += 1;
+            _metrics.streams_total += 1;
             res.writeHead(200, {
               "content-type": "text/event-stream",
               "cache-control": "no-cache",
               connection: "keep-alive",
             });
-            req.on("close", () => upstream.body?.cancel?.().catch?.(() => null));
+            req.on("close", () => { _metrics.streams_active = Math.max(0, _metrics.streams_active - 1); });
             for await (const chunk of upstream.body) {
               if (res.writableEnded || res.destroyed) break;
               res.write(chunk);
+              _metrics.events_received += 1;
             }
             if (!res.writableEnded && !res.destroyed) res.end();
+            _metrics.streams_active = Math.max(0, _metrics.streams_active - 1);
             return true;
           }
         } catch {
+          _metrics.stream_errors += 1;
           // fall back to legacy single-run poll bridge below
         }
       }
@@ -927,6 +943,7 @@ export function createSwarmApiHandler(deps) {
             );
           }
         } catch {
+          _metrics.stream_errors += 1;
           // ignore transient poll failures
         }
       };

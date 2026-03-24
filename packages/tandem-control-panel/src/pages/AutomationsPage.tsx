@@ -40,6 +40,7 @@ import {
   workflowSessionIds,
 } from "../features/orchestration/workflowStability";
 import { useEngineStream } from "../features/stream/useEngineStream";
+import { useCapabilities } from "../features/system/queries.ts";
 import { api } from "../lib/api";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { AdvancedMissionBuilderPanel } from "./AdvancedMissionBuilderPanel";
@@ -7675,6 +7676,8 @@ function SpawnApprovals({ client, toast }: { client: any; toast: any }) {
 // ─── Main Page ──────────────────────────────────────────────────────────────
 
 export function AutomationsPage({ client, api, toast, navigate, providerStatus }: AppPageProps) {
+  const caps = useCapabilities();
+  const acaAvailable = caps.data?.aca_integration === true;
   const [tab, setTab] = useState<ActiveTab>("create");
   const [createMode, setCreateMode] = useState<CreateMode>("simple");
   const [selectedRunId, setSelectedRunId] = useState<string>("");
@@ -7775,23 +7778,34 @@ export function AutomationsPage({ client, api, toast, navigate, providerStatus }
                 </div>
 
                 {createMode === "advanced" ? (
-                  <AdvancedMissionBuilderPanel
-                    client={client}
-                    api={api}
-                    toast={toast}
-                    defaultProvider={providerStatus.defaultProvider}
-                    defaultModel={providerStatus.defaultModel}
-                    editingAutomation={advancedEditAutomation}
-                    onShowAutomations={() => {
-                      setAdvancedEditAutomation(null);
-                      setTab("list");
-                    }}
-                    onShowRuns={() => {
-                      setAdvancedEditAutomation(null);
-                      setTab("running");
-                    }}
-                    onClearEditing={() => setAdvancedEditAutomation(null)}
-                  />
+                  acaAvailable ? (
+                    <AdvancedMissionBuilderPanel
+                      client={client}
+                      api={api}
+                      toast={toast}
+                      defaultProvider={providerStatus.defaultProvider}
+                      defaultModel={providerStatus.defaultModel}
+                      editingAutomation={advancedEditAutomation}
+                      onShowAutomations={() => {
+                        setAdvancedEditAutomation(null);
+                        setTab("list");
+                      }}
+                      onShowRuns={() => {
+                        setAdvancedEditAutomation(null);
+                        setTab("running");
+                      }}
+                      onClearEditing={() => setAdvancedEditAutomation(null)}
+                    />
+                  ) : (
+                    <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
+                      <p className="text-sm text-amber-200">
+                        <strong>Advanced mission builder</strong> requires the external ACA (Hal900)
+                        integration. ACA is not currently connected. Use{" "}
+                        <strong>simple mode</strong> to create automations with engine-native
+                        features.
+                      </p>
+                    </div>
+                  )
                 ) : (
                   <CreateWizard
                     client={client}

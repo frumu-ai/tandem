@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { renderIcons } from "../app/icons.js";
 import { AgentStandupBuilder } from "./AgentStandupBuilder";
 import { PageCard, EmptyState } from "./ui";
+import { useCapabilities } from "../features/system/queries.ts";
 import type { AppPageProps } from "./pageTypes";
 
 const ROLE_OPTIONS = [
@@ -97,6 +98,8 @@ export function TeamsPage({ client, toast }: AppPageProps) {
   const [form, setForm] = useState<TemplateFormState>(EMPTY_FORM);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const caps = useCapabilities();
+  const acaAvailable = caps.data?.aca_integration === true;
 
   const templatesQuery = useQuery({
     queryKey: ["teams", "templates"],
@@ -242,12 +245,14 @@ export function TeamsPage({ client, toast }: AppPageProps) {
 
   return (
     <div ref={rootRef} className="grid gap-4">
-      <PageCard
-        title="Agent Standup"
-        subtitle="Compose scheduled standups from the same saved agents you manage here"
-      >
-        <AgentStandupBuilder client={client} toast={toast} />
-      </PageCard>
+      {acaAvailable && (
+        <PageCard
+          title="Agent Standup"
+          subtitle="Compose scheduled standups from the same saved agents you manage here"
+        >
+          <AgentStandupBuilder client={client} toast={toast} />
+        </PageCard>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-2">
         <PageCard

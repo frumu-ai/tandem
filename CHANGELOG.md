@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.15] - 2026-03-24
+
+### Added
+
+- **Control panel ACA/Hal900 integration with optional feature gating**:
+  - Added `/api/capabilities` endpoint returning `{ aca_integration, coding_workflows, missions, agent_teams, coder, engine_healthy, cached_at_ms }` with 45-second in-memory cache
+  - Added `ACA_BASE_URL`, `ACA_HEALTH_PATH`, `ACA_PROBE_TIMEOUT_MS`, `ACA_CAPABILITY_CACHE_TTL_MS` environment variables to server config
+  - ACA probe uses 5-second timeout; failures increment `aca_probe_error_counts` by reason bucket
+  - Capability transitions (ACA availability and engine health) are logged to console with ISO timestamps
+
+- **`useCapabilities` React Query hook**:
+  - `useCapabilities()` hook in `src/features/system/queries.ts` with 60-second refetch, 30-second stale time
+  - All ControlPanel pages now gate queries on `coding_workflows === true` via React Query `enabled` flag
+  - `CodingWorkflowsPage` shows non-blocking callout when engine is absent: "External ACA (Hal900) not detected. Using engine-native autonomous coding."
+
+- **ACA-specific UI panels now feature-flagged behind `aca_integration`**:
+  - `AgentStandupBuilder` in `TeamsPage` — entire card hidden when `aca_integration === false`
+  - `AdvancedMissionBuilderPanel` in `AutomationsPage` — shows amber callout when ACA absent; renders normally when available
+  - All other ControlPanel pages (Studio, MCP, Memory, Packs, Channels) remain fully functional when ACA is absent
+
+- **Observability instrumentation for ACA/engine capability monitoring**:
+  - `capability_detect_duration_ms` emitted via `GET /api/capabilities` under `_internal`
+  - `GET /api/capabilities/metrics` returns `detect_duration_ms`, `detect_ok`, `last_detect_at_ms`, `aca_probe_error_counts` (keyed by reason: `aca_not_configured`, `aca_endpoint_not_found`, `aca_probe_timeout`, `aca_probe_error`, `aca_health_failed_xxx`)
+  - `GET /api/system/orchestrator-metrics` returns `streams_active`, `streams_total`, `events_received`, `stream_errors` for SSE stream monitoring
+  - SSE client metrics via `getSseMetrics()`: `channels.open`, `channels.total`, `events_received`, `errors_total`
+
+- **Unit and integration tests for capability routing**:
+  - `tests/capabilities.test.mjs` — 8 test cases covering all ACA/engine probe scenarios (all passing)
+  - `tests/capabilities-integration.test.mjs` — integration tests for engine-up/ACA-absent and engine-down paths
+
+- **Load test scripts for run throughput and multi-worker fan-out**:
+  - `scripts/loadtest/run_concurrency.mjs` — concurrent run concurrency test via session → run → SSE stream
+  - `scripts/loadtest/run_fanout.mjs` — multi-mission multi-worker fan-out via agent-team/mission APIs
+  - Both scripts moved from `tools/loadtest/` to `scripts/loadtest/`
+
 ## [0.4.14] - 2026-03-23
 
 ### Fixed

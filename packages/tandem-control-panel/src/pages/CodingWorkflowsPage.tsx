@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AnimatedPage, Badge, PanelCard, StatusPulse } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
+import { useCapabilities } from "../features/system/queries.ts";
 import type { AppPageProps } from "./pageTypes";
 
 type CodingTab = "overview" | "board" | "manual" | "integrations";
@@ -157,30 +158,40 @@ function Metric({
 export function CodingWorkflowsPage({ api, client }: AppPageProps) {
   const [tab, setTab] = useState<CodingTab>("overview");
 
+  const caps = useCapabilities();
+  const acaAvailable = caps.data?.aca_integration === true;
+  const engineAvailable = caps.data?.engine_healthy === true;
+  const codingAvailable = caps.data?.coding_workflows === true;
+
   const health = useQuery({
     queryKey: ["coding-workflows", "health"],
     queryFn: () => api("/api/system/health"),
-    refetchInterval: 15000,
+    refetchInterval: codingAvailable ? 15000 : false,
+    enabled: codingAvailable,
   });
   const swarm = useQuery({
     queryKey: ["coding-workflows", "swarm"],
     queryFn: () => api("/api/swarm/status").catch(() => ({ status: "unknown", activeRuns: 0 })),
-    refetchInterval: 6000,
+    refetchInterval: codingAvailable ? 6000 : false,
+    enabled: codingAvailable,
   });
   const workflowContexts = useQuery({
     queryKey: ["coding-workflows", "workflow-context-runs"],
     queryFn: () => api("/api/engine/context/runs?limit=16").catch(() => ({ runs: [] })),
-    refetchInterval: 6000,
+    refetchInterval: codingAvailable ? 6000 : false,
+    enabled: codingAvailable,
   });
   const mcpServersQuery = useQuery({
     queryKey: ["coding-workflows", "mcp-servers"],
     queryFn: () => client.mcp.list().catch(() => ({})),
-    refetchInterval: 10000,
+    refetchInterval: codingAvailable ? 10000 : false,
+    enabled: codingAvailable,
   });
   const mcpToolsQuery = useQuery({
     queryKey: ["coding-workflows", "mcp-tools"],
     queryFn: () => client.mcp.listTools().catch(() => []),
-    refetchInterval: 15000,
+    refetchInterval: codingAvailable ? 15000 : false,
+    enabled: codingAvailable,
   });
 
   const mcpServers = useMemo(() => normalizeServers(mcpServersQuery.data), [mcpServersQuery.data]);
@@ -210,6 +221,38 @@ export function CodingWorkflowsPage({ api, client }: AppPageProps) {
     { id: "manual", label: "Manual tasks", icon: "code" },
     { id: "integrations", label: "Integrations", icon: "plug-zap" },
   ];
+
+  if (!codingAvailable) {
+    return (
+      <AnimatedPage className="grid gap-4">
+        <PanelCard className="overflow-hidden">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)] xl:items-start">
+            <div className="min-w-0">
+              <div className="tcp-page-eyebrow">Coding workflows</div>
+              <h1 className="tcp-page-title">Autonomous Coding</h1>
+              <p className="tcp-subtle mt-2 max-w-3xl">
+                {acaAvailable
+                  ? "External ACA  is connected. Engine-native autonomous coding features are being loaded."
+                  : "External ACA  not detected. Using engine-native autonomous coding."}
+              </p>
+              {!engineAvailable && (
+                <div className="mt-3 rounded-2xl border border-yellow-500/20 bg-yellow-500/10 p-4">
+                  <p className="text-sm text-yellow-200">
+                    <strong>Engine not detected.</strong> Configure and start the Tandem engine to
+                    enable autonomous coding features. Use the{" "}
+                    <a href="/settings" className="underline">
+                      Settings
+                    </a>{" "}
+                    page to configure the engine connection.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </PanelCard>
+      </AnimatedPage>
+    );
+  }
 
   return (
     <AnimatedPage className="grid gap-4">
