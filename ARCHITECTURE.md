@@ -1,71 +1,84 @@
 # Tandem Architecture
 
-Tandem is an **engine-owned workflow runtime** for coordinated autonomous work. It is built as a multi-crate Rust workspace to support various clients (Desktop UI, TUI, Headless Server, and background bots) using a shared core engine.
+Tandem is an **engine-owned workflow runtime** for coordinated autonomous work. The repo is organized as a Rust workspace plus thin desktop, web-control, TUI, and npm wrapper clients that all speak the same shared engine concepts.
 
-## 1) Core Engine (Rust Crates)
+## 1) Core Engine and Shared Crates
 
-The backend logic is modularized into several crates under `crates/`:
+The shared backend is split across crates under `crates/` plus the standalone `engine/` binary crate:
 
-- **tandem-core**: The central library that coordinates projects, memory, and settings.
-- **tandem-orchestrator**: Manages multi-agent execution, task graphs, scaling policies, and budget controls.
-- **tandem-channels**: Handles headless bot integrations (Discord, Slack, Telegram).
-- **tandem-memory**: SQLite-backed embeddings and full-text search indexing system.
-- **tandem-providers**: Interfaces with external LLM providers (Cloudflare AI Gateway, local models, etc.).
-- **tandem-skills & tandem-tools**: Manages execution of local, custom, and MCP (Model Context Protocol) tools like Composio or Arcade.
-- **tandem-server**: The HTTP server exposing the core engine to API clients or channel bots.
-- **tandem-observability & tandem-types**: Tracing, logging, and shared domain models.
+- **tandem-core**: session/state/config/storage, permissions, tool routing, agent registry, engine loop, and shared defaults.
+- **tandem-server**: HTTP/SSE API surface, runtime state, workflows, `automation_v2`, routines, pack management, agent teams, capability resolution, browser integration, shared resources, and embedded web UI.
+- **tandem-runtime**: shared PTY, LSP, MCP, and workspace-index helpers used by engine-side and client-side flows.
+- **tandem-workflows**: workflow spec handling, workflow source tracking, mission builder models, and validation helpers.
+- **tandem-agent-teams**: compatibility and path helpers for agent-team manifests.
+- **tandem-skills**: skill cataloging, loading, and export helpers for skill manifests and companion workflow metadata.
+- **tandem-tools**: tool registry and execution-policy plumbing.
+- **tandem-memory**: storage, embeddings, retrieval, governance, and context-layer helpers.
+- **tandem-providers**: provider registration plus auth/config integration.
+- **tandem-browser**: browser sidecar and browser automation support.
+- **tandem-channels**: Discord, Slack, and Telegram integrations.
+- **tandem-types**, **tandem-wire**, **tandem-observability**, and **tandem-document**: shared domain models, transport/wire conversion, process logging, and document utilities.
 
-## 2) Standalone Headless Engine (`tandem/engine`)
+## 2) Headless Engine (`engine/`)
 
-The `engine` directory contains the `tandem-ai` crate, which is the central executable and "brain" of the standalone Tandem runtime.
+The `engine/` crate is the `tandem-ai` package and the `tandem-engine` binary.
 
-- **Purpose**: It wraps `tandem-core`, `tandem-server`, and the rest of the workspace crates into a single deployable binary.
-- **Operation**: It runs the headless Tandem server (HTTP + SSE APIs). External clients, including channel bots, the TUI, or web dashboards, communicate with this engine.
-- **Storage Root**: Standard installs should use one Tandem state root (`TANDEM_STATE_DIR`) so memory, config, logs, and session storage live together. A separate `TANDEM_MEMORY_DB_PATH` is supported only as an advanced override.
-- **Execution**: Can be run locally via `cargo run -p tandem-ai -- serve` or packaged as prebuilt NPM binaries (`packages/tandem-engine`).
+- It composes `tandem-core`, `tandem-server`, `tandem-runtime`, `tandem-tools`, `tandem-providers`, `tandem-memory`, `tandem-browser`, `tandem-types`, `tandem-wire`, and `tandem-observability` into one deployable runtime.
+- `serve` starts the HTTP/SSE engine used by desktop, TUI, the control panel, and channel bots.
+- `run`, `parallel`, and `tool` provide one-shot, batch, and direct-tool execution paths.
+- `browser` and `memory` manage browser sidecars and memory import/inspection.
+- Standard installs should use one Tandem state root (`TANDEM_STATE_DIR`) so memory, config, logs, and session storage live together.
+- npm launchers are published via `packages/tandem-engine` and `packages/tandem-ai`.
 
 ## 3) Desktop Application (Tauri + React/Vite)
 
-The desktop application wraps the core Rust engine to provide a rich GUI.
+The desktop application wraps the shared engine and exposes local filesystem, approval, and orchestration UX.
 
 - **Frontend (`src/`)**:
-  - Standard React + Vite setup.
-  - Manages chat views, file browsers, the tool staging area, and orchestration visualization.
+  - React + Vite UI for chat, file browsing, tool staging, agent catalog browsing, and orchestration views.
   - Uses `src/lib/tauri.ts` to interface with the backend via IPC.
 - **Backend (`src-tauri/src/`)**:
-  - A Tauri v2 application that leverages the `tandem-*` crates.
-  - Manages encrypted API keys (`keystore.rs`, `vault.rs`).
-  - Handles local filesystem operations and GUI-specific state (like tool visual approvals).
+  - A Tauri v2 shell over the shared Tandem crates.
+  - Manages encrypted API keys, keystore/vault state, filesystem operations, and GUI-specific approval flows.
 
-## 4) Terminal User Interface (`crates/tandem-tui`)
+## 4) Control Panel (`packages/tandem-control-panel`)
+
+The control panel is the browser-based operations surface for workflows, teams, packs, channels, memory, and catalog browsing.
+
+- It talks to the same engine HTTP/SSE API as the desktop client.
+- It focuses on workflow studio, orchestrator/runs, agent teams, coding workflows, automation authoring, and shared catalogs.
+- Generated catalog data and shared selectors keep the control panel aligned with desktop behavior where the surfaces overlap.
+
+## 5) Terminal User Interface (`crates/tandem-tui`)
 
 The TUI provides a native terminal experience for developers who want to stay close to their code.
 
-- **Stack**: Built with `ratatui` for modern, responsive terminal rendering via Crossterm.
-- **Features**: Real-time markdown rendering of LLM responses, project configuration management, inline code blocks, and conversation session persistence.
-- **Integration**: Operates as a distinct application frontend. It initializes `tandem-core` directly inside the terminal process, allowing for low-latency feedback without running a separate HTTP server.
+- **Stack**: built with `ratatui` and Crossterm.
+- **Features**: markdown rendering, session persistence, command-driven workflow, and real-time engine interaction.
+- **Integration**: initializes `tandem-core` directly inside the terminal process, with shared runtime helpers where needed, so it can run with or without a separate local HTTP server.
 
-## 5) Runtime Data Flow
+## 6) Runtime Data Flow
 
 1. **User Interaction**:
-   - **Desktop**: User interacts with the React UI, which calls Tauri IPC commands. Tauri delegates to the core logic in the underlying crates and streams events back.
-   - **TUI**: User interacts with the terminal interface, which directly uses the `tandem-core` engine.
-   - **Channels**: A Discord/Telegram user sends a message. The `tandem-channels` crate processes it, queries the Orchestrator for agent logic, and returns the response asynchronously.
+   - **Desktop**: React UI -> Tauri IPC -> shared Tandem backend or engine service.
+   - **Control panel**: browser UI -> HTTP/SSE API on the engine.
+   - **TUI**: terminal UI -> in-process core/runtime.
+   - **Channels**: Discord/Slack/Telegram adapters -> `tandem-server` and `tandem-channels` flows.
 2. **Tool Execution**:
-   - LLMs propose tool calls (like reading a file or querying an MCP resource).
-   - In the Desktop app, risky tools require visual approval ("Zero Trust").
-   - In TUI or Headless contexts, operations run according to the configured `Autonomy` policies.
-   - **Crucially**, multi-agent synchronization happens via the engine's internal Blackboard and Git Worktree Isolation, ensuring concurrent autonomous tasks do not collide.
+   - LLMs propose tool calls and workflow steps.
+   - Desktop and other GUI clients gate risky operations through approval flows.
+   - Headless and TUI contexts use the configured autonomy and permission policies.
+   - Multi-agent coordination happens through the engine's workflow, run, and worktree/runtime state instead of client-local state.
 
-## 6) Security and Trust Boundaries
+## 7) Security and Trust Boundaries
 
 - Local-first design: API keys, SQLite databases, and project settings are stored securely on the user's filesystem.
 - Operations that mutate the host machine (writing files, running terminal commands) are gated by policies and visual approvals in the Desktop app.
 - Multi-agent orchestrators respect token budgets to prevent runaway LLM costs.
 
-## 7) Context & Memory Management
+## 8) Context & Memory Management
 
-Tandem is intentionally designed to avoid "context snowballing" or endless token accumulation bugs—an issue commonly seen when relying on recursive inline summarization loops.
+Tandem is intentionally designed to avoid "context snowballing" or endless token accumulation bugs - an issue commonly seen when relying on recursive inline summarization loops.
 
 ```mermaid
 sequenceDiagram
@@ -80,7 +93,7 @@ sequenceDiagram
   Engine->>Engine: Append User Message
   Engine->>Engine: Check window token limits
   alt Context Exceeded
-    Engine->>Engine: Evict oldest transcript turns
+    Engine->>Engine: Truncate older conversational turns
     Engine->>Engine: Insert [history compacted...] marker
   end
   Engine->>LLM: Forward bounded prompt + RAG snippets
@@ -91,4 +104,4 @@ Tandem uses a **strict sliding window** mechanism within its interaction loops (
 1. It truncates older conversational turns.
 2. It substitutes them cleanly with static markers indicating omitted history rather than endlessly attempting to re-inject rules or summarize prior context strings.
 
-To ensure agents do not lose critical facts during long-running sessions, historical insights and project context are offloaded to Semantic Metadata retrieval (RAG) rather than statically prepending huge workspace definitions. Relevant facts are fetched just-in-time from the `Memory` subsystem and injected cleanly into prompts (via `<relevant_history>` tags).
+To ensure agents do not lose critical facts during long-running sessions, historical insights and project context are offloaded to semantic-memory retrieval (RAG) rather than statically prepending huge workspace definitions. Relevant facts are fetched just in time from the `Memory` subsystem and injected cleanly into prompts (via `<relevant_history>` tags).
