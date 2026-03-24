@@ -13,7 +13,9 @@
   </p>
 </div>
 
-## Tandem
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+</p>
 
 Tandem is an **engine-owned workflow runtime** for coordinated autonomous work.
 
@@ -30,12 +32,6 @@ It provides durable coordination primitives—blackboards, workboards, explicit 
 `Durable State → Workboards → Agent Swarm → Artifacts`
 
 **→ [Download desktop app](https://tandem.frumu.ai/) · [Deploy on a VPS (5 min)](examples/agent-quickstart/) · [Read the docs](https://tandem.docs.frumu.ai/)**
-
-## Language options
-
-- English: [README.md](README.md)
-- 简体中文: [README.zh-CN.md](README.zh-CN.md)
-- Translations (contribution guide): [docs/README_TRANSLATIONS.md](docs/README_TRANSLATIONS.md)
 
 ## 30-second quickstart
 

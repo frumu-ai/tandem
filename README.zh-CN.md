@@ -13,7 +13,9 @@
   </p>
 </div>
 
-## Tandem
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+</p>
 
 **Tandem 是一个面向协调自治工作流的引擎主导型（engine-owned）运行时。**
 
@@ -89,12 +91,6 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 ```
 
 **→ [下载桌面版](https://tandem.frumu.ai/) · [5 分钟部署到 VPS](examples/agent-quickstart/) · [阅读文档](https://tandem.docs.frumu.ai/)**
-
-## Language Options
-
-- English: [README.md](README.md)
-- 简体中文: [README.zh-CN.md](README.zh-CN.md)
-- 翻译说明（贡献指南）: [docs/README_TRANSLATIONS.md](docs/README_TRANSLATIONS.md)
 
 <div align="center">
   <img src=".github/assets/app.png" alt="Tandem AI Workspace" width="90%">
