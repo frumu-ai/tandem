@@ -1358,74 +1358,72 @@ fn workflow_step_enforcement_defaults(
         return None;
     }
     let expects_web_research = workflow_step_expects_web_research(step_id, kind, objective);
+    let normalized_kind = kind.trim().to_ascii_lowercase();
+    let validation_profile =
+        if normalized_kind == "citations" || (expects_web_research && normalized_kind != "brief") {
+            "external_research"
+        } else if normalized_kind == "brief" {
+            "research_synthesis"
+        } else {
+            "local_research"
+        };
     Some(crate::AutomationOutputEnforcement {
-        required_tools: vec![
-            "read".to_string(),
-            if expects_web_research {
-                "websearch".to_string()
-            } else {
-                String::new()
-            },
-        ]
-        .into_iter()
-        .filter(|value| !value.is_empty())
-        .collect(),
-        required_evidence: vec!["local_source_reads".to_string()]
-            .into_iter()
-            .chain(
-                expects_web_research
-                    .then_some("external_sources".to_string())
-                    .into_iter(),
-            )
-            .collect(),
-        required_sections: vec![
-            "files_reviewed".to_string(),
-            "files_not_reviewed".to_string(),
-            "citations".to_string(),
-        ]
-        .into_iter()
-        .chain(
-            expects_web_research
-                .then_some("web_sources_reviewed".to_string())
-                .into_iter(),
-        )
-        .collect(),
-        prewrite_gates: vec![
-            "workspace_inspection".to_string(),
-            "concrete_reads".to_string(),
-        ]
-        .into_iter()
-        .chain(
-            expects_web_research
-                .then_some("successful_web_research".to_string())
-                .into_iter(),
-        )
-        .collect(),
-        retry_on_missing: vec![
-            "local_source_reads".to_string(),
-            "files_reviewed".to_string(),
-            "files_not_reviewed".to_string(),
-            "citations".to_string(),
-            "workspace_inspection".to_string(),
-            "concrete_reads".to_string(),
-        ]
-        .into_iter()
-        .chain(
-            expects_web_research
-                .then_some("external_sources".to_string())
-                .into_iter(),
-        )
-        .chain(
-            expects_web_research
-                .then_some("web_sources_reviewed".to_string())
-                .into_iter(),
-        )
-        .chain(
-            expects_web_research
-                .then_some("successful_web_research".to_string())
-                .into_iter(),
-        )
-        .collect(),
+        validation_profile: Some(validation_profile.to_string()),
+        required_tools: match validation_profile {
+            "external_research" => vec!["websearch".to_string()],
+            "local_research" => vec!["read".to_string()],
+            _ => Vec::new(),
+        },
+        required_evidence: match validation_profile {
+            "external_research" => vec!["external_sources".to_string()],
+            "local_research" => vec!["local_source_reads".to_string()],
+            _ => vec!["local_source_reads".to_string()]
+                .into_iter()
+                .chain(
+                    expects_web_research
+                        .then_some("external_sources".to_string())
+                        .into_iter(),
+                )
+                .collect(),
+        },
+        required_sections: match validation_profile {
+            "external_research" => vec!["citations".to_string()],
+            "research_synthesis" if expects_web_research => vec!["citations".to_string()],
+            _ => Vec::new(),
+        },
+        prewrite_gates: match validation_profile {
+            "external_research" => vec!["successful_web_research".to_string()],
+            "local_research" => vec![
+                "workspace_inspection".to_string(),
+                "concrete_reads".to_string(),
+            ],
+            _ => Vec::new(),
+        },
+        retry_on_missing: match validation_profile {
+            "external_research" => vec![
+                "external_sources".to_string(),
+                "citations".to_string(),
+                "successful_web_research".to_string(),
+            ],
+            "local_research" => vec![
+                "local_source_reads".to_string(),
+                "workspace_inspection".to_string(),
+                "concrete_reads".to_string(),
+            ],
+            _ => vec!["local_source_reads".to_string()]
+                .into_iter()
+                .chain(
+                    expects_web_research
+                        .then_some("external_sources".to_string())
+                        .into_iter(),
+                )
+                .chain(
+                    expects_web_research
+                        .then_some("citations".to_string())
+                        .into_iter(),
+                )
+                .collect(),
+        },
         terminal_on: vec![
             "tool_unavailable".to_string(),
             "repair_budget_exhausted".to_string(),

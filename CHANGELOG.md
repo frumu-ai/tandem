@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.17] - 2026-03-25
+
+### Added
+
+- **Reusable `ChatInterfacePanel` component for unified AI chat UX**:
+  - Added `ChatInterfacePanel` component (`src/components/ChatInterfacePanel.tsx`) matching the ChatPage message/composer format with motion animations, bot avatar support, thinking dots, streaming text, and file attachment pills.
+  - Added `BotIdentity` type with `botName` and `botAvatarUrl` for branded AI assistant rendering.
+  - Added `ChatQuickReply` type and quick-reply button support for clarifier/choice flows.
+  - Added auto-height textarea (up to 180px) with Enter-to-send / Shift+Enter newline.
+  - Added auto-scroll to newest messages on updates.
+  - Added optional file attachment row with remove buttons and paperclip attach trigger.
+  - Added optional status banner with spinner for in-flight states.
+
+### Changed
+
+- **ChatPage refactored to use `ChatInterfacePanel`**:
+  - Replaced ~165 lines of inline message/composer code with the shared `ChatInterfacePanel`.
+  - ChatPage now reuses the same chat UX component as TaskPlanningPanel.
+- **TaskPlanningPanel unified planner chat flow**:
+  - Consolidated Goal + Revision notes into a single planner chat input.
+  - Clarifier questions render as quick-reply buttons in the chat interface.
+  - Conversation history now lives inside the chat flow instead of a separate panel.
+  - Right-side columns (Planned tasks / Plan details) only appear after first planner response.
+  - Removed duplicate chat/conversation sections from the form.
+
+### Fixed
+
+- **Clarifier options API extended**:
+  - Added `options[]` array to the planner clarifier JSON response so the UI can render multiple-choice quick-reply buttons.
+  - `PlannerClarifierOption` struct added with `id` and `label` fields and `Serialize` derive.
+  - All 7 clarifier JSON construction sites in `workflow_planner.rs` now include the options field.
+- **Workflow stability telemetry**:
+  - Added `validatorSummary` and `warningRequirements` fields to `workflowTaskInspectionDetails()` so task inspection surfaces show validation warnings that were previously silently dropped.
+
 ## [0.4.16] - 2026-03-24
 
 ### Added

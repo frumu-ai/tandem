@@ -30,11 +30,19 @@
 - Moved the custom OpenAI-compatible provider form into the normal provider catalog list in Settings instead of showing it as a separate top-level default block.
 - Updated the Coding Workflows board to use the full width, with run detail and live logs moved below the board and collapsed by default.
 - Improved planner UX with visible loading state, disabled regenerate/revise actions while requests are running, and longer planner chat request timeouts.
+- Loosened workflow validation defaults so external-research and synthesis steps can complete with warnings instead of being blocked by local source-audit conventions.
+- Added explicit validation profiles plus `accepted_with_warnings` outcomes so usable automation artifacts can continue downstream while still surfacing validator warnings.
 
 ### Automation Runtime Sandbox Fix
 
 - Fixed automation execution prompts to include inline node input metadata directly, so runs can use configured inputs without searching undeclared temp files.
 - Added workspace-local default artifact paths for standard automation handoff nodes so they stop inventing `/tmp/...` paths that the workspace sandbox correctly blocks.
+
+### Workflow Validator Dead-End Reductions
+
+- Fixed citation-oriented and external-research workflow nodes so they no longer fail purely for missing `Files reviewed`-style sections when citations and web research are otherwise valid.
+- Updated workflow planner and mission-builder enforcement defaults to emit profile-appropriate hard requirements instead of one-size-fits-all research-brief blockers.
+- Added non-blocking warning visibility in automation task details so operators can distinguish “completed with warnings” from true repair/block states.
 
 ## Tandem v0.4.15 Release Notes (Released 2026-03-24)
 

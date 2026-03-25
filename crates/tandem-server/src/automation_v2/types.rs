@@ -130,6 +130,8 @@ pub struct AutomationFlowOutputContract {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct AutomationOutputEnforcement {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_profile: Option<String>,
     #[serde(default)]
     pub required_tools: Vec<String>,
     #[serde(default)]
@@ -309,6 +311,10 @@ pub struct AutomationValidatorSummary {
     pub reason: Option<String>,
     #[serde(default)]
     pub unmet_requirements: Vec<String>,
+    #[serde(default)]
+    pub warning_requirements: Vec<String>,
+    #[serde(default)]
+    pub warning_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_candidate_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

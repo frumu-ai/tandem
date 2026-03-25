@@ -2,6 +2,34 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.4.17 (Released 2026-03-25)
+
+- Shared `ChatInterfacePanel` component
+  - added `ChatInterfacePanel` component for unified AI chat UX across ChatPage and TaskPlanningPanel
+  - added motion animations, bot avatar support, thinking dots, streaming text, and file attachment pills to the shared component
+  - added quick-reply button support for clarifier/choice flows with `ChatQuickReply` type
+  - added auto-height textarea (up to 180px) with Enter-to-send / Shift+Enter newline
+  - added auto-scroll to newest messages on updates
+
+- ChatPage refactored to use `ChatInterfacePanel`
+  - replaced ~165 lines of inline message/composer code with the shared component
+  - ChatPage and TaskPlanningPanel now share the same chat UX
+
+- TaskPlanningPanel unified planner chat flow
+  - consolidated Goal + Revision notes into a single planner chat input
+  - clarifier questions render as quick-reply buttons in the chat interface
+  - conversation history now lives inside the chat flow instead of a separate panel
+  - right-side columns (Planned tasks / Plan details) only appear after first planner response
+  - removed duplicate chat/conversation sections from the form
+
+- Clarifier options API extended
+  - added `options[]` array to the planner clarifier JSON response for multiple-choice quick-reply buttons
+  - `PlannerClarifierOption` struct added with `id` and `label` fields and `Serialize` derive
+  - all 7 clarifier JSON construction sites in `workflow_planner.rs` now include the options field
+
+- Workflow stability telemetry fix
+  - added `validatorSummary` and `warningRequirements` fields to task inspection so validation warnings are no longer silently dropped
+
 ## v0.4.16 (Released 2026-03-24)
 
 - Shared agent catalog for Tandem desktop and control panel
@@ -26,10 +54,17 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - moved the custom OpenAI-compatible provider form into the normal provider catalog list in Settings
   - updated the Coding Workflows board to use the full width, with run detail and live logs moved below the board and collapsed by default
   - improved planner UX with visible loading state, disabled regenerate/revise actions while a request is running, and longer planner request timeouts
+  - loosened workflow validation defaults so external-research and synthesis steps can complete with warnings instead of being blocked by local source-audit conventions
+  - added explicit validation profiles plus `accepted_with_warnings` outcomes so usable automation artifacts can continue downstream while still surfacing validator warnings
 
 - Automation runtime sandbox fix
   - fixed automation execution prompts to include inline node input metadata directly
   - added workspace-local default artifact paths for standard automation handoff nodes so they stop inventing `/tmp/...` temp files that the sandbox correctly blocks
+
+- Workflow validator dead-end reductions
+  - fixed citation-oriented and external-research workflow nodes so they no longer fail purely for missing `Files reviewed`-style sections when citations and web research are otherwise valid
+  - updated workflow planner and mission-builder enforcement defaults to emit profile-appropriate hard requirements instead of one-size-fits-all research-brief blockers
+  - added non-blocking warning visibility in automation task details so operators can distinguish “completed with warnings” from true repair/block states
 
 ## v0.4.15 (Released 2026-03-24)
 

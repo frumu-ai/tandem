@@ -591,6 +591,7 @@ export function workflowTaskInspectionDetails(task: any, output: any) {
   const telemetry = workflowNodeToolTelemetry(output);
   const artifactValidation = workflowArtifactValidation(output);
   const stability = workflowNodeStability(output);
+  const validatorSummary = output?.validator_summary || output?.validatorSummary || {};
   const verificationOutcome = (() => {
     const approved = output?.approved;
     if (typeof approved === "boolean") return approved ? "approved" : "not approved";
@@ -615,6 +616,7 @@ export function workflowTaskInspectionDetails(task: any, output: any) {
   return {
     telemetry,
     artifactValidation,
+    validatorSummary,
     touchedFiles: workflowStringArray(artifactValidation?.touched_files),
     undeclaredFiles: workflowStringArray(artifactValidation?.undeclared_files_created),
     researchReadPaths: workflowStringArray(artifactValidation?.read_paths),
@@ -624,6 +626,25 @@ export function workflowTaskInspectionDetails(task: any, output: any) {
     ),
     unreviewedRelevantPaths: workflowStringArray(artifactValidation?.unreviewed_relevant_paths),
     unmetResearchRequirements: workflowStringArray(artifactValidation?.unmet_requirements),
+    warningRequirements: workflowStringArray(
+      validatorSummary?.warning_requirements ||
+        validatorSummary?.warningRequirements ||
+        artifactValidation?.warning_requirements ||
+        artifactValidation?.warningRequirements
+    ),
+    warningCount:
+      Number(
+        validatorSummary?.warning_count ||
+          validatorSummary?.warningCount ||
+          artifactValidation?.warning_count ||
+          artifactValidation?.warningCount ||
+          0
+      ) || 0,
+    validationOutcome: String(
+      validatorSummary?.outcome || artifactValidation?.validation_outcome || ""
+    )
+      .trim()
+      .toLowerCase(),
     verificationOutcome,
     verificationPassed:
       typeof output?.approved === "boolean"

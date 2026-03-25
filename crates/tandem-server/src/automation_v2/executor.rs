@@ -471,6 +471,8 @@ pub async fn run_automation_v2_executor(state: AppState) {
                             crate::app::state::automation_output_is_verify_failed(&output);
                         let needs_repair =
                             crate::app::state::automation_output_needs_repair(&output);
+                        let has_warnings =
+                            crate::app::state::automation_output_has_warnings(&output);
                         let repair_exhausted =
                             crate::app::state::automation_output_repair_exhausted(&output);
                         let mut blocked_reason =
@@ -719,6 +721,8 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                         "node_verify_failed"
                                     } else if needs_repair && !terminal_repair_block {
                                         "node_repair_requested"
+                                    } else if has_warnings {
+                                        "node_completed_with_warnings"
                                     } else if blocked {
                                         "node_blocked"
                                     } else {
@@ -731,6 +735,8 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                             "node `{}` requested another repair attempt",
                                             node_id
                                         )
+                                    } else if has_warnings {
+                                        format!("node `{}` completed with warnings", node_id)
                                     } else if blocked {
                                         format!("node `{}` blocked downstream execution", node_id)
                                     } else {
@@ -747,11 +753,17 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                             "verify_failed"
                                         } else if needs_repair && !terminal_repair_block {
                                             "needs_repair"
+                                        } else if has_warnings {
+                                            "completed_with_warnings"
                                         } else if blocked {
                                             "blocked"
                                         } else {
                                             "completed"
                                         },
+                                        "warning_count": output
+                                            .get("artifact_validation")
+                                            .and_then(|value| value.get("warning_count"))
+                                            .and_then(Value::as_u64),
                                         "max_attempts": max_attempts,
                                         "blocked_reason": blocked_reason,
                                         "failure_reason": failure_reason,

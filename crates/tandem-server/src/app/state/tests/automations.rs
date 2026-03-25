@@ -838,6 +838,7 @@ fn automation_output_enforcement_prefers_contract_over_legacy_builder_metadata()
             kind: "brief".to_string(),
             validator: None,
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: None,
                 required_tools: vec!["read".to_string()],
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: vec!["files_reviewed".to_string()],
@@ -1498,6 +1499,7 @@ fn research_finalize_prewrite_requirements_skip_same_node_reads_and_websearch() 
             kind: "brief".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("research_synthesis".to_string()),
                 required_tools: Vec::new(),
                 required_evidence: vec![
                     "local_source_reads".to_string(),
@@ -1828,6 +1830,7 @@ fn first_attempt_required_tools_prompt_without_output_path_requires_handoff() {
             kind: "structured_json".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
                 required_evidence: Vec::new(),
                 required_sections: Vec::new(),
@@ -2018,6 +2021,54 @@ fn standard_workflow_nodes_receive_default_workspace_output_paths() {
         automation_node_required_output_path(&node).as_deref(),
         Some(".tandem/artifacts/research-sources.json")
     );
+}
+
+#[test]
+fn citations_nodes_do_not_require_files_reviewed_sections_by_default() {
+    let node = AutomationFlowNode {
+        node_id: "research_sources".to_string(),
+        agent_id: "researcher".to_string(),
+        objective: "Research sources".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "citations".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": ".tandem/artifacts/research-sources.json",
+                "web_research_expected": true,
+                "source_coverage_required": true
+            }
+        })),
+    };
+
+    let enforcement = automation_node_output_enforcement(&node);
+
+    assert!(enforcement
+        .required_sections
+        .iter()
+        .any(|item| item == "citations"));
+    assert!(enforcement
+        .validation_profile
+        .as_deref()
+        .is_some_and(|value| value == "external_research"));
+    assert!(!enforcement
+        .required_sections
+        .iter()
+        .any(|item| item == "files_reviewed"));
+    assert!(!enforcement
+        .required_sections
+        .iter()
+        .any(|item| item == "files_not_reviewed"));
 }
 
 #[test]
@@ -2940,6 +2991,113 @@ fn research_artifact_validation_requires_citations_and_web_sources_reviewed() {
 }
 
 #[test]
+fn research_citations_validation_accepts_external_research_without_files_reviewed_section() {
+    let workspace_root =
+        std::env::temp_dir().join(format!("tandem-research-sources-test-{}", now_ms()));
+    std::fs::create_dir_all(workspace_root.join("inputs")).expect("create workspace");
+    std::fs::write(workspace_root.join("inputs/questions.md"), "Question")
+        .expect("seed input file");
+
+    let node = AutomationFlowNode {
+        node_id: "research_sources".to_string(),
+        agent_id: "researcher".to_string(),
+        objective: "Research current web sources".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "citations".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return a citation handoff.".to_string()),
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": ".tandem/artifacts/research-sources.json",
+                "web_research_expected": true,
+                "source_coverage_required": true
+            }
+        })),
+    };
+    let mut session = Session::new(Some("research sources".to_string()), None);
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![
+            MessagePart::ToolInvocation {
+                tool: "read".to_string(),
+                args: json!({"path":"inputs/questions.md"}),
+                result: Some(json!({"output":"Question"})),
+                error: None,
+            },
+            MessagePart::ToolInvocation {
+                tool: "websearch".to_string(),
+                args: json!({"query":"autonomous AI agentic workflows 2024 2025"}),
+                result: Some(json!({"output":"Search results found"})),
+                error: None,
+            },
+            MessagePart::ToolInvocation {
+                tool: "write".to_string(),
+                args: json!({
+                    "path":".tandem/artifacts/research-sources.json",
+                    "content":"# Research Sources\n\n## Summary\nCurrent external research was gathered successfully.\n\n## Citations\n1. AI Agents in 2025: Expectations vs. Reality | IBM. Source note: https://www.ibm.com/think/insights/ai-agents-2025-expectations-vs-reality\n2. Agentic AI, explained | MIT Sloan. Source note: https://mitsloan.mit.edu/ideas-made-to-matter/agentic-ai-explained\n\n## Web sources reviewed\n- https://www.ibm.com/think/insights/ai-agents-2025-expectations-vs-reality\n- https://mitsloan.mit.edu/ideas-made-to-matter/agentic-ai-explained\n"
+                }),
+                result: Some(json!({"output":"written"})),
+                error: None,
+            },
+        ],
+    ));
+
+    let tool_telemetry = summarize_automation_tool_activity(
+        &node,
+        &session,
+        &[
+            "read".to_string(),
+            "write".to_string(),
+            "websearch".to_string(),
+        ],
+    );
+    let (_accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "",
+        &tool_telemetry,
+        None,
+        Some((
+            ".tandem/artifacts/research-sources.json".to_string(),
+            "# Research Sources\n\n## Summary\nCurrent external research was gathered successfully.\n\n## Citations\n1. AI Agents in 2025: Expectations vs. Reality | IBM. Source note: https://www.ibm.com/think/insights/ai-agents-2025-expectations-vs-reality\n2. Agentic AI, explained | MIT Sloan. Source note: https://mitsloan.mit.edu/ideas-made-to-matter/agentic-ai-explained\n\n## Web sources reviewed\n- https://www.ibm.com/think/insights/ai-agents-2025-expectations-vs-reality\n- https://mitsloan.mit.edu/ideas-made-to-matter/agentic-ai-explained\n".to_string(),
+        )),
+        &std::collections::BTreeSet::new(),
+    );
+
+    assert!(rejected.is_none());
+    assert_eq!(
+        artifact_validation
+            .get("validation_outcome")
+            .and_then(Value::as_str),
+        Some("passed")
+    );
+    assert!(!artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("files_reviewed_missing"))));
+    assert!(!artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("files_reviewed_not_backed_by_read"))));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn marketing_template_automation_migrates_to_split_research_flow() {
     let mut automation = AutomationV2Spec {
         automation_id: "automation-v2-test".to_string(),
@@ -3189,6 +3347,7 @@ fn research_finalize_validation_accepts_upstream_read_evidence() {
             kind: "brief".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("research_synthesis".to_string()),
                 required_tools: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: vec![
@@ -6164,6 +6323,7 @@ fn structured_handoff_nodes_fail_when_only_fallback_tool_summary_is_returned() {
             kind: "structured_json".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
@@ -6366,6 +6526,7 @@ fn structured_handoff_nodes_require_concrete_reads_without_output_path() {
             kind: "structured_json".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),

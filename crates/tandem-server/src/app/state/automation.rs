@@ -1117,6 +1117,7 @@ pub(super) fn migrate_bundled_studio_research_split_automation(
             kind: "structured_json".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
@@ -1169,6 +1170,7 @@ pub(super) fn migrate_bundled_studio_research_split_automation(
             kind: "structured_json".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
@@ -1225,6 +1227,7 @@ pub(super) fn migrate_bundled_studio_research_split_automation(
             kind: "structured_json".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
             enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("external_research".to_string()),
                 required_tools: vec!["websearch".to_string()],
                 required_evidence: vec!["external_sources".to_string()],
                 required_sections: Vec::new(),
@@ -1294,18 +1297,14 @@ pub(super) fn migrate_bundled_studio_research_split_automation(
                 None
             }),
         enforcement: Some(crate::AutomationOutputEnforcement {
+            validation_profile: Some("research_synthesis".to_string()),
             required_tools: Vec::new(),
             required_evidence: vec![
                 "local_source_reads".to_string(),
                 "external_sources".to_string(),
             ],
             required_sections: if final_is_brief_like {
-                vec![
-                    "files_reviewed".to_string(),
-                    "files_not_reviewed".to_string(),
-                    "citations".to_string(),
-                    "web_sources_reviewed".to_string(),
-                ]
+                vec!["citations".to_string()]
             } else {
                 Vec::new()
             },
@@ -1314,10 +1313,7 @@ pub(super) fn migrate_bundled_studio_research_split_automation(
                 vec![
                     "local_source_reads".to_string(),
                     "external_sources".to_string(),
-                    "files_reviewed".to_string(),
-                    "files_not_reviewed".to_string(),
                     "citations".to_string(),
-                    "web_sources_reviewed".to_string(),
                 ]
             } else {
                 vec![
@@ -2801,21 +2797,22 @@ pub(crate) fn automation_node_prewrite_requirements(
     let enforcement = automation_node_output_enforcement(node);
     let required_tools = enforcement.required_tools.clone();
     let web_research_expected = enforcement_requires_external_sources(&enforcement);
+    let validation_profile = enforcement
+        .validation_profile
+        .as_deref()
+        .unwrap_or("artifact_only");
     let workspace_inspection_required = requested_tools
         .iter()
         .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list" | "read"));
     let web_research_required =
         web_research_expected && requested_tools.iter().any(|tool| tool == "websearch");
-    let brief_research_node = enforcement
-        .required_sections
-        .iter()
-        .any(|item| item == "files_reviewed");
-    let research_finalize = automation_node_is_research_finalize(node);
+    let brief_research_node = validation_profile == "local_research";
+    let research_finalize = validation_profile == "research_synthesis";
     let has_required_read = required_tools.iter().any(|tool| tool == "read");
     let has_required_websearch = required_tools.iter().any(|tool| tool == "websearch");
     let has_any_required_tools = !required_tools.is_empty();
     let concrete_read_required = !research_finalize
-        && (brief_research_node
+        && ((brief_research_node || validation_profile == "local_research")
             || has_required_read
             || enforcement
                 .prewrite_gates
@@ -2823,7 +2820,7 @@ pub(crate) fn automation_node_prewrite_requirements(
                 .any(|gate| gate == "concrete_reads"))
         && requested_tools.iter().any(|tool| tool == "read");
     let successful_web_research_required = !research_finalize
-        && (brief_research_node
+        && ((validation_profile == "external_research")
             || has_required_websearch
             || enforcement
                 .prewrite_gates
@@ -2858,13 +2855,56 @@ pub(crate) fn automation_node_output_enforcement(
     let legacy_web_research_expected = automation_node_legacy_web_research_expected(node);
     let is_research_contract =
         validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief;
+    let contract_kind = node
+        .output_contract
+        .as_ref()
+        .map(|contract| contract.kind.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "structured_json".to_string());
+    let validation_profile = enforcement
+        .validation_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| {
+            if validator_kind == crate::AutomationOutputValidatorKind::ReviewDecision {
+                "review_gate".to_string()
+            } else if validator_kind == crate::AutomationOutputValidatorKind::CodePatch {
+                "code_change".to_string()
+            } else if node.node_id == "collect_inputs" {
+                "artifact_only".to_string()
+            } else if contract_kind == "citations"
+                || legacy_web_research_expected
+                || legacy_required_tools.iter().any(|tool| tool == "websearch")
+            {
+                "external_research".to_string()
+            } else if automation_node_is_research_finalize(node)
+                || (is_research_contract
+                    && matches!(
+                        contract_kind.as_str(),
+                        "brief" | "report_markdown" | "text_summary"
+                    ))
+            {
+                "research_synthesis".to_string()
+            } else if legacy_required_tools.iter().any(|tool| tool == "read")
+                || is_research_contract
+            {
+                "local_research".to_string()
+            } else {
+                "artifact_only".to_string()
+            }
+        });
+    enforcement.validation_profile = Some(validation_profile.clone());
+    let is_local_research = validation_profile == "local_research";
+    let is_external_research = validation_profile == "external_research";
+    let is_research_synthesis = validation_profile == "research_synthesis";
 
     if enforcement.required_tools.is_empty() {
         enforcement.required_tools = legacy_required_tools.clone();
-        if is_research_contract && !enforcement.required_tools.iter().any(|tool| tool == "read") {
+        if is_local_research && !enforcement.required_tools.iter().any(|tool| tool == "read") {
             enforcement.required_tools.push("read".to_string());
         }
-        if legacy_web_research_expected
+        if (is_external_research || legacy_web_research_expected)
             && !enforcement
                 .required_tools
                 .iter()
@@ -2875,12 +2915,21 @@ pub(crate) fn automation_node_output_enforcement(
     }
 
     if enforcement.required_evidence.is_empty() {
-        if is_research_contract || enforcement.required_tools.iter().any(|tool| tool == "read") {
+        if is_local_research
+            || (is_research_synthesis
+                && enforcement.required_tools.iter().any(|tool| tool == "read"))
+        {
             enforcement
                 .required_evidence
                 .push("local_source_reads".to_string());
         }
-        if legacy_web_research_expected
+        if is_external_research
+            || legacy_web_research_expected
+            || (is_research_synthesis
+                && enforcement
+                    .required_tools
+                    .iter()
+                    .any(|tool| tool == "websearch"))
             || enforcement
                 .required_tools
                 .iter()
@@ -2893,34 +2942,24 @@ pub(crate) fn automation_node_output_enforcement(
     }
 
     if enforcement.required_sections.is_empty() && is_research_contract {
-        enforcement.required_sections.extend([
-            "files_reviewed".to_string(),
-            "files_not_reviewed".to_string(),
-            "citations".to_string(),
-        ]);
-        if legacy_web_research_expected || enforcement_requires_external_sources(&enforcement) {
-            enforcement
-                .required_sections
-                .push("web_sources_reviewed".to_string());
+        if is_external_research {
+            enforcement.required_sections.push("citations".to_string());
+        } else if is_research_synthesis && enforcement_requires_external_sources(&enforcement) {
+            enforcement.required_sections.push("citations".to_string());
         }
     }
 
     if enforcement.prewrite_gates.is_empty() && automation_node_required_output_path(node).is_some()
     {
-        enforcement
-            .prewrite_gates
-            .push("workspace_inspection".to_string());
-        if enforcement
-            .required_evidence
-            .iter()
-            .any(|item| item == "local_source_reads")
-            || enforcement.required_tools.iter().any(|tool| tool == "read")
-        {
+        if is_local_research {
+            enforcement
+                .prewrite_gates
+                .push("workspace_inspection".to_string());
             enforcement
                 .prewrite_gates
                 .push("concrete_reads".to_string());
         }
-        if enforcement_requires_external_sources(&enforcement) {
+        if is_external_research && enforcement_requires_external_sources(&enforcement) {
             enforcement
                 .prewrite_gates
                 .push("successful_web_research".to_string());
@@ -2974,6 +3013,76 @@ pub(crate) fn automation_node_output_enforcement(
     enforcement.retry_on_missing = normalize_non_empty_list(enforcement.retry_on_missing);
     enforcement.terminal_on = normalize_non_empty_list(enforcement.terminal_on);
     enforcement
+}
+
+fn validation_requirement_is_warning(profile: &str, requirement: &str) -> bool {
+    match profile {
+        "external_research" => matches!(
+            requirement,
+            "files_reviewed_missing"
+                | "files_reviewed_not_backed_by_read"
+                | "relevant_files_not_reviewed_or_skipped"
+                | "web_sources_reviewed_missing"
+                | "files_reviewed_contains_nonconcrete_paths"
+        ),
+        "research_synthesis" => matches!(
+            requirement,
+            "files_reviewed_missing"
+                | "files_reviewed_not_backed_by_read"
+                | "relevant_files_not_reviewed_or_skipped"
+                | "web_sources_reviewed_missing"
+                | "files_reviewed_contains_nonconcrete_paths"
+                | "workspace_inspection_required"
+        ),
+        "local_research" => matches!(
+            requirement,
+            "files_reviewed_missing" | "relevant_files_not_reviewed_or_skipped"
+        ),
+        "artifact_only" => matches!(
+            requirement,
+            "editorial_substance_missing" | "markdown_structure_missing"
+        ),
+        _ => false,
+    }
+}
+
+fn semantic_block_reason_for_requirements(unmet_requirements: &[String]) -> Option<String> {
+    let has_unmet = |needle: &str| unmet_requirements.iter().any(|value| value == needle);
+    if has_unmet("structured_handoff_missing") {
+        Some("structured handoff was not returned in the final response".to_string())
+    } else if has_unmet("workspace_inspection_required") {
+        Some("structured handoff completed without required workspace inspection".to_string())
+    } else if has_unmet("missing_successful_web_research") {
+        Some("research completed without required current web research".to_string())
+    } else if has_unmet("no_concrete_reads") || has_unmet("concrete_read_required") {
+        Some(
+            "research completed without concrete file reads or required source coverage"
+                .to_string(),
+        )
+    } else if has_unmet("relevant_files_not_reviewed_or_skipped") {
+        Some(
+            "research completed without covering or explicitly skipping relevant discovered files"
+                .to_string(),
+        )
+    } else if has_unmet("citations_missing") {
+        Some("research completed without citation-backed claims".to_string())
+    } else if has_unmet("web_sources_reviewed_missing") {
+        Some("research completed without a web sources reviewed section".to_string())
+    } else if has_unmet("files_reviewed_contains_nonconcrete_paths") {
+        Some(
+            "research artifact contains non-concrete paths (wildcards or directory placeholders) in source audit"
+                .to_string(),
+        )
+    } else if has_unmet("files_reviewed_missing") || has_unmet("files_reviewed_not_backed_by_read")
+    {
+        Some("research completed without a source-backed files reviewed section".to_string())
+    } else if has_unmet("markdown_structure_missing") {
+        Some("editorial artifact is missing expected markdown structure".to_string())
+    } else if has_unmet("editorial_substance_missing") {
+        Some("editorial artifact is too weak or placeholder-like".to_string())
+    } else {
+        None
+    }
 }
 
 fn enforcement_requires_external_sources(enforcement: &crate::AutomationOutputEnforcement) -> bool {
@@ -4908,30 +5017,6 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
         {
             accepted_output = None;
         }
-        if semantic_block_reason.is_some() {
-            let output_is_substantive =
-                accepted_output.as_ref().is_some_and(|(_, accepted_text)| {
-                    let assessment = assess_artifact_candidate(
-                        node,
-                        workspace_root,
-                        "accepted_output",
-                        accepted_text,
-                        &read_paths,
-                        &discovered_relevant_paths,
-                    );
-                    assessment.substantive && !assessment.placeholder_like
-                });
-            if output_is_substantive {
-                // Research artifacts may stay on disk for operator inspection, but unmet source
-                // coverage should continue to block or repair the node until requirements are
-                // actually satisfied. Only non-research artifacts are allowed to clear semantic
-                // validation purely because the produced file looks substantive.
-                let should_clear = !has_research_contract;
-                if should_clear {
-                    semantic_block_reason = None;
-                }
-            }
-        }
     }
     if accepted_output.is_some() && accepted_candidate_source.is_none() {
         accepted_candidate_source = Some("verified_output".to_string());
@@ -5005,30 +5090,22 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
         }
         unmet_requirements.sort();
         unmet_requirements.dedup();
-
-        if semantic_block_reason.is_none() && !unmet_requirements.is_empty() {
-            semantic_block_reason = Some(
-                if unmet_requirements
-                    .iter()
-                    .any(|item| item == "structured_handoff_missing")
-                {
-                    "structured handoff was not returned in the final response".to_string()
-                } else if unmet_requirements
-                    .iter()
-                    .any(|item| item == "workspace_inspection_required")
-                {
-                    "structured handoff completed without required workspace inspection".to_string()
-                } else if unmet_requirements
-                    .iter()
-                    .any(|item| item == "missing_successful_web_research")
-                {
-                    "structured handoff completed without required current web research".to_string()
-                } else {
-                    "structured handoff completed without required concrete file reads".to_string()
-                },
-            );
-        }
     }
+    let validation_profile = enforcement
+        .validation_profile
+        .clone()
+        .unwrap_or_else(|| "artifact_only".to_string());
+    unmet_requirements.sort();
+    unmet_requirements.dedup();
+    let mut warning_requirements = unmet_requirements
+        .iter()
+        .filter(|item| validation_requirement_is_warning(&validation_profile, item))
+        .cloned()
+        .collect::<Vec<_>>();
+    unmet_requirements.retain(|item| !validation_requirement_is_warning(&validation_profile, item));
+    warning_requirements.sort();
+    warning_requirements.dedup();
+    semantic_block_reason = semantic_block_reason_for_requirements(&unmet_requirements);
     let (repair_attempt, repair_attempts_remaining, repair_exhausted) = infer_artifact_repair_state(
         parsed_status.as_ref(),
         repair_attempted,
@@ -5048,6 +5125,8 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
         }
     } else if semantic_block_reason.is_some() {
         "blocked"
+    } else if !warning_requirements.is_empty() {
+        "accepted_with_warnings"
     } else {
         "passed"
     };
@@ -5174,9 +5253,12 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
         "repair_succeeded": repair_succeeded,
         "repair_exhausted": repair_exhausted,
         "validation_outcome": validation_outcome,
+        "validation_profile": validation_profile,
         "blocking_classification": blocking_classification,
         "required_next_tool_actions": required_next_tool_actions,
         "unmet_requirements": unmet_requirements,
+        "warning_requirements": warning_requirements.clone(),
+        "warning_count": warning_requirements.len(),
         "artifact_candidates": artifact_candidates,
         "resolved_enforcement": enforcement,
         "structured_handoff_present": structured_handoff.is_some(),
@@ -6354,6 +6436,21 @@ pub(crate) fn build_automation_validator_summary(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let warning_requirements = artifact_validation
+        .and_then(|value| value.get("warning_requirements"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let warning_count = artifact_validation
+        .and_then(|value| value.get("warning_count"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_else(|| warning_requirements.len() as u32);
     let accepted_candidate_source = artifact_validation
         .and_then(|value| value.get("accepted_candidate_source"))
         .and_then(Value::as_str)
@@ -6402,19 +6499,26 @@ pub(crate) fn build_automation_validator_summary(
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         });
-    let outcome = match normalized_status.as_str() {
-        "completed" | "done" => "passed",
-        "verify_failed" => "verify_failed",
-        "blocked" => "blocked",
-        "failed" => "failed",
-        other => other,
-    }
-    .to_string();
+    let outcome = artifact_validation
+        .and_then(|value| value.get("validation_outcome"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(match normalized_status.as_str() {
+            "completed" | "done" => "passed",
+            "verify_failed" => "verify_failed",
+            "blocked" => "blocked",
+            "failed" => "failed",
+            other => other,
+        })
+        .to_string();
     crate::AutomationValidatorSummary {
         kind: validator_kind,
         outcome,
         reason,
         unmet_requirements,
+        warning_requirements,
+        warning_count,
         accepted_candidate_source,
         verification_outcome,
         repair_attempted,
@@ -6984,6 +7088,21 @@ pub(crate) fn automation_output_needs_repair(output: &Value) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("needs_repair"))
 }
 
+pub(crate) fn automation_output_has_warnings(output: &Value) -> bool {
+    output
+        .get("validator_summary")
+        .and_then(|value| value.get("warning_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| {
+            output
+                .get("artifact_validation")
+                .and_then(|value| value.get("warning_count"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        })
+        > 0
+}
+
 pub(crate) fn automation_output_repair_exhausted(output: &Value) -> bool {
     output
         .get("artifact_validation")
@@ -7015,7 +7134,10 @@ pub(crate) fn automation_output_is_passing(output: &Value) -> bool {
         .get("validator_summary")
         .and_then(|v| v.get("outcome"))
         .and_then(Value::as_str)
-        .is_some_and(|outcome| outcome.eq_ignore_ascii_case("passed"))
+        .is_some_and(|outcome| {
+            outcome.eq_ignore_ascii_case("passed")
+                || outcome.eq_ignore_ascii_case("accepted_with_warnings")
+        })
         && output
             .get("validator_summary")
             .and_then(|v| v.get("unmet_requirements"))

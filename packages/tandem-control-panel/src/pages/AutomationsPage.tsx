@@ -4406,6 +4406,9 @@ function MyAutomations({
   const selectedBoardTaskWorkflowClass = selectedBoardTaskInspection.workflowClass;
   const selectedBoardTaskPhase = selectedBoardTaskInspection.phase;
   const selectedBoardTaskFailureKind = selectedBoardTaskInspection.failureKind;
+  const selectedBoardTaskWarningCount = selectedBoardTaskInspection.warningCount;
+  const selectedBoardTaskWarningRequirements = selectedBoardTaskInspection.warningRequirements;
+  const selectedBoardTaskValidationOutcome = selectedBoardTaskInspection.validationOutcome;
   const selectedBoardTaskArtifactCandidates = selectedBoardTaskInspection.artifactCandidates;
   const selectedBoardTaskLifecycleEvents = useMemo(
     () => workflowRecentNodeEventSummaries(selectedRun, selectedBoardTaskNodeId, 8),
@@ -5751,6 +5754,8 @@ function MyAutomations({
                                 {String(selectedBoardTaskOutput?.status || "").trim() ? (
                                   <span
                                     className={
+                                      selectedBoardTaskValidationOutcome ===
+                                        "accepted_with_warnings" ||
                                       String(selectedBoardTaskOutput?.status || "")
                                         .trim()
                                         .toLowerCase() === "blocked"
@@ -5758,7 +5763,16 @@ function MyAutomations({
                                         : "tcp-badge-ok"
                                     }
                                   >
-                                    status: {String(selectedBoardTaskOutput?.status || "").trim()}
+                                    status:{" "}
+                                    {selectedBoardTaskValidationOutcome === "accepted_with_warnings"
+                                      ? "completed with warnings"
+                                      : String(selectedBoardTaskOutput?.status || "").trim()}
+                                  </span>
+                                ) : null}
+                                {selectedBoardTaskWarningCount > 0 ? (
+                                  <span className="tcp-badge-warn">
+                                    {selectedBoardTaskWarningCount} warning
+                                    {selectedBoardTaskWarningCount === 1 ? "" : "s"}
                                   </span>
                                 ) : null}
                                 {typeof selectedBoardTaskOutput?.approved === "boolean" ? (
@@ -5801,6 +5815,7 @@ function MyAutomations({
                             {selectedBoardTaskWorkflowClass ||
                             selectedBoardTaskPhase ||
                             selectedBoardTaskFailureKind ||
+                            selectedBoardTaskWarningCount ||
                             selectedBoardTaskArtifactCandidates.length ? (
                               <div className="rounded-lg border border-slate-700/60 bg-slate-950/20 p-3 text-xs text-slate-300">
                                 <div className="font-medium text-slate-200">Stability Contract</div>
@@ -5824,12 +5839,32 @@ function MyAutomations({
                                     </div>
                                   </div>
                                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
+                                    <div className="tcp-subtle">validation outcome</div>
+                                    <div className="mt-1 font-medium text-slate-100">
+                                      {selectedBoardTaskValidationOutcome || "n/a"}
+                                    </div>
+                                  </div>
+                                  <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
                                     <div className="tcp-subtle">artifact candidates</div>
                                     <div className="mt-1 font-medium text-slate-100">
                                       {selectedBoardTaskArtifactCandidates.length}
                                     </div>
                                   </div>
                                 </div>
+                                {selectedBoardTaskWarningRequirements.length ? (
+                                  <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                                    <div className="mb-2 font-medium text-amber-100">
+                                      Non-blocking warnings
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {selectedBoardTaskWarningRequirements.map((item: string) => (
+                                        <span key={item} className="tcp-badge-warn">
+                                          {item.replace(/_/g, " ")}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
                                 {selectedBoardTaskArtifactCandidates.length ? (
                                   <div className="mt-3 grid gap-2">
                                     {selectedBoardTaskArtifactCandidates.map(
