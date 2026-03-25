@@ -12,6 +12,14 @@ import { AppShell } from "./AppShell";
 import { deriveProviderState } from "./providerStatus";
 import { providerHints } from "./store.js";
 import {
+  ACA_CORE_NAV_ROUTE_IDS,
+  getDefaultNavigationVisibility,
+  loadNavigationVisibility,
+  saveNavigationVisibility,
+  visibleNavigationRoutes,
+  type NavigationVisibility,
+} from "./navigation";
+import {
   THEMES,
   applyTheme,
   cycleThemeId,
@@ -20,7 +28,8 @@ import {
 } from "./themes.js";
 import { renderIcons } from "./icons.js";
 import { api } from "../lib/api";
-import { useSwarmStatus, useSystemHealth } from "../features/system/queries";
+import { useCapabilities, useSwarmStatus, useSystemHealth } from "../features/system/queries";
+import type { RouteId } from "./routes";
 
 const TOKEN_STORAGE_KEY = "tandem_control_panel_token";
 
@@ -169,6 +178,23 @@ function AppBody() {
   const healthQuery = useSystemHealth(authed);
   const swarmStatusQuery = useSwarmStatus(authed);
   const bugMonitorQuery = useBugMonitorStatus(authed);
+  const capabilitiesQuery = useCapabilities(authed);
+  const acaMode = !!capabilitiesQuery.data?.aca_integration;
+  const navVisibilityHydrated = useRef(false);
+  const [navVisibility, setNavVisibility] = useState<NavigationVisibility>(() =>
+    loadNavigationVisibility(false)
+  );
+
+  useEffect(() => {
+    if (!authed || !capabilitiesQuery.isFetched || navVisibilityHydrated.current) return;
+    navVisibilityHydrated.current = true;
+    setNavVisibility(loadNavigationVisibility(acaMode));
+  }, [acaMode, authed, capabilitiesQuery.isFetched]);
+
+  useEffect(() => {
+    if (!navVisibilityHydrated.current) return;
+    saveNavigationVisibility(navVisibility);
+  }, [navVisibility]);
 
   const loginMutation = useMutation({
     mutationFn: async ({ token }: { token: string; remember: boolean }) => {
@@ -239,6 +265,43 @@ function AppBody() {
     await queryClient.invalidateQueries({ queryKey: ["identity"] });
   }, [queryClient]);
 
+  const setRouteVisibility = useCallback(
+    (routeId: RouteId, visible: boolean) => {
+      setNavVisibility((current) => {
+        const locked = acaMode && ACA_CORE_NAV_ROUTE_IDS.has(routeId);
+        const next = { ...current, [routeId]: locked ? true : visible };
+        return next[routeId] === current[routeId] ? current : next;
+      });
+    },
+    [acaMode]
+  );
+
+  const showAllSections = useCallback(() => {
+    setNavVisibility((current) => {
+      const next = { ...current };
+      for (const [routeId] of APP_NAV_ROUTES) {
+        next[routeId as RouteId] = true;
+      }
+      return next;
+    });
+  }, []);
+
+  const resetNavigation = useCallback(() => {
+    setNavVisibility(getDefaultNavigationVisibility(acaMode));
+  }, [acaMode]);
+
+  const navRoutes = useMemo(() => visibleNavigationRoutes(navVisibility), [navVisibility]);
+  const navigation = useMemo(
+    () => ({
+      acaMode,
+      routeVisibility: navVisibility,
+      setRouteVisibility,
+      showAllSections,
+      resetNavigation,
+    }),
+    [acaMode, navVisibility, resetNavigation, setRouteVisibility, showAllSections]
+  );
+
   const setTheme = useCallback(
     (nextThemeId: string) => {
       const theme = setControlPanelTheme(nextThemeId);
@@ -275,6 +338,7 @@ function AppBody() {
     themes: THEMES,
     setTheme,
     themeId,
+    navigation,
   };
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
@@ -365,7 +429,7 @@ function AppBody() {
         identity={identity}
         currentRoute={currentRoute}
         providerLocked={providerLocked}
-        navRoutes={APP_NAV_ROUTES as Array<[string, string, string]>}
+        navRoutes={navRoutes as Array<[string, string, string]>}
         onNavigate={navigate}
         onPaletteOpen={() => setPaletteOpen(true)}
         onThemeCycle={() => setTheme(cycleThemeId(themeId))}

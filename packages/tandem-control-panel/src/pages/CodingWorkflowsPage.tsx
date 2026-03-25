@@ -205,6 +205,7 @@ function formatStatus(status: string) {
 }
 
 const ACTIVE_RUN_STALE_AFTER_MS = 30 * 60 * 1000;
+const GITHUB_ITEM_LAUNCH_LOCK_MS = 15 * 1000;
 
 function runHasLiveSession(run: any) {
   return run?.is_running === true || run?.snapshot?.is_running === true;
@@ -418,6 +419,7 @@ export function CodingWorkflowsPage({
   const [githubBoardRefreshAt, setGithubBoardRefreshAt] = useState<number | null>(null);
   const [hiddenGithubColumns, setHiddenGithubColumns] = useState<string[]>([]);
   const [selectedGithubItemIds, setSelectedGithubItemIds] = useState<string[]>([]);
+  const [launchingGithubItemIds, setLaunchingGithubItemIds] = useState<Record<string, number>>({});
   const [batchTriggering, setBatchTriggering] = useState(false);
 
   const caps = useCapabilities();
@@ -603,6 +605,10 @@ export function CodingWorkflowsPage({
     () => githubBoard.items.filter((item: any) => githubBoardItemCanRun(item)),
     [githubBoard.items]
   );
+  const launchingGithubItemIdSet = useMemo(
+    () => new Set(Object.keys(launchingGithubItemIds)),
+    [launchingGithubItemIds]
+  );
   const activeGithubItemIdentities = useMemo(
     () =>
       new Set(
@@ -696,6 +702,47 @@ export function CodingWorkflowsPage({
   useEffect(() => {
     setSelectedGithubItemIds([]);
   }, [selectedProjectSlug]);
+
+  useEffect(() => {
+    setLaunchingGithubItemIds({});
+  }, [selectedProjectSlug]);
+
+  useEffect(() => {
+    const pendingEntries = Object.entries(launchingGithubItemIds);
+    if (!pendingEntries.length) return;
+    const timers = pendingEntries.map(([itemId, launchedAt]) => {
+      const elapsedMs = Date.now() - Number(launchedAt || 0);
+      const delayMs = Math.max(0, GITHUB_ITEM_LAUNCH_LOCK_MS - elapsedMs);
+      return window.setTimeout(() => {
+        setLaunchingGithubItemIds((current) => {
+          if (!current[itemId]) return current;
+          const next = { ...current };
+          delete next[itemId];
+          return next;
+        });
+      }, delayMs);
+    });
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [launchingGithubItemIds]);
+
+  useEffect(() => {
+    if (!Object.keys(launchingGithubItemIds).length || !githubBoard.items.length) return;
+    setLaunchingGithubItemIds((current) => {
+      let changed = false;
+      const next = { ...current };
+      githubBoard.items.forEach((item: any) => {
+        const itemId = String(item?.id || "").trim();
+        if (!itemId || next[itemId] === undefined) return;
+        if (activeGithubItemIdentities.has(githubBoardItemIdentity(item))) {
+          delete next[itemId];
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [activeGithubItemIdentities, githubBoard.items, launchingGithubItemIds]);
 
   useEffect(() => {
     saveHiddenGithubColumns(selectedProjectSlug, hiddenGithubColumns);
@@ -801,7 +848,16 @@ export function CodingWorkflowsPage({
   }
 
   function selectAllActionableGithubItems() {
-    setSelectedGithubItemIds(actionableGithubItems.map((item: any) => String(item.id || "")));
+    setSelectedGithubItemIds(
+      githubBoard.items
+        .filter(
+          (item: any) =>
+            githubBoardItemCanRun(item) &&
+            !activeGithubItemIdentities.has(githubBoardItemIdentity(item)) &&
+            !launchingGithubItemIdSet.has(String(item.id || ""))
+        )
+        .map((item: any) => String(item.id || ""))
+    );
   }
 
   function clearGithubSelection() {
@@ -816,7 +872,8 @@ export function CodingWorkflowsPage({
     const launchableItems = items.filter(
       (item: any) =>
         githubBoardItemCanRun(item) &&
-        !activeGithubItemIdentities.has(githubBoardItemIdentity(item))
+        !activeGithubItemIdentities.has(githubBoardItemIdentity(item)) &&
+        !launchingGithubItemIdSet.has(String(item.id || ""))
     );
     const selectors = launchableItems
       .map((item: any) => String(item?.selector || "").trim())
@@ -832,6 +889,17 @@ export function CodingWorkflowsPage({
     if (overrideProvider.trim()) overrides.ACA_PROVIDER = overrideProvider.trim();
     if (overrideModel.trim()) overrides.ACA_MODEL = overrideModel.trim();
 
+    setLaunchingGithubItemIds((current) => {
+      const next = { ...current };
+      const launchedAt = Date.now();
+      launchableItems.forEach((item: any) => {
+        const itemId = String(item?.id || "").trim();
+        if (itemId) {
+          next[itemId] = launchedAt;
+        }
+      });
+      return next;
+    });
     setBatchTriggering(true);
     try {
       const result = await api("/api/aca/runs/trigger-batch", {
@@ -852,6 +920,16 @@ export function CodingWorkflowsPage({
       toast("ok", `Started ${selectors.length} ACA run${selectors.length === 1 ? "" : "s"}.`);
       setSelectedGithubItemIds([]);
     } catch (error) {
+      setLaunchingGithubItemIds((current) => {
+        const next = { ...current };
+        launchableItems.forEach((item: any) => {
+          const itemId = String(item?.id || "").trim();
+          if (itemId) {
+            delete next[itemId];
+          }
+        });
+        return next;
+      });
       toast("err", error instanceof Error ? error.message : String(error));
     } finally {
       setBatchTriggering(false);
@@ -1277,24 +1355,25 @@ export function CodingWorkflowsPage({
                                     >
                                       {(() => {
                                         const itemCanRun = githubBoardItemCanRun(item);
+                                        const itemId = String(item.id || "");
                                         const itemIsRunning =
                                           itemCanRun &&
                                           activeGithubItemIdentities.has(
                                             githubBoardItemIdentity(item)
                                           );
+                                        const itemIsLaunching =
+                                          launchingGithubItemIdSet.has(itemId);
+                                        const itemIsLaunchLocked =
+                                          itemIsRunning || itemIsLaunching || batchTriggering;
                                         return (
                                           <div className="grid gap-3">
                                             <div className="flex items-start gap-3">
                                               <input
                                                 type="checkbox"
                                                 className="mt-1 h-4 w-4 shrink-0"
-                                                checked={selectedGithubItemIds.includes(
-                                                  String(item.id || "")
-                                                )}
-                                                disabled={!itemCanRun || itemIsRunning}
-                                                onChange={() =>
-                                                  toggleGithubItemSelection(String(item.id || ""))
-                                                }
+                                                checked={selectedGithubItemIds.includes(itemId)}
+                                                disabled={!itemCanRun || itemIsLaunchLocked}
+                                                onChange={() => toggleGithubItemSelection(itemId)}
                                               />
                                               <div className="min-w-0 flex-1">
                                                 <div className="break-words text-sm font-semibold leading-5">
@@ -1319,6 +1398,9 @@ export function CodingWorkflowsPage({
                                               </Badge>
                                               {itemIsRunning ? (
                                                 <Badge tone="info">Run active</Badge>
+                                              ) : null}
+                                              {itemIsLaunching && !itemIsRunning ? (
+                                                <Badge tone="warn">Starting</Badge>
                                               ) : null}
                                               {!itemCanRun &&
                                               String(item.statusKey || "").trim() ===
@@ -1345,15 +1427,15 @@ export function CodingWorkflowsPage({
                                                 type="button"
                                                 className="tcp-btn h-8 px-3 text-xs"
                                                 onClick={() => triggerGithubItems([item])}
-                                                disabled={
-                                                  !itemCanRun || batchTriggering || itemIsRunning
-                                                }
+                                                disabled={!itemCanRun || itemIsLaunchLocked}
                                               >
                                                 {!itemCanRun
                                                   ? "Not launchable"
                                                   : itemIsRunning
                                                     ? "Already running"
-                                                    : "Run task"}
+                                                    : itemIsLaunching
+                                                      ? "Starting..."
+                                                      : "Run task"}
                                               </button>
                                             </div>
                                           </div>

@@ -45,6 +45,22 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
     title: "Settings",
     subtitle: "Provider defaults, identity, themes, and runtime diagnostics.",
   },
+  channels: {
+    title: "Channels",
+    subtitle: "Chat integrations, tool scope, and channel configuration.",
+  },
+  "bug-monitor": {
+    title: "Bug Monitor",
+    subtitle: "Issue detection, draft review, and GitHub publishing controls.",
+  },
+  packs: {
+    title: "Packs",
+    subtitle: "Starter packs and pack installation paths.",
+  },
+  teams: {
+    title: "Teams",
+    subtitle: "Team instances, approvals, and shared execution state.",
+  },
   mcp: {
     title: "MCP",
     subtitle: "Catalog, readiness, and generated integration details.",

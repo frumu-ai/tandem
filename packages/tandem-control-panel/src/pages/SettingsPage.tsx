@@ -12,9 +12,12 @@ import {
   Toolbar,
 } from "../ui/index.tsx";
 import { ThemePicker } from "../ui/ThemePicker.tsx";
+import { APP_NAV_ROUTES } from "../app/routes";
 import { providerHints } from "../app/store.js";
+import { ACA_CORE_NAV_ROUTE_IDS } from "../app/navigation";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
+import type { RouteId } from "../app/routes";
 
 type BrowserBlockingIssue = {
   code?: string;
@@ -52,6 +55,7 @@ type BrowserSmokeTestResponse = {
 };
 
 type SettingsSection =
+  | "navigation"
   | "providers"
   | "search"
   | "identity"
@@ -602,6 +606,19 @@ function providerCatalogSubtitle(provider: any, defaultModel: string) {
   return `Default model: ${defaultModel || "none"}`;
 }
 
+const NAV_ROUTE_DESCRIPTIONS: Record<string, string> = {
+  dashboard: "Command status, activity, and fast paths.",
+  chat: "Session-driven conversation, uploads, and live responses.",
+  studio: "Template-first workflow builder.",
+  automations: "Reusable routines, approvals, and execution history.",
+  coding: "ACA intake, task launchers, and coding runs.",
+  agents: "Reusable agent roles and workflow drafts.",
+  orchestrator: "Plan-driven task execution and approvals.",
+  memory: "Searchable memory records and operational context.",
+  feed: "Global event stream and pack-aware actions.",
+  settings: "Provider defaults, themes, and runtime diagnostics.",
+};
+
 export function SettingsPage({
   client,
   api,
@@ -614,6 +631,7 @@ export function SettingsPage({
   themeId,
   refreshProviderStatus,
   refreshIdentityStatus,
+  navigation,
 }: AppPageProps) {
   const queryClient = useQueryClient();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -621,7 +639,9 @@ export function SettingsPage({
   const [botName, setBotName] = useState(String(identity?.botName || "Tandem"));
   const [botAvatarUrl, setBotAvatarUrl] = useState(String(identity?.botAvatarUrl || ""));
   const [botControlPanelAlias, setBotControlPanelAlias] = useState("Control Center");
-  const [activeSection, setActiveSection] = useState<SettingsSection>("providers");
+  const [activeSection, setActiveSection] = useState<SettingsSection>(
+    navigation?.acaMode ? "navigation" : "providers"
+  );
   const [searchBackend, setSearchBackend] = useState("auto");
   const [searchTandemUrl, setSearchTandemUrl] = useState("");
   const [searchSearxngUrl, setSearchSearxngUrl] = useState("");
@@ -703,7 +723,8 @@ export function SettingsPage({
     if (currentRoute === "mcp") setActiveSection("mcp");
     if (currentRoute === "channels") setActiveSection("channels");
     if (currentRoute === "bug-monitor") setActiveSection("bug_monitor");
-  }, [currentRoute]);
+    if (currentRoute === "settings" && navigation?.acaMode) setActiveSection("navigation");
+  }, [currentRoute, navigation?.acaMode]);
 
   const providersCatalog = useQuery({
     queryKey: ["settings", "providers", "catalog"],
@@ -1642,6 +1663,7 @@ export function SettingsPage({
   };
 
   const sectionTabs: Array<{ id: SettingsSection; label: string; icon: string }> = [
+    { id: "navigation", label: "Navigation", icon: "panel-left" },
     { id: "providers", label: "Providers", icon: "cpu" },
     { id: "search", label: "Web Search", icon: "globe" },
     { id: "identity", label: "Identity", icon: "badge-check" },
@@ -1659,6 +1681,26 @@ export function SettingsPage({
     () => isGithubCopilotMcpTransport(mcpTransport),
     [mcpTransport]
   );
+  const navigationVisibility = navigation?.routeVisibility || {};
+  const navigationRows = APP_NAV_ROUTES.map(([routeId, label, icon]) => {
+    const typedRouteId = routeId as RouteId;
+    const enabled = navigationVisibility[typedRouteId] !== false;
+    const pinned = !!navigation?.acaMode && ACA_CORE_NAV_ROUTE_IDS.has(typedRouteId);
+    return {
+      routeId,
+      label,
+      icon,
+      enabled,
+      pinned,
+      description:
+        NAV_ROUTE_DESCRIPTIONS[routeId] ||
+        `Open the ${String(label || routeId).toLowerCase()} section.`,
+    };
+  });
+  const visibleNavigationCount = navigationRows.filter((row) => row.enabled).length;
+  const hiddenOptionalNavigationCount = navigationRows.filter(
+    (row) => !row.enabled && !row.pinned
+  ).length;
 
   useEffect(() => {
     const root = rootRef.current;
@@ -1709,6 +1751,135 @@ export function SettingsPage({
         <SplitView
           main={
             <StaggerGroup className="grid gap-4">
+              {activeSection === "navigation" ? (
+                <PanelCard
+                  title="Sidebar navigation"
+                  subtitle={
+                    navigation?.acaMode
+                      ? "ACA mode keeps Dashboard, Chat, Coding, and Settings visible by default."
+                      : "Choose which sections appear in the sidebar."
+                  }
+                  actions={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Badge tone={navigation?.acaMode ? "ok" : "info"}>
+                        {navigation?.acaMode ? "ACA compact default" : "Full nav default"}
+                      </Badge>
+                      <Badge tone="ghost">
+                        {visibleNavigationCount}/{navigationRows.length} visible
+                      </Badge>
+                      <button
+                        className="tcp-btn"
+                        type="button"
+                        onClick={() => navigation?.showAllSections()}
+                      >
+                        Show all sections
+                      </button>
+                      <button
+                        className="tcp-btn-primary"
+                        type="button"
+                        onClick={() => navigation?.resetNavigation()}
+                      >
+                        Reset {navigation?.acaMode ? "ACA compact" : "default"}
+                      </button>
+                    </div>
+                  }
+                >
+                  <div className="grid gap-4">
+                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-medium">Core sections</div>
+                          <div className="tcp-subtle mt-1 text-xs">
+                            Dashboard, Chat, Coding, and Settings stay visible in ACA mode.
+                          </div>
+                        </div>
+                        <Badge tone="ok">{navigation?.acaMode ? "Pinned on" : "Standard"}</Badge>
+                      </div>
+                      <div className="mt-3 grid gap-2">
+                        {navigationRows
+                          .filter((row) => row.pinned)
+                          .map((row) => (
+                            <div
+                              key={row.routeId}
+                              className="flex items-center justify-between rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-3"
+                            >
+                              <div className="flex min-w-0 items-center gap-3">
+                                <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-lime-500/30 bg-lime-500/10 text-lime-200">
+                                  <i data-lucide={row.icon}></i>
+                                </span>
+                                <div className="min-w-0">
+                                  <div className="font-medium">{row.label}</div>
+                                  <div className="tcp-subtle truncate text-xs">
+                                    {row.description}
+                                  </div>
+                                </div>
+                              </div>
+                              <Badge tone="ok">Pinned</Badge>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-medium">Optional sections</div>
+                          <div className="tcp-subtle mt-1 text-xs">
+                            Show extra workflow and automation surfaces only when needed.
+                          </div>
+                        </div>
+                        <Badge tone={hiddenOptionalNavigationCount > 0 ? "warn" : "ok"}>
+                          {hiddenOptionalNavigationCount} hidden
+                        </Badge>
+                      </div>
+                      <div className="mt-3 grid gap-2">
+                        {navigationRows
+                          .filter((row) => !row.pinned)
+                          .map((row) => (
+                            <button
+                              key={row.routeId}
+                              type="button"
+                              className={`flex items-center justify-between rounded-xl border px-3 py-3 text-left transition ${
+                                row.enabled
+                                  ? "border-lime-500/40 bg-lime-500/10 hover:border-lime-400/70"
+                                  : "border-slate-700/60 bg-slate-900/20 hover:border-slate-500/70"
+                              }`}
+                              onClick={() =>
+                                navigation?.setRouteVisibility(row.routeId as RouteId, !row.enabled)
+                              }
+                            >
+                              <div className="flex min-w-0 items-center gap-3">
+                                <span
+                                  className={`flex h-9 w-9 items-center justify-center rounded-lg border ${
+                                    row.enabled
+                                      ? "border-lime-500/30 bg-lime-500/10 text-lime-200"
+                                      : "border-slate-700/70 bg-slate-950/30 text-slate-300"
+                                  }`}
+                                >
+                                  <i data-lucide={row.icon}></i>
+                                </span>
+                                <div className="min-w-0">
+                                  <div className="font-medium">{row.label}</div>
+                                  <div className="tcp-subtle truncate text-xs">
+                                    {row.description}
+                                  </div>
+                                </div>
+                              </div>
+                              <Badge tone={row.enabled ? "ok" : "ghost"}>
+                                {row.enabled ? "Shown" : "Hidden"}
+                              </Badge>
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+
+                    <div className="tcp-subtle text-xs">
+                      These preferences are stored in this browser only.
+                    </div>
+                  </div>
+                </PanelCard>
+              ) : null}
+
               {activeSection === "providers" ? (
                 <PanelCard
                   title="Provider defaults"

@@ -1,5 +1,6 @@
 import type { TandemClient } from "@frumu/tandem-client";
 import type { RouteId } from "../app/routes";
+import type { NavigationVisibility } from "../app/navigation";
 
 export type ToastKind = "ok" | "info" | "warn" | "err";
 
@@ -18,6 +19,14 @@ export type IdentityInfo = {
   controlPanelName: string;
 };
 
+export type NavigationPreferences = {
+  acaMode: boolean;
+  routeVisibility: NavigationVisibility;
+  setRouteVisibility: (routeId: RouteId, visible: boolean) => void;
+  showAllSections: () => void;
+  resetNavigation: () => void;
+};
+
 export type AppPageProps = {
   path?: string;
   default?: boolean;
@@ -33,4 +42,5 @@ export type AppPageProps = {
   themes: any[];
   setTheme: (themeId: string) => any;
   themeId: string;
+  navigation?: NavigationPreferences;
 };
