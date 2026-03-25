@@ -28,6 +28,13 @@ export interface Capabilities {
   coder: boolean;
   engine_healthy: boolean;
   cached_at_ms: number;
+  control_panel_mode?: "aca" | "standalone" | "auto";
+  control_panel_mode_source?: "env" | "config" | "detected" | string;
+  control_panel_mode_reason?: string;
+  control_panel_config_path?: string;
+  control_panel_config_ready?: boolean;
+  control_panel_config_missing?: string[];
+  control_panel_compact_nav?: boolean;
 }
 
 export function useCapabilities(enabled = true) {

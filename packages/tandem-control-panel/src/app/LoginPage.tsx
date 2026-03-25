@@ -6,11 +6,15 @@ export function LoginPage({
   savedToken,
   onCheckEngine,
   controlPanelName,
+  controlPanelMode,
+  controlPanelModeReason,
 }: {
   loginMutation: any;
   savedToken: string;
   onCheckEngine: () => Promise<string>;
   controlPanelName: string;
+  controlPanelMode?: string;
+  controlPanelModeReason?: string;
 }) {
   const [token, setToken] = useState(savedToken);
   const [remember, setRemember] = useState(true);
@@ -36,7 +40,11 @@ export function LoginPage({
 
         <PanelCard
           title={controlPanelName}
-          subtitle="Authenticate against your Tandem engine to continue."
+          subtitle={
+            controlPanelMode === "aca"
+              ? "ACA install detected. Authenticate against your Tandem engine to continue."
+              : "Standalone install detected. Authenticate against your Tandem engine to continue."
+          }
         >
           <form
             className="grid gap-3"
@@ -111,6 +119,9 @@ export function LoginPage({
                 Connectivity checks are non-destructive and help verify the local panel can reach
                 the engine before authentication.
               </p>
+              {controlPanelModeReason ? (
+                <p className="tcp-subtle mt-2 text-xs">{controlPanelModeReason}</p>
+              ) : null}
             </div>
           </form>
         </PanelCard>

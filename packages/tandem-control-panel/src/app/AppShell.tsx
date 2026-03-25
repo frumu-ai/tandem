@@ -133,6 +133,7 @@ export function AppShell({
       renderIcons();
     } catch {}
   }, [
+    navRoutes,
     currentRoute,
     mobileNavOpen,
     statusBar.bugMonitor?.enabled,

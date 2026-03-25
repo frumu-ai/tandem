@@ -163,11 +163,6 @@ function AppBody() {
   });
 
   const authed = authQuery.isSuccess;
-  useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  }, [authed, route]);
   const client = useMemo(
     () => (authed ? new TandemClient({ baseUrl: "/api/engine", token: "session" }) : null),
     [authed]
@@ -178,8 +173,13 @@ function AppBody() {
   const healthQuery = useSystemHealth(authed);
   const swarmStatusQuery = useSwarmStatus(authed);
   const bugMonitorQuery = useBugMonitorStatus(authed);
-  const capabilitiesQuery = useCapabilities(authed);
-  const acaMode = !!capabilitiesQuery.data?.aca_integration;
+  const capabilitiesQuery = useCapabilities();
+  const controlPanelMode =
+    String(
+      capabilitiesQuery.data?.control_panel_mode ||
+        (capabilitiesQuery.data?.aca_integration ? "aca" : "standalone")
+    ).trim() || "standalone";
+  const acaMode = controlPanelMode === "aca";
   const navVisibilityHydrated = useRef(false);
   const [navVisibility, setNavVisibility] = useState<NavigationVisibility>(() =>
     loadNavigationVisibility(false)
@@ -195,6 +195,12 @@ function AppBody() {
     if (!navVisibilityHydrated.current) return;
     saveNavigationVisibility(navVisibility);
   }, [navVisibility]);
+
+  useEffect(() => {
+    try {
+      renderIcons();
+    } catch {}
+  }, [authed, navVisibility, route]);
 
   const loginMutation = useMutation({
     mutationFn: async ({ token }: { token: string; remember: boolean }) => {
@@ -399,6 +405,10 @@ function AppBody() {
         loginMutation={loginMutation as any}
         savedToken={getSavedToken()}
         controlPanelName={identity.controlPanelName}
+        controlPanelMode={controlPanelMode}
+        controlPanelModeReason={String(
+          capabilitiesQuery.data?.control_panel_mode_reason || ""
+        ).trim()}
         onCheckEngine={async () => {
           const health = await api("/api/system/health");
           const status = health?.engine?.ready || health?.engine?.healthy ? "healthy" : "unhealthy";

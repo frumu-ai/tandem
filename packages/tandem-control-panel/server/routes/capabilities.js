@@ -57,6 +57,7 @@ export function createCapabilitiesHandler(deps) {
     ACA_BASE_URL,
     ACA_HEALTH_PATH = "/health",
     getAcaToken,
+    getInstallProfile,
     engineHealth,
     cacheTtlMs = DEFAULT_CAPABILITY_CACHE_TTL_MS,
   } = deps;
@@ -130,6 +131,18 @@ export function createCapabilitiesHandler(deps) {
     const aca = await probeAca();
     const features = await probeEngineFeatures(engineOk, aca.available);
     const durationMs = Date.now() - t0;
+    let installProfile = null;
+    if (typeof getInstallProfile === "function") {
+      try {
+        installProfile = await getInstallProfile({
+          acaAvailable: aca.available,
+          engineHealthy: engineOk,
+          acaReason: aca.reason,
+        });
+      } catch {
+        installProfile = null;
+      }
+    }
 
     _metrics.detect_duration_ms = durationMs;
     _metrics.detect_ok = true;
@@ -144,6 +157,15 @@ export function createCapabilitiesHandler(deps) {
       coder: features.coder,
       engine_healthy: engineOk,
       cached_at_ms: now,
+      control_panel_mode: installProfile?.control_panel_mode || (aca.available ? "aca" : "standalone"),
+      control_panel_mode_source: installProfile?.control_panel_mode_source || "detected",
+      control_panel_mode_reason: installProfile?.control_panel_mode_reason || "",
+      control_panel_config_path: installProfile?.control_panel_config_path || "",
+      control_panel_config_ready: !!installProfile?.control_panel_config_ready,
+      control_panel_config_missing: Array.isArray(installProfile?.control_panel_config_missing)
+        ? installProfile.control_panel_config_missing
+        : [],
+      control_panel_compact_nav: !!installProfile?.control_panel_compact_nav,
       _internal: {
         capability_detect_duration_ms: durationMs,
       },

@@ -7,6 +7,8 @@ set -eu
 : "${TANDEM_CONTROL_PANEL_AUTO_START_ENGINE:=0}"
 : "${TANDEM_STATE_DIR:=/var/lib/tandem/panel}"
 : "${TANDEM_CONTROL_PANEL_STATE_DIR:=/var/lib/tandem/panel/control-panel}"
+: "${TANDEM_CONTROL_PANEL_CONFIG_FILE:=${TANDEM_CONTROL_PANEL_STATE_DIR}/control-panel-config.json}"
+: "${TANDEM_CONTROL_PANEL_MODE:=auto}"
 
 export TANDEM_CONTROL_PANEL_HOST
 export TANDEM_CONTROL_PANEL_PORT
@@ -14,5 +16,7 @@ export TANDEM_ENGINE_URL
 export TANDEM_CONTROL_PANEL_AUTO_START_ENGINE
 export TANDEM_STATE_DIR
 export TANDEM_CONTROL_PANEL_STATE_DIR
+export TANDEM_CONTROL_PANEL_CONFIG_FILE
+export TANDEM_CONTROL_PANEL_MODE
 
 exec node /opt/tandem-control-panel/bin/setup.js

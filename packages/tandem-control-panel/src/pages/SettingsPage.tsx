@@ -55,6 +55,7 @@ type BrowserSmokeTestResponse = {
 };
 
 type SettingsSection =
+  | "install"
   | "navigation"
   | "providers"
   | "search"
@@ -640,8 +641,10 @@ export function SettingsPage({
   const [botAvatarUrl, setBotAvatarUrl] = useState(String(identity?.botAvatarUrl || ""));
   const [botControlPanelAlias, setBotControlPanelAlias] = useState("Control Center");
   const [activeSection, setActiveSection] = useState<SettingsSection>(
-    navigation?.acaMode ? "navigation" : "providers"
+    navigation?.acaMode ? "navigation" : "install"
   );
+  const [installConfigText, setInstallConfigText] = useState("");
+  const [installConfigError, setInstallConfigError] = useState("");
   const [searchBackend, setSearchBackend] = useState("auto");
   const [searchTandemUrl, setSearchTandemUrl] = useState("");
   const [searchSearxngUrl, setSearchSearxngUrl] = useState("");
@@ -723,8 +726,29 @@ export function SettingsPage({
     if (currentRoute === "mcp") setActiveSection("mcp");
     if (currentRoute === "channels") setActiveSection("channels");
     if (currentRoute === "bug-monitor") setActiveSection("bug_monitor");
+    if (currentRoute === "settings" && !navigation?.acaMode) setActiveSection("install");
     if (currentRoute === "settings" && navigation?.acaMode) setActiveSection("navigation");
   }, [currentRoute, navigation?.acaMode]);
+
+  const installProfileQuery = useQuery({
+    queryKey: ["settings", "install", "profile"],
+    queryFn: () => api("/api/install/profile", { method: "GET" }).catch(() => null),
+    refetchInterval: 30_000,
+  });
+  const installConfigQuery = useQuery({
+    queryKey: ["settings", "install", "config"],
+    queryFn: () => api("/api/control-panel/config", { method: "GET" }).catch(() => null),
+  });
+  useEffect(() => {
+    const payload = (installConfigQuery.data as any)?.config || null;
+    if (!payload) return;
+    try {
+      setInstallConfigText(JSON.stringify(payload, null, 2));
+      setInstallConfigError("");
+    } catch {
+      setInstallConfigError("Loaded config could not be rendered as JSON.");
+    }
+  }, [installConfigQuery.data]);
 
   const providersCatalog = useQuery({
     queryKey: ["settings", "providers", "catalog"],
@@ -1165,6 +1189,36 @@ export function SettingsPage({
       );
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
+  });
+
+  const saveInstallConfigMutation = useMutation({
+    mutationFn: async () => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(installConfigText);
+      } catch (error) {
+        throw new Error(
+          error instanceof Error
+            ? `Config JSON is invalid: ${error.message}`
+            : "Config JSON is invalid."
+        );
+      }
+      return api("/api/control-panel/config", {
+        method: "PATCH",
+        body: JSON.stringify({ config: parsed }),
+      });
+    },
+    onSuccess: async () => {
+      setInstallConfigError("");
+      toast("ok", "Control panel config saved.");
+      await queryClient.invalidateQueries({ queryKey: ["settings", "install"] });
+      await queryClient.invalidateQueries({ queryKey: ["system", "capabilities"] });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setInstallConfigError(message);
+      toast("err", message);
+    },
   });
 
   const saveIdentityMutation = useMutation({
@@ -1663,6 +1717,7 @@ export function SettingsPage({
   };
 
   const sectionTabs: Array<{ id: SettingsSection; label: string; icon: string }> = [
+    { id: "install", label: "Install", icon: "clipboard-list" },
     { id: "navigation", label: "Navigation", icon: "panel-left" },
     { id: "providers", label: "Providers", icon: "cpu" },
     { id: "search", label: "Web Search", icon: "globe" },
@@ -1875,6 +1930,136 @@ export function SettingsPage({
 
                     <div className="tcp-subtle text-xs">
                       These preferences are stored in this browser only.
+                    </div>
+                  </div>
+                </PanelCard>
+              ) : null}
+
+              {activeSection === "install" ? (
+                <PanelCard
+                  title="Install config"
+                  subtitle="Durable non-secret install preferences stored in tandem-data and shared with ACA."
+                  actions={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Badge
+                        tone={
+                          String(installProfileQuery.data?.control_panel_mode || "")
+                            .trim()
+                            .toLowerCase() === "aca"
+                            ? "ok"
+                            : "info"
+                        }
+                      >
+                        {installProfileQuery.data?.control_panel_mode || "auto"}
+                      </Badge>
+                      <Badge
+                        tone={installProfileQuery.data?.control_panel_config_ready ? "ok" : "warn"}
+                      >
+                        {installProfileQuery.data?.control_panel_config_ready
+                          ? "Ready"
+                          : "Needs setup"}
+                      </Badge>
+                      <button
+                        type="button"
+                        className="tcp-btn"
+                        onClick={() =>
+                          installConfigQuery
+                            .refetch()
+                            .then(() => toast("ok", "Install config refreshed."))
+                        }
+                      >
+                        <i data-lucide="refresh-cw"></i>
+                        Refresh
+                      </button>
+                      <button
+                        type="button"
+                        className="tcp-btn-primary"
+                        onClick={() => saveInstallConfigMutation.mutate()}
+                        disabled={saveInstallConfigMutation.isPending}
+                      >
+                        <i data-lucide="save"></i>
+                        Save config
+                      </button>
+                    </div>
+                  }
+                >
+                  <div className="grid gap-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                        <div className="font-medium">Startup profile</div>
+                        <div className="tcp-subtle mt-1 text-xs">
+                          {installProfileQuery.data?.control_panel_mode_reason ||
+                            "The control panel auto-detects ACA on startup and can be overridden with TANDEM_CONTROL_PANEL_MODE."}
+                        </div>
+                        <div className="mt-3 grid gap-2 text-xs">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Mode source</span>
+                            <span>
+                              {installProfileQuery.data?.control_panel_mode_source || "detected"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">ACA detected</span>
+                            <span>{installProfileQuery.data?.aca_integration ? "yes" : "no"}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Compact nav</span>
+                            <span>
+                              {installProfileQuery.data?.control_panel_compact_nav ? "on" : "off"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                        <div className="font-medium">Config file</div>
+                        <div className="tcp-subtle mt-1 break-all text-xs">
+                          {installProfileQuery.data?.control_panel_config_path ||
+                            installConfigQuery.data?.path ||
+                            "control-panel-config.json"}
+                        </div>
+                        <div className="mt-3 grid gap-2 text-xs">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Ready</span>
+                            <span>
+                              {installProfileQuery.data?.control_panel_config_ready ? "yes" : "no"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Missing</span>
+                            <span>
+                              {Array.isArray(installProfileQuery.data?.control_panel_config_missing)
+                                ? installProfileQuery.data?.control_panel_config_missing.join(
+                                    ", "
+                                  ) || "none"
+                                : "unknown"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <label className="grid gap-2">
+                      <span className="text-sm font-medium">Control panel config JSON</span>
+                      <textarea
+                        className="tcp-input min-h-[28rem] font-mono text-xs leading-5"
+                        value={installConfigText}
+                        onInput={(event) =>
+                          setInstallConfigText((event.target as HTMLTextAreaElement).value)
+                        }
+                        spellCheck={false}
+                      />
+                    </label>
+
+                    {installConfigError ? (
+                      <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+                        {installConfigError}
+                      </div>
+                    ) : null}
+
+                    <div className="tcp-subtle text-xs">
+                      This file holds non-secret install state: repo binding, provider defaults,
+                      task source, swarm policy, GitHub MCP preferences, and ACA navigation
+                      defaults. Secrets should stay in `.env` or token files.
                     </div>
                   </div>
                 </PanelCard>

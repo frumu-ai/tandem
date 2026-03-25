@@ -12,9 +12,16 @@ import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { homedir } from "os";
 import { ensureBootstrapEnv, resolveEnvLoadOrder } from "../lib/setup/env.js";
+import {
+  readControlPanelConfig,
+  resolveControlPanelConfigPath,
+  resolveControlPanelMode,
+  summarizeControlPanelConfig,
+} from "../lib/setup/control-panel-config.js";
 import { createSwarmApiHandler, getOrchestratorMetrics } from "../server/routes/swarm.js";
 import { createAcaApiHandler } from "../server/routes/aca.js";
 import { createCapabilitiesHandler, getCapabilitiesMetrics } from "../server/routes/capabilities.js";
+import { createControlPanelConfigHandler } from "../server/routes/control-panel-config.js";
 
 function parseDotEnv(content) {
   const out = {};
@@ -182,6 +189,8 @@ const ENGINE_URL = (
 const ACA_BASE_URL = String(process.env.ACA_BASE_URL || "")
   .trim()
   .replace(/\/+$/, "");
+const CONTROL_PANEL_CONFIG_FILE = String(process.env.TANDEM_CONTROL_PANEL_CONFIG_FILE || "").trim();
+const CONTROL_PANEL_MODE = String(process.env.TANDEM_CONTROL_PANEL_MODE || "auto").trim();
 const DEFAULT_TANDEM_SEARCH_URL = (
   process.env.TANDEM_SEARCH_URL || "https://search.tandem.frumu.ai"
 ).replace(/\/+$/, "");
@@ -193,11 +202,19 @@ const SWARM_HIDDEN_RUNS_PATH = resolve(
   "swarm-hidden-runs.json"
 );
 const AUTO_START_ENGINE = (process.env.TANDEM_CONTROL_PANEL_AUTO_START_ENGINE || "1") !== "0";
-const CONFIGURED_ENGINE_TOKEN = (
-  process.env.TANDEM_CONTROL_PANEL_ENGINE_TOKEN ||
-  process.env.TANDEM_API_TOKEN ||
-  ""
-).trim();
+const CONFIGURED_ENGINE_TOKEN = (() => {
+  const explicit = String(
+    process.env.TANDEM_CONTROL_PANEL_ENGINE_TOKEN || process.env.TANDEM_API_TOKEN || ""
+  ).trim();
+  if (explicit) return explicit;
+  const tokenFile = String(process.env.TANDEM_API_TOKEN_FILE || "").trim();
+  if (tokenFile) {
+    try {
+      return readFileSync(resolve(tokenFile), "utf8").trim();
+    } catch {}
+  }
+  return "";
+})();
 const ACA_TOKEN_FILE = String(process.env.ACA_API_TOKEN_FILE || "").trim();
 const SESSION_TTL_MS =
   Number.parseInt(process.env.TANDEM_CONTROL_PANEL_SESSION_TTL_MINUTES || "1440", 10) * 60 * 1000;
@@ -1164,6 +1181,36 @@ function getAcaToken() {
     readOptionalTokenFile(ACA_TOKEN_FILE) ||
     ""
   );
+}
+
+function getControlPanelConfigPath() {
+  return resolveControlPanelConfigPath({
+    explicitPath: CONTROL_PANEL_CONFIG_FILE,
+    stateDir: process.env.TANDEM_CONTROL_PANEL_STATE_DIR,
+    env: process.env,
+  });
+}
+
+async function getInstallProfile({ acaAvailable = false, acaReason = "" } = {}) {
+  const configPath = getControlPanelConfigPath();
+  const config = readControlPanelConfig(configPath);
+  const mode = resolveControlPanelMode({
+    config,
+    envMode: CONTROL_PANEL_MODE,
+    acaAvailable,
+  });
+  const summary = summarizeControlPanelConfig(config);
+  return {
+    control_panel_mode: mode.mode,
+    control_panel_mode_source: mode.source,
+    control_panel_mode_reason: mode.reason || "",
+    control_panel_config_path: configPath,
+    control_panel_config_ready: summary.ready,
+    control_panel_config_missing: summary.missing,
+    control_panel_compact_nav: !!summary.control_panel?.aca_compact_nav,
+    aca_integration: !!acaAvailable,
+    aca_reason: acaReason || "",
+  };
 }
 
 function pushSwarmEvent(kind, payload = {}) {
@@ -4548,6 +4595,7 @@ const handleCapabilities = createCapabilitiesHandler({
   ACA_BASE_URL,
   ACA_HEALTH_PATH: process.env.ACA_HEALTH_PATH || "/health",
   getAcaToken,
+  getInstallProfile,
   engineHealth: async (token) => {
     const health = await engineHealth(token).catch(() => null);
     return health;
@@ -4561,6 +4609,17 @@ const handleAcaApi = createAcaApiHandler({
   ACA_BASE_URL,
   getAcaToken,
   sendJson,
+});
+
+const handleControlPanelConfig = createControlPanelConfigHandler({
+  CONTROL_PANEL_CONFIG_FILE,
+  TANDEM_CONTROL_PANEL_STATE_DIR: process.env.TANDEM_CONTROL_PANEL_STATE_DIR || "",
+  CONTROL_PANEL_MODE,
+  ACA_BASE_URL,
+  PROBE_TIMEOUT_MS: Number.parseInt(process.env.ACA_PROBE_TIMEOUT_MS || "5000", 10),
+  getAcaToken,
+  sendJson,
+  readJsonBody,
 });
 
 async function handleApi(req, res) {
@@ -4585,6 +4644,11 @@ async function handleApi(req, res) {
 
   if (pathname === "/api/capabilities/metrics" && req.method === "GET") {
     sendJson(res, 200, getCapabilitiesMetrics());
+    return true;
+  }
+
+  if (pathname === "/api/install/profile" && req.method === "GET") {
+    await handleCapabilities(req, res);
     return true;
   }
 
@@ -4649,6 +4713,12 @@ async function handleApi(req, res) {
       engine: health,
     });
     return true;
+  }
+
+  if (pathname === "/api/control-panel/config" && (req.method === "GET" || req.method === "PATCH")) {
+    const session = requireSession(req, res);
+    if (!session) return true;
+    return handleControlPanelConfig(req, res);
   }
 
   if (pathname.startsWith("/api/swarm") || pathname.startsWith("/api/orchestrator")) {

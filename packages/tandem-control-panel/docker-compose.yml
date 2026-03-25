@@ -35,6 +35,8 @@ services:
       TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0"
       TANDEM_STATE_DIR: /var/lib/tandem/panel
       TANDEM_CONTROL_PANEL_STATE_DIR: /var/lib/tandem/panel/control-panel
+      TANDEM_CONTROL_PANEL_CONFIG_FILE: /var/lib/tandem/panel/control-panel/control-panel-config.json
+      TANDEM_CONTROL_PANEL_MODE: ${TANDEM_CONTROL_PANEL_MODE:-auto}
     volumes:
       - tandem-panel-state:/var/lib/tandem/panel
     ports:
