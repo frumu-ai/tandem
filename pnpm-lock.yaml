@@ -13,6 +13,18 @@ importers:
       "@fontsource/geist-sans":
         specifier: ^5.2.5
         version: 5.2.5
+      "@fullcalendar/core":
+        specifier: ^6.1.19
+        version: 6.1.20
+      "@fullcalendar/interaction":
+        specifier: ^6.1.19
+        version: 6.1.20(@fullcalendar/core@6.1.20)
+      "@fullcalendar/react":
+        specifier: ^6.1.19
+        version: 6.1.20(@fullcalendar/core@6.1.20)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      "@fullcalendar/timegrid":
+        specifier: ^6.1.19
+        version: 6.1.20(@fullcalendar/core@6.1.20)
       "@tailwindcss/vite":
         specifier: ^4.2.2
         version: 4.2.2(vite@8.0.1(@types/node@25.5.0)(esbuild@0.27.2)(jiti@2.6.1)(yaml@2.8.2))
@@ -668,6 +680,46 @@ packages:
         integrity: sha512-anllOHyJbElRs9fV15TeDRqAeb1IKm4bSknPl6ZMoyPTx1BBy7logudcUwpNjmQLkzn4Q0JGQLRCUKJYoyST6A==,
       }
 
+  "@fullcalendar/core@6.1.20":
+    resolution:
+      {
+        integrity: sha512-1cukXLlePFiJ8YKXn/4tMKsy0etxYLCkXk8nUCFi11nRONF2Ba2CD5b21/ovtOO2tL6afTJfwmc1ed3HG7eB1g==,
+      }
+
+  "@fullcalendar/daygrid@6.1.20":
+    resolution:
+      {
+        integrity: sha512-AO9vqhkLP77EesmJzuU+IGXgxNulsA8mgQHynclJ8U70vSwAVnbcLG9qftiTAFSlZjiY/NvhE7sflve6cJelyQ==,
+      }
+    peerDependencies:
+      "@fullcalendar/core": ~6.1.20
+
+  "@fullcalendar/interaction@6.1.20":
+    resolution:
+      {
+        integrity: sha512-p6txmc5txL0bMiPaJxe2ip6o0T384TyoD2KGdsU6UjZ5yoBlaY+dg7kxfnYKpYMzEJLG58n+URrHr2PgNL2fyA==,
+      }
+    peerDependencies:
+      "@fullcalendar/core": ~6.1.20
+
+  "@fullcalendar/react@6.1.20":
+    resolution:
+      {
+        integrity: sha512-1w0pZtceaUdfAnxMSCGHCQalhi+mR1jOe76sXzyAXpcPz/Lf0zHSdcGK/U2XpZlnQgQtBZW+d+QBnnzVQKCxAA==,
+      }
+    peerDependencies:
+      "@fullcalendar/core": ~6.1.20
+      react: ^16.7.0 || ^17 || ^18 || ^19
+      react-dom: ^16.7.0 || ^17 || ^18 || ^19
+
+  "@fullcalendar/timegrid@6.1.20":
+    resolution:
+      {
+        integrity: sha512-4H+/MWbz3ntA50lrPif+7TsvMeX3R1GSYjiLULz0+zEJ7/Yfd9pupZmAwUs/PBpA6aAcFmeRr0laWfcz1a9V1A==,
+      }
+    peerDependencies:
+      "@fullcalendar/core": ~6.1.20
+
   "@humanfs/core@0.19.1":
     resolution:
       {
@@ -792,6 +844,7 @@ packages:
     engines: { node: ^20.19.0 || >=22.12.0 }
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   "@rolldown/binding-linux-arm64-musl@1.0.0-rc.10":
     resolution:
@@ -801,6 +854,7 @@ packages:
     engines: { node: ^20.19.0 || >=22.12.0 }
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   "@rolldown/binding-linux-ppc64-gnu@1.0.0-rc.10":
     resolution:
@@ -810,6 +864,7 @@ packages:
     engines: { node: ^20.19.0 || >=22.12.0 }
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   "@rolldown/binding-linux-s390x-gnu@1.0.0-rc.10":
     resolution:
@@ -819,6 +874,7 @@ packages:
     engines: { node: ^20.19.0 || >=22.12.0 }
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   "@rolldown/binding-linux-x64-gnu@1.0.0-rc.10":
     resolution:
@@ -828,6 +884,7 @@ packages:
     engines: { node: ^20.19.0 || >=22.12.0 }
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   "@rolldown/binding-linux-x64-musl@1.0.0-rc.10":
     resolution:
@@ -837,6 +894,7 @@ packages:
     engines: { node: ^20.19.0 || >=22.12.0 }
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   "@rolldown/binding-openharmony-arm64@1.0.0-rc.10":
     resolution:
@@ -944,6 +1002,7 @@ packages:
     engines: { node: ">= 20" }
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   "@tailwindcss/oxide-linux-arm64-musl@4.2.2":
     resolution:
@@ -953,6 +1012,7 @@ packages:
     engines: { node: ">= 20" }
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   "@tailwindcss/oxide-linux-x64-gnu@4.2.2":
     resolution:
@@ -962,6 +1022,7 @@ packages:
     engines: { node: ">= 20" }
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   "@tailwindcss/oxide-linux-x64-musl@4.2.2":
     resolution:
@@ -971,6 +1032,7 @@ packages:
     engines: { node: ">= 20" }
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   "@tailwindcss/oxide-wasm32-wasi@4.2.2":
     resolution:
@@ -1076,6 +1138,7 @@ packages:
     engines: { node: ">= 10" }
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   "@tauri-apps/cli-linux-arm64-musl@2.10.1":
     resolution:
@@ -1085,6 +1148,7 @@ packages:
     engines: { node: ">= 10" }
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   "@tauri-apps/cli-linux-riscv64-gnu@2.10.1":
     resolution:
@@ -1094,6 +1158,7 @@ packages:
     engines: { node: ">= 10" }
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   "@tauri-apps/cli-linux-x64-gnu@2.10.1":
     resolution:
@@ -1103,6 +1168,7 @@ packages:
     engines: { node: ">= 10" }
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   "@tauri-apps/cli-linux-x64-musl@2.10.1":
     resolution:
@@ -1112,6 +1178,7 @@ packages:
     engines: { node: ">= 10" }
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   "@tauri-apps/cli-win32-arm64-msvc@2.10.1":
     resolution:
@@ -2283,6 +2350,7 @@ packages:
     engines: { node: ">= 12.0.0" }
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   lightningcss-linux-arm64-musl@1.32.0:
     resolution:
@@ -2292,6 +2360,7 @@ packages:
     engines: { node: ">= 12.0.0" }
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   lightningcss-linux-x64-gnu@1.32.0:
     resolution:
@@ -2301,6 +2370,7 @@ packages:
     engines: { node: ">= 12.0.0" }
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   lightningcss-linux-x64-musl@1.32.0:
     resolution:
@@ -2310,6 +2380,7 @@ packages:
     engines: { node: ">= 12.0.0" }
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   lightningcss-win32-arm64-msvc@1.32.0:
     resolution:
@@ -2819,6 +2890,12 @@ packages:
         integrity: sha512-OW/rX8O/jXnm82Ey1k44pObPtdblfiuWnrd8X7GJ7emImCOstunGbXUpp7HdBrFQX6rJzn3sPT397Wp5aCwCHg==,
       }
     engines: { node: ^10 || ^12 || >=14 }
+
+  preact@10.12.1:
+    resolution:
+      {
+        integrity: sha512-l8386ixSsBdbreOAkqtrwqHwdvR35ID8c3rKPa8lCWuO86dBi32QWHV4vfsZK1utLLFMvw+Z5Ad4XLkZzchscg==,
+      }
 
   prelude-ls@1.2.1:
     resolution:
@@ -3717,6 +3794,29 @@ snapshots:
   "@fontsource-variable/geist-mono@5.2.7": {}
 
   "@fontsource/geist-sans@5.2.5": {}
+
+  "@fullcalendar/core@6.1.20":
+    dependencies:
+      preact: 10.12.1
+
+  "@fullcalendar/daygrid@6.1.20(@fullcalendar/core@6.1.20)":
+    dependencies:
+      "@fullcalendar/core": 6.1.20
+
+  "@fullcalendar/interaction@6.1.20(@fullcalendar/core@6.1.20)":
+    dependencies:
+      "@fullcalendar/core": 6.1.20
+
+  "@fullcalendar/react@6.1.20(@fullcalendar/core@6.1.20)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)":
+    dependencies:
+      "@fullcalendar/core": 6.1.20
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
+
+  "@fullcalendar/timegrid@6.1.20(@fullcalendar/core@6.1.20)":
+    dependencies:
+      "@fullcalendar/core": 6.1.20
+      "@fullcalendar/daygrid": 6.1.20(@fullcalendar/core@6.1.20)
 
   "@humanfs/core@0.19.1": {}
 
@@ -5092,6 +5192,8 @@ snapshots:
       nanoid: 3.3.11
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  preact@10.12.1: {}
 
   prelude-ls@1.2.1: {}
 

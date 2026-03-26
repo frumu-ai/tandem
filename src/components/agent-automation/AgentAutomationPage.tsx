@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Input } from "@/components/ui";
 import { ProjectSwitcher } from "@/components/sidebar";
+import { AutomationCalendar } from "@/components/agent-automation/AutomationCalendar";
 import {
   blockedNodeIds,
   completedNodeIds,
@@ -28,6 +29,17 @@ import {
   runUsageMetrics,
 } from "@/components/coder/shared/coderRunUtils";
 import { AdvancedMissionBuilder } from "@/components/agent-automation/AdvancedMissionBuilder";
+import { ScheduleBuilder } from "@/components/agent-automation/ScheduleBuilder";
+import {
+  buildWorkflowCalendarOccurrences,
+  formatAutomationV2ScheduleLabel,
+  rewriteCronForDroppedStart,
+  type CalendarRange,
+} from "@/components/agent-automation/automationCalendarUtils";
+import {
+  type ScheduleKind,
+  type ScheduleValue,
+} from "@/components/agent-automation/scheduleBuilder";
 import {
   automationsV2Delete,
   automationsV2Get,
@@ -65,10 +77,9 @@ import {
   type WorkflowPlanConversation,
 } from "@/lib/tauri";
 
-type PageTab = "create" | "automations" | "runs";
+type PageTab = "create" | "calendar" | "automations" | "runs";
 type CreateMode = "simple" | "advanced";
 type WizardStep = 1 | 2 | 3 | 4;
-type ScheduleKind = "manual" | "interval" | "cron";
 type ExecutionMode = "team" | "swarm";
 
 interface WizardState {
@@ -173,20 +184,6 @@ function formatDateTime(raw: unknown) {
   const value = Number(raw || 0);
   if (!Number.isFinite(value) || value <= 0) return "n/a";
   return new Date(value < 1_000_000_000_000 ? value * 1000 : value).toLocaleString();
-}
-
-function formatSchedule(
-  scheduleKind: ScheduleKind,
-  intervalSeconds: string,
-  cronExpression: string
-) {
-  if (scheduleKind === "manual") return "Manual";
-  if (scheduleKind === "cron") return `Cron: ${String(cronExpression || "").trim() || "unset"}`;
-  const seconds = Math.max(1, Number.parseInt(String(intervalSeconds || "3600"), 10) || 3600);
-  if (seconds % 86400 === 0) return `Every ${seconds / 86400} day(s)`;
-  if (seconds % 3600 === 0) return `Every ${seconds / 3600} hour(s)`;
-  if (seconds % 60 === 0) return `Every ${seconds / 60} minute(s)`;
-  return `Every ${seconds} second(s)`;
 }
 
 function workflowEditToSchedule(
@@ -835,6 +832,22 @@ export function AgentAutomationPage({
   onOpenMcpExtensions,
   initialRunId = null,
 }: AgentAutomationPageProps) {
+  const [calendarRange, setCalendarRange] = useState<CalendarRange>(() => {
+    const now = new Date();
+    const start = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() - now.getUTCDay(),
+      0,
+      0,
+      0,
+      0
+    );
+    return {
+      startMs: start,
+      endMs: start + 7 * 24 * 60 * 60 * 1000,
+    };
+  });
   const [tab, setTab] = useState<PageTab>("create");
   const [createMode, setCreateMode] = useState<CreateMode>("simple");
   const [wizardStep, setWizardStep] = useState<WizardStep>(1);
@@ -1043,6 +1056,14 @@ export function AgentAutomationPage({
       setPlanningChangeSummary([]);
       setPlannerDiagnostics(null);
     }
+  };
+
+  const updateWizardSchedule = (value: ScheduleValue) => {
+    updateWizard({
+      scheduleKind: value.scheduleKind,
+      cronExpression: value.cronExpression,
+      intervalSeconds: value.intervalSeconds,
+    });
   };
 
   const generatePlan = async () => {
@@ -1261,6 +1282,59 @@ export function AgentAutomationPage({
     }
   };
 
+  const updateEditDraftSchedule = (value: ScheduleValue) => {
+    setEditDraft((current) =>
+      current
+        ? {
+            ...current,
+            scheduleKind: value.scheduleKind,
+            cronExpression: value.cronExpression,
+            intervalSeconds: value.intervalSeconds,
+          }
+        : current
+    );
+  };
+
+  const updateCalendarAutomationFromEvent = async (info: {
+    event?: {
+      extendedProps?: {
+        automation?: AutomationV2Spec;
+        cronExpression?: string;
+      };
+      start?: Date | null;
+    };
+    revert?: () => void;
+  }) => {
+    const automation = info?.event?.extendedProps?.automation;
+    const automationId = String(automation?.automation_id || "").trim();
+    const cronExpression = String(info?.event?.extendedProps?.cronExpression || "").trim();
+    const start = info?.event?.start ? new Date(info.event.start) : null;
+    const nextCron = start ? rewriteCronForDroppedStart(cronExpression, start) : null;
+    if (!automationId || !nextCron) {
+      info?.revert?.();
+      setError("That schedule cannot be moved from the calendar yet.");
+      return;
+    }
+    setBusyKey(`calendar:${automationId}`);
+    setError(null);
+    try {
+      await automationsV2Update(automationId, {
+        schedule: {
+          type: "cron",
+          cron_expression: nextCron,
+          timezone: "UTC",
+          misfire_policy: "run_once",
+        },
+      });
+      await loadAutomationState();
+    } catch (calendarError) {
+      info?.revert?.();
+      setError(calendarError instanceof Error ? calendarError.message : String(calendarError));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
   const toggleAutomationState = async (automation: AutomationV2Spec) => {
     const automationId = String(automation.automation_id || "").trim();
     if (!automationId) return;
@@ -1422,6 +1496,13 @@ export function AgentAutomationPage({
   const activeWorkflowCount = workflowAutomations.filter(
     (automation) => String(automation.status || "").trim() === "active"
   ).length;
+  const calendarEvents = useMemo(
+    () =>
+      workflowAutomations.flatMap((automation) =>
+        buildWorkflowCalendarOccurrences(automation, calendarRange)
+      ),
+    [calendarRange, workflowAutomations]
+  );
   const runningWorkflowCount = workflowRuns.filter((run) =>
     ["queued", "running", "pausing"].includes(String(run.status || "").trim())
   ).length;
@@ -1607,6 +1688,13 @@ export function AgentAutomationPage({
               </Button>
               <Button
                 size="sm"
+                variant={tab === "calendar" ? "primary" : "secondary"}
+                onClick={() => setTab("calendar")}
+              >
+                Calendar
+              </Button>
+              <Button
+                size="sm"
                 variant={tab === "automations" ? "primary" : "secondary"}
                 onClick={() => setTab("automations")}
               >
@@ -1753,59 +1841,14 @@ export function AgentAutomationPage({
 
                 {wizardStep === 2 ? (
                   <div className="mt-4 space-y-4">
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      {[
-                        { kind: "manual" as ScheduleKind, label: "Manual" },
-                        { kind: "interval" as ScheduleKind, label: "Interval" },
-                        { kind: "cron" as ScheduleKind, label: "Cron" },
-                      ].map((entry) => (
-                        <button
-                          key={entry.kind}
-                          type="button"
-                          className={`rounded-lg border px-3 py-3 text-left ${
-                            wizard.scheduleKind === entry.kind
-                              ? "border-primary bg-primary/10"
-                              : "border-border bg-surface-elevated/40"
-                          }`}
-                          onClick={() => updateWizard({ scheduleKind: entry.kind })}
-                        >
-                          <div className="text-sm font-medium text-text">{entry.label}</div>
-                          <div className="mt-1 text-xs text-text-muted">
-                            {entry.kind === "manual"
-                              ? "Run only when triggered."
-                              : entry.kind === "interval"
-                                ? "Repeat on a fixed cadence."
-                                : "Use an explicit cron expression."}
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                    {wizard.scheduleKind === "interval" ? (
-                      <Input
-                        label="Interval Seconds"
-                        type="number"
-                        min={1}
-                        value={wizard.intervalSeconds}
-                        onChange={(event) => updateWizard({ intervalSeconds: event.target.value })}
-                      />
-                    ) : null}
-                    {wizard.scheduleKind === "cron" ? (
-                      <Input
-                        label="Cron Expression"
-                        value={wizard.cronExpression}
-                        onChange={(event) => updateWizard({ cronExpression: event.target.value })}
-                      />
-                    ) : null}
-                    <div className="rounded-lg border border-border bg-surface-elevated/40 px-3 py-2 text-sm text-text-muted">
-                      Schedule preview:{" "}
-                      <span className="font-medium text-text">
-                        {formatSchedule(
-                          wizard.scheduleKind,
-                          wizard.intervalSeconds,
-                          wizard.cronExpression
-                        )}
-                      </span>
-                    </div>
+                    <ScheduleBuilder
+                      value={{
+                        scheduleKind: wizard.scheduleKind,
+                        intervalSeconds: wizard.intervalSeconds,
+                        cronExpression: wizard.cronExpression,
+                      }}
+                      onChange={updateWizardSchedule}
+                    />
                   </div>
                 ) : null}
 
@@ -2195,6 +2238,20 @@ export function AgentAutomationPage({
           </>
         ) : null}
 
+        {!loadingState && tab === "calendar" ? (
+          <SectionCard
+            title="Workflow Calendar"
+            subtitle="Week and day views for workflow automations. Legacy routines stay in the compatibility list for now."
+          >
+            <AutomationCalendar
+              events={calendarEvents}
+              onRangeChange={setCalendarRange}
+              onOpenAutomation={openEditDraft}
+              onEventDrop={(info) => void updateCalendarAutomationFromEvent(info)}
+            />
+          </SectionCard>
+        ) : null}
+
         {!loadingState && tab === "automations" ? (
           <>
             <SectionCard
@@ -2234,12 +2291,7 @@ export function AgentAutomationPage({
                           <div className="mt-2 grid gap-2 text-xs text-text-muted sm:grid-cols-2 lg:grid-cols-4">
                             <div>Workspace: {automation.workspace_root || "n/a"}</div>
                             <div>
-                              Schedule:{" "}
-                              {formatSchedule(
-                                scheduleToEditor(automation.schedule).scheduleKind,
-                                scheduleToEditor(automation.schedule).intervalSeconds,
-                                scheduleToEditor(automation.schedule).cronExpression
-                              )}
+                              Schedule: {formatAutomationV2ScheduleLabel(automation.schedule)}
                             </div>
                             <div>
                               Model:{" "}
@@ -3472,54 +3524,14 @@ export function AgentAutomationPage({
                     )
                   }
                 />
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <label className="block text-sm font-medium text-text">
-                    Schedule Kind
-                    <select
-                      value={editDraft.scheduleKind}
-                      onChange={(event) =>
-                        setEditDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                scheduleKind:
-                                  event.target.value === "manual"
-                                    ? "manual"
-                                    : event.target.value === "cron"
-                                      ? "cron"
-                                      : "interval",
-                              }
-                            : current
-                        )
-                      }
-                      className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                    >
-                      <option value="manual">Manual</option>
-                      <option value="interval">Interval</option>
-                      <option value="cron">Cron</option>
-                    </select>
-                  </label>
-                  <Input
-                    label="Interval Seconds"
-                    type="number"
-                    min={1}
-                    value={editDraft.intervalSeconds}
-                    onChange={(event) =>
-                      setEditDraft((current) =>
-                        current ? { ...current, intervalSeconds: event.target.value } : current
-                      )
-                    }
-                  />
-                  <Input
-                    label="Cron"
-                    value={editDraft.cronExpression}
-                    onChange={(event) =>
-                      setEditDraft((current) =>
-                        current ? { ...current, cronExpression: event.target.value } : current
-                      )
-                    }
-                  />
-                </div>
+                <ScheduleBuilder
+                  value={{
+                    scheduleKind: editDraft.scheduleKind,
+                    intervalSeconds: editDraft.intervalSeconds,
+                    cronExpression: editDraft.cronExpression,
+                  }}
+                  onChange={updateEditDraftSchedule}
+                />
               </div>
               <div className="space-y-3">
                 <div className="grid gap-3 sm:grid-cols-2">

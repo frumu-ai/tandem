@@ -21,6 +21,11 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - added a guided schedule builder in create/edit flows for picking run times, weekdays, monthly dates, and repeat intervals without requiring cron knowledge
   - added a shared provider/model selector used across automation and mission-builder editors
 
+- Desktop Tauri automation parity
+  - added a new `Calendar` tab for workflow automations with week/day views, crowded-slot `+N more` handling, drill-down, and click-to-edit behavior
+  - added drag-based rescheduling for simple cron-backed desktop calendar entries
+  - added the guided schedule builder to desktop create and workflow edit flows so recurring schedules no longer require raw cron by default
+
 - Control-panel workflow polish
   - renamed approvals/runtime wording to `Active Teams`
   - updated advanced mission builder token generation to use a browser-safe fallback helper
