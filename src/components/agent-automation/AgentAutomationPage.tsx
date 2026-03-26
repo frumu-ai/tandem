@@ -29,7 +29,7 @@ import {
   runUsageMetrics,
 } from "@/components/coder/shared/coderRunUtils";
 import { AdvancedMissionBuilder } from "@/components/agent-automation/AdvancedMissionBuilder";
-import { ScheduleBuilder } from "@/components/agent-automation/ScheduleBuilder";
+import { ScheduleBuilder } from "@/components/agent-automation/GuidedScheduleBuilder";
 import {
   buildWorkflowCalendarOccurrences,
   formatAutomationV2ScheduleLabel,
