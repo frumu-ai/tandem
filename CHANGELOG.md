@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Calendar-first automations scheduling in the control panel**:
   - added a weekly calendar view for workflow automations with FullCalendar-based overlap handling and click-through editing
   - added drag/reschedule support for simple cron-backed automation slots plus UTC occurrence expansion for recurring runs
+  - added week-to-day calendar drill-down, focused time-slot navigation, and visible `+N more` overlap counts for crowded schedule slots
+  - added a shared guided schedule builder for automation creation and workflow editing so operators can pick times, weekdays, monthly dates, and repeat intervals without writing cron by hand
   - added a shared provider/model selector component reused across automation and mission-builder editing surfaces
 - **Operator search diagnostics in control-panel settings**:
   - added a `Test search` action in Web Search settings that runs the live engine `websearch` tool and renders a markdown result preview below the form

@@ -17,6 +17,8 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Calendar-first Automations workflow
   - added a weekly calendar view for automations with recurring-slot expansion, overlap stacking, and click-to-edit behavior
   - added drag-based rescheduling for simple cron-backed automation entries
+  - added week-to-day drill-down, focused time-slot navigation, and `+N more` overlap counts so simultaneous automations are easier to inspect
+  - added a guided schedule builder in create/edit flows for picking run times, weekdays, monthly dates, and repeat intervals without requiring cron knowledge
   - added a shared provider/model selector used across automation and mission-builder editors
 
 - Control-panel workflow polish

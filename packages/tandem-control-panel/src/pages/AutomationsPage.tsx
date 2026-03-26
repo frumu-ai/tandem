@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import YAML from "yaml";
 import { renderIcons } from "../app/icons.js";
 import { AutomationCalendar } from "../features/automations/AutomationCalendar";
+import { ScheduleBuilder } from "../features/automations/ScheduleBuilder";
 import { projectOrchestrationRun } from "../features/orchestrator/blackboardProjection";
 import { TaskBoard } from "../features/orchestration/TaskBoard";
 import {
@@ -45,6 +46,7 @@ import { useCapabilities } from "../features/system/queries.ts";
 import { api } from "../lib/api";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
+import { describeScheduleValue } from "../features/automations/scheduleBuilder";
 import { AdvancedMissionBuilderPanel } from "./AdvancedMissionBuilderPanel";
 import { OptimizationCampaignsPanel } from "./OptimizationCampaignsPanel";
 import { PageCard, EmptyState, formatJson } from "./ui";
@@ -105,7 +107,9 @@ interface WizardState {
   goal: string;
   workspaceRoot: string;
   schedulePreset: string;
+  scheduleKind: "manual" | "cron" | "interval";
   cron: string;
+  intervalSeconds: string;
   mode: ExecutionMode;
   maxAgents: string;
   routedSkill: string;
@@ -259,11 +263,34 @@ function createDefaultWizardState(
   defaultModel: string,
   workspaceRoot = ""
 ): WizardState {
+  const defaultPreset = AUTOMATION_WIZARD_CONFIG.schedulePresets.find(
+    (preset) => preset.label === AUTOMATION_WIZARD_CONFIG.defaults.schedulePreset
+  );
+  const defaultSchedule =
+    defaultPreset?.intervalSeconds !== undefined && defaultPreset.intervalSeconds !== null
+      ? {
+          scheduleKind: "interval" as const,
+          cron: "",
+          intervalSeconds: String(defaultPreset.intervalSeconds),
+        }
+      : defaultPreset?.cron
+        ? {
+            scheduleKind: "cron" as const,
+            cron: defaultPreset.cron,
+            intervalSeconds: "3600",
+          }
+        : {
+            scheduleKind: "manual" as const,
+            cron: "",
+            intervalSeconds: "3600",
+          };
   return {
     goal: "",
     workspaceRoot,
     schedulePreset: AUTOMATION_WIZARD_CONFIG.defaults.schedulePreset,
-    cron: "",
+    scheduleKind: defaultSchedule.scheduleKind,
+    cron: defaultSchedule.cron,
+    intervalSeconds: defaultSchedule.intervalSeconds,
     mode: AUTOMATION_WIZARD_CONFIG.defaults.mode,
     maxAgents: AUTOMATION_WIZARD_CONFIG.defaults.maxAgents,
     routedSkill: "",
@@ -325,6 +352,16 @@ function normalizeMcpServers(raw: any): McpServerOption[] {
 }
 
 function toSchedulePayload(wizard: WizardState) {
+  if (wizard.scheduleKind === "manual") {
+    return { type: "manual" };
+  }
+  if (wizard.scheduleKind === "interval") {
+    return {
+      interval_seconds: {
+        seconds: Math.max(1, Number.parseInt(String(wizard.intervalSeconds || "3600"), 10) || 3600),
+      },
+    };
+  }
   const customCron = String(wizard.cron || "").trim();
   if (customCron) {
     return { cron: { expression: customCron } };
@@ -343,12 +380,20 @@ function toSchedulePayload(wizard: WizardState) {
 
 function formatScheduleLabel(schedule: any) {
   const cronExpr = String(schedule?.cron?.expression || schedule?.cron_expression || "").trim();
-  if (cronExpr) return cronExpr;
+  if (cronExpr) {
+    return describeScheduleValue({
+      scheduleKind: "cron",
+      cronExpression: cronExpr,
+      intervalSeconds: "3600",
+    });
+  }
   const seconds = Number(schedule?.interval_seconds?.seconds);
   if (Number.isFinite(seconds) && seconds > 0) {
-    if (seconds % 3600 === 0) return `Every ${seconds / 3600}h`;
-    if (seconds % 60 === 0) return `Every ${seconds / 60}m`;
-    return `Every ${seconds}s`;
+    return describeScheduleValue({
+      scheduleKind: "interval",
+      cronExpression: "",
+      intervalSeconds: String(seconds),
+    });
   }
   return "manual";
 }
@@ -357,14 +402,21 @@ function formatAutomationV2ScheduleLabel(schedule: any) {
   const type = String(schedule?.type || "")
     .trim()
     .toLowerCase();
-  if (type === "cron")
-    return String(schedule?.cron_expression || schedule?.cronExpression || "cron");
+  if (type === "cron") {
+    return describeScheduleValue({
+      scheduleKind: "cron",
+      cronExpression: String(schedule?.cron_expression || schedule?.cronExpression || ""),
+      intervalSeconds: "3600",
+    });
+  }
   if (type === "interval") {
     const seconds = Number(schedule?.interval_seconds || schedule?.intervalSeconds || 0);
     if (!Number.isFinite(seconds) || seconds <= 0) return "interval";
-    if (seconds % 3600 === 0) return `Every ${seconds / 3600}h`;
-    if (seconds % 60 === 0) return `Every ${seconds / 60}m`;
-    return `Every ${seconds}s`;
+    return describeScheduleValue({
+      scheduleKind: "interval",
+      cronExpression: "",
+      intervalSeconds: String(seconds),
+    });
   }
   return "manual";
 }
@@ -1760,13 +1812,21 @@ function Step1Goal({
 function Step2Schedule({
   selected,
   onSelect,
-  customCron,
-  onCustomCron,
+  scheduleValue,
+  onScheduleChange,
 }: {
   selected: string;
   onSelect: (preset: SchedulePreset) => void;
-  customCron: string;
-  onCustomCron: (v: string) => void;
+  scheduleValue: {
+    scheduleKind: "manual" | "cron" | "interval";
+    cronExpression: string;
+    intervalSeconds: string;
+  };
+  onScheduleChange: (value: {
+    scheduleKind: "manual" | "cron" | "interval";
+    cronExpression: string;
+    intervalSeconds: string;
+  }) => void;
 }) {
   return (
     <div className="grid gap-3">
@@ -1793,15 +1853,7 @@ function Step2Schedule({
           </button>
         ))}
       </div>
-      <div className="grid gap-1">
-        <label className="text-xs text-slate-500">Custom cron expression (advanced)</label>
-        <input
-          className="tcp-input font-mono text-sm"
-          placeholder="e.g. 30 8 * * 1-5  (8:30am weekdays)"
-          value={customCron}
-          onInput={(e) => onCustomCron((e.target as HTMLInputElement).value)}
-        />
-      </div>
+      <ScheduleBuilder value={scheduleValue} onChange={onScheduleChange} />
     </div>
   );
 }
@@ -2261,15 +2313,11 @@ function Step4Review({
   const [goalExpanded, setGoalExpanded] = useState(false);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [expandedStepIds, setExpandedStepIds] = useState<Record<string, boolean>>({});
-  const wizardSchedule = wizard.cron
-    ? wizard.cron
-    : AUTOMATION_WIZARD_CONFIG.schedulePresets.find((p) => p.label === wizard.schedulePreset)
-          ?.intervalSeconds
-      ? `Every ${
-          AUTOMATION_WIZARD_CONFIG.schedulePresets.find((p) => p.label === wizard.schedulePreset)!
-            .intervalSeconds! / 3600
-        }h`
-      : wizard.schedulePreset || "Manual";
+  const wizardSchedule = describeScheduleValue({
+    scheduleKind: wizard.scheduleKind,
+    cronExpression: wizard.cron,
+    intervalSeconds: wizard.intervalSeconds,
+  });
   const planOperatorPreferences =
     planPreview && typeof planPreview === "object"
       ? planPreview.operator_preferences || planPreview.operatorPreferences || {}
@@ -2483,7 +2531,7 @@ function Step4Review({
             </span>
           </div>
         ) : null}
-        {wizard.cron ? (
+        {wizard.scheduleKind === "cron" && wizard.cron ? (
           <div className="grid gap-1">
             <span className="text-xs text-slate-500 uppercase tracking-wide">Cron</span>
             <code className="rounded bg-slate-800/60 px-2 py-1 text-xs text-slate-300">
@@ -3166,7 +3214,11 @@ function CreateWizard({
     step === 1
       ? wizard.goal.trim().length > 8
       : step === 2
-        ? !!wizard.schedulePreset || !!wizard.cron.trim()
+        ? wizard.scheduleKind === "manual" ||
+          (wizard.scheduleKind === "cron" && !!wizard.cron.trim()) ||
+          (wizard.scheduleKind === "interval" &&
+            (Number.parseInt(String(wizard.intervalSeconds || "0"), 10) || 0) > 0) ||
+          !!wizard.schedulePreset
         : step === 3
           ? !!wizard.mode && !workspaceRootError && !plannerModelError && !roleModelsError
           : true;
@@ -3329,11 +3381,33 @@ function CreateWizard({
                 setWizard((s) => ({
                   ...s,
                   schedulePreset: preset.label,
+                  scheduleKind:
+                    preset.intervalSeconds !== undefined && preset.intervalSeconds !== null
+                      ? "interval"
+                      : preset.cron
+                        ? "cron"
+                        : "manual",
                   cron: preset.cron,
+                  intervalSeconds:
+                    preset.intervalSeconds !== undefined && preset.intervalSeconds !== null
+                      ? String(preset.intervalSeconds)
+                      : s.intervalSeconds,
                 }))
               }
-              customCron={wizard.cron}
-              onCustomCron={(v) => setWizard((s) => ({ ...s, cron: v, schedulePreset: "" }))}
+              scheduleValue={{
+                scheduleKind: wizard.scheduleKind,
+                cronExpression: wizard.cron,
+                intervalSeconds: wizard.intervalSeconds,
+              }}
+              onScheduleChange={(value) =>
+                setWizard((s) => ({
+                  ...s,
+                  schedulePreset: "",
+                  scheduleKind: value.scheduleKind,
+                  cron: value.cronExpression,
+                  intervalSeconds: value.intervalSeconds,
+                }))
+              }
             />
           ) : step === 3 ? (
             <Step3Mode
@@ -7598,31 +7672,31 @@ function MyAutomations({
 
                   <div className="grid gap-3 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
                     <div className="text-xs uppercase tracking-wide text-slate-500">Execution</div>
-                    <div className="grid gap-2 sm:grid-cols-3">
+                    <div className="grid gap-3">
                       <div className="grid gap-1">
-                        <label className="text-xs text-slate-400">Schedule type</label>
-                        <select
-                          className="tcp-select"
-                          value={workflowEditDraft.scheduleKind}
-                          onInput={(e) =>
+                        <label className="text-xs text-slate-400">Schedule</label>
+                        <ScheduleBuilder
+                          value={{
+                            scheduleKind: workflowEditDraft.scheduleKind,
+                            cronExpression: workflowEditDraft.cronExpression,
+                            intervalSeconds: workflowEditDraft.intervalSeconds,
+                          }}
+                          onChange={(value) =>
                             setWorkflowEditDraft((current) =>
                               current
                                 ? {
                                     ...current,
-                                    scheduleKind: (e.target as HTMLSelectElement).value as
-                                      | "manual"
-                                      | "cron"
-                                      | "interval",
+                                    scheduleKind: value.scheduleKind,
+                                    cronExpression: value.cronExpression,
+                                    intervalSeconds: value.intervalSeconds,
                                   }
                                 : current
                             )
                           }
-                        >
-                          <option value="manual">manual</option>
-                          <option value="cron">cron</option>
-                          <option value="interval">interval</option>
-                        </select>
+                        />
                       </div>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
                       <div className="grid gap-1">
                         <label className="text-xs text-slate-400">Execution mode</label>
                         <select
@@ -7669,45 +7743,6 @@ function MyAutomations({
                         />
                       </div>
                     </div>
-                    {workflowEditDraft.scheduleKind === "cron" ? (
-                      <div className="grid gap-1">
-                        <label className="text-xs text-slate-400">Cron expression</label>
-                        <input
-                          className="tcp-input font-mono"
-                          value={workflowEditDraft.cronExpression}
-                          onInput={(e) =>
-                            setWorkflowEditDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    cronExpression: (e.target as HTMLInputElement).value,
-                                  }
-                                : current
-                            )
-                          }
-                        />
-                      </div>
-                    ) : workflowEditDraft.scheduleKind === "interval" ? (
-                      <div className="grid gap-1">
-                        <label className="text-xs text-slate-400">Interval seconds</label>
-                        <input
-                          type="number"
-                          min="1"
-                          className="tcp-input"
-                          value={workflowEditDraft.intervalSeconds}
-                          onInput={(e) =>
-                            setWorkflowEditDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    intervalSeconds: (e.target as HTMLInputElement).value,
-                                  }
-                                : current
-                            )
-                          }
-                        />
-                      </div>
-                    ) : null}
                   </div>
 
                   <div className="grid gap-3 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
