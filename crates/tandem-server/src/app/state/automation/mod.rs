@@ -6012,6 +6012,38 @@ pub(crate) fn summarize_automation_tool_activity(
     })
 }
 
+async fn load_automation_session_after_run(
+    state: &AppState,
+    session_id: &str,
+    expect_tool_activity: bool,
+) -> Option<Session> {
+    let mut last = state.storage.get_session(session_id).await?;
+    if !expect_tool_activity || session_contains_tool_invocations(&last) {
+        return Some(last);
+    }
+
+    // `message.part.updated` events are persisted asynchronously; give storage a
+    // short window to capture tool invocations before we compute telemetry.
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        let current = state.storage.get_session(session_id).await?;
+        if session_contains_tool_invocations(&current) {
+            return Some(current);
+        }
+        last = current;
+    }
+    Some(last)
+}
+
+fn session_contains_tool_invocations(session: &Session) -> bool {
+    session.messages.iter().any(|message| {
+        message
+            .parts
+            .iter()
+            .any(|part| matches!(part, MessagePart::ToolInvocation { .. }))
+    })
+}
+
 async fn record_automation_external_actions_for_session(
     state: &AppState,
     run_id: &str,
@@ -6848,9 +6880,8 @@ pub(crate) async fn execute_automation_v2_node(
     state.clear_automation_v2_session(run_id, &session_id).await;
 
     result?;
-    let session = state
-        .storage
-        .get_session(&session_id)
+    let expect_tool_activity = !requested_tools.is_empty();
+    let session = load_automation_session_after_run(state, &session_id, expect_tool_activity)
         .await
         .ok_or_else(|| anyhow::anyhow!("automation session `{}` missing after run", session_id))?;
     let session_text = extract_session_text_output(&session);
