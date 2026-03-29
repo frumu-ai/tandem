@@ -19,6 +19,7 @@ members = [
     "crates/tandem-channels",
     "crates/tandem-agent-teams",
     "crates/tandem-workflows",
+    "crates/tandem-plan-compiler",
 ]
 resolver = "2"
 
@@ -31,4 +32,3 @@ incremental = true
 codegen-units = 32
 opt-level = 2
 lto = "off"
-

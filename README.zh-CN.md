@@ -509,8 +509,16 @@ tandem/
 
 ## 许可证
 
-- 仓库许可证文本：[MIT](LICENSE)
-- Rust crates（`crates/*`）：`MIT OR Apache-2.0`（见 [LICENSE](LICENSE) 与 [LICENSE-APACHE](LICENSE-APACHE)）
+本仓库使用混合许可模式：
+
+- 核心引擎 crates 与工具 (例如 `tandem-core`、`tandem-server`、`tandem-types`、`tandem-orchestrator` 以及 `crates/` 下的其他组件):
+  - 基于 `MIT OR Apache-2.0` 许可 (见 [LICENSE](LICENSE) 与 [LICENSE-APACHE](LICENSE-APACHE))
+
+- 任务编译 crate (`tandem-plan-compiler`):
+  - 基于 Business Source License 1.1 (`BSL-1.1`) 许可
+  - 详情见 `crates/tandem-plan-compiler/LICENSE`
+
+简而言之：运行时引擎完全开源 (MIT/Apache)，任务/计划编译器在 BSL 许可下提供源码。
 
 ## 致谢
 

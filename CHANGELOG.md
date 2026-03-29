@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.17] - 2026-03-28
+
+### Added
+
+- **Automation Modularization & Scaling**:
+  - Extracted and modularized the automation engine into dedicated modules: `types`, `lifecycle`, `path_hygiene`, `rate_limit`, `scheduler`, `assessment`, `extraction`, `verification`, `upstream`, `enforcement`, and `node_output`.
+  - Implemented a new multi-run scheduler with a `JoinSet`-based supervisor, capacity capping, and workspace-root locking.
+  - Added a `PreexistingArtifactRegistry` (MWF-300) to enable efficient artifact reuse during retries and server restarts.
+  - Integrated per-provider rate limiting into the scheduler admission logic to prevent cascading failures.
+  - Exposed core scheduler metrics (active/queued runs, admitted/completed totals, wait time histograms) via a new `/api/system/scheduler/metrics` endpoint.
+  - Added panic recovery and server-restart recovery for automation runs to ensure continuity.
+- **File Governance & Codebase Health**:
+  - Added `scripts/check-file-sizes.sh` for line-count baseline generation and tracking.
+  - Added `scripts/ci-file-size-check.sh` for CI-time file-size enforcement (1500-line threshold for touched files).
+  - Established an initial file-size baseline in `docs/internal/file-size-baseline.csv`.
+- **Workflow Plan Governance & Compiler Boundary**:
+  - Added overlap analysis and confirmation handling to workflow-plan preview, chat, get, and apply flows, including persisted overlap decision history and control-panel review UI.
+  - Added compiler-owned approved-plan materialization helpers and manual-trigger record stamping so plan-governance transforms no longer have to live in `tandem-server`.
+  - Added overlap-history rendering in the workflow scope inspector so prior reuse, merge, fork, and new decisions are searchable and auditable.
+- **Governed Context and Bundle Parity**:
+  - Added a first-class `ContextObject` design and runtime wiring for governed mission context, including scope, policy, freshness, provenance, and validation state.
+  - Added bundle/export roundtrips that preserve revision, scope snapshot, connector binding resolution, model routing, budget enforcement, and approved-plan materialization metadata together.
+  - Added runtime credential-envelope and context-partition handoff so routine execution stays compartmentalized while still inheriting the right mission context.
+- **Operator Visibility for Approval, Budget, and Routing**:
+  - Added explicit inspector and calendar visibility for approval readiness, lifecycle state, budget hard-limit behavior, overlap history, and per-step model routing.
+  - Added connector suggestion and edit affordances so unresolved bindings are surfaced as actionable operator work instead of being guessed implicitly.
+- **Mission Builder Preview Visibility**:
+  - Added compiled mission-spec preview panels in desktop, control-panel, and template mission builders showing mission identity, entrypoint, phase counts, milestone counts, and success criteria.
+  - Added compiled work-item preview cards across those mission builders, including assigned agent, dependency, and phase/lane/milestone metadata.
+
 ## [0.4.16] - 2026-03-25
 
 ### Added

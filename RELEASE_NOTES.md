@@ -2,6 +2,42 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.17 (Released 2026-03-28)
+
+- **Automation Modularization & Scaling**
+  - Modularized the automation engine into dedicated sub-modules for improved maintainability.
+  - Implemented a robust multi-run scheduler with capacity capping and workspace-root locking.
+  - Added `PreexistingArtifactRegistry` (MWF-300) for efficient artifact reuse across retries.
+  - Integrated provider-aware rate limiting into the scheduler admission flow.
+  - Added observability for scheduler metrics, including active/queued counts and wait-time histograms.
+  - Improved reliability with automatic panic and server-restart recovery for in-flight runs.
+
+- **File Governance & Codebase Health**
+  - Added codebase-wide line-count baseline generation in `docs/internal/file-size-baseline.csv`.
+  - Added CI enforcement script to warn when touched files exceed the 1500-line threshold.
+
+- **Workflow plan overlap review and auditable decisions**
+  - Added overlap analysis to workflow-plan preview, chat, load, and apply responses so operators can see when a new plan matches or closely resembles prior work.
+  - Added explicit overlap confirmation before apply when reuse/merge/fork/new decisions must be chosen, and persisted those decisions into overlap history for later audit.
+  - Added overlap-history rendering in the workflow scope inspector so prior operator choices are searchable and visible in the UI.
+
+- **Compiler-boundary cleanup for governed plan metadata**
+  - Moved approved-plan materialization and manual-trigger record stamping into `tandem-plan-compiler`, keeping these plan-governance transforms under the compiler's licensed boundary instead of `tandem-server`.
+  - Updated server callers to consume the compiler API for those transforms while leaving runtime/session/MCP concerns in the open-source host layer.
+
+- **Governed context, bundle parity, and runtime compartmentalization**
+  - Added a first-class `ContextObject` design for mission-scoped context with explicit scope, policy, freshness, provenance, and validation state.
+  - Added runtime context-partition and credential-envelope handoff so routines inherit the right mission context without crossing execution boundaries.
+  - Hardened bundle/export roundtrips so revision, scope snapshot, connector binding resolution, model routing, budget enforcement, and approved-plan materialization metadata travel together.
+
+- **Operator visibility for approval, budget, routing, and bindings**
+  - Added explicit inspector and calendar visibility for approval readiness, lifecycle state, budget hard-limit behavior, overlap history, and per-step model routing.
+  - Added connector suggestion and edit affordances so unresolved bindings are surfaced as actionable work instead of being inferred silently.
+
+- **Compiled mission preview visibility**
+  - Added compiled mission-spec panels to desktop, control-panel, and template mission builders so operators can inspect mission identity, entrypoint, phases, milestones, and success criteria directly from preview.
+  - Added compiled work-item cards showing assigned agent, dependencies, and phase/lane/milestone metadata to make the compiler output easier to validate before execution.
+
 ## v0.4.16 (Released 2026-03-25)
 
 - Shared agent catalog for Tandem desktop and control panel

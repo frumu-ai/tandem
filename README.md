@@ -405,8 +405,16 @@ If Tandem saves you time, consider [sponsoring development](https://github.com/s
 
 ## License
 
-- Repository license text: [MIT](LICENSE)
-- Rust crates (`crates/*`): `MIT OR Apache-2.0` (see [LICENSE](LICENSE) and [LICENSE-APACHE](LICENSE-APACHE))
+This repository uses a mixed licensing model:
+
+- Core engine crates and tools (e.g. `tandem-core`, `tandem-server`, `tandem-types`, `tandem-orchestrator`, and others in `crates/`):
+  - Licensed under `MIT OR Apache-2.0` (see [LICENSE](LICENSE) and [LICENSE-APACHE](LICENSE-APACHE))
+
+- Mission compiler crate (`tandem-plan-compiler`):
+  - Licensed under Business Source License 1.1 (`BSL-1.1`)
+  - See `crates/tandem-plan-compiler/LICENSE` for terms
+
+In short: the runtime engine is fully open source (MIT/Apache), the mission/plan compiler is source-available under BSL.
 
 ## Acknowledgments
 

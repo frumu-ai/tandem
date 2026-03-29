@@ -43,6 +43,7 @@ const cargoFiles = [
   "crates/tandem-memory/Cargo.toml",
   "crates/tandem-observability/Cargo.toml",
   "crates/tandem-orchestrator/Cargo.toml",
+  "crates/tandem-plan-compiler/Cargo.toml",
   "crates/tandem-providers/Cargo.toml",
   "crates/tandem-runtime/Cargo.toml",
   "crates/tandem-server/Cargo.toml",

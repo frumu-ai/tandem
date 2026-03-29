@@ -1,3 +1,7 @@
+Note: Some crates in this repository (e.g. tandem-plan-compiler)
+are licensed under BSL-1.1. See their crate directories for details.
+This root LICENSE applies to MIT-licensed parts only.
+
 MIT License
 
 Copyright (c) 2026 Tandem Contributors
