@@ -31,6 +31,9 @@ use tandem_memory::types::{MemorySearchResult, MemoryTier};
 use tandem_memory::MemoryManager;
 use tandem_types::{ToolResult, ToolSchema};
 
+mod builtin_tools;
+use builtin_tools::*;
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn schema(&self) -> ToolSchema;
@@ -636,10 +639,7 @@ fn is_batch_wrapper_tool_name(name: &str) -> bool {
 }
 
 fn non_empty_batch_str(value: Option<&Value>) -> Option<&str> {
-    value
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+    trimmed_non_empty_str(value)
 }
 
 fn resolve_batch_call_tool_name(call: &Value) -> Option<String> {
@@ -1075,577 +1075,7 @@ fn is_malformed_tool_pattern_token(pattern: &str) -> bool {
     false
 }
 
-fn is_document_file(path: &Path) -> bool {
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        matches!(
-            ext.to_lowercase().as_str(),
-            "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "ods" | "xlsb" | "rtf"
-        )
-    } else {
-        false
-    }
-}
-
-struct BashTool;
-#[async_trait]
-impl Tool for BashTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "bash".to_string(),
-            description: "Run shell command".to_string(),
-            input_schema: json!({
-                "type":"object",
-                "properties":{
-                    "command":{"type":"string"},
-                    "timeout_ms":{"type":"integer","minimum":1000}
-                },
-                "required":["command"]
-            }),
-        }
-    }
-    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        let cmd = args["command"].as_str().unwrap_or("").trim();
-        if cmd.is_empty() {
-            anyhow::bail!("BASH_COMMAND_MISSING");
-        }
-        #[cfg(windows)]
-        let shell = match build_shell_command(cmd) {
-            ShellCommandPlan::Execute(plan) => plan,
-            ShellCommandPlan::Blocked(result) => return Ok(result),
-        };
-        #[cfg(not(windows))]
-        let ShellCommandPlan::Execute(shell) = build_shell_command(cmd);
-        let ShellExecutionPlan {
-            mut command,
-            translated_command,
-            os_guardrail_applied,
-            guardrail_reason,
-        } = shell;
-        let effective_cwd = effective_cwd_from_args(&args);
-        command.current_dir(&effective_cwd);
-        if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
-            for (k, v) in env {
-                if let Some(value) = v.as_str() {
-                    command.env(k, value);
-                }
-            }
-        }
-        let timeout_ms = bash_timeout_ms(&args);
-        let output = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            command.output(),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("BASH_TIMEOUT_MS_EXCEEDED({timeout_ms})"))??;
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let metadata = shell_metadata(
-            translated_command.as_deref(),
-            os_guardrail_applied,
-            guardrail_reason.as_deref(),
-            stderr,
-        );
-        let mut metadata = metadata;
-        if let Some(obj) = metadata.as_object_mut() {
-            obj.insert(
-                "effective_cwd".to_string(),
-                Value::String(effective_cwd.to_string_lossy().to_string()),
-            );
-            if let Some(workspace_root) = workspace_root_from_args(&args) {
-                obj.insert(
-                    "workspace_root".to_string(),
-                    Value::String(workspace_root.to_string_lossy().to_string()),
-                );
-            }
-        }
-        Ok(ToolResult {
-            output: String::from_utf8_lossy(&output.stdout).to_string(),
-            metadata,
-        })
-    }
-
-    async fn execute_with_cancel(
-        &self,
-        args: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        let cmd = args["command"].as_str().unwrap_or("").trim();
-        if cmd.is_empty() {
-            anyhow::bail!("BASH_COMMAND_MISSING");
-        }
-        #[cfg(windows)]
-        let shell = match build_shell_command(cmd) {
-            ShellCommandPlan::Execute(plan) => plan,
-            ShellCommandPlan::Blocked(result) => return Ok(result),
-        };
-        #[cfg(not(windows))]
-        let ShellCommandPlan::Execute(shell) = build_shell_command(cmd);
-        let ShellExecutionPlan {
-            mut command,
-            translated_command,
-            os_guardrail_applied,
-            guardrail_reason,
-        } = shell;
-        let effective_cwd = effective_cwd_from_args(&args);
-        command.current_dir(&effective_cwd);
-        if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
-            for (k, v) in env {
-                if let Some(value) = v.as_str() {
-                    command.env(k, value);
-                }
-            }
-        }
-        let timeout_ms = bash_timeout_ms(&args);
-        let timeout = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms));
-        tokio::pin!(timeout);
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        let mut child = command.spawn()?;
-        let status = tokio::select! {
-            _ = cancel.cancelled() => {
-                let _ = child.kill().await;
-                return Ok(ToolResult {
-                    output: "command cancelled".to_string(),
-                    metadata: json!({"cancelled": true}),
-                });
-            }
-            _ = &mut timeout => {
-                let _ = child.kill().await;
-                return Ok(ToolResult {
-                    output: format!("command timed out after {} ms", timeout_ms),
-                    metadata: json!({"timeout": true, "timeout_ms": timeout_ms}),
-                });
-            }
-            result = child.wait() => result?
-        };
-        let stdout = match child.stdout.take() {
-            Some(mut handle) => {
-                use tokio::io::AsyncReadExt;
-                let mut buf = Vec::new();
-                let _ = handle.read_to_end(&mut buf).await;
-                String::from_utf8_lossy(&buf).to_string()
-            }
-            None => String::new(),
-        };
-        let stderr = match child.stderr.take() {
-            Some(mut handle) => {
-                use tokio::io::AsyncReadExt;
-                let mut buf = Vec::new();
-                let _ = handle.read_to_end(&mut buf).await;
-                String::from_utf8_lossy(&buf).to_string()
-            }
-            None => String::new(),
-        };
-        let mut metadata = shell_metadata(
-            translated_command.as_deref(),
-            os_guardrail_applied,
-            guardrail_reason.as_deref(),
-            stderr,
-        );
-        if let Some(obj) = metadata.as_object_mut() {
-            obj.insert("exit_code".to_string(), json!(status.code()));
-            obj.insert(
-                "effective_cwd".to_string(),
-                Value::String(effective_cwd.to_string_lossy().to_string()),
-            );
-            if let Some(workspace_root) = workspace_root_from_args(&args) {
-                obj.insert(
-                    "workspace_root".to_string(),
-                    Value::String(workspace_root.to_string_lossy().to_string()),
-                );
-            }
-        }
-        Ok(ToolResult {
-            output: if stdout.is_empty() {
-                format!("command exited: {}", status)
-            } else {
-                stdout
-            },
-            metadata,
-        })
-    }
-}
-
-fn bash_timeout_ms(args: &Value) -> u64 {
-    let from_args = args
-        .get("timeout_ms")
-        .and_then(|v| v.as_u64())
-        .filter(|v| *v >= 1_000);
-    let from_env = std::env::var("TANDEM_BASH_TIMEOUT_MS")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|v| *v >= 1_000);
-    from_args.or(from_env).unwrap_or(30_000)
-}
-
-struct ShellExecutionPlan {
-    command: Command,
-    translated_command: Option<String>,
-    os_guardrail_applied: bool,
-    guardrail_reason: Option<String>,
-}
-
-fn shell_metadata(
-    translated_command: Option<&str>,
-    os_guardrail_applied: bool,
-    guardrail_reason: Option<&str>,
-    stderr: String,
-) -> Value {
-    let mut metadata = json!({
-        "stderr": stderr,
-        "os_guardrail_applied": os_guardrail_applied,
-    });
-    if let Some(obj) = metadata.as_object_mut() {
-        if let Some(translated) = translated_command {
-            obj.insert(
-                "translated_command".to_string(),
-                Value::String(translated.to_string()),
-            );
-        }
-        if let Some(reason) = guardrail_reason {
-            obj.insert(
-                "guardrail_reason".to_string(),
-                Value::String(reason.to_string()),
-            );
-        }
-    }
-    metadata
-}
-
-enum ShellCommandPlan {
-    Execute(ShellExecutionPlan),
-    #[cfg(windows)]
-    Blocked(ToolResult),
-}
-
-fn build_shell_command(raw_cmd: &str) -> ShellCommandPlan {
-    #[cfg(windows)]
-    {
-        let reason = windows_guardrail_reason(raw_cmd);
-        let translated = translate_windows_shell_command(raw_cmd);
-        let translated_applied = translated.is_some();
-        if let Some(reason) = reason {
-            if translated.is_none() {
-                return ShellCommandPlan::Blocked(ToolResult {
-                    output: format!(
-                        "Shell command blocked on Windows ({reason}). Use cross-platform tools (`read`, `glob`, `grep`) or PowerShell-native syntax."
-                    ),
-                    metadata: json!({
-                        "os_guardrail_applied": true,
-                        "guardrail_reason": reason,
-                        "blocked": true
-                    }),
-                });
-            }
-        }
-        let effective = translated.clone().unwrap_or_else(|| raw_cmd.to_string());
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", &effective]);
-        return ShellCommandPlan::Execute(ShellExecutionPlan {
-            command,
-            translated_command: translated,
-            os_guardrail_applied: reason.is_some() || translated_applied,
-            guardrail_reason: reason.map(str::to_string),
-        });
-    }
-
-    #[allow(unreachable_code)]
-    {
-        let mut command = Command::new("sh");
-        command.args(["-lc", raw_cmd]);
-        ShellCommandPlan::Execute(ShellExecutionPlan {
-            command,
-            translated_command: None,
-            os_guardrail_applied: false,
-            guardrail_reason: None,
-        })
-    }
-}
-
-#[cfg(any(windows, test))]
-fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
-    let trimmed = raw_cmd.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let lowered = trimmed.to_ascii_lowercase();
-    if lowered.starts_with("ls") {
-        return translate_windows_ls_command(trimmed);
-    }
-    if lowered.starts_with("find ") {
-        return translate_windows_find_command(trimmed);
-    }
-    None
-}
-
-#[cfg(any(windows, test))]
-fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
-    let mut force = false;
-    let mut paths: Vec<&str> = Vec::new();
-    for token in trimmed.split_whitespace().skip(1) {
-        if token.starts_with('-') {
-            let flags = token.trim_start_matches('-').to_ascii_lowercase();
-            if flags.contains('a') {
-                force = true;
-            }
-            continue;
-        }
-        paths.push(token);
-    }
-
-    let mut translated = String::from("Get-ChildItem");
-    if force {
-        translated.push_str(" -Force");
-    }
-    if !paths.is_empty() {
-        translated.push_str(" -Path ");
-        translated.push_str(&quote_powershell_single(&paths.join(" ")));
-    }
-    Some(translated)
-}
-
-#[cfg(any(windows, test))]
-fn translate_windows_find_command(trimmed: &str) -> Option<String> {
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    if tokens.is_empty() || !tokens[0].eq_ignore_ascii_case("find") {
-        return None;
-    }
-
-    let mut idx = 1usize;
-    let mut path = ".".to_string();
-    let mut file_only = false;
-    let mut patterns: Vec<String> = Vec::new();
-
-    if idx < tokens.len() && !tokens[idx].starts_with('-') {
-        path = normalize_shell_token(tokens[idx]);
-        idx += 1;
-    }
-
-    while idx < tokens.len() {
-        let token = tokens[idx].to_ascii_lowercase();
-        match token.as_str() {
-            "-type" => {
-                if idx + 1 < tokens.len() && tokens[idx + 1].eq_ignore_ascii_case("f") {
-                    file_only = true;
-                }
-                idx += 2;
-            }
-            "-name" => {
-                if idx + 1 < tokens.len() {
-                    let pattern = normalize_shell_token(tokens[idx + 1]);
-                    if !pattern.is_empty() {
-                        patterns.push(pattern);
-                    }
-                }
-                idx += 2;
-            }
-            "-o" | "-or" | "(" | ")" => {
-                idx += 1;
-            }
-            _ => {
-                idx += 1;
-            }
-        }
-    }
-
-    let mut translated = format!("Get-ChildItem -Path {}", quote_powershell_single(&path));
-    translated.push_str(" -Recurse");
-    if file_only {
-        translated.push_str(" -File");
-    }
-
-    if patterns.len() == 1 {
-        translated.push_str(" -Filter ");
-        translated.push_str(&quote_powershell_single(&patterns[0]));
-    } else if patterns.len() > 1 {
-        translated.push_str(" -Include ");
-        let include_list = patterns
-            .iter()
-            .map(|p| quote_powershell_single(p))
-            .collect::<Vec<_>>()
-            .join(",");
-        translated.push_str(&include_list);
-    }
-
-    Some(translated)
-}
-
-#[cfg(any(windows, test))]
-fn normalize_shell_token(token: &str) -> String {
-    let trimmed = token.trim();
-    if trimmed.len() >= 2
-        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
-    {
-        return trimmed[1..trimmed.len() - 1].to_string();
-    }
-    trimmed.to_string()
-}
-
-#[cfg(any(windows, test))]
-fn quote_powershell_single(input: &str) -> String {
-    format!("'{}'", input.replace('\'', "''"))
-}
-
-#[cfg(any(windows, test))]
-fn windows_guardrail_reason(raw_cmd: &str) -> Option<&'static str> {
-    let trimmed = raw_cmd.trim().to_ascii_lowercase();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let unix_only_prefixes = [
-        "awk ", "sed ", "xargs ", "chmod ", "chown ", "sudo ", "apt ", "apt-get ", "yum ", "dnf ",
-        "brew ", "zsh ", "bash ", "sh ", "uname", "pwd",
-    ];
-    if unix_only_prefixes
-        .iter()
-        .any(|prefix| trimmed.starts_with(prefix))
-    {
-        return Some("unix_command_untranslatable");
-    }
-    if trimmed.contains("/dev/null") || trimmed.contains("~/.") {
-        return Some("posix_path_pattern");
-    }
-    None
-}
-
-struct ReadTool;
-#[async_trait]
-impl Tool for ReadTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "read".to_string(),
-            description: "Read file contents. Supports text files and documents (PDF, DOCX, PPTX, XLSX, RTF).".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to file"
-                    },
-                    "max_size": {
-                        "type": "integer",
-                        "description": "Max file size in bytes (default: 25MB)"
-                    },
-                    "max_chars": {
-                        "type": "integer",
-                        "description": "Max output characters (default: 200,000)"
-                    }
-                },
-                "required": ["path"]
-            }),
-        }
-    }
-    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        let path = args["path"].as_str().unwrap_or("").trim();
-        let Some(mut path_buf) = resolve_tool_path(path, &args) else {
-            return Ok(sandbox_path_denied_result(path, &args));
-        };
-
-        let metadata = match fs::metadata(&path_buf).await {
-            Ok(meta) => meta,
-            Err(first_err) => {
-                if let Some(recovered) = resolve_read_path_fallback(path, &args) {
-                    path_buf = recovered;
-                    match fs::metadata(&path_buf).await {
-                        Ok(meta) => meta,
-                        Err(e) => {
-                            return Ok(ToolResult {
-                                output: format!("read failed: {}", e),
-                                metadata: json!({
-                                    "ok": false,
-                                    "reason": "path_not_found",
-                                    "path": path,
-                                    "resolved_path": path_buf.to_string_lossy(),
-                                    "error": e.to_string()
-                                }),
-                            });
-                        }
-                    }
-                } else {
-                    return Ok(ToolResult {
-                        output: format!("read failed: {}", first_err),
-                        metadata: json!({
-                            "ok": false,
-                            "reason": "path_not_found",
-                            "path": path,
-                            "error": first_err.to_string()
-                        }),
-                    });
-                }
-            }
-        };
-        if metadata.is_dir() {
-            return Ok(ToolResult {
-                output: format!(
-                    "read failed: `{}` is a directory. Use `glob` to enumerate files, then `read` a concrete file path.",
-                    path
-                ),
-                metadata: json!({
-                    "ok": false,
-                    "reason": "path_is_directory",
-                    "path": path
-                }),
-            });
-        }
-
-        // Check if it's a document format
-        if is_document_file(&path_buf) {
-            // Use document extraction
-            let mut limits = tandem_document::ExtractLimits::default();
-
-            if let Some(max_size) = args["max_size"].as_u64() {
-                limits.max_file_bytes = max_size;
-            }
-            if let Some(max_chars) = args["max_chars"].as_u64() {
-                limits.max_output_chars = max_chars as usize;
-            }
-
-            match tandem_document::extract_file_text(&path_buf, limits) {
-                Ok(text) => {
-                    let ext = path_buf
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("unknown")
-                        .to_lowercase();
-                    return Ok(ToolResult {
-                        output: text,
-                        metadata: json!({
-                            "path": path,
-                            "type": "document",
-                            "format": ext
-                        }),
-                    });
-                }
-                Err(e) => {
-                    return Ok(ToolResult {
-                        output: format!("Failed to extract document text: {}", e),
-                        metadata: json!({"path": path, "error": true}),
-                    });
-                }
-            }
-        }
-
-        // Fallback to text reading
-        let data = match fs::read_to_string(&path_buf).await {
-            Ok(data) => data,
-            Err(e) => {
-                return Ok(ToolResult {
-                    output: format!("read failed: {}", e),
-                    metadata: json!({
-                        "ok": false,
-                        "reason": "read_text_failed",
-                        "path": path_buf.to_string_lossy(),
-                        "error": e.to_string()
-                    }),
-                });
-            }
-        };
-        Ok(ToolResult {
-            output: data,
-            metadata: json!({"path": path_buf.to_string_lossy(), "type": "text"}),
-        })
-    }
-}
+// Builtin shell/read tool implementations live in `builtin_tools`.
 
 struct WriteTool;
 #[async_trait]
@@ -1789,8 +1219,16 @@ impl Tool for GlobTool {
 }
 
 fn is_discovery_ignored_path(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == ".tandem")
+    let components: Vec<_> = path.components().collect();
+    for (idx, component) in components.iter().enumerate() {
+        if component.as_os_str() == ".tandem" {
+            let next = components
+                .get(idx + 1)
+                .map(|component| component.as_os_str());
+            return next != Some(std::ffi::OsStr::new("artifacts"));
+        }
+    }
+    false
 }
 
 struct GrepTool;
@@ -6114,6 +5552,59 @@ mod tests {
         assert!(resolve_tool_path("**/*", &json!({})).is_none());
         assert!(resolve_tool_path("/", &json!({})).is_none());
         assert!(resolve_tool_path("C:\\", &json!({})).is_none());
+    }
+
+    #[tokio::test]
+    async fn glob_allows_tandem_artifact_paths() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-glob-artifacts-{}", uuid_like(now_ms_u64())));
+        let artifacts_dir = root.join(".tandem").join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).expect("create artifacts dir");
+        let artifact = artifacts_dir.join("report.json");
+        std::fs::write(&artifact, "{\"ok\":true}").expect("write artifact");
+
+        let tool = GlobTool;
+        let result = tool
+            .execute(json!({
+                "pattern": ".tandem/artifacts/*.json",
+                "__workspace_root": root.to_string_lossy().to_string(),
+                "__effective_cwd": root.to_string_lossy().to_string(),
+            }))
+            .await
+            .expect("glob result");
+
+        assert!(
+            result.output.contains(".tandem/artifacts/report.json"),
+            "expected artifact path in glob output, got: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn glob_still_hides_non_artifact_tandem_paths() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-glob-hidden-{}", uuid_like(now_ms_u64())));
+        let tandem_dir = root.join(".tandem");
+        let artifacts_dir = tandem_dir.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).expect("create tandem dirs");
+        std::fs::write(tandem_dir.join("secrets.json"), "{\"hidden\":true}")
+            .expect("write hidden file");
+
+        let tool = GlobTool;
+        let result = tool
+            .execute(json!({
+                "pattern": ".tandem/*.json",
+                "__workspace_root": root.to_string_lossy().to_string(),
+                "__effective_cwd": root.to_string_lossy().to_string(),
+            }))
+            .await
+            .expect("glob result");
+
+        assert!(
+            result.output.trim().is_empty(),
+            "expected non-artifact tandem paths to stay hidden, got: {}",
+            result.output
+        );
     }
 
     #[cfg(windows)]

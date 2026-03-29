@@ -461,7 +461,8 @@ impl Channel for DiscordChannel {
                 }
             }
         });
-        write.send(Message::Text(identify.to_string())).await?;
+        let identify_text = identify.to_string();
+        write.send(Message::Text(identify_text)).await?;
         info!("Discord: identified, heartbeat every {heartbeat_interval}ms");
 
         // Heartbeat timer — sends ticks into the select! loop
@@ -483,8 +484,8 @@ impl Channel for DiscordChannel {
             tokio::select! {
                 _ = hb_rx.recv() => {
                     let d = if sequence >= 0 { json!(sequence) } else { json!(null) };
-                    let hb = json!({"op": 1, "d": d});
-                    if write.send(Message::Text(hb.to_string())).await.is_err() {
+                    let heartbeat_text = json!({"op": 1, "d": d}).to_string();
+                    if write.send(Message::Text(heartbeat_text)).await.is_err() {
                         break;
                     }
                 }
@@ -509,7 +510,8 @@ impl Channel for DiscordChannel {
                         1 => {
                             // Server requests immediate heartbeat
                             let d = if sequence >= 0 { json!(sequence) } else { json!(null) };
-                            if write.send(Message::Text(json!({"op":1,"d":d}).to_string())).await.is_err() {
+                            let heartbeat = json!({"op":1,"d":d}).to_string();
+                            if write.send(Message::Text(heartbeat)).await.is_err() {
                                 break;
                             }
                             continue;

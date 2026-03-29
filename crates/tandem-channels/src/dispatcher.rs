@@ -366,6 +366,10 @@ async fn save_session_map(map: &HashMap<String, SessionRecord>) {
     }
 }
 
+async fn persist_session_map(map: &HashMap<String, SessionRecord>) {
+    save_session_map(map).await;
+}
+
 // ---------------------------------------------------------------------------
 // Slash command parsing
 // ---------------------------------------------------------------------------
@@ -2564,7 +2568,7 @@ async fn get_or_create_session(
                 .as_millis() as u64;
             let sid = record.session_id.clone();
             // Persist the updated last_seen_at_ms
-            save_session_map(&guard).await;
+            persist_session_map(&guard).await;
             return Some(sid);
         }
         if let Some(mut legacy_record) = guard.remove(&legacy_key) {
@@ -2576,7 +2580,7 @@ async fn get_or_create_session(
             legacy_record.scope_kind = Some(session_scope_kind_label(msg).to_string());
             let sid = legacy_record.session_id.clone();
             guard.insert(map_key.clone(), legacy_record);
-            save_session_map(&guard).await;
+            persist_session_map(&guard).await;
             return Some(sid);
         }
     }
@@ -2638,7 +2642,7 @@ async fn get_or_create_session(
             tool_preferences: None,
         },
     );
-    save_session_map(&guard).await;
+    persist_session_map(&guard).await;
 
     Some(session_id)
 }
@@ -2758,18 +2762,15 @@ async fn run_in_session(
     // Subscribe by session for robust delivery in channels.
     let event_url = format!("{base_url}/event?sessionID={session_id}");
 
-    let sse_resp = add_auth(client.get(&event_url), api_token)
-        .header("Accept", "text/event-stream")
-        .send()
-        .await?;
-
     use futures_util::StreamExt;
     let mut content_buf = String::new();
     let mut last_error: Option<String> = None;
-    let mut body_stream = sse_resp.bytes_stream();
     let mut line_buf = String::new();
-
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    let mut reconnect_attempts = 0usize;
+    let mut body_stream = open_channel_event_stream(&client, &event_url, api_token)
+        .await?
+        .bytes_stream();
 
     'outer: loop {
         if tokio::time::Instant::now() >= deadline {
@@ -2780,10 +2781,77 @@ async fn run_in_session(
                 line_buf.push_str(&String::from_utf8_lossy(&chunk));
             }
             Ok(Some(Err(e))) => {
-                tracing::warn!("SSE stream error: {e}");
+                let err_text = e.to_string();
+                let recoverable =
+                    should_retry_channel_event_stream(&err_text, &content_buf, deadline)
+                        && reconnect_attempts < 2;
+                if err_text.contains("error decoding response body") {
+                    tracing::warn!(
+                        "Channel SSE stream closed while reading response body: {err_text}"
+                    );
+                } else {
+                    tracing::warn!("Channel SSE stream error: {err_text}");
+                }
+                if recoverable {
+                    reconnect_attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(250 * reconnect_attempts as u64))
+                        .await;
+                    match open_channel_event_stream(&client, &event_url, api_token).await {
+                        Ok(resp) => {
+                            body_stream = resp.bytes_stream();
+                            continue 'outer;
+                        }
+                        Err(err) => {
+                            last_error = Some(err.to_string());
+                        }
+                    }
+                } else if !err_text.trim().is_empty() {
+                    last_error = Some(err_text);
+                }
                 break 'outer;
             }
-            Ok(None) | Err(_) => break 'outer,
+            Ok(None) => {
+                if should_retry_channel_event_stream("eof", &content_buf, deadline)
+                    && reconnect_attempts < 2
+                {
+                    reconnect_attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(250 * reconnect_attempts as u64))
+                        .await;
+                    match open_channel_event_stream(&client, &event_url, api_token).await {
+                        Ok(resp) => {
+                            body_stream = resp.bytes_stream();
+                            continue 'outer;
+                        }
+                        Err(err) => {
+                            last_error = Some(err.to_string());
+                        }
+                    }
+                }
+                break 'outer;
+            }
+            Err(_) => {
+                if should_retry_channel_event_stream("timeout", &content_buf, deadline)
+                    && reconnect_attempts < 2
+                {
+                    reconnect_attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(250 * reconnect_attempts as u64))
+                        .await;
+                    match open_channel_event_stream(&client, &event_url, api_token).await {
+                        Ok(resp) => {
+                            body_stream = resp.bytes_stream();
+                            continue 'outer;
+                        }
+                        Err(err) => {
+                            last_error = Some(err.to_string());
+                        }
+                    }
+                } else {
+                    last_error = Some(
+                        "channel event stream timed out while waiting for updates".to_string(),
+                    );
+                }
+                break 'outer;
+            }
         }
 
         // Process complete SSE lines
@@ -2878,6 +2946,53 @@ async fn run_in_session(
     }
 
     Ok(content_buf)
+}
+
+async fn open_channel_event_stream(
+    client: &reqwest::Client,
+    event_url: &str,
+    api_token: &str,
+) -> anyhow::Result<reqwest::Response> {
+    let resp = add_auth(client.get(event_url), api_token)
+        .header("Accept", "text/event-stream")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err = resp.text().await.unwrap_or_default();
+        anyhow::bail!("event stream request failed ({status}): {err}");
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !content_type
+        .to_ascii_lowercase()
+        .contains("text/event-stream")
+    {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "event stream returned unexpected content-type '{}' ({status}): {}",
+            content_type,
+            truncate_for_channel(&body, 400)
+        );
+    }
+    Ok(resp)
+}
+
+fn should_retry_channel_event_stream(
+    reason: &str,
+    content_buf: &str,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let before_deadline = tokio::time::Instant::now() < deadline;
+    let empty_content = content_buf.trim().is_empty();
+    empty_content
+        && before_deadline
+        && (matches!(reason, "eof" | "timeout") || reason.contains("error decoding response body"))
 }
 
 fn truncate_for_channel(input: &str, max_chars: usize) -> String {
@@ -5369,7 +5484,7 @@ async fn active_session_id(msg: &ChannelMessage, session_map: &SessionMap) -> Op
         record.scope_kind = Some(session_scope_kind_label(msg).to_string());
         let session_id = record.session_id.clone();
         guard.insert(map_key, record);
-        save_session_map(&guard).await;
+        persist_session_map(&guard).await;
         return Some(session_id);
     }
     None
@@ -5485,7 +5600,7 @@ async fn new_session_text(
             tool_preferences: None,
         },
     );
-    save_session_map(&guard).await;
+    persist_session_map(&guard).await;
 
     format!(
         "✅ Started new session \"{}\" (`{}`)\nFresh context — what would you like to work on?",
@@ -5561,7 +5676,7 @@ async fn resume_session_text(
                     tool_preferences: None,
                 },
             );
-            save_session_map(&guard).await;
+            persist_session_map(&guard).await;
 
             format!(
                 "✅ Resumed session \"{}\" (`{}`)\n→ Ready to continue.",
@@ -6789,6 +6904,26 @@ mod tests {
         assert!(!source_is_trusted_for_auto_install(
             &msg,
             &["slack".to_string()]
+        ));
+    }
+
+    #[test]
+    fn retries_empty_channel_event_stream_on_decode_error() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        assert!(should_retry_channel_event_stream(
+            "error decoding response body",
+            "",
+            deadline
+        ));
+    }
+
+    #[test]
+    fn does_not_retry_channel_event_stream_after_content_arrives() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        assert!(!should_retry_channel_event_stream(
+            "error decoding response body",
+            "partial reply",
+            deadline
         ));
     }
 }

@@ -421,6 +421,7 @@ impl EngineLoop {
             let mut latest_required_tool_failure_kind = RequiredToolFailureKind::NoToolCallEmitted;
             let email_delivery_requested = requires_email_delivery_prompt(&text);
             let web_research_requested = requires_web_research_prompt(&text);
+            let code_workflow_requested = infer_code_workflow_from_text(&text);
             let mut email_action_executed = false;
             let mut latest_email_action_note: Option<String> = None;
             let intent = classify_intent(&text);
@@ -1430,10 +1431,12 @@ impl EngineLoop {
                             }
                             if !requested_write_required && required_tool_retry_count == 0 {
                                 required_tool_retry_count += 1;
-                                followup_context = Some(build_required_tool_retry_context(
-                                    &offered_tool_preview,
-                                    latest_required_tool_failure_kind,
-                                ));
+                                followup_context =
+                                    Some(build_required_tool_retry_context_for_task(
+                                        &offered_tool_preview,
+                                        latest_required_tool_failure_kind,
+                                        &text,
+                                    ));
                                 self.event_bus.publish(EngineEvent::new(
                                     "provider.call.iteration.finish",
                                     json!({
@@ -1501,6 +1504,7 @@ impl EngineLoop {
                                 requested_prewrite_requirements.repair_on_unmet_requirements,
                                 productive_write_tool_calls_total,
                                 prewrite_satisfied,
+                                code_workflow_requested,
                             ) {
                                 if unmet_prewrite_repair_retry_count
                                     < prewrite_repair_retry_max_attempts()
@@ -1812,9 +1816,10 @@ impl EngineLoop {
                     }
                     if !requested_write_required && required_tool_retry_count == 0 {
                         required_tool_retry_count += 1;
-                        followup_context = Some(build_required_tool_retry_context(
+                        followup_context = Some(build_required_tool_retry_context_for_task(
                             &offered_tool_preview,
                             latest_required_tool_failure_kind,
+                            &text,
                         ));
                         continue;
                     }
@@ -1880,6 +1885,7 @@ impl EngineLoop {
                         requested_prewrite_requirements.repair_on_unmet_requirements,
                         productive_write_tool_calls_total,
                         prewrite_satisfied,
+                        code_workflow_requested,
                     ) && !prewrite_gate_waived
                     {
                         let unmet_prewrite_codes = collect_unmet_prewrite_requirement_codes(
@@ -3297,8 +3303,11 @@ fn should_start_prewrite_repair_before_first_write(
     repair_on_unmet_requirements: bool,
     productive_write_tool_calls_total: usize,
     prewrite_satisfied: bool,
+    code_workflow_requested: bool,
 ) -> bool {
-    repair_on_unmet_requirements && productive_write_tool_calls_total == 0 && !prewrite_satisfied
+    (repair_on_unmet_requirements || code_workflow_requested)
+        && productive_write_tool_calls_total == 0
+        && !prewrite_satisfied
 }
 
 fn is_batch_wrapper_tool_name(name: &str) -> bool {
@@ -3772,6 +3781,133 @@ fn build_required_tool_retry_context(
     )
 }
 
+fn looks_like_code_target_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let normalized = trimmed.replace('\\', "/");
+    let file_name = normalized
+        .rsplit('/')
+        .next()
+        .unwrap_or(normalized.as_str())
+        .to_ascii_lowercase();
+    if matches!(
+        file_name.as_str(),
+        "cargo.toml"
+            | "cargo.lock"
+            | "package.json"
+            | "pnpm-lock.yaml"
+            | "package-lock.json"
+            | "yarn.lock"
+            | "makefile"
+            | "dockerfile"
+            | ".gitignore"
+            | ".editorconfig"
+            | "tsconfig.json"
+            | "pyproject.toml"
+            | "requirements.txt"
+    ) {
+        return true;
+    }
+    let extension = file_name.rsplit('.').next().unwrap_or_default();
+    matches!(
+        extension,
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "py"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "cs"
+            | "rb"
+            | "php"
+            | "swift"
+            | "scala"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "json"
+    )
+}
+
+fn infer_code_workflow_from_text(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    if lowered.contains("code agent contract")
+        || lowered.contains("inspect -> patch -> apply -> test -> repair")
+        || lowered.contains("task kind: `code_change`")
+        || lowered.contains("task kind: code_change")
+        || lowered.contains("output contract kind: code_patch")
+        || lowered.contains("verification expectation:")
+        || lowered.contains("verification command:")
+    {
+        return true;
+    }
+    infer_required_output_target_path_from_text(text)
+        .is_some_and(|path| looks_like_code_target_path(&path))
+}
+
+fn infer_verification_command_from_text(text: &str) -> Option<String> {
+    for marker in ["Verification expectation:", "verification expectation:"] {
+        let Some(start) = text.find(marker) else {
+            continue;
+        };
+        let remainder = text[start + marker.len()..].trim_start();
+        let line = remainder.lines().next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let cleaned = line
+            .trim_matches('`')
+            .trim_end_matches('.')
+            .trim()
+            .to_string();
+        if !cleaned.is_empty() {
+            return Some(cleaned);
+        }
+    }
+    None
+}
+
+fn build_required_tool_retry_context_for_task(
+    offered_tool_preview: &str,
+    previous_reason: RequiredToolFailureKind,
+    latest_user_text: &str,
+) -> String {
+    let mut prompt = build_required_tool_retry_context(offered_tool_preview, previous_reason);
+    if !infer_code_workflow_from_text(latest_user_text) {
+        return prompt;
+    }
+    let output_target = infer_required_output_target_path_from_text(latest_user_text)
+        .unwrap_or_else(|| "the declared source target".to_string());
+    let verification = infer_verification_command_from_text(latest_user_text)
+        .unwrap_or_else(|| "run the declared verification command with `bash`".to_string());
+    prompt.push(' ');
+    prompt.push_str(
+        "This is a code workflow: follow inspect -> patch -> apply -> test -> repair before finalizing.",
+    );
+    prompt.push(' ');
+    prompt.push_str(&format!(
+        "Patch `{output_target}` using `apply_patch` (or `edit` for local edits); use `write` only when creating a brand-new file."
+    ));
+    prompt.push(' ');
+    prompt.push_str(&format!(
+        "After patching, run verification with `bash` (`{verification}`). If verification fails, repair the smallest root cause and re-run verification."
+    ));
+    prompt
+}
+
 fn is_write_invalid_args_failure_kind(reason: RequiredToolFailureKind) -> bool {
     matches!(
         reason,
@@ -3791,7 +3927,11 @@ fn build_write_required_retry_context(
     web_research_satisfied: bool,
     successful_web_research_satisfied: bool,
 ) -> String {
-    let mut prompt = build_required_tool_retry_context(offered_tool_preview, previous_reason);
+    let mut prompt = build_required_tool_retry_context_for_task(
+        offered_tool_preview,
+        previous_reason,
+        latest_user_text,
+    );
     let unmet = describe_unmet_prewrite_requirements(
         prewrite_requirements,
         workspace_inspection_satisfied,
@@ -3833,7 +3973,11 @@ fn build_prewrite_repair_retry_context(
     web_research_satisfied: bool,
     successful_web_research_satisfied: bool,
 ) -> String {
-    let mut prompt = build_required_tool_retry_context(offered_tool_preview, previous_reason);
+    let mut prompt = build_required_tool_retry_context_for_task(
+        offered_tool_preview,
+        previous_reason,
+        latest_user_text,
+    );
     let unmet = describe_unmet_prewrite_requirements(
         prewrite_requirements,
         workspace_inspection_satisfied,
@@ -3874,14 +4018,25 @@ fn build_prewrite_repair_retry_context(
         prompt.push_str(&repair_notes.join(" "));
     }
     if let Some(path) = infer_required_output_target_path_from_text(latest_user_text) {
-        prompt.push(' ');
-        prompt.push_str(&format!(
-            "Use `read` and `websearch` now to gather evidence, then write the artifact to `{path}`."
-        ));
-        prompt.push(' ');
-        prompt.push_str(&format!(
-            "Do not declare the output blocked while `read` and `websearch` remain available. Call them now."
-        ));
+        if infer_code_workflow_from_text(latest_user_text) {
+            prompt.push(' ');
+            prompt.push_str(&format!(
+                "Use `read` to confirm the concrete code context, then patch `{path}` with `apply_patch` or `edit` and run verification before finalizing."
+            ));
+            prompt.push(' ');
+            prompt.push_str(
+                "Do not return a prose-only completion before patch + verification steps run.",
+            );
+        } else {
+            prompt.push(' ');
+            prompt.push_str(&format!(
+                "Use `read` and `websearch` now to gather evidence, then write the artifact to `{path}`."
+            ));
+            prompt.push(' ');
+            prompt.push_str(&format!(
+                "Do not declare the output blocked while `read` and `websearch` remain available. Call them now."
+            ));
+        }
     }
     prompt
 }
@@ -3935,9 +4090,10 @@ fn build_empty_completion_retry_context(
             unmet.join(" and ")
         ));
         prompt.push(' ');
-        prompt.push_str(&build_required_tool_retry_context(
+        prompt.push_str(&build_required_tool_retry_context_for_task(
             offered_tool_preview,
             RequiredToolFailureKind::WriteRequiredNotSatisfied,
+            latest_user_text,
         ));
     }
     if let Some(path) = infer_required_output_target_path_from_text(latest_user_text) {
@@ -4644,15 +4800,68 @@ fn is_shell_tool_name(tool_name: &str) -> bool {
     )
 }
 
+fn email_tool_name_tokens(tool_name: &str) -> Vec<String> {
+    tool_name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+}
+
+fn email_tool_name_compact(tool_name: &str) -> String {
+    tool_name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+}
+
 fn is_email_delivery_tool_name(tool_name: &str) -> bool {
-    matches!(
-        normalize_tool_name(tool_name).as_str(),
-        "mcp.composio_1.gmail_send_email"
-            | "mcp.composio_1.gmail_send_draft"
-            | "mcp.composio.gmail_send_email"
-            | "mcp.composio.gmail_send_draft"
-    ) || tool_name.ends_with(".gmail_send_email")
-        || tool_name.ends_with(".gmail_send_draft")
+    let tokens = email_tool_name_tokens(tool_name);
+    let compact = email_tool_name_compact(tool_name);
+    let looks_like_email_provider = tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "email"
+                | "mail"
+                | "gmail"
+                | "outlook"
+                | "smtp"
+                | "imap"
+                | "inbox"
+                | "mailbox"
+                | "mailer"
+                | "exchange"
+                | "sendgrid"
+                | "mailgun"
+                | "postmark"
+                | "resend"
+                | "ses"
+        )
+    });
+    if !looks_like_email_provider {
+        return false;
+    }
+    tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "send" | "deliver" | "reply" | "draft" | "compose" | "create"
+        )
+    }) || compact.contains("sendemail")
+        || compact.contains("emailsend")
+        || compact.contains("replyemail")
+        || compact.contains("emailreply")
+        || compact.contains("draftemail")
+        || compact.contains("emaildraft")
+        || compact.contains("composeemail")
+        || compact.contains("emailcompose")
+        || compact.contains("createemaildraft")
+        || compact.contains("emailcreatedraft")
 }
 
 fn sanitize_email_attachment_args(args: Value) -> Value {
@@ -5469,13 +5678,11 @@ fn sanitize_url_candidate(raw: &str) -> Option<String> {
 }
 
 fn clean_path_candidate_token(raw: &str) -> Option<String> {
-    let token = raw
-        .trim()
-        .trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '*' | '|'))
-        .trim_start_matches(['(', '[', '{', '<'])
-        .trim_end_matches([',', ';', ':', ')', ']', '}', '>'])
-        .trim_end_matches('.')
-        .trim();
+    let token = raw.trim();
+    let token = token.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '*' | '|'));
+    let token = token.trim_start_matches(['(', '[', '{', '<']);
+    let token = token.trim_end_matches([',', ';', ':', ')', ']', '}', '>']);
+    let token = token.trim_end_matches('.').trim();
 
     if token.is_empty() {
         return None;
@@ -6154,11 +6361,28 @@ fn parse_function_style_args(input: &str) -> Map<String, Value> {
         if key.is_empty() {
             continue;
         }
+        if !is_valid_function_style_key(key) {
+            continue;
+        }
         let value = parse_scalar_like_value(raw_value);
         args.insert(key.to_string(), value);
     }
 
     args
+}
+
+fn is_valid_function_style_key(key: &str) -> bool {
+    // Accept common tool-style identifiers such as `path`, `allow_empty`,
+    // `search.query`, and `arg-name`, but reject malformed fragments that
+    // commonly come from broken JSON streams (e.g. `{"allow_empty`).
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphanumeric() || first == '_') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-')
 }
 
 fn parse_scalar_like_value(raw: &str) -> Value {
@@ -8464,24 +8688,52 @@ Call: todowrite(task_id=3, status="in_progress")
     #[test]
     fn prewrite_repair_can_start_before_any_write_attempt() {
         assert!(should_start_prewrite_repair_before_first_write(
-            true, 0, false
+            true, 0, false, false
         ));
         assert!(!should_start_prewrite_repair_before_first_write(
-            true, 0, true
+            true, 0, true, false
         ));
         assert!(!should_start_prewrite_repair_before_first_write(
-            false, 0, false
+            false, 0, false, false
+        ));
+        assert!(should_start_prewrite_repair_before_first_write(
+            false, 0, false, true
         ));
     }
 
     #[test]
     fn prewrite_repair_does_not_fire_after_first_write() {
         assert!(!should_start_prewrite_repair_before_first_write(
-            true, 1, false
+            true, 1, false, false
         ));
         assert!(!should_start_prewrite_repair_before_first_write(
-            true, 2, false
+            true, 2, false, true
         ));
+    }
+
+    #[test]
+    fn infer_code_workflow_from_text_detects_code_agent_contract() {
+        let prompt = "Code Agent Contract:\n- Follow the deterministic loop: inspect -> patch -> apply -> test -> repair -> finalize.\n- Verification expectation: cargo test";
+        assert!(infer_code_workflow_from_text(prompt));
+    }
+
+    #[test]
+    fn infer_code_workflow_from_text_detects_source_target_path() {
+        let prompt = "Required Workspace Output:\n- Create or update `src/lib.rs` relative to the workspace root.";
+        assert!(infer_code_workflow_from_text(prompt));
+    }
+
+    #[test]
+    fn required_tool_retry_context_for_task_adds_code_loop_guidance() {
+        let prompt = build_required_tool_retry_context_for_task(
+            "read, edit, apply_patch, bash",
+            RequiredToolFailureKind::WriteRequiredNotSatisfied,
+            "Code Agent Contract:\n- Follow the deterministic loop: inspect -> patch -> apply -> test -> repair -> finalize.\n- Verification expectation: cargo test\nRequired Workspace Output:\n- Create or update `src/lib.rs` relative to the workspace root.",
+        );
+        assert!(prompt.contains("inspect -> patch -> apply -> test -> repair"));
+        assert!(prompt.contains("apply_patch"));
+        assert!(prompt.contains("cargo test"));
+        assert!(prompt.contains("src/lib.rs"));
     }
 
     #[test]
@@ -8565,20 +8817,35 @@ Required output target:
     }
 
     #[test]
-    fn duplicate_signature_limit_defaults_to_200_for_all_tools() {
+    fn duplicate_signature_limit_defaults_to_200_for_general_tools_and_1_for_email_delivery() {
         let _guard = env_test_lock();
         unsafe {
             std::env::remove_var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT");
+            std::env::remove_var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT_EMAIL_DELIVERY");
         }
         assert_eq!(duplicate_signature_limit_for("pack_builder"), 200);
         assert_eq!(duplicate_signature_limit_for("bash"), 200);
         assert_eq!(duplicate_signature_limit_for("write"), 200);
+        assert_eq!(
+            duplicate_signature_limit_for("mcp.composio_1.gmail_send_email"),
+            1
+        );
+        assert_eq!(
+            duplicate_signature_limit_for("mcp.composio_1.gmail_create_email_draft"),
+            1
+        );
     }
 
     #[test]
     fn parse_streamed_tool_args_preserves_unparseable_write_payload() {
         let parsed = parse_streamed_tool_args("write", "path=game.html content");
         assert_ne!(parsed, json!({}));
+    }
+
+    #[test]
+    fn parse_streamed_tool_args_rejects_malformed_json_fragment_as_function_style() {
+        let parsed = parse_streamed_tool_args("write", r#"{"allow_empty": null"#);
+        assert_eq!(parsed, json!(r#"{"allow_empty": null"#));
     }
 
     #[test]
@@ -8631,6 +8898,7 @@ Required output target:
         let _guard = env_test_lock();
         unsafe {
             std::env::set_var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT", "9");
+            std::env::remove_var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT_EMAIL_DELIVERY");
         }
         assert_eq!(duplicate_signature_limit_for("write"), 200);
         assert_eq!(duplicate_signature_limit_for("bash"), 200);
@@ -8641,6 +8909,46 @@ Required output target:
         unsafe {
             std::env::remove_var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT");
         }
+    }
+
+    #[test]
+    fn email_delivery_duplicate_signature_limit_env_override_respects_floor_of_one() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var(
+                "TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT_EMAIL_DELIVERY",
+                "1",
+            );
+        }
+        assert_eq!(
+            duplicate_signature_limit_for("mcp.composio_1.gmail_send_email"),
+            1
+        );
+        unsafe {
+            std::env::set_var(
+                "TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT_EMAIL_DELIVERY",
+                "3",
+            );
+        }
+        assert_eq!(
+            duplicate_signature_limit_for("mcp.composio_1.gmail_send_email"),
+            3
+        );
+        unsafe {
+            std::env::remove_var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT_EMAIL_DELIVERY");
+        }
+    }
+
+    #[test]
+    fn email_delivery_detection_is_provider_agnostic() {
+        assert!(is_email_delivery_tool_name(
+            "mcp.composio_1.gmail_send_email"
+        ));
+        assert!(is_email_delivery_tool_name("mcp.sendgrid.send_email"));
+        assert!(is_email_delivery_tool_name("mcp.resend.create_email_draft"));
+        assert!(is_email_delivery_tool_name("mcp.outlook.reply_email"));
+        assert!(!is_email_delivery_tool_name("mcp.reddit.send_message"));
+        assert!(!is_email_delivery_tool_name("mcp.github.create_issue"));
     }
 
     #[test]
@@ -9034,8 +9342,9 @@ Required output target:
     fn disable_tool_guard_budgets_env_overrides_all_budgets() {
         unsafe {
             std::env::set_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS", "1");
+            std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
         }
-        assert_eq!(tool_budget_for("mcp.arcade.gmail_sendemail"), usize::MAX);
+        assert_eq!(tool_budget_for("mcp.arcade.gmail_sendemail"), 1);
         assert_eq!(tool_budget_for("websearch"), usize::MAX);
         unsafe {
             std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
@@ -9043,17 +9352,37 @@ Required output target:
     }
 
     #[test]
-    fn tool_budget_defaults_to_200_calls() {
+    fn email_delivery_budget_can_still_be_explicitly_overridden_when_global_budgets_are_disabled() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS", "1");
+            std::env::set_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY", "0");
+        }
+        assert_eq!(tool_budget_for("mcp.arcade.gmail_sendemail"), usize::MAX);
+        unsafe {
+            std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
+            std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
+        }
+    }
+
+    #[test]
+    fn tool_budget_defaults_to_200_calls_and_1_for_email_delivery() {
         let _guard = env_test_lock();
         unsafe {
             std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
             std::env::remove_var("TANDEM_TOOL_BUDGET_DEFAULT");
             std::env::remove_var("TANDEM_TOOL_BUDGET_WEBSEARCH");
             std::env::remove_var("TANDEM_TOOL_BUDGET_READ");
+            std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
         }
         assert_eq!(tool_budget_for("bash"), 200);
         assert_eq!(tool_budget_for("websearch"), 200);
         assert_eq!(tool_budget_for("read"), 200);
+        assert_eq!(tool_budget_for("mcp.composio_1.gmail_send_email"), 1);
+        assert_eq!(
+            tool_budget_for("mcp.composio_1.gmail_create_email_draft"),
+            1
+        );
     }
 
     #[test]
@@ -9063,6 +9392,7 @@ Required output target:
             std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
             std::env::set_var("TANDEM_TOOL_BUDGET_DEFAULT", "17");
             std::env::set_var("TANDEM_TOOL_BUDGET_WEBSEARCH", "250");
+            std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
         }
         assert_eq!(tool_budget_for("bash"), 200);
         assert_eq!(tool_budget_for("websearch"), 250);
@@ -9070,5 +9400,34 @@ Required output target:
             std::env::remove_var("TANDEM_TOOL_BUDGET_DEFAULT");
             std::env::remove_var("TANDEM_TOOL_BUDGET_WEBSEARCH");
         }
+    }
+
+    #[test]
+    fn email_delivery_tool_budget_env_override_respects_floor_of_one() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
+            std::env::set_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY", "1");
+        }
+        assert_eq!(tool_budget_for("mcp.composio_1.gmail_send_email"), 1);
+        unsafe {
+            std::env::set_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY", "5");
+        }
+        assert_eq!(tool_budget_for("mcp.composio_1.gmail_send_email"), 5);
+        unsafe {
+            std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
+        }
+    }
+
+    #[test]
+    fn provider_agnostic_email_tools_share_single_send_budget() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
+            std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
+        }
+        assert_eq!(tool_budget_for("mcp.sendgrid.send_email"), 1);
+        assert_eq!(tool_budget_for("mcp.resend.create_email_draft"), 1);
+        assert_eq!(duplicate_signature_limit_for("mcp.outlook.reply_email"), 1);
     }
 }

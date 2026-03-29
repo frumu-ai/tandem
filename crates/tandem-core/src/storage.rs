@@ -6,7 +6,7 @@ use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::fs;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task;
 use uuid::Uuid;
 
@@ -57,6 +57,7 @@ pub struct Storage {
     sessions: RwLock<HashMap<String, Session>>,
     metadata: RwLock<HashMap<String, SessionMeta>>,
     question_requests: RwLock<HashMap<String, QuestionRequest>>,
+    flush_lock: Mutex<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -301,9 +302,30 @@ fn tool_args_have_more_structure(existing: &Value, incoming: &Value) -> bool {
     }
 }
 
+fn tool_args_object_looks_malformed(args: &Value) -> bool {
+    let Some(obj) = args.as_object() else {
+        return false;
+    };
+    if obj.is_empty() {
+        return false;
+    }
+    obj.keys().all(|key| {
+        !key.chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            || key.contains('{')
+            || key.contains('}')
+            || key.contains('"')
+            || key.contains('\'')
+    })
+}
+
 fn should_replace_tool_args(existing: &Value, incoming: &Value) -> bool {
     if tool_args_are_empty(incoming) {
         return tool_args_are_empty(existing);
+    }
+    if tool_args_object_looks_malformed(existing) && !tool_args_object_looks_malformed(incoming) {
+        return true;
     }
     if tool_args_are_empty(existing) {
         return true;
@@ -378,6 +400,7 @@ impl Storage {
             sessions: RwLock::new(sessions),
             metadata: RwLock::new(metadata),
             question_requests: RwLock::new(question_requests),
+            flush_lock: Mutex::new(()),
         };
 
         if imported_legacy_sessions || metadata_compacted {
@@ -874,6 +897,7 @@ impl Storage {
     }
 
     async fn flush(&self) -> anyhow::Result<()> {
+        let _flush_guard = self.flush_lock.lock().await;
         {
             let snapshot = self.sessions.read().await.clone();
             self.flush_file("sessions.json", &snapshot).await?;
@@ -1492,6 +1516,7 @@ fn merge_session_messages(
 mod tests {
     use super::*;
     use std::fs as stdfs;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn todos_are_normalized_to_wire_shape() {
@@ -2130,6 +2155,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn append_message_part_replaces_malformed_object_args_with_structured_result_args() {
+        let base = std::env::temp_dir().join(format!(
+            "tandem-core-tool-malformed-args-replace-{}",
+            Uuid::new_v4()
+        ));
+        let storage = Storage::new(&base).await.expect("storage");
+        let session = Session::new(
+            Some("tool malformed args replacement".to_string()),
+            Some(".".to_string()),
+        );
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let user = Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: "build ui".to_string(),
+            }],
+        );
+        let message_id = user.id.clone();
+        storage
+            .append_message(&session_id, user)
+            .await
+            .expect("append user");
+
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"{\"allow_empty": null}),
+                    result: None,
+                    error: None,
+                },
+            )
+            .await
+            .expect("append malformed invocation");
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"game.html","content":"<html>draft</html>"}),
+                    result: Some(json!("ok")),
+                    error: None,
+                },
+            )
+            .await
+            .expect("append structured result");
+
+        let session = storage.get_session(&session_id).await.expect("session");
+        let message = session
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("message");
+        assert_eq!(message.parts.len(), 2);
+        match &message.parts[1] {
+            MessagePart::ToolInvocation {
+                tool,
+                args,
+                result,
+                error,
+            } => {
+                assert_eq!(tool, "write");
+                assert_eq!(args["path"], "game.html");
+                assert_eq!(args["content"], "<html>draft</html>");
+                assert_eq!(result.as_ref(), Some(&json!("ok")));
+                assert_eq!(error.as_deref(), None);
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn append_message_part_falls_back_to_latest_user_message_when_id_missing() {
         let base =
             std::env::temp_dir().join(format!("tandem-core-tool-fallback-{}", Uuid::new_v4()));
@@ -2307,5 +2409,42 @@ mod tests {
         let storage = Storage::new(&base).await.expect("storage");
         let repaired = storage.get_session(&id).await.expect("session");
         assert_eq!(repaired.title, "Explain this bug");
+    }
+
+    #[tokio::test]
+    async fn concurrent_storage_flushes_do_not_fail() {
+        let base = std::env::temp_dir().join(format!("tandem-core-flush-race-{}", Uuid::new_v4()));
+        let storage = Arc::new(Storage::new(&base).await.expect("storage"));
+        let session = Session::new(Some("flush race".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let mut tasks = Vec::new();
+        for task_index in 0..12 {
+            let storage = Arc::clone(&storage);
+            let session_id = session_id.clone();
+            tasks.push(tokio::spawn(async move {
+                for part_index in 0..8 {
+                    let message = Message::new(
+                        MessageRole::User,
+                        vec![MessagePart::Text {
+                            text: format!("task {task_index} part {part_index}"),
+                        }],
+                    );
+                    storage
+                        .append_message(&session_id, message)
+                        .await
+                        .expect("append message");
+                }
+            }));
+        }
+
+        for task in tasks {
+            task.await.expect("join task");
+        }
+
+        let session = storage.get_session(&session_id).await.expect("session");
+        assert_eq!(session.messages.len(), 12 * 8);
+        assert!(base.join("sessions.json").exists());
     }
 }

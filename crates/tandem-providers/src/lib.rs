@@ -764,6 +764,15 @@ fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {
     add_openai_provider(
         config,
         &mut providers,
+        "llama_cpp",
+        "llama.cpp",
+        "http://127.0.0.1:8080/v1",
+        "llm",
+        true,
+    );
+    add_openai_provider(
+        config,
+        &mut providers,
         "groq",
         "Groq",
         "https://api.groq.com/openai/v1",
@@ -911,7 +920,7 @@ fn add_openai_provider(
     default_model: &str,
     use_api_key: bool,
 ) {
-    let Some(entry) = config.providers.get(id) else {
+    let Some(entry) = provider_config_entry(config, id) else {
         return;
     };
     providers.push(Arc::new(OpenAICompatibleProvider {
@@ -936,6 +945,21 @@ fn add_openai_provider(
     }));
 }
 
+fn provider_config_entry<'a>(config: &'a AppConfig, id: &str) -> Option<&'a ProviderConfig> {
+    config
+        .providers
+        .get(id)
+        .or_else(|| provider_id_aliases(id).find_map(|alias| config.providers.get(alias)))
+}
+
+fn provider_id_aliases(id: &str) -> impl Iterator<Item = &'static str> {
+    match id.trim().to_ascii_lowercase().as_str() {
+        "llama_cpp" => vec!["llama.cpp"].into_iter(),
+        "llama.cpp" => vec!["llama_cpp"].into_iter(),
+        _ => Vec::new().into_iter(),
+    }
+}
+
 fn is_placeholder_api_key(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.is_empty()
@@ -949,6 +973,8 @@ fn is_known_provider_id(id: &str) -> bool {
         "ollama"
             | "openai"
             | "openrouter"
+            | "llama_cpp"
+            | "llama.cpp"
             | "groq"
             | "mistral"
             | "together"
@@ -962,6 +988,12 @@ fn is_known_provider_id(id: &str) -> bool {
 }
 
 fn humanize_provider_name(id: &str) -> String {
+    if matches!(
+        id.trim().to_ascii_lowercase().as_str(),
+        "llama_cpp" | "llama.cpp"
+    ) {
+        return "llama.cpp".to_string();
+    }
     let mut words = Vec::new();
     for segment in id.split(['_', '-']) {
         let segment = segment.trim();

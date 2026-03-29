@@ -1,10 +1,20 @@
 pub(super) const MIN_TOOL_CALL_LIMIT: usize = 200;
+const EMAIL_DELIVERY_TOOL_LIMIT: usize = 1;
 
 pub(super) fn tool_budget_for(tool_name: &str) -> usize {
+    let normalized = super::normalize_tool_name(tool_name);
+    if super::is_email_delivery_tool_name(&normalized) {
+        if let Some(override_budget) = parse_budget_override("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY") {
+            if override_budget == usize::MAX {
+                return usize::MAX;
+            }
+            return override_budget.max(EMAIL_DELIVERY_TOOL_LIMIT);
+        }
+        return EMAIL_DELIVERY_TOOL_LIMIT;
+    }
     if env_budget_guards_disabled() {
         return usize::MAX;
     }
-    let normalized = super::normalize_tool_name(tool_name);
     let env_key = match normalized.as_str() {
         "glob" => "TANDEM_TOOL_BUDGET_GLOB",
         "read" => "TANDEM_TOOL_BUDGET_READ",
@@ -22,7 +32,19 @@ pub(super) fn tool_budget_for(tool_name: &str) -> usize {
     MIN_TOOL_CALL_LIMIT
 }
 
-pub(super) fn duplicate_signature_limit_for(_tool_name: &str) -> usize {
+pub(super) fn duplicate_signature_limit_for(tool_name: &str) -> usize {
+    let normalized = super::normalize_tool_name(tool_name);
+    if super::is_email_delivery_tool_name(&normalized) {
+        if let Ok(raw) = std::env::var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT_EMAIL_DELIVERY")
+        {
+            if let Ok(parsed) = raw.trim().parse::<usize>() {
+                if parsed > 0 {
+                    return parsed.max(EMAIL_DELIVERY_TOOL_LIMIT);
+                }
+            }
+        }
+        return EMAIL_DELIVERY_TOOL_LIMIT;
+    }
     if let Ok(raw) = std::env::var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT") {
         if let Ok(parsed) = raw.trim().parse::<usize>() {
             if parsed > 0 {
