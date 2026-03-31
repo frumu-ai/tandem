@@ -5354,6 +5354,56 @@ function MyAutomations({
 
   useEffect(() => {
     if (!selectedRunId) return;
+    const refreshSelectedRun = () => {
+      void Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["automations", "run", selectedRunId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["automations", "run", "events", selectedRunId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["automations", "run", "artifacts", selectedRunId],
+        }),
+        selectedContextRunId
+          ? queryClient.invalidateQueries({
+              queryKey: ["automations", "run", "context", selectedContextRunId],
+            })
+          : Promise.resolve(),
+        selectedContextRunId
+          ? queryClient.invalidateQueries({
+              queryKey: ["automations", "run", "context", selectedContextRunId, "blackboard"],
+            })
+          : Promise.resolve(),
+        selectedContextRunId
+          ? queryClient.invalidateQueries({
+              queryKey: ["automations", "run", "context", selectedContextRunId, "events"],
+            })
+          : Promise.resolve(),
+        selectedContextRunId
+          ? queryClient.invalidateQueries({
+              queryKey: ["automations", "run", "context", selectedContextRunId, "patches"],
+            })
+          : Promise.resolve(),
+        queryClient.invalidateQueries({
+          queryKey: ["automations", "run", "session", selectedRunId],
+        }),
+      ]);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      refreshSelectedRun();
+    };
+    window.addEventListener("focus", refreshSelectedRun);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", refreshSelectedRun);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [queryClient, selectedContextRunId, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRunId) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       onSelectRunId("");
