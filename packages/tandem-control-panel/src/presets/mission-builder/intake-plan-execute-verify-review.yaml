@@ -1,0 +1,141 @@
+id: intake-plan-execute-verify-review
+label: Intake -> Plan -> Execute -> Verify -> Review
+description: Run a structured operational pipeline from intake through execution, verification, and final review.
+schedule_defaults:
+  type: interval
+  interval_seconds: 86400
+  timezone: UTC
+blueprint:
+  mission_id: mission_intake_plan_execute_verify_review
+  title: Intake to verified delivery mission
+  goal: Turn recurring inbound work into a planned, executed, verified, and review-ready outcome with clear traceability across stages.
+  success_criteria:
+    - Intake is normalized into a clear scoped brief
+    - A concrete execution plan exists before work begins
+    - Execution stays inside the planned scope
+    - Verification records what was actually checked
+    - Final review states readiness and remaining follow-up
+  shared_context: Optimize for repeatable delivery work. Use staged artifacts so later runs and later stages do not need to reconstruct context. Raw intake should not become reusable truth until it has been validated downstream.
+  workspace_root: ""
+  orchestrator_template_id: ""
+  phases:
+    - phase_id: intake
+      title: Intake
+      execution_mode: soft
+    - phase_id: delivery
+      title: Delivery
+      execution_mode: barrier
+  milestones:
+    - milestone_id: execution-basis-ready
+      title: Execution basis ready
+      phase_id: intake
+      required_stage_ids:
+        - normalize-intake
+        - build-plan
+  team:
+    allowed_template_ids: []
+    default_model_policy: null
+    allowed_mcp_servers: []
+    max_parallel_agents: 4
+    mission_budget: {}
+    orchestrator_only_tool_calls: false
+  workstreams:
+    - workstream_id: normalize-intake
+      title: Normalize intake
+      objective: Turn the incoming request, signal, or backlog item into a scoped brief with facts, constraints, and open questions.
+      role: operator
+      prompt: Act as an intake operator. Normalize the incoming work into a structured brief that captures what is known, what is required, what is unclear, and what should stay out of scope. Preserve source facts and avoid jumping prematurely into solution design.
+      priority: 2
+      phase_id: intake
+      lane: intake
+      milestone: execution-basis-ready
+      depends_on: []
+      input_refs: []
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: structured_json
+        summary_guidance: Scoped intake brief with facts, constraints, open questions, and source references.
+    - workstream_id: build-plan
+      title: Build plan
+      objective: Turn the scoped intake brief into a concrete plan with dependencies, execution scope, and verification approach.
+      role: planner
+      prompt: Act as a planning lead. Convert the intake brief into a practical execution plan with stages, dependencies, scope boundaries, risks, and how success will be verified. Do not execute the plan in this stage.
+      priority: 1
+      phase_id: intake
+      lane: planning
+      milestone: execution-basis-ready
+      depends_on:
+        - normalize-intake
+      input_refs:
+        - from_step_id: normalize-intake
+          alias: intake_brief
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: plan_markdown
+        summary_guidance: Execution plan, scope boundaries, dependencies, risks, and verification approach.
+    - workstream_id: execute-work
+      title: Execute work
+      objective: Carry out the planned work inside the declared scope and produce the required deliverable.
+      role: worker
+      prompt: Act as an execution specialist. Use the approved intake brief and plan to carry out the scoped task. Preserve traceability to the plan, avoid widening scope unnecessarily, and record material deviations if they become necessary.
+      priority: 2
+      phase_id: delivery
+      lane: execution
+      depends_on:
+        - build-plan
+      input_refs:
+        - from_step_id: build-plan
+          alias: execution_plan
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: report_markdown
+        summary_guidance: Execution result, deliverable summary, changed scope if any, and unresolved issues.
+    - workstream_id: verify-work
+      title: Verify work
+      objective: Verify the execution result against the plan and record what was actually checked.
+      role: tester
+      prompt: Act as a verification operator. Check whether the execution result matches the planned scope and stated success criteria. Record exactly what was verified, what failed, and what remains blocked or uncertain.
+      priority: 1
+      phase_id: delivery
+      lane: verification
+      depends_on:
+        - execute-work
+      input_refs:
+        - from_step_id: execute-work
+          alias: execution_result
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: verification_report
+        summary_guidance: Verification steps, pass/fail findings, blockers, and clear readiness status.
+  review_stages:
+    - stage_id: delivery-review
+      stage_kind: approval
+      title: Delivery review gate
+      target_ids:
+        - verify-work
+      role: approver
+      prompt: Review the verified output for readiness. Approve only when the execution result is scoped correctly, verification is credible, and remaining risk is acceptable for downstream reuse or handoff.
+      checklist:
+        - Intake, plan, execution, and verification form one coherent chain
+        - Verification is factual and specific
+        - Residual risk is explicit
+      priority: 1
+      phase_id: delivery
+      lane: approval
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      gate:
+        required: true
+        decisions:
+          - approve
+          - rework
+          - cancel
+        rework_targets:
+          - execute-work
+          - verify-work
+        instructions: Use rework when execution drifted from plan, verification is weak, or the final result is not ready for trusted downstream use.
+  metadata: null

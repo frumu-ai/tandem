@@ -33,6 +33,11 @@ tandem-engine serve --api-token $(tandem-engine token generate)
     href="./scheduling-automations/"
     description="Create recurring routines, legacy automations, V2 automations, and planner-backed schedules."
   />
+  <LinkCard
+    title="Engine Authentication For Agents"
+    href="../engine-authentication-for-agents/"
+    description="Get an engine token and authenticate SDK or HTTP calls safely."
+  />
 </CardGrid>
 
 ## Common event types

@@ -4,6 +4,8 @@ title: Agent Teams
 
 Agent Teams add policy-gated multi-agent spawning to `tandem-engine`.
 
+For authoring the workflow and mission prompts those agents should follow, see [Prompting Workflows And Missions](./prompting-workflows-and-missions/).
+
 ## TUI Workflow (Agent Fanout)
 
 For terminal-native team execution, use TUI fanout:

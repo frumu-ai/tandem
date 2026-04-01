@@ -84,6 +84,23 @@ async fn mission_builder_preview_returns_compiled_automation() {
     assert_eq!(
         payload
             .get("automation")
+            .and_then(|row| row.get("knowledge"))
+            .and_then(|row| row.get("reuse_mode"))
+            .and_then(Value::as_str),
+        Some("preflight")
+    );
+    assert_eq!(
+        payload
+            .get("automation")
+            .and_then(|row| row.get("knowledge"))
+            .and_then(|row| row.get("read_spaces"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
+    );
+    assert_eq!(
+        payload
+            .get("automation")
             .and_then(|row| row.get("flow"))
             .and_then(|row| row.get("nodes"))
             .and_then(Value::as_array)
@@ -100,6 +117,21 @@ async fn mission_builder_preview_returns_compiled_automation() {
         .iter()
         .find(|row| row.get("node_id").and_then(Value::as_str) == Some("research"))
         .expect("research node");
+    assert_eq!(
+        research
+            .get("knowledge")
+            .and_then(|row| row.get("trust_floor"))
+            .and_then(Value::as_str),
+        Some("promoted")
+    );
+    assert_eq!(
+        research
+            .get("knowledge")
+            .and_then(|row| row.get("read_spaces"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
+    );
     assert_eq!(
         research
             .get("output_contract")
@@ -162,6 +194,8 @@ async fn mission_builder_apply_persists_draft_automation() {
             .and_then(Value::as_str),
         Some("mission_blueprint")
     );
+    assert_eq!(stored.knowledge.reuse_mode.to_string(), "preflight");
+    assert_eq!(stored.knowledge.read_spaces.len(), 1);
 }
 
 #[tokio::test]

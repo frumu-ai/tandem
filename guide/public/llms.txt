@@ -37,6 +37,10 @@
 ## Developer and automation docs
 
 - /mcp-automated-agents/ - Automated agent workflows and MCP patterns.
+- /agent-workflow-mission-quickstart/ - Short checklist for agents creating, running, and maintaining Tandem workflows or missions.
+- /prompting-workflows-and-missions/ - How to prompt Tandem workflows, missions, and staged recurring operations.
+- /creating-and-running-workflows-and-missions/ - Which Tandem path to use and how to create, apply, schedule, and run it.
+- /engine-authentication-for-agents/ - How to obtain an engine token and authenticate SDK or HTTP calls.
 - /webmcp-for-agents/ - Local HTTP APIs for agents.
 - /autonomous-coding-agents-github-projects/ - GitHub Projects coding-agent workflows.
 - /browser-setup-and-testing/ - Browser setup, install, and validation.
@@ -63,6 +67,10 @@
 - Want to run Tandem as a service? Use `/headless-service/`.
 - Want to understand orchestration? Read `/agents-and-sessions/` and `/agent-teams/`.
 - Want to build integrations? Use `/mcp-automated-agents/`, `/webmcp-for-agents/`, and the SDK pages.
+- Want the shortest reliable checklist? Start with `/agent-workflow-mission-quickstart/`.
+- Want to generate strong workflow or mission specs? Start with `/prompting-workflows-and-missions/`.
+- Want to know which engine path to call next? Use `/creating-and-running-workflows-and-missions/`.
+- Need the token and auth pattern first? Use `/engine-authentication-for-agents/`.
 - Want low-level behavior? Use the `/reference/` pages and `/protocol-matrix/`.
 
 ## External

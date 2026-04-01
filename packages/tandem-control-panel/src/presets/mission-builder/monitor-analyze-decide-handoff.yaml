@@ -1,0 +1,131 @@
+id: monitor-analyze-decide-handoff
+label: Monitor -> Analyze -> Decide -> Handoff
+description: Run a recurring signal loop that watches for changes, analyzes impact, prepares decisions, and hands off a validated update.
+schedule_defaults:
+  type: cron
+  cron_expression: "0 8 * * 1-5"
+  timezone: UTC
+blueprint:
+  mission_id: mission_monitor_analyze_decide_handoff
+  title: Signal monitoring mission
+  goal: Monitor a recurring source of operational signals, analyze meaningful changes, recommend clear decisions, and produce a validated handoff for the next operator or system.
+  success_criteria:
+    - Important changes are detected and separated from noise
+    - Analysis explains why each change matters and to whom
+    - Decision recommendations are concrete and actionable
+    - Final handoff is ready for downstream use without repeating the same analysis
+  shared_context: Optimize for recurring operation over time. Preserve continuity between runs through validated outputs, not raw notes. Be explicit about uncertainty, signal quality, and when no action is needed.
+  workspace_root: ""
+  orchestrator_template_id: ""
+  phases:
+    - phase_id: monitor
+      title: Monitor
+      execution_mode: soft
+    - phase_id: decision
+      title: Decision
+      execution_mode: barrier
+  milestones:
+    - milestone_id: signal-package-ready
+      title: Signal package ready
+      phase_id: monitor
+      required_stage_ids:
+        - monitor-signals
+        - analyze-impact
+  team:
+    allowed_template_ids: []
+    default_model_policy: null
+    allowed_mcp_servers: []
+    max_parallel_agents: 4
+    mission_budget: {}
+    orchestrator_only_tool_calls: false
+  workstreams:
+    - workstream_id: monitor-signals
+      title: Monitor signals
+      objective: Observe the current inputs and identify changes, anomalies, or meaningful events since the prior validated state.
+      role: analyst
+      prompt: Act as a recurring monitoring operator. Inspect the allowed inputs, detect what materially changed, separate important signals from routine noise, and produce a structured signal log that later stages can trust without repeating broad discovery.
+      priority: 2
+      phase_id: monitor
+      lane: sensing
+      milestone: signal-package-ready
+      depends_on: []
+      input_refs: []
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: report_markdown
+        summary_guidance: Detected changes, evidence, confidence, and clear separation of material signals from noise.
+    - workstream_id: analyze-impact
+      title: Analyze impact
+      objective: Explain what the detected changes mean, which actors or systems are affected, and what risks or opportunities they create.
+      role: reviewer
+      prompt: Act as an impact analyst. Use the monitored signal package to explain significance, affected stakeholders, urgency, confidence, and possible consequences. Preserve evidence, distinguish facts from inference, and avoid proposing actions before the decision stage.
+      priority: 1
+      phase_id: monitor
+      lane: analysis
+      milestone: signal-package-ready
+      depends_on:
+        - monitor-signals
+      input_refs:
+        - from_step_id: monitor-signals
+          alias: signal_log
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: brief_markdown
+        summary_guidance: Impact summary, affected areas, urgency, confidence, and key open questions.
+    - workstream_id: recommend-decisions
+      title: Recommend decisions
+      objective: Turn the signal and impact analysis into concrete recommended actions, decisions, or escalations.
+      role: planner
+      prompt: Act as a decision-support planner. Use the upstream signal log and impact summary to recommend concrete next actions, explicit decisions, and no-action cases where appropriate. Make the rationale inspectable and avoid ambiguous recommendations.
+      priority: 2
+      phase_id: decision
+      lane: decision
+      depends_on:
+        - monitor-signals
+        - analyze-impact
+      input_refs:
+        - from_step_id: analyze-impact
+          alias: impact_summary
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: plan_markdown
+        summary_guidance: Recommended decisions, action rationale, urgency, owners, and cases where no action is required.
+    - workstream_id: prepare-handoff
+      title: Prepare handoff
+      objective: Package the validated signal, analysis, and decision output into a downstream-ready handoff.
+      role: coordinator
+      prompt: Act as a handoff coordinator. Package the validated findings and decision recommendations into a concise operational handoff that names the important change, what it means, what should happen next, and what still needs human judgment.
+      priority: 1
+      phase_id: decision
+      lane: handoff
+      depends_on:
+        - recommend-decisions
+      input_refs:
+        - from_step_id: recommend-decisions
+          alias: decision_package
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: handoff_markdown
+        summary_guidance: Final signal handoff with validated changes, decision recommendations, owners, and residual uncertainty.
+  review_stages:
+    - stage_id: handoff-review
+      stage_kind: review
+      title: Handoff quality review
+      target_ids:
+        - prepare-handoff
+      role: reviewer
+      prompt: Review the final handoff for evidence quality, internal consistency, decision clarity, and downstream usability. Reject handoffs that hide uncertainty or force later stages to rediscover context.
+      checklist:
+        - Material changes are clearly identified
+        - Recommendations are concrete
+        - Evidence and uncertainty are explicit
+      priority: 1
+      phase_id: decision
+      lane: review
+      tool_allowlist_override: []
+      mcp_servers_override: []
+  metadata: null

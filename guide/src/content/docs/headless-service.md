@@ -152,6 +152,8 @@ This is designed so that:
 - Put TLS in front of Tandem when exposing it on a network.
 - Do not expose the service directly to the public internet without a reverse proxy.
 
+If an agent or external service needs to create workflows, missions, or automations against this engine, start with [Engine Authentication For Agents](./engine-authentication-for-agents/) and [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/).
+
 ## See Also
 
 - [Engine Commands](./reference/engine-commands/)

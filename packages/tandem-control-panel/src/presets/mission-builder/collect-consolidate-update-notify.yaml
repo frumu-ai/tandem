@@ -1,0 +1,130 @@
+id: collect-consolidate-update-notify
+label: Collect -> Consolidate -> Update State -> Notify
+description: Run a recurring state-refresh mission that gathers inputs, consolidates them, updates the shared state, and notifies the right audience.
+schedule_defaults:
+  type: cron
+  cron_expression: "0 9 * * *"
+  timezone: UTC
+blueprint:
+  mission_id: mission_collect_consolidate_update_notify
+  title: State refresh mission
+  goal: Collect recurring inputs, consolidate them into a validated state update, refresh the shared record, and send a clear downstream notification.
+  success_criteria:
+    - Inputs are gathered from the intended sources
+    - Consolidation removes duplication and ambiguity
+    - The shared state is updated in a traceable way
+    - Notification summarizes what changed and what matters next
+  shared_context: Optimize for recurring state maintenance. Favor stable, inspectable state updates over ad hoc narrative summaries. Distinguish raw collected inputs from the validated state that later runs should build upon.
+  workspace_root: ""
+  orchestrator_template_id: ""
+  phases:
+    - phase_id: collect
+      title: Collect
+      execution_mode: soft
+    - phase_id: publish
+      title: Publish
+      execution_mode: barrier
+  milestones:
+    - milestone_id: state-update-ready
+      title: State update ready
+      phase_id: collect
+      required_stage_ids:
+        - collect-inputs
+        - consolidate-state
+  team:
+    allowed_template_ids: []
+    default_model_policy: null
+    allowed_mcp_servers: []
+    max_parallel_agents: 4
+    mission_budget: {}
+    orchestrator_only_tool_calls: false
+  workstreams:
+    - workstream_id: collect-inputs
+      title: Collect inputs
+      objective: Gather the current raw inputs and source records needed for this run.
+      role: collector
+      prompt: Act as a collection operator. Gather the current run inputs from the allowed sources, preserve source references, and produce a collection package that later stages can consolidate without re-collecting the same material.
+      priority: 2
+      phase_id: collect
+      lane: collection
+      milestone: state-update-ready
+      depends_on: []
+      input_refs: []
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: structured_json
+        summary_guidance: Raw collected inputs with source references, timestamps, and collection notes.
+    - workstream_id: consolidate-state
+      title: Consolidate state
+      objective: Turn the collected inputs into one validated state update that can become the new reference point.
+      role: analyst
+      prompt: Act as a consolidation analyst. Use the collected input package to merge duplicates, resolve inconsistencies where possible, identify missing fields, and produce one coherent state update with explicit evidence and uncertainty.
+      priority: 1
+      phase_id: collect
+      lane: consolidation
+      milestone: state-update-ready
+      depends_on:
+        - collect-inputs
+      input_refs:
+        - from_step_id: collect-inputs
+          alias: collected_inputs
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: structured_json
+        summary_guidance: Consolidated state update with validated fields, deltas, unresolved ambiguity, and evidence links.
+    - workstream_id: update-shared-state
+      title: Update shared state
+      objective: Convert the consolidated state into the canonical update payload or artifact for this run.
+      role: operator
+      prompt: Act as a state-update operator. Transform the consolidated state into the artifact or update package that should become the new shared state for this mission. Preserve change history, explicit deltas, and anything needed for the next run to start from the new baseline.
+      priority: 2
+      phase_id: publish
+      lane: state
+      depends_on:
+        - consolidate-state
+      input_refs:
+        - from_step_id: consolidate-state
+          alias: consolidated_state
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: structured_json
+        summary_guidance: Validated shared-state update package with deltas, retained fields, and provenance.
+    - workstream_id: notify-stakeholders
+      title: Notify stakeholders
+      objective: Summarize the update for the downstream audience with emphasis on what changed and what action is required.
+      role: notifier
+      prompt: Act as a notification operator. Use the validated state update to produce a concise downstream notification that explains what changed, why it matters, what if anything needs action, and where to look for the full update package.
+      priority: 1
+      phase_id: publish
+      lane: notify
+      depends_on:
+        - update-shared-state
+      input_refs:
+        - from_step_id: update-shared-state
+          alias: state_update
+      tool_allowlist_override: []
+      mcp_servers_override: []
+      output_contract:
+        kind: handoff_markdown
+        summary_guidance: Notification summary with key changes, impact, required actions, and links to the updated state package.
+  review_stages:
+    - stage_id: state-review
+      stage_kind: review
+      title: State update review
+      target_ids:
+        - update-shared-state
+      role: reviewer
+      prompt: Review the state update for consistency, traceability, and suitability as the next baseline. Reject updates that merge ambiguous input into shared truth without evidence or clear uncertainty markers.
+      checklist:
+        - State update is traceable to collected inputs
+        - Deltas are explicit
+        - Uncertainty is not hidden
+      priority: 1
+      phase_id: publish
+      lane: review
+      tool_allowlist_override: []
+      mcp_servers_override: []
+  metadata: null

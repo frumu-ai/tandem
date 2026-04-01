@@ -35,6 +35,10 @@
 ## Developer and automation
 
 - /mcp-automated-agents/ - Automated agent workflows and MCP integration.
+- /agent-workflow-mission-quickstart/ - Compact checklist for agents creating and operating Tandem workflows or missions.
+- /prompting-workflows-and-missions/ - Prompting guide for workflows, missions, and staged recurring operations.
+- /creating-and-running-workflows-and-missions/ - Operational guide for choosing and running workflows, missions, and automations.
+- /engine-authentication-for-agents/ - Engine token and authenticated SDK/HTTP usage guide.
 - /webmcp-for-agents/ - WebMCP workflow guidance for agents.
 - /autonomous-coding-agents-github-projects/ - GitHub Projects coding-agent workflows.
 - /browser-setup-and-testing/ - Browser install, setup, and validation.
@@ -69,6 +73,10 @@
 - If it needs to operate Tandem, use `/control-panel/`, `/headless-service/`, and `/tui-guide/`.
 - If it needs to reason about agents, use `/agents-and-sessions/` and `/agent-teams/`.
 - If it needs integration guidance, use `/mcp-automated-agents/`, `/webmcp-for-agents/`, and the SDK pages.
+- If it needs the shortest actionable checklist, use `/agent-workflow-mission-quickstart/`.
+- If it needs to generate a mission or workflow from human intent, use `/prompting-workflows-and-missions/`.
+- If it needs to choose the correct runtime path, use `/creating-and-running-workflows-and-missions/`.
+- If it needs engine auth or token handling, use `/engine-authentication-for-agents/`.
 - If it needs implementation details, use the `/reference/` pages plus `/protocol-matrix/` and `/architecture/`.
 
 ## External

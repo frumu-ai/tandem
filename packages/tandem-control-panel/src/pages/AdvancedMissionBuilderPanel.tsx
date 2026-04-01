@@ -4,6 +4,13 @@ import YAML from "yaml";
 import type { TandemClient } from "@frumu/tandem-client";
 import { renderIcons } from "../app/icons.js";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
+import {
+  applyScheduleDefaultsToEditor,
+  buildIntentToMissionBlueprintPrompt,
+  missionBuilderKnowledgeGuardrails,
+  parseMissionBlueprintDraft,
+  type MissionBuilderScheduleDefaults,
+} from "../features/mission-builder/shared";
 
 type ApiFn = (path: string, init?: RequestInit) => Promise<any>;
 
@@ -120,6 +127,7 @@ type MissionPreset = {
   id: string;
   label: string;
   description: string;
+  schedule_defaults?: MissionBuilderScheduleDefaults;
   blueprint: MissionBlueprint;
 };
 
@@ -127,6 +135,7 @@ type StarterPresetFile = {
   id: string;
   label: string;
   description: string;
+  schedule_defaults?: MissionBuilderScheduleDefaults;
   blueprint: MissionBlueprint;
 };
 
@@ -135,6 +144,9 @@ const STARTER_PRESET_ICON_BY_ID: Record<string, string> = {
   "workflow-audit": "workflow",
   "agentic-design": "bot",
   "automation-rollout": "arrow-up-circle",
+  "monitor-analyze-decide-handoff": "radar",
+  "intake-plan-execute-verify-review": "list-checks",
+  "collect-consolidate-update-notify": "database-zap",
 };
 
 const STARTER_PRESET_SOURCES = import.meta.glob("../presets/mission-builder/*.yaml", {
@@ -264,6 +276,10 @@ function parseMissionPreset(source: string, sourcePath: string): MissionPreset {
   const id = String(preset.id || "").trim();
   const label = String(preset.label || "").trim();
   const description = String(preset.description || "").trim();
+  const schedule_defaults =
+    preset.schedule_defaults && typeof preset.schedule_defaults === "object"
+      ? (preset.schedule_defaults as MissionBuilderScheduleDefaults)
+      : undefined;
   const blueprint = preset.blueprint as MissionBlueprint | undefined;
 
   if (!id) throw new Error(`Invalid mission preset at ${sourcePath}: missing id.`);
@@ -275,7 +291,7 @@ function parseMissionPreset(source: string, sourcePath: string): MissionPreset {
     throw new Error(`Invalid mission preset at ${sourcePath}: missing blueprint.`);
   }
 
-  return { id, label, description, blueprint };
+  return { id, label, description, schedule_defaults, blueprint };
 }
 
 const STARTER_PRESETS = Object.entries(STARTER_PRESET_SOURCES)
@@ -380,12 +396,14 @@ function LabeledTextArea({
   onInput,
   placeholder,
   rows = 5,
+  readOnly = false,
 }: {
   label: string;
   value: string;
   onInput: (value: string) => void;
   placeholder?: string;
   rows?: number;
+  readOnly?: boolean;
 }) {
   return (
     <label className="block text-sm">
@@ -393,6 +411,7 @@ function LabeledTextArea({
       <textarea
         rows={rows}
         value={value}
+        readOnly={readOnly}
         placeholder={placeholder}
         onInput={(event) => onInput((event.target as HTMLTextAreaElement).value)}
         className="min-h-[108px] w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400"
@@ -610,6 +629,8 @@ export function AdvancedMissionBuilderPanel({
   const [workstreamModels, setWorkstreamModels] = useState<Record<string, ModelDraft>>({});
   const [reviewModels, setReviewModels] = useState<Record<string, ModelDraft>>({});
   const [showGuide, setShowGuide] = useState(false);
+  const [selectedIntentPresetId, setSelectedIntentPresetId] = useState("");
+  const [blueprintDraftText, setBlueprintDraftText] = useState("");
   const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
   const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
   const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
@@ -686,6 +707,8 @@ export function AdvancedMissionBuilderPanel({
       setScheduleKind("manual");
       setIntervalSeconds("3600");
       setCronExpression("");
+      setSelectedIntentPresetId("");
+      setBlueprintDraftText("");
       setTeamModel({ provider: defaultProvider, model: defaultModel });
       setWorkstreamModels({});
       setReviewModels({});
@@ -721,6 +744,8 @@ export function AdvancedMissionBuilderPanel({
       setIntervalSeconds("3600");
     }
     setRunAfterCreate(false);
+    setSelectedIntentPresetId("");
+    setBlueprintDraftText("");
     setPreview(null);
     setError("");
   }, [
@@ -829,6 +854,37 @@ export function AdvancedMissionBuilderPanel({
     () => validateMissionBlueprintForUi(effectiveBlueprint),
     [effectiveBlueprint]
   );
+  const selectedIntentPreset = useMemo(
+    () => STARTER_PRESETS.find((entry) => entry.id === selectedIntentPresetId) || null,
+    [selectedIntentPresetId]
+  );
+  const knowledgeGuardrails = useMemo(() => missionBuilderKnowledgeGuardrails(), []);
+  const missionAuthoringPrompt = useMemo(
+    () =>
+      buildIntentToMissionBlueprintPrompt({
+        missionTitle: effectiveBlueprint.title,
+        missionGoal: effectiveBlueprint.goal,
+        sharedContext: effectiveBlueprint.shared_context || "",
+        successCriteria: effectiveBlueprint.success_criteria,
+        workspaceRoot: effectiveBlueprint.workspace_root || workspaceRoot,
+        archetypeLabel: selectedIntentPreset?.label || "",
+        scheduleKind,
+        intervalSeconds,
+        cronExpression,
+      }),
+    [
+      effectiveBlueprint.goal,
+      effectiveBlueprint.shared_context,
+      effectiveBlueprint.success_criteria,
+      effectiveBlueprint.title,
+      effectiveBlueprint.workspace_root,
+      workspaceRoot,
+      selectedIntentPreset?.label,
+      scheduleKind,
+      intervalSeconds,
+      cronExpression,
+    ]
+  );
 
   const stageIds = useMemo(
     () => [
@@ -900,6 +956,13 @@ export function AdvancedMissionBuilderPanel({
     setPreview(null);
   }
 
+  function applyScheduleDefaults(defaults?: MissionBuilderScheduleDefaults) {
+    const next = applyScheduleDefaultsToEditor(defaults);
+    setScheduleKind(next.scheduleKind);
+    setIntervalSeconds(next.intervalSeconds);
+    setCronExpression(next.cronExpression);
+  }
+
   function applyStarterPreset(preset: string) {
     const presetRecord = STARTER_PRESETS.find((entry) => entry.id === preset);
     if (!presetRecord) return;
@@ -913,6 +976,8 @@ export function AdvancedMissionBuilderPanel({
     setPreview(null);
     setError("");
     setActiveTab("mission");
+    setSelectedIntentPresetId(presetRecord.id);
+    applyScheduleDefaults(presetRecord.schedule_defaults);
     setTeamModel({ provider: defaultProvider, model: defaultModel });
     setWorkstreamModels({});
     setReviewModels({});
@@ -920,6 +985,40 @@ export function AdvancedMissionBuilderPanel({
       "info",
       `Loaded ${presetRecord.label}. Review the prompts and adapt them to your mission.`
     );
+  }
+
+  function importMissionDraft() {
+    const parsed = parseMissionBlueprintDraft(blueprintDraftText);
+    if (!parsed.blueprint) {
+      const message = parsed.error || "Unable to import mission draft.";
+      setError(message);
+      toast("err", message);
+      return;
+    }
+    const next = {
+      ...defaultBlueprint(blueprint.workspace_root || workspaceRoot),
+      ...(parsed.blueprint as MissionBlueprint),
+      workspace_root:
+        String(
+          (parsed.blueprint as any)?.workspace_root || blueprint.workspace_root || workspaceRoot
+        ).trim() ||
+        blueprint.workspace_root ||
+        workspaceRoot,
+    };
+    setBlueprint(next);
+    applyScheduleDefaults(parsed.scheduleDefaults);
+    setPreview(null);
+    setError("");
+    toast("ok", "Imported mission blueprint draft.");
+  }
+
+  async function copyMissionPrompt() {
+    try {
+      await navigator.clipboard.writeText(missionAuthoringPrompt);
+      toast("ok", "Mission authoring prompt copied.");
+    } catch {
+      toast("warn", "Unable to copy automatically. The prompt is still shown below.");
+    }
   }
 
   async function compilePreview() {
@@ -1248,6 +1347,88 @@ export function AdvancedMissionBuilderPanel({
           subtitle="Global brief, success criteria, and schedule."
           icon="clipboard-list"
         >
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
+            <div className="mb-2 text-sm font-semibold text-slate-100">Intent to blueprint</div>
+            <div className="tcp-subtle text-xs">
+              Use an archetype, generate a strong authoring prompt for another LLM, or paste a
+              generated YAML blueprint draft back into the builder.
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <label className="block text-sm">
+                <div className="mb-1 font-medium text-slate-200">Archetype hint</div>
+                <select
+                  value={selectedIntentPresetId}
+                  onInput={(event) =>
+                    setSelectedIntentPresetId((event.target as HTMLSelectElement).value)
+                  }
+                  className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-sm text-slate-100 outline-none focus:border-amber-400"
+                >
+                  <option value="">None</option>
+                  {STARTER_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex items-end gap-2">
+                <button
+                  className="tcp-btn h-10 px-3 text-sm"
+                  type="button"
+                  onClick={() => {
+                    if (selectedIntentPresetId) applyStarterPreset(selectedIntentPresetId);
+                  }}
+                  disabled={!selectedIntentPresetId}
+                >
+                  <i data-lucide="sparkles"></i>
+                  Apply archetype
+                </button>
+                <button
+                  className="tcp-btn h-10 px-3 text-sm"
+                  type="button"
+                  onClick={copyMissionPrompt}
+                >
+                  <i data-lucide="copy"></i>
+                  Copy authoring prompt
+                </button>
+              </div>
+            </div>
+            {selectedIntentPreset ? (
+              <div className="tcp-subtle mt-2 text-xs">{selectedIntentPreset.description}</div>
+            ) : null}
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <LabeledTextArea
+                label="Generated authoring prompt"
+                value={missionAuthoringPrompt}
+                onInput={() => {}}
+                rows={14}
+                readOnly
+                placeholder=""
+              />
+              <LabeledTextArea
+                label="Paste LLM-generated YAML or JSON blueprint draft"
+                value={blueprintDraftText}
+                onInput={setBlueprintDraftText}
+                rows={14}
+                placeholder="Paste a mission preset-shaped YAML object or a raw MissionBlueprint object."
+              />
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                className="tcp-btn h-8 px-3 text-xs"
+                type="button"
+                onClick={importMissionDraft}
+              >
+                <i data-lucide="file-input"></i>
+                Import draft
+              </button>
+            </div>
+            <div className="mt-3 grid gap-1 text-xs text-slate-300">
+              {knowledgeGuardrails.map((item) => (
+                <div key={item}>{item}</div>
+              ))}
+            </div>
+          </div>
           <div className="grid gap-3 md:grid-cols-2">
             <LabeledInput
               label="Mission title"

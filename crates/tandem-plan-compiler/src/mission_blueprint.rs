@@ -3,7 +3,10 @@
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use tandem_orchestrator::{MissionSpec, WorkItem, WorkItemStatus};
+use tandem_orchestrator::{
+    KnowledgeBinding, KnowledgeReuseMode, KnowledgeScope, KnowledgeSpaceRef, KnowledgeTrustLevel,
+    MissionSpec, WorkItem, WorkItemStatus,
+};
 use tandem_workflows::{
     MissionBlueprint, MissionPhaseExecutionMode, ReviewStageKind, WorkstreamBlueprint,
 };
@@ -16,6 +19,10 @@ pub const MISSION_EXECUTION_KIND_GOVERNANCE: &str = "governance";
 pub fn derive_mission_spec(blueprint: &MissionBlueprint) -> MissionSpec {
     let mut spec = MissionSpec::new(blueprint.title.clone(), blueprint.goal.clone());
     spec.mission_id = blueprint.mission_id.clone();
+    spec.knowledge = mission_knowledge_defaults(
+        Some(blueprint.goal.as_str()),
+        Some(format!("mission/{}", blueprint.mission_id)),
+    );
     spec.success_criteria = blueprint.success_criteria.clone();
     spec.entrypoint = Some("automation_v2".to_string());
     spec.metadata = Some(json!({
@@ -144,6 +151,18 @@ pub fn mission_workstream_builder_defaults(
     builder.insert("phase_id".to_string(), json!(workstream.phase_id));
     builder.insert("lane".to_string(), json!(workstream.lane));
     builder.insert("milestone".to_string(), json!(workstream.milestone));
+    builder.insert(
+        "knowledge".to_string(),
+        serde_json::to_value(mission_knowledge_defaults(
+            Some(workstream.objective.as_str()),
+            workstream
+                .lane
+                .clone()
+                .or_else(|| workstream.phase_id.clone())
+                .or_else(|| Some(workstream.role.clone())),
+        ))
+        .unwrap_or(Value::Null),
+    );
     let expects_web_research = workstream_expects_web_research(workstream);
     if workstream.output_contract.kind.trim().to_ascii_lowercase() == "brief" {
         builder.insert(
@@ -210,6 +229,35 @@ pub fn workstream_expects_web_research(workstream: &WorkstreamBlueprint) -> bool
         || workstream.prompt.to_ascii_lowercase().contains("online")
         || workstream.prompt.to_ascii_lowercase().contains("current")
         || workstream.prompt.to_ascii_lowercase().contains("latest")
+}
+
+pub fn mission_knowledge_defaults(
+    subject: Option<impl AsRef<str>>,
+    namespace: Option<String>,
+) -> KnowledgeBinding {
+    let subject = subject
+        .as_ref()
+        .map(|value| value.as_ref().trim().to_string())
+        .filter(|value| !value.is_empty());
+    let namespace = namespace
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    KnowledgeBinding {
+        enabled: true,
+        reuse_mode: KnowledgeReuseMode::Preflight,
+        trust_floor: KnowledgeTrustLevel::Promoted,
+        read_spaces: vec![KnowledgeSpaceRef {
+            scope: KnowledgeScope::Project,
+            ..KnowledgeSpaceRef::default()
+        }],
+        promote_spaces: vec![KnowledgeSpaceRef {
+            scope: KnowledgeScope::Project,
+            ..KnowledgeSpaceRef::default()
+        }],
+        namespace,
+        subject,
+        freshness_ms: None,
+    }
 }
 
 fn review_stage_kind_to_lower_string(kind: ReviewStageKind) -> String {

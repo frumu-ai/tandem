@@ -81,8 +81,9 @@ fn compile_blueprint_preview(
             })),
         )
     })?;
-    let automation =
+    let mut automation =
         mission_builder_runtime::compile_to_automation(blueprint.clone(), schedule, creator_id);
+    automation.knowledge = preview.mission_spec.knowledge.clone();
 
     Ok(mission_builder_runtime::MissionCompilePreview {
         blueprint,

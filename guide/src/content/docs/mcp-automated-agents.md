@@ -4,6 +4,12 @@ title: MCP Automated Agents
 
 Set up scheduled agents that can use MCP connector tools with explicit per-agent tool allowlists.
 
+If another LLM or agent is generating the workflow or mission definition itself, use [Prompting Workflows And Missions](./prompting-workflows-and-missions/) to keep stage prompts, handoffs, and recurring mission structure strong.
+
+For the operational path after prompting, use [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/). For engine tokens and authenticated HTTP or SDK calls, use [Engine Authentication For Agents](./engine-authentication-for-agents/).
+
+If you want the shortest end-to-end checklist for an agent, start with [Agent Workflow And Mission Quickstart](./agent-workflow-mission-quickstart/).
+
 ## What You Get
 
 - MCP connector lifecycle: add, enable/disable, connect, refresh
