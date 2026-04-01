@@ -160,6 +160,34 @@ pub async fn coder_get_run(
 }
 
 #[tauri::command]
+pub async fn context_run_rollback_preview(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.context_run_rollback_preview(&run_id).await
+}
+
+#[tauri::command]
+pub async fn context_run_rollback_execute(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .context_run_rollback_execute(&run_id, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn context_run_rollback_history(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.context_run_rollback_history(&run_id).await
+}
+
+#[tauri::command]
 pub async fn coder_get_project_binding(
     state: State<'_, AppState>,
     project_id: String,

@@ -328,6 +328,47 @@ pub(super) fn context_run_mutation_checkpoint_preview_summary_for_run(
     })
 }
 
+pub(super) fn context_run_mutation_checkpoint_rollback_history_summary_for_run(
+    state: &AppState,
+    run_id: &str,
+) -> Value {
+    let history = context_run_mutation_checkpoint_rollback_history_entries(
+        &load_context_run_mutation_checkpoint_source_events(state, run_id, None, None),
+    );
+    context_run_mutation_checkpoint_rollback_history_summary(&history)
+}
+
+pub(super) fn context_run_mutation_checkpoint_last_rollback_outcome_for_run(
+    state: &AppState,
+    run_id: &str,
+) -> Value {
+    let history = context_run_mutation_checkpoint_rollback_history_entries(
+        &load_context_run_mutation_checkpoint_source_events(state, run_id, None, None),
+    );
+    match history.last() {
+        Some(entry) => json!({
+            "seq": entry.seq,
+            "ts_ms": entry.ts_ms,
+            "event_id": entry.event_id,
+            "outcome": entry.outcome,
+            "reason": entry.reason,
+            "selected_event_ids": entry.selected_event_ids,
+        }),
+        None => Value::Null,
+    }
+}
+
+pub(super) fn context_run_mutation_checkpoint_rollback_policy_summary(
+    run: &ContextRunState,
+) -> Value {
+    json!({
+        "eligible": rollback_execution_allowed_for_status(&run.status),
+        "run_status": run.status,
+        "required_confirm": "rollback",
+        "required_policy_ack": "allow_rollback_execution",
+    })
+}
+
 fn load_context_run_mutation_checkpoint_source_events(
     state: &AppState,
     run_id: &str,

@@ -1659,6 +1659,22 @@ impl App {
         ("context_runs", "List engine context runs"),
         ("context_run_create", "Create an engine context run"),
         ("context_run_get", "Get engine context run state"),
+        (
+            "context_run_rollback_preview",
+            "Show rollback preview steps for a context run",
+        ),
+        (
+            "context_run_rollback_execute",
+            "Execute selected rollback steps for a context run",
+        ),
+        (
+            "context_run_rollback_execute_all",
+            "Execute every executable rollback preview step for a context run",
+        ),
+        (
+            "context_run_rollback_history",
+            "Show detailed rollback receipts for a context run",
+        ),
         ("context_run_events", "Show context run events"),
         ("context_run_pause", "Pause context run"),
         ("context_run_resume", "Resume context run"),
@@ -7106,6 +7122,12 @@ CONTEXT RUNS:
   /context_runs [limit]                   List context runs from engine
   /context_run_create <objective...>      Create context run (interactive type)
   /context_run_get <run_id>               Show context run details
+  /context_run_rollback_preview <run_id>  Show rollback preview steps
+  /context_run_rollback_execute <run_id> --ack <event_id...>
+                                          Execute selected rollback steps
+  /context_run_rollback_execute_all <run_id> --ack
+                                          Execute all executable preview steps
+  /context_run_rollback_history <run_id>  Show rollback receipt history
   /context_run_events <run_id> [tail]     Show recent context run events
   /context_run_pause <run_id>             Append pause event + set paused status
   /context_run_resume <run_id>            Append resume event + set running status
@@ -8468,18 +8490,330 @@ MULTI-AGENT KEYS:
                 };
                 let run_id = args[0];
                 match client.context_run_get(run_id).await {
-                    Ok(run) => format!(
-                        "Context run {}\n  status: {}\n  type: {}\n  revision: {}\n  workspace: {}\n  steps: {}\n  why_next_step: {}\n  objective: {}",
-                        run.run_id,
-                        format!("{:?}", run.status).to_lowercase(),
-                        run.run_type,
-                        run.revision,
-                        run.workspace.canonical_path,
-                        run.steps.len(),
-                        run.why_next_step.unwrap_or_else(|| "<none>".to_string()),
-                        run.objective
-                    ),
+                    Ok(detail) => {
+                        let run = detail.run;
+                        let rollback_preview_steps = detail
+                            .rollback_preview_summary
+                            .get("step_count")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0);
+                        let rollback_history_entries = detail
+                            .rollback_history_summary
+                            .get("entry_count")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0);
+                        let rollback_policy_eligible = detail
+                            .rollback_policy
+                            .get("eligible")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false);
+                        let rollback_required_ack = detail
+                            .rollback_policy
+                            .get("required_policy_ack")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("<none>");
+                        let last_rollback_outcome = detail
+                            .last_rollback_outcome
+                            .get("outcome")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("<none>");
+                        let last_rollback_reason = detail
+                            .last_rollback_outcome
+                            .get("reason")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("<none>");
+                        format!(
+                            "Context run {}\n  status: {}\n  type: {}\n  revision: {}\n  workspace: {}\n  steps: {}\n  why_next_step: {}\n  objective: {}\n\nRollback\n  preview_steps: {}\n  history_entries: {}\n  policy: {}\n  required_ack: {}\n  last_outcome: {}\n  last_reason: {}\n\nNext\n  /context_run_rollback_preview {}\n  /context_run_rollback_history {}",
+                            run.run_id,
+                            format!("{:?}", run.status).to_lowercase(),
+                            run.run_type,
+                            run.revision,
+                            run.workspace.canonical_path,
+                            run.steps.len(),
+                            run.why_next_step.unwrap_or_else(|| "<none>".to_string()),
+                            run.objective,
+                            rollback_preview_steps,
+                            rollback_history_entries,
+                            if rollback_policy_eligible {
+                                "eligible"
+                            } else {
+                                "blocked"
+                            },
+                            rollback_required_ack,
+                            last_rollback_outcome,
+                            last_rollback_reason,
+                            run.run_id,
+                            run.run_id
+                        )
+                    }
                     Err(err) => format!("Failed to load context run: {}", err),
+                }
+            }
+
+            "context_run_rollback_preview" => {
+                if args.len() != 1 {
+                    return "Usage: /context_run_rollback_preview <run_id>".to_string();
+                }
+                let Some(client) = &self.client else {
+                    return "Engine client not connected.".to_string();
+                };
+                let run_id = args[0];
+                match client.context_run_rollback_preview(run_id).await {
+                    Ok(preview) => {
+                        if preview.steps.is_empty() {
+                            return format!(
+                                "No rollback preview steps for context run {}.",
+                                run_id
+                            );
+                        }
+                        let lines = preview
+                            .steps
+                            .iter()
+                            .take(12)
+                            .map(|step| {
+                                format!(
+                                    "  - [{}] seq={} ops={} tool={} event={}",
+                                    if step.executable { "exec" } else { "info" },
+                                    step.seq,
+                                    step.operation_count,
+                                    step.tool.as_deref().unwrap_or("<unknown>"),
+                                    step.event_id
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let executable_ids = preview
+                            .steps
+                            .iter()
+                            .filter(|step| step.executable)
+                            .map(|step| step.event_id.clone())
+                            .collect::<Vec<_>>();
+                        let executable_id_lines = if executable_ids.is_empty() {
+                            "  <none>".to_string()
+                        } else {
+                            executable_ids
+                                .iter()
+                                .map(|event_id| format!("  {}", event_id))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        };
+                        let next = if executable_ids.is_empty() {
+                            "  No executable rollback steps are available yet.".to_string()
+                        } else {
+                            format!(
+                                "  /context_run_rollback_execute {} --ack {}\n  /context_run_rollback_execute_all {} --ack",
+                                run_id,
+                                executable_ids.join(" "),
+                                run_id
+                            )
+                        };
+                        format!(
+                            "Rollback preview ({})\n  step_count: {}\n  executable_steps: {}\n  advisory_steps: {}\n  fully_executable: {}\n\nExecutable ids\n{}\n\nSteps\n{}\n\nNext\n{}",
+                            run_id,
+                            preview.step_count,
+                            preview.executable_step_count,
+                            preview.advisory_step_count,
+                            preview.executable,
+                            executable_id_lines,
+                            lines.join("\n"),
+                            next
+                        )
+                    }
+                    Err(err) => format!("Failed to load rollback preview: {}", err),
+                }
+            }
+
+            "context_run_rollback_execute" => {
+                if args.len() < 3 || args[1] != "--ack" {
+                    return "Usage: /context_run_rollback_execute <run_id> --ack <event_id...>"
+                        .to_string();
+                }
+                let Some(client) = &self.client else {
+                    return "Engine client not connected.".to_string();
+                };
+                let run_id = args[0];
+                let event_ids = args[2..]
+                    .iter()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>();
+                if event_ids.is_empty() {
+                    return "Provide at least one rollback preview event id.".to_string();
+                }
+                match client
+                    .context_run_rollback_execute(
+                        run_id,
+                        event_ids.clone(),
+                        Some("allow_rollback_execution".to_string()),
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        let missing = result
+                            .missing_event_ids
+                            .as_ref()
+                            .filter(|rows| !rows.is_empty())
+                            .map(|rows| rows.join(", "))
+                            .unwrap_or_else(|| "<none>".to_string());
+                        format!(
+                            "Rollback execute ({})\n  applied: {}\n  selected: {}\n  applied_steps: {}\n  applied_operations: {}\n  missing: {}\n  reason: {}\n\nNext\n  /context_run_rollback_history {}\n  /context_run_rollback_preview {}",
+                            run_id,
+                            result.applied,
+                            if result.selected_event_ids.is_empty() {
+                                event_ids.join(", ")
+                            } else {
+                                result.selected_event_ids.join(", ")
+                            },
+                            result.applied_step_count.unwrap_or(0),
+                            result.applied_operation_count.unwrap_or(0),
+                            missing,
+                            result.reason.unwrap_or_else(|| "<none>".to_string()),
+                            run_id,
+                            run_id
+                        )
+                    }
+                    Err(err) => format!("Failed to execute rollback: {}", err),
+                }
+            }
+
+            "context_run_rollback_execute_all" => {
+                if args.len() != 2 || args[1] != "--ack" {
+                    return "Usage: /context_run_rollback_execute_all <run_id> --ack".to_string();
+                }
+                let Some(client) = &self.client else {
+                    return "Engine client not connected.".to_string();
+                };
+                let run_id = args[0];
+                let preview = match client.context_run_rollback_preview(run_id).await {
+                    Ok(preview) => preview,
+                    Err(err) => return format!("Failed to load rollback preview: {}", err),
+                };
+                let event_ids = preview
+                    .steps
+                    .iter()
+                    .filter(|step| step.executable)
+                    .map(|step| step.event_id.clone())
+                    .collect::<Vec<_>>();
+                if event_ids.is_empty() {
+                    return format!(
+                        "No executable rollback preview steps for context run {}.",
+                        run_id
+                    );
+                }
+                match client
+                    .context_run_rollback_execute(
+                        run_id,
+                        event_ids.clone(),
+                        Some("allow_rollback_execution".to_string()),
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        let missing = result
+                            .missing_event_ids
+                            .as_ref()
+                            .filter(|rows| !rows.is_empty())
+                            .map(|rows| rows.join(", "))
+                            .unwrap_or_else(|| "<none>".to_string());
+                        let selected = if result.selected_event_ids.is_empty() {
+                            event_ids.join(", ")
+                        } else {
+                            result.selected_event_ids.join(", ")
+                        };
+                        format!(
+                            "Rollback execute all ({})\n  applied: {}\n  selected: {}\n  applied_steps: {}\n  applied_operations: {}\n  missing: {}\n  reason: {}\n\nNext\n  /context_run_rollback_history {}\n  /context_run_rollback_preview {}",
+                            run_id,
+                            result.applied,
+                            selected,
+                            result.applied_step_count.unwrap_or(0),
+                            result.applied_operation_count.unwrap_or(0),
+                            missing,
+                            result.reason.unwrap_or_else(|| "<none>".to_string()),
+                            run_id,
+                            run_id
+                        )
+                    }
+                    Err(err) => format!("Failed to execute rollback: {}", err),
+                }
+            }
+
+            "context_run_rollback_history" => {
+                if args.len() != 1 {
+                    return "Usage: /context_run_rollback_history <run_id>".to_string();
+                }
+                let Some(client) = &self.client else {
+                    return "Engine client not connected.".to_string();
+                };
+                let run_id = args[0];
+                match client.context_run_rollback_history(run_id).await {
+                    Ok(history) => {
+                        if history.entries.is_empty() {
+                            return format!("No rollback receipts for context run {}.", run_id);
+                        }
+                        let entry_count = history.entries.len();
+                        let applied_count = history
+                            .entries
+                            .iter()
+                            .filter(|entry| entry.outcome == "applied")
+                            .count();
+                        let blocked_count = history
+                            .entries
+                            .iter()
+                            .filter(|entry| entry.outcome != "applied")
+                            .count();
+                        let lines = history
+                            .entries
+                            .iter()
+                            .rev()
+                            .take(6)
+                            .map(|entry| {
+                                let selected = if entry.selected_event_ids.is_empty() {
+                                    "<none>".to_string()
+                                } else {
+                                    entry.selected_event_ids.join(", ")
+                                };
+                                let missing = entry
+                                    .missing_event_ids
+                                    .as_ref()
+                                    .filter(|rows| !rows.is_empty())
+                                    .map(|rows| rows.join(", "))
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                let actions = entry
+                                    .applied_by_action
+                                    .as_ref()
+                                    .filter(|counts| !counts.is_empty())
+                                    .map(|counts| {
+                                        let mut rows = counts
+                                            .iter()
+                                            .map(|(action, count)| format!("{}={}", action, count))
+                                            .collect::<Vec<_>>();
+                                        rows.sort();
+                                        rows.join(", ")
+                                    })
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                format!(
+                                    "  - seq={} outcome={} ts={}\n    selected: {}\n    missing: {}\n    steps: {}\n    operations: {}\n    actions: {}\n    reason: {}",
+                                    entry.seq,
+                                    entry.outcome,
+                                    entry.ts_ms,
+                                    selected,
+                                    missing,
+                                    entry.applied_step_count.unwrap_or(0),
+                                    entry.applied_operation_count.unwrap_or(0),
+                                    actions,
+                                    entry.reason.as_deref().unwrap_or("<none>")
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        format!(
+                            "Rollback receipts ({})\n  entries: {}\n  applied: {}\n  blocked: {}\n\nRecent receipts\n{}",
+                            run_id,
+                            entry_count,
+                            applied_count,
+                            blocked_count,
+                            lines.join("\n")
+                        )
+                    }
+                    Err(err) => format!("Failed to load rollback receipts: {}", err),
                 }
             }
 

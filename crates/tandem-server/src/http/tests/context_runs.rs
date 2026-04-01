@@ -143,6 +143,29 @@ async fn context_run_create_append_event_and_get() {
         .expect("mutation event response");
     assert_eq!(mutation_event_resp.status(), StatusCode::OK);
 
+    let rollback_blocked_event_req = Request::builder()
+        .method("POST")
+        .uri("/context/runs/ctx-run-1/events")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "type": "rollback_execution_blocked",
+                "status": "running",
+                "payload": {
+                    "reason": "rollback execution is not allowed for the current run status",
+                    "selected_event_ids": ["evt-1"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("rollback blocked event request");
+    let rollback_blocked_event_resp = app
+        .clone()
+        .oneshot(rollback_blocked_event_req)
+        .await
+        .expect("rollback blocked event response");
+    assert_eq!(rollback_blocked_event_resp.status(), StatusCode::OK);
+
     let list_events_req = Request::builder()
         .method("GET")
         .uri("/context/runs/ctx-run-1/events?since_seq=0")
@@ -164,7 +187,7 @@ async fn context_run_create_append_event_and_get() {
             .get("events")
             .and_then(|v| v.as_array())
             .map(|rows| rows.len()),
-        Some(3)
+        Some(4)
     );
 
     let get_run_req = Request::builder()
@@ -246,6 +269,49 @@ async fn context_run_create_append_event_and_get() {
             .and_then(|summary| summary.get("step_count"))
             .and_then(Value::as_u64),
         Some(1)
+    );
+    assert_eq!(
+        get_run_payload
+            .get("rollback_history_summary")
+            .and_then(|summary| summary.get("entry_count"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        get_run_payload
+            .get("rollback_history_summary")
+            .and_then(|summary| summary.get("by_outcome"))
+            .and_then(|counts| counts.get("blocked"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        get_run_payload
+            .get("last_rollback_outcome")
+            .and_then(|value| value.get("outcome"))
+            .and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(
+        get_run_payload
+            .get("last_rollback_outcome")
+            .and_then(|value| value.get("reason"))
+            .and_then(Value::as_str),
+        Some("rollback execution is not allowed for the current run status")
+    );
+    assert_eq!(
+        get_run_payload
+            .get("rollback_policy")
+            .and_then(|summary| summary.get("eligible"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        get_run_payload
+            .get("rollback_policy")
+            .and_then(|summary| summary.get("required_policy_ack"))
+            .and_then(Value::as_str),
+        Some("allow_rollback_execution")
     );
 }
 

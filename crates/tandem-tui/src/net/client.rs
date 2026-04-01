@@ -710,6 +710,19 @@ pub struct ContextRunState {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct ContextRunDetailResponse {
+    pub run: ContextRunState,
+    #[serde(default)]
+    pub rollback_preview_summary: serde_json::Value,
+    #[serde(default)]
+    pub rollback_history_summary: serde_json::Value,
+    #[serde(default)]
+    pub last_rollback_outcome: serde_json::Value,
+    #[serde(default)]
+    pub rollback_policy: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct ContextRunEventRecord {
     pub event_id: String,
     pub run_id: String,
@@ -766,6 +779,73 @@ pub struct ContextBlackboardState {
     #[serde(default)]
     pub summaries: ContextBlackboardSummaries,
     pub revision: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct ContextRunRollbackHistoryEntry {
+    pub seq: u64,
+    pub ts_ms: u64,
+    pub event_id: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub selected_event_ids: Vec<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub missing_event_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub applied_step_count: Option<u64>,
+    #[serde(default)]
+    pub applied_operation_count: Option<u64>,
+    #[serde(default)]
+    pub applied_by_action: Option<HashMap<String, u64>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct ContextRunRollbackPreviewStep {
+    pub seq: u64,
+    pub event_id: String,
+    #[serde(default)]
+    pub tool: Option<String>,
+    pub executable: bool,
+    pub operation_count: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct ContextRunRollbackPreviewResponse {
+    #[serde(default)]
+    pub steps: Vec<ContextRunRollbackPreviewStep>,
+    #[serde(default)]
+    pub step_count: u64,
+    #[serde(default)]
+    pub executable_step_count: u64,
+    #[serde(default)]
+    pub advisory_step_count: u64,
+    #[serde(default)]
+    pub executable: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct ContextRunRollbackExecuteResponse {
+    pub applied: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub selected_event_ids: Vec<String>,
+    #[serde(default)]
+    pub missing_event_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub applied_step_count: Option<u64>,
+    #[serde(default)]
+    pub applied_operation_count: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct ContextRunRollbackHistoryResponse {
+    #[serde(default)]
+    pub entries: Vec<ContextRunRollbackHistoryEntry>,
+    #[serde(default)]
+    pub summary: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1721,11 +1801,11 @@ impl EngineClient {
         Ok(payload.run)
     }
 
-    pub async fn context_run_get(&self, run_id: &str) -> Result<ContextRunState> {
+    pub async fn context_run_get(&self, run_id: &str) -> Result<ContextRunDetailResponse> {
         let url = format!("{}/context/runs/{}", self.base_url, run_id);
         let resp = self.client.get(&url).send().await?;
-        let payload = resp.json::<ContextRunRecordResponse>().await?;
-        Ok(payload.run)
+        let payload = resp.json::<ContextRunDetailResponse>().await?;
+        Ok(payload)
     }
 
     pub async fn context_run_put(&self, run: &ContextRunState) -> Result<ContextRunState> {
@@ -1779,6 +1859,52 @@ impl EngineClient {
         let resp = self.client.get(&url).send().await?;
         let payload = resp.json::<ContextBlackboardResponse>().await?;
         Ok(payload.blackboard)
+    }
+
+    pub async fn context_run_rollback_history(
+        &self,
+        run_id: &str,
+    ) -> Result<ContextRunRollbackHistoryResponse> {
+        let url = format!(
+            "{}/context/runs/{}/checkpoints/mutations/rollback-history",
+            self.base_url, run_id
+        );
+        let resp = self.client.get(&url).send().await?;
+        let payload = resp.json::<ContextRunRollbackHistoryResponse>().await?;
+        Ok(payload)
+    }
+
+    pub async fn context_run_rollback_preview(
+        &self,
+        run_id: &str,
+    ) -> Result<ContextRunRollbackPreviewResponse> {
+        let url = format!(
+            "{}/context/runs/{}/checkpoints/mutations/rollback-preview",
+            self.base_url, run_id
+        );
+        let resp = self.client.get(&url).send().await?;
+        let payload = resp.json::<ContextRunRollbackPreviewResponse>().await?;
+        Ok(payload)
+    }
+
+    pub async fn context_run_rollback_execute(
+        &self,
+        run_id: &str,
+        event_ids: Vec<String>,
+        policy_ack: Option<String>,
+    ) -> Result<ContextRunRollbackExecuteResponse> {
+        let url = format!(
+            "{}/context/runs/{}/checkpoints/mutations/rollback-execute",
+            self.base_url, run_id
+        );
+        let body = serde_json::json!({
+            "confirm": "rollback",
+            "policy_ack": policy_ack,
+            "event_ids": event_ids,
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        let payload = resp.json::<ContextRunRollbackExecuteResponse>().await?;
+        Ok(payload)
     }
 
     pub async fn context_run_replay(
@@ -2546,17 +2672,84 @@ mod tests {
         let base = spawn_single_response_server(
             "/context/runs/ctx-2",
             "200 OK",
-            r#"{"run":{"run_id":"ctx-2","run_type":"cron","status":"paused","objective":"Nightly pipeline","workspace":{"workspace_id":"ws2","canonical_path":"/tmp/cron","lease_epoch":2},"steps":[],"why_next_step":null,"revision":7,"created_at_ms":3,"updated_at_ms":4}}"#,
+            r#"{"run":{"run_id":"ctx-2","run_type":"cron","status":"paused","objective":"Nightly pipeline","workspace":{"workspace_id":"ws2","canonical_path":"/tmp/cron","lease_epoch":2},"steps":[],"why_next_step":null,"revision":7,"created_at_ms":3,"updated_at_ms":4},"rollback_preview_summary":{"step_count":1},"rollback_history_summary":{"entry_count":2},"last_rollback_outcome":{"outcome":"blocked"},"rollback_policy":{"eligible":true}}"#,
         )
         .await;
         let client = EngineClient::new(base);
-        let run = client
+        let detail = client
             .context_run_get("ctx-2")
             .await
             .expect("context_run_get");
-        assert_eq!(run.run_id, "ctx-2");
-        assert_eq!(run.run_type, "cron");
-        assert_eq!(run.status, ContextRunStatus::Paused);
+        assert_eq!(detail.run.run_id, "ctx-2");
+        assert_eq!(detail.run.run_type, "cron");
+        assert_eq!(detail.run.status, ContextRunStatus::Paused);
+        assert_eq!(detail.rollback_policy["eligible"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn context_run_rollback_history_reads_engine_endpoint() {
+        let base = spawn_single_response_server(
+            "/context/runs/ctx-rollback/checkpoints/mutations/rollback-history",
+            "200 OK",
+            r#"{"entries":[{"seq":14,"ts_ms":1234,"event_id":"evt-rollback","outcome":"applied","selected_event_ids":["evt-1"],"applied_step_count":1,"applied_operation_count":2,"applied_by_action":{"rewrite_file":2}}],"summary":{"entry_count":1,"by_outcome":{"applied":1}}}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let history = client
+            .context_run_rollback_history("ctx-rollback")
+            .await
+            .expect("context_run_rollback_history");
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].outcome, "applied");
+        assert_eq!(
+            history.entries[0]
+                .applied_by_action
+                .as_ref()
+                .and_then(|counts| counts.get("rewrite_file"))
+                .copied(),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn context_run_rollback_preview_reads_engine_endpoint() {
+        let base = spawn_single_response_server(
+            "/context/runs/ctx-preview/checkpoints/mutations/rollback-preview",
+            "200 OK",
+            r#"{"steps":[{"seq":9,"event_id":"evt-preview","tool":"write_file","executable":true,"operation_count":3}],"step_count":1,"executable_step_count":1,"advisory_step_count":0,"executable":true}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let preview = client
+            .context_run_rollback_preview("ctx-preview")
+            .await
+            .expect("context_run_rollback_preview");
+        assert_eq!(preview.step_count, 1);
+        assert_eq!(preview.steps[0].event_id, "evt-preview");
+        assert!(preview.steps[0].executable);
+        assert_eq!(preview.steps[0].operation_count, 3);
+    }
+
+    #[tokio::test]
+    async fn context_run_rollback_execute_posts_engine_endpoint() {
+        let base = spawn_single_response_server(
+            "/context/runs/ctx-exec/checkpoints/mutations/rollback-execute",
+            "200 OK",
+            r#"{"applied":true,"selected_event_ids":["evt-preview"],"applied_step_count":1,"applied_operation_count":3}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let result = client
+            .context_run_rollback_execute(
+                "ctx-exec",
+                vec!["evt-preview".to_string()],
+                Some("allow_rollback_execution".to_string()),
+            )
+            .await
+            .expect("context_run_rollback_execute");
+        assert!(result.applied);
+        assert_eq!(result.selected_event_ids, vec!["evt-preview".to_string()]);
+        assert_eq!(result.applied_operation_count, Some(3));
     }
 
     #[tokio::test]

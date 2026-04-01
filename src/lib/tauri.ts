@@ -1454,6 +1454,25 @@ export async function getCoderRun(runId: string): Promise<{
   return invoke("coder_get_run", { runId });
 }
 
+export async function getContextRunRollbackPreview(
+  runId: string
+): Promise<Record<string, unknown>> {
+  return invoke("context_run_rollback_preview", { runId });
+}
+
+export async function executeContextRunRollback(
+  runId: string,
+  request: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  return invoke("context_run_rollback_execute", { runId, request });
+}
+
+export async function getContextRunRollbackHistory(
+  runId: string
+): Promise<Record<string, unknown>> {
+  return invoke("context_run_rollback_history", { runId });
+}
+
 export async function getCoderProjectBinding(projectId: string): Promise<{
   binding: CoderProjectBindingRecord | null;
 }> {

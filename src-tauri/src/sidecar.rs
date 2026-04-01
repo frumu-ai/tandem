@@ -4651,6 +4651,55 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
+    pub async fn context_run_rollback_preview(&self, run_id: &str) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/context/runs/{}/checkpoints/mutations/rollback-preview",
+            self.base_url().await?,
+            run_id
+        );
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to get context run rollback preview: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn context_run_rollback_execute(
+        &self,
+        run_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/context/runs/{}/checkpoints/mutations/rollback-execute",
+            self.base_url().await?,
+            run_id
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to execute context run rollback: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn context_run_rollback_history(&self, run_id: &str) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/context/runs/{}/checkpoints/mutations/rollback-history",
+            self.base_url().await?,
+            run_id
+        );
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to get context run rollback history: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
     pub async fn coder_get_project_binding(&self, project_id: &str) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
         let url = format!(

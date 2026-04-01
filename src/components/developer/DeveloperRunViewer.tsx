@@ -5,9 +5,11 @@ import {
   Database,
   ExternalLink,
   GitBranch,
+  History,
   PanelsTopLeft,
   RefreshCw,
   Search,
+  Shield,
   SquareCheckBig,
   SquareX,
   Workflow,
@@ -15,8 +17,11 @@ import {
 import {
   approveCoderRun,
   cancelCoderRun,
+  executeContextRunRollback,
   getCoderMemoryHits,
   getCoderRun,
+  getContextRunRollbackHistory,
+  getContextRunRollbackPreview,
   listCoderArtifacts,
   listCoderMemoryCandidates,
   listCoderRuns,
@@ -138,6 +143,10 @@ function pickText(value: unknown): string {
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return "";
+}
+
+function pickNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -362,6 +371,12 @@ function runEventType(event: RunEventRow): string {
 
 function runEventId(event: RunEventRow, index: number): string {
   return pickText(event.event_id) || `${runEventType(event)}-${index}`;
+}
+
+function rollbackExecutionAllowedStatus(status: string): boolean {
+  return ["awaiting_approval", "paused", "blocked", "failed", "completed", "cancelled"].includes(
+    status.trim().toLowerCase()
+  );
 }
 
 function isValidationTask(task: RunTaskRecord): boolean {
@@ -695,6 +710,19 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [acting, setActing] = useState<"approve" | "cancel" | null>(null);
+  const [rollbackPreview, setRollbackPreview] = useState<Record<string, unknown> | null>(null);
+  const [loadingRollbackPreview, setLoadingRollbackPreview] = useState(false);
+  const [rollbackPreviewError, setRollbackPreviewError] = useState<string | null>(null);
+  const [rollbackHistory, setRollbackHistory] = useState<Record<string, unknown> | null>(null);
+  const [loadingRollbackHistory, setLoadingRollbackHistory] = useState(false);
+  const [rollbackHistoryError, setRollbackHistoryError] = useState<string | null>(null);
+  const [rollbackSelectedEventIds, setRollbackSelectedEventIds] = useState<string[]>([]);
+  const [rollbackPolicyAcknowledged, setRollbackPolicyAcknowledged] = useState(false);
+  const [rollbackExecuting, setRollbackExecuting] = useState(false);
+  const [rollbackExecutionResult, setRollbackExecutionResult] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
   const [copiedContextRun, setCopiedContextRun] = useState(false);
   const [copiedDuplicateBadge, setCopiedDuplicateBadge] = useState<string | null>(null);
   const [copiedMemoryValue, setCopiedMemoryValue] = useState<string | null>(null);
@@ -750,6 +778,34 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     }
   }, []);
 
+  const loadRollbackPreview = useCallback(async (contextRunId: string) => {
+    setLoadingRollbackPreview(true);
+    try {
+      const payload = await getContextRunRollbackPreview(contextRunId);
+      setRollbackPreview(payload);
+      setRollbackPreviewError(null);
+    } catch (err) {
+      setRollbackPreview(null);
+      setRollbackPreviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingRollbackPreview(false);
+    }
+  }, []);
+
+  const loadRollbackHistory = useCallback(async (contextRunId: string) => {
+    setLoadingRollbackHistory(true);
+    try {
+      const payload = await getContextRunRollbackHistory(contextRunId);
+      setRollbackHistory(payload);
+      setRollbackHistoryError(null);
+    } catch (err) {
+      setRollbackHistory(null);
+      setRollbackHistoryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingRollbackHistory(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadRuns();
     const interval = globalThis.setInterval(() => {
@@ -771,6 +827,13 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       setSelectedArtifactContent("");
       setCompareArtifactPath(null);
       setCompareArtifactContent("");
+      setRollbackPreview(null);
+      setRollbackPreviewError(null);
+      setRollbackHistory(null);
+      setRollbackHistoryError(null);
+      setRollbackSelectedEventIds([]);
+      setRollbackPolicyAcknowledged(false);
+      setRollbackExecutionResult(null);
       return;
     }
     void loadRunDetail(selectedRunId);
@@ -976,6 +1039,170 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     }
     return null;
   }, [error]);
+
+  const linkedContextRunId = useMemo(
+    () => pickText(selectedRun?.linked_context_run_id),
+    [selectedRun?.linked_context_run_id]
+  );
+
+  useEffect(() => {
+    if (!linkedContextRunId) {
+      setRollbackPreview(null);
+      setRollbackPreviewError(null);
+      setRollbackHistory(null);
+      setRollbackHistoryError(null);
+      setRollbackSelectedEventIds([]);
+      setRollbackPolicyAcknowledged(false);
+      setRollbackExecutionResult(null);
+      return;
+    }
+    setRollbackSelectedEventIds([]);
+    setRollbackPolicyAcknowledged(false);
+    setRollbackExecutionResult(null);
+    void loadRollbackPreview(linkedContextRunId);
+    void loadRollbackHistory(linkedContextRunId);
+  }, [linkedContextRunId, loadRollbackHistory, loadRollbackPreview]);
+
+  const selectedRollbackHistorySummary = useMemo(() => {
+    const serverSummary = asRecord(runState?.rollback_history_summary);
+    if (serverSummary) {
+      const byOutcome = asRecord(serverSummary.by_outcome) ?? {};
+      return {
+        entryCount: pickNumber(serverSummary.entry_count) ?? 0,
+        appliedCount: pickNumber(byOutcome.applied) ?? 0,
+        blockedCount: pickNumber(byOutcome.blocked) ?? 0,
+      };
+    }
+    return selectedRunEvents.reduce(
+      (summary: { entryCount: number; appliedCount: number; blockedCount: number }, event) => {
+        const type = runEventType(event);
+        if (type === "rollback_execution_applied") {
+          summary.entryCount += 1;
+          summary.appliedCount += 1;
+        } else if (type === "rollback_execution_blocked") {
+          summary.entryCount += 1;
+          summary.blockedCount += 1;
+        }
+        return summary;
+      },
+      { entryCount: 0, appliedCount: 0, blockedCount: 0 }
+    );
+  }, [runState, selectedRunEvents]);
+
+  const selectedLastRollbackOutcome = useMemo(() => {
+    const serverOutcome = asRecord(runState?.last_rollback_outcome);
+    if (serverOutcome) {
+      return {
+        outcome: pickText(serverOutcome.outcome),
+        reason: pickText(serverOutcome.reason),
+        tsMs: pickNumber(serverOutcome.ts_ms),
+      };
+    }
+    const rollbackEvents = selectedRunEvents.filter((event) => {
+      const type = runEventType(event);
+      return type === "rollback_execution_applied" || type === "rollback_execution_blocked";
+    });
+    if (rollbackEvents.length === 0) return null;
+    const latest =
+      [...rollbackEvents].sort(
+        (left, right) => (runEventTimestamp(right) ?? 0) - (runEventTimestamp(left) ?? 0)
+      )[0] ?? null;
+    if (!latest) return null;
+    const payload = asRecord(latest.payload);
+    return {
+      outcome: runEventType(latest) === "rollback_execution_applied" ? "applied" : "blocked",
+      reason: pickText(payload?.reason),
+      tsMs: runEventTimestamp(latest),
+    };
+  }, [runState, selectedRunEvents]);
+
+  const selectedRollbackPolicy = useMemo(() => {
+    const serverPolicy = asRecord(runState?.rollback_policy);
+    if (serverPolicy) {
+      return {
+        eligible: serverPolicy.eligible === true,
+        runStatus: pickText(serverPolicy.run_status) || pickText(runState?.status) || "unknown",
+        requiredConfirm: pickText(serverPolicy.required_confirm) || "rollback",
+        requiredPolicyAck: pickText(serverPolicy.required_policy_ack) || "allow_rollback_execution",
+      };
+    }
+    const runStatus = pickText(runState?.status) || "unknown";
+    return {
+      eligible: rollbackExecutionAllowedStatus(runStatus),
+      runStatus,
+      requiredConfirm: "rollback",
+      requiredPolicyAck: "allow_rollback_execution",
+    };
+  }, [runState]);
+
+  const rollbackPreviewSteps = useMemo(() => {
+    const rawSteps = asRecord(rollbackPreview)?.steps;
+    return (Array.isArray(rawSteps) ? rawSteps : [])
+      .map((value) => {
+        const record = asRecord(value);
+        return {
+          eventId: pickText(record?.event_id),
+          seq: pickNumber(record?.seq),
+          tool: pickText(record?.tool) || "unknown",
+          executable: record?.executable === true,
+          operationCount: pickNumber(record?.operation_count) ?? 0,
+        };
+      })
+      .filter((step) => step.eventId.length > 0);
+  }, [rollbackPreview]);
+
+  const rollbackPreviewSummary = useMemo(() => {
+    const record = asRecord(rollbackPreview);
+    return {
+      stepCount: pickNumber(record?.step_count) ?? rollbackPreviewSteps.length,
+      executable: record?.executable === true,
+      executableStepCount: pickNumber(record?.executable_step_count) ?? 0,
+      advisoryStepCount: pickNumber(record?.advisory_step_count) ?? 0,
+    };
+  }, [rollbackPreview, rollbackPreviewSteps.length]);
+
+  const rollbackHistoryEntries = useMemo(() => {
+    const rawEntries = asRecord(rollbackHistory)?.entries;
+    return (Array.isArray(rawEntries) ? rawEntries : [])
+      .map((value) => {
+        const record = asRecord(value);
+        const rawSelectedIds = record?.selected_event_ids;
+        const rawMissingIds = record?.missing_event_ids;
+        const rawAppliedByAction = asRecord(record?.applied_by_action);
+        return {
+          eventId: pickText(record?.event_id),
+          outcome: pickText(record?.outcome) || "unknown",
+          reason: pickText(record?.reason),
+          tsMs: pickNumber(record?.ts_ms),
+          seq: pickNumber(record?.seq),
+          selectedEventIds: (Array.isArray(rawSelectedIds) ? rawSelectedIds : [])
+            .map(pickText)
+            .filter((value) => value.length > 0),
+          missingEventIds: (Array.isArray(rawMissingIds) ? rawMissingIds : [])
+            .map(pickText)
+            .filter((value) => value.length > 0),
+          appliedStepCount: pickNumber(record?.applied_step_count) ?? 0,
+          appliedOperationCount: pickNumber(record?.applied_operation_count) ?? 0,
+          appliedByAction: rawAppliedByAction
+            ? Object.entries(rawAppliedByAction)
+                .map(([key, value]) => [key, pickNumber(value) ?? 0] as const)
+                .filter(([, value]) => value > 0)
+            : [],
+        };
+      })
+      .filter((entry) => entry.eventId.length > 0)
+      .sort((left, right) => (right.tsMs ?? 0) - (left.tsMs ?? 0));
+  }, [rollbackHistory]);
+
+  const rollbackExecutionMessage = useMemo(() => {
+    const record = asRecord(rollbackExecutionResult);
+    if (!record) return "";
+    if (record.applied === true) {
+      const count = pickNumber(record.applied_operation_count) ?? 0;
+      return `Applied ${count} rollback operation${count === 1 ? "" : "s"}.`;
+    }
+    return pickText(record.reason) || "Rollback request was blocked.";
+  }, [rollbackExecutionResult]);
 
   const filteredRuns = useMemo(() => {
     const query = runQuery.trim().toLowerCase();
@@ -1724,6 +1951,57 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       // Ignore clipboard failures; the id is still visible in the UI.
     }
   }, [selectedRun?.linked_context_run_id]);
+
+  const toggleRollbackStepSelection = useCallback((eventId: string) => {
+    setRollbackSelectedEventIds((current) =>
+      current.includes(eventId)
+        ? current.filter((value) => value !== eventId)
+        : current.concat(eventId)
+    );
+  }, []);
+
+  const selectAllExecutableRollbackSteps = useCallback(() => {
+    setRollbackSelectedEventIds(
+      rollbackPreviewSteps.filter((step) => step.executable).map((step) => step.eventId)
+    );
+  }, [rollbackPreviewSteps]);
+
+  const executeRollbackSelection = useCallback(async () => {
+    if (!selectedRunId || !linkedContextRunId || rollbackSelectedEventIds.length === 0) return;
+    setRollbackExecuting(true);
+    try {
+      const result = await executeContextRunRollback(linkedContextRunId, {
+        confirm: "rollback",
+        policy_ack: rollbackPolicyAcknowledged ? "allow_rollback_execution" : undefined,
+        event_ids: rollbackSelectedEventIds,
+      });
+      setRollbackExecutionResult(result);
+      await Promise.all([
+        loadRuns(),
+        loadRunDetail(selectedRunId),
+        loadRollbackPreview(linkedContextRunId),
+        loadRollbackHistory(linkedContextRunId),
+      ]);
+      if (result.applied === true) {
+        setRollbackSelectedEventIds([]);
+        setRollbackPolicyAcknowledged(false);
+      }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRollbackExecuting(false);
+    }
+  }, [
+    linkedContextRunId,
+    loadRollbackHistory,
+    loadRollbackPreview,
+    loadRunDetail,
+    loadRuns,
+    rollbackPolicyAcknowledged,
+    rollbackSelectedEventIds,
+    selectedRunId,
+  ]);
 
   const copyDuplicateBadgeValue = useCallback(async (value: string) => {
     try {
@@ -2664,6 +2942,430 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                       </button>
                     ))}
                   </div>
+                  <div className="mt-3 grid gap-3 xl:grid-cols-3">
+                    <Card className="border-border bg-surface-elevated/30">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="flex items-center gap-2 text-sm">
+                          <Shield className="h-4 w-4" />
+                          Rollback Policy
+                        </CardTitle>
+                        <CardDescription>
+                          Execution stays gated until the linked context run is in an eligible state
+                          and the operator provides the required acknowledgement.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-2 pt-0 text-sm text-text-muted">
+                        <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface px-3 py-2">
+                          <span>Eligibility</span>
+                          <span
+                            className={cn(
+                              "rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.18em]",
+                              selectedRollbackPolicy.eligible
+                                ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+                                : "border border-amber-500/20 bg-amber-500/10 text-amber-100"
+                            )}
+                          >
+                            {selectedRollbackPolicy.eligible ? "Eligible" : "Blocked"}
+                          </span>
+                        </div>
+                        <div className="rounded-xl border border-border bg-surface px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                            Run status
+                          </p>
+                          <p className="mt-1 text-text">{selectedRollbackPolicy.runStatus}</p>
+                        </div>
+                        <div className="rounded-xl border border-border bg-surface px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                            Required ack
+                          </p>
+                          <p className="mt-1 font-mono text-[11px] text-text">
+                            {selectedRollbackPolicy.requiredPolicyAck}
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="border-border bg-surface-elevated/30">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="flex items-center gap-2 text-sm">
+                          <History className="h-4 w-4" />
+                          Rollback Audit
+                        </CardTitle>
+                        <CardDescription>
+                          Applied and blocked rollback attempts recovered from the linked context
+                          run.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-2 pt-0 text-sm text-text-muted">
+                        <div className="grid gap-2 sm:grid-cols-3">
+                          {[
+                            ["Entries", selectedRollbackHistorySummary.entryCount],
+                            ["Applied", selectedRollbackHistorySummary.appliedCount],
+                            ["Blocked", selectedRollbackHistorySummary.blockedCount],
+                          ].map(([label, value]) => (
+                            <div
+                              key={String(label)}
+                              className="rounded-xl border border-border bg-surface px-3 py-2"
+                            >
+                              <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                                {label}
+                              </p>
+                              <p className="mt-1 text-base font-semibold text-text">
+                                {String(value)}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            setEventQuery("rollback_execution");
+                            setEventTypeFilter("all");
+                            focusOverviewSection("timeline");
+                          }}
+                        >
+                          <History className="h-4 w-4" />
+                          Show rollback events
+                        </Button>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="border-border bg-surface-elevated/30">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="flex items-center gap-2 text-sm">
+                          <RefreshCw className="h-4 w-4" />
+                          Last Rollback Outcome
+                        </CardTitle>
+                        <CardDescription>
+                          Most recent rollback result surfaced from the linked context run.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-2 pt-0 text-sm text-text-muted">
+                        {selectedLastRollbackOutcome ? (
+                          <>
+                            <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface px-3 py-2">
+                              <span>Outcome</span>
+                              <span
+                                className={cn(
+                                  "rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.18em]",
+                                  selectedLastRollbackOutcome.outcome === "applied"
+                                    ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+                                    : "border border-amber-500/20 bg-amber-500/10 text-amber-100"
+                                )}
+                              >
+                                {selectedLastRollbackOutcome.outcome}
+                              </span>
+                            </div>
+                            <div className="rounded-xl border border-border bg-surface px-3 py-2">
+                              <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                                Recorded
+                              </p>
+                              <p className="mt-1 text-text">
+                                {formatTimestamp(selectedLastRollbackOutcome.tsMs)}
+                              </p>
+                            </div>
+                            <div className="rounded-xl border border-border bg-surface px-3 py-2">
+                              <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                                Reason
+                              </p>
+                              <p className="mt-1 text-text">
+                                {selectedLastRollbackOutcome.reason || "No reason recorded."}
+                              </p>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="rounded-xl border border-dashed border-border bg-surface px-3 py-4">
+                            No rollback attempts recorded for this context run yet.
+                          </p>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                  <Card className="mt-3 border-border bg-surface-elevated/30">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="flex items-center gap-2 text-sm">
+                        <RefreshCw className="h-4 w-4" />
+                        Rollback Operator
+                      </CardTitle>
+                      <CardDescription>
+                        Review rollback preview steps, select executable work only, then execute
+                        with explicit acknowledgement.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3 pt-0 text-sm text-text-muted">
+                      <div className="flex flex-wrap gap-2">
+                        <div className="rounded-xl border border-border bg-surface px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                            Preview steps
+                          </p>
+                          <p className="mt-1 text-text">{rollbackPreviewSummary.stepCount}</p>
+                        </div>
+                        <div className="rounded-xl border border-border bg-surface px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                            Executable
+                          </p>
+                          <p className="mt-1 text-text">
+                            {rollbackPreviewSummary.executableStepCount}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-border bg-surface px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                            Advisory
+                          </p>
+                          <p className="mt-1 text-text">
+                            {rollbackPreviewSummary.advisoryStepCount}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-border bg-surface px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                            Plan status
+                          </p>
+                          <p className="mt-1 text-text">
+                            {rollbackPreviewSummary.executable ? "Fully executable" : "Mixed"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          loading={loadingRollbackPreview}
+                          disabled={!linkedContextRunId}
+                          onClick={() =>
+                            linkedContextRunId && void loadRollbackPreview(linkedContextRunId)
+                          }
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          Reload preview
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={rollbackPreviewSteps.every((step) => !step.executable)}
+                          onClick={() => selectAllExecutableRollbackSteps()}
+                        >
+                          Select executable
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={rollbackSelectedEventIds.length === 0}
+                          onClick={() => setRollbackSelectedEventIds([])}
+                        >
+                          Clear selection
+                        </Button>
+                      </div>
+
+                      {rollbackPreviewError ? (
+                        <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-amber-100">
+                          {rollbackPreviewError}
+                        </div>
+                      ) : null}
+
+                      {rollbackPreviewSteps.length > 0 ? (
+                        <div className="grid gap-2">
+                          {rollbackPreviewSteps.map((step) => {
+                            const selected = rollbackSelectedEventIds.includes(step.eventId);
+                            return (
+                              <label
+                                key={step.eventId}
+                                className={cn(
+                                  "flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-3",
+                                  selected
+                                    ? "border-primary/40 bg-primary/10"
+                                    : "border-border bg-surface",
+                                  !step.executable && "opacity-80"
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="mt-1"
+                                  checked={selected}
+                                  disabled={!step.executable}
+                                  onChange={() => toggleRollbackStepSelection(step.eventId)}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="font-medium text-text">{step.tool}</span>
+                                    <span className="text-text-subtle">seq {step.seq ?? "?"}</span>
+                                    <span
+                                      className={cn(
+                                        "rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.18em]",
+                                        step.executable
+                                          ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+                                          : "border border-amber-500/20 bg-amber-500/10 text-amber-100"
+                                      )}
+                                    >
+                                      {step.executable ? "Executable" : "Advisory only"}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 text-xs text-text-muted">
+                                    {step.operationCount} rollback operation
+                                    {step.operationCount === 1 ? "" : "s"} for {step.eventId}
+                                  </p>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-border bg-surface px-3 py-4">
+                          {linkedContextRunId
+                            ? "No rollback preview steps are available for this run."
+                            : "This coder run is not linked to a context run yet."}
+                        </div>
+                      )}
+
+                      <label className="flex items-start gap-3 rounded-xl border border-border bg-surface px-3 py-3 text-text">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={rollbackPolicyAcknowledged}
+                          onChange={(event) => setRollbackPolicyAcknowledged(event.target.checked)}
+                        />
+                        <span>
+                          I acknowledge the rollback policy gate and want to submit the required
+                          token{" "}
+                          <span className="font-mono text-[11px]">
+                            {selectedRollbackPolicy.requiredPolicyAck}
+                          </span>
+                          .
+                        </span>
+                      </label>
+
+                      {rollbackExecutionResult ? (
+                        <div
+                          className={cn(
+                            "rounded-xl border px-3 py-2",
+                            asRecord(rollbackExecutionResult)?.applied === true
+                              ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-100"
+                              : "border-amber-500/20 bg-amber-500/10 text-amber-100"
+                          )}
+                        >
+                          {rollbackExecutionMessage}
+                        </div>
+                      ) : null}
+
+                      {rollbackHistoryError ? (
+                        <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-amber-100">
+                          {rollbackHistoryError}
+                        </div>
+                      ) : null}
+
+                      <div className="rounded-xl border border-border bg-surface px-3 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[11px] uppercase tracking-[0.18em] text-text-subtle">
+                              Rollback receipts
+                            </p>
+                            <p className="mt-1 text-xs text-text-muted">
+                              Detailed applied and blocked rollback attempts from the linked context
+                              run.
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            loading={loadingRollbackHistory}
+                            disabled={!linkedContextRunId}
+                            onClick={() =>
+                              linkedContextRunId && void loadRollbackHistory(linkedContextRunId)
+                            }
+                          >
+                            <History className="h-4 w-4" />
+                            Reload
+                          </Button>
+                        </div>
+                        <div className="mt-3 grid gap-2">
+                          {rollbackHistoryEntries.length > 0 ? (
+                            rollbackHistoryEntries.slice(0, 6).map((entry) => (
+                              <div
+                                key={entry.eventId}
+                                className="rounded-xl border border-border bg-surface-elevated/40 px-3 py-3"
+                              >
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={cn(
+                                      "rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.18em]",
+                                      entry.outcome === "applied"
+                                        ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+                                        : "border border-amber-500/20 bg-amber-500/10 text-amber-100"
+                                    )}
+                                  >
+                                    {entry.outcome}
+                                  </span>
+                                  <span className="text-xs text-text-subtle">
+                                    {formatTimestamp(entry.tsMs)}
+                                  </span>
+                                  <span className="font-mono text-[11px] text-text-subtle">
+                                    {entry.eventId}
+                                  </span>
+                                </div>
+                                {entry.reason ? (
+                                  <p className="mt-2 text-xs text-text">{entry.reason}</p>
+                                ) : null}
+                                <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-muted">
+                                  <span>selected: {entry.selectedEventIds.length}</span>
+                                  {entry.outcome === "applied" ? (
+                                    <>
+                                      <span>steps: {entry.appliedStepCount}</span>
+                                      <span>operations: {entry.appliedOperationCount}</span>
+                                    </>
+                                  ) : null}
+                                  {entry.seq !== null ? <span>seq: {entry.seq}</span> : null}
+                                </div>
+                                {entry.selectedEventIds.length > 0 ? (
+                                  <p className="mt-2 text-[11px] text-text-muted">
+                                    Selected: {entry.selectedEventIds.join(", ")}
+                                  </p>
+                                ) : null}
+                                {entry.missingEventIds.length > 0 ? (
+                                  <p className="mt-1 text-[11px] text-amber-100">
+                                    Missing: {entry.missingEventIds.join(", ")}
+                                  </p>
+                                ) : null}
+                                {entry.appliedByAction.length > 0 ? (
+                                  <p className="mt-1 text-[11px] text-text-muted">
+                                    Actions:{" "}
+                                    {entry.appliedByAction
+                                      .map(([action, count]) => `${action} (${count})`)
+                                      .join(", ")}
+                                  </p>
+                                ) : null}
+                              </div>
+                            ))
+                          ) : (
+                            <p className="rounded-xl border border-dashed border-border bg-surface px-3 py-4 text-xs text-text-muted">
+                              No detailed rollback receipts recorded yet.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          loading={rollbackExecuting}
+                          disabled={
+                            !selectedRollbackPolicy.eligible ||
+                            rollbackSelectedEventIds.length === 0 ||
+                            !rollbackPolicyAcknowledged
+                          }
+                          onClick={() => void executeRollbackSelection()}
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          Execute selected rollback
+                        </Button>
+                        <p className="self-center text-xs text-text-subtle">
+                          Select at least one executable step and acknowledge policy before
+                          execution.
+                        </p>
+                      </div>
+                    </CardContent>
+                  </Card>
                   <div className="mt-3 grid gap-3 xl:grid-cols-3">
                     <Card className="border-border bg-surface-elevated/30">
                       <CardHeader className="pb-2">

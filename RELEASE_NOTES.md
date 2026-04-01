@@ -19,6 +19,14 @@ This is the canonical release-notes file used by release tooling.
 - **Desktop startup splash resilience**
   - Fixed the unlock splash so it dismisses immediately after a successful vault unlock instead of waiting on later provider discovery.
   - Stopped sidecar startup from silently rewriting selected-provider/default-provider state on boot, which reduces startup regressions caused by stale or slow provider config.
+- **Context-run rollback audit and operator flow**
+  - Added rollback history summary, last rollback outcome, and rollback policy metadata to context-run detail responses so clients can surface rollback readiness and audit state directly.
+  - Added guarded rollback preview, receipt history, and execution workflows to the desktop developer run viewer, including policy acknowledgement and linked context-run refresh after execution.
+  - Added Tandem TUI rollback preview, receipt history, explicit rollback execute, and execute-all commands so terminal operators can inspect and run guarded rollback steps from the TUI.
+
+- **Engine build reliability**
+  - Restored the `tandem-engine` fast-release build path by adding the `tandem-server` library surface expected by `tandem-ai`.
+  - Re-exported the required server/runtime helpers through that new crate entrypoint so engine builds no longer fail on unresolved `tandem_server` imports.
 
 ## v0.4.17 (Released 2026-04-01)
 

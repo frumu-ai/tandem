@@ -1473,11 +1473,26 @@ pub(super) async fn context_run_get(
         super::context_run_mutation_checkpoints::context_run_mutation_checkpoint_preview_summary_for_run(
             &state, &run_id,
         );
+    let rollback_history_summary =
+        super::context_run_mutation_checkpoints::context_run_mutation_checkpoint_rollback_history_summary_for_run(
+            &state, &run_id,
+        );
+    let last_rollback_outcome =
+        super::context_run_mutation_checkpoints::context_run_mutation_checkpoint_last_rollback_outcome_for_run(
+            &state, &run_id,
+        );
+    let rollback_policy =
+        super::context_run_mutation_checkpoints::context_run_mutation_checkpoint_rollback_policy_summary(
+            &run,
+        );
     Ok(Json(json!({
         "run": run,
         "ledger_summary": ledger_summary,
         "mutation_checkpoint_summary": mutation_checkpoint_summary,
         "rollback_preview_summary": rollback_preview_summary,
+        "rollback_history_summary": rollback_history_summary,
+        "last_rollback_outcome": last_rollback_outcome,
+        "rollback_policy": rollback_policy,
     })))
 }
 

@@ -18,12 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Workflow knowledge reuse and rollout guidance**:
   - Added first-class knowledge bindings, project-scoped preflight reuse, promotion lifecycle tracking, and audit reasons so workflows can reuse validated knowledge instead of redoing the same work.
   - Added planner and review guardrails that keep raw working state local, prefer project-scoped promoted knowledge, and surface rollout guidance for operators.
+- **Context-run rollback audit and operator surfaces**:
+  - Added rollback history summary, last rollback outcome, and rollback policy metadata to `GET /context/runs/:run_id` so clients can render audit state without replaying event history manually.
+  - Added regression coverage for blocked rollback outcomes and required policy-ack metadata on context-run detail responses.
+- **Desktop and terminal rollback operations visibility**:
+  - Added rollback policy, audit, preview, receipt history, and guarded execute flows to the desktop developer run viewer, including linked context-run refresh after execution.
+  - Added Tandem TUI rollback preview, rollback history, explicit rollback execute, and execute-all commands so terminal operators can inspect and run guarded rollback steps without leaving the TUI.
 
 ### Fixed
 
 - **Desktop startup splash resilience**:
   - Made the unlock splash dismiss immediately after a successful vault unlock so slow or transient provider discovery cannot strand the app on the startup screen.
   - Stopped boot-time sidecar startup from silently rewriting the selected provider/default-provider state, reducing startup regressions caused by stale or slow provider config.
+- **`tandem-engine` fast-release build regression**:
+  - Restored `cargo build -p tandem-ai --profile fast-release` by adding the missing `tandem-server` library surface expected by the engine binary.
+  - Re-exported the required server/runtime helpers through the new library entrypoint so engine builds no longer fail with unresolved `tandem_server` imports.
 
 ## [0.4.17] - 2026-04-01
 
