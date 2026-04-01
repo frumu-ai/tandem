@@ -12,7 +12,7 @@ This is the canonical release-notes file used by release tooling.
   - Added explicit execution-kind markers plus mission coder handoff summaries so mission and workflow nodes can distinguish coder-run work from governance-only steps.
   - Added regressions that preserve lane, phase, milestone, and launch metadata across the mission preview and task-routing boundaries.
 
-## v0.4.17 (Released 2026-03-28)
+## v0.4.17 (Released 2026-04-01)
 
 - **Automation Modularization & Scaling**
   - Modularized the automation engine into dedicated sub-modules for improved maintainability.
