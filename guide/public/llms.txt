@@ -1,69 +1,71 @@
 # Tandem Docs
 
-> Canonical documentation for Tandem at `https://docs.tandem.ac/`.
-> If you are trying to understand the project quickly, start here.
+> Agent navigation guide for the published docs site at `https://docs.tandem.ac/`.
+> Use these pages to find the relevant docs content on the site itself.
 
-## What this site covers
+## How to use this
 
-- Tandem engine usage, deployment, and configuration.
-- Desktop and terminal workflows for operators and contributors.
-- Agent orchestration, sessions, and MCP-based automation.
-- SDKs, reference APIs, and protocol behavior.
+- Start at `/start-here/` if you need the recommended entry path.
+- Use the route paths below to open the matching docs page on `docs.tandem.ac`.
+- Do not expect repo file paths here; this index is for the published docs site only.
 
-## Best starting pages
+## Start here
 
-- /start-here/ - Decide whether you need the CLI, web control panel, or source build path.
-- /installation/ - Install the official packages and prerequisites.
-- /install-cli-binaries/ - Install the master CLI, engine, and TUI binaries.
-- /first-run/ - Run the first validation checklist.
-- /control-panel/ - Use or scaffold the browser control panel.
-- /tui-guide/ - Learn the terminal UI.
-- /agents-and-sessions/ - Understand sessions and execution context.
-- /agent-teams/ - Learn Tandem's agent-team orchestration model.
-- /mcp-automated-agents/ - Build automated agent workflows.
-- /webmcp-for-agents/ - Expose local HTTP APIs to agents.
-- /configuration/ - Configure providers, keys, and system instructions.
+- /start-here/ - Choose the right path for CLI, control panel, or source builds.
+- /installation/ - Install Tandem and its prerequisites.
+- /install-cli-binaries/ - Install the official CLI, engine, and TUI binaries.
+- /first-run/ - Follow the first-run checklist.
 - /build-from-source/ - Build Tandem from source.
 
-## Reference pages
+## Desktop and operator docs
 
-- /architecture/ - Internal architecture overview.
-- /protocol-matrix/ - Port and protocol compatibility matrix.
-- /engine-testing/ - Engine validation and testing notes.
+- /control-panel/ - Browser control panel and scaffolded app guidance.
+- /tui-guide/ - Terminal UI guide.
+- /agents-and-sessions/ - Sessions, context, and execution model.
+- /agent-teams/ - Agent team architecture and behavior.
+- /configuration/ - Providers, keys, and system instructions.
+- /headless-service/ - Headless engine service mode.
+- /channel-integrations/ - Slack, Discord, Telegram, and related integrations.
+- /desktop/overview/ - Desktop overview.
+- /desktop/first-10-minutes/ - First 10 minutes with Tandem Desktop.
+- /desktop/workflows/ - Desktop workflows.
+- /desktop/settings-and-safety/ - Settings and safety.
+- /desktop/learn-walkthroughs/ - Interactive Learn walkthroughs.
+- /desktop/troubleshooting/ - Desktop troubleshooting.
+- /desktop/headless-deployment/ - Headless deployment from desktop workflows.
+
+## Developer and automation docs
+
+- /mcp-automated-agents/ - Automated agent workflows and MCP patterns.
+- /webmcp-for-agents/ - Local HTTP APIs for agents.
+- /autonomous-coding-agents-github-projects/ - GitHub Projects coding-agent workflows.
+- /browser-setup-and-testing/ - Browser setup, install, and validation.
 - /sdk/ - SDK landing page.
 - /sdk/typescript/ - TypeScript SDK.
 - /sdk/python/ - Python SDK.
-- /reference/engine-commands/ - Engine CLI reference.
-- /reference/tui-commands/ - TUI command reference.
+- /sdk/scheduling-automations/ - SDK automation scheduling.
+
+## Architecture and reference
+
+- /architecture/ - System architecture overview.
+- /protocol-matrix/ - Protocol and compatibility matrix.
+- /engine-testing/ - Engine testing guidance.
+- /reference/engine-commands/ - Engine CLI commands.
+- /reference/tui-commands/ - TUI commands.
 - /reference/tools/ - Tool API reference.
-- /reference/spawn-policy/ - Spawn policy and safety gates.
+- /reference/spawn-policy/ - Spawn policy and safety rules.
 - /reference/agent-team-api/ - Agent-team HTTP API.
 - /reference/agent-team-events/ - Agent-team event stream contract.
 
-## Desktop and deployment
+## If you need a quick pointer
 
-- /desktop/overview/ - Desktop architecture and UX overview.
-- /desktop/first-10-minutes/ - Guided onboarding for desktop users.
-- /desktop/workflows/ - Common desktop workflows.
-- /desktop/settings-and-safety/ - Safety and settings guidance.
-- /desktop/learn-walkthroughs/ - Interactive Learn walkthroughs.
-- /desktop/troubleshooting/ - Desktop troubleshooting.
-- /desktop/headless-deployment/ - Desktop-to-headless deployment path.
-- /headless-service/ - Headless engine service mode.
-- /channel-integrations/ - Slack, Discord, Telegram, and related integrations.
-- /browser-setup-and-testing/ - Browser setup and test flow.
-
-## Where to find the source
-
-- `guide/src/content/docs/` - Authoritative source for the published docs.
-- `guide/astro.config.mjs` - Site config, base URL, and sidebar structure.
-- `guide/src/styles/custom.css` - Docs styling.
-- `docs/` - Deeper internal design and implementation docs.
-
-## Full index
-
-- /llms-full.txt - Exhaustive page map with source hints.
+- Want setup? Start with `/start-here/` and `/installation/`.
+- Want to run Tandem as a service? Use `/headless-service/`.
+- Want to understand orchestration? Read `/agents-and-sessions/` and `/agent-teams/`.
+- Want to build integrations? Use `/mcp-automated-agents/`, `/webmcp-for-agents/`, and the SDK pages.
+- Want low-level behavior? Use the `/reference/` pages and `/protocol-matrix/`.
 
 ## External
 
 - https://github.com/frumu-ai/tandem
+- https://webmcp.dev/

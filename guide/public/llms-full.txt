@@ -1,75 +1,77 @@
 # Tandem Docs (Full Index)
 
-> Exhaustive index for the live docs site at `https://docs.tandem.ac/`.
-> Source files live under `guide/src/content/docs/`.
+> Exhaustive index for the published docs site at `https://docs.tandem.ac/`.
+> This file is for agents that can browse the docs site, not the source repo.
 
 ## Home
 
-- / - `guide/src/content/docs/index.md`
-- /start-here/ - `guide/src/content/docs/start-here.md`
-- /installation/ - `guide/src/content/docs/installation.md`
-- /install-cli-binaries/ - `guide/src/content/docs/install-cli-binaries.md`
-- /first-run/ - `guide/src/content/docs/first-run.md`
+- / - Docs home and top-level entry point.
+- /start-here/ - Recommended entry path for new users.
+- /installation/ - Install Tandem and its prerequisites.
+- /install-cli-binaries/ - Install the CLI, engine, and TUI binaries.
+- /first-run/ - First-run checklist and validation.
+- /build-from-source/ - Build from source instructions.
 
 ## Core usage
 
-- /control-panel/ - `guide/src/content/docs/control-panel.md`
-- /tui-guide/ - `guide/src/content/docs/tui-guide.md`
-- /agents-and-sessions/ - `guide/src/content/docs/agents-and-sessions.md`
-- /agent-teams/ - `guide/src/content/docs/agent-teams.md`
-- /configuration/ - `guide/src/content/docs/configuration.md`
-- /headless-service/ - `guide/src/content/docs/headless-service.md`
-- /channel-integrations/ - `guide/src/content/docs/channel-integrations.md`
+- /control-panel/ - Browser control panel and editable panel app path.
+- /tui-guide/ - Terminal UI guide.
+- /agents-and-sessions/ - Sessions and execution model.
+- /agent-teams/ - Agent-team architecture and behavior.
+- /configuration/ - Providers, keys, and system instructions.
+- /headless-service/ - Headless engine service mode.
+- /channel-integrations/ - Slack, Discord, Telegram, and related integrations.
 
 ## Desktop
 
-- /desktop/overview/ - `guide/src/content/docs/desktop/overview.md`
-- /desktop/first-10-minutes/ - `guide/src/content/docs/desktop/first-10-minutes.md`
-- /desktop/workflows/ - `guide/src/content/docs/desktop/workflows.md`
-- /desktop/settings-and-safety/ - `guide/src/content/docs/desktop/settings-and-safety.md`
-- /desktop/learn-walkthroughs/ - `guide/src/content/docs/desktop/learn-walkthroughs.md`
-- /desktop/troubleshooting/ - `guide/src/content/docs/desktop/troubleshooting.md`
-- /desktop/headless-deployment/ - `guide/src/content/docs/desktop/headless-deployment.md`
+- /desktop/overview/ - Desktop overview.
+- /desktop/first-10-minutes/ - First 10 minutes with Tandem Desktop.
+- /desktop/workflows/ - Desktop workflows.
+- /desktop/settings-and-safety/ - Desktop settings and safety.
+- /desktop/learn-walkthroughs/ - Learn walkthroughs and tutorials.
+- /desktop/troubleshooting/ - Desktop troubleshooting.
+- /desktop/headless-deployment/ - Headless deployment path from desktop workflows.
 
 ## Developer and automation
 
-- /mcp-automated-agents/ - `guide/src/content/docs/mcp-automated-agents.md`
-- /webmcp-for-agents/ - `guide/src/content/docs/webmcp-for-agents.md`
-- /autonomous-coding-agents-github-projects/ - `guide/src/content/docs/autonomous-coding-agents-github-projects.md`
-- /browser-setup-and-testing/ - `guide/src/content/docs/browser-setup-and-testing.md`
+- /mcp-automated-agents/ - Automated agent workflows and MCP integration.
+- /webmcp-for-agents/ - WebMCP workflow guidance for agents.
+- /autonomous-coding-agents-github-projects/ - GitHub Projects coding-agent workflows.
+- /browser-setup-and-testing/ - Browser install, setup, and validation.
 
 ## Architecture and reference
 
-- /architecture/ - `guide/src/content/docs/architecture.md`
-- /protocol-matrix/ - `guide/src/content/docs/protocol-matrix.md`
-- /engine-testing/ - `guide/src/content/docs/engine-testing.md`
-- /build-from-source/ - `guide/src/content/docs/build-from-source.md`
-- /reference/engine-commands/ - `guide/src/content/docs/reference/engine-commands.md`
-- /reference/tui-commands/ - `guide/src/content/docs/reference/tui-commands.md`
-- /reference/tools/ - `guide/src/content/docs/reference/tools.md`
-- /reference/spawn-policy/ - `guide/src/content/docs/reference/spawn-policy.md`
-- /reference/agent-team-api/ - `guide/src/content/docs/reference/agent-team-api.md`
-- /reference/agent-team-events/ - `guide/src/content/docs/reference/agent-team-events.md`
+- /architecture/ - Internal architecture overview.
+- /protocol-matrix/ - Protocol compatibility matrix.
+- /engine-testing/ - Engine testing guidance.
+- /reference/engine-commands/ - Engine CLI reference.
+- /reference/tui-commands/ - TUI command reference.
+- /reference/tools/ - Tool API reference.
+- /reference/spawn-policy/ - Spawn policy and safety rules.
+- /reference/agent-team-api/ - Agent-team HTTP API.
+- /reference/agent-team-events/ - Agent-team event stream contract.
 
 ## SDKs
 
-- /sdk/ - `guide/src/content/docs/sdk/index.md`
-- /sdk/typescript/ - `guide/src/content/docs/sdk/typescript.md`
-- /sdk/python/ - `guide/src/content/docs/sdk/python.md`
-- /sdk/scheduling-automations/ - `guide/src/content/docs/sdk/scheduling-automations.md`
+- /sdk/ - SDK landing page.
+- /sdk/typescript/ - TypeScript SDK.
+- /sdk/python/ - Python SDK.
+- /sdk/scheduling-automations/ - SDK automation scheduling.
 
 ## Design and support
 
-- /design-system/ - `guide/src/content/docs/design-system.md`
+- /design-system/ - Product and UI design guidance.
 
-## Notes for LLMs
+## Navigation cues
 
-- Prefer `https://docs.tandem.ac/` as the canonical published origin.
-- Treat `guide/src/content/docs/` as the source of truth for the docs site.
-- Treat `docs/` as the source of deeper internal design and implementation references.
-- Do not rely on `guide/book/` or `guide/dist/` as editable sources; they are build outputs.
+- If the agent needs to understand what Tandem is, start at `/`.
+- If it needs user onboarding, go to `/start-here/`, then follow `/installation/` and `/first-run/`.
+- If it needs to operate Tandem, use `/control-panel/`, `/headless-service/`, and `/tui-guide/`.
+- If it needs to reason about agents, use `/agents-and-sessions/` and `/agent-teams/`.
+- If it needs integration guidance, use `/mcp-automated-agents/`, `/webmcp-for-agents/`, and the SDK pages.
+- If it needs implementation details, use the `/reference/` pages plus `/protocol-matrix/` and `/architecture/`.
 
-## External resources
+## External
 
 - https://github.com/frumu-ai/tandem
 - https://webmcp.dev/
