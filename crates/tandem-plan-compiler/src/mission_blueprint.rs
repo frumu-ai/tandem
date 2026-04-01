@@ -10,6 +10,9 @@ use tandem_workflows::{
 
 use crate::contracts::research_output_contract_policy_seed;
 
+pub const MISSION_EXECUTION_KIND_CODER_RUN: &str = "coder_run";
+pub const MISSION_EXECUTION_KIND_GOVERNANCE: &str = "governance";
+
 pub fn derive_mission_spec(blueprint: &MissionBlueprint) -> MissionSpec {
     let mut spec = MissionSpec::new(blueprint.title.clone(), blueprint.goal.clone());
     spec.mission_id = blueprint.mission_id.clone();
@@ -39,6 +42,7 @@ pub fn derive_work_items(blueprint: &MissionBlueprint) -> Vec<WorkItem> {
             run_id: None,
             artifact_refs: Vec::new(),
             metadata: Some(json!({
+                "execution_kind": MISSION_EXECUTION_KIND_CODER_RUN,
                 "role": workstream.role,
                 "template_id": workstream.template_id,
                 "stage_kind": "workstream",
@@ -60,6 +64,7 @@ pub fn derive_work_items(blueprint: &MissionBlueprint) -> Vec<WorkItem> {
         run_id: None,
         artifact_refs: Vec::new(),
         metadata: Some(json!({
+            "execution_kind": MISSION_EXECUTION_KIND_GOVERNANCE,
             "stage_kind": review_stage_kind_to_lower_string(stage.stage_kind.clone()),
             "template_id": stage.template_id,
             "role": stage.role,
@@ -168,6 +173,9 @@ pub fn mission_workstream_node_metadata(workstream: &WorkstreamBlueprint) -> Opt
     let Some(builder_map) = builder.as_object_mut() else {
         return Some(Value::Object(root));
     };
+    builder_map
+        .entry("execution_kind".to_string())
+        .or_insert_with(|| json!(MISSION_EXECUTION_KIND_CODER_RUN));
     for (key, value) in mission_workstream_builder_defaults(workstream) {
         builder_map.entry(key).or_insert(value);
     }

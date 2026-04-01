@@ -39,7 +39,8 @@ pub use crate::materialization::{
     ProjectedStepContextBindings,
 };
 pub use crate::mission_preview::{
-    compile_mission_blueprint_preview, CompiledNodePreview, MissionBlueprintPreview,
+    compile_mission_blueprint_preview, summarize_mission_execution_boundary, CompiledNodePreview,
+    MissionBlueprintPreview, MissionExecutionBoundarySummary,
 };
 pub use crate::mission_runtime::{
     compile_mission_runtime_projection, project_mission_runtime_materialization_seed,

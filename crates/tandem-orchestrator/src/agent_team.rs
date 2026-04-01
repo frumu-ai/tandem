@@ -512,8 +512,11 @@ mod tests {
         };
         let template = AgentTemplate {
             template_id: "worker-default".to_string(),
+            display_name: Some("Worker".to_string()),
+            avatar_url: None,
             role: AgentRole::Worker,
             system_prompt: None,
+            default_model: None,
             skills: vec![],
             default_budget: BudgetLimit::default(),
             capabilities: CapabilitySpec::default(),

@@ -11,17 +11,19 @@ use tandem_plan_compiler::api::{
     build_workflow_plan_with_planner_json, compare_workflow_plan_preview_replay_with_revision,
     compile_mission_blueprint_preview, compile_workflow_plan_preview_package_with_revision,
     default_fallback_schedule_json, default_fallback_step_json, load_workflow_plan_draft,
-    revise_workflow_plan_draft_json, store_preview_draft, workflow_plan_to_json, ApprovalMode,
-    Clock, CommunicationModel, ContextObject, ContextObjectProvenance, ContextObjectScope,
-    ContextValidationStatus, CredentialBindingRef, CredentialEnvelope, InterRoutinePolicy,
-    McpToolCatalog, MissionBlueprintPreview, MissionDefinition, PeerVisibility, PlanLifecycleState,
-    PlanOwner, PlanPackage, PlanReplayReport, PlanStore, PlannerBuildConfig,
-    PlannerBuildRequestJson, PlannerDraftRevisionResultJson, PlannerLlmInvocation,
-    PlannerLlmInvoker, PlannerLoopConfig, PlannerModelRegistry, PlannerSessionStore,
-    RoutineSemanticKind, TelemetrySink, WorkflowPlanJson, WorkspaceResolver,
+    revise_workflow_plan_draft_json, store_preview_draft, summarize_mission_execution_boundary,
+    workflow_plan_to_json, ApprovalMode, Clock, CommunicationModel, ContextObject,
+    ContextObjectProvenance, ContextObjectScope, ContextValidationStatus, CredentialBindingRef,
+    CredentialEnvelope, InterRoutinePolicy, McpToolCatalog, MissionBlueprintPreview,
+    MissionDefinition, PeerVisibility, PlanLifecycleState, PlanOwner, PlanPackage,
+    PlanReplayReport, PlanStore, PlannerBuildConfig, PlannerBuildRequestJson,
+    PlannerDraftRevisionResultJson, PlannerLlmInvocation, PlannerLlmInvoker, PlannerLoopConfig,
+    PlannerModelRegistry, PlannerSessionStore, RoutineSemanticKind, TelemetrySink,
+    WorkflowPlanJson, WorkspaceResolver,
 };
 use tandem_workflows::{
-    MissionBlueprint, MissionTeamBlueprint, OutputContractBlueprint, WorkstreamBlueprint,
+    ApprovalDecision, HumanApprovalGate, MissionBlueprint, MissionTeamBlueprint,
+    OutputContractBlueprint, ReviewStage, ReviewStageKind, WorkstreamBlueprint,
 };
 
 struct ApiTestHost {
@@ -291,7 +293,33 @@ fn curated_api_supports_mission_preview_types() {
             timeout_ms: None,
             metadata: None,
         }],
-        review_stages: Vec::new(),
+        review_stages: vec![ReviewStage {
+            stage_id: "approval_1".to_string(),
+            stage_kind: ReviewStageKind::Approval,
+            title: "Approve".to_string(),
+            priority: None,
+            phase_id: None,
+            lane: None,
+            milestone: None,
+            target_ids: vec!["workstream_1".to_string()],
+            role: None,
+            template_id: None,
+            prompt: "".to_string(),
+            checklist: Vec::new(),
+            model_override: None,
+            tool_allowlist_override: Vec::new(),
+            mcp_servers_override: Vec::new(),
+            gate: Some(HumanApprovalGate {
+                required: true,
+                decisions: vec![
+                    ApprovalDecision::Approve,
+                    ApprovalDecision::Rework,
+                    ApprovalDecision::Cancel,
+                ],
+                rework_targets: vec!["workstream_1".to_string()],
+                instructions: Some("Approve the completed workstream.".to_string()),
+            }),
+        }],
         metadata: None,
     };
 
@@ -299,7 +327,40 @@ fn curated_api_supports_mission_preview_types() {
     let roundtrip =
         serde_json::from_value::<MissionBlueprintPreview>(serde_json::to_value(preview).unwrap())
             .unwrap();
-    assert_eq!(roundtrip.work_items.len(), 1);
+    assert_eq!(roundtrip.work_items.len(), 2);
+    assert!(roundtrip
+        .node_previews
+        .iter()
+        .any(|node| node.execution_kind == "coder_run"));
+    assert!(roundtrip
+        .node_previews
+        .iter()
+        .any(|node| node.execution_kind == "governance"));
+    assert_eq!(
+        roundtrip
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "workstream_1")
+            .and_then(|item| item.metadata.as_ref())
+            .and_then(|metadata| metadata.get("execution_kind"))
+            .and_then(Value::as_str),
+        Some("coder_run")
+    );
+    assert_eq!(
+        roundtrip
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "approval_1")
+            .and_then(|item| item.metadata.as_ref())
+            .and_then(|metadata| metadata.get("execution_kind"))
+            .and_then(Value::as_str),
+        Some("governance")
+    );
+
+    let summary = summarize_mission_execution_boundary(&roundtrip);
+    assert_eq!(summary.total_nodes, 2);
+    assert_eq!(summary.coder_run_node_ids, vec!["workstream_1".to_string()]);
+    assert_eq!(summary.governance_node_ids, vec!["approval_1".to_string()]);
 }
 
 #[test]

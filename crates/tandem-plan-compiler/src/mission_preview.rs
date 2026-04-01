@@ -11,6 +11,7 @@ use tandem_workflows::{
 
 use crate::mission_blueprint::{
     compile_barrier_dependencies, derive_mission_spec, derive_work_items, phase_rank_map,
+    MISSION_EXECUTION_KIND_CODER_RUN, MISSION_EXECUTION_KIND_GOVERNANCE,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +19,7 @@ pub struct CompiledNodePreview {
     pub node_id: String,
     pub title: String,
     pub agent_id: String,
+    pub execution_kind: String,
     pub stage_kind: String,
     pub phase_id: Option<String>,
     pub lane: Option<String>,
@@ -36,6 +38,13 @@ pub struct MissionBlueprintPreview {
     pub work_items: Vec<WorkItem>,
     pub node_previews: Vec<CompiledNodePreview>,
     pub validation: Vec<ValidationMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MissionExecutionBoundarySummary {
+    pub total_nodes: usize,
+    pub coder_run_node_ids: Vec<String>,
+    pub governance_node_ids: Vec<String>,
 }
 
 pub fn compile_mission_blueprint_preview(
@@ -62,6 +71,27 @@ pub fn compile_mission_blueprint_preview(
     })
 }
 
+pub fn summarize_mission_execution_boundary(
+    preview: &MissionBlueprintPreview,
+) -> MissionExecutionBoundarySummary {
+    let mut coder_run_node_ids = Vec::new();
+    let mut governance_node_ids = Vec::new();
+
+    for node in &preview.node_previews {
+        if node.execution_kind == MISSION_EXECUTION_KIND_CODER_RUN {
+            coder_run_node_ids.push(node.node_id.clone());
+        } else {
+            governance_node_ids.push(node.node_id.clone());
+        }
+    }
+
+    MissionExecutionBoundarySummary {
+        total_nodes: preview.node_previews.len(),
+        coder_run_node_ids,
+        governance_node_ids,
+    }
+}
+
 fn derive_node_previews(blueprint: &MissionBlueprint) -> Vec<CompiledNodePreview> {
     let phase_rank = phase_rank_map(blueprint);
     let barrier_deps = compile_barrier_dependencies(blueprint, &phase_rank);
@@ -82,6 +112,7 @@ fn derive_node_previews(blueprint: &MissionBlueprint) -> Vec<CompiledNodePreview
             node_id: workstream.workstream_id.clone(),
             title: workstream.title.clone(),
             agent_id,
+            execution_kind: MISSION_EXECUTION_KIND_CODER_RUN.to_string(),
             stage_kind: "workstream".to_string(),
             phase_id: workstream.phase_id.clone(),
             lane: workstream.lane.clone(),
@@ -136,6 +167,7 @@ fn derive_node_previews(blueprint: &MissionBlueprint) -> Vec<CompiledNodePreview
             node_id: stage.stage_id.clone(),
             title: stage.title.clone(),
             agent_id,
+            execution_kind: MISSION_EXECUTION_KIND_GOVERNANCE.to_string(),
             stage_kind,
             phase_id: stage.phase_id.clone(),
             lane: stage.lane.clone(),

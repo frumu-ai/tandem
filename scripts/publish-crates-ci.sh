@@ -45,6 +45,7 @@ CRATES=(
   "crates/tandem-runtime"
   "crates/tandem-channels"
   "crates/tandem-workflows"
+  "crates/tandem-plan-compiler"
   "crates/tandem-server"
   "crates/tandem-tui"
   "engine"

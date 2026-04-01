@@ -21,7 +21,7 @@ use crate::materialization::{
 };
 use crate::mission_blueprint::{
     compile_barrier_dependencies, mission_workstream_enforcement_defaults,
-    mission_workstream_node_metadata, phase_rank_map,
+    mission_workstream_node_metadata, phase_rank_map, MISSION_EXECUTION_KIND_GOVERNANCE,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +337,7 @@ fn review_stage_metadata(
     mcp_servers: &[String],
 ) -> Value {
     json!({
+        "execution_kind": MISSION_EXECUTION_KIND_GOVERNANCE,
         "builder": {
             "title": stage.title,
             "checklist": stage.checklist,
@@ -483,6 +484,15 @@ mod tests {
                 .as_ref()
                 .and_then(|contract| contract.validator_kind),
             Some(crate::contracts::ProjectedOutputValidatorKind::ResearchBrief)
+        );
+        assert_eq!(
+            projection.nodes[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("builder"))
+                .and_then(|builder| builder.get("execution_kind"))
+                .and_then(Value::as_str),
+            Some("coder_run")
         );
     }
 }
