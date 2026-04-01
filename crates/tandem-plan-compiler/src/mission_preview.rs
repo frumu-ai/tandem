@@ -2,6 +2,7 @@
 // Licensed under the Business Source License 1.1
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use tandem_orchestrator::{MissionSpec, WorkItem};
 use tandem_workflows::{
@@ -47,6 +48,33 @@ pub struct MissionExecutionBoundarySummary {
     pub governance_node_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MissionCoderRunHandoffCandidate {
+    pub mission_id: String,
+    pub mission_title: String,
+    pub mission_goal: String,
+    pub workspace_root: String,
+    pub node_id: String,
+    pub title: String,
+    pub objective: String,
+    pub agent_id: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    pub execution_kind: String,
+    pub stage_kind: String,
+    pub phase_id: Option<String>,
+    pub lane: Option<String>,
+    pub milestone: Option<String>,
+    pub priority: Option<i32>,
+    pub depends_on: Vec<String>,
+    pub tool_allowlist: Vec<String>,
+    pub mcp_servers: Vec<String>,
+    pub inherited_brief: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
 pub fn compile_mission_blueprint_preview(
     blueprint: MissionBlueprint,
 ) -> Result<MissionBlueprintPreview, Vec<ValidationMessage>> {
@@ -90,6 +118,49 @@ pub fn summarize_mission_execution_boundary(
         coder_run_node_ids,
         governance_node_ids,
     }
+}
+
+pub fn summarize_mission_coder_run_handoffs(
+    preview: &MissionBlueprintPreview,
+) -> Vec<MissionCoderRunHandoffCandidate> {
+    let workstreams_by_id = preview
+        .blueprint
+        .workstreams
+        .iter()
+        .map(|workstream| (workstream.workstream_id.clone(), workstream))
+        .collect::<HashMap<_, _>>();
+
+    preview
+        .node_previews
+        .iter()
+        .filter(|node| node.execution_kind == MISSION_EXECUTION_KIND_CODER_RUN)
+        .filter_map(|node| {
+            let workstream = workstreams_by_id.get(&node.node_id)?;
+            Some(MissionCoderRunHandoffCandidate {
+                mission_id: preview.blueprint.mission_id.clone(),
+                mission_title: preview.blueprint.title.clone(),
+                mission_goal: preview.blueprint.goal.clone(),
+                workspace_root: preview.blueprint.workspace_root.clone(),
+                node_id: node.node_id.clone(),
+                title: node.title.clone(),
+                objective: workstream.objective.clone(),
+                agent_id: node.agent_id.clone(),
+                role: workstream.role.clone(),
+                template_id: workstream.template_id.clone(),
+                execution_kind: node.execution_kind.clone(),
+                stage_kind: node.stage_kind.clone(),
+                phase_id: node.phase_id.clone(),
+                lane: node.lane.clone(),
+                milestone: node.milestone.clone(),
+                priority: node.priority,
+                depends_on: node.depends_on.clone(),
+                tool_allowlist: node.tool_allowlist.clone(),
+                mcp_servers: node.mcp_servers.clone(),
+                inherited_brief: node.inherited_brief.clone(),
+                metadata: workstream.metadata.clone(),
+            })
+        })
+        .collect()
 }
 
 fn derive_node_previews(blueprint: &MissionBlueprint) -> Vec<CompiledNodePreview> {

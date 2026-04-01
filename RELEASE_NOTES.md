@@ -2,6 +2,20 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.18 (Released 2026-04-01)
+
+- **Task intake and routing boundary**
+  - Added a task-intake preview contract and HTTP endpoint so external orchestration can normalize single tasks, grouped tasks, and GitHub Project items before selecting coder or workflow paths.
+  - Added task grouping signals, board-item normalization, and advisory route hints so grouped work can prefer mission preview without collapsing the mission planner into the coding loop.
+
+- **Mission/workflow handoff hardening**
+  - Added explicit execution-kind markers plus mission coder handoff summaries so mission and workflow nodes can distinguish coder-run work from governance-only steps.
+  - Added regressions that preserve lane, phase, milestone, and launch metadata across the mission preview and task-routing boundaries.
+
+- **ACA task-first orchestration alignment**
+  - Added a Tandem SDK helper for task-intake preview and propagated GitHub Project context so ACA can keep task-first intake while preserving project name and column metadata.
+  - Updated the internal planning and kanban docs to keep the external orchestration boundary explicit and avoid moving the coding loop into mission/workflow ownership.
+
 ## v0.4.17 (Released 2026-03-28)
 
 - **Automation Modularization & Scaling**

@@ -11,15 +11,15 @@ use tandem_plan_compiler::api::{
     build_workflow_plan_with_planner_json, compare_workflow_plan_preview_replay_with_revision,
     compile_mission_blueprint_preview, compile_workflow_plan_preview_package_with_revision,
     default_fallback_schedule_json, default_fallback_step_json, load_workflow_plan_draft,
-    revise_workflow_plan_draft_json, store_preview_draft, summarize_mission_execution_boundary,
-    workflow_plan_to_json, ApprovalMode, Clock, CommunicationModel, ContextObject,
-    ContextObjectProvenance, ContextObjectScope, ContextValidationStatus, CredentialBindingRef,
-    CredentialEnvelope, InterRoutinePolicy, McpToolCatalog, MissionBlueprintPreview,
-    MissionDefinition, PeerVisibility, PlanLifecycleState, PlanOwner, PlanPackage,
-    PlanReplayReport, PlanStore, PlannerBuildConfig, PlannerBuildRequestJson,
-    PlannerDraftRevisionResultJson, PlannerLlmInvocation, PlannerLlmInvoker, PlannerLoopConfig,
-    PlannerModelRegistry, PlannerSessionStore, RoutineSemanticKind, TelemetrySink,
-    WorkflowPlanJson, WorkspaceResolver,
+    revise_workflow_plan_draft_json, store_preview_draft, summarize_mission_coder_run_handoffs,
+    summarize_mission_execution_boundary, workflow_plan_to_json, ApprovalMode, Clock,
+    CommunicationModel, ContextObject, ContextObjectProvenance, ContextObjectScope,
+    ContextValidationStatus, CredentialBindingRef, CredentialEnvelope, InterRoutinePolicy,
+    McpToolCatalog, MissionBlueprintPreview, MissionDefinition, PeerVisibility, PlanLifecycleState,
+    PlanOwner, PlanPackage, PlanReplayReport, PlanStore, PlannerBuildConfig,
+    PlannerBuildRequestJson, PlannerDraftRevisionResultJson, PlannerLlmInvocation,
+    PlannerLlmInvoker, PlannerLoopConfig, PlannerModelRegistry, PlannerSessionStore,
+    RoutineSemanticKind, TelemetrySink, WorkflowPlanJson, WorkspaceResolver,
 };
 use tandem_workflows::{
     ApprovalDecision, HumanApprovalGate, MissionBlueprint, MissionTeamBlueprint,
@@ -361,6 +361,149 @@ fn curated_api_supports_mission_preview_types() {
     assert_eq!(summary.total_nodes, 2);
     assert_eq!(summary.coder_run_node_ids, vec!["workstream_1".to_string()]);
     assert_eq!(summary.governance_node_ids, vec!["approval_1".to_string()]);
+
+    let coder_handoffs = summarize_mission_coder_run_handoffs(&roundtrip);
+    assert_eq!(coder_handoffs.len(), 1);
+    let handoff = &coder_handoffs[0];
+    assert_eq!(handoff.mission_id, "mission_api");
+    assert_eq!(handoff.node_id, "workstream_1");
+    assert_eq!(handoff.role, "worker");
+    assert_eq!(handoff.objective, "Add the feature");
+    assert_eq!(handoff.workspace_root, "/repo");
+    assert_eq!(handoff.execution_kind, "coder_run");
+}
+
+#[test]
+fn curated_api_hardens_mission_coder_launch_contract() {
+    let blueprint = MissionBlueprint {
+        mission_id: "mission_hardened".to_string(),
+        title: "Grouped Mission".to_string(),
+        goal: "Ship a grouped slice.".to_string(),
+        success_criteria: vec!["Grouped work is ready to hand off.".to_string()],
+        shared_context: Some("Clustered by release.".to_string()),
+        workspace_root: "/repo".to_string(),
+        orchestrator_template_id: Some("orchestrator_template".to_string()),
+        phases: vec![tandem_workflows::MissionPhaseBlueprint {
+            phase_id: "phase_coding".to_string(),
+            title: "Coding".to_string(),
+            description: Some("Coder execution phase".to_string()),
+            execution_mode: Some(tandem_workflows::MissionPhaseExecutionMode::Soft),
+        }],
+        milestones: vec![tandem_workflows::MissionMilestoneBlueprint {
+            milestone_id: "milestone_alpha".to_string(),
+            title: "Alpha".to_string(),
+            description: Some("First grouped slice milestone".to_string()),
+            phase_id: Some("phase_coding".to_string()),
+            required_stage_ids: vec!["approval_1".to_string()],
+        }],
+        team: MissionTeamBlueprint::default(),
+        workstreams: vec![WorkstreamBlueprint {
+            workstream_id: "workstream_1".to_string(),
+            title: "Implement".to_string(),
+            objective: "Add the feature".to_string(),
+            role: "worker".to_string(),
+            priority: Some(2),
+            phase_id: Some("phase_coding".to_string()),
+            lane: Some("coding".to_string()),
+            milestone: Some("milestone_alpha".to_string()),
+            template_id: Some("template_worker".to_string()),
+            prompt: "Do the work.".to_string(),
+            model_override: None,
+            tool_allowlist_override: vec!["read".to_string(), "write".to_string()],
+            mcp_servers_override: vec!["github".to_string()],
+            depends_on: vec!["approval_1".to_string()],
+            input_refs: Vec::new(),
+            output_contract: OutputContractBlueprint {
+                kind: "report_markdown".to_string(),
+                schema: None,
+                summary_guidance: Some("Summarize the coder launch contract.".to_string()),
+            },
+            retry_policy: None,
+            timeout_ms: Some(15_000),
+            metadata: Some(json!({
+                "surface": "tandem",
+                "workflow_kind": "coder_run",
+                "preset_id": "issue_fix",
+                "launch_source": "mission",
+            })),
+        }],
+        review_stages: vec![ReviewStage {
+            stage_id: "approval_1".to_string(),
+            stage_kind: ReviewStageKind::Approval,
+            title: "Approve".to_string(),
+            priority: Some(1),
+            phase_id: Some("phase_coding".to_string()),
+            lane: Some("governance".to_string()),
+            milestone: Some("milestone_alpha".to_string()),
+            target_ids: vec!["workstream_1".to_string()],
+            role: Some("orchestrator".to_string()),
+            template_id: Some("template_approval".to_string()),
+            prompt: "Approve the completed workstream.".to_string(),
+            checklist: vec!["Contract preserved".to_string()],
+            model_override: None,
+            tool_allowlist_override: Vec::new(),
+            mcp_servers_override: Vec::new(),
+            gate: Some(HumanApprovalGate {
+                required: true,
+                decisions: vec![ApprovalDecision::Approve, ApprovalDecision::Rework],
+                rework_targets: vec!["workstream_1".to_string()],
+                instructions: Some("Approve the launch contract.".to_string()),
+            }),
+        }],
+        metadata: Some(json!({
+            "coder": {
+                "surface": "tandem",
+                "workflow_kind": "coder_run",
+                "preset_id": "issue_fix",
+                "launch_source": "mission",
+            }
+        })),
+    };
+
+    let preview = compile_mission_blueprint_preview(blueprint).unwrap();
+    let summary = summarize_mission_execution_boundary(&preview);
+    assert_eq!(summary.coder_run_node_ids, vec!["workstream_1".to_string()]);
+    assert_eq!(summary.governance_node_ids, vec!["approval_1".to_string()]);
+
+    let coder_handoffs = summarize_mission_coder_run_handoffs(&preview);
+    assert_eq!(coder_handoffs.len(), 1);
+    let handoff = &coder_handoffs[0];
+    assert_eq!(handoff.node_id, "workstream_1");
+    assert_eq!(handoff.execution_kind, "coder_run");
+    assert_eq!(handoff.phase_id.as_deref(), Some("phase_coding"));
+    assert_eq!(handoff.lane.as_deref(), Some("coding"));
+    assert_eq!(handoff.milestone.as_deref(), Some("milestone_alpha"));
+    assert_eq!(handoff.template_id.as_deref(), Some("template_worker"));
+    assert_eq!(handoff.depends_on, vec!["approval_1".to_string()]);
+    assert_eq!(
+        handoff.tool_allowlist,
+        vec!["read".to_string(), "write".to_string()]
+    );
+    assert_eq!(handoff.mcp_servers, vec!["github".to_string()]);
+    assert_eq!(
+        handoff
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("surface"))
+            .and_then(Value::as_str),
+        Some("tandem")
+    );
+    assert_eq!(
+        handoff
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("workflow_kind"))
+            .and_then(Value::as_str),
+        Some("coder_run")
+    );
+    assert_eq!(
+        handoff
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("launch_source"))
+            .and_then(Value::as_str),
+        Some("mission")
+    );
 }
 
 #[test]

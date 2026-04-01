@@ -5,6 +5,7 @@ pub(super) mod bug_monitor;
 pub(super) mod capabilities;
 pub(super) mod channels;
 pub(super) mod coder;
+pub(super) mod context_run_ledger;
 pub(super) mod context_runs;
 pub(super) mod global;
 pub(super) mod mcp;
@@ -21,6 +22,7 @@ pub(super) mod resources;
 pub(super) mod routines;
 pub(super) mod sessions;
 pub(super) mod setup_understanding;
+pub(super) mod task_intake;
 pub(super) mod workflow_planner;
 pub(super) mod workflows;
 

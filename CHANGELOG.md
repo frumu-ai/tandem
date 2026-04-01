@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.18] - 2026-04-01
+
+### Added
+
+- **Task intake and routing boundary**:
+  - Added a task-intake preview contract and HTTP endpoint for external orchestrators to normalize single tasks, grouped tasks, and GitHub Project items before routing them to coder or workflow surfaces.
+  - Added task grouping signals, board-item normalization, and advisory route hints so grouped work can prefer mission preview without turning the mission planner into the coding loop.
+- **Mission/workflow handoff hardening**:
+  - Added explicit execution-kind markers and mission coder handoff summaries so mission/workflow nodes can distinguish coder-run work from governance steps.
+  - Added regressions that preserve lane, phase, milestone, and launch metadata across mission preview and task-routing boundaries.
+- **ACA task-first orchestration alignment**:
+  - Added a Tandem SDK helper for task-intake preview plus GitHub Project context propagation so ACA can keep task-first intake and preserve project name and column metadata.
+  - Updated internal planning and kanban docs to keep the external orchestration boundary explicit and avoid moving the coding loop into mission/workflow ownership.
+
 ## [0.4.17] - 2026-03-28
 
 ### Added

@@ -33,6 +33,7 @@ pub(super) fn build_router(state: AppState) -> Router {
     router = super::routes_presets::apply(router);
     router = super::routes_pack_builder::apply(router);
     router = super::routes_packs::apply(router);
+    router = super::routes_task_intake::apply(router);
     router = super::routes_workflow_planner::apply(router);
     router = super::routes_workflows::apply(router);
     router = super::routes_setup_understanding::apply(router);
