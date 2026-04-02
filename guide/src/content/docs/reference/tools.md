@@ -42,7 +42,10 @@ The Tandem Engine tool registry currently exposes the following tools.
 
 - **`bash`**: Run shell commands (PowerShell on Windows, Bash on Linux/Mac).
   - Input: `command` (string)
-- **`mcp_debug`**: Call an MCP tool directly.
+- **`mcp_debug`**: Call an MCP tool directly by URL.
+  - Input: `url` (string), `tool` (string), optional `args` (object), `headers` (object), `timeout_ms` (integer), `max_bytes` (integer)
+  - Use this when you already know the MCP server URL and the tool name you want to invoke.
+  - This tool does not discover tools or search the registry; it only calls a named MCP tool.
 - **`todo_write`**: Update the Todo/task list.
   - Aliases: `todowrite`, `update_todo_list`
 - **`task`**: Update the current task status.
@@ -59,6 +62,15 @@ The Tandem Engine tool registry currently exposes the following tools.
   - Input: optional filters (e.g., `team_name`, status filter)
 - **`sendmessage`**: Send mailbox-style message/task prompt to one or more teammates.
   - Input: message payload (e.g., `team_name`, `to`, `content`, `summary`)
+
+## MCP Discovery Endpoints
+
+These are HTTP endpoints, not engine tools:
+
+- `GET /mcp/tools` - List discovered tools from connected MCP servers.
+- `GET /tool/ids` - List all engine tool IDs, including built-ins and MCP tools.
+
+If you need to find a tool by keyword, fetch one of those lists and filter locally. Tandem does not provide a separate public "search the installed registry" endpoint.
 
 ## Specialized
 

@@ -20,6 +20,19 @@ For provider and model routing choices, use [Choosing Providers And Models For A
 - Routine-level `allowed_tools` policy for scheduled bots
 - Agent Automation visibility for connector status and scheduled runs
 
+## How Tool Discovery Works
+
+Tandem does not expose a separate "search the MCP registry by keyword" API.
+The public discovery path is:
+
+1. Connect the MCP server.
+2. List discovered tools with `GET /mcp/tools`.
+3. List all engine tool IDs with `GET /tool/ids`.
+4. Filter the returned tool list locally by prefix, server name, or tool name.
+5. Execute the chosen tool directly through the engine or via `mcp_debug` when you need to call a remote MCP server by URL.
+
+The engine does have internal semantic tool retrieval for prompt-time tool selection, but that ranking path is not a public registry search endpoint.
+
 ## The Context Bloat Solution: Strict Tool Isolation
 
 Most AI agent frameworks attempt to solve the token limit problem of massive MCP servers (e.g., Arcade offering hundreds of tools) by using "Tool RAG" (dynamically retrieving tool schemas) or trying to truncate contexts on the fly. This is notoriously error-prone and wastes expensive tokens.
