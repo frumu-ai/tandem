@@ -352,7 +352,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
                 output_path
             ),
             _ => format!(
-                "Required Run Artifact:\n- Create or update `{}` for this run.\n- Use `glob` to discover candidate paths and `read` only for concrete file paths.\n- Use the `write` tool to create the full file contents.\n- Only write declared workflow artifact files; do not create auxiliary touch files, status files, marker files, or placeholder preservation notes.\n- Overwrite the declared output with the actual artifact contents for this run instead of preserving a prior placeholder.\n- Do not report success unless this run artifact exists when the stage ends.",
+                "Required Run Artifact:\n- Create or update `{}` for this run.\n- If this output path is already known, use `write` immediately to create the full file contents.\n- Use `glob` and `read` only when you must inspect existing companion files or verify a preexisting artifact before updating it.\n- Do not let an empty `glob` end the run; still create the required artifact.\n- Only write declared workflow artifact files; do not create auxiliary touch files, status files, marker files, or placeholder preservation notes.\n- Overwrite the declared output with the actual artifact contents for this run instead of preserving a prior placeholder.\n- Do not report success unless this run artifact exists when the stage ends.",
                 output_path
             ),
         };

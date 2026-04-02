@@ -1265,8 +1265,8 @@ fn collect_inputs_prompt_requires_reading_before_writing() {
         )
         .expect("scoped output path");
     assert!(prompt.contains("Required Run Artifact:"));
-    assert!(prompt.contains("Use `glob` to discover candidate paths"));
-    assert!(prompt.contains("`read` only for concrete file paths"));
+    assert!(prompt.contains("use `write` immediately to create the full file contents"));
+    assert!(prompt.contains("Do not let an empty `glob` end the run"));
     assert!(prompt.contains(&expected_output_path));
 }
 
