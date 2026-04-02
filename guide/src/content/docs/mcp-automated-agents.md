@@ -17,6 +17,7 @@ For provider and model routing choices, use [Choosing Providers And Models For A
 - MCP connector lifecycle: add, enable/disable, connect, refresh
 - Auto MCP tool discovery on connect (`initialize` + `tools/list`)
 - Namespaced MCP tools in the global tool registry (for example `mcp.arcade.search`)
+- `mcp_list` for a structured inventory of configured and connected MCP servers/tools
 - Routine-level `allowed_tools` policy for scheduled bots
 - Agent Automation visibility for connector status and scheduled runs
 
@@ -25,13 +26,14 @@ For provider and model routing choices, use [Choosing Providers And Models For A
 Tandem does not expose a separate "search the MCP registry by keyword" API.
 The public discovery path is:
 
-1. Connect the MCP server.
-2. List discovered tools with `GET /mcp/tools`.
-3. List all engine tool IDs with `GET /tool/ids`.
-4. Filter the returned tool list locally by prefix, server name, or tool name.
-5. Execute the chosen tool directly through the engine or via `mcp_debug` when you need to call a remote MCP server by URL.
+1. Use `mcp_list` to get the engine's current MCP inventory snapshot.
+2. Connect the MCP server.
+3. List discovered tools with `GET /mcp/tools`.
+4. List all engine tool IDs with `GET /tool/ids`.
+5. Filter the returned tool list locally by prefix, server name, or tool name.
+6. Execute the chosen tool directly through the engine or via `mcp_debug` when you need to call a remote MCP server by URL.
 
-The engine does have internal semantic tool retrieval for prompt-time tool selection, but that ranking path is not a public registry search endpoint.
+The engine does have internal semantic tool retrieval for prompt-time tool selection, but that ranking path is separate from `mcp_list` and is not a public registry search endpoint.
 
 ## The Context Bloat Solution: Strict Tool Isolation
 

@@ -42,6 +42,9 @@ The Tandem Engine tool registry currently exposes the following tools.
 
 - **`bash`**: Run shell commands (PowerShell on Windows, Bash on Linux/Mac).
   - Input: `command` (string)
+- **`mcp_list`**: List the configured and connected MCP servers and their discovered tools.
+  - Input: none
+  - Use this when you want the engine to return the current MCP inventory as a single tool result.
 - **`mcp_debug`**: Call an MCP tool directly by URL.
   - Input: `url` (string), `tool` (string), optional `args` (object), `headers` (object), `timeout_ms` (integer), `max_bytes` (integer)
   - Use this when you already know the MCP server URL and the tool name you want to invoke.
@@ -67,10 +70,11 @@ The Tandem Engine tool registry currently exposes the following tools.
 
 These are HTTP endpoints, not engine tools:
 
+- `mcp_list` - Engine tool that returns the current MCP inventory snapshot.
 - `GET /mcp/tools` - List discovered tools from connected MCP servers.
 - `GET /tool/ids` - List all engine tool IDs, including built-ins and MCP tools.
 
-If you need to find a tool by keyword, fetch one of those lists and filter locally. Tandem does not provide a separate public "search the installed registry" endpoint.
+If you need to find a tool by keyword, fetch one of those lists and filter locally. Tandem does not provide a separate public "search the installed registry" endpoint, but `mcp_list` does give the agent a structured inventory of connected servers and tools.
 
 ## Specialized
 
