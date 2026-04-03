@@ -5250,6 +5250,19 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
+    pub async fn automations_v2_runs_all(&self, limit: Option<usize>) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/automations/v2/runs", self.base_url().await?);
+        let mut request = self.http_client.get(&url);
+        if let Some(limit) = limit {
+            request = request.query(&[("limit", limit)]);
+        }
+        let response = request.send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to list workflow automation runs: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
     pub async fn automations_v2_run_get(&self, run_id: &str) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/automations/v2/runs/{}", self.base_url().await?, run_id);

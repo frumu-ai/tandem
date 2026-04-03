@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.20] - 2026-04-03
+
+### Fixed
+
+- **Installed desktop startup black-screen after vault unlock**:
+  - Added a bounded timeout to installed-build sidecar release discovery so a stalled GitHub metadata check cannot leave the desktop app hanging on a black screen after passcode unlock.
+  - Hardened post-unlock startup routing so Tandem uses the actual configured workspace/provider state when deciding between onboarding and chat, avoiding stale-state redirects on desktop boot.
+- **Desktop automation first-load and refresh latency**:
+  - Reworked the automation page so the main load path waits only for automation overview data while provider, MCP, and tool catalogs load in the background or on demand for the Create tab.
+  - Replaced per-automation run-history fan-out with a single bulk runs request, reducing refresh work for Calendar, My Automations, and Live Tasks.
+  - Fixed workspace-root validation to accept Windows absolute paths in desktop automation flows instead of treating only Unix-style paths as valid.
+
 ## [0.4.19] - 2026-04-02
 
 ### Fixed

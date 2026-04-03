@@ -143,6 +143,14 @@ pub async fn automations_v2_runs(
 }
 
 #[tauri::command]
+pub async fn automations_v2_runs_all(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value> {
+    state.sidecar.automations_v2_runs_all(limit).await
+}
+
+#[tauri::command]
 pub async fn automations_v2_run_get(
     state: State<'_, AppState>,
     run_id: String,

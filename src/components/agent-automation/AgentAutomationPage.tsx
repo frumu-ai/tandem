@@ -54,7 +54,7 @@ import {
   automationsV2RunRepair,
   automationsV2RunRecover,
   automationsV2RunResume,
-  automationsV2Runs,
+  automationsV2RunsAll,
   automationsV2Update,
   getSessionMessages,
   listProvidersFromSidecar,
@@ -158,8 +158,26 @@ function buildDefaultWizard(
 function validateWorkspaceRootInput(value: string) {
   const trimmed = String(value || "").trim();
   if (!trimmed) return "Workspace root is required.";
-  if (!trimmed.startsWith("/")) return "Workspace root must be an absolute path.";
+  if (!isAbsolutePath(trimmed)) return "Workspace root must be an absolute path.";
   return "";
+}
+
+function isAbsolutePath(value: string) {
+  const trimmed = String(value || "").trim();
+  return (
+    trimmed.startsWith("/") ||
+    /^[a-zA-Z]:[\\/]/.test(trimmed) ||
+    /^\\\\[^\\]+\\[^\\]+/.test(trimmed)
+  );
+}
+
+async function withFallback<T>(operation: Promise<T>, fallback: T, timeoutMs = 8000): Promise<T> {
+  return Promise.race([
+    operation.catch(() => fallback),
+    new Promise<T>((resolve) => {
+      window.setTimeout(() => resolve(fallback), timeoutMs);
+    }),
+  ]);
 }
 
 function validateModelInput(provider: string, model: string) {
@@ -893,6 +911,8 @@ export function AgentAutomationPage({
   });
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [loadingState, setLoadingState] = useState(true);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const providerModelMap = useMemo(
@@ -913,18 +933,23 @@ export function AgentAutomationPage({
   );
 
   const loadCatalog = async () => {
-    const [providerRows, mcpRows, toolRows] = await Promise.all([
-      listProvidersFromSidecar(),
-      mcpListServers(),
-      toolIds().catch(() => []),
-    ]);
-    setProviders(providerRows);
-    setMcpServers(mcpRows);
-    setAvailableToolIds(Array.isArray(toolRows) ? toolRows : []);
-    setWizard((current) => buildDefaultWizard(activeProject, providerRows, current));
+    setCatalogLoading(true);
+    try {
+      const [providerRows, mcpRows, toolRows] = await Promise.all([
+        withFallback(listProvidersFromSidecar(), [] as ProviderInfo[]),
+        withFallback(mcpListServers(), [] as McpServerRecord[]),
+        withFallback(toolIds(), [] as string[]),
+      ]);
+      setProviders(providerRows);
+      setMcpServers(mcpRows);
+      setAvailableToolIds(Array.isArray(toolRows) ? toolRows : []);
+      setWizard((current) => buildDefaultWizard(activeProject, providerRows, current));
+    } finally {
+      setCatalogLoading(false);
+    }
   };
 
-  const loadAutomationState = async () => {
+  const loadAutomationOverview = async () => {
     const [workflowResponse, routineRows] = await Promise.all([
       automationsV2List(),
       routinesList(),
@@ -932,29 +957,29 @@ export function AgentAutomationPage({
     const automations = Array.isArray(workflowResponse?.automations)
       ? workflowResponse.automations
       : [];
-    const runsPerAutomation = await Promise.all(
-      automations.map(async (automation) => {
-        const automationId = String(automation?.automation_id || "").trim();
-        if (!automationId) return [];
-        try {
-          const response = await automationsV2Runs(automationId, 10);
-          return Array.isArray(response?.runs) ? response.runs : [];
-        } catch {
-          return [];
-        }
-      })
-    );
     setWorkflowAutomations(automations);
     setLegacyRoutines(routineRows);
-    setWorkflowRuns(
-      runsPerAutomation
-        .flat()
-        .sort(
+  };
+
+  const loadWorkflowRuns = async () => {
+    setRunsLoading(true);
+    try {
+      const response = await automationsV2RunsAll(50);
+      const runs = Array.isArray(response?.runs) ? response.runs : [];
+      setWorkflowRuns(
+        runs.sort(
           (a, b) =>
             Number(b?.updated_at_ms || b?.created_at_ms || 0) -
             Number(a?.updated_at_ms || a?.created_at_ms || 0)
         )
-    );
+      );
+    } finally {
+      setRunsLoading(false);
+    }
+  };
+
+  const refreshWorkflowData = async () => {
+    await Promise.all([loadAutomationOverview(), loadWorkflowRuns()]);
   };
 
   const loadSelectedRunDetail = async (runId: string) => {
@@ -993,13 +1018,15 @@ export function AgentAutomationPage({
   const refreshAll = async () => {
     setLoadingState(true);
     try {
-      await Promise.all([loadCatalog(), loadAutomationState()]);
+      await loadAutomationOverview();
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setLoadingState(false);
     }
+    void loadCatalog().catch(() => undefined);
+    void loadWorkflowRuns().catch(() => undefined);
   };
 
   useEffect(() => {
@@ -1014,7 +1041,8 @@ export function AgentAutomationPage({
         if (!eventLooksRelevant(event) || disposed) return;
         if (refreshTimeout) clearTimeout(refreshTimeout);
         refreshTimeout = setTimeout(() => {
-          void loadAutomationState().catch(() => undefined);
+          void loadAutomationOverview().catch(() => undefined);
+          void loadWorkflowRuns().catch(() => undefined);
           if (selectedRunId) {
             void loadSelectedRunDetail(selectedRunId).catch(() => undefined);
           }
@@ -1047,6 +1075,19 @@ export function AgentAutomationPage({
     setSelectedRunId(initialRunId);
     setTab("runs");
   }, [initialRunId]);
+
+  useEffect(() => {
+    if (tab !== "runs") return;
+    if (workflowRuns.length > 0 || runsLoading) return;
+    void loadWorkflowRuns().catch(() => undefined);
+  }, [tab, workflowRuns.length, runsLoading]);
+
+  useEffect(() => {
+    if (tab !== "create") return;
+    if (catalogLoading) return;
+    if (providers.length > 0 || mcpServers.length > 0 || availableToolIds.length > 0) return;
+    void loadCatalog().catch(() => undefined);
+  }, [tab, catalogLoading, providers.length, mcpServers.length, availableToolIds.length]);
 
   const updateWizard = (patch: Partial<WizardState>) => {
     setWizard((current) => ({ ...current, ...patch }));
@@ -1176,7 +1217,7 @@ export function AgentAutomationPage({
       setPlannerDiagnostics(null);
       setPlanningMessage("");
       setTab("automations");
-      await loadAutomationState();
+      await refreshWorkflowData();
     } catch (applyError) {
       setError(applyError instanceof Error ? applyError.message : String(applyError));
     } finally {
@@ -1274,7 +1315,7 @@ export function AgentAutomationPage({
         },
       });
       setEditDraft(null);
-      await loadAutomationState();
+      await refreshWorkflowData();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
@@ -1326,7 +1367,7 @@ export function AgentAutomationPage({
           misfire_policy: "run_once",
         },
       });
-      await loadAutomationState();
+      await refreshWorkflowData();
     } catch (calendarError) {
       info?.revert?.();
       setError(calendarError instanceof Error ? calendarError.message : String(calendarError));
@@ -1346,7 +1387,7 @@ export function AgentAutomationPage({
       } else {
         await automationsV2Pause(automationId, "Paused from desktop automation page");
       }
-      await loadAutomationState();
+      await refreshWorkflowData();
     } catch (toggleError) {
       setError(toggleError instanceof Error ? toggleError.message : String(toggleError));
     } finally {
@@ -1360,7 +1401,7 @@ export function AgentAutomationPage({
     try {
       await automationsV2RunNow(automationId);
       setTab("runs");
-      await loadAutomationState();
+      await refreshWorkflowData();
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
     } finally {
@@ -1374,7 +1415,7 @@ export function AgentAutomationPage({
     setError(null);
     try {
       await automationsV2Delete(automationId);
-      await loadAutomationState();
+      await refreshWorkflowData();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
     } finally {
@@ -1393,7 +1434,7 @@ export function AgentAutomationPage({
       } else {
         await automationsV2RunCancel(runId, "Cancelled from desktop automation page");
       }
-      await loadAutomationState();
+      await refreshWorkflowData();
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : String(actionError));
     } finally {
@@ -1406,7 +1447,7 @@ export function AgentAutomationPage({
     setError(null);
     try {
       await automationsV2RunGateDecide(runId, { decision });
-      await loadAutomationState();
+      await refreshWorkflowData();
       await loadSelectedRunDetail(runId);
     } catch (gateError) {
       setError(gateError instanceof Error ? gateError.message : String(gateError));
@@ -1431,7 +1472,7 @@ export function AgentAutomationPage({
           ? "Recovered from paused state via desktop automation page"
           : "Recovered from desktop automation page"
       );
-      await loadAutomationState();
+      await refreshWorkflowData();
       await loadSelectedRunDetail(runId);
     } catch (recoverError) {
       setError(recoverError instanceof Error ? recoverError.message : String(recoverError));
@@ -1470,7 +1511,7 @@ export function AgentAutomationPage({
           : undefined,
         reason: repairDraft.reason.trim() || undefined,
       });
-      await loadAutomationState();
+      await refreshWorkflowData();
       await loadSelectedRunDetail(runId);
     } catch (repairError) {
       setError(repairError instanceof Error ? repairError.message : String(repairError));
@@ -2229,7 +2270,7 @@ export function AgentAutomationPage({
                 toolIds={availableToolIds}
                 editingAutomation={advancedEditAutomation}
                 onOpenMcpExtensions={onOpenMcpExtensions}
-                onRefreshAutomations={loadAutomationState}
+                onRefreshAutomations={refreshWorkflowData}
                 onShowAutomations={() => setTab("automations")}
                 onShowRuns={() => setTab("runs")}
                 onClearEditing={() => setAdvancedEditAutomation(null)}
@@ -2498,7 +2539,7 @@ export function AgentAutomationPage({
               ))}
               {workflowRuns.length === 0 ? (
                 <div className="rounded-lg border border-border bg-surface px-3 py-6 text-center text-sm text-text-muted">
-                  No workflow runs found yet.
+                  {runsLoading ? "Loading workflow runs..." : "No workflow runs found yet."}
                 </div>
               ) : null}
             </div>

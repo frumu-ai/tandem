@@ -2478,6 +2478,10 @@ export async function automationsV2Runs(
   return invoke("automations_v2_runs", { automationId, limit });
 }
 
+export async function automationsV2RunsAll(limit?: number): Promise<AutomationV2RunsResponse> {
+  return invoke("automations_v2_runs_all", { limit });
+}
+
 export async function automationsV2RunGet(runId: string): Promise<AutomationV2RunGetResponse> {
   const response = (await invoke("automations_v2_run_get", {
     runId,

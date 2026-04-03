@@ -7,6 +7,7 @@ use std::cmp::Ordering;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tandem_core::resolve_shared_paths;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
@@ -19,6 +20,7 @@ const RELEASES_PER_PAGE: usize = 20;
 const MAX_RELEASE_PAGES: usize = 5;
 const RELEASE_CHECK_INTERVAL_SECS: i64 = 6 * 60 * 60;
 const RELEASE_CACHE_FILE: &str = "sidecar_release_cache.json";
+const RELEASE_REQUEST_TIMEOUT_SECS: u64 = 8;
 
 fn shared_app_data_dir(_app: &AppHandle) -> Option<PathBuf> {
     resolve_shared_paths()
@@ -358,7 +360,13 @@ struct ReleaseDiscovery {
 }
 
 async fn fetch_release_discovery(app: &AppHandle) -> Result<ReleaseDiscovery> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(RELEASE_REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| {
+            TandemError::Sidecar(format!("Failed to create release-check client: {}", e))
+        })?;
     let releases = fetch_releases(app, &client, false).await?;
     Ok(build_release_discovery(&releases, false))
 }

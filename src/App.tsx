@@ -671,6 +671,17 @@ function App() {
 
   const activeProviderId = activeProviderInfo?.providerId || null;
   const requestedView = view === "coder" ? "agent-automation" : view;
+  const hasWorkspaceConfigured = Boolean(
+    activeProject?.path || state?.workspace_path || state?.has_workspace
+  );
+  const shouldShowOnboarding =
+    (!hasWorkspaceConfigured || !hasConfiguredProvider) &&
+    requestedView !== "settings" &&
+    requestedView !== "about" &&
+    requestedView !== "packs" &&
+    requestedView !== "extensions" &&
+    requestedView !== "command-center" &&
+    requestedView !== "agent-automation";
 
   // Update view based on workspace state after loading
   const effectiveView =
@@ -678,15 +689,11 @@ function App() {
       ? "sidecar-setup"
       : !sidecarReady
         ? "sidecar-setup"
-        : (!state?.has_workspace || !hasConfiguredProvider) &&
-            requestedView !== "settings" &&
-            requestedView !== "about" &&
-            requestedView !== "packs" &&
-            requestedView !== "extensions" &&
-            requestedView !== "command-center" &&
-            requestedView !== "agent-automation"
+        : shouldShowOnboarding
           ? "onboarding"
-          : requestedView;
+          : requestedView === "onboarding" && hasWorkspaceConfigured && hasConfiguredProvider
+            ? "chat"
+            : requestedView;
 
   const shouldShowWhatsNew =
     showWhatsNew &&
@@ -993,7 +1000,7 @@ function App() {
   const handleSidecarReady = useCallback(() => {
     setSidecarReady(true);
     // Navigate to appropriate view
-    if (state?.has_workspace) {
+    if (hasWorkspaceConfigured) {
       // TODO(startup-routing): Revisit last-open-area restore once we have a proper
       // starter/boot page that can coordinate sidecar readiness checks for all views.
       // For now, always land in chat on startup to avoid command-center-first boot races.
@@ -1038,7 +1045,7 @@ function App() {
     } else {
       setView("onboarding");
     }
-  }, [state?.has_workspace, currentSessionId]);
+  }, [hasWorkspaceConfigured, currentSessionId]);
 
   const handleSwitchProject = async (projectId: string) => {
     setProjectSwitcherLoading(true);

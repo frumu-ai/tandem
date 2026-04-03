@@ -2,6 +2,17 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.20 (Released 2026-04-03)
+
+- **Installed desktop startup black-screen after vault unlock**
+  - Added a timeout to installed-build sidecar release discovery so a stalled GitHub metadata lookup cannot hold the Tauri app on a black screen after passcode unlock.
+  - Hardened startup routing after unlock so Tandem uses the actual configured workspace/provider state before deciding whether to show onboarding or chat.
+
+- **Desktop automation loading and refresh responsiveness**
+  - Stopped the main automation screen from blocking on provider, MCP, and tool catalog fetches during first load and refresh.
+  - Moved Create-tab catalog loading to the background/on-demand path so Calendar, My Automations, and Live Tasks render sooner.
+  - Replaced per-automation run-history fan-out with a single bulk runs request and fixed Windows absolute-path validation for automation workspace roots.
+
 ## v0.4.19 (Released 2026-04-02)
 
 - **Production desktop black-screen startup regression**

@@ -1,6 +1,6 @@
 [package]
 name = "tandem"
-version = "0.4.19"
+version = "0.4.20"
 description = "A local-first, zero-trust AI workspace application"
 authors = ["Tandem Contributors"]
 edition = "2021"
