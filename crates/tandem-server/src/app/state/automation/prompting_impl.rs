@@ -27,7 +27,7 @@ fn automation_prompt_render_canonical_html_body(text: &str) -> String {
 
     let mut html = String::new();
     let mut in_list = false;
-    let mut flush_list = |html: &mut String, in_list: &mut bool| {
+    let flush_list = |html: &mut String, in_list: &mut bool| {
         if *in_list {
             html.push_str("</ul>");
             *in_list = false;

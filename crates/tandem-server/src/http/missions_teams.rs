@@ -670,7 +670,7 @@ pub(super) async fn agent_team_template_delete(
 }
 
 pub(super) async fn compose_standup(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(input): Json<StandupComposeInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let name = input.name.trim();
