@@ -11,7 +11,7 @@ type StandupTemplateOption = {
 };
 
 const SCHEDULE_PRESETS = [
-  { label: "Every hour", intervalSeconds: 3600 },
+  { label: "Every X hours", intervalSeconds: 3600 },
   { label: "Every morning", cron: "0 9 * * *" },
   { label: "Every evening", cron: "0 18 * * *" },
   { label: "Daily at midnight", cron: "0 0 * * *" },

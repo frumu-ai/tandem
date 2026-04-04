@@ -14,8 +14,8 @@ goalExamples:
   - Watch for price changes on competitor products and alert me
   - Generate a weekly report from our Notion workspace
 schedulePresets:
-  - label: Every hour
-    desc: Good for monitoring & alerts
+  - label: Every X hours
+    desc: Set a 1, 2, 4, 6, or other hour interval for monitoring & alerts
     icon: "⏰"
     cron: ""
     intervalSeconds: 3600
