@@ -127,8 +127,15 @@ Use:
 
 This pattern can be authored from both UI surfaces:
 
-- **Tandem Control Panel** (`packages/tandem-control-panel`): Use the Automations Wizard or Studio.
+- **Tandem Control Panel** (`packages/tandem-control-panel`): Use the Automations Wizard (which auto-detects "monitoring" keywords to build this structure) or assemble it manually in the Studio.
 - **Tandem Desktop App** (`src-tauri` / App frontend): Use the Automations page or the Agent Team setup.
+
+### How the Engine Identifies a Triage Gate
+
+When these tools (or the planner) generate a Smart Heartbeat, they attach a specific flag to the initial checking node:
+`metadata.triage_gate: true`.
+
+When the automation executes, the underlying engine identifies this flag. It then knows to expect the node to return a structured JSON output with a `has_work` boolean. If `has_work` is `false`, the engine transitively skips all downstream nodes that depend on it.
 
 This is the best fit for avoiding high-token polling. Tandem uses a triage-first DAG pattern where:
 
