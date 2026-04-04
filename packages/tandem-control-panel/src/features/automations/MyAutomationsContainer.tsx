@@ -2,6 +2,17 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { useEffect, useMemo, useRef, useState } from "react";
 import { renderIcons } from "../../app/icons.js";
 import { api } from "../../lib/api";
+import {
+  DEFAULT_WORKFLOW_SORT_MODE,
+  WORKFLOW_SORT_MODES,
+  getAutomationCreatedAtMs,
+  getAutomationId,
+  getAutomationName,
+  normalizeFavoriteAutomationIds,
+  normalizeWorkflowSortMode,
+  sortWorkflowAutomations,
+  toggleFavoriteAutomationId,
+} from "../../../lib/automations/workflow-list.js";
 import { formatJson } from "../../pages/ui";
 import { projectOrchestrationRun } from "../orchestrator/blackboardProjection";
 import {
@@ -902,6 +913,188 @@ export function MyAutomationsContainer({
     }
     return Array.from(byId.values());
   }, [automationsQuery.data, toArray]);
+  const workflowPreferencesQuery = useQuery({
+    queryKey: ["control-panel", "preferences"],
+    queryFn: () =>
+      api("/api/control-panel/preferences", { method: "GET" }).catch(() => ({
+        preferences: {
+          favorite_automation_ids: [],
+          workflow_sort_mode: DEFAULT_WORKFLOW_SORT_MODE,
+        },
+      })),
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const workflowPreferences = (workflowPreferencesQuery.data as any)?.preferences || {};
+  const workflowSortMode = normalizeWorkflowSortMode(
+    workflowPreferences.workflow_sort_mode || DEFAULT_WORKFLOW_SORT_MODE
+  );
+  const favoriteAutomationIds = useMemo(
+    () => normalizeFavoriteAutomationIds(workflowPreferences.favorite_automation_ids || []),
+    [workflowPreferences.favorite_automation_ids]
+  );
+  const favoriteAutomationIdSet = useMemo(
+    () => new Set(favoriteAutomationIds),
+    [favoriteAutomationIds]
+  );
+  const updateWorkflowPreferencesMutation = useMutation({
+    mutationFn: async (patch: {
+      favorite_automation_ids?: string[];
+      workflow_sort_mode?: string;
+    }) =>
+      api("/api/control-panel/preferences", {
+        method: "PATCH",
+        body: JSON.stringify({ preferences: patch }),
+      }),
+    onMutate: async (patch) => {
+      await queryClient.cancelQueries({ queryKey: ["control-panel", "preferences"] });
+      const previous = queryClient.getQueryData(["control-panel", "preferences"]);
+      queryClient.setQueryData(["control-panel", "preferences"], (current: any) => ({
+        ...(current || {}),
+        ok: true,
+        preferences: {
+          ...(current?.preferences || {}),
+          ...patch,
+        },
+      }));
+      return { previous };
+    },
+    onError: (_error, _patch, context) => {
+      if (context?.previous !== undefined) {
+        queryClient.setQueryData(["control-panel", "preferences"], context.previous);
+      }
+    },
+    onSuccess: (payload) => {
+      queryClient.setQueryData(["control-panel", "preferences"], payload);
+    },
+  });
+  const setWorkflowSortMode = (nextSortMode: string) => {
+    updateWorkflowPreferencesMutation.mutate({
+      workflow_sort_mode: normalizeWorkflowSortMode(nextSortMode),
+      favorite_automation_ids: favoriteAutomationIds,
+    });
+  };
+  const toggleWorkflowFavorite = (automationId: string) => {
+    const nextFavoriteIds = toggleFavoriteAutomationId(favoriteAutomationIds, automationId);
+    updateWorkflowPreferencesMutation.mutate({
+      favorite_automation_ids: nextFavoriteIds,
+      workflow_sort_mode: workflowSortMode,
+    });
+  };
+  const classifyWorkflowAutomation = useMemo(
+    () => (automation: any) => {
+      if (isStandupAutomation(automation)) {
+        return { key: "standup", label: "Standup" };
+      }
+      if (isMissionBlueprintAutomation(automation)) {
+        return { key: "mission_blueprint", label: "Mission Blueprint" };
+      }
+      if (automation?.schedule) {
+        return { key: "scheduled", label: "Scheduled" };
+      }
+      if (
+        String(automation?.mode || "")
+          .trim()
+          .toLowerCase() === "standalone"
+      ) {
+        return { key: "manual", label: "Manual" };
+      }
+      return { key: "other", label: "Other" };
+    },
+    [isMissionBlueprintAutomation, isStandupAutomation]
+  );
+  const workflowAutomationRows = useMemo(() => {
+    return sortWorkflowAutomations(automationsV2, {
+      sortMode: workflowSortMode,
+      favoriteAutomationIds: favoriteAutomationIdSet,
+    }).map((automation: any) => {
+      const id = getAutomationId(automation);
+      const category = classifyWorkflowAutomation(automation);
+      return {
+        automation,
+        id,
+        name: getAutomationName(automation),
+        createdAtMs: getAutomationCreatedAtMs(automation),
+        isFavorite: favoriteAutomationIdSet.has(id),
+        status: String(automation?.status || "draft").trim(),
+        paused:
+          String(automation?.status || "draft")
+            .trim()
+            .toLowerCase() === "paused",
+        categoryKey: category.key,
+        categoryLabel: category.label,
+      };
+    });
+  }, [automationsV2, classifyWorkflowAutomation, favoriteAutomationIdSet, workflowSortMode]);
+  const workflowAutomationSections = useMemo(() => {
+    const categoryOrder = [
+      { key: "standup", label: "Standup" },
+      { key: "mission_blueprint", label: "Mission Blueprint" },
+      { key: "scheduled", label: "Scheduled" },
+      { key: "manual", label: "Manual" },
+      { key: "other", label: "Other" },
+    ];
+    const favorites = workflowAutomationRows.filter((row: any) => row.isFavorite);
+    const sections: Array<{
+      key: string;
+      label: string;
+      description: string;
+      count: number;
+      rows: Array<any>;
+    }> = [];
+    if (favorites.length > 0) {
+      sections.push({
+        key: "favorites",
+        label: "Favorites",
+        description: "Pinned here for this profile.",
+        count: favorites.length,
+        rows: favorites,
+      });
+    }
+    const remaining = workflowAutomationRows.filter((row: any) => !row.isFavorite);
+    for (const category of categoryOrder) {
+      const rows = remaining.filter((row: any) => row.categoryKey === category.key);
+      if (!rows.length) continue;
+      sections.push({
+        key: category.key,
+        label: category.label,
+        description:
+          category.key === "standup"
+            ? "Standup and daily workflow automations."
+            : category.key === "mission_blueprint"
+              ? "Blueprint-style workflow automations."
+              : category.key === "scheduled"
+                ? "Automations driven by schedules or recurring triggers."
+                : category.key === "manual"
+                  ? "Automations that are usually started by hand."
+                  : "Workflow automations that do not fit the other groups yet.",
+        count: rows.length,
+        rows,
+      });
+    }
+    return sections;
+  }, [workflowAutomationRows]);
+  const legacyAutomationRows = useMemo(() => {
+    return sortWorkflowAutomations(automations, {
+      sortMode: workflowSortMode,
+      favoriteAutomationIds: favoriteAutomationIdSet,
+    }).map((automation: any) => {
+      const id = String(
+        automation?.automation_id || automation?.id || automation?.routine_id || ""
+      ).trim();
+      return {
+        automation,
+        id,
+        name: getAutomationName(automation),
+        createdAtMs: getAutomationCreatedAtMs(automation),
+        isFavorite: favoriteAutomationIdSet.has(id),
+        status: String(automation?.status || "active").trim(),
+      };
+    });
+  }, [automations, favoriteAutomationIdSet, workflowSortMode]);
+  const workflowPreferencesLoading =
+    workflowPreferencesQuery.isLoading || updateWorkflowPreferencesMutation.isPending;
   const calendarEvents = useMemo(() => {
     const legacyEvents = automations.flatMap((automation: any) =>
       buildCalendarOccurrences({
@@ -1651,6 +1844,10 @@ export function MyAutomationsContainer({
     runNowV2Mutation.isPending,
     runs.length,
     sessionEvents.length,
+    workflowAutomationSections.length,
+    legacyAutomationRows.length,
+    workflowSortMode,
+    workflowPreferencesLoading,
     updateAutomationMutation.isPending,
     workflowRuns.length,
     !!editDraft,
@@ -1817,9 +2014,13 @@ export function MyAutomationsContainer({
         calendarEvents,
         workflowAutomationCount,
         automationsV2,
+        workflowAutomationSections,
+        legacyAutomationRows,
         totalSavedAutomations,
         legacyAutomationCount,
         automations,
+        workflowSortMode,
+        workflowPreferencesLoading,
         packs,
         activeRuns,
         workflowQueueCounts,
@@ -2040,6 +2241,8 @@ export function MyAutomationsContainer({
         backlogTaskRequeueMutation,
         runActionMutation,
         taskResetPreviewQuery,
+        toggleWorkflowFavorite,
+        setWorkflowSortMode,
       }}
       helpers={{
         statusColor,

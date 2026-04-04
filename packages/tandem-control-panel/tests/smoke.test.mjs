@@ -649,6 +649,38 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
   const me = await request(baseUrl, "/api/auth/me", { cookie });
   assert.equal(me.status, 200);
 
+  const prefs = await request(baseUrl, "/api/control-panel/preferences", { cookie });
+  assert.equal(prefs.status, 200);
+
+  const prefsUpdate = await request(baseUrl, "/api/control-panel/preferences", {
+    method: "PATCH",
+    cookie,
+    body: {
+      preferences: {
+        favorite_automation_ids: ["workflow-a", "workflow-b", "workflow-a"],
+        workflow_sort_mode: "name_asc",
+      },
+    },
+  });
+  assert.equal(prefsUpdate.status, 200);
+
+  const relogin = await request(baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: { token: fake.token },
+  });
+  assert.equal(relogin.status, 200);
+  const reloginCookie = extractCookie(relogin);
+  const reloginPrefs = await request(baseUrl, "/api/control-panel/preferences", {
+    method: "PATCH",
+    cookie: reloginCookie,
+    body: {
+      preferences: {
+        workflow_sort_mode: "created_desc",
+      },
+    },
+  });
+  assert.equal(reloginPrefs.status, 200);
+
   const proxy = await request(baseUrl, "/api/engine/global/health", { cookie });
   assert.equal(proxy.status, 200);
   const proxyJson = await proxy.json();

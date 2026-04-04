@@ -18,10 +18,13 @@ import {
   resolveControlPanelMode,
   summarizeControlPanelConfig,
 } from "../lib/setup/control-panel-config.js";
+import { resolveControlPanelPrincipalIdentity } from "../lib/setup/control-panel-principal.js";
+import { resolveControlPanelPreferencesPath } from "../lib/setup/control-panel-preferences.js";
 import { createSwarmApiHandler, getOrchestratorMetrics } from "../server/routes/swarm.js";
 import { createAcaApiHandler } from "../server/routes/aca.js";
 import { createCapabilitiesHandler, getCapabilitiesMetrics } from "../server/routes/capabilities.js";
 import { createControlPanelConfigHandler } from "../server/routes/control-panel-config.js";
+import { createControlPanelPreferencesHandler } from "../server/routes/control-panel-preferences.js";
 
 function parseDotEnv(content) {
   const out = {};
@@ -190,6 +193,11 @@ const ACA_BASE_URL = String(process.env.ACA_BASE_URL || "")
   .trim()
   .replace(/\/+$/, "");
 const CONTROL_PANEL_CONFIG_FILE = String(process.env.TANDEM_CONTROL_PANEL_CONFIG_FILE || "").trim();
+const CONTROL_PANEL_PREFERENCES_FILE = resolveControlPanelPreferencesPath({
+  env: process.env,
+  explicitPath: String(process.env.TANDEM_CONTROL_PANEL_PREFERENCES_FILE || "").trim(),
+  stateDir: process.env.TANDEM_CONTROL_PANEL_STATE_DIR,
+});
 const CONTROL_PANEL_MODE = String(process.env.TANDEM_CONTROL_PANEL_MODE || "auto").trim();
 const DEFAULT_TANDEM_SEARCH_URL = (
   process.env.TANDEM_SEARCH_URL || "https://search.tandem.ac"
@@ -1759,7 +1767,13 @@ async function handleAuthLogin(req, res) {
       }
     }
     const sid = randomBytes(24).toString("hex");
-    sessions.set(sid, { token, createdAt: Date.now(), lastSeenAt: Date.now() });
+    const principal = resolveControlPanelPrincipalIdentity({ token });
+    sessions.set(sid, {
+      token,
+      createdAt: Date.now(),
+      lastSeenAt: Date.now(),
+      ...principal,
+    });
     setSessionCookie(res, sid);
     sendJson(res, 200, {
       ok: true,
@@ -1769,6 +1783,9 @@ async function handleAuthLogin(req, res) {
         version: health.version || "unknown",
         local: isLocalEngineUrl(ENGINE_URL),
       },
+      principal_id: principal.principal_id,
+      principal_source: principal.principal_source,
+      principal_scope: principal.principal_scope,
     });
   } catch (e) {
     sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -4759,6 +4776,14 @@ const handleControlPanelConfig = createControlPanelConfigHandler({
   readJsonBody,
 });
 
+const handleControlPanelPreferences = createControlPanelPreferencesHandler({
+  CONTROL_PANEL_PREFERENCES_FILE,
+  TANDEM_CONTROL_PANEL_STATE_DIR: process.env.TANDEM_CONTROL_PANEL_STATE_DIR || "",
+  resolvePrincipalIdentity: resolveControlPanelPrincipalIdentity,
+  sendJson,
+  readJsonBody,
+});
+
 async function handleApi(req, res) {
   const pathname = new URL(req.url, `http://127.0.0.1:${PORTAL_PORT}`).pathname;
 
@@ -4914,8 +4939,20 @@ async function handleApi(req, res) {
       engineUrl: ENGINE_URL,
       localEngine: isLocalEngineUrl(ENGINE_URL),
       engine: health,
+      principal_id: String(session.principal_id || session.principalId || ""),
+      principal_source: String(session.principal_source || session.principalSource || "unknown"),
+      principal_scope: String(session.principal_scope || session.principalScope || "global"),
     });
     return true;
+  }
+
+  if (
+    pathname === "/api/control-panel/preferences" &&
+    (req.method === "GET" || req.method === "PATCH")
+  ) {
+    const session = requireSession(req, res);
+    if (!session) return true;
+    return handleControlPanelPreferences(req, res, session);
   }
 
   if (pathname === "/api/control-panel/config" && (req.method === "GET" || req.method === "PATCH")) {

@@ -7,6 +7,10 @@ import {
 } from "./MyAutomationsDialogs";
 import { RunDebuggerDialog } from "./RunDebuggerDialog";
 import { EmptyState } from "../../pages/ui";
+import {
+  WORKFLOW_SORT_MODES,
+  formatAutomationCreatedAtLabel,
+} from "../../../lib/automations/workflow-list.js";
 
 export function MyAutomationsContent({ state, actions, helpers }: any) {
   const [runningSectionsOpen, setRunningSectionsOpen] = useState({
@@ -19,10 +23,12 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     viewMode,
     calendarEvents,
     workflowAutomationCount,
-    automationsV2,
+    workflowAutomationSections,
+    legacyAutomationRows,
     totalSavedAutomations,
     legacyAutomationCount,
-    automations,
+    workflowSortMode,
+    workflowPreferencesLoading,
     packs,
     activeRuns,
     workflowQueueCounts,
@@ -121,6 +127,8 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     runNowV2Mutation,
     automationActionMutation,
     beginEdit,
+    toggleWorkflowFavorite,
+    setWorkflowSortMode,
     runNowMutation,
     isPausedAutomation,
     onSelectRunId,
@@ -157,7 +165,6 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
 
   const {
     statusColor,
-    isStandupAutomation,
     isMissionBlueprintAutomation,
     workflowAutomationToEditDraft,
     formatAutomationV2ScheduleLabel,
@@ -184,6 +191,256 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
       [section]: !current[section],
     }));
 
+  const workflowSortLabel =
+    WORKFLOW_SORT_MODES.find((option) => option.value === workflowSortMode)?.label ||
+    "Created: newest first";
+
+  const renderWorkflowAutomationCard = (row: any) => {
+    const automation = row?.automation || row;
+    const id = String(
+      row?.id || automation?.automation_id || automation?.automationId || ""
+    ).trim();
+    const status = String(row?.status || automation?.status || "draft").trim();
+    const paused = !!row?.paused || status.toLowerCase() === "paused";
+    const favorite = !!row?.isFavorite;
+    const categoryLabel = String(row?.categoryLabel || "").trim();
+    const createdAtMs = Number(row?.createdAtMs || 0) || 0;
+    return (
+      <div key={id} className="tcp-card flex flex-col gap-3 group">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="text-xl">🧩</span>
+            <div className="min-w-0">
+              <strong className="block truncate text-sm font-bold tracking-tight text-white mb-0.5">
+                {String(automation?.name || id || "Workflow automation")}
+              </strong>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {categoryLabel ? (
+                  <span className="tcp-badge-ok text-[10px] py-0 px-1.5">{categoryLabel}</span>
+                ) : null}
+                {String(automation?.description || "").trim() ? null : (
+                  <span className="text-[10px] text-slate-500 uppercase tracking-[0.2em]">
+                    No description
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              className={`tcp-icon-btn h-8 w-8 ${favorite ? "text-amber-300" : "text-slate-400"}`}
+              onClick={() => toggleWorkflowFavorite(id)}
+              disabled={!id || workflowPreferencesLoading}
+              title={favorite ? "Remove from favorites" : "Add to favorites"}
+              aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
+              aria-pressed={favorite}
+            >
+              <i data-lucide="star" className={`w-3.5 h-3.5 ${favorite ? "fill-current" : ""}`}></i>
+            </button>
+            <button
+              className="tcp-icon-btn h-8 w-8 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity"
+              onClick={() => {
+                if (isMissionBlueprintAutomation(automation)) {
+                  onOpenAdvancedEdit(automation);
+                  return;
+                }
+                setWorkflowEditDraft(workflowAutomationToEditDraft(automation));
+              }}
+              disabled={!id}
+              title="Edit workflow automation"
+              aria-label="Edit workflow automation"
+            >
+              <i data-lucide="pencil" className="w-3.5 h-3.5"></i>
+            </button>
+            <span
+              className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${statusColor(status)}`}
+            >
+              {status}
+            </span>
+          </div>
+        </div>
+
+        {String(automation?.description || "").trim() ? (
+          <div className="tcp-subtle text-xs line-clamp-2 leading-relaxed">
+            {String(automation.description)}
+          </div>
+        ) : (
+          <div className="tcp-subtle text-xs italic opacity-40">No description provided</div>
+        )}
+
+        {String(automation?.metadata?.standup?.report_path_template || "").trim() ? (
+          <div className="text-[10px] text-emerald-300/80 font-mono tracking-tight bg-emerald-500/10 p-1.5 rounded-md truncate">
+            report: {String(automation?.metadata?.standup?.report_path_template || "")}
+          </div>
+        ) : null}
+
+        <div className="tcp-subtle text-[11px] font-medium flex items-center gap-1.5">
+          <i data-lucide="calendar" className="w-3 h-3"></i>
+          {formatAutomationV2ScheduleLabel(automation?.schedule)}
+        </div>
+
+        {createdAtMs ? (
+          <div className="tcp-subtle text-[11px] font-medium flex items-center gap-1.5">
+            <i data-lucide="clock" className="w-3 h-3"></i>
+            Created {formatAutomationCreatedAtLabel(automation)}
+          </div>
+        ) : null}
+
+        <div className="mt-auto pt-3 flex flex-wrap gap-2 border-t border-white/5">
+          <button
+            className="tcp-btn-primary flex-1 h-8 px-2 text-[11px]"
+            onClick={() => runNowV2Mutation.mutate({ id })}
+            disabled={!id || runNowV2Mutation.isPending}
+          >
+            <i data-lucide="play" className="w-3 h-3"></i>
+            {runNowV2Mutation.isPending ? "Starting..." : "Run"}
+          </button>
+          <button
+            className="tcp-btn h-8 px-2 text-[11px]"
+            onClick={() => runNowV2Mutation.mutate({ id, dryRun: true })}
+            disabled={!id || runNowV2Mutation.isPending}
+          >
+            <i data-lucide="flask-conical" className="w-3 h-3"></i>
+            Dry
+          </button>
+          <button
+            className="tcp-btn h-8 px-2 text-[11px]"
+            onClick={() =>
+              automationActionMutation.mutate({
+                action: paused ? "resume" : "pause",
+                automationId: id,
+                family: "v2",
+              })
+            }
+            disabled={!id || automationActionMutation.isPending}
+          >
+            <i data-lucide={paused ? "play" : "pause"} className="w-3 h-3"></i>
+            {paused ? "Resume" : "Pause"}
+          </button>
+          <button
+            className="tcp-btn-danger h-8 w-8 px-0 flex items-center justify-center"
+            onClick={() =>
+              setDeleteConfirm({
+                automationId: id,
+                family: "v2",
+                title: String(automation?.name || id || "workflow automation"),
+              })
+            }
+            disabled={!id || automationActionMutation.isPending}
+            title="Remove"
+          >
+            <i data-lucide="trash-2" className="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderLegacyAutomationCard = (row: any) => {
+    const automation = row?.automation || row;
+    const id = String(
+      row?.id || automation?.automation_id || automation?.id || automation?.routine_id || ""
+    ).trim();
+    const favorite = !!row?.isFavorite;
+    const status = String(row?.status || automation?.status || "active").trim();
+    const paused = isPausedAutomation(automation);
+    const createdAtMs = Number(row?.createdAtMs || 0) || 0;
+    return (
+      <div key={id} className="tcp-list-item">
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span>⏰</span>
+            <strong className="truncate">{String(automation?.name || id || "Automation")}</strong>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className={`tcp-icon-btn h-7 w-7 ${favorite ? "text-amber-300" : ""}`}
+              onClick={() => toggleWorkflowFavorite(id)}
+              disabled={!id || workflowPreferencesLoading}
+              title={favorite ? "Remove from favorites" : "Add to favorites"}
+              aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
+              aria-pressed={favorite}
+            >
+              <i data-lucide="star" className={`w-3.5 h-3.5 ${favorite ? "fill-current" : ""}`}></i>
+            </button>
+            <button className="tcp-btn h-7 px-2 text-xs" onClick={() => beginEdit(automation)}>
+              <i data-lucide="pencil"></i>
+            </button>
+            <span className={statusColor(status)}>{status}</span>
+          </div>
+        </div>
+        {createdAtMs ? (
+          <div className="tcp-subtle text-xs mb-1 flex items-center gap-1.5">
+            <i data-lucide="clock" className="w-3 h-3"></i>
+            Created {formatAutomationCreatedAtLabel(automation)}
+          </div>
+        ) : null}
+        <div className="tcp-subtle text-xs">{formatScheduleLabel(automation?.schedule)}</div>
+        <div className="mt-2">
+          <div className="flex flex-wrap gap-2">
+            <button className="tcp-btn h-7 px-2 text-xs" onClick={() => runNowMutation.mutate(id)}>
+              <i data-lucide="play"></i>
+              Run now
+            </button>
+            <button
+              className="tcp-btn h-7 px-2 text-xs"
+              onClick={() =>
+                automationActionMutation.mutate({
+                  action: paused ? "resume" : "pause",
+                  automationId: id,
+                  family: "legacy",
+                })
+              }
+              disabled={!id || automationActionMutation.isPending}
+            >
+              <i data-lucide={paused ? "play" : "pause"}></i>
+              {paused ? "Resume" : "Pause"}
+            </button>
+            <button
+              className="tcp-btn h-7 px-2 text-xs"
+              onClick={() => {
+                const latestForAutomation = runs.find((run: any) => {
+                  const automationId = String(
+                    run?.automation_id || run?.routine_id || run?.id || ""
+                  ).trim();
+                  return automationId === id;
+                });
+                const runId = String(
+                  latestForAutomation?.run_id || latestForAutomation?.id || ""
+                ).trim();
+                if (runId) {
+                  onSelectRunId(runId);
+                  onOpenRunningView();
+                } else {
+                  toast("info", "No runs yet for this automation.");
+                }
+              }}
+            >
+              <i data-lucide="info"></i>
+              Debug latest
+            </button>
+            <button
+              className="tcp-btn-danger h-7 px-2 text-xs"
+              onClick={() =>
+                setDeleteConfirm({
+                  automationId: id,
+                  family: "legacy",
+                  title: String(automation?.name || automation?.label || id || "automation"),
+                })
+              }
+              disabled={!id || automationActionMutation.isPending}
+            >
+              <i data-lucide="trash-2"></i>
+              Remove
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div ref={rootRef} className="grid gap-4">
       {viewMode === "calendar" ? (
@@ -199,142 +456,80 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
       ) : null}
 
       {viewMode === "list" ? (
-        <div className="space-y-4 mb-4">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
-              Workflow Automations
-            </p>
+        <div className="space-y-5 mb-4">
+          <div className="flex items-start justify-between gap-2">
+            <div className="space-y-1">
+              <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                Workflow Automations
+              </p>
+              <p className="tcp-subtle text-xs">
+                Favorites stay pinned first, and the rest follow your saved sort preference.
+              </p>
+            </div>
             <span className="tcp-badge-ghost text-xs tracking-wide">
               {workflowAutomationCount} items
             </span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {automationsV2.length > 0 ? (
-              automationsV2.map((automation: any) => {
-                const id = String(
-                  automation?.automation_id || automation?.automationId || ""
-                ).trim();
-                const status = String(automation?.status || "draft").trim();
-                const paused = status.toLowerCase() === "paused";
-                const standup = isStandupAutomation(automation);
-                return (
-                  <div key={id} className="tcp-card flex flex-col gap-3 group">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="text-xl">🧩</span>
-                        <div className="min-w-0">
-                          <strong className="block truncate text-sm font-bold tracking-tight text-white mb-0.5">
-                            {String(automation?.name || id || "Workflow automation")}
-                          </strong>
-                          {standup ? (
-                            <span className="tcp-badge-ok text-[10px] py-0 px-1.5">Standup</span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          className="tcp-icon-btn h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => {
-                            if (isMissionBlueprintAutomation(automation)) {
-                              onOpenAdvancedEdit(automation);
-                              return;
-                            }
-                            setWorkflowEditDraft(workflowAutomationToEditDraft(automation));
-                          }}
-                          disabled={!id}
-                          title="Edit workflow automation"
-                          aria-label="Edit workflow automation"
-                        >
-                          <i data-lucide="pencil" className="w-3.5 h-3.5"></i>
-                        </button>
-                        <span
-                          className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${statusColor(status)}`}
-                        >
-                          {status}
-                        </span>
-                      </div>
-                    </div>
 
-                    {String(automation?.description || "").trim() ? (
-                      <div className="tcp-subtle text-xs line-clamp-2 leading-relaxed">
-                        {String(automation.description)}
-                      </div>
-                    ) : (
-                      <div className="tcp-subtle text-xs italic opacity-40">
-                        No description provided
-                      </div>
-                    )}
-
-                    {standup ? (
-                      <div className="text-[10px] text-emerald-300/80 font-mono tracking-tight bg-emerald-500/10 p-1.5 rounded-md truncate">
-                        report: {String(automation?.metadata?.standup?.report_path_template || "")}
-                      </div>
-                    ) : null}
-
-                    <div className="tcp-subtle text-[11px] font-medium flex items-center gap-1.5">
-                      <i data-lucide="calendar" className="w-3 h-3"></i>
-                      {formatAutomationV2ScheduleLabel(automation?.schedule)}
-                    </div>
-
-                    <div className="mt-auto pt-3 flex flex-wrap gap-2 border-t border-white/5">
-                      <button
-                        className="tcp-btn-primary flex-1 h-8 px-2 text-[11px]"
-                        onClick={() => runNowV2Mutation.mutate({ id })}
-                        disabled={!id || runNowV2Mutation.isPending}
-                      >
-                        <i data-lucide="play" className="w-3 h-3"></i>
-                        {runNowV2Mutation.isPending ? "Starting..." : "Run"}
-                      </button>
-                      <button
-                        className="tcp-btn h-8 px-2 text-[11px]"
-                        onClick={() => runNowV2Mutation.mutate({ id, dryRun: true })}
-                        disabled={!id || runNowV2Mutation.isPending}
-                      >
-                        <i data-lucide="flask-conical" className="w-3 h-3"></i>
-                        Dry
-                      </button>
-                      <button
-                        className="tcp-btn h-8 px-2 text-[11px]"
-                        onClick={() =>
-                          automationActionMutation.mutate({
-                            action: paused ? "resume" : "pause",
-                            automationId: id,
-                            family: "v2",
-                          })
-                        }
-                        disabled={!id || automationActionMutation.isPending}
-                      >
-                        <i data-lucide={paused ? "play" : "pause"} className="w-3 h-3"></i>
-                        {paused ? "Resume" : "Pause"}
-                      </button>
-                      <button
-                        className="tcp-btn-danger h-8 w-8 px-0 flex items-center justify-center"
-                        onClick={() =>
-                          setDeleteConfirm({
-                            automationId: id,
-                            family: "v2",
-                            title: String(automation?.name || id || "workflow automation"),
-                          })
-                        }
-                        disabled={!id || automationActionMutation.isPending}
-                        title="Remove"
-                      >
-                        <i data-lucide="trash-2" className="w-3.5 h-3.5"></i>
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="tcp-list-item">
-                <div className="font-medium">No workflow automations saved yet</div>
-                <div className="tcp-subtle mt-1 text-xs">
-                  This section is separate from run history and only shows workflow automation
-                  definitions.
-                </div>
+          <div className="tcp-card flex flex-col gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-1">
+                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                  Sort & Favorites
+                </p>
+                <p className="tcp-subtle text-xs">
+                  Current sort: {workflowSortLabel}. Profile-backed preferences only affect this
+                  list, not workflow execution.
+                </p>
               </div>
-            )}
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="tcp-subtle text-xs uppercase tracking-[0.2em]">Sort</label>
+                <select
+                  className="tcp-input h-8 min-w-[190px] py-1 text-xs"
+                  value={workflowSortMode}
+                  onChange={(event) => setWorkflowSortMode(event.target.value)}
+                  disabled={workflowPreferencesLoading}
+                >
+                  {WORKFLOW_SORT_MODES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
+
+          {workflowAutomationSections.length > 0 ? (
+            <div className="space-y-5">
+              {workflowAutomationSections.map((section: any) => (
+                <section key={section.key} className="space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                        {section.label}
+                      </p>
+                      <p className="tcp-subtle text-xs">{section.description}</p>
+                    </div>
+                    <span className="tcp-badge-ghost text-xs tracking-wide">
+                      {section.count} items
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {section.rows.map((row: any) => renderWorkflowAutomationCard(row))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="tcp-list-item">
+              <div className="font-medium">No workflow automations saved yet</div>
+              <div className="tcp-subtle mt-1 text-xs">
+                This section is separate from run history and only shows workflow automation
+                definitions.
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -348,106 +543,21 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
           </div>
 
           <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
-                Scheduled Automations
-              </p>
+            <div className="flex items-start justify-between gap-2">
+              <div className="space-y-1">
+                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                  Scheduled Automations
+                </p>
+                <p className="tcp-subtle text-xs">
+                  Legacy routines remain here with their familiar run, pause, and debug actions.
+                </p>
+              </div>
               <span className="tcp-subtle text-xs">{legacyAutomationCount} items</span>
             </div>
-            {automations.length > 0 ? (
-              automations.map((automation: any) => {
-                const id = String(
-                  automation?.automation_id || automation?.id || automation?.routine_id || ""
-                );
-                return (
-                  <div key={id} className="tcp-list-item">
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span>⏰</span>
-                        <strong>{String(automation?.name || id || "Automation")}</strong>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          className="tcp-btn h-7 px-2 text-xs"
-                          onClick={() => beginEdit(automation)}
-                        >
-                          <i data-lucide="pencil"></i>
-                        </button>
-                        <span className={statusColor(automation?.status)}>
-                          {String(automation?.status || "active")}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="tcp-subtle text-xs">
-                      {formatScheduleLabel(automation?.schedule)}
-                    </div>
-                    <div className="mt-2">
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          className="tcp-btn h-7 px-2 text-xs"
-                          onClick={() => runNowMutation.mutate(id)}
-                        >
-                          <i data-lucide="play"></i>
-                          Run now
-                        </button>
-                        <button
-                          className="tcp-btn h-7 px-2 text-xs"
-                          onClick={() =>
-                            automationActionMutation.mutate({
-                              action: isPausedAutomation(automation) ? "resume" : "pause",
-                              automationId: id,
-                              family: "legacy",
-                            })
-                          }
-                          disabled={!id || automationActionMutation.isPending}
-                        >
-                          <i data-lucide={isPausedAutomation(automation) ? "play" : "pause"}></i>
-                          {isPausedAutomation(automation) ? "Resume" : "Pause"}
-                        </button>
-                        <button
-                          className="tcp-btn h-7 px-2 text-xs"
-                          onClick={() => {
-                            const latestForAutomation = runs.find((run: any) => {
-                              const automationId = String(
-                                run?.automation_id || run?.routine_id || run?.id || ""
-                              ).trim();
-                              return automationId === id;
-                            });
-                            const runId = String(
-                              latestForAutomation?.run_id || latestForAutomation?.id || ""
-                            ).trim();
-                            if (runId) {
-                              onSelectRunId(runId);
-                              onOpenRunningView();
-                            } else {
-                              toast("info", "No runs yet for this automation.");
-                            }
-                          }}
-                        >
-                          <i data-lucide="info"></i>
-                          Debug latest
-                        </button>
-                        <button
-                          className="tcp-btn-danger h-7 px-2 text-xs"
-                          onClick={() =>
-                            setDeleteConfirm({
-                              automationId: id,
-                              family: "legacy",
-                              title: String(
-                                automation?.name || automation?.label || id || "automation"
-                              ),
-                            })
-                          }
-                          disabled={!id || automationActionMutation.isPending}
-                        >
-                          <i data-lucide="trash-2"></i>
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
+            {legacyAutomationRows.length > 0 ? (
+              <div className="grid gap-2">
+                {legacyAutomationRows.map((row: any) => renderLegacyAutomationCard(row))}
+              </div>
             ) : (
               <div className="tcp-list-item">
                 <div className="font-medium">No scheduled automations saved yet</div>

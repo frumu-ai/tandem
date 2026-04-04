@@ -244,6 +244,7 @@ function AppBody() {
   const logout = useCallback(async () => {
     await api("/api/auth/logout", { method: "POST" }).catch(() => {});
     queryClient.removeQueries({ queryKey: ["auth"] });
+    queryClient.removeQueries({ queryKey: ["control-panel"] });
     queryClient.removeQueries({ queryKey: ["provider"] });
     queryClient.removeQueries({ queryKey: ["identity"] });
     queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
