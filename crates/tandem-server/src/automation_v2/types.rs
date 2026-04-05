@@ -306,6 +306,10 @@ pub enum AutomationOutputValidatorKind {
     ReviewDecision,
     StructuredJson,
     GenericArtifact,
+    /// Standup participant nodes. Produces a JSON object with `yesterday`, `today`, and
+    /// `blockers` fields. Status detection short-circuits all review-approval and
+    /// research-brief logic for this kind — participants either complete or need repair.
+    StandupUpdate,
 }
 
 impl AutomationOutputValidatorKind {
@@ -316,6 +320,7 @@ impl AutomationOutputValidatorKind {
             Self::ReviewDecision => "review_decision",
             Self::StructuredJson => "structured_json",
             Self::GenericArtifact => "generic_artifact",
+            Self::StandupUpdate => "standup_update",
         }
     }
 }

@@ -251,34 +251,63 @@ fn validate_standup_report_path(raw: &str) -> Result<String, &'static str> {
 
 fn standup_participant_objective(template_name: &str) -> String {
     format!(
-        "You are preparing your daily standup update for {template_name}. Base the update on workspace files and Tandem memory for this project. Before making any claim, inspect the workspace broadly: use `glob` to inventory every top-level directory and the major subdirectories beneath it, use `grep` to identify standup-relevant paths, then `read` the concrete files that appear relevant. Complete that workspace-wide inventory pass first, then drill into every area that appears relevant to recent work, artifacts, docs, drafts, outputs, notes, or generated results. Use `memory_search` for prior conversations and history; it defaults to the current session, current workspace/project, and global Tandem memory unless you need to narrow scope. Ground each standup point in files you actually opened or memory you actually found. Do not write tool/process commentary in the final update. Describe actual work found in the workspace, not the act of preparing the standup. Do not treat missing web research or missing connector results as a blocker for this standup unless the workspace evidence itself explicitly says external research is required. If current external findings are unavailable, still complete the standup from local evidence and mention that limitation plainly instead of blocking. Return valid JSON with keys `yesterday`, `today`, and `blockers`. Keep each field concise and evidence-based. If no verifiable role-specific progress is found after the workspace-wide pass, say that plainly instead of guessing."
+        "You are {template_name}. Report your actual progress for this daily standup.
+
+YOUR TASK:
+Find concrete evidence of work done since the previous standup and report it. Search the workspace and memory, then write a JSON update.
+
+HOW TO SEARCH:
+1. Use `glob` to list these workspace-root directories first: `outputs/`, `content/`, `drafts/`, `research/`, `docs/` (excluding `docs/standups/`). These are where actual deliverables land.
+2. Use `read` on any files in those directories that look relevant to your role. Check file dates or filenames to determine if they are new since the last standup.
+3. Use `memory_search` to recall prior conversations, completed tasks, or notes from the project history.
+4. Read the previous standup at `docs/standups/` to understand what was already reported — do not repeat it.
+5. DO NOT search `.tandem/` — that directory contains run history and audit artifacts, not deliverables.
+
+OUTPUT RULES:
+- `yesterday`: List only work that is new since the previous standup. Name specific files, drafts, or deliverables. NEVER write tool observations like \"reviewed workspace context\" or \"identified relevant docs\".
+- `today`: Name a specific deliverable or task you will work on next. Do not write \"prepare the standup\" as today's work.
+- `blockers`: List only actual business blockers. \"No memory found\" is NOT a blocker. \"Evidence limited\" is NOT a blocker. Leave this empty if there are none.
+
+STATUS RULES (critical):
+- Always return `status: completed` in the final JSON — even if you found nothing.
+- NEVER return `status: blocked`. If you have nothing to report, say so plainly in `yesterday` and still return `status: completed`.
+- The only valid status values for a standup participant are `completed` and `needs_repair`.
+
+BAD (reject these patterns entirely):
+- \"Reviewed workspace context and approved findings\"
+- \"Identified Tandem positioning docs as source of truth\"
+- \"No prior work evidence was found in memory_search\"
+- \"The update remains evidence-limited without additional source material\"
+- \"Prepared the daily standup update\"
+
+GOOD (write things like this):
+- \"Drafted homepage headline copy in outputs/homepage-copy.md\"
+- \"Updated campaign brief at content/briefs/q2-campaign.md with new audience segment\"
+- \"No {template_name} deliverables found in workspace.\"
+
+If you find no concrete role-specific work after a thorough search, say exactly: \"No {template_name} deliverables found in workspace.\" Do not pad with process commentary.
+
+Return valid JSON with keys `yesterday`, `today`, `blockers`, and `status`. Set `status` to `completed`."
     )
 }
 
 fn standup_participant_enforcement() -> crate::AutomationOutputEnforcement {
+    // The standup_update validation profile (enforcement.rs) handles gate
+    // construction: it requires concrete_reads but not workspace_inspection,
+    // and does not impose Files Reviewed sections or citation requirements.
     crate::AutomationOutputEnforcement {
-        validation_profile: Some("local_research".to_string()),
+        validation_profile: Some("standup_update".to_string()),
         required_tools: vec![
+            "read".to_string(),
             "glob".to_string(),
             "grep".to_string(),
-            "read".to_string(),
             "memory_search".to_string(),
         ],
         required_evidence: vec!["local_source_reads".to_string()],
         required_sections: Vec::new(),
-        prewrite_gates: vec![
-            "workspace_inspection".to_string(),
-            "concrete_reads".to_string(),
-        ],
-        retry_on_missing: vec![
-            "local_source_reads".to_string(),
-            "workspace_inspection".to_string(),
-            "concrete_reads".to_string(),
-        ],
-        terminal_on: vec![
-            "tool_unavailable".to_string(),
-            "repair_budget_exhausted".to_string(),
-        ],
+        prewrite_gates: Vec::new(), // populated by enforcement.rs for standup_update
+        retry_on_missing: Vec::new(), // populated by enforcement.rs
+        terminal_on: Vec::new(),    // populated by enforcement.rs
         repair_budget: Some(3),
         session_text_recovery: Some("require_prewrite_satisfied".to_string()),
     }
@@ -286,7 +315,31 @@ fn standup_participant_enforcement() -> crate::AutomationOutputEnforcement {
 
 fn standup_synthesis_objective(report_path_template: &str) -> String {
     format!(
-        "Synthesize all participant standup updates into a clear markdown engineering standup. Include sections for Yesterday, Today, and Blockers grouped by participant. Write the final markdown report to `{report_path_template}` relative to the workspace root. After writing the report, store a concise standup summary in project memory with `memory_store`, using `tier: \"project\"`, source `agent_standup_summary`, and metadata that includes the report path. Then return a short confirmation summary."
+        "You are the standup coordinator. Synthesize participant updates into a useful daily standup that a human team lead would want to read.
+
+EDITORIAL RULES (apply these strictly before writing anything):
+1. If a participant's update contains only meta-commentary — phrases like \"reviewed workspace context\", \"identified relevant docs\", \"evidence-limited\", \"prepared the standup\", or \"no prior work evidence was found\" — replace the entire section with: `⚠️ No concrete progress reported for [role name].`
+2. Any \"blocker\" that is a tool observation (\"no memory found\", \"evidence limited\", \"artifacts truncated\") must be silently dropped. Only real business blockers belong in the Blockers section.
+3. Remove duplicate items that appear across multiple participants.
+4. Do not mention tool names (`glob`, `grep`, `memory_search`, `read`) anywhere in the final report.
+5. The final report must read as if a human wrote it. Every item must be a concrete deliverable, decision, or action — not a description of the agent's process.
+
+REPORT FORMAT:
+Write a markdown report with these sections:
+## Yesterday
+[Per-participant bullets of concrete work done]
+
+## Today
+[Per-participant bullets of specific next actions or deliverables]
+
+## Blockers
+[Only real business blockers — omit this section entirely if there are none]
+
+Write the final markdown report to `{report_path_template}` relative to the workspace root using the `write` tool.
+
+After writing the report, store a concise standup summary in project memory using `memory_store` with `tier: \"project\"`, source `agent_standup_summary`, and metadata that includes the report path.
+
+Then return a short confirmation with the report path and participant count."
     )
 }
 
@@ -834,6 +887,27 @@ pub(super) async fn compose_standup(
                 })),
             ));
         };
+        // Standup participants must be worker-style agents. Reviewer, Orchestrator, and
+        // Delegator role templates break the standup output contract because their output
+        // handlers expect approval decisions rather than yesterday/today/blockers JSON.
+        let role_name = format!("{:?}", template.role).to_ascii_lowercase();
+        if matches!(
+            role_name.as_str(),
+            "reviewer" | "orchestrator" | "delegator"
+        ) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "ok": false,
+                    "code": "INVALID_PARTICIPANT_ROLE",
+                    "error": format!(
+                        "template `{template_id}` has role `{role_name}` which cannot be a standup participant. Only Worker, Watcher, Tester, and Committer roles are supported."
+                    ),
+                    "templateID": template_id,
+                    "role": role_name,
+                })),
+            ));
+        }
         participants.push(template);
     }
 
@@ -909,8 +983,8 @@ pub(super) async fn compose_standup(
             depends_on: Vec::new(),
             input_refs: Vec::new(),
             output_contract: Some(crate::AutomationFlowOutputContract {
-                kind: "structured_json".to_string(),
-                validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+                kind: "standup_update".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::StandupUpdate),
                 enforcement: Some(standup_participant_enforcement()),
                 schema: None,
                 summary_guidance: None,

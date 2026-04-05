@@ -221,13 +221,21 @@ pub(crate) fn automation_node_output_enforcement(
             }
         });
     enforcement.validation_profile = Some(validation_profile.clone());
+    let is_standup_update = validation_profile == "standup_update";
     let is_local_research = validation_profile == "local_research";
     let is_external_research = validation_profile == "external_research";
     let is_research_synthesis = validation_profile == "research_synthesis";
 
     if enforcement.required_tools.is_empty() {
         enforcement.required_tools = legacy_required_tools.clone();
-        if is_local_research && !enforcement.required_tools.iter().any(|tool| tool == "glob") {
+        // standup_update: require read but not glob — participants that go straight to
+        // reading relevant files satisfy the quality bar without a glob pass first.
+        if is_standup_update {
+            if !enforcement.required_tools.iter().any(|tool| tool == "read") {
+                enforcement.required_tools.push("read".to_string());
+            }
+        } else if is_local_research && !enforcement.required_tools.iter().any(|tool| tool == "glob")
+        {
             enforcement.required_tools.push("glob".to_string());
         }
         if is_local_research && !enforcement.required_tools.iter().any(|tool| tool == "read") {
@@ -293,7 +301,13 @@ pub(crate) fn automation_node_output_enforcement(
 
     if enforcement.prewrite_gates.is_empty() && automation_node_required_output_path(node).is_some()
     {
-        if is_local_research {
+        if is_standup_update {
+            // Only require a concrete read. workspace_inspection (glob) is not a hard gate
+            // for standup participants — they get a repair signal instead of a hard block.
+            enforcement
+                .prewrite_gates
+                .push("concrete_reads".to_string());
+        } else if is_local_research {
             enforcement
                 .prewrite_gates
                 .push("workspace_inspection".to_string());

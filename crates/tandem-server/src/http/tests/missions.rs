@@ -379,7 +379,7 @@ async fn agent_standup_compose_builds_workflow_automation_from_templates() {
             .get("output_contract")
             .and_then(|value| value.get("validator"))
             .and_then(Value::as_str),
-        Some("structured_json")
+        Some("standup_update")
     );
     assert_eq!(
         nodes[0]
@@ -387,7 +387,7 @@ async fn agent_standup_compose_builds_workflow_automation_from_templates() {
             .and_then(|value| value.get("enforcement"))
             .and_then(|value| value.get("validation_profile"))
             .and_then(Value::as_str),
-        Some("local_research")
+        Some("standup_update")
     );
     assert!(nodes[0]
         .get("output_contract")
@@ -462,7 +462,7 @@ async fn agent_standup_compose_builds_workflow_automation_from_templates() {
         .and_then(|rows| rows.first())
         .and_then(|value| value.get("objective"))
         .and_then(Value::as_str)
-        .is_some_and(|value| value.contains("inventory every top-level directory")));
+        .is_some_and(|value| value.contains("Report your actual progress")));
     assert!(automation
         .get("agents")
         .and_then(Value::as_array)

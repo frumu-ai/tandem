@@ -3,6 +3,49 @@ use crate::util::time::now_ms;
 use serde_json::{json, Value};
 use tandem_types::MessagePart;
 
+/// Returns true when all user-visible standup fields consist entirely of known
+/// meta-commentary phrases. Used by the `StandupUpdate` fast path to trigger
+/// a repair rather than silently accepting empty-substance output.
+fn standup_output_contains_only_filler(parsed: &Value) -> bool {
+    // Phrases that indicate the agent described its search process instead of
+    // reporting actual deliverables. Kept intentionally specific to avoid
+    // false positives on legitimate updates that happen to share words.
+    const FILLER_PATTERNS: &[&str] = &[
+        "reviewed workspace",
+        "reviewed prior project memory",
+        "reviewed prior standup",
+        "identified relevant",
+        "approved findings",
+        "evidence-limited",
+        "evidence remains",
+        "evidence is limited",
+        "no prior work evidence",
+        "cannot be expanded without",
+        "prepared the standup",
+        "prepare the daily standup",
+        "workspace context",
+        "source of truth",
+        "no broader copy draft",
+        "workspace artifacts and tandem",
+        "based on workspace artifacts",
+        "reviewing workspace",
+        "standup preparation from available",
+    ];
+    // Both yesterday and today must be filler for the whole update to be rejected.
+    // An agent that has a real "today" but filler "yesterday" is partially useful.
+    let fields = ["yesterday", "today"];
+    fields.iter().all(|field| {
+        parsed
+            .get(field)
+            .and_then(Value::as_str)
+            .map(|text| {
+                let lower = text.trim().to_ascii_lowercase();
+                lower.is_empty() || FILLER_PATTERNS.iter().any(|p| lower.contains(p))
+            })
+            .unwrap_or(true) // missing field counts as filler
+    })
+}
+
 pub(crate) fn augment_automation_attempt_evidence_with_validation(
     attempt_evidence: &Value,
     artifact_validation: Option<&Value>,
@@ -495,6 +538,58 @@ pub(crate) fn detect_automation_node_status(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let validator_kind = automation_output_validator_kind(node);
+
+    // --- StandupUpdate fast path ---
+    // Standup participants bypass all text-marker matching, approval-gate logic,
+    // and research-brief validation. They produce structured JSON with three keys;
+    // anything else triggers a targeted repair signal.
+    if validator_kind == crate::AutomationOutputValidatorKind::StandupUpdate {
+        let parsed = parse_status_json(session_text);
+        let has_required_keys = parsed
+            .as_ref()
+            .is_some_and(|v| v.get("yesterday").is_some() && v.get("today").is_some());
+        if has_required_keys {
+            let explicit_reason = parsed
+                .as_ref()
+                .and_then(|v| v.get("reason"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            // Filler rejection: if every user-visible field is meta-commentary,
+            // trigger a repair so the agent tries again with the repair hint.
+            if standup_output_contains_only_filler(parsed.as_ref().unwrap()) {
+                return (
+                    if research_repair_exhausted {
+                        "blocked".to_string()
+                    } else {
+                        "needs_repair".to_string()
+                    },
+                    Some(
+                        "standup update contains only meta-commentary; \
+                         report concrete file names or deliverables, \
+                         or write exactly: \"No [role] deliverables found in workspace.\""
+                            .to_string(),
+                    ),
+                    None,
+                );
+            }
+            return ("completed".to_string(), explicit_reason, None);
+        }
+        // Missing required keys — clear repair signal
+        return (
+            if research_repair_exhausted {
+                "blocked".to_string()
+            } else {
+                "needs_repair".to_string()
+            },
+            Some(
+                "standup update is missing required JSON keys: `yesterday` and `today` \
+                 must be present in the returned JSON object"
+                    .to_string(),
+            ),
+            None,
+        );
+    }
+
     let handoff_only_structured_json = validator_kind
         == crate::AutomationOutputValidatorKind::StructuredJson
         && automation_node_required_output_path(node).is_none();
@@ -554,7 +649,12 @@ pub(crate) fn detect_automation_node_status(
             return ("blocked".to_string(), explicit_reason, approved);
         }
     }
-    if approved == Some(false) {
+    // Only ReviewDecision nodes act as approval gates. StructuredJson nodes (e.g. standup
+    // participants) return structured data that may contain an `approved` field with unrelated
+    // semantics — treat approval gating as a ReviewDecision-exclusive concern.
+    if approved == Some(false)
+        && validator_kind == crate::AutomationOutputValidatorKind::ReviewDecision
+    {
         return (
             "blocked".to_string(),
             explicit_reason

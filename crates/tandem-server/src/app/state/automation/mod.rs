@@ -2413,12 +2413,12 @@ pub fn automation_node_required_output_path(node: &AutomationFlowNode) -> Option
 }
 
 fn automation_node_default_output_path(node: &AutomationFlowNode) -> Option<String> {
-    let extension = match node
+    let contract_kind = node
         .output_contract
         .as_ref()
         .map(|contract| contract.kind.as_str())
-        .unwrap_or("structured_json")
-    {
+        .unwrap_or("structured_json");
+    let extension = match contract_kind {
         "report_markdown" => {
             let format = node
                 .metadata
@@ -2465,7 +2465,17 @@ fn automation_node_default_output_path(node: &AutomationFlowNode) -> Option<Stri
     if slug.is_empty() {
         return None;
     }
-    Some(format!(".tandem/artifacts/{slug}.{extension}"))
+    // Human-readable deliverables (markdown/html) land in the workspace root under
+    // `outputs/` so they are visible to humans and discoverable by the standup system.
+    // JSON intermediates stay in `.tandem/artifacts/` — they are pipeline plumbing
+    // consumed by downstream nodes, not final deliverables.
+    // In both cases the run-scoping mechanism archives a copy into
+    // `.tandem/runs/<run-id>/artifacts/` for audit history.
+    if extension == "md" || extension == "html" {
+        Some(format!("outputs/{slug}.{extension}"))
+    } else {
+        Some(format!(".tandem/artifacts/{slug}.{extension}"))
+    }
 }
 
 fn automation_node_allows_preexisting_output_reuse(node: &AutomationFlowNode) -> bool {
@@ -6425,19 +6435,71 @@ pub(crate) async fn execute_automation_v2_node(
     } else {
         None
     };
+    // P1: Delta-aware standup — read the most recent previous standup report and inject it.
+    // This gives both participants and the coordinator awareness of what was already reported,
+    // allowing them to report only new progress rather than re-discovering the same workspace state.
+    let previous_standup_context: Option<String> = if is_agent_standup_automation(automation) {
+        let report_path_template = resolve_standup_report_path_template(automation);
+        let run_ts = run.started_at_ms.unwrap_or_else(now_ms);
+        let previous_report = report_path_template.and_then(|template| {
+            // Try up to 7 days back to find the most recent previous report
+            for days_back in 1u64..=7 {
+                let previous_ts = run_ts.saturating_sub(days_back * 24 * 60 * 60 * 1000);
+                let candidate_path = if template.contains("{{date}}") {
+                    let date = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+                        previous_ts as i64,
+                    )
+                    .unwrap_or_else(chrono::Utc::now)
+                    .format("%Y-%m-%d")
+                    .to_string();
+                    template.replace("{{date}}", &date)
+                } else {
+                    break;
+                };
+                if let Ok(resolved) =
+                    resolve_automation_output_path(&workspace_root, &candidate_path)
+                {
+                    if resolved.is_file() {
+                        if let Ok(content) = std::fs::read_to_string(&resolved) {
+                            let trimmed = content.trim();
+                            if !trimmed.is_empty() {
+                                return Some(format!(
+                                    "Previous Standup Report ({}):\n{}\n\nReport only NEW progress since the above. Do not repeat items already listed in the previous standup.",
+                                    candidate_path,
+                                    trimmed
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        });
+        previous_report
+    } else {
+        None
+    };
     let knowledge_preflight =
         automation_knowledge_preflight(state, automation, node, run_id, &project_id).await;
-    let knowledge_context = knowledge_preflight.as_ref().and_then(|preflight| {
-        if !preflight.is_reusable() {
-            return None;
+    let knowledge_context = {
+        let base = knowledge_preflight.as_ref().and_then(|preflight| {
+            if !preflight.is_reusable() {
+                return None;
+            }
+            let rendered = preflight.format_for_injection();
+            if rendered.trim().is_empty() {
+                None
+            } else {
+                Some(rendered)
+            }
+        });
+        match (base, previous_standup_context) {
+            (Some(base), Some(prev)) => Some(format!("{base}\n\n{prev}")),
+            (Some(base), None) => Some(base),
+            (None, Some(prev)) => Some(prev),
+            (None, None) => None,
         }
-        let rendered = preflight.format_for_injection();
-        if rendered.trim().is_empty() {
-            None
-        } else {
-            Some(rendered)
-        }
-    });
+    };
     let max_attempts = automation_node_max_attempts(node);
     let mut prompt = render_automation_v2_prompt_with_options(
         automation,
