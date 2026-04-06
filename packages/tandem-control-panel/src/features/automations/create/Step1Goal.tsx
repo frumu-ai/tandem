@@ -1,63 +1,4 @@
-import { useMemo, useState } from "react";
-import { renderMarkdownSafe } from "../../../lib/markdown";
-import agentCatalog from "../../../generated/agent-catalog.json";
-
-type AgentCatalogEntry = {
-  id: string;
-  name: string;
-  category_title: string;
-  role: string;
-  summary: string;
-  instructions?: string;
-  tags: string[];
-};
-
-type AgentCatalogIndex = {
-  categories: Array<{ id: string; title: string }>;
-  agents: AgentCatalogEntry[];
-};
-
-const CATALOG = agentCatalog as AgentCatalogIndex;
-
-function formatAgentInstructionsMarkdown(raw: string) {
-  const lines = String(raw || "")
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd());
-  const out: string[] = [];
-  let inSectionList = false;
-  const sectionHeaders = new Set(["Working mode", "Focus on", "Quality checks", "Return"]);
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) {
-      if (inSectionList && out[out.length - 1] !== "") out.push("");
-      inSectionList = false;
-      continue;
-    }
-    if (/^\d+\.\s+/.test(line) || /^[-*]\s+/.test(line)) {
-      out.push(line);
-      inSectionList = true;
-      continue;
-    }
-    const headerMatch = line.match(/^([A-Za-z][A-Za-z\s]+):$/);
-    if (headerMatch) {
-      const heading = headerMatch[1].trim();
-      out.push(`### ${heading}`);
-      inSectionList = sectionHeaders.has(heading);
-      continue;
-    }
-    if (inSectionList) {
-      out.push(`- ${line}`);
-      continue;
-    }
-    out.push(line);
-  }
-
-  return out
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+import { useMemo } from "react";
 
 type Step1GoalProps = {
   value: string;
@@ -85,8 +26,6 @@ type Step1GoalProps = {
   installStatus: string;
   topMatches: Array<{ skill_name?: string; confidence?: number }>;
   isMatching: boolean;
-  selectedAgentId: string;
-  onChangeSelectedAgentId: (v: string) => void;
   goalPlaceholder: string;
 };
 
@@ -117,31 +56,11 @@ export function Step1Goal(props: Step1GoalProps) {
     installStatus,
     topMatches,
     isMatching,
-    selectedAgentId,
-    onChangeSelectedAgentId,
     goalPlaceholder,
   } = props;
 
-  const [agentSearch, setAgentSearch] = useState("");
   const generatedArtifactKeys = Object.keys(
     (generatedSkill?.artifacts as Record<string, string>) || {}
-  );
-
-  const filteredAgents = useMemo(() => {
-    const query = agentSearch.toLowerCase().trim();
-    if (!query) return CATALOG.agents;
-    return CATALOG.agents.filter(
-      (agent) =>
-        agent.name.toLowerCase().includes(query) ||
-        agent.summary.toLowerCase().includes(query) ||
-        agent.tags.some((tag) => tag.toLowerCase().includes(query)) ||
-        agent.category_title.toLowerCase().includes(query)
-    );
-  }, [agentSearch]);
-
-  const selectedAgent = useMemo(
-    () => CATALOG.agents.find((a) => a.id === selectedAgentId) || null,
-    [selectedAgentId]
   );
 
   const isMonitorGoal = useMemo(() => {
@@ -179,85 +98,6 @@ export function Step1Goal(props: Step1GoalProps) {
             lightweight model to check if there's new work before running the full automation. No
             tokens wasted when there's nothing new.
           </span>
-        </div>
-      ) : null}
-      <div className="grid gap-2">
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-slate-500">Search agents from catalog:</p>
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-slate-500">{filteredAgents.length} agents</span>
-            {selectedAgentId ? (
-              <button
-                type="button"
-                className="tcp-btn h-6 px-2 text-xs"
-                onClick={() => onChangeSelectedAgentId("")}
-              >
-                Clear selection
-              </button>
-            ) : null}
-          </div>
-        </div>
-        <input
-          className="tcp-input text-xs"
-          placeholder="Search agents by name, tag, or description..."
-          value={agentSearch}
-          onInput={(e) => setAgentSearch((e.target as HTMLInputElement).value)}
-        />
-        <div className="max-h-[200px] overflow-y-auto rounded border border-slate-700/50">
-          {filteredAgents.length === 0 ? (
-            <p className="p-3 text-xs text-slate-500">No agents found</p>
-          ) : (
-            <div className="grid gap-1 p-2">
-              {filteredAgents.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  className={`tcp-list-item flex flex-col items-start gap-1 text-left transition-all ${
-                    selectedAgentId === agent.id ? "border-amber-400/60 bg-amber-400/10" : ""
-                  }`}
-                  onClick={() => {
-                    onChangeSelectedAgentId(selectedAgentId === agent.id ? "" : agent.id);
-                    setAgentSearch("");
-                  }}
-                >
-                  <div className="flex w-full items-center gap-2">
-                    <span className="font-medium text-xs truncate">{agent.name}</span>
-                    <span className="tcp-badge-info text-[10px]">{agent.category_title}</span>
-                    <span className="tcp-badge-info text-[10px]">{agent.role}</span>
-                  </div>
-                  <span className="text-[10px] text-slate-400 line-clamp-2">{agent.summary}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-      {selectedAgent ? (
-        <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-3 text-xs">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="font-medium text-amber-300">Selected: {selectedAgent.name}</span>
-            <div className="flex items-center gap-2">
-              <span className="tcp-badge-info">{selectedAgent.role}</span>
-              <button
-                type="button"
-                className="tcp-btn h-6 px-2 text-[10px]"
-                onClick={() => onChangeSelectedAgentId("")}
-              >
-                Clear selection
-              </button>
-            </div>
-          </div>
-          <div
-            className="prose prose-sm prose-invert max-w-none text-slate-300 prose-headings:text-amber-100 prose-p:text-slate-300 prose-li:text-slate-300 prose-strong:text-slate-100"
-            dangerouslySetInnerHTML={{
-              __html: renderMarkdownSafe(
-                formatAgentInstructionsMarkdown(selectedAgent.instructions || selectedAgent.summary)
-              ),
-            }}
-          />
-          <p className="mt-2 text-[10px] uppercase tracking-wide text-slate-500">
-            Preview only. This selection does not change the compiled automation payload.
-          </p>
         </div>
       ) : null}
       <div className="rounded-xl border border-slate-700/50 bg-slate-900/30 p-3 text-xs text-slate-300">

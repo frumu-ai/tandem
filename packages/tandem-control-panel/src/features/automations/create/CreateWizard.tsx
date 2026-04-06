@@ -46,7 +46,6 @@ interface WizardState {
   customSkillName: string;
   customSkillDescription: string;
   customWorkflowKind: "pack_builder_recipe" | "automation_v2_dag";
-  selectedAgentId: string;
 }
 
 interface ProviderOption {
@@ -188,7 +187,6 @@ function createDefaultWizardState(
     customSkillName: "",
     customSkillDescription: "",
     customWorkflowKind: "pack_builder_recipe",
-    selectedAgentId: "",
   };
 }
 
@@ -820,8 +818,6 @@ export function CreateWizard({
               installStatus={installStatus}
               topMatches={routerMatches}
               isMatching={matchMutation.isPending}
-              selectedAgentId={wizard.selectedAgentId}
-              onChangeSelectedAgentId={(v) => setWizard((s) => ({ ...s, selectedAgentId: v }))}
               goalPlaceholder={AUTOMATION_WIZARD_CONFIG.goalExamples[0]}
             />
           ) : step === 2 ? (
