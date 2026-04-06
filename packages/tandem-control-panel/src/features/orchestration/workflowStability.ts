@@ -216,14 +216,13 @@ export function workflowTaskState(
   const pending = new Set(workflowPendingNodeIds(run));
   const taskId = String(nodeId || "").trim();
   if (!taskId) return dependencyTaskIds.length ? "pending" : "runnable";
-  if (completed.has(taskId)) return "done";
   const output = workflowNodeOutput(run, taskId);
   const outputStatus = String(output?.status || output?.content?.status || "")
     .trim()
     .toLowerCase();
-  if (outputStatus === "done") return "done";
-  if (outputStatus === "verify_failed" || outputStatus === "failed") return "failed";
   if (blocked.has(taskId) || outputStatus === "blocked") return "blocked";
+  if (outputStatus === "verify_failed" || outputStatus === "failed") return "failed";
+  if (completed.has(taskId) || outputStatus === "done") return "done";
   const errorText = String(
     output?.error ||
       output?.content?.error ||

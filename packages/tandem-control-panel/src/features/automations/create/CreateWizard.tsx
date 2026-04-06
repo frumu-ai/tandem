@@ -747,7 +747,59 @@ export function CreateWizard({
   }, [step]);
 
   return (
-    <div className="flex flex-col h-full gap-4 min-h-0">
+    <div className="flex flex-col h-full gap-4 min-h-0 relative">
+      <AnimatePresence>
+        {compileMutation.isPending ? (
+          <motion.div
+            className="absolute inset-[-1.25rem] z-50 flex items-center justify-center rounded-2xl bg-slate-950/80 backdrop-blur-md"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25 }}
+          >
+            <div className="flex flex-col items-center gap-6 p-8">
+              <div className="relative flex items-center justify-center h-24 w-24">
+                <motion.div
+                  className="absolute inset-0 rounded-full border-[3px] border-transparent border-t-amber-500 border-r-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)]"
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, ease: "linear", duration: 1.2 }}
+                />
+                <motion.div
+                  className="absolute inset-2 rounded-full border-[3px] border-transparent border-l-amber-300 border-b-amber-300 opacity-70"
+                  animate={{ rotate: -360 }}
+                  transition={{ repeat: Infinity, ease: "linear", duration: 1.8 }}
+                />
+                <motion.div
+                  className="absolute inset-0 rounded-full bg-amber-500/20 blur-xl"
+                  animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
+                  transition={{ repeat: Infinity, ease: "easeInOut", duration: 2 }}
+                />
+                <i data-lucide="sparkles" className="h-10 w-10 text-amber-400 relative z-10" />
+              </div>
+              <div className="text-center">
+                <h3 className="text-xl font-bold tracking-tight text-white mb-2 flex items-center justify-center gap-1">
+                  Generating Mission Plan
+                  <motion.span
+                    animate={{ opacity: [0, 1, 0] }}
+                    transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                  >
+                    ...
+                  </motion.span>
+                </h3>
+                <motion.p
+                  className="text-sm text-slate-400 max-w-sm leading-relaxed"
+                  animate={{ opacity: [0.6, 1, 0.6] }}
+                  transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut" }}
+                >
+                  Tandem is analyzing your goal, evaluating the workspace, and drafting a
+                  step-by-step blueprint.
+                </motion.p>
+              </div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
       <div className="flex items-center gap-2">
         {AUTOMATION_WIZARD_CONFIG.steps.map((label, i) => {
           const num = (i + 1) as WizardStep;
@@ -983,7 +1035,7 @@ export function CreateWizard({
       </AnimatePresence>
 
       {step < 4 ? (
-        <div className="flex justify-between gap-2">
+        <div className="flex justify-between gap-2 shrink-0">
           <button
             className="tcp-btn"
             disabled={step === 1 || compileMutation.isPending}

@@ -3106,6 +3106,84 @@ async fn automations_v2_run_recover_from_pause_preserves_completed_state_and_rec
 }
 
 #[tokio::test]
+async fn automations_v2_run_recover_allows_completed_runs_with_blocked_node_evidence() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-completed-blocked-recover").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Completed;
+            row.finished_at_ms = Some(crate::now_ms());
+            row.checkpoint.completed_nodes = vec!["draft".to_string(), "review".to_string()];
+            row.checkpoint.pending_nodes = vec!["approval".to_string()];
+            row.checkpoint.node_outputs.insert(
+                "draft".to_string(),
+                json!({"status":"completed","summary":"draft"}),
+            );
+            row.checkpoint.node_outputs.insert(
+                "review".to_string(),
+                json!({"status":"blocked","summary":"review blocked"}),
+            );
+            row.checkpoint.node_attempts.insert("review".to_string(), 2);
+            row.active_session_ids = vec!["session-a".to_string()];
+            row.latest_session_id = Some("session-a".to_string());
+            row.active_instance_ids = vec!["instance-a".to_string()];
+        })
+        .await
+        .expect("updated run");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/recover", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "reason": "retry completed run with blocked node evidence" })
+                        .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let recovered = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after recover");
+    assert_eq!(recovered.status, crate::AutomationRunStatus::Queued);
+    assert!(recovered
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node_id| node_id == "draft"));
+    assert!(!recovered
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node_id| node_id == "review"));
+    assert!(recovered.checkpoint.node_outputs.contains_key("draft"));
+    assert!(!recovered.checkpoint.node_outputs.contains_key("review"));
+    assert!(recovered
+        .checkpoint
+        .pending_nodes
+        .iter()
+        .any(|node_id| node_id == "review"));
+    assert!(recovered.active_session_ids.is_empty());
+    assert!(recovered.active_instance_ids.is_empty());
+    assert!(recovered.latest_session_id.is_none());
+    assert_eq!(
+        recovered.resume_reason.as_deref(),
+        Some("retry completed run with blocked node evidence")
+    );
+}
+
+#[tokio::test]
 async fn automations_v2_run_cancel_records_operator_stop_kind_and_clears_active_ids() {
     let state = test_state().await;
     let app = app_router(state.clone());
@@ -4441,6 +4519,80 @@ async fn automations_v2_run_task_continue_minimally_resets_blocked_node() {
         metadata.get("node_id").and_then(Value::as_str),
         Some("review")
     );
+}
+
+#[tokio::test]
+async fn automations_v2_run_task_continue_accepts_completed_runs_when_node_output_is_blocked() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-task-continue-completed").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Completed;
+            row.finished_at_ms = Some(crate::now_ms());
+            row.checkpoint.completed_nodes = vec!["draft".to_string(), "review".to_string()];
+            row.checkpoint.pending_nodes = vec!["approval".to_string()];
+            row.checkpoint.node_outputs.insert(
+                "review".to_string(),
+                json!({"status":"blocked","summary":"review blocked"}),
+            );
+            row.checkpoint.node_attempts.insert("review".to_string(), 2);
+            row.active_session_ids = vec!["session-a".to_string()];
+            row.latest_session_id = Some("session-a".to_string());
+            row.active_instance_ids = vec!["instance-a".to_string()];
+        })
+        .await
+        .expect("updated run");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/automations/v2/runs/{}/tasks/{}/continue",
+                    run.run_id, "review"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "reason": "continue completed run with blocked output"
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let continued = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after continue");
+    assert_eq!(continued.status, crate::AutomationRunStatus::Queued);
+    assert!(continued
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node_id| node_id == "draft"));
+    assert!(!continued
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node_id| node_id == "review"));
+    assert!(!continued.checkpoint.node_outputs.contains_key("review"));
+    assert!(continued
+        .checkpoint
+        .pending_nodes
+        .iter()
+        .any(|node_id| node_id == "review"));
+    assert!(continued.active_session_ids.is_empty());
+    assert!(continued.active_instance_ids.is_empty());
+    assert!(continued.latest_session_id.is_none());
 }
 
 #[tokio::test]

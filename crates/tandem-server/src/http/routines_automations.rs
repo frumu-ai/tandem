@@ -219,6 +219,39 @@ fn automation_v2_failed_node_ids(run: &crate::AutomationV2RunRecord) -> Vec<Stri
     failed_nodes
 }
 
+fn automation_v2_node_output_status(output: &Value) -> String {
+    let direct_status = output
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !direct_status.is_empty() {
+        return direct_status.to_ascii_lowercase();
+    }
+    output
+        .get("content")
+        .and_then(|content| content.get("status"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn automation_v2_blocked_node_ids(run: &crate::AutomationV2RunRecord) -> Vec<String> {
+    let mut blocked_nodes = run.checkpoint.blocked_nodes.clone();
+    blocked_nodes.extend(
+        run.checkpoint
+            .node_outputs
+            .iter()
+            .filter_map(|(node_id, output)| {
+                (automation_v2_node_output_status(output) == "blocked").then_some(node_id.clone())
+            }),
+    );
+    blocked_nodes.sort();
+    blocked_nodes.dedup();
+    blocked_nodes
+}
+
 async fn validate_shared_context_pack_bindings(
     state: &AppState,
     workspace_root: Option<&str>,
@@ -3175,10 +3208,15 @@ pub(super) async fn automations_v2_run_recover(
             ),
         ));
     };
+    let blocked_node_ids = automation_v2_blocked_node_ids(&current);
+    let blocked_run_is_recoverable = matches!(current.status, AutomationRunStatus::Blocked)
+        || (matches!(current.status, AutomationRunStatus::Completed)
+            && !blocked_node_ids.is_empty());
     if !matches!(
         current.status,
         AutomationRunStatus::Failed | AutomationRunStatus::Paused
-    ) {
+    ) && !blocked_run_is_recoverable
+    {
         return Err((
             StatusCode::CONFLICT,
             Json(
@@ -3204,6 +3242,21 @@ pub(super) async fn automations_v2_run_recover(
             ));
         };
         let roots = std::iter::once(failure_node_id).collect::<std::collections::HashSet<_>>();
+        crate::collect_automation_descendants(&automation, &roots)
+    } else if blocked_run_is_recoverable {
+        if blocked_node_ids.is_empty() {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error":"Run has no recoverable blocked node",
+                    "code":"AUTOMATION_V2_RUN_BLOCKED_CONTEXT_MISSING",
+                    "runID": run_id
+                })),
+            ));
+        }
+        let roots = blocked_node_ids
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
         crate::collect_automation_descendants(&automation, &roots)
     } else {
         std::collections::HashSet::new()
@@ -3830,8 +3883,8 @@ pub(super) async fn automations_v2_run_task_continue(
             .checkpoint
             .node_outputs
             .get(&node_id)
-            .and_then(|value| value.get("status").and_then(Value::as_str))
-            .map(|value| value.eq_ignore_ascii_case("blocked"))
+            .map(automation_v2_node_output_status)
+            .map(|value| value == "blocked")
             .unwrap_or(false);
     if !is_blocked {
         return Err((

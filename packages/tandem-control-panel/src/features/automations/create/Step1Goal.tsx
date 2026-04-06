@@ -79,7 +79,7 @@ export function Step1Goal(props: Step1GoalProps) {
   }, [value]);
 
   return (
-    <div className="flex flex-col h-full gap-4">
+    <div className="flex flex-col h-full gap-4 overflow-y-auto">
       <p className="text-sm text-slate-400">
         Describe what you want the AI to do — in plain English. No technical knowledge needed.
       </p>

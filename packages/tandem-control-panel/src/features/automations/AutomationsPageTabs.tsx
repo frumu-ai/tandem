@@ -89,8 +89,8 @@ export function AutomationsPageTabs({
               subtitle="Describe what you want, pick a schedule, and Tandem handles the rest"
               fullHeight
             >
-              <div className="flex flex-col h-full gap-4">
-                <div className="rounded-xl border border-slate-700/50 bg-slate-950/50 p-4">
+              <div className="flex flex-col flex-1 min-h-0 h-full gap-4">
+                <div className="rounded-xl border border-slate-700/50 bg-slate-950/50 p-4 shrink-0">
                   <div className="mb-2 text-xs font-medium uppercase tracking-[0.24em] text-slate-500">
                     Builder Mode
                   </div>

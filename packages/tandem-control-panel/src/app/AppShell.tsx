@@ -480,7 +480,7 @@ export function AppShell({
         <AnimatePresence mode="wait">
           <motion.section
             key={routeKey}
-            className={`tcp-main-content ${currentRoute === "chat" ? "tcp-main-content-fill" : ""}`.trim()}
+            className={`tcp-main-content ${currentRoute === "chat" || currentRoute === "automations" ? "tcp-main-content-fill" : ""}`.trim()}
             initial={reducedMotion ? false : { opacity: 0, y: 18 }}
             animate={reducedMotion ? undefined : { opacity: 1, y: 0 }}
             exit={reducedMotion ? undefined : { opacity: 0, y: -14 }}
