@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Badge } from "../../ui/index.tsx";
 import { ProviderModelSelector } from "../../components/ProviderModelSelector";
 import { WorkspaceDirectoryPicker } from "../../components/WorkspaceDirectoryPicker";
@@ -6,6 +6,7 @@ import {
   buildDefaultKnowledgeOperatorPreferences,
   buildKnowledgeRolloutGuidance,
 } from "./plannerShared";
+import { renderIcons } from "../../app/icons.js";
 
 export type PlannerTargetSurface = "automation" | "mission" | "coding" | "orchestrator";
 export type PlannerHorizon = "same_day" | "multi_day" | "weekly" | "monthly" | "mixed";
@@ -116,6 +117,7 @@ export function IntentBriefPanel({
   onWorkspaceBrowserParent,
   onWorkspaceBrowserDirectory,
   onSelectWorkspaceDirectory,
+  onReset,
   disabled = false,
 }: {
   draft: IntentBriefDraft;
@@ -143,9 +145,17 @@ export function IntentBriefPanel({
   onWorkspaceBrowserParent: () => void;
   onWorkspaceBrowserDirectory: (path: string) => void;
   onSelectWorkspaceDirectory: () => void;
+  onReset: () => void;
   disabled?: boolean;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  useEffect(() => {
+    try {
+      renderIcons();
+    } catch {}
+  });
+
   const selectedTarget = TARGET_SURFACE_OPTIONS.find((option) => option.id === draft.targetSurface);
   const selectedHorizon = HORIZON_OPTIONS.find((option) => option.id === draft.planningHorizon);
   const knowledgeDefaults = buildDefaultKnowledgeOperatorPreferences(draft.goal).knowledge;
@@ -160,9 +170,21 @@ export function IntentBriefPanel({
           <Badge tone={plannerCanUseLlm ? "ok" : "warn"}>
             {plannerCanUseLlm ? "model ready" : "model missing"}
           </Badge>
+          <div className="flex-1" />
+          <button
+            type="button"
+            className="tcp-btn h-6 px-2 text-[10px]"
+            onClick={onReset}
+            title="Start a new mission and clear the current planner state"
+            disabled={disabled}
+          >
+            <i data-lucide="plus" className="mr-1 h-3 w-3"></i>
+            New mission
+          </button>
         </div>
         <p className="tcp-subtle mt-2 text-xs">
-          The planner will infer target surface, cadence, and constraints from your intent.
+          The planner turns your intent into a structured workflow. Describe the full system —
+          connected agents, schedules, and handoffs — and the planner will decompose it.
         </p>
       </div>
 
@@ -172,10 +194,14 @@ export function IntentBriefPanel({
           <Badge tone="info">project scope</Badge>
           <Badge tone="info">preflight reuse</Badge>
           <Badge tone="info">promoted trust floor</Badge>
-          <Badge tone={knowledgeSubject ? "ok" : "warn"}>
-            {knowledgeSubject ? `subject: ${knowledgeSubject}` : "subject inferred later"}
-          </Badge>
+          {!knowledgeSubject ? <Badge tone="warn">subject inferred later</Badge> : null}
         </div>
+        {knowledgeSubject ? (
+          <div className="mt-3 rounded border border-white/5 bg-black/20 p-2 text-xs tcp-subtle break-words">
+            <strong className="text-emerald-500/80 uppercase tracking-wide mr-1">Subject:</strong>
+            <span className="line-clamp-3">{knowledgeSubject}</span>
+          </div>
+        ) : null}
         <p className="tcp-subtle mt-2 text-xs">
           The planner will start from project-scoped promoted knowledge and reuse prior work before
           it recomputes. Raw working notes stay local unless they are promoted later.

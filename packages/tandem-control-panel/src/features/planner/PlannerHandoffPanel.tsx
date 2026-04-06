@@ -177,18 +177,23 @@ export function PlannerHandoffPanel({
 
         <div className="flex flex-wrap gap-2">
           <button type="button" className="tcp-btn" onClick={seedAutomationDraft}>
+            <i data-lucide="bot" className="mr-1 h-3 w-3"></i>
             Create automation draft
           </button>
           <button type="button" className="tcp-btn" onClick={() => navigate("studio")}>
+            <i data-lucide="network" className="mr-1 h-3 w-3"></i>
             Open in mission builder
           </button>
           <button type="button" className="tcp-btn" onClick={seedCodingBundle}>
+            <i data-lucide="code" className="mr-1 h-3 w-3"></i>
             Publish coding task bundle
           </button>
           <button type="button" className="tcp-btn" onClick={() => navigate("orchestrator")}>
+            <i data-lucide="sparkles" className="mr-1 h-3 w-3"></i>
             Open in orchestrator
           </button>
           <button type="button" className="tcp-btn-primary" onClick={() => void exportBundle()}>
+            <i data-lucide="download" className="mr-1 h-3 w-3"></i>
             Export plan bundle
           </button>
         </div>

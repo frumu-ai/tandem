@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge, PanelCard } from "../../ui/index.tsx";
 import { PlannerMetricGrid, PlannerSubsection } from "./plannerPrimitives";
 import { listNamedPlannerDrafts, listPlannerDraftHistory } from "./plannerDraftStorage";
+import { renderIcons } from "../../app/icons.js";
 
 function safeString(value: unknown) {
   return String(value || "").trim();
@@ -40,6 +41,15 @@ export function PlannerDraftList({
   onDeleteHistory: (entryId: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [showAutosaves, setShowAutosaves] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      renderIcons();
+    } catch {}
+  });
+
   const drafts = listNamedPlannerDrafts(storagePrefix);
   const history = listPlannerDraftHistory(historyKey);
   const normalizedQuery = safeString(query).toLowerCase();
@@ -144,7 +154,14 @@ export function PlannerDraftList({
                     },
                     {
                       label: "Brief",
-                      value: draft.briefGoal || "no saved goal",
+                      value: (
+                        <span
+                          className="block text-xs line-clamp-3"
+                          title={draft.briefGoal || "no saved goal"}
+                        >
+                          {draft.briefGoal || "no saved goal"}
+                        </span>
+                      ),
                     },
                     {
                       label: "Conversation",
@@ -164,15 +181,42 @@ export function PlannerDraftList({
                     className="tcp-btn"
                     onClick={() => onOpenDraft(draft.storageKey)}
                   >
+                    <i data-lucide="folder-open" className="mr-1 h-3 w-3"></i>
                     Reopen draft
                   </button>
-                  <button
-                    type="button"
-                    className="tcp-btn"
-                    onClick={() => onDeleteDraft(draft.storageKey)}
-                  >
-                    Delete
-                  </button>
+
+                  {confirmDelete === draft.storageKey ? (
+                    <div className="flex items-center gap-2 rounded border border-red-500/20 bg-red-500/10 px-2 py-1">
+                      <span className="text-xs text-red-400">Confirm delete?</span>
+                      <button
+                        type="button"
+                        className="tcp-btn bg-red-500/20 text-red-300 border-red-500/50 hover:bg-red-500/30"
+                        onClick={() => {
+                          onDeleteDraft(draft.storageKey);
+                          setConfirmDelete(null);
+                        }}
+                      >
+                        <i data-lucide="trash-2" className="mr-1 h-3 w-3"></i>
+                        Confirm
+                      </button>
+                      <button
+                        type="button"
+                        className="tcp-btn"
+                        onClick={() => setConfirmDelete(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="tcp-btn"
+                      onClick={() => setConfirmDelete(draft.storageKey)}
+                    >
+                      <i data-lucide="trash-2" className="mr-1 h-3 w-3"></i>
+                      Delete
+                    </button>
+                  )}
                 </div>
               </PlannerSubsection>
             ))}
@@ -184,7 +228,16 @@ export function PlannerDraftList({
         )}
 
         <PlannerSubsection title="Recent autosaves">
-          {filteredHistory.length ? (
+          {!showAutosaves ? (
+            <button
+              type="button"
+              className="tcp-btn w-full justify-start text-xs"
+              onClick={() => setShowAutosaves(true)}
+            >
+              <i data-lucide="chevron-down" className="mr-1 h-3 w-3"></i>
+              Show {history.length} autosaved snapshots
+            </button>
+          ) : filteredHistory.length ? (
             <div className="grid gap-2">
               {filteredHistory.slice(0, 8).map((entry) => (
                 <div
@@ -217,7 +270,14 @@ export function PlannerDraftList({
                       },
                       {
                         label: "Brief",
-                        value: entry.briefGoal || "no saved goal",
+                        value: (
+                          <span
+                            className="block text-xs line-clamp-3"
+                            title={entry.briefGoal || "no saved goal"}
+                          >
+                            {entry.briefGoal || "no saved goal"}
+                          </span>
+                        ),
                       },
                       {
                         label: "Conversation",
@@ -237,15 +297,42 @@ export function PlannerDraftList({
                       className="tcp-btn"
                       onClick={() => onOpenHistory(entry.entryId)}
                     >
+                      <i data-lucide="folder-open" className="mr-1 h-3 w-3"></i>
                       Reopen autosave
                     </button>
-                    <button
-                      type="button"
-                      className="tcp-btn"
-                      onClick={() => onDeleteHistory(entry.entryId)}
-                    >
-                      Delete
-                    </button>
+
+                    {confirmDelete === entry.entryId ? (
+                      <div className="flex items-center gap-2 rounded border border-red-500/20 bg-red-500/10 px-2 py-1">
+                        <span className="text-xs text-red-400">Confirm delete?</span>
+                        <button
+                          type="button"
+                          className="tcp-btn bg-red-500/20 text-red-300 border-red-500/50 hover:bg-red-500/30"
+                          onClick={() => {
+                            onDeleteHistory(entry.entryId);
+                            setConfirmDelete(null);
+                          }}
+                        >
+                          <i data-lucide="trash-2" className="mr-1 h-3 w-3"></i>
+                          Confirm
+                        </button>
+                        <button
+                          type="button"
+                          className="tcp-btn"
+                          onClick={() => setConfirmDelete(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="tcp-btn"
+                        onClick={() => setConfirmDelete(entry.entryId)}
+                      >
+                        <i data-lucide="trash-2" className="mr-1 h-3 w-3"></i>
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

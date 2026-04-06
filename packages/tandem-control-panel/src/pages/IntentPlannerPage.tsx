@@ -39,6 +39,7 @@ import {
   normalizePlannerConversationMessages,
   type PlannerProviderOption,
 } from "../features/planner/plannerShared";
+import { renderIcons } from "../app/icons.js";
 
 type ClarifierOption = {
   id: string;
@@ -152,9 +153,11 @@ function targetPromptLabel(targetSurface: PlannerTargetSurface) {
 }
 
 function plannerPromptFromBrief(brief: IntentBriefDraft) {
+  const goal = safeString(brief.goal);
   return [
-    `Plan a Tandem ${targetPromptLabel(brief.targetSurface)} from this intent: ${safeString(brief.goal)}`,
+    goal,
     `Planning horizon: ${horizonPromptLabel(brief.planningHorizon)}.`,
+    `Target surface: ${targetPromptLabel(brief.targetSurface)}.`,
     safeString(brief.workspaceRoot) ? `Workspace root: ${safeString(brief.workspaceRoot)}` : "",
     safeString(brief.outputExpectations)
       ? `Expected outputs:\n${safeString(brief.outputExpectations)}`
@@ -415,6 +418,12 @@ export function IntentPlannerPage({
   }, [draftKey]);
 
   useEffect(() => {
+    try {
+      renderIcons();
+    } catch {}
+  });
+
+  useEffect(() => {
     if (!plannerDraftHydrated) return;
     const snapshot = {
       name: namedDraftName,
@@ -458,7 +467,7 @@ export function IntentPlannerPage({
   ]);
 
   const startPlanning = async (messageOverride?: string) => {
-    const intent = safeString(messageOverride ?? plannerInput ?? brief.goal);
+    const intent = safeString(messageOverride || plannerInput || brief.goal);
     const workspaceRoot = safeString(brief.workspaceRoot);
     if (!intent) {
       toast("warn", "Describe the intent you want the planner to turn into a long-horizon plan.");
@@ -788,6 +797,10 @@ export function IntentPlannerPage({
                 setWorkspaceBrowserSearch("");
                 toast("ok", `Workspace selected: ${workspaceCurrentBrowseDir}`);
               }}
+              onReset={() => {
+                resetLocalState();
+                toast("ok", "Started a new empty mission draft.");
+              }}
               disabled={isPlanning}
             />
           </PanelCard>
@@ -809,7 +822,7 @@ export function IntentPlannerPage({
           <PanelCard
             title="Planner conversation"
             subtitle="Shape the full workflow plan."
-            className={`flex flex-col shrink-0 ${hasGeneratedDraft ? "h-[500px]" : "flex-1 min-h-[500px]"}`}
+            className="flex flex-col shrink-0 h-[500px]"
             actions={
               <div className="flex flex-wrap gap-2">
                 <button
@@ -838,7 +851,7 @@ export function IntentPlannerPage({
                   Last autosave: {new Date(plannerDraftUpdatedAtMs).toLocaleTimeString()}
                 </div>
               ) : null}
-              <div className="tcp-chat-fill">
+              <div className="tcp-chat-fill flex flex-col">
                 <ChatInterfacePanel
                   messages={plannerChatMessages}
                   emptyText="Describe your mission intent to start."
