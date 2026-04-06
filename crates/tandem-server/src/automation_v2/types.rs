@@ -128,6 +128,113 @@ pub struct AutomationScopePolicy {
     pub watch_paths: Vec<String>,
 }
 
+impl AutomationScopePolicy {
+    /// Returns `true` if this policy is effectively unrestricted (all lists empty).
+    pub fn is_open(&self) -> bool {
+        self.readable_paths.is_empty()
+            && self.writable_paths.is_empty()
+            && self.denied_paths.is_empty()
+    }
+
+    /// Check whether `path` (relative to workspace root) is readable under this
+    /// policy. Returns `Err(reason)` if the access is denied.
+    ///
+    /// Rules (evaluated in order):
+    /// 1. If `path` is covered by `denied_paths` → deny.
+    /// 2. If `writable_paths` is non-empty and `path` is covered → allow.
+    /// 3. If `readable_paths` is non-empty and `path` is covered → allow.
+    /// 4. If both `readable_paths` and `writable_paths` are empty → allow (open policy).
+    /// 5. Otherwise → deny.
+    pub fn check_read(&self, path: &str) -> Result<(), String> {
+        let path = path.trim_start_matches('/');
+        if self.path_is_denied(path) {
+            return Err(format!(
+                "scope policy: read denied for `{path}` (path is in denied_paths)"
+            ));
+        }
+        if self.readable_paths.is_empty() && self.writable_paths.is_empty() {
+            return Ok(()); // open policy
+        }
+        if self.path_is_readable(path) || self.path_is_writable(path) {
+            return Ok(());
+        }
+        Err(format!(
+            "scope policy: read denied for `{path}` (not in readable_paths or writable_paths)"
+        ))
+    }
+
+    /// Check whether `path` is writable under this policy.
+    pub fn check_write(&self, path: &str) -> Result<(), String> {
+        let path = path.trim_start_matches('/');
+        if self.path_is_denied(path) {
+            return Err(format!(
+                "scope policy: write denied for `{path}` (path is in denied_paths)"
+            ));
+        }
+        if self.writable_paths.is_empty() {
+            return Ok(()); // no write restriction
+        }
+        if self.path_is_writable(path) {
+            return Ok(());
+        }
+        Err(format!(
+            "scope policy: write denied for `{path}` (not in writable_paths)"
+        ))
+    }
+
+    /// Check whether `path` is scannable by the watch evaluator.
+    pub fn check_watch(&self, path: &str) -> Result<(), String> {
+        let path = path.trim_start_matches('/');
+        if self.path_is_denied(path) {
+            return Err(format!(
+                "scope policy: watch denied for `{path}` (path is in denied_paths)"
+            ));
+        }
+        let watch_paths = if self.watch_paths.is_empty() {
+            &self.readable_paths
+        } else {
+            &self.watch_paths
+        };
+        if watch_paths.is_empty() {
+            return Ok(()); // open watch policy
+        }
+        if watch_paths
+            .iter()
+            .any(|prefix| scope_path_matches_prefix(path, prefix))
+        {
+            return Ok(());
+        }
+        Err(format!(
+            "scope policy: watch denied for `{path}` (not in watch_paths / readable_paths)"
+        ))
+    }
+
+    fn path_is_denied(&self, path: &str) -> bool {
+        self.denied_paths
+            .iter()
+            .any(|prefix| scope_path_matches_prefix(path, prefix))
+    }
+
+    fn path_is_readable(&self, path: &str) -> bool {
+        self.readable_paths
+            .iter()
+            .any(|prefix| scope_path_matches_prefix(path, prefix))
+    }
+
+    fn path_is_writable(&self, path: &str) -> bool {
+        self.writable_paths
+            .iter()
+            .any(|prefix| scope_path_matches_prefix(path, prefix))
+    }
+}
+
+/// Returns true if `path` is equal to `prefix` or starts with `prefix + "/"`.
+fn scope_path_matches_prefix(path: &str, prefix: &str) -> bool {
+    let prefix = prefix.trim_matches('/');
+    let path = path.trim_matches('/');
+    path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
 /// Per-automation handoff directory configuration.
 ///
 /// Paths are relative to `workspace_root` (or the automation's scoped workspace).
@@ -933,5 +1040,109 @@ mod tests {
         assert_eq!(node.knowledge.subject.as_deref(), Some("Topic map"));
         assert_eq!(node.knowledge.read_spaces.len(), 1);
         assert_eq!(node.knowledge.promote_spaces.len(), 1);
+    }
+
+    // ── AutomationScopePolicy ────────────────────────────────────────────────
+
+    fn open_policy() -> AutomationScopePolicy {
+        AutomationScopePolicy::default()
+    }
+
+    fn restricted_policy() -> AutomationScopePolicy {
+        AutomationScopePolicy {
+            readable_paths: vec!["shared/".to_string(), "job-search/reports/".to_string()],
+            writable_paths: vec!["job-search/reports/".to_string()],
+            denied_paths: vec!["shared/secrets/".to_string()],
+            watch_paths: vec![],
+        }
+    }
+
+    #[test]
+    fn scope_policy_open_allows_any_read() {
+        let policy = open_policy();
+        assert!(policy.check_read("anything/here.md").is_ok());
+        assert!(policy.check_read("shared/secrets/token.txt").is_ok());
+    }
+
+    #[test]
+    fn scope_policy_open_allows_any_write() {
+        let policy = open_policy();
+        assert!(policy.check_write("anywhere/file.txt").is_ok());
+    }
+
+    #[test]
+    fn scope_policy_deny_wins_over_readable() {
+        let policy = restricted_policy();
+        // shared/secrets/ is explicitly denied, even though "shared/" is readable
+        assert!(policy.check_read("shared/secrets/token.txt").is_err());
+        assert!(policy.check_write("shared/secrets/token.txt").is_err());
+    }
+
+    #[test]
+    fn scope_policy_readable_path_allows_read() {
+        let policy = restricted_policy();
+        assert!(policy
+            .check_read("shared/handoffs/approved/handoff.json")
+            .is_ok());
+    }
+
+    #[test]
+    fn scope_policy_unreadable_path_denied() {
+        let policy = restricted_policy();
+        // "private/" is not in readable_paths
+        assert!(policy.check_read("private/notes.md").is_err());
+    }
+
+    #[test]
+    fn scope_policy_writable_path_allows_write() {
+        let policy = restricted_policy();
+        assert!(policy.check_write("job-search/reports/week1.md").is_ok());
+    }
+
+    #[test]
+    fn scope_policy_non_writable_path_denied_for_write() {
+        let policy = restricted_policy();
+        // "shared/" is readable but not writable
+        assert!(policy
+            .check_write("shared/handoffs/approved/handoff.json")
+            .is_err());
+    }
+
+    #[test]
+    fn scope_policy_watch_falls_back_to_readable_when_watch_paths_empty() {
+        let policy = restricted_policy(); // watch_paths is empty
+                                          // watched paths should follow readable_paths
+        assert!(policy.check_watch("shared/handoffs/inbox/").is_ok());
+        assert!(policy.check_watch("private/something").is_err());
+    }
+
+    #[test]
+    fn scope_policy_explicit_watch_paths_override_readable() {
+        let policy = AutomationScopePolicy {
+            readable_paths: vec!["shared/".to_string()],
+            writable_paths: vec![],
+            denied_paths: vec![],
+            watch_paths: vec!["shared/handoffs/inbox/".to_string()],
+        };
+        // Only the explicit watch path is watchable
+        assert!(policy
+            .check_watch("shared/handoffs/inbox/alert.json")
+            .is_ok());
+        // "shared/other/" is readable but not in watch_paths
+        assert!(policy.check_watch("shared/other/file.md").is_err());
+    }
+
+    #[test]
+    fn scope_path_prefix_matches_exact_and_children() {
+        assert!(scope_path_matches_prefix("shared", "shared"));
+        assert!(scope_path_matches_prefix("shared/foo/bar.json", "shared"));
+        assert!(!scope_path_matches_prefix("sharedfoo", "shared")); // no slash boundary
+        assert!(!scope_path_matches_prefix("other/shared", "shared"));
+    }
+
+    #[test]
+    fn scope_policy_is_open_reflects_empty_lists() {
+        assert!(open_policy().is_open());
+        assert!(!restricted_policy().is_open());
     }
 }

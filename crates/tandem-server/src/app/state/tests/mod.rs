@@ -237,6 +237,7 @@ pub(crate) fn tmp_routines_file(name: &str) -> PathBuf {
 }
 
 mod automations;
+mod handoff;
 mod routines;
 mod shared_resources;
 mod status_index;
