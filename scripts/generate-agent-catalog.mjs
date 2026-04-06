@@ -200,7 +200,7 @@ function buildCatalog() {
         id: categorySlug,
         title: categoryMeta.title || toTitleCase(categorySlug),
         summary: categoryMeta.summary || "",
-        source_path: path.posix.join("docs/internal/tandem-proprietary/categories", categoryDir),
+        source_path: path.posix.join("@tandem-proprietary/agents/categories", categoryDir),
         toml_files: fs
           .readdirSync(categoryPath, { withFileTypes: true })
           .filter((file) => file.isFile() && file.name.endsWith(".toml"))
@@ -224,7 +224,7 @@ function buildCatalog() {
       }
 
       const sourcePath = path.posix.join(
-        "docs/internal/tandem-proprietary/categories",
+        "@tandem-proprietary/agents/categories",
         path.relative(categoryRoot, filePath).split(path.sep).join("/")
       );
 
@@ -276,7 +276,7 @@ function buildCatalog() {
 
   return {
     generated_at: new Date().toISOString(),
-    source_root: path.posix.join("docs/internal/tandem-proprietary"),
+    source_root: path.posix.join("@tandem-proprietary/agents"),
     categories,
     agents,
   };
