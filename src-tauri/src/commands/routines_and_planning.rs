@@ -131,6 +131,14 @@ pub async fn automations_v2_resume(
 }
 
 #[tauri::command]
+pub async fn automations_v2_handoffs(
+    state: State<'_, AppState>,
+    automation_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.automations_v2_handoffs(&automation_id).await
+}
+
+#[tauri::command]
 pub async fn automations_v2_runs(
     state: State<'_, AppState>,
     automation_id: String,

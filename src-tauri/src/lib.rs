@@ -753,6 +753,7 @@ pub fn run() {
             commands::automations_v2_run_now,
             commands::automations_v2_pause,
             commands::automations_v2_resume,
+            commands::automations_v2_handoffs,
             commands::automations_v2_runs,
             commands::automations_v2_runs_all,
             commands::automations_v2_run_get,
