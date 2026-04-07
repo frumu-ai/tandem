@@ -31,16 +31,9 @@ It provides durable coordination primitives, including blackboards, workboards, 
 
 `Durable State → Workboards → Agent Swarm → Artifacts`
 
-**→ [Download desktop app](https://tandem.ac/) · [Deploy on a VPS (5 min)](examples/agent-quickstart/) · [Read the docs](https://docs.tandem.ac/)**
+**→ [Connect an agent via MCP](https://tandem.ac/docs-mcp) · [Download desktop app](https://tandem.ac/) · [Read the docs](https://docs.tandem.ac/)**
 
 ## 30-second quickstart
-
-### Desktop
-
-1. Download and launch Tandem: [tandem.ac](https://tandem.ac/)
-2. Open **Settings** and add a provider API key.
-3. Select a workspace folder.
-4. Start with a task prompt and choose **Immediate** or **Plan Mode**.
 
 ### Web Control Panel
 
@@ -55,6 +48,13 @@ tandem panel open
 
 Use this when you want the browser-based control center backed by the engine.
 
+### Desktop
+
+1. Download and launch Tandem: [tandem.ac](https://tandem.ac/)
+2. Open **Settings** and add a provider API key.
+3. Select a workspace folder.
+4. Start with a task prompt and choose **Immediate** or **Plan Mode**.
+
 ### Editable App Scaffold
 
 Generate a fully editable control panel app in your own folder:
@@ -68,17 +68,11 @@ npm run dev
 
 Use this when you want to customize routes, pages, themes, styles, or runtime behavior without editing `node_modules`.
 
-### Repo Source / Service Install
+### MCP-assisted setup
 
-Clone the repo when you are contributing to Tandem itself or want the full source tree and example deployment scripts:
+If you want an existing agent to help install or configure Tandem, connect that agent to Tandem's MCP interface first. The MCP docs explain how to wire your own agent into Tandem so it can assist with setup, configuration, and follow-up tasks:
 
-```bash
-git clone https://github.com/frumu-ai/tandem.git
-cd tandem/examples/agent-quickstart
-sudo bash setup-agent.sh
-```
-
-Open the printed URL and sign in with the generated key!
+- [Tandem MCP docs](https://tandem.ac/docs-mcp)
 
 If you only want the engine runtime, you can keep it foreground-only:
 

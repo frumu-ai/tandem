@@ -31,16 +31,15 @@ Tandem 采取了截然不同的方法来应对工程化 Agent 的复杂现实。
 
 `持久状态 → 工作板 → 智能体 Swarm → 结构化产物`
 
-可作为桌面应用运行、在 VPS 上以无头服务运行，或通过 HTTP + SSE API 从任意语言接入。
+可作为桌面应用运行，或以无头服务运行，也可以通过 HTTP + SSE API 从任意语言接入。
+
+如果你想让已有的 agent 帮你安装或配置 Tandem，先把它连接到 Tandem 的 MCP 接口。这样它就可以协助你完成安装、配置和后续操作：
+
+- [Tandem MCP 文档](https://tandem.ac/docs-mcp)
 
 ```bash
 # 选项 1：快速运行（无需全局安装与源码）：
 npx @frumu/tandem-panel
-
-# 选项 2：可修改源码与系统服务安装（Hackable / Systemd）：
-git clone https://github.com/frumu-ai/tandem.git
-cd tandem/examples/agent-quickstart
-sudo bash setup-agent.sh
 ```
 
 ```mermaid
@@ -90,7 +89,7 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
             print(event.properties.get("delta", ""), end="", flush=True)
 ```
 
-**→ [下载桌面版](https://tandem.ac/) · [5 分钟部署到 VPS](examples/agent-quickstart/) · [阅读文档](https://docs.tandem.ac/)**
+**→ [下载桌面版](https://tandem.ac/) · [通过 MCP 连接你的 agent](https://tandem.ac/docs-mcp) · [阅读文档](https://docs.tandem.ac/)**
 
 <div align="center">
   <img src=".github/assets/app.png" alt="Tandem AI Workspace" width="90%">
