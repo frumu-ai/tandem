@@ -321,6 +321,22 @@ pub(crate) fn automation_node_output_enforcement(
                 .push("successful_web_research".to_string());
         }
     }
+    if node
+        .metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|m| m.get("triage_gate"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && automation_node_required_output_path(node).is_none()
+    {
+        if !enforcement.required_tools.iter().any(|t| t == "glob") {
+            enforcement.required_tools.push("glob".to_string());
+        }
+        if !enforcement.required_tools.iter().any(|t| t == "read") {
+            enforcement.required_tools.push("read".to_string());
+        }
+    }
     if code_patch_contract
         && automation_node_required_output_path(node).is_some()
         && !enforcement

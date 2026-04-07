@@ -655,6 +655,7 @@ pub(crate) fn detect_automation_node_status(
     let has_required_tools = !automation_node_required_tools(node).is_empty();
     let validation_repairable = (validator_kind
         == crate::AutomationOutputValidatorKind::ResearchBrief
+        || validator_kind == crate::AutomationOutputValidatorKind::GenericArtifact
         || has_required_tools
         || handoff_only_structured_json)
         && !research_repair_exhausted;
@@ -670,6 +671,37 @@ pub(crate) fn detect_automation_node_status(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let tool_mode_required_unsatisfied = session_text.contains("TOOL_MODE_REQUIRED_NOT_SATISFIED");
+    if tool_mode_required_unsatisfied && parsed.is_none() {
+        let reason = if session_text.contains("WRITE_REQUIRED_NOT_SATISFIED") {
+            automation_node_required_output_path(node)
+                .map(|path| {
+                    format!("required output `{path}` was not created in the current attempt")
+                })
+                .unwrap_or_else(|| {
+                    "required output was not created in the current attempt".to_string()
+                })
+        } else if session_text.contains("TOOL_CALL_REJECTED_BY_POLICY") {
+            "required tool call was rejected before the node completed".to_string()
+        } else if session_text.contains("TOOL_CALL_INVALID_ARGS")
+            || session_text.contains("WRITE_ARGS_EMPTY_FROM_PROVIDER")
+            || session_text.contains("WRITE_ARGS_UNPARSEABLE_FROM_PROVIDER")
+        {
+            "required tool call used invalid arguments and should be retried with corrected inputs"
+                .to_string()
+        } else {
+            "required tool call was not completed before finalizing the node".to_string()
+        };
+        return (
+            if validation_repairable {
+                "needs_repair".to_string()
+            } else {
+                "blocked".to_string()
+            },
+            Some(reason),
+            approved,
+        );
+    }
     if parsed
         .as_ref()
         .and_then(|value| value.get("status"))
@@ -729,7 +761,18 @@ pub(crate) fn detect_automation_node_status(
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     }) {
-        return ("blocked".to_string(), Some(reason), approved);
+        let repairable_rejected_artifact = reason
+            .contains("was not created in the current attempt")
+            || session_text.contains("TOOL_MODE_REQUIRED_NOT_SATISFIED");
+        return (
+            if repairable_rejected_artifact && !research_repair_exhausted {
+                "needs_repair".to_string()
+            } else {
+                "blocked".to_string()
+            },
+            Some(reason),
+            approved,
+        );
     }
     if let Some(reason) = artifact_validation.and_then(|value| {
         value
@@ -908,7 +951,7 @@ pub(crate) fn detect_automation_node_status(
         && verification_outcome.as_deref() == Some("partial")
     {
         return (
-            "blocked".to_string(),
+            "needs_repair".to_string(),
             Some(format!(
                 "coding task completed with only {} of {} declared verification commands run",
                 verification_completed, verification_total
@@ -918,7 +961,7 @@ pub(crate) fn detect_automation_node_status(
     }
     if automation_node_is_code_workflow(node) && verification_expected && !verification_ran {
         return (
-            "blocked".to_string(),
+            "needs_repair".to_string(),
             Some(
                 "coding task completed without running the declared verification command"
                     .to_string(),
@@ -1036,7 +1079,17 @@ pub(crate) fn detect_automation_node_status(
         } else {
             "email delivery was requested but no email draft/send tool executed".to_string()
         };
-        return ("blocked".to_string(), Some(reason), approved);
+        let delivery_repairable = !email_delivery_attempted
+            && (!offered_email_send_tools.is_empty() || !offered_email_draft_tools.is_empty());
+        return (
+            if delivery_repairable {
+                "needs_repair".to_string()
+            } else {
+                "blocked".to_string()
+            },
+            Some(reason),
+            approved,
+        );
     }
     if automation_node_is_code_workflow(node) {
         return ("done".to_string(), explicit_reason, approved);

@@ -21,6 +21,19 @@ This is the canonical release-notes file used by release tooling.
   - Added delta-aware previous standup injection to prevent duplicate findings across daily reports by automatically retrieving prior reports up to 7 days back.
   - Formalized workspace-root output conventions so final standup deliverables are consistently placed in `outputs/` for immediate human discoverability.
 
+- **Workflow self-healing and retry hardening**
+  - Fixed assess/triage nodes so they explicitly request workspace tools and no longer stall with MCP-only offers when the objective requires `glob` and `read`.
+  - Fixed retry classification so missing required outputs, raw `TOOL_MODE_REQUIRED_NOT_SATISFIED` / `WRITE_REQUIRED_NOT_SATISFIED` endings, generic artifact synthesis failures, missed verification runs, and offered-but-unused delivery tools all re-enter repair flow instead of blocking prematurely.
+  - Fixed current-attempt artifact materialization checks so promoted run-scoped outputs count as freshly materialized during the active attempt.
+  - Fixed workflow bootstrap guidance so file-like targets such as `.jsonl`, `.json`, and `.md` are treated as files rather than directories.
+  - Fixed runtime ledger `.json` rewrites being misclassified as unsafe protected-source rewrites, while preserving safety checks for real source/config files.
+  - Added focused regression coverage around repair classification, required-output retries, ledger rewrites, prompt guidance, and delivery/verification retry behavior.
+
+- **Workflow authoring and operator notes**
+  - Strengthened artifact-writing prompts so retries explicitly rewrite the declared output, include a full `write.content` body, and avoid placeholder/path-only writes.
+  - Kept filename expansion prompt-driven instead of hardcoding placeholder replacement in the engine, so workflow authors retain control over naming conventions.
+  - Corrected the local control-panel build/restart command in `docs/ENGINE_TESTING.md` so it returns to the repository root after restarting the service.
+
 ## v0.4.21 (Released 2026-04-06)
 
 - **Smart Heartbeat Monitor Automations**

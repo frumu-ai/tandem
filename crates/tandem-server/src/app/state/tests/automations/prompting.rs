@@ -186,6 +186,99 @@ fn connector_backed_automation_prompt_surfaces_mcp_discovery_guidance() {
 }
 
 #[test]
+fn automation_prompt_clarifies_file_paths_are_not_directories() {
+    let automation = AutomationV2Spec {
+        automation_id: "automation-file-paths".to_string(),
+        name: "File Path Prompt".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: crate::AutomationFlowSpec { nodes: Vec::new() },
+        execution: crate::AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let node = AutomationFlowNode {
+        node_id: "execute_goal".to_string(),
+        agent_id: "worker".to_string(),
+        objective: "Bootstrap files in the workspace and update tracker/seen-jobs.jsonl."
+            .to_string(),
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+    let agent = AutomationAgentProfile {
+        agent_id: "worker".to_string(),
+        template_id: None,
+        display_name: "Worker".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec!["write".to_string()],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp",
+        "run-file-paths",
+        &node,
+        1,
+        &agent,
+        &[],
+        &["write".to_string()],
+        None,
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("Create only parent folders as directories"));
+    assert!(prompt.contains("Do not use `bash`/`mkdir` to create a file path itself"));
+}
+
+#[test]
 fn first_attempt_research_prompt_requires_completed_status() {
     let automation = AutomationV2Spec {
         automation_id: "automation-1".to_string(),

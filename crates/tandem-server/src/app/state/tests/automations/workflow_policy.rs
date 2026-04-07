@@ -668,7 +668,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
             None,
         );
 
-    assert_eq!(status, "blocked");
+    assert_eq!(status, "needs_repair");
     assert_eq!(
         reason.as_deref(),
         Some(
@@ -2846,7 +2846,7 @@ fn code_workflow_without_verification_run_is_blocked() {
             None,
         );
 
-    assert_eq!(status, "blocked");
+    assert_eq!(status, "needs_repair");
     assert_eq!(
         reason.as_deref(),
         Some("coding task completed without running the declared verification command")
@@ -3407,6 +3407,77 @@ fn email_delivery_nodes_block_without_email_tool_execution() {
         );
 
     assert_eq!(status, "blocked");
+    assert_eq!(
+        reason.as_deref(),
+        Some(
+            "email delivery to `recipient@example.com` was requested but no email draft/send tool executed"
+        )
+    );
+    assert_eq!(approved, Some(true));
+}
+
+#[test]
+fn email_delivery_nodes_request_repair_when_email_tools_were_offered_but_unused() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "notify_user".to_string(),
+        agent_id: "agent-committer".to_string(),
+        objective: "Send the finalized report to the requested email address in the email body using simple HTML.".to_string(),
+        depends_on: vec!["generate_report".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "generate_report".to_string(),
+            alias: "report_body".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "approval_gate".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "delivery": {
+                "method": "email",
+                "to": "recipient@example.com",
+                "content_type": "text/html",
+                "inline_body_only": true,
+                "attachments": false
+            }
+        })),
+    };
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "The report is ready.\n\n{\"status\":\"completed\",\"approved\":true}",
+            None,
+            &json!({
+                "requested_tools": ["read", "email_draft"],
+                "executed_tools": ["read"],
+                "tool_call_counts": {"read": 1},
+                "workspace_inspection_used": true,
+                "email_delivery_attempted": false,
+                "email_delivery_succeeded": false,
+                "latest_email_delivery_failure": null,
+                "capability_resolution": {
+                    "email_tool_diagnostics": {
+                        "available_tools": ["email_draft"],
+                        "offered_tools": ["email_draft"],
+                        "available_send_tools": [],
+                        "offered_send_tools": [],
+                        "available_draft_tools": ["email_draft"],
+                        "offered_draft_tools": ["email_draft"]
+                    }
+                }
+            }),
+            None,
+        );
+
+    assert_eq!(status, "needs_repair");
     assert_eq!(
         reason.as_deref(),
         Some(
@@ -4073,6 +4144,104 @@ fn research_finalize_prompt_includes_upstream_coverage_summary() {
 }
 
 #[test]
+fn data_json_rewrite_is_not_treated_as_unsafe_source_rewrite() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-automation-json-ledger-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(workspace_root.join("tracker/search-ledger"))
+        .expect("create workspace");
+    std::fs::write(
+        workspace_root.join("tracker/search-ledger/2026-04-07.json"),
+        "{\n  \"searches\": []\n}\n",
+    )
+    .expect("seed ledger");
+    let snapshot = automation_workspace_root_file_snapshot(
+        workspace_root.to_str().expect("workspace root string"),
+    );
+    let handoff = "# Job scout summary\n\nUpdated tracker and recap.\n".to_string();
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "execute_goal".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Update job scout artifacts".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "task_kind": "code_change",
+                "output_path": "handoff.md"
+            }
+        })),
+    };
+    let mut session = Session::new(
+        Some("json ledger rewrite".to_string()),
+        Some(
+            workspace_root
+                .to_str()
+                .expect("workspace root string")
+                .to_string(),
+        ),
+    );
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![
+            MessagePart::ToolInvocation {
+                tool: "write".to_string(),
+                args: json!({
+                    "path": "tracker/search-ledger/2026-04-07.json",
+                    "content": "{\n  \"status\": \"completed\"\n}\n"
+                }),
+                result: Some(json!({"ok": true})),
+                error: None,
+            },
+            MessagePart::ToolInvocation {
+                tool: "write".to_string(),
+                args: json!({
+                    "path": "handoff.md",
+                    "content": handoff
+                }),
+                result: Some(json!({"ok": true})),
+                error: None,
+            },
+        ],
+    ));
+
+    let (_, metadata, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "",
+        &json!({
+            "requested_tools": ["read", "write"],
+            "executed_tools": ["write"]
+        }),
+        None,
+        Some(("handoff.md".to_string(), handoff)),
+        &snapshot,
+    );
+
+    assert_eq!(rejected, None);
+    assert!(metadata
+        .get("rejected_artifact_reason")
+        .and_then(Value::as_str)
+        .is_none());
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+#[test]
 fn artifact_validation_restores_substantive_session_write_over_short_completion_note() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-automation-restore-write-{}",
@@ -4524,6 +4693,211 @@ fn generic_artifact_validation_rejects_stale_preexisting_output_without_current_
     assert_eq!(disk_text, stale_preexisting);
 
     let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+#[test]
+fn missing_required_output_requests_repair_before_attempt_budget_is_exhausted() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "generate_report".to_string(),
+        agent_id: "writer".to_string(),
+        objective: "Generate the final report".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": "outputs/generate-report.md"
+            }
+        })),
+    };
+    let artifact_validation = json!({
+        "rejected_artifact_reason": "required output `outputs/generate-report.md` was not created in the current attempt",
+        "semantic_block_reason": "required output was not created in the current attempt",
+        "unmet_requirements": ["current_attempt_output_missing"],
+        "repair_exhausted": false,
+    });
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "TOOL_MODE_REQUIRED_NOT_SATISFIED: WRITE_REQUIRED_NOT_SATISFIED: tool_mode=required but the model ended without executing a productive tool call.",
+            None,
+            &json!({
+                "requested_tools": ["write"],
+                "executed_tools": ["glob"]
+            }),
+            Some(&artifact_validation),
+        );
+
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("required output `outputs/generate-report.md` was not created in the current attempt")
+    );
+    assert_eq!(approved, None);
+}
+
+#[test]
+fn required_tool_mode_write_unsatisfied_requests_repair_without_artifact_validation() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "generate_report".to_string(),
+        agent_id: "writer".to_string(),
+        objective: "Generate the final report".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": "outputs/generate-report.md"
+            }
+        })),
+    };
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "TOOL_MODE_REQUIRED_NOT_SATISFIED: WRITE_REQUIRED_NOT_SATISFIED: tool_mode=required but the model ended without executing a productive tool call.",
+            None,
+            &json!({
+                "requested_tools": ["glob", "write"],
+                "executed_tools": ["glob"]
+            }),
+            None,
+        );
+
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("required output `outputs/generate-report.md` was not created in the current attempt")
+    );
+    assert_eq!(approved, None);
+}
+
+#[test]
+fn generic_artifact_semantic_block_requests_repair_before_attempt_budget_is_exhausted() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "generate_report".to_string(),
+        agent_id: "writer".to_string(),
+        objective: "Generate the final report".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": "report.md"
+            }
+        })),
+    };
+    let artifact_validation = json!({
+        "semantic_block_reason": "editorial artifact is missing expected markdown structure",
+        "unmet_requirements": ["markdown_structure_missing", "editorial_substance_missing"],
+        "repair_exhausted": false,
+    });
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "Done\n\n{\"status\":\"completed\"}",
+            Some(&("report.md".to_string(), "# Draft\n\nTODO\n".to_string())),
+            &json!({
+                "requested_tools": ["write"],
+                "executed_tools": ["write"]
+            }),
+            Some(&artifact_validation),
+        );
+
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("editorial artifact is missing expected markdown structure")
+    );
+    assert_eq!(approved, None);
+}
+
+#[test]
+fn code_workflow_missing_verification_requests_repair() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "implement".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Implement feature".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "task_kind": "code_change",
+                "verification_command": "cargo test",
+                "output_path": "handoff.md"
+            }
+        })),
+    };
+    let tool_telemetry = json!({
+        "requested_tools": ["read", "apply_patch", "write", "bash"],
+        "executed_tools": ["apply_patch", "write"],
+        "verification_expected": true,
+        "verification_ran": false,
+        "verification_failed": false
+    });
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "Done\n\n{\"status\":\"completed\"}",
+            None,
+            &tool_telemetry,
+            None,
+        );
+
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("coding task completed without running the declared verification command")
+    );
+    assert_eq!(approved, None);
 }
 
 #[test]

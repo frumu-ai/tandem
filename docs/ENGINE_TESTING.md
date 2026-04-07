@@ -65,7 +65,7 @@ sudo systemctl restart tandem-engine
 # Control panel testing locally
 
 ```bash
-cd packages/tandem-control-panel && pnpm build && sudo systemctl restart tandem-control-panel.service
+cd packages/tandem-control-panel && pnpm build && sudo systemctl restart tandem-control-panel.service && cd ../..
 ```
 
 ## API Token Security Validation

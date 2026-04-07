@@ -26,6 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added delta-aware previous standup injection to prevent duplicate findings across daily reports by automatically retrieving prior reports up to 7 days back.
   - Formalized workspace-root output conventions so final standup deliverables are consistently placed in `outputs/` for immediate human discoverability.
 
+### Changed
+
+- **Workflow prompt repair guidance and filesystem bootstrap clarity**:
+  - Strengthened required-artifact prompts so retry attempts explicitly rewrite the declared output, include full `write.content`, and avoid empty-path or empty-body writes.
+  - Added explicit path guidance that file-like targets such as `.jsonl`, `.json`, and `.md` must be created as files, while only parent folders should be created as directories.
+  - Updated monitor/triage prompt rendering so workspace inspection steps explicitly use `glob` and `read` when deciding whether downstream work should run.
+  - Corrected the local control-panel build/restart test command in `docs/ENGINE_TESTING.md` so it returns to the repo root after restarting the service.
+
+### Fixed
+
+- **Workflow self-healing, retry classification, and artifact validation**:
+  - Fixed triage-gate enforcement so assess-style nodes request and receive filesystem tools (`glob`, `read`) instead of getting stuck with MCP-only tool offers.
+  - Fixed current-attempt artifact materialization tracking so promoted run-scoped outputs satisfy retry validation instead of being rejected as stale.
+  - Fixed required-write failures (`TOOL_MODE_REQUIRED_NOT_SATISFIED`, `WRITE_REQUIRED_NOT_SATISFIED`) to surface as repairable workflow states when another attempt can still create the missing artifact.
+  - Fixed generic artifact/editorial validation, missed code-workflow verification, and offered-but-unused email delivery stages to request repair instead of blocking immediately when the node can self-correct.
+  - Fixed raw runtime data rewrites such as workflow ledger `.json` files from being misclassified as protected source-file rewrites.
+  - Fixed workflow bootstrap guidance that previously led models to create file paths like `tracker/seen-jobs.jsonl` as directories.
+  - Added regression coverage for the new self-healing paths, prompt guidance, JSON ledger writes, and required-output retry handling.
+
 ## [0.4.21] - 2026-04-06
 
 ### Added

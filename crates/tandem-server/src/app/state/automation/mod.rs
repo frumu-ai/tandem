@@ -2127,7 +2127,6 @@ fn path_looks_like_source_file(path: &str) -> bool {
         [
             "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "kt", "kts", "c", "cc", "cpp", "h",
             "hpp", "cs", "rb", "php", "swift", "scala", "sh", "bash", "zsh", "toml", "yaml", "yml",
-            "json",
         ]
         .contains(&extension)
     }) {
@@ -3315,7 +3314,8 @@ async fn reconcile_automation_resolve_verified_output_path(
             output_path,
         )? {
             return Ok(Some(AutomationVerifiedOutputResolution {
-                materialized_by_current_attempt: output_touched,
+                materialized_by_current_attempt: output_touched
+                    || promoted.materialized_by_current_attempt,
                 ..promoted
             }));
         }

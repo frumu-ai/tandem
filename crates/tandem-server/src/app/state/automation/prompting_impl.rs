@@ -367,7 +367,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     }
     let execution_mode = automation_node_execution_mode(node, workspace_root);
     sections.push(format!(
-        "Execution Policy:\n- Mode: `{}`.\n- Use only declared workflow artifact paths.\n- Keep status and blocker notes in the response JSON, not as placeholder file contents.",
+        "Execution Policy:\n- Mode: `{}`.\n- Use only declared workflow artifact paths.\n- Create only parent folders as directories; treat paths ending in file-like suffixes such as `.md`, `.json`, `.jsonl`, `.yaml`, `.yml`, `.toml`, `.txt`, or `.csv` as files.\n- Do not use `bash`/`mkdir` to create a file path itself; use `write` with the full file contents when a file must be created.\n- Keep status and blocker notes in the response JSON, not as placeholder file contents.",
         execution_mode
     ));
     if automation_node_is_code_workflow(node) {
@@ -406,11 +406,23 @@ pub(crate) fn render_automation_v2_prompt_with_options(
                 output_path
             ),
             _ => format!(
-                "Required Run Artifact:\n- Create or update `{}` for this run.\n- If this output path is already known, use `write` immediately to create the full file contents.\n- Use `glob` and `read` only when you must inspect existing companion files or verify a preexisting artifact before updating it.\n- Do not let an empty `glob` end the run; still create the required artifact.\n- Only write declared workflow artifact files; do not create auxiliary touch files, status files, marker files, or placeholder preservation notes.\n- Overwrite the declared output with the actual artifact contents for this run instead of preserving a prior placeholder.\n- Do not report success unless this run artifact exists when the stage ends.",
+                "Required Run Artifact:\n- Create or update `{}` for this run.\n- When calling the `write` tool, include the full file body in the `content` field; do not call `write` with only a path or an empty body.\n- If this output path is already known, use `write` immediately to create the full file contents.\n- On every retry attempt, rewrite the required output in this attempt even if the content would be identical; do not rely on a prior attempt’s file.\n- Use `glob` and `read` only when you must inspect existing companion files or verify a preexisting artifact before updating it.\n- Do not let an empty `glob` end the run; still create the required artifact.\n- Only write declared workflow artifact files; do not create auxiliary touch files, status files, marker files, or placeholder preservation notes.\n- Overwrite the declared output with the actual artifact contents for this run instead of preserving a prior placeholder.\n- Do not report success unless this run artifact exists when the stage ends.",
                 output_path
             ),
         };
         sections.push(output_rules);
+    }
+    let triage_gate = node
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("triage_gate"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if triage_gate && automation_node_required_output_path(node).is_none() {
+        sections.push(
+            "Triage Workspace Inspection:\n- Use `glob` to probe required folders and expected bootstrap files.\n- Use `read` on concrete files when needed to decide `has_work`.\n- Do not include prose; return only the structured JSON handoff plus the final compact status object."
+                .to_string(),
+        );
     }
     if automation_node_web_research_expected(node) {
         let requested_has_websearch = requested_tools.iter().any(|tool| tool == "websearch");
@@ -968,7 +980,7 @@ pub(crate) fn render_automation_repair_brief(
     };
 
     Some(format!(
-        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.",
+        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, rewrite the required output path again in this attempt before finalizing, even if the content would be identical.\n- Perform the required concrete `read` calls and, when expected, successful `websearch` before finalizing.\n- Include reviewed sources and citations in the artifact where the contract requires it.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.",
         node.node_id,
         reason,
         validation_basis_line,
