@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useEngineStream } from "../features/stream/useEngineStream";
+import { renderMarkdownSafe } from "../lib/markdown";
 import { AnimatedPage, Badge, PageHeader, PanelCard, SplitView } from "../ui/index";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
@@ -29,6 +30,12 @@ function statusTone(enabled: boolean) {
 
 function workflowEventType(event: any) {
   return safeString(event?.event_type || event?.type || event?.event || "workflow.event");
+}
+
+function packFileUrl(packId: string, relPath: string) {
+  const cleanPackId = encodeURIComponent(safeString(packId));
+  const cleanPath = encodeURI(safeString(relPath));
+  return `/api/engine/packs/${cleanPackId}/files/${cleanPath}`;
 }
 
 export function PacksPage({ api, toast }: AppPageProps) {
@@ -166,6 +173,28 @@ export function PacksPage({ api, toast }: AppPageProps) {
   const selectedWorkflowPayload = workflowDetailQuery.data?.workflow || null;
   const selectedWorkflowHooks = toArray(workflowDetailQuery.data, "hooks");
   const simulation = simulateMutation.data?.simulation || null;
+  const marketplace = selectedPackPayload?.manifest?.marketplace || null;
+  const marketplacePublisher = marketplace?.publisher || null;
+  const marketplaceListing = marketplace?.listing || null;
+  const marketplaceIconPath = safeString(marketplaceListing?.icon || "");
+  const marketplaceReadmeQuery = useQuery({
+    queryKey: ["packs", "readme", activePackId],
+    enabled: !!activePackId,
+    queryFn: async () => {
+      const response = await fetch(packFileUrl(activePackId, "README.md"), {
+        credentials: "include",
+      });
+      if (!response.ok) return "";
+      return response.text();
+    },
+  });
+  const marketplaceReadme = safeString(marketplaceReadmeQuery.data || "");
+  const marketplaceCoverUrl = marketplaceIconPath
+    ? packFileUrl(activePackId, marketplaceIconPath)
+    : "";
+  const marketplaceScreenshots = toArray(marketplaceListing, "screenshots").map((entry: any) =>
+    safeString(entry)
+  );
 
   useEngineStream(
     `/api/engine/workflows/events${activeWorkflowId ? `?workflow_id=${encodeURIComponent(activeWorkflowId)}` : ""}`,
@@ -326,6 +355,82 @@ export function PacksPage({ api, toast }: AppPageProps) {
                       </Badge>
                     </div>
                   </div>
+                  {marketplaceListing ? (
+                    <div className="tcp-list-item grid gap-3">
+                      <div className="flex items-start gap-3">
+                        {marketplaceCoverUrl ? (
+                          <img
+                            src={marketplaceCoverUrl}
+                            alt={`${safeString(marketplaceListing?.display_name || selectedPackPayload?.installed?.name || activePackId)} cover art`}
+                            className="h-24 w-24 rounded-2xl border border-white/10 object-cover"
+                          />
+                        ) : null}
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
+                            <strong>
+                              {safeString(marketplaceListing?.display_name || activePackId)}
+                            </strong>
+                            <Badge tone="info">
+                              {safeString(marketplacePublisher?.verification_tier || "unverified")}
+                            </Badge>
+                          </div>
+                          <div className="tcp-subtle text-sm">
+                            {safeString(marketplaceListing?.description || "")}
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                            <Badge tone="ghost">
+                              {safeString(
+                                marketplacePublisher?.display_name || "Unknown publisher"
+                              )}
+                            </Badge>
+                            {toArray(marketplaceListing, "categories").map((entry: any) => (
+                              <Badge key={safeString(entry)} tone="ghost">
+                                {safeString(entry)}
+                              </Badge>
+                            ))}
+                            {toArray(marketplaceListing, "tags").map((entry: any) => (
+                              <Badge key={safeString(entry)} tone="ghost">
+                                {safeString(entry)}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {marketplaceScreenshots.length ? (
+                        <div className="grid gap-2">
+                          <div className="tcp-subtle text-xs uppercase tracking-[0.24em]">
+                            Screenshots
+                          </div>
+                          <div className="grid gap-2 md:grid-cols-2">
+                            {marketplaceScreenshots.map((shot: string) => (
+                              <img
+                                key={shot}
+                                src={packFileUrl(activePackId, shot)}
+                                alt={`${safeString(marketplaceListing?.display_name || activePackId)} screenshot`}
+                                className="rounded-2xl border border-white/10"
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      <div className="grid gap-2">
+                        <div className="tcp-subtle text-xs uppercase tracking-[0.24em]">
+                          README Preview
+                        </div>
+                        {marketplaceReadme ? (
+                          <div
+                            className="prose prose-invert max-w-none rounded-2xl border border-white/10 bg-black/20 p-4"
+                            dangerouslySetInnerHTML={{
+                              __html: renderMarkdownSafe(marketplaceReadme),
+                            }}
+                          />
+                        ) : (
+                          <EmptyState text="No README preview is available for this pack." />
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="grid gap-2">
                     <div className="tcp-subtle text-xs uppercase tracking-[0.24em]">
                       Workflow Entry Points

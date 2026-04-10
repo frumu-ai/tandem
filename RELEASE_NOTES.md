@@ -2,7 +2,12 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.4.23 (Unreleased)
+## v0.4.24 (Unreleased)
+
+- **Marketplace browse split**: The control panel marketplace is now browse-only and links out to tandem.ac, while the internal docs now define the public marketplace/server ownership split and launch sequence.
+- **Marketplace server contract**: Added internal planning docs for the tandem.ac marketplace server API, route ownership, catalog/search/detail behavior, and the control-panel handoff model.
+
+## v0.4.23 (Released 2026-04-11)
 
 - **Vault unlock startup safety net**: The desktop unlock flow now keeps the splash visible until the React app reports it is actually ready, and startup crashes show a visible recovery screen instead of a blank window.
 - **Workflow stale-run recovery and operator actions**

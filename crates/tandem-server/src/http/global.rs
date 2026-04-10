@@ -1105,13 +1105,16 @@ pub(super) async fn openapi_doc() -> Json<Value> {
             "/memory/{id}":{"delete":{"summary":"Delete memory record"}},
             "/packs":{"get":{"summary":"List installed packs"}},
             "/packs/{selector}":{"get":{"summary":"Inspect installed pack by pack_id or name"}},
+            "/packs/{selector}/files/{*path}":{"get":{"summary":"Fetch a file from an installed pack"}},
             "/packs/install":{"post":{"summary":"Install tandem pack from local path or URL"}},
             "/packs/install_from_attachment":{"post":{"summary":"Install tandem pack from downloaded attachment path"}},
             "/packs/uninstall":{"post":{"summary":"Uninstall tandem pack"}},
             "/packs/export":{"post":{"summary":"Export installed tandem pack as zip"}},
             "/packs/detect":{"post":{"summary":"Detect tandem pack marker in zip and emit pack.detected"}},
             "/packs/{selector}/updates":{"get":{"summary":"Check updates for installed pack (stub)"}},
-            "/packs/{selector}/update":{"post":{"summary":"Apply updates for installed pack (stub)"}}
+            "/packs/{selector}/update":{"post":{"summary":"Apply updates for installed pack (stub)"}},
+            "/marketplace/catalog":{"get":{"summary":"Load marketplace pack catalog"}},
+            "/marketplace/packs/{pack_id}/files/{*path}":{"get":{"summary":"Fetch a file from a marketplace pack zip"}}
         }
     }))
 }

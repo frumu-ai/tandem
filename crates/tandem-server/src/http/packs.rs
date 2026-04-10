@@ -1,9 +1,22 @@
 use super::*;
+use axum::body::Body;
+use axum::extract::{Path, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::Response;
+use serde_json::{json, Value};
 use std::path::PathBuf;
+
+use crate::http::global::sanitize_relative_subpath;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct PackSelectorPath {
     pub selector: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct PackSelectorFilePath {
+    pub selector: String,
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +73,40 @@ pub(super) async fn packs_get(
     Ok(Json(json!({
         "pack": inspection,
     })))
+}
+
+pub(super) async fn packs_file_get(
+    State(state): State<AppState>,
+    Path(PackSelectorFilePath { selector, path }): Path<PackSelectorFilePath>,
+) -> Result<Response, StatusCode> {
+    let rel = sanitize_relative_subpath(Some(&path))?;
+    let inspection = state.pack_manager.inspect(&selector).await.map_err(|err| {
+        if err.to_string().contains("not found") {
+            StatusCode::NOT_FOUND
+        } else {
+            tracing::warn!("pack file inspect failed: {}", err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    })?;
+    let file_path = PathBuf::from(&inspection.installed.install_path).join(&rel);
+    if !file_path.exists() || !file_path.is_file() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let bytes = tokio::fs::read(&file_path).await.map_err(|err| {
+        tracing::warn!("pack file read failed: {}", err);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type_for_path(&file_path))
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
 }
 
 pub(super) async fn packs_install(
@@ -182,6 +229,27 @@ pub(super) async fn packs_updates_get(
         },
         "reapproval_required": false
     })))
+}
+
+fn content_type_for_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "md" | "markdown" | "mdx" => "text/markdown; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "yaml" | "yml" => "text/yaml; charset=utf-8",
+        "txt" | "log" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
 }
 
 pub(super) async fn packs_update_post(

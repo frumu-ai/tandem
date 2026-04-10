@@ -38,6 +38,8 @@ pub struct PackManifest {
     #[serde(default)]
     pub pack_id: Option<String>,
     #[serde(default)]
+    pub marketplace: Option<Value>,
+    #[serde(default)]
     pub capabilities: Value,
     #[serde(default)]
     pub entrypoints: Value,
@@ -195,7 +197,6 @@ impl PackManager {
             return Err(anyhow!("zip does not contain root marker tandempack.yaml"));
         }
         let manifest = read_manifest_from_zip(&source_file)?;
-        validate_manifest(&manifest)?;
         let sha256 = sha256_file(&source_file)?;
         let pack_id = manifest
             .pack_id
@@ -209,6 +210,8 @@ impl PackManager {
         let stage_unpacked = stage_root.join("unpacked");
         tokio::fs::create_dir_all(&stage_unpacked).await?;
         safe_extract_zip(&source_file, &stage_unpacked)?;
+        let manifest_value = serde_json::to_value(&manifest)?;
+        validate_manifest(&manifest, &manifest_value, &stage_unpacked)?;
         let secret_hits = scan_embedded_secrets(&stage_unpacked)?;
         let strict_secret_scan = std::env::var("TANDEM_PACK_SECRET_SCAN_STRICT")
             .map(|v| {
@@ -490,7 +493,11 @@ fn read_manifest_from_zip(path: &Path) -> anyhow::Result<PackManifest> {
     Ok(manifest)
 }
 
-fn validate_manifest(manifest: &PackManifest) -> anyhow::Result<()> {
+fn validate_manifest(
+    manifest: &PackManifest,
+    manifest_value: &Value,
+    install_root: &Path,
+) -> anyhow::Result<()> {
     if manifest.name.trim().is_empty() {
         return Err(anyhow!("manifest.name is required"));
     }
@@ -500,7 +507,126 @@ fn validate_manifest(manifest: &PackManifest) -> anyhow::Result<()> {
     if manifest.pack_type.trim().is_empty() {
         return Err(anyhow!("manifest.type is required"));
     }
+    if let Some(marketplace) = manifest_value
+        .pointer("/marketplace")
+        .and_then(|value| value.as_object())
+    {
+        validate_marketplace_metadata(marketplace)?;
+        validate_manifest_references(manifest_value, install_root)?;
+    }
     Ok(())
+}
+
+fn validate_marketplace_metadata(
+    marketplace: &serde_json::Map<String, Value>,
+) -> anyhow::Result<()> {
+    let publisher = marketplace
+        .get("publisher")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| anyhow!("marketplace.publisher is required"))?;
+    for key in ["publisher_id", "display_name", "verification_tier"] {
+        if publisher
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(|value| !value.trim().is_empty())
+            != Some(true)
+        {
+            return Err(anyhow!("marketplace.publisher.{key} is required"));
+        }
+    }
+
+    let listing = marketplace
+        .get("listing")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| anyhow!("marketplace.listing is required"))?;
+    for key in ["display_name", "description", "license_spdx"] {
+        if listing
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(|value| !value.trim().is_empty())
+            != Some(true)
+        {
+            return Err(anyhow!("marketplace.listing.{key} is required"));
+        }
+    }
+    if listing
+        .get("categories")
+        .and_then(|value| value.as_array())
+        .map(|rows| rows.is_empty())
+        .unwrap_or(true)
+    {
+        return Err(anyhow!("marketplace.listing.categories is required"));
+    }
+    if listing
+        .get("tags")
+        .and_then(|value| value.as_array())
+        .map(|rows| rows.is_empty())
+        .unwrap_or(true)
+    {
+        return Err(anyhow!("marketplace.listing.tags is required"));
+    }
+    Ok(())
+}
+
+fn validate_manifest_references(manifest_value: &Value, install_root: &Path) -> anyhow::Result<()> {
+    let mut references = Vec::new();
+    if let Some(contents) = manifest_value.pointer("/contents") {
+        collect_manifest_paths(contents, &mut references);
+    }
+    if let Some(listing) = manifest_value.pointer("/marketplace/listing") {
+        for field in ["icon", "changelog"] {
+            if let Some(path) = listing.get(field).and_then(|value| value.as_str()) {
+                let trimmed = path.trim();
+                if !trimmed.is_empty() {
+                    references.push(trimmed.to_string());
+                }
+            }
+        }
+        if let Some(items) = listing
+            .get("screenshots")
+            .and_then(|value| value.as_array())
+        {
+            for item in items {
+                if let Some(path) = item.as_str() {
+                    let trimmed = path.trim();
+                    if !trimmed.is_empty() {
+                        references.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+    references.sort();
+    references.dedup();
+    for rel in references {
+        let path = install_root.join(&rel);
+        if !path.exists() {
+            return Err(anyhow!("declared pack file missing: {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn collect_manifest_paths(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Array(rows) => {
+            for row in rows {
+                collect_manifest_paths(row, out);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(path) = map.get("path").and_then(|value| value.as_str()) {
+                let trimmed = path.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_string());
+                }
+            }
+            for child in map.values() {
+                collect_manifest_paths(child, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn safe_extract_zip(zip_path: &Path, out_dir: &Path) -> anyhow::Result<()> {

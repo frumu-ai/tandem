@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.23] - Unreleased
+## [0.4.24] - Unreleased
+
+### Added
+
+- **Marketplace browse split**: The control panel marketplace is now browse-only and links out to tandem.ac, while the new internal contract docs define the public marketplace/server ownership split.
+
+### Changed
+
+- **Marketplace presentation**: The marketplace navigation now reads as an external bridge to tandem.ac instead of a local store surface.
+
+## [0.4.23] - Released 2026-04-11
 
 ### Fixed
 

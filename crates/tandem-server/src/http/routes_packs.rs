@@ -7,6 +7,7 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
         .route("/packs", get(packs_list))
         .route("/packs/{selector}", get(packs_get))
+        .route("/packs/{selector}/files/{*path}", get(packs_file_get))
         .route("/packs/install", post(packs_install))
         .route(
             "/packs/install_from_attachment",

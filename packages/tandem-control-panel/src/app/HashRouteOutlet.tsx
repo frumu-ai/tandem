@@ -2,6 +2,7 @@ import { DashboardPage } from "../pages/DashboardPage";
 import { ChatPage } from "../pages/ChatPage";
 import { IntentPlannerPage } from "../pages/IntentPlannerPage";
 import { WorkflowsPage } from "../pages/WorkflowsPage";
+import { MarketplacePage } from "../pages/MarketplacePage";
 import { WorkflowStudioPage } from "../pages/WorkflowStudioPage";
 import { AutomationsPage } from "../pages/AutomationsPage";
 import { CodingWorkflowsPage } from "../pages/CodingWorkflowsPage";
@@ -25,6 +26,8 @@ export function HashRouteOutlet({ routeId, pageProps }: { routeId: string; pageP
       return <IntentPlannerPage {...pageProps} />;
     case "workflows":
       return <WorkflowsPage {...pageProps} />;
+    case "marketplace":
+      return <MarketplacePage {...pageProps} />;
     case "studio":
       return <WorkflowStudioPage {...pageProps} />;
     case "automations":

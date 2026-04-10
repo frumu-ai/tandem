@@ -10,6 +10,7 @@ pub(super) mod context_run_ledger;
 pub(super) mod context_run_mutation_checkpoints;
 pub(super) mod context_runs;
 pub(super) mod global;
+pub(super) mod marketplace;
 pub(super) mod mcp;
 pub(super) mod memory;
 pub(super) mod mission_builder;
@@ -171,6 +172,14 @@ pub(super) async fn test_state() -> AppState {
 }
 
 pub(super) fn write_pack_zip(path: &std::path::Path, manifest: &str) {
+    write_pack_zip_with_entries(path, manifest, &[("README.md", "# pack")]);
+}
+
+pub(super) fn write_pack_zip_with_entries(
+    path: &std::path::Path,
+    manifest: &str,
+    extra_entries: &[(&str, &str)],
+) {
     let file = std::fs::File::create(path).expect("create zip");
     let mut zip = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default()
@@ -178,8 +187,10 @@ pub(super) fn write_pack_zip(path: &std::path::Path, manifest: &str) {
     zip.start_file("tandempack.yaml", opts)
         .expect("start marker");
     std::io::Write::write_all(&mut zip, manifest.as_bytes()).expect("write marker");
-    zip.start_file("README.md", opts).expect("start readme");
-    std::io::Write::write_all(&mut zip, b"# pack").expect("write readme");
+    for (name, body) in extra_entries {
+        zip.start_file(*name, opts).expect("start extra entry");
+        std::io::Write::write_all(&mut zip, body.as_bytes()).expect("write extra entry");
+    }
     zip.finish().expect("finish zip");
 }
 

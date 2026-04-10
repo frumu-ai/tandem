@@ -343,3 +343,172 @@ contents:
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn packs_install_with_marketplace_assets_exposes_files() {
+    let state = test_state().await;
+    let root = std::env::temp_dir().join(format!("tandem-pack-marketplace-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&root).expect("mkdir");
+    let pack_zip = root.join("marketplace-pack.zip");
+    write_pack_zip_with_entries(
+        &pack_zip,
+        r#"
+manifest_schema_version: 1
+pack_id: marketplace-pack
+name: marketplace-pack
+version: 1.0.0
+type: workflow
+engine:
+  requires: ">=0.9.0 <2.0.0"
+marketplace:
+  publisher:
+    publisher_id: pub_tandem_official
+    display_name: Tandem
+    verification_tier: official
+  listing:
+    display_name: Marketplace Pack
+    description: Marketplace pack used for regression coverage.
+    categories: ["testing"]
+    tags: ["marketplace", "pack"]
+    license_spdx: Apache-2.0
+    icon: resources/marketplace/icon.svg
+    screenshots: ["resources/marketplace/screenshot-1.svg"]
+    changelog: CHANGELOG.md
+entrypoints:
+  workflows:
+    - marketplace_workflow
+capabilities:
+  required: []
+  optional: []
+  non_portable: []
+contents:
+  workflows:
+    - id: marketplace_workflow
+      path: workflows/marketplace-workflow.yaml
+"#,
+        &[
+            ("README.md", "# Marketplace Pack\n\nThis pack ships assets."),
+            ("CHANGELOG.md", "## 1.0.0\n- Initial marketplace package"),
+            (
+                "resources/marketplace/icon.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"6\" fill=\"#1d4ed8\"/></svg>",
+            ),
+            (
+                "resources/marketplace/screenshot-1.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"6\" fill=\"#0f172a\"/></svg>",
+            ),
+            (
+                "workflows/marketplace-workflow.yaml",
+                "workflow:\n  id: marketplace_workflow\n  name: Marketplace Workflow\n  steps:\n    - action: agent:project-manager\n      with:\n        prompt: Hello from marketplace\n",
+            ),
+        ],
+    );
+    let app = app_router(state.clone());
+    let install_req = Request::builder()
+        .method("POST")
+        .uri("/packs/install")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "path": pack_zip.to_string_lossy(),
+                "source": {"kind":"test"}
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let install_resp = app.clone().oneshot(install_req).await.expect("response");
+    assert_eq!(install_resp.status(), StatusCode::OK);
+
+    let file_req = Request::builder()
+        .method("GET")
+        .uri("/packs/marketplace-pack/files/README.md")
+        .body(Body::empty())
+        .expect("request");
+    let file_resp = app.clone().oneshot(file_req).await.expect("response");
+    assert_eq!(file_resp.status(), StatusCode::OK);
+    assert_eq!(
+        file_resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/markdown; charset=utf-8")
+    );
+    let file_body = to_bytes(file_resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let body_text = String::from_utf8(file_body.to_vec()).expect("utf8");
+    assert!(body_text.contains("Marketplace Pack"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn packs_install_rejects_missing_marketplace_assets() {
+    let state = test_state().await;
+    let root = std::env::temp_dir().join(format!(
+        "tandem-pack-marketplace-missing-{}",
+        Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).expect("mkdir");
+    let pack_zip = root.join("marketplace-pack-missing.zip");
+    write_pack_zip_with_entries(
+        &pack_zip,
+        r#"
+manifest_schema_version: 1
+pack_id: marketplace-pack-missing
+name: marketplace-pack-missing
+version: 1.0.0
+type: workflow
+engine:
+  requires: ">=0.9.0 <2.0.0"
+marketplace:
+  publisher:
+    publisher_id: pub_tandem_official
+    display_name: Tandem
+    verification_tier: official
+  listing:
+    display_name: Marketplace Pack Missing
+    description: Missing asset coverage test.
+    categories: ["testing"]
+    tags: ["marketplace", "pack"]
+    license_spdx: Apache-2.0
+    icon: resources/marketplace/icon.svg
+    screenshots: ["resources/marketplace/screenshot-1.svg"]
+    changelog: CHANGELOG.md
+entrypoints:
+  workflows:
+    - marketplace_workflow
+capabilities:
+  required: []
+  optional: []
+  non_portable: []
+contents:
+  workflows:
+    - id: marketplace_workflow
+      path: workflows/marketplace-workflow.yaml
+"#,
+        &[
+            ("README.md", "# Marketplace Pack"),
+            ("CHANGELOG.md", "## 1.0.0\n- Initial marketplace package"),
+            (
+                "workflows/marketplace-workflow.yaml",
+                "workflow:\n  id: marketplace_workflow\n  name: Marketplace Workflow\n  steps:\n    - action: agent:project-manager\n      with:\n        prompt: Hello from marketplace\n",
+            ),
+        ],
+    );
+    let app = app_router(state);
+    let install_req = Request::builder()
+        .method("POST")
+        .uri("/packs/install")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "path": pack_zip.to_string_lossy(),
+                "source": {"kind":"test"}
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let install_resp = app.oneshot(install_req).await.expect("response");
+    assert_eq!(install_resp.status(), StatusCode::BAD_REQUEST);
+    let _ = std::fs::remove_dir_all(root);
+}
