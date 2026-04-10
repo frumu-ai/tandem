@@ -4,7 +4,7 @@ export const ROUTES = [
   ["chat", "Chat", "message-square"],
   ["planner", "Planner", "compass"],
   ["workflows", "Workflows", "network"],
-  ["studio", "Studio", "network"],
+  ["studio", "Studio", "blocks"],
   ["automations", "Automations", "bot"],
   ["coding", "Coding", "code"],
   ["agents", "Agents", "users"],

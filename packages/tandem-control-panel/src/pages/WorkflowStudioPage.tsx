@@ -238,7 +238,7 @@ function splitCsv(value: string) {
 }
 
 function joinCsv(values: string[]) {
-  return values.join(", ");
+  return Array.isArray(values) ? values.join(", ") : "";
 }
 
 function normalizeStringList(values: unknown) {
@@ -3448,7 +3448,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                             mcpAllowedServers: splitCsv((event.target as HTMLInputElement).value),
                           })
                         }
-                        placeholder={mcpServers.join(", ") || "No MCP servers detected"}
+                        placeholder={joinCsv(mcpServers) || "No MCP servers detected"}
                       />
                     </label>
                   </div>
