@@ -2,6 +2,10 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.23 (Unreleased)
+
+- **Vault unlock startup safety net**: The desktop unlock flow now keeps the splash visible until the React app reports it is actually ready, and startup crashes show a visible recovery screen instead of a blank window.
+
 ## v0.4.22 (Unreleased)
 
 - **Workflow import, Workflow Center, and agent teaching**

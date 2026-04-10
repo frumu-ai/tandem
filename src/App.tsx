@@ -105,26 +105,13 @@ type View =
   | "onboarding"
   | "sidecar-setup";
 
-// Hide the HTML splash screen once React is ready and vault is unlocked
-function hideSplashScreen() {
-  const splash = document.getElementById("splash-screen");
-  if (splash) {
-    splash.classList.add("hidden");
-    // Clean up matrix animation
-    if (window.__matrixInterval) {
-      window.clearInterval(window.__matrixInterval);
-    }
-    // Remove splash after transition
-    setTimeout(() => splash.remove(), 500);
-  }
-}
-
 // Add type for the global properties
 declare global {
   interface Window {
     __matrixInterval?: ReturnType<typeof window.setInterval>;
     __splashStartedAt?: number;
     __vaultUnlocked?: boolean;
+    __tandemAppReady?: boolean;
   }
 }
 
@@ -767,14 +754,15 @@ function App() {
     };
   }, [refreshAppState]);
 
-  // Hide the splash once the vault is unlocked.
-  // We do not wait for the rest of app bootstrap here because provider/catalog
-  // loading can be slow or transiently unavailable, and that should not trap
-  // the user on the lock screen.
   useEffect(() => {
-    if (vaultUnlocked) {
-      hideSplashScreen();
+    if (!vaultUnlocked || window.__tandemAppReady) {
+      return;
     }
+    const frame = window.requestAnimationFrame(() => {
+      window.__tandemAppReady = true;
+      window.dispatchEvent(new window.Event("tandem-app-ready"));
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [vaultUnlocked]);
 
   // Load sessions and projects when sidecar is ready

@@ -8,6 +8,7 @@ import type { ThemeId } from "./types/theme";
 
 const MIN_PIN_LENGTH = 4;
 const MAX_PIN_LENGTH = 4;
+const APP_READY_EVENT = "tandem-app-ready";
 
 let currentPin = "";
 let confirmPin = "";
@@ -58,8 +59,6 @@ function dismissSplashScreen() {
     window.clearInterval(matrixInterval);
   }
 
-  // Remove the splash after the fade so a delayed React mount cannot strand
-  // the user on the unlock screen.
   window.setTimeout(() => splash.remove(), 500);
 }
 
@@ -172,6 +171,15 @@ function startMatrixRain() {
   (window as any).__matrixInterval = interval;
 }
 
+window.addEventListener(
+  APP_READY_EVENT,
+  () => {
+    (window as any).__tandemAppReady = true;
+    dismissSplashScreen();
+  },
+  { once: true }
+);
+
 // Get DOM elements
 const loadingSection = document.getElementById("loading-section")!;
 const pinSection = document.getElementById("pin-section")!;
@@ -283,7 +291,6 @@ async function submitPin() {
 
       await invoke("create_vault", { pin: currentPin });
       (window as any).__vaultUnlocked = true;
-      dismissSplashScreen();
     } else {
       // Unlock existing vault
       loadingText.innerHTML = 'Unlocking vault<span class="loading-dots"></span>';
@@ -292,7 +299,6 @@ async function submitPin() {
 
       await invoke("unlock_vault", { pin: currentPin });
       (window as any).__vaultUnlocked = true;
-      dismissSplashScreen();
     }
 
     // Success! The React app will handle the rest
@@ -385,7 +391,6 @@ async function checkVaultStatus() {
     } else if (status === "unlocked") {
       // Already unlocked (shouldn't happen normally)
       (window as any).__vaultUnlocked = true;
-      dismissSplashScreen();
     }
   } catch (error: any) {
     console.error("[Vault] Failed to check status:", error);
