@@ -8,6 +8,8 @@ If another LLM or agent is generating the workflow or mission definition itself,
 
 For the operational path after prompting, use [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/). For engine tokens and authenticated HTTP or SDK calls, use [Engine Authentication For Agents](./engine-authentication-for-agents/).
 
+For a compact, agent-facing checklist that covers MCP discovery, clarifying questions, workflow import, apply, repair, and provenance, start with [Agent Workflow Operating Manual](./agent-workflow-operating-manual/).
+
 If you want the shortest end-to-end checklist for an agent, start with [Agent Workflow And Mission Quickstart](./agent-workflow-mission-quickstart/).
 
 For provider and model routing choices, use [Choosing Providers And Models For Agents](./choosing-providers-and-models-for-agents/).
@@ -33,6 +35,10 @@ The public discovery path is:
 5. List all engine tool IDs with `GET /tool/ids`.
 6. Filter the returned tool list locally by prefix, server name, or tool name.
 7. Execute the chosen tool directly through the engine or via `mcp_debug` when you need to call a remote MCP server by URL.
+
+If the required MCP server or tool is missing from `mcp_list`, do not guess. Tell the user which MCP must be connected or added, or switch to a workflow that only uses already-available tools.
+
+If the workflow requires an external tool the agent cannot see in `mcp_list`, stop and explain that the MCP must be added or connected before compilation can continue.
 
 The engine does have internal semantic tool retrieval for prompt-time tool selection, but that ranking path is separate from `mcp_list` and is not a public registry search endpoint.
 

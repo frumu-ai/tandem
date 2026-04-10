@@ -2462,12 +2462,17 @@ class WorkflowPlans {
     bundle: JsonObject;
     creatorId?: string;
     creator_id?: string;
+    projectSlug?: string;
+    project_slug?: string;
+    title?: string;
   }): Promise<WorkflowPlanImportPreviewResponse> {
     return this.req<WorkflowPlanImportPreviewResponse>("/workflow-plans/import/preview", {
       method: "POST",
       body: JSON.stringify({
         bundle: options.bundle,
         creator_id: options.creator_id ?? options.creatorId,
+        project_slug: options.project_slug ?? options.projectSlug,
+        title: options.title,
       }),
     });
   }
@@ -2476,12 +2481,17 @@ class WorkflowPlans {
     bundle: JsonObject;
     creatorId?: string;
     creator_id?: string;
+    projectSlug?: string;
+    project_slug?: string;
+    title?: string;
   }): Promise<WorkflowPlanImportResponse> {
     return this.req<WorkflowPlanImportResponse>("/workflow-plans/import", {
       method: "POST",
       body: JSON.stringify({
         bundle: options.bundle,
         creator_id: options.creator_id ?? options.creatorId,
+        project_slug: options.project_slug ?? options.projectSlug,
+        title: options.title,
       }),
     });
   }

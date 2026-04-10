@@ -651,6 +651,27 @@ export function MyAutomationsContainer({
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
+  useEffect(() => {
+    runActionMutation.reset();
+    workflowRepairMutation.reset();
+    workflowRecoverMutation.reset();
+    workflowTaskRetryMutation.reset();
+    workflowTaskContinueMutation.reset();
+    workflowTaskRequeueMutation.reset();
+    backlogTaskClaimMutation.reset();
+    backlogTaskRequeueMutation.reset();
+  }, [
+    backlogTaskClaimMutation,
+    backlogTaskRequeueMutation,
+    runActionMutation,
+    selectedBoardTaskId,
+    selectedRunId,
+    workflowRecoverMutation,
+    workflowRepairMutation,
+    workflowTaskContinueMutation,
+    workflowTaskRequeueMutation,
+    workflowTaskRetryMutation,
+  ]);
 
   const updateAutomationMutation = useMutation({
     mutationFn: async (draft: any) => {
@@ -1495,6 +1516,12 @@ export function MyAutomationsContainer({
   const selectedBoardTaskAppearsBlocked = selectedBoardTaskStateNormalized === "blocked";
   const selectedBoardTaskAppearsRetryable =
     selectedBoardTaskAppearsBlocked || selectedBoardTaskStateNormalized === "failed";
+  const pendingRunAction = runActionMutation.isPending
+    ? String(runActionMutation.variables?.action || "").trim()
+    : "";
+  const pendingRunActionMessage = pendingRunAction
+    ? `Waiting for ${pendingRunAction} request to finish.`
+    : "";
   const selectedBoardTaskBlockedOnServer =
     !!selectedBoardTaskNodeId && serverBlockedNodeIds.includes(selectedBoardTaskNodeId);
   const selectedBoardTaskNeedsRepairOnServer =
@@ -1606,7 +1633,8 @@ export function MyAutomationsContainer({
     !!selectedBoardTaskNodeId &&
     selectedBoardTaskBlockedOnServer;
   const selectedBoardTaskServerActionMessage =
-    selectedBoardTaskIsWorkflowNode &&
+    pendingRunActionMessage ||
+    (selectedBoardTaskIsWorkflowNode &&
     selectedBoardTaskNodeId &&
     ((selectedBoardTaskAppearsBlocked && !selectedBoardTaskBlockedOnServer) ||
       (selectedBoardTaskAppearsRetryable &&
@@ -1614,7 +1642,7 @@ export function MyAutomationsContainer({
         !selectedBoardTaskBlockedOnServer &&
         !selectedBoardTaskNeedsRepairOnServer))
       ? "This node is not currently blocked on the server."
-      : "";
+      : "");
   const canTaskRequeue =
     isWorkflowRun &&
     !!selectedRunId &&
@@ -2219,6 +2247,14 @@ export function MyAutomationsContainer({
         automationWizardConfig,
         updateWorkflowAutomationMutation,
         onRefreshRunDebugger: () => {
+          runActionMutation.reset();
+          workflowRepairMutation.reset();
+          workflowRecoverMutation.reset();
+          workflowTaskRetryMutation.reset();
+          workflowTaskContinueMutation.reset();
+          workflowTaskRequeueMutation.reset();
+          backlogTaskClaimMutation.reset();
+          backlogTaskRequeueMutation.reset();
           void Promise.all([
             queryClient.invalidateQueries({
               queryKey: ["automations", "run", selectedRunId],

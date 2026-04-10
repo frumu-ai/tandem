@@ -186,7 +186,10 @@ The Planner page uses the same bundle-shaped workflow when it hands plans off in
    - `POST /workflow-plans/import/preview` returns `import_validation`, `plan_package_preview`, `derived_scope_snapshot`, and `summary`.
    - Check `import_validation.compatible` before import.
 4. Import the bundle.
-   - `POST /workflow-plans/import` stores the imported plan package in the target workspace.
+   - `POST /workflow-plans/import` creates a durable planner session with the imported draft, provenance, and validation state.
+   - The imported workflow appears in the Workflow Center and can be reopened from the planner session view.
+   - The imported workflow is revisable from the Workflow Center and the planner session view.
+   - Import does not apply or arm the workflow; schedule data remains staged until apply.
 
 Example request flow:
 

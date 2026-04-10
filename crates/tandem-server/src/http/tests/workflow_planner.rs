@@ -366,7 +366,7 @@ async fn workflow_plan_preview_uses_fallback_when_planner_provider_unconfigured(
 async fn workflow_plan_preview_accepts_valid_llm_created_plan() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
-    let app = app_router(state);
+    let app = app_router(state.clone());
     let _guard = PlannerEnvGuard::new(&[
         "TANDEM_WORKFLOW_PLANNER_TEST_BUILD_RESPONSE",
         "TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE",
@@ -1554,7 +1554,7 @@ async fn workflow_plan_apply_preserves_research_web_expectation_metadata() {
 async fn workflow_plan_import_accepts_exported_bundle() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
-    let app = app_router(state);
+    let app = app_router(state.clone());
     let _guard = PlannerEnvGuard::new(&[
         "TANDEM_WORKFLOW_PLANNER_TEST_BUILD_RESPONSE",
         "TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE",
@@ -1654,6 +1654,37 @@ async fn workflow_plan_import_accepts_exported_bundle() {
         .and_then(Value::as_array)
         .map(|entries| !entries.is_empty())
         .unwrap_or(false));
+    assert_eq!(
+        import_payload.get("persisted").and_then(Value::as_bool),
+        Some(true)
+    );
+    let session = import_payload
+        .get("session")
+        .and_then(Value::as_object)
+        .cloned();
+    assert!(session.is_some());
+    let session = session.expect("session");
+    assert_eq!(
+        session.get("source_kind").and_then(Value::as_str),
+        Some("imported_bundle")
+    );
+    assert_eq!(
+        session.get("source_bundle_digest").and_then(Value::as_str),
+        import_payload
+            .get("import_source_bundle_digest")
+            .and_then(Value::as_str)
+    );
+    let session_id = session
+        .get("session_id")
+        .and_then(Value::as_str)
+        .expect("session id")
+        .to_string();
+    let stored_session = state
+        .get_workflow_planner_session(&session_id)
+        .await
+        .expect("stored session");
+    assert_eq!(stored_session.source_kind, "imported_bundle");
+    assert!(stored_session.draft.is_some());
 }
 
 #[tokio::test]
@@ -1726,12 +1757,19 @@ async fn workflow_plan_import_preview_returns_scope_snapshot_and_summary() {
         .expect("import preview body");
     let import_preview_payload: Value =
         serde_json::from_slice(&import_preview_body).expect("import preview json");
+    assert_eq!(
+        import_preview_payload
+            .get("persisted")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
     assert!(import_preview_payload
         .get("derived_scope_snapshot")
         .and_then(|value| value.get("plan_id"))
         .and_then(Value::as_str)
         .map(|plan_id| plan_id.starts_with("imported-"))
         .unwrap_or(false));
+    assert!(import_preview_payload.get("session").is_none());
     assert!(import_preview_payload
         .get("plan_package_preview")
         .and_then(|value| value.get("validation_state"))
@@ -2757,6 +2795,13 @@ async fn workflow_planner_sessions_support_crud_and_duplication() {
         .await
         .expect("create body");
     let create_payload: Value = serde_json::from_slice(&create_body).expect("create json");
+    assert_eq!(
+        create_payload
+            .get("session")
+            .and_then(|row| row.get("source_kind"))
+            .and_then(Value::as_str),
+        Some("planner")
+    );
     let session_id = create_payload
         .get("session")
         .and_then(|row| row.get("session_id"))
@@ -2786,6 +2831,12 @@ async fn workflow_planner_sessions_support_crud_and_duplication() {
         .is_some_and(|rows| rows.iter().any(|row| {
             row.get("session_id").and_then(Value::as_str) == Some(session_id.as_str())
         })));
+    assert!(list_payload
+        .get("sessions")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows
+            .iter()
+            .any(|row| { row.get("source_kind").and_then(Value::as_str) == Some("planner") })));
 
     let patch_resp = app
         .clone()
@@ -2839,6 +2890,13 @@ async fn workflow_planner_sessions_support_crud_and_duplication() {
         .and_then(Value::as_str)
         .expect("duplicate session id");
     assert_ne!(duplicate_session_id, session_id);
+    assert_eq!(
+        duplicate_payload
+            .get("session")
+            .and_then(|row| row.get("source_kind"))
+            .and_then(Value::as_str),
+        Some("forked_planner")
+    );
 }
 
 #[tokio::test]

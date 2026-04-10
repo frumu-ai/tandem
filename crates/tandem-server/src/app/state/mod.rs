@@ -4712,15 +4712,15 @@ impl AppState {
         for run in candidate_runs {
             let last_activity_at_ms = self.automation_run_last_activity_at_ms(&run).await;
             if now.saturating_sub(last_activity_at_ms) >= stale_after_ms {
-                runs.push((
-                    run.run_id.clone(),
-                    run.active_session_ids.clone(),
-                    run.active_instance_ids.clone(),
-                ));
+                runs.push(run);
             }
         }
         let mut reaped = 0usize;
-        for (run_id, session_ids, instance_ids) in runs {
+        for run in runs {
+            let run_id = run.run_id.clone();
+            let session_ids = run.active_session_ids.clone();
+            let instance_ids = run.active_instance_ids.clone();
+            let stale_node_ids = automation::lifecycle::automation_in_progress_node_ids(&run);
             let detail = format!(
                 "automation run paused after no provider activity for at least {}s",
                 stale_after_ms / 1000
@@ -4737,9 +4737,61 @@ impl AppState {
             self.forget_automation_v2_sessions(&session_ids).await;
             if self
                 .update_automation_v2_run(&run_id, |row| {
+                    let stale_node_detail = format!(
+                        "node execution stalled after no provider activity for at least {}s",
+                        stale_after_ms / 1000
+                    );
+                    let automation_snapshot = row.automation_snapshot.clone();
+                    let mut annotated_nodes = Vec::new();
+                    if let Some(automation) = automation_snapshot.as_ref() {
+                        for node_id in &stale_node_ids {
+                            if row.checkpoint.node_outputs.contains_key(node_id) {
+                                continue;
+                            }
+                            let Some(node) = automation
+                                .flow
+                                .nodes
+                                .iter()
+                                .find(|candidate| &candidate.node_id == node_id)
+                            else {
+                                continue;
+                            };
+                            let attempts =
+                                row.checkpoint.node_attempts.get(node_id).copied().unwrap_or(1);
+                            let max_attempts = automation_node_max_attempts(node);
+                            let terminal = attempts >= max_attempts;
+                            row.checkpoint.node_outputs.insert(
+                                node_id.clone(),
+                                crate::automation_v2::executor::build_node_execution_error_output_with_category(
+                                    node,
+                                    &stale_node_detail,
+                                    terminal,
+                                    "execution_error",
+                                ),
+                            );
+                            if row.checkpoint.last_failure.is_none() {
+                                row.checkpoint.last_failure = Some(
+                                    crate::automation_v2::types::AutomationFailureRecord {
+                                        node_id: node_id.clone(),
+                                        reason: stale_node_detail.clone(),
+                                        failed_at_ms: now_ms(),
+                                    },
+                                );
+                            }
+                            annotated_nodes.push(node_id.clone());
+                        }
+                    }
                     row.status = AutomationRunStatus::Paused;
                     row.pause_reason = Some("stale_no_provider_activity".to_string());
-                    row.detail = Some(detail.clone());
+                    row.detail = Some(if annotated_nodes.is_empty() {
+                        detail.clone()
+                    } else {
+                        format!(
+                            "{}; repairable node(s): {}",
+                            detail,
+                            annotated_nodes.join(", ")
+                        )
+                    });
                     row.stop_kind = Some(AutomationStopKind::StaleReaped);
                     row.stop_reason = Some(detail.clone());
                     row.active_session_ids.clear();
@@ -4751,6 +4803,9 @@ impl AppState {
                         Some(detail.clone()),
                         Some(AutomationStopKind::StaleReaped),
                     );
+                    if let Some(automation) = automation_snapshot.as_ref() {
+                        automation::refresh_automation_runtime_state(automation, row);
+                    }
                 })
                 .await
                 .is_some()

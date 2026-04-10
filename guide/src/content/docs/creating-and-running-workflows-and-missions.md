@@ -18,6 +18,7 @@ This page is operational. For prompt-writing guidance, see [Prompting Workflows 
 - the user has natural-language intent
 - Tandem should generate the automation shape for you
 - you want a planner chat loop before applying the result
+- you want to import or reopen a saved workflow session before revising it
 
 Primary surfaces:
 
@@ -65,10 +66,18 @@ Primary surfaces:
 - you are tracking higher-level work items and state transitions
 - you want to push mission events as work progresses
 
+### Use the Workflow Center when
+
+- you need to find imported sessions, saved drafts, or provenance
+- you want to inspect the stored workflow before revising or applying it
+- you want one place to see planner sessions alongside their source bundle digest
+
 Primary surfaces:
 
-- `client.missions`
-- mission runtime endpoints exposed through the SDK and desktop bridge
+- control panel Workflow Center
+- `client.workflowPlannerSessions`
+- `client.workflowPlans.importPreview`
+- `client.workflowPlans.importPlan`
 
 ## Recommended authoring path
 
@@ -80,6 +89,7 @@ For most agent-authored systems, use this sequence:
 4. apply it into the engine
 5. schedule it if it should recur
 6. inspect runs and repair only the failing stage instead of rebuilding everything
+7. if the workflow came from an import, reopen the stored planner session first and revise that session instead of starting from scratch
 
 ## What to choose for common situations
 
@@ -319,6 +329,7 @@ That gives you:
 - [Choosing Providers And Models For Agents](./choosing-providers-and-models-for-agents/)
 - [Prompting Workflows And Missions](./prompting-workflows-and-missions/)
 - [Control Panel (Web Admin)](./control-panel/)
+- [Agent Workflow Operating Manual](./agent-workflow-operating-manual/)
 - [MCP Automated Agents](./mcp-automated-agents/)
 - [Connected-Agent Handoffs](./connected-agent-handoffs/)
 - [Scheduling Workflows And Automations](./sdk/scheduling-automations/)

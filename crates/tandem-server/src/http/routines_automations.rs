@@ -3291,6 +3291,7 @@ pub(super) async fn automations_v2_run_recover(
                 && reset_nodes.is_empty()
             {
                 for node_id in run.checkpoint.pending_nodes.clone() {
+                    run.checkpoint.node_outputs.remove(&node_id);
                     run.checkpoint.node_attempts.remove(&node_id);
                 }
             }

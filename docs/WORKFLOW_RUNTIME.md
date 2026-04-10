@@ -94,6 +94,10 @@ The reuse flow is:
 2. Copy `plan_package_bundle` into the target environment.
 3. Call `POST /workflow-plans/import/preview` to check `import_validation`, `plan_package_preview`, `derived_scope_snapshot`, and `summary`.
 4. Call `POST /workflow-plans/import` if the import preview is compatible.
+   - This creates a durable planner session with the imported draft and provenance.
+   - The imported session is visible in the Workflow Center and can be reopened there.
+   - It does not arm a runnable automation yet.
+   - Schedule data stays staged until the user applies the plan.
 
 Example response shape:
 

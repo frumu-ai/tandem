@@ -220,6 +220,8 @@ For agents that need to create and run workflows or missions:
 6. apply and schedule
 7. inspect runs with the same authenticated client
 
+Import preview is read-only, but durable import, apply, and repair all mutate engine state, so they should use the same authenticated client path as the rest of the workflow lifecycle.
+
 ## See also
 
 - [Agent Workflow And Mission Quickstart](./agent-workflow-mission-quickstart/)

@@ -49,6 +49,8 @@ This is the same payload family the control panel sends for planner-created and 
 
 Automation plans and V2 DAG workflows can also carry `knowledge` bindings, which lets the engine preflight project-scoped reusable knowledge before a node runs. In practice, that means the workflow can start from promoted knowledge, keep raw working notes local, and only refresh prior work when the configured freshness policy says it is stale.
 
+If you import a workflow bundle that already contains schedule information, keep that schedule staged inside the imported planner session until the user applies the plan. Import is not the same as arming the automation.
+
 ## Default Recommendation
 
 For new scheduled automation work, prefer `automationsV2` / `automations_v2`.

@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_plan_compiler::api as compiler_api;
 use uuid::Uuid;
@@ -45,6 +45,10 @@ pub(super) struct WorkflowPlanImportRequest {
     pub bundle: compiler_api::PlanPackageImportBundle,
     #[serde(default)]
     pub creator_id: Option<String>,
+    #[serde(default)]
+    pub project_slug: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -91,6 +95,10 @@ pub struct WorkflowPlannerSessionRecord {
     pub project_slug: String,
     pub title: String,
     pub workspace_root: String,
+    #[serde(default = "default_workflow_planner_source_kind")]
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bundle_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_plan_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,6 +117,12 @@ pub struct WorkflowPlannerSessionRecord {
     pub allowed_mcp_servers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_preferences: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_validation: Option<compiler_api::PlanReplayReport>,
+    #[serde(default)]
+    pub import_transform_log: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_scope_snapshot: Option<compiler_api::PlanScopeSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at_ms: Option<u64>,
     #[serde(default)]
@@ -218,6 +232,10 @@ pub(super) struct WorkflowPlannerSessionListItem {
     pub title: String,
     pub project_slug: String,
     pub workspace_root: String,
+    #[serde(default)]
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bundle_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_plan_id: Option<String>,
     pub created_at_ms: u64,
@@ -238,6 +256,326 @@ fn workflow_plan_import_summary(plan_package: &compiler_api::PlanPackage) -> ser
         "context_object_count": plan_package.context_objects.len(),
         "credential_envelope_count": plan_package.credential_envelopes.len(),
     })
+}
+
+fn default_workflow_planner_source_kind() -> String {
+    "planner".to_string()
+}
+
+fn workflow_planner_session_fork_source_kind(source_kind: &str) -> String {
+    let normalized = source_kind.trim();
+    let stripped = normalized.strip_prefix("forked_").unwrap_or(normalized);
+    format!("forked_{}", stripped)
+}
+
+fn workflow_plan_import_title(goal: &str, fallback_digest: &str) -> String {
+    let goal = goal.trim();
+    if !goal.is_empty() {
+        let clipped = if goal.chars().count() > 40 {
+            let mut clipped = goal.chars().take(39).collect::<String>();
+            clipped.push('…');
+            clipped
+        } else {
+            goal.to_string()
+        };
+        return format!("Imported {clipped}");
+    }
+    let digest = fallback_digest.chars().take(12).collect::<String>();
+    format!("Imported workflow {digest}")
+}
+
+fn workflow_plan_import_agent_role(kind: &str) -> String {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "research" => "researcher",
+        "monitoring" => "watcher",
+        "drafting" => "writer",
+        "review" => "reviewer",
+        "execution" => "worker",
+        "sync" => "worker",
+        "reporting" => "reporter",
+        "publication" => "publisher",
+        "remediation" => "repairer",
+        "triage" => "triager",
+        "orchestration" => "orchestrator",
+        _ => "worker",
+    }
+    .to_string()
+}
+
+fn workflow_plan_import_step_id(routine_id: &str, step_id: &str) -> String {
+    let routine_id = routine_id.trim();
+    let step_id = step_id.trim();
+    if step_id.contains("::") {
+        step_id.to_string()
+    } else {
+        format!("{routine_id}::{step_id}")
+    }
+}
+
+fn workflow_plan_import_output_contract(
+    step_notes: Option<&String>,
+) -> crate::AutomationFlowOutputContract {
+    crate::AutomationFlowOutputContract {
+        kind: "generic_artifact".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: step_notes
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    }
+}
+
+fn workflow_plan_import_input_refs(depends_on: &[String]) -> Vec<crate::AutomationFlowInputRef> {
+    depends_on
+        .iter()
+        .map(|from_step_id| crate::AutomationFlowInputRef {
+            from_step_id: from_step_id.clone(),
+            alias: from_step_id
+                .chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                .collect::<String>(),
+        })
+        .collect()
+}
+
+fn workflow_plan_import_steps(
+    plan_package: &compiler_api::PlanPackage,
+    source_bundle_digest: &str,
+) -> Vec<crate::WorkflowPlanStep> {
+    let mut steps = Vec::new();
+    for routine in &plan_package.routine_graph {
+        let routine_kind = serde_json::to_value(&routine.semantic_kind)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "mixed".to_string());
+        if routine.steps.is_empty() {
+            let step_id = workflow_plan_import_step_id(&routine.routine_id, "routine");
+            let mut metadata = json!({
+                "imported": true,
+                "source_bundle_digest": source_bundle_digest,
+                "source_plan_id": plan_package.plan_id,
+                "source_routine_id": routine.routine_id,
+                "source_routine_kind": routine_kind,
+                "source_step_kind": "routine",
+                "source_step_label": routine.routine_id,
+            });
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert(
+                    "source_step_dependencies".to_string(),
+                    serde_json::to_value(&routine.dependencies).unwrap_or(Value::Null),
+                );
+            }
+            steps.push(crate::WorkflowPlanStep {
+                step_id,
+                kind: routine_kind.clone(),
+                objective: format!("Continue imported routine `{}`.", routine.routine_id),
+                depends_on: routine
+                    .dependencies
+                    .iter()
+                    .map(|dep| workflow_plan_import_step_id(&dep.routine_id, "routine"))
+                    .collect(),
+                agent_role: workflow_plan_import_agent_role(&routine_kind),
+                input_refs: workflow_plan_import_input_refs(&[]),
+                output_contract: Some(workflow_plan_import_output_contract(None)),
+                metadata: Some(metadata),
+            });
+            continue;
+        }
+
+        for step in &routine.steps {
+            let step_id = workflow_plan_import_step_id(&routine.routine_id, &step.step_id);
+            let depends_on = step
+                .dependencies
+                .iter()
+                .map(|dependency| workflow_plan_import_step_id(&routine.routine_id, dependency))
+                .collect::<Vec<_>>();
+            let objective = step
+                .notes
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    let label = step.label.trim();
+                    if label.is_empty() {
+                        None
+                    } else {
+                        Some(label.to_string())
+                    }
+                })
+                .unwrap_or_else(|| format!("Continue imported step `{}`.", step.step_id));
+            let mut metadata = json!({
+                "imported": true,
+                "source_bundle_digest": source_bundle_digest,
+                "source_plan_id": plan_package.plan_id,
+                "source_routine_id": routine.routine_id,
+                "source_routine_kind": routine_kind,
+                "source_step_id": step.step_id,
+                "source_step_kind": step.kind,
+                "source_step_label": step.label,
+                "source_step_action": step.action,
+                "source_step_notes": step.notes,
+            });
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert(
+                    "source_step_dependencies".to_string(),
+                    serde_json::to_value(&step.dependencies).unwrap_or(Value::Null),
+                );
+                object.insert(
+                    "source_step_outputs".to_string(),
+                    serde_json::to_value(&step.outputs).unwrap_or(Value::Null),
+                );
+                object.insert(
+                    "source_step_context_reads".to_string(),
+                    serde_json::to_value(&step.context_reads).unwrap_or(Value::Null),
+                );
+                object.insert(
+                    "source_step_context_writes".to_string(),
+                    serde_json::to_value(&step.context_writes).unwrap_or(Value::Null),
+                );
+            }
+            steps.push(crate::WorkflowPlanStep {
+                step_id,
+                kind: step.kind.clone(),
+                objective,
+                depends_on: depends_on.clone(),
+                agent_role: workflow_plan_import_agent_role(&routine_kind),
+                input_refs: workflow_plan_import_input_refs(&depends_on),
+                output_contract: Some(workflow_plan_import_output_contract(step.notes.as_ref())),
+                metadata: Some(metadata),
+            });
+        }
+    }
+
+    if steps.is_empty() {
+        steps.push(crate::WorkflowPlanStep {
+            step_id: "import_bundle".to_string(),
+            kind: "import_bundle".to_string(),
+            objective: format!(
+                "Review imported workflow bundle `{}`.",
+                source_bundle_digest.chars().take(12).collect::<String>()
+            ),
+            depends_on: Vec::new(),
+            agent_role: "reviewer".to_string(),
+            input_refs: Vec::new(),
+            output_contract: Some(workflow_plan_import_output_contract(None)),
+            metadata: Some(json!({
+                "imported": true,
+                "source_bundle_digest": source_bundle_digest,
+                "source_plan_id": plan_package.plan_id,
+                "source_step_kind": "bundle_summary",
+            })),
+        });
+    }
+
+    steps
+}
+
+fn workflow_plan_from_import_preview(
+    preview: &compiler_api::PlanPackageImportPreview,
+    workspace_root: &str,
+) -> crate::WorkflowPlan {
+    let mission_goal = preview.plan_package.mission.goal.clone();
+    let source_bundle_digest = preview.source_bundle_digest.clone();
+    let import_transform_log = preview.import_transform_log.clone();
+    let steps = workflow_plan_import_steps(&preview.plan_package, &source_bundle_digest);
+    let allowed_mcp_servers = preview
+        .plan_package
+        .connector_bindings
+        .iter()
+        .filter(|binding| {
+            binding
+                .binding_type
+                .trim()
+                .to_ascii_lowercase()
+                .contains("mcp")
+        })
+        .map(|binding| binding.binding_id.clone())
+        .collect::<Vec<_>>();
+    let requires_integrations = preview
+        .plan_package
+        .connector_intents
+        .iter()
+        .map(|intent| intent.capability.clone())
+        .collect::<Vec<_>>();
+    let original_prompt = if mission_goal.trim().is_empty() {
+        format!(
+            "Imported workflow bundle {}",
+            source_bundle_digest.chars().take(12).collect::<String>()
+        )
+    } else {
+        mission_goal.clone()
+    };
+    crate::WorkflowPlan {
+        plan_id: preview.plan_package.plan_id.clone(),
+        planner_version: "workflow_plan_import_v1".to_string(),
+        plan_source: "workflow_plan_import".to_string(),
+        original_prompt: original_prompt.clone(),
+        normalized_prompt: original_prompt.clone(),
+        confidence: "imported".to_string(),
+        title: workflow_plan_import_title(&mission_goal, &source_bundle_digest),
+        description: preview.plan_package.mission.summary.clone(),
+        schedule: compiler_api::manual_schedule(
+            "UTC".to_string(),
+            crate::RoutineMisfirePolicy::RunOnce,
+        ),
+        execution_target: "automation_v2".to_string(),
+        workspace_root: workspace_root.to_string(),
+        steps,
+        requires_integrations,
+        allowed_mcp_servers,
+        operator_preferences: Some(json!({
+            "source_kind": "imported_bundle",
+            "source_bundle_digest": source_bundle_digest,
+            "source_plan_id": preview.plan_package.plan_id,
+        })),
+        save_options: json!({
+            "origin": "workflow_plan_import",
+            "source_kind": "imported_bundle",
+            "source_bundle_digest": source_bundle_digest.clone(),
+            "source_plan_id": preview.plan_package.plan_id.clone(),
+            "import_transform_log": import_transform_log.clone(),
+        }),
+    }
+}
+
+fn workflow_plan_import_draft(
+    preview: &compiler_api::PlanPackageImportPreview,
+    workspace_root: &str,
+) -> crate::WorkflowPlanDraftRecord {
+    let plan = workflow_plan_from_import_preview(preview, workspace_root);
+    let now = crate::now_ms();
+    let source_bundle_digest = preview.source_bundle_digest.clone();
+    let import_transform_log = preview.import_transform_log.clone();
+    let derived_scope_snapshot = preview.derived_scope_snapshot.clone();
+    let conversation = crate::WorkflowPlanConversation {
+        conversation_id: format!("wfchat-{}", Uuid::new_v4()),
+        plan_id: plan.plan_id.clone(),
+        created_at_ms: now,
+        updated_at_ms: now,
+        messages: vec![crate::WorkflowPlanChatMessage {
+            role: "system".to_string(),
+            text: format!(
+                "Imported workflow bundle `{}` from plan `{}`. Review and revise before applying.",
+                source_bundle_digest, preview.plan_package.plan_id
+            ),
+            created_at_ms: now,
+        }],
+    };
+    crate::WorkflowPlanDraftRecord {
+        initial_plan: plan.clone(),
+        current_plan: plan,
+        plan_revision: 1,
+        conversation,
+        planner_diagnostics: Some(json!({
+            "source_kind": "imported_bundle",
+            "source_bundle_digest": source_bundle_digest.clone(),
+            "import_transform_log": import_transform_log.clone(),
+            "derived_scope_snapshot": derived_scope_snapshot.clone(),
+        })),
+        last_success_materialization: None,
+    }
 }
 
 async fn compile_preview_plan_overlap(
@@ -312,6 +650,8 @@ fn workflow_planner_session_list_item(
         title: session.title.clone(),
         project_slug: session.project_slug.clone(),
         workspace_root: session.workspace_root.clone(),
+        source_kind: session.source_kind.clone(),
+        source_bundle_digest: session.source_bundle_digest.clone(),
         current_plan_id: session.current_plan_id.clone(),
         created_at_ms: session.created_at_ms,
         updated_at_ms: session.updated_at_ms,
@@ -971,6 +1311,8 @@ pub(super) async fn workflow_planner_session_create(
             .map(str::trim)
             .unwrap_or("")
             .to_string(),
+        source_kind: default_workflow_planner_source_kind(),
+        source_bundle_digest: None,
         current_plan_id: None,
         draft: None,
         goal: input.goal.unwrap_or_default(),
@@ -982,6 +1324,9 @@ pub(super) async fn workflow_planner_session_create(
             .unwrap_or_else(|| "coding_task_planning".to_string()),
         allowed_mcp_servers: input.allowed_mcp_servers,
         operator_preferences: input.operator_preferences,
+        import_validation: None,
+        import_transform_log: Vec::new(),
+        import_scope_snapshot: None,
         published_at_ms: None,
         published_tasks: Vec::new(),
         created_at_ms: now,
@@ -1186,6 +1531,7 @@ pub(super) async fn workflow_planner_session_duplicate(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("Copy of {}", source.title));
+    next.source_kind = workflow_planner_session_fork_source_kind(&source.source_kind);
     next.created_at_ms = now;
     next.updated_at_ms = now;
     if let Some(draft) = source.draft.as_ref() {
@@ -1616,6 +1962,7 @@ pub(super) async fn workflow_plan_apply(
 async fn workflow_plan_import_inner(
     State(state): State<AppState>,
     Json(input): Json<WorkflowPlanImportRequest>,
+    persist: bool,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let report = compiler_api::validate_plan_package_bundle(&input.bundle);
     if !report.compatible {
@@ -1636,16 +1983,94 @@ async fn workflow_plan_import_inner(
         input.creator_id.as_deref().unwrap_or("workflow_planner"),
     );
     let plan_package_validation = compiler_api::validate_plan_package(&import_preview.plan_package);
+    let plan_package_preview = import_preview.plan_package.clone();
+    let source_bundle_digest = import_preview.source_bundle_digest.clone();
+    let derived_scope_snapshot = import_preview.derived_scope_snapshot.clone();
+    let import_transform_log = import_preview.import_transform_log.clone();
+    let source_plan_id = import_preview.plan_package.plan_id.clone();
+    let imported_goal = import_preview.plan_package.mission.goal.clone();
+    let summary = workflow_plan_import_summary(&plan_package_preview);
+    if !persist {
+        return Ok(Json(json!({
+            "ok": true,
+            "persisted": false,
+            "bundle": input.bundle,
+            "import_validation": report,
+            "plan_package_preview": plan_package_preview,
+            "plan_package_validation": plan_package_validation,
+            "derived_scope_snapshot": derived_scope_snapshot,
+            "summary": summary,
+            "import_transform_log": import_transform_log,
+            "import_source_bundle_digest": source_bundle_digest,
+        })));
+    }
+
+    let project_slug = input
+        .project_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("workflow-imports")
+        .to_string();
+    let draft = workflow_plan_import_draft(&import_preview, &workspace_root);
+    let session = WorkflowPlannerSessionRecord {
+        session_id: format!("wfplan-session-{}", Uuid::new_v4()),
+        project_slug,
+        title: input
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| workflow_plan_import_title(&imported_goal, &source_bundle_digest)),
+        workspace_root,
+        source_kind: "imported_bundle".to_string(),
+        source_bundle_digest: Some(source_bundle_digest.clone()),
+        current_plan_id: Some(draft.current_plan.plan_id.clone()),
+        draft: Some(draft),
+        goal: imported_goal.clone(),
+        notes: import_transform_log.join("\n"),
+        planner_provider: String::new(),
+        planner_model: String::new(),
+        plan_source: "workflow_plan_import".to_string(),
+        allowed_mcp_servers: Vec::new(),
+        operator_preferences: Some(json!({
+            "source_kind": "imported_bundle",
+            "source_bundle_digest": source_bundle_digest.clone(),
+            "source_plan_id": source_plan_id.clone(),
+        })),
+        import_validation: Some(report.clone()),
+        import_transform_log: import_transform_log.clone(),
+        import_scope_snapshot: Some(derived_scope_snapshot.clone()),
+        published_at_ms: None,
+        published_tasks: Vec::new(),
+        created_at_ms: crate::now_ms(),
+        updated_at_ms: crate::now_ms(),
+    };
+    let stored = state
+        .put_workflow_planner_session(session)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "WORKFLOW_PLAN_INVALID",
+                })),
+            )
+        })?;
     Ok(Json(json!({
         "ok": true,
+        "persisted": true,
         "bundle": input.bundle,
         "import_validation": report,
-        "plan_package_preview": import_preview.plan_package,
+        "plan_package_preview": plan_package_preview,
         "plan_package_validation": plan_package_validation,
-        "derived_scope_snapshot": import_preview.derived_scope_snapshot,
-        "summary": workflow_plan_import_summary(&import_preview.plan_package),
-        "import_transform_log": import_preview.import_transform_log,
-        "import_source_bundle_digest": import_preview.source_bundle_digest,
+        "derived_scope_snapshot": derived_scope_snapshot,
+        "summary": summary,
+        "import_transform_log": import_transform_log,
+        "import_source_bundle_digest": source_bundle_digest,
+        "session": stored,
     })))
 }
 
@@ -1653,14 +2078,14 @@ pub(super) async fn workflow_plan_import(
     State(state): State<AppState>,
     Json(input): Json<WorkflowPlanImportRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    workflow_plan_import_inner(State(state), Json(input)).await
+    workflow_plan_import_inner(State(state), Json(input), true).await
 }
 
 pub(super) async fn workflow_plan_import_preview(
     State(state): State<AppState>,
     Json(input): Json<WorkflowPlanImportRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    workflow_plan_import_inner(State(state), Json(input)).await
+    workflow_plan_import_inner(State(state), Json(input), false).await
 }
 
 async fn export_workflow_plan_to_pack_builder(

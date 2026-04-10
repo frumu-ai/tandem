@@ -3107,6 +3107,65 @@ async fn automations_v2_run_recover_from_pause_preserves_completed_state_and_rec
 }
 
 #[tokio::test]
+async fn automations_v2_run_recover_from_stale_pause_clears_pending_outputs_and_attempts() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-stale-pause-recover").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Paused;
+            row.pause_reason = Some("stale_no_provider_activity".to_string());
+            row.checkpoint.completed_nodes = vec!["draft".to_string()];
+            row.checkpoint.pending_nodes = vec!["review".to_string(), "approval".to_string()];
+            row.checkpoint
+                .node_outputs
+                .insert("draft".to_string(), json!({"summary":"draft"}));
+            row.checkpoint.node_outputs.insert(
+                "review".to_string(),
+                json!({
+                    "status": "needs_repair",
+                    "blocked_reason": "node execution stalled after no provider activity for at least 300s"
+                }),
+            );
+            row.checkpoint.node_attempts.insert("draft".to_string(), 2);
+            row.checkpoint.node_attempts.insert("review".to_string(), 2);
+            row.checkpoint.node_attempts.insert("approval".to_string(), 1);
+        })
+        .await
+        .expect("updated run");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/recover", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "reason": "recover stale pause" }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let recovered = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after recover");
+    assert_eq!(recovered.status, crate::AutomationRunStatus::Queued);
+    assert!(recovered.checkpoint.node_outputs.contains_key("draft"));
+    assert!(!recovered.checkpoint.node_outputs.contains_key("review"));
+    assert!(recovered.checkpoint.node_attempts.get("draft") == Some(&2));
+    assert!(recovered.checkpoint.node_attempts.get("review").is_none());
+    assert!(recovered.checkpoint.node_attempts.get("approval").is_none());
+}
+
+#[tokio::test]
 async fn automations_v2_run_recover_allows_completed_runs_with_blocked_node_evidence() {
     let state = test_state().await;
     let app = app_router(state.clone());

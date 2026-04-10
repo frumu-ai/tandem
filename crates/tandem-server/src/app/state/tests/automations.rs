@@ -2487,6 +2487,140 @@ async fn stale_running_automation_runs_are_paused_and_release_scheduler_capacity
 }
 
 #[tokio::test]
+async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
+    let automation = AutomationV2Spec {
+        automation_id: "auto-stale-run-repairable-test".to_string(),
+        name: "Stale Run Repairable Test".to_string(),
+        description: None,
+        status: AutomationV2Status::Active,
+        schedule: AutomationV2Schedule {
+            schedule_type: AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: AutomationFlowSpec {
+            nodes: vec![AutomationFlowNode {
+                knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+                node_id: "cluster_topics".to_string(),
+                agent_id: "writer".to_string(),
+                objective: "Cluster the findings".to_string(),
+                depends_on: Vec::new(),
+                input_refs: Vec::new(),
+                output_contract: None,
+                retry_policy: None,
+                timeout_ms: None,
+                stage_kind: None,
+                gate: None,
+                metadata: None,
+            }],
+        },
+        execution: AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp/stale-run-repairable-workspace".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let state = ready_test_state().await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let run_id = run.run_id.clone();
+    state
+        .claim_specific_automation_v2_run(&run_id)
+        .await
+        .expect("claim run");
+    let session_id = "session-stale-run-repairable-test";
+    let cancellation = state.cancellations.create(session_id).await;
+    state
+        .add_automation_v2_session(&run_id, session_id)
+        .await
+        .expect("attach session");
+    {
+        let mut guard = state.automation_v2_runs.write().await;
+        let persisted = guard.get_mut(&run_id).expect("persisted run");
+        persisted.checkpoint.pending_nodes = vec!["cluster_topics".to_string()];
+        persisted
+            .checkpoint
+            .node_attempts
+            .insert("cluster_topics".to_string(), 1);
+        persisted.checkpoint.lifecycle_history.push(
+            crate::automation_v2::types::AutomationLifecycleRecord {
+                event: "run_started".to_string(),
+                recorded_at_ms: now_ms().saturating_sub(180_000),
+                reason: None,
+                stop_kind: None,
+                metadata: None,
+            },
+        );
+        persisted.checkpoint.lifecycle_history.push(
+            crate::automation_v2::types::AutomationLifecycleRecord {
+                event: "node_started".to_string(),
+                recorded_at_ms: now_ms().saturating_sub(180_000),
+                reason: Some("node `cluster_topics` started".to_string()),
+                stop_kind: None,
+                metadata: Some(json!({
+                    "node_id": "cluster_topics",
+                    "attempt": 1,
+                })),
+            },
+        );
+    }
+
+    let reaped = state.reap_stale_running_automation_runs(120_000).await;
+    assert_eq!(reaped, 1);
+
+    let persisted = state
+        .get_automation_v2_run(&run_id)
+        .await
+        .expect("persisted run");
+    assert_eq!(persisted.status, AutomationRunStatus::Paused);
+    assert!(persisted
+        .detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("repairable node(s): cluster_topics")));
+    let output = persisted
+        .checkpoint
+        .node_outputs
+        .get("cluster_topics")
+        .expect("repairable output");
+    assert_eq!(
+        output.get("status").and_then(Value::as_str),
+        Some("needs_repair")
+    );
+    assert!(output
+        .get("blocked_reason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| reason.contains("no provider activity")));
+    assert_eq!(
+        persisted
+            .checkpoint
+            .last_failure
+            .as_ref()
+            .map(|failure| failure.node_id.as_str()),
+        Some("cluster_topics")
+    );
+    assert!(cancellation.is_cancelled());
+}
+
+#[tokio::test]
 async fn stale_running_automation_runs_ignore_recent_session_activity() {
     let automation = AutomationV2Spec {
         automation_id: "auto-stale-session-activity-test".to_string(),

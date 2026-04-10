@@ -4,6 +4,13 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.4.22 (Unreleased)
 
+- **Workflow import, Workflow Center, and agent teaching**
+  - Durable workflow bundle import now persists a planner session with provenance, validation, and an embedded draft instead of staying preview-only.
+  - Added a Workflow Center surface so imported and saved workflow sessions can be browsed, reopened, and handed back into the planner.
+  - Updated the agent-facing guide path so `mcp_list` is the first discovery step and missing MCPs are surfaced honestly instead of being guessed.
+  - Corrected workflow docs so import is described as durable session creation, not automation arming.
+  - Improved stale-run recovery so stalled nodes are surfaced as repairable and recover clears stale pending outputs and attempts.
+
 - **Per-attempt forensic evidence**: Every automation attempt now generates a durable JSON forensic record, capturing full context for debugging and audit.
 - **Explicit node file contracts**: Workflow nodes can now declare explicit `input_files` and `output_files` at authoring time, overriding heuristic workspace inspection and providing clearer contract enforcement.
 - **Stale run handling**: Stale automation runs are now paused instead of failed, using a new `last_activity_at_ms` timestamp for more accurate detection.

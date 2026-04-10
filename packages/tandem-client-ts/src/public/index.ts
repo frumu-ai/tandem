@@ -1688,14 +1688,16 @@ export interface WorkflowPlanGetResponse {
 
 export interface WorkflowPlanImportPreviewResponse {
   ok?: boolean;
+  persisted?: boolean;
   bundle?: JsonObject;
   import_validation?: JsonObject;
   plan_package_preview?: JsonObject;
   plan_package_validation?: JsonObject;
   derived_scope_snapshot?: JsonObject;
   summary?: JsonObject;
-  import_transform_log?: JsonObject;
+  import_transform_log?: JsonValue[];
   import_source_bundle_digest?: string;
+  session?: WorkflowPlannerSessionRecord;
 }
 
 export type WorkflowPlanImportResponse = WorkflowPlanImportPreviewResponse;
@@ -1705,6 +1707,8 @@ export interface WorkflowPlannerSessionRecord {
   project_slug: string;
   title: string;
   workspace_root: string;
+  source_kind?: string;
+  source_bundle_digest?: string | null;
   current_plan_id?: string;
   draft?: WorkflowPlanDraftRecord;
   goal?: string;
@@ -1714,6 +1718,9 @@ export interface WorkflowPlannerSessionRecord {
   plan_source?: string;
   allowed_mcp_servers?: string[];
   operator_preferences?: JsonObject;
+  import_validation?: JsonObject | null;
+  import_transform_log?: string[];
+  import_scope_snapshot?: JsonObject | null;
   published_at_ms?: number | null;
   published_tasks?: JsonValue[];
   created_at_ms: number;
@@ -1726,6 +1733,8 @@ export interface WorkflowPlannerSessionListItem {
   title: string;
   project_slug: string;
   workspace_root: string;
+  source_kind?: string;
+  source_bundle_digest?: string | null;
   current_plan_id?: string;
   created_at_ms: number;
   updated_at_ms: number;

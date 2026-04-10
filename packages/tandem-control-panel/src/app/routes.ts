@@ -7,6 +7,7 @@ export type RouteId =
   | "dashboard"
   | "chat"
   | "planner"
+  | "workflows"
   | "studio"
   | "automations"
   | "coding"

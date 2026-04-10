@@ -131,6 +131,20 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
     sessionLabel,
     formatTimestampLabel,
   } = helpers;
+  const pendingRunAction = runActionMutation.isPending
+    ? String(runActionMutation.variables?.action || "").trim()
+    : "";
+  const pendingRunActionLabel =
+    pendingRunAction === "cancel"
+      ? "Cancelling..."
+      : pendingRunAction === "resume"
+        ? "Resuming..."
+        : pendingRunAction === "pause"
+          ? "Pausing..."
+          : "Working...";
+  const pendingRunActionMessage = pendingRunAction
+    ? `Waiting for ${pendingRunAction} request to finish.`
+    : "";
 
   if (!selectedRunId) return null;
 
@@ -188,9 +202,10 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                   runActionMutation.isPending
                 }
                 title={
-                  continueBlockedNodeId
+                  pendingRunActionMessage ||
+                  (continueBlockedNodeId
                     ? `Continue blocked task ${continueBlockedNodeId} with minimal reset`
-                    : "Select a blocked node to continue"
+                    : "Select a blocked node to continue")
                 }
               >
                 <i data-lucide="skip-forward"></i>
@@ -220,9 +235,10 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                   runActionMutation.isPending
                 }
                 title={
-                  runDebuggerRetryNodeId
+                  pendingRunActionMessage ||
+                  (runDebuggerRetryNodeId
                     ? `Retry selected task ${runDebuggerRetryNodeId}`
-                    : "Retry the whole run"
+                    : "Retry the whole run")
                 }
               >
                 <i data-lucide="rotate-ccw"></i>
@@ -272,7 +288,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                 title="Force stop this workflow run and clear active sessions"
               >
                 <i data-lucide="square"></i>
-                {runActionMutation.isPending ? "Cancelling..." : "Cancel"}
+                {runActionMutation.isPending ? pendingRunActionLabel : "Cancel"}
               </button>
             ) : null}
             <button className="tcp-btn h-8 w-full px-2 text-xs sm:w-auto" onClick={onRefresh}>

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workflow import and workflow cohesion**: Durable bundle import now persists a planner session with provenance, validation, and an embedded draft, and the control panel now has a Workflow Center surface for browsing and reopening stored workflow sessions.
+- **Agent workflow teaching**: Added a compact agent-facing operating manual and tightened the workflow/MCP docs so agents start with `mcp_list`, stop when required MCPs are missing, and treat import as durable session creation instead of automation arming.
+
 - **Per-attempt forensic evidence**: Every automation attempt now generates a durable JSON forensic record, capturing full context for debugging and audit.
 - **Explicit node file contracts**: Workflow nodes can now declare explicit `input_files` and `output_files` at authoring time, overriding heuristic workspace inspection and providing clearer contract enforcement.
 
@@ -21,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Workflow import docs mismatch**: The workflow docs now match the implementation by describing `POST /workflow-plans/import` as durable planner-session creation instead of immediate workspace persistence or automation arming.
 - **Clean-run workflow survival**: Write-required sessions no longer die on a fresh workspace just because the first `glob` returns empty; empty `glob` results now count as productive discovery and preparatory tool cycles get a retry instead of immediate termination.
 - **False-positive blocked/verify_failed workflow states**: Report-style artifacts can now describe blocked upstream conditions or failed tests without being misclassified as blocked/verify_failed when the node explicitly completed.
 - **Validation overreach on completed artifacts**: Structured completed outputs with materialized artifacts no longer get downgraded by secondary concrete-read heuristics or blocked-handoff cleanup logic.

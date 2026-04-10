@@ -46,6 +46,8 @@ The Tandem Engine tool registry currently exposes the following tools.
   - Input: none
   - Use this first when an agent needs to discover MCP access.
   - It returns a structured inventory in one result, which keeps the agent from carrying a full MCP tool dump in context unless it actually needs one.
+  - If the needed server or tool is missing, stop and tell the user to add or connect the MCP instead of inventing a capability.
+  - If a workflow request depends on an unavailable MCP, the right response is to ask for that MCP, not to silently switch to a different tool.
 - **`mcp_debug`**: Call an MCP tool directly by URL.
   - Input: `url` (string), `tool` (string), optional `args` (object), `headers` (object), `timeout_ms` (integer), `max_bytes` (integer)
   - Use this when you already know the MCP server URL and the tool name you want to invoke.

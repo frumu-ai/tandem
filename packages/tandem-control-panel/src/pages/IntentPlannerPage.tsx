@@ -172,6 +172,27 @@ function plannerPromptFromBrief(brief: IntentBriefDraft) {
     .join("\n");
 }
 
+const WORKFLOW_IMPORT_HANDOFF_KEY = "tandem.workflow.importHandoff.v1";
+
+function loadWorkflowImportHandoff() {
+  try {
+    const raw = localStorage.getItem(WORKFLOW_IMPORT_HANDOFF_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as {
+      session_id?: string;
+      title?: string;
+      project_slug?: string;
+      source_kind?: string;
+      source_bundle_digest?: string | null;
+      current_plan_id?: string | null;
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function IntentPlannerPage({
   api,
   client,
@@ -203,6 +224,9 @@ export function IntentPlannerPage({
   const [plannerDraftHydrated, setPlannerDraftHydrated] = useState(false);
   const [plannerDraftUpdatedAtMs, setPlannerDraftUpdatedAtMs] = useState<number | null>(null);
   const [plannerDraftRestored, setPlannerDraftRestored] = useState(false);
+  const [importedWorkflowSessionApplied, setImportedWorkflowSessionApplied] = useState("");
+  const [workflowImportHandoff, setWorkflowImportHandoff] =
+    useState<ReturnType<typeof loadWorkflowImportHandoff>>(null);
   const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
   const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
   const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
@@ -244,6 +268,14 @@ export function IntentPlannerPage({
       api(`/api/orchestrator/workspaces/list?dir=${encodeURIComponent(workspaceBrowserDir)}`, {
         method: "GET",
       }).catch(() => ({})),
+  });
+  const importedWorkflowSessionQuery = useQuery({
+    queryKey: ["intent-planner", "workflow-import-handoff", workflowImportHandoff?.session_id],
+    enabled: !!workflowImportHandoff?.session_id,
+    queryFn: () =>
+      client.workflowPlannerSessions
+        .get(String(workflowImportHandoff?.session_id || ""))
+        .catch(() => ({ session: null })),
   });
 
   const providerOptions = useMemo<PlannerProviderOption[]>(() => {
@@ -299,6 +331,10 @@ export function IntentPlannerPage({
   const workspaceDirectories = Array.isArray((workspaceBrowserQuery.data as any)?.directories)
     ? (workspaceBrowserQuery.data as any).directories
     : [];
+  const importedWorkflowSession = importedWorkflowSessionQuery.data?.session || null;
+  const importedWorkflowSourceKind = safeString(
+    importedWorkflowSession?.source_kind || workflowImportHandoff?.source_kind || ""
+  );
   const workspaceParentDir = String((workspaceBrowserQuery.data as any)?.parent || "").trim();
   const workspaceCurrentBrowseDir = String(
     (workspaceBrowserQuery.data as any)?.dir || workspaceBrowserDir || ""
@@ -331,6 +367,71 @@ export function IntentPlannerPage({
           }
     );
   }, [healthQuery.data]);
+
+  useEffect(() => {
+    setWorkflowImportHandoff(loadWorkflowImportHandoff());
+  }, []);
+
+  useEffect(() => {
+    if (!workflowImportHandoff?.session_id || !importedWorkflowSession) return;
+    if (importedWorkflowSession.session_id !== workflowImportHandoff.session_id) return;
+    if (importedWorkflowSessionApplied === importedWorkflowSession.session_id) return;
+
+    const importedPlan =
+      importedWorkflowSession.draft?.current_plan || importedWorkflowSession.draft?.initial_plan;
+    if (!importedPlan) return;
+
+    setBrief({
+      ...DEFAULT_BRIEF,
+      goal: safeString(
+        importedWorkflowSession.goal ||
+          importedWorkflowSession.title ||
+          importedPlan.original_prompt ||
+          importedPlan.title
+      ),
+      workspaceRoot: safeString(
+        importedWorkflowSession.workspace_root || importedPlan.workspace_root
+      ),
+      targetSurface: DEFAULT_BRIEF.targetSurface,
+      planningHorizon: DEFAULT_BRIEF.planningHorizon,
+      outputExpectations: safeString(importedPlan.description),
+      constraints: "",
+      plannerProvider: safeString(importedWorkflowSession.planner_provider),
+      plannerModel: safeString(importedWorkflowSession.planner_model),
+      selectedMcpServers: Array.isArray(importedPlan.allowed_mcp_servers)
+        ? importedPlan.allowed_mcp_servers.map((row: any) => safeString(row)).filter(Boolean)
+        : [],
+    });
+    setPlannerInput(
+      safeString(
+        importedWorkflowSession.goal ||
+          importedWorkflowSession.title ||
+          importedPlan.normalized_prompt ||
+          importedPlan.original_prompt
+      )
+    );
+    setPlanPreview(importedPlan);
+    setPlanningConversation(importedWorkflowSession.draft?.conversation || null);
+    setPlanningChangeSummary([]);
+    setPlannerError("");
+    setPlannerDiagnostics(
+      importedWorkflowSession.import_scope_snapshot ||
+        importedWorkflowSession.draft?.planner_diagnostics ||
+        null
+    );
+    setValidationReport(null);
+    setPlanPackage(null);
+    setPlanPackageBundle(null);
+    setPlanPackageReplay(null);
+    setOverlapAnalysis(null);
+    setTeachingLibrary(null);
+    setPlanningState("idle");
+    setPlannerDraftRestored(true);
+    setPlannerDraftHydrated(true);
+    setNamedDraftName(safeString(importedWorkflowSession.title || importedPlan.title));
+    setImportedWorkflowSessionApplied(importedWorkflowSession.session_id);
+    clearWorkflowImportHandoff(false);
+  }, [importedWorkflowSession, importedWorkflowSessionApplied, workflowImportHandoff?.session_id]);
 
   const resetLocalState = () => {
     clearPlannerDraft(draftKey);
@@ -726,8 +827,97 @@ export function IntentPlannerPage({
     toast("ok", "Deleted the autosaved planner state.");
   };
 
+  const clearWorkflowImportHandoff = (notify = true) => {
+    try {
+      localStorage.removeItem(WORKFLOW_IMPORT_HANDOFF_KEY);
+    } catch {
+      // Ignore storage failures.
+    }
+    setWorkflowImportHandoff(null);
+    if (notify) {
+      toast("ok", "Cleared the imported workflow handoff.");
+    }
+  };
+
   return (
     <AnimatedPage className="flex flex-col min-h-0 h-full overflow-hidden">
+      {workflowImportHandoff ? (
+        <PanelCard
+          title="Imported workflow handoff"
+          subtitle="This durable session was created from an imported bundle. Open the workflow center to inspect, revise, or continue it."
+          className="mb-4"
+          actions={
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="tcp-btn-secondary"
+                onClick={() => navigate("workflows")}
+              >
+                Open workflow center
+              </button>
+              <button
+                type="button"
+                className="tcp-btn-secondary"
+                onClick={() => clearWorkflowImportHandoff()}
+              >
+                Dismiss
+              </button>
+            </div>
+          }
+        >
+          <div className="grid gap-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={importedWorkflowSourceKind === "imported_bundle" ? "warn" : "info"}>
+                {importedWorkflowSourceKind || "imported_bundle"}
+              </Badge>
+              <Badge tone="ghost">{safeString(workflowImportHandoff.session_id)}</Badge>
+            </div>
+            <div className="grid gap-1 md:grid-cols-2">
+              <div>
+                <div className="tcp-subtle text-xs">Title</div>
+                <div>
+                  {safeString(
+                    importedWorkflowSession?.title ||
+                      workflowImportHandoff.title ||
+                      "Imported workflow"
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="tcp-subtle text-xs">Project</div>
+                <div>
+                  {safeString(
+                    importedWorkflowSession?.project_slug ||
+                      workflowImportHandoff.project_slug ||
+                      "workflow-imports"
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="tcp-subtle text-xs">Bundle digest</div>
+                <div>
+                  {safeString(
+                    importedWorkflowSession?.source_bundle_digest ||
+                      workflowImportHandoff.source_bundle_digest ||
+                      "—"
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="tcp-subtle text-xs">Current plan id</div>
+                <div>
+                  {safeString(
+                    importedWorkflowSession?.current_plan_id ||
+                      workflowImportHandoff.current_plan_id ||
+                      "—"
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </PanelCard>
+      ) : null}
+
       <div className="grid flex-1 gap-4 min-h-0 xl:grid-cols-[minmax(400px,0.8fr)_minmax(0,1.2fr)]">
         <div className="flex flex-col gap-4 min-h-0 h-full overflow-y-auto pr-1">
           <PanelCard

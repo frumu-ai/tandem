@@ -41,6 +41,41 @@ pub fn automation_last_activity_at_ms(run: &AutomationV2RunRecord) -> u64 {
         .unwrap_or(run.created_at_ms)
 }
 
+pub fn automation_in_progress_node_ids(run: &AutomationV2RunRecord) -> Vec<String> {
+    let mut in_progress = std::collections::HashSet::new();
+    for record in &run.checkpoint.lifecycle_history {
+        let Some(node_id) = record
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("node_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        match record.event.as_str() {
+            "node_started" => {
+                in_progress.insert(node_id.to_string());
+            }
+            "node_completed"
+            | "node_completed_with_warnings"
+            | "node_blocked"
+            | "node_repair_requested"
+            | "node_verify_failed"
+            | "node_failed"
+            | "node_skipped_no_work"
+            | "node_approval_rollback" => {
+                in_progress.remove(node_id);
+            }
+            _ => {}
+        }
+    }
+    let mut node_ids = in_progress.into_iter().collect::<Vec<_>>();
+    node_ids.sort();
+    node_ids
+}
+
 pub fn automation_lifecycle_event_metadata_for_node(
     node_id: &str,
     attempt: u32,
