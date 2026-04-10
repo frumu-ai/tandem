@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Marketplace presentation**: The marketplace navigation now reads as an external bridge to tandem.ac instead of a local store surface.
 
+### Fixed
+
+- **Definitive workflow stability overhaul (Phases 1–4)**:
+  - **Explicit completion signal always wins**: `node_output.rs` now prioritizes `{"status":"completed"}` JSON signals over all heuristic content scans. If a node emits that signal and the artifact is present on disk, the node is immediately marked completed regardless of what the artifact text contains (blocked-handoff phrases, test-failure language, or similar).
+  - **Artifact-gate fallback completion**: Nodes whose status JSON is missing or unparseable are still marked completed if the artifact exists on disk and was produced in the current attempt window, preventing orphaned runs from hanging indefinitely after sidecar restarts.
+  - **False-positive block suppression**: Secondary concrete-read audits and file-evidence content scans are now suppressed for nodes that already carry an explicit completed status, eliminating the class of false-positive `blocked` / `verify_failed` downgrades that could occur even after a model cleanly finished its work.
+  - **Bootstrap inference guard for synthesis nodes**: `enforcement.rs` now skips the `automation_node_inferred_bootstrap_required_files` inference for terminal synthesis/analysis nodes (`brief`, `report_markdown`, `text_summary`, `citations`) that have upstream dependencies. These nodes do not need to re-discover workspace files; their upstream nodes already did that. Chained bootstrap nodes (`structured_json`) continue inferring requirements as before.
+  - **Context-write path stripping for all node types**: `prompting_impl.rs` now strips internal `ctx:...` context-write IDs from upstream inputs for every node type, not just a specific subset. This prevents models from mistakenly treating those engine-internal identifiers as real filesystem write targets and hallucinating paths like `ctx:abc123`.
+  - **Research node write-flow enforcement**: Added a `Next Step` hint to research node prompts when evidence gathering is complete and a required artifact is declared, explicitly instructing the model to call `websearch` first and then `write` the artifact — reinforcing the evidence-before-artifact contract without requiring a repeat repair cycle.
+  - **Output-target exclusion from file requirements**: `must_write_files` no longer injects a node's own declared `output_targets` into its required-file list. A node should not be required to have its own output file present before it runs; that file is what it is supposed to create.
+
 ## [0.4.23] - Released 2026-04-11
 
 ### Fixed

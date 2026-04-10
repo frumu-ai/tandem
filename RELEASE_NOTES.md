@@ -7,6 +7,15 @@ This is the canonical release-notes file used by release tooling.
 - **Marketplace browse split**: The control panel marketplace is now browse-only and links out to tandem.ac, while the internal docs now define the public marketplace/server ownership split and launch sequence.
 - **Marketplace server contract**: Added internal planning docs for the tandem.ac marketplace server API, route ownership, catalog/search/detail behavior, and the control-panel handoff model.
 
+- **Definitive workflow stability overhaul**
+  - Explicit `{"status":"completed"}` signals from nodes now take absolute priority over all heuristic content scans. Nodes that signal completion and have an artifact on disk are marked completed immediately, regardless of what the artifact text contains.
+  - Nodes whose status JSON is absent or unparseable are still marked completed when the artifact exists on disk and was written in the current attempt window, preventing stalled runs after engine restarts.
+  - False-positive `blocked` and `verify_failed` downgrades are suppressed for nodes that already carry an explicit completed status. Secondary concrete-read audits and file-evidence content scans no longer override a node's own completion signal.
+  - Bootstrap file-requirement inference is now skipped for terminal synthesis nodes (`brief`, `report_markdown`, `text_summary`, `citations`) that have upstream dependencies. These nodes receive their evidence from upstream; they should not be asked to re-discover workspace files before running.
+  - Internal `ctx:...` context-write IDs are now stripped from upstream inputs for all node types before prompts are assembled, preventing models from hallucinating those engine-internal identifiers as filesystem write targets.
+  - Research nodes with a declared required artifact now receive an explicit `Next Step` hint instructing the model to call `websearch` before writing, reinforcing the evidence-before-artifact contract without triggering an additional repair cycle.
+  - A node's own declared `output_targets` are no longer injected into its required-file list, preventing the engine from treating a file the node is supposed to create as a file it must already have before starting.
+
 ## v0.4.23 (Released 2026-04-11)
 
 - **Vault unlock startup safety net**: The desktop unlock flow now keeps the splash visible until the React app reports it is actually ready, and startup crashes show a visible recovery screen instead of a blank window.
