@@ -544,7 +544,7 @@ fn detect_automation_blocker_category_prefers_delivery_category_from_canonical_e
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
-                "to": "evan@frumu.ai",
+                "to": "test@example.com",
                 "content_type": "text/html",
                 "inline_body_only": true,
                 "attachments": false
@@ -568,7 +568,7 @@ fn detect_automation_blocker_category_prefers_delivery_category_from_canonical_e
         detect_automation_blocker_category(
             &node,
             "blocked",
-            Some("email delivery to `evan@frumu.ai` was requested but no email draft/send tool executed"),
+            Some("email delivery to `test@example.com` was requested but no email draft/send tool executed"),
             &tool_telemetry,
             None,
         )
@@ -613,7 +613,7 @@ fn execute_goal_objective_with_gmail_draft_or_send_requires_email_delivery() {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
         node_id: "execute_goal".to_string(),
         agent_id: "operator".to_string(),
-        objective: "Create a Gmail draft or send the final HTML summary email to evan@frumu.ai if mail tools are available.".to_string(),
+        objective: "Create a Gmail draft or send the final HTML summary email to test@example.com if mail tools are available.".to_string(),
         depends_on: Vec::new(),
         input_refs: Vec::new(),
         output_contract: Some(AutomationFlowOutputContract {
@@ -639,7 +639,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
         node_id: "execute_goal".to_string(),
         agent_id: "operator".to_string(),
-        objective: "Create a Gmail draft or send the final HTML summary email to evan@frumu.ai if mail tools are available.".to_string(),
+        objective: "Create a Gmail draft or send the final HTML summary email to test@example.com if mail tools are available.".to_string(),
         depends_on: Vec::new(),
         input_refs: Vec::new(),
         output_contract: Some(AutomationFlowOutputContract {
@@ -687,7 +687,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
     assert_eq!(
         reason.as_deref(),
         Some(
-            "email delivery to `evan@frumu.ai` was requested but no email draft/send tool executed"
+            "email delivery to `test@example.com` was requested but no email draft/send tool executed"
         )
     );
     assert_eq!(approved, Some(true));
