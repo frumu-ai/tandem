@@ -6,6 +6,7 @@ This is the canonical release-notes file used by release tooling.
 
 - **Marketplace browse split**: The control panel marketplace is now browse-only and links out to tandem.ac, while the internal docs now define the public marketplace/server ownership split and launch sequence.
 - **Marketplace server contract**: Added internal planning docs for the tandem.ac marketplace server API, route ownership, catalog/search/detail behavior, and the control-panel handoff model.
+- **Desktop unlock startup progress visibility**: The desktop splash now listens to explicit backend startup events from vault unlock, keystore initialization, and sidecar boot so it stays on a live progress state instead of falling back to an empty waiting window.
 
 - **Definitive workflow stability overhaul**
   - Explicit `{"status":"completed"}` signals from nodes now take absolute priority over all heuristic content scans. Nodes that signal completion and have an artifact on disk are marked completed immediately, regardless of what the artifact text contains.

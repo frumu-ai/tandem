@@ -413,7 +413,7 @@ pub async fn set_active_project(
             // Restart with new workspace
             state
                 .sidecar
-                .start(sidecar_path.to_string_lossy().as_ref())
+                .start_with_app(Some(app.clone()), sidecar_path.to_string_lossy().as_ref())
                 .await?;
 
             tracing::info!("Sidecar restarted successfully");

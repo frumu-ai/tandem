@@ -218,6 +218,15 @@ pub async fn unlock_vault(
     // Store master key and mark as unlocked
     vault_state.set_master_key(master_key.clone());
 
+    crate::sidecar::emit_desktop_startup_progress(
+        Some(&app),
+        crate::sidecar::DesktopStartupStatus::Starting,
+        "vault_unlocked",
+        "Vault unlocked",
+        12,
+        Some("Master key restored".to_string()),
+    );
+
     // Initialize keystore in the background so vault unlock can return immediately.
     initialize_keystore_after_unlock(app.clone(), master_key.clone());
 

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Desktop unlock startup progress visibility**: The splash now listens to explicit backend startup events from vault unlock, keystore initialization, and sidecar boot so it stays on a live progress state instead of falling back to an empty waiting window.
 - **Definitive workflow stability overhaul (Phases 1–4)**:
   - **Explicit completion signal always wins**: `node_output.rs` now prioritizes `{"status":"completed"}` JSON signals over all heuristic content scans. If a node emits that signal and the artifact is present on disk, the node is immediately marked completed regardless of what the artifact text contains (blocked-handoff phrases, test-failure language, or similar).
   - **Artifact-gate fallback completion**: Nodes whose status JSON is missing or unparseable are still marked completed if the artifact exists on disk and was produced in the current attempt window, preventing orphaned runs from hanging indefinitely after sidecar restarts.

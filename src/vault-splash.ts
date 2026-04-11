@@ -3,12 +3,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import { DEFAULT_THEME_ID, getThemeById } from "./lib/themes";
 import type { ThemeId } from "./types/theme";
 
 const MIN_PIN_LENGTH = 4;
 const MAX_PIN_LENGTH = 4;
 const APP_READY_EVENT = "tandem-app-ready";
+const DESKTOP_STARTUP_PROGRESS_EVENT = "desktop-startup-progress";
 
 let currentPin = "";
 let confirmPin = "";
@@ -16,8 +18,21 @@ let isCreateMode = false;
 let isConfirmStep = false;
 let isLoading = false;
 let unlockWatchdog: number | null = null;
+let backendReady = false;
+let backendFailed = false;
+let sawBackendProgress = false;
+let splashDismissed = false;
 
 type VaultStatus = "not_created" | "locked" | "unlocked";
+type DesktopStartupStatus = "starting" | "ready" | "failed";
+
+interface DesktopStartupProgress {
+  status: DesktopStartupStatus;
+  phase: string;
+  message: string;
+  percent: number;
+  detail?: string | null;
+}
 
 function parseRgb(color: string): { r: number; g: number; b: number } | null {
   const c = color.trim();
@@ -50,6 +65,9 @@ function parseRgb(color: string): { r: number; g: number; b: number } | null {
 }
 
 function dismissSplashScreen() {
+  if (splashDismissed) return;
+  splashDismissed = true;
+
   const splash = document.getElementById("splash-screen");
   if (!splash) return;
 
@@ -61,6 +79,54 @@ function dismissSplashScreen() {
   }
 
   window.setTimeout(() => splash.remove(), 500);
+}
+
+function attemptDismissSplash() {
+  if (backendFailed) return;
+  if ((window as any).__tandemAppReady && backendReady) {
+    dismissSplashScreen();
+  }
+}
+
+function updateProgressBars(percent: number) {
+  const clamped = Math.max(0, Math.min(100, percent));
+  progressBars.forEach((bar, index) => {
+    const threshold = (index + 1) * 20;
+    const active = clamped >= threshold;
+    bar.style.opacity = active ? "1" : clamped >= threshold - 10 ? "0.65" : "0.25";
+    bar.style.background = active ? "var(--matrix-green)" : "rgba(var(--matrix-green-rgb), 0.18)";
+  });
+}
+
+function renderStartupProgress(progress: DesktopStartupProgress) {
+  sawBackendProgress = true;
+  backendReady = progress.status === "ready";
+  backendFailed = progress.status === "failed";
+
+  const percent = Math.max(0, Math.min(100, Math.round(progress.percent)));
+  updateProgressBars(percent);
+
+  loadingSection.style.display = "flex";
+
+  if (progress.status === "failed") {
+    loadingText.style.color = "var(--error-red)";
+  } else {
+    loadingText.style.color = "var(--matrix-green)";
+  }
+
+  loadingText.textContent = "";
+  loadingText.append(document.createTextNode(progress.message));
+  loadingText.append(document.createTextNode(` · ${percent}%`));
+
+  if (progress.detail) {
+    loadingText.append(document.createTextNode(` · ${progress.detail}`));
+  }
+
+  const dots = document.createElement("span");
+  dots.className = "loading-dots";
+  loadingText.append(dots);
+
+  attemptDismissSplash();
 }
 
 function applySplashTheme() {
@@ -176,7 +242,7 @@ window.addEventListener(
   APP_READY_EVENT,
   () => {
     (window as any).__tandemAppReady = true;
-    dismissSplashScreen();
+    attemptDismissSplash();
   },
   { once: true }
 );
@@ -190,10 +256,33 @@ const pinDots = document.getElementById("pin-dots")!;
 const pinError = document.getElementById("pin-error")!;
 const pinConfirmHint = document.getElementById("pin-confirm-hint")!;
 const loadingText = document.getElementById("loading-text")!;
+const progressBars = Array.from(document.querySelectorAll<HTMLElement>(".progress-bar"));
 
 // Theme + matrix start (must happen before we begin interactions)
 applySplashTheme();
 startMatrixRain();
+
+void (async () => {
+  try {
+    const sidecarStatus = (await invoke("get_sidecar_status")) as string;
+    if (sidecarStatus === "running") {
+      renderStartupProgress({
+        status: "ready",
+        phase: "sidecar_ready",
+        message: "Tandem engine ready",
+        percent: 100,
+        detail: "Backend already running",
+      });
+    }
+  } catch {
+    // Best-effort only. The unlock flow will emit explicit progress events.
+  }
+})();
+
+void listen<DesktopStartupProgress>(DESKTOP_STARTUP_PROGRESS_EVENT, (event) => {
+  const progress = event.payload;
+  renderStartupProgress(progress);
+}).catch(() => {});
 
 function updatePinDots() {
   const dots = pinDots.querySelectorAll(".pin-dot");
@@ -273,8 +362,14 @@ async function submitPin() {
   setLoading(true);
   clearUnlockWatchdog();
   unlockWatchdog = window.setTimeout(() => {
-    if (isLoading) {
-      loadingText.innerHTML = 'Starting Tandem<span class="loading-dots"></span>';
+    if (isLoading && !sawBackendProgress) {
+      renderStartupProgress({
+        status: "starting",
+        phase: "startup_fallback",
+        message: "Starting Tandem",
+        percent: 60,
+        detail: "Waiting for backend progress",
+      });
     }
   }, 5000);
 
@@ -306,7 +401,13 @@ async function submitPin() {
       await invoke("create_vault", { pin: currentPin });
       (window as any).__vaultUnlocked = true;
       clearUnlockWatchdog();
-      loadingText.innerHTML = 'Starting Tandem<span class="loading-dots"></span>';
+      renderStartupProgress({
+        status: "starting",
+        phase: "vault_created",
+        message: "Vault created",
+        percent: 12,
+        detail: "Preparing secure storage",
+      });
     } else {
       // Unlock existing vault
       loadingText.innerHTML = 'Unlocking vault<span class="loading-dots"></span>';
@@ -316,7 +417,13 @@ async function submitPin() {
       await invoke("unlock_vault", { pin: currentPin });
       (window as any).__vaultUnlocked = true;
       clearUnlockWatchdog();
-      loadingText.innerHTML = 'Starting Tandem<span class="loading-dots"></span>';
+      renderStartupProgress({
+        status: "starting",
+        phase: "vault_unlocked",
+        message: "Vault unlocked",
+        percent: 12,
+        detail: "Launching backend process",
+      });
     }
 
     // Success! The React app will handle the rest

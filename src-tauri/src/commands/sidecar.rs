@@ -15,11 +15,27 @@ async fn start_sidecar_inner(app: &AppHandle, state: &AppState) -> Result<u16> {
             .stream_hub
             .start(app.clone(), state.sidecar.clone())
             .await?;
+        crate::sidecar::emit_desktop_startup_progress(
+            Some(app),
+            crate::sidecar::DesktopStartupStatus::Ready,
+            "sidecar_ready",
+            "Tandem engine ready",
+            100,
+            Some("Sidecar already running".to_string()),
+        );
         return state.sidecar.port().await.ok_or_else(|| {
             TandemError::Sidecar("Sidecar running but no port assigned".to_string())
         });
     }
     if initial_state == SidecarState::Starting {
+        crate::sidecar::emit_desktop_startup_progress(
+            Some(app),
+            crate::sidecar::DesktopStartupStatus::Starting,
+            "sidecar_waiting",
+            "Waiting for Tandem engine",
+            72,
+            Some("Another startup is already in progress".to_string()),
+        );
         // Another caller is already starting it; wait briefly for port assignment.
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -28,6 +44,14 @@ async fn start_sidecar_inner(app: &AppHandle, state: &AppState) -> Result<u16> {
                     .stream_hub
                     .start(app.clone(), state.sidecar.clone())
                     .await?;
+                crate::sidecar::emit_desktop_startup_progress(
+                    Some(app),
+                    crate::sidecar::DesktopStartupStatus::Ready,
+                    "sidecar_ready",
+                    "Tandem engine ready",
+                    100,
+                    Some("Startup completed by another caller".to_string()),
+                );
                 return state.sidecar.port().await.ok_or_else(|| {
                     TandemError::Sidecar("Sidecar running but no port assigned".to_string())
                 });
@@ -66,7 +90,7 @@ async fn start_sidecar_inner(app: &AppHandle, state: &AppState) -> Result<u16> {
     // Start the sidecar
     state
         .sidecar
-        .start(sidecar_path.to_string_lossy().as_ref())
+        .start_with_app(Some(app.clone()), sidecar_path.to_string_lossy().as_ref())
         .await?;
 
     // Push runtime-only provider auth immediately after sidecar startup.

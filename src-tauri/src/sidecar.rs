@@ -18,6 +18,7 @@ use tandem_core::{
 };
 use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
 use tandem_skills::{SkillContent, SkillInfo, SkillLocation, SkillTemplateInfo};
+use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, RwLock};
 
 #[cfg(windows)]
@@ -171,6 +172,47 @@ pub struct SidecarStartupHealth {
     pub last_error: Option<String>,
     pub build_id: Option<String>,
     pub binary_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopStartupStatus {
+    Starting,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DesktopStartupProgress {
+    pub status: DesktopStartupStatus,
+    pub phase: String,
+    pub message: String,
+    pub percent: u8,
+    pub detail: Option<String>,
+}
+
+pub const DESKTOP_STARTUP_PROGRESS_EVENT: &str = "desktop-startup-progress";
+
+pub fn emit_desktop_startup_progress(
+    app: Option<&AppHandle>,
+    status: DesktopStartupStatus,
+    phase: impl Into<String>,
+    message: impl Into<String>,
+    percent: u8,
+    detail: Option<String>,
+) {
+    let Some(app) = app else {
+        return;
+    };
+
+    let payload = DesktopStartupProgress {
+        status,
+        phase: phase.into(),
+        message: message.into(),
+        percent: percent.min(100),
+        detail,
+    };
+    let _ = app.emit(DESKTOP_STARTUP_PROGRESS_EVENT, payload);
 }
 
 fn default_health_ready() -> bool {
@@ -2574,11 +2616,23 @@ impl SidecarManager {
 
     /// Start the sidecar process
     pub async fn start(&self, sidecar_path: &str) -> Result<()> {
+        self.start_with_app(None, sidecar_path).await
+    }
+
+    pub async fn start_with_app(&self, app: Option<AppHandle>, sidecar_path: &str) -> Result<()> {
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
 
         {
             let state = self.state.read().await;
             if *state == SidecarState::Running {
+                emit_desktop_startup_progress(
+                    app.as_ref(),
+                    DesktopStartupStatus::Ready,
+                    "sidecar_ready",
+                    "Tandem engine ready",
+                    100,
+                    Some("Sidecar already running".to_string()),
+                );
                 tracing::debug!("Sidecar already running");
                 return Ok(());
             }
@@ -2588,6 +2642,15 @@ impl SidecarManager {
             let mut state = self.state.write().await;
             *state = SidecarState::Starting;
         }
+
+        emit_desktop_startup_progress(
+            app.as_ref(),
+            DesktopStartupStatus::Starting,
+            "sidecar_starting",
+            "Starting Tandem engine",
+            60,
+            Some("Launching backend process".to_string()),
+        );
 
         tracing::info!("Starting tandem-engine sidecar from: {}", sidecar_path);
         {
@@ -2606,6 +2669,14 @@ impl SidecarManager {
         if config.shared_mode {
             if let Ok(health) = self.health_check(port).await {
                 if health.ready {
+                    emit_desktop_startup_progress(
+                        app.as_ref(),
+                        DesktopStartupStatus::Ready,
+                        "sidecar_ready",
+                        "Tandem engine ready",
+                        100,
+                        Some(format!("port={}", port)),
+                    );
                     {
                         let mut port_guard = self.port.write().await;
                         *port_guard = Some(port);
@@ -2624,6 +2695,17 @@ impl SidecarManager {
                     );
                     return Ok(());
                 }
+                emit_desktop_startup_progress(
+                    app.as_ref(),
+                    DesktopStartupStatus::Starting,
+                    "sidecar_waiting",
+                    "Waiting for shared Tandem engine",
+                    70,
+                    Some(format!(
+                        "port={} phase={} elapsed_ms={}",
+                        port, health.phase, health.startup_elapsed_ms
+                    )),
+                );
                 tracing::info!(
                     "Existing tandem-engine on port {} is healthy but not ready yet (phase={} elapsed_ms={})",
                     port,
@@ -2829,8 +2911,16 @@ impl SidecarManager {
         }
 
         // Wait for sidecar to be ready
-        match self.wait_for_ready(port).await {
+        match self.wait_for_ready(app.as_ref(), port).await {
             Ok(_) => {
+                emit_desktop_startup_progress(
+                    app.as_ref(),
+                    DesktopStartupStatus::Ready,
+                    "sidecar_ready",
+                    "Tandem engine ready",
+                    100,
+                    Some(format!("port={}", port)),
+                );
                 let mut state = self.state.write().await;
                 *state = SidecarState::Running;
                 tracing::info!("tandem-engine sidecar started on port {}", port);
@@ -2870,6 +2960,14 @@ impl SidecarManager {
                     let mut job_guard = self.windows_job.lock().await;
                     *job_guard = None;
                 }
+                emit_desktop_startup_progress(
+                    app.as_ref(),
+                    DesktopStartupStatus::Failed,
+                    "sidecar_failed",
+                    "Tandem engine failed to start",
+                    0,
+                    Some(e.to_string()),
+                );
                 let mut state = self.state.write().await;
                 *state = SidecarState::Failed;
                 Err(e)
@@ -3062,11 +3160,19 @@ impl SidecarManager {
     }
 
     /// Wait for the sidecar to be ready
-    async fn wait_for_ready(&self, port: u16) -> Result<()> {
+    async fn wait_for_ready(&self, app: Option<&AppHandle>, port: u16) -> Result<()> {
         let start = Instant::now();
         let timeout = self.startup_wait_timeout();
 
         tracing::debug!("Waiting for sidecar to be ready on port {}", port);
+        emit_desktop_startup_progress(
+            app,
+            DesktopStartupStatus::Starting,
+            "sidecar_waiting",
+            "Booting Tandem engine",
+            72,
+            Some(format!("port={} timeout_ms={}", port, timeout.as_millis())),
+        );
         emit_event(
             tracing::Level::INFO,
             ProcessKind::Desktop,
@@ -3147,6 +3253,8 @@ impl SidecarManager {
                     return Ok(());
                 }
                 Ok(health) => {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    let percent = 72u8.saturating_add(((elapsed_ms / 1000) as u8).min(22));
                     last_error = format!(
                         "Engine starting: phase={} attempt_id={} elapsed_ms={}{}",
                         health.phase,
@@ -3185,6 +3293,17 @@ impl SidecarManager {
                         );
                         last_progress_emit = Instant::now();
                     }
+                    emit_desktop_startup_progress(
+                        app,
+                        DesktopStartupStatus::Starting,
+                        "sidecar_waiting",
+                        "Booting Tandem engine",
+                        percent.min(95),
+                        Some(format!(
+                            "phase={} attempt_id={} elapsed_ms={}",
+                            health.phase, health.startup_attempt_id, health.startup_elapsed_ms
+                        )),
+                    );
                 }
                 Err(e) => {
                     last_error = e.to_string();
@@ -3226,6 +3345,14 @@ impl SidecarManager {
                     last_error
                 )),
             },
+        );
+        emit_desktop_startup_progress(
+            app,
+            DesktopStartupStatus::Failed,
+            "sidecar_timeout",
+            "Tandem engine startup timed out",
+            0,
+            Some(last_error.clone()),
         );
         tracing::error!("Sidecar failed to start. Last error: {}", last_error);
         Err(TandemError::Sidecar(format!(

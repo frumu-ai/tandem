@@ -9,6 +9,14 @@ pub fn get_vault_status(vault_state: State<'_, VaultState>) -> VaultStatus {
 }
 
 fn initialize_keystore_after_unlock(app: AppHandle, master_key: Vec<u8>) {
+    crate::sidecar::emit_desktop_startup_progress(
+        Some(&app),
+        crate::sidecar::DesktopStartupStatus::Starting,
+        "keystore_initializing",
+        "Preparing secure storage",
+        28,
+        Some("Restoring local credentials".to_string()),
+    );
     tauri::async_runtime::spawn(async move {
         let app_clone = app.clone();
         let init_result = tauri::async_runtime::spawn_blocking(move || {
@@ -17,13 +25,41 @@ fn initialize_keystore_after_unlock(app: AppHandle, master_key: Vec<u8>) {
         .await;
 
         match init_result {
-            Ok(()) => tracing::info!("Keystore initialization complete"),
-            Err(err) => tracing::error!("Keystore initialization task failed: {}", err),
+            Ok(()) => {
+                crate::sidecar::emit_desktop_startup_progress(
+                    Some(&app),
+                    crate::sidecar::DesktopStartupStatus::Starting,
+                    "keystore_ready",
+                    "Secure storage ready",
+                    45,
+                    Some("Keystore initialization complete".to_string()),
+                );
+                tracing::info!("Keystore initialization complete");
+            }
+            Err(err) => {
+                crate::sidecar::emit_desktop_startup_progress(
+                    Some(&app),
+                    crate::sidecar::DesktopStartupStatus::Failed,
+                    "keystore_failed",
+                    "Secure storage initialization failed",
+                    0,
+                    Some(err.to_string()),
+                );
+                tracing::error!("Keystore initialization task failed: {}", err);
+            }
         }
     });
 }
 
 fn spawn_sidecar_start_in_background(app: AppHandle) {
+    crate::sidecar::emit_desktop_startup_progress(
+        Some(&app),
+        crate::sidecar::DesktopStartupStatus::Starting,
+        "sidecar_request",
+        "Starting Tandem engine",
+        55,
+        Some("Launching backend process".to_string()),
+    );
     tauri::async_runtime::spawn(async move {
         let result = match app.try_state::<AppState>() {
             Some(state) => start_sidecar_inner(&app, state.inner()).await,
@@ -33,6 +69,14 @@ fn spawn_sidecar_start_in_background(app: AppHandle) {
         };
 
         if let Err(err) = result {
+            crate::sidecar::emit_desktop_startup_progress(
+                Some(&app),
+                crate::sidecar::DesktopStartupStatus::Failed,
+                "sidecar_failed",
+                "Tandem engine failed to start",
+                0,
+                Some(err.to_string()),
+            );
             tracing::warn!(
                 "Vault unlocked but failed to auto-start tandem-engine sidecar: {}",
                 err
@@ -75,6 +119,15 @@ pub async fn create_vault(
 
     // Store master key and mark as unlocked
     vault_state.set_master_key(master_key.clone());
+
+    crate::sidecar::emit_desktop_startup_progress(
+        Some(&app),
+        crate::sidecar::DesktopStartupStatus::Starting,
+        "vault_created",
+        "Vault created",
+        12,
+        Some("Master key restored".to_string()),
+    );
 
     // Initialize keystore in the background so vault creation can return immediately.
     initialize_keystore_after_unlock(app.clone(), master_key.clone());
