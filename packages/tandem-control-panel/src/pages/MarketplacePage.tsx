@@ -199,16 +199,6 @@ export function MarketplacePage(_props: AppPageProps) {
                   </div>
                   <div className="mt-2 text-sm">{selectedPack.highlight}</div>
                 </div>
-
-                <div className="tcp-list-item">
-                  <div className="tcp-subtle text-xs uppercase tracking-[0.24em]">Next step</div>
-                  <div className="mt-2 grid gap-2 text-sm tcp-subtle">
-                    <div>1. Keep the marketplace hidden until tandem.ac is ready.</div>
-                    <div>2. Promote these concepts into real listings later.</div>
-                    <div>3. Wire search, login, and purchase on the web marketplace first.</div>
-                    <div>4. Re-enable this page only when there is live catalog content.</div>
-                  </div>
-                </div>
               </div>
             ) : (
               <EmptyState text="Select a featured concept." />
