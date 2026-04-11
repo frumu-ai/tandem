@@ -3,14 +3,11 @@ import { AnimatedPage, Badge, PageHeader, PanelCard, SplitView } from "../ui/ind
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 
-const MARKETPLACE_BASE_URL = "https://tandem.ac/marketplace";
-
 type FeaturedMarketplacePack = {
   packId: string;
   title: string;
   summary: string;
   audience: string;
-  searchQuery: string;
   categories: string[];
   tags: string[];
   highlight: string;
@@ -23,7 +20,6 @@ const FEATURED_PACKS: FeaturedMarketplacePack[] = [
     summary:
       "Kickoff, weekly status, meeting notes, and action tracking for teams that need clarity fast.",
     audience: "Project leads, operators, and team managers",
-    searchQuery: "planning workflow pack",
     categories: ["planning", "project management", "operations"],
     tags: ["kickoff", "weekly status", "action tracking"],
     highlight: "Best starting point for general-purpose planning workflows.",
@@ -34,7 +30,6 @@ const FEATURED_PACKS: FeaturedMarketplacePack[] = [
     summary:
       "Draft, polish, and repurpose articles with an SEO-aware workflow that keeps the story readable.",
     audience: "Writers, editors, and marketers",
-    searchQuery: "writing workflow pack",
     categories: ["writing", "seo", "content marketing"],
     tags: ["blog drafts", "copy editing", "content refresh"],
     highlight: "Useful when the output needs to read well and rank well.",
@@ -45,7 +40,6 @@ const FEATURED_PACKS: FeaturedMarketplacePack[] = [
     summary:
       "Turn rough questions into structured briefs, source checks, and comparative analysis.",
     audience: "Researchers, analysts, and product teams",
-    searchQuery: "research workflow pack",
     categories: ["research", "analysis", "fact finding"],
     tags: ["briefs", "source verification", "competitive scan"],
     highlight: "Good for turning uncertainty into a clear evidence trail.",
@@ -56,7 +50,6 @@ const FEATURED_PACKS: FeaturedMarketplacePack[] = [
     summary:
       "Break features into implementation tasks, review changes, and keep engineering work moving.",
     audience: "Developers, reviewers, and release teams",
-    searchQuery: "build workflow pack",
     categories: ["engineering", "delivery", "release"],
     tags: ["feature breakdown", "bug triage", "pr review"],
     highlight: "Best when you want a workflow that maps directly to coding work.",
@@ -67,90 +60,61 @@ function safeString(value: unknown) {
   return String(value || "").trim();
 }
 
-function marketplaceUrl(path = "", params?: Record<string, string>) {
-  const base = MARKETPLACE_BASE_URL.replace(/\/+$/, "");
-  const cleanPath = path ? `/${String(path).replace(/^\/+/, "")}` : "";
-  const url = new URL(`${base}${cleanPath}`);
-  for (const [key, value] of Object.entries(params || {})) {
-    const text = safeString(value);
-    if (text) {
-      url.searchParams.set(key, text);
-    }
-  }
-  return url.toString();
-}
-
 export function MarketplacePage(_props: AppPageProps) {
   void _props;
   const [selectedPackId, setSelectedPackId] = useState(FEATURED_PACKS[0]?.packId || "");
-  const [searchQuery, setSearchQuery] = useState("");
 
   const selectedPack = useMemo(
     () => FEATURED_PACKS.find((entry) => entry.packId === selectedPackId) || FEATURED_PACKS[0],
     [selectedPackId]
   );
 
-  const marketplaceHomeUrl = marketplaceUrl();
-  const externalSearchUrl = marketplaceUrl("/search", { q: searchQuery });
-  const selectedSearchUrl = marketplaceUrl("/search", { q: selectedPack?.searchQuery || "" });
-
   return (
     <AnimatedPage className="grid gap-4">
       <PageHeader
         eyebrow="Marketplace"
-        title="Workflow packs on tandem.ac"
-        subtitle="These are starter concepts for the public marketplace. Search tandem.ac for live catalog results, login, and purchase."
+        title="Marketplace coming soon"
+        subtitle="This route is intentionally hidden by default. If someone enables it manually, it stays a placeholder until the tandem.ac marketplace is live."
         badges={
           <>
-            <Badge tone="info">{FEATURED_PACKS.length} featured packs</Badge>
-            <Badge tone="ghost">browse only</Badge>
-            <Badge tone="ghost">tandem.ac source of truth</Badge>
+            <Badge tone="info">coming soon</Badge>
+            <Badge tone="ghost">{FEATURED_PACKS.length} seed concepts</Badge>
+            <Badge tone="ghost">disabled by default</Badge>
           </>
         }
       />
 
       <PanelCard
-        title="Find a workflow pack"
-        subtitle="Search opens tandem.ac marketplace results. The control panel does not own checkout or install."
+        title="Marketplace not live yet"
+        subtitle="The public store will live on tandem.ac. This page is a placeholder until search, login, and purchase are ready."
       >
-        <form
-          className="flex flex-col gap-3 md:flex-row md:items-center"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!safeString(searchQuery)) return;
-            window.open(externalSearchUrl, "_blank", "noopener,noreferrer");
-          }}
-        >
-          <input
-            className="tcp-input flex-1"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search for planning, writing, research, or build packs"
-          />
-          <div className="flex flex-wrap gap-2">
-            <a
-              className="tcp-btn-primary"
-              href={externalSearchUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <i data-lucide="search"></i>
-              Search on tandem.ac
-            </a>
-            <a className="tcp-btn" href={marketplaceHomeUrl} target="_blank" rel="noreferrer">
-              <i data-lucide="external-link"></i>
-              Open marketplace home
-            </a>
+        <div className="grid gap-3">
+          <div className="tcp-list-item">
+            <div className="tcp-subtle text-xs uppercase tracking-[0.24em]">Status</div>
+            <div className="mt-2 text-sm">
+              The marketplace page is intentionally a placeholder until the tandem.ac catalog API
+              and listing pages go live.
+            </div>
           </div>
-        </form>
+          <div className="flex flex-wrap gap-2">
+            <button className="tcp-btn-primary" type="button" disabled>
+              <i data-lucide="search"></i>
+              Search marketplace
+            </button>
+            <button className="tcp-btn" type="button" disabled>
+              <i data-lucide="external-link"></i>
+              Open tandem.ac
+            </button>
+          </div>
+        </div>
       </PanelCard>
 
       <SplitView
         main={
           <div className="grid gap-4">
             <PanelCard
-              title="Featured shelf"
-              subtitle="These are starter concepts we plan to seed on tandem.ac, not live inventory."
+              title="Seed concepts"
+              subtitle="These are planning concepts, not published marketplace listings."
             >
               <div className="grid gap-3">
                 {FEATURED_PACKS.map((pack) => {
@@ -188,7 +152,7 @@ export function MarketplacePage(_props: AppPageProps) {
             </PanelCard>
 
             <PanelCard
-              title="What tandem.ac owns"
+              title="What tandem.ac will own later"
               subtitle="The store belongs on the web, not inside the control panel."
             >
               <div className="grid gap-2 text-sm tcp-subtle">
@@ -204,24 +168,7 @@ export function MarketplacePage(_props: AppPageProps) {
         aside={
           <PanelCard
             title="Selected concept"
-            subtitle="Search tandem.ac for live results matching this starter concept."
-            actions={
-              <div className="flex flex-wrap gap-2">
-                <a
-                  className="tcp-btn-primary"
-                  href={selectedSearchUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <i data-lucide="external-link"></i>
-                  Search concept
-                </a>
-                <a className="tcp-btn" href={selectedSearchUrl} target="_blank" rel="noreferrer">
-                  <i data-lucide="search"></i>
-                  Search similar
-                </a>
-              </div>
-            }
+            subtitle="This is a seed idea that will become a real listing later."
           >
             {selectedPack ? (
               <div className="grid gap-3">
@@ -254,17 +201,17 @@ export function MarketplacePage(_props: AppPageProps) {
                 </div>
 
                 <div className="tcp-list-item">
-                  <div className="tcp-subtle text-xs uppercase tracking-[0.24em]">Browse flow</div>
+                  <div className="tcp-subtle text-xs uppercase tracking-[0.24em]">Next step</div>
                   <div className="mt-2 grid gap-2 text-sm tcp-subtle">
-                    <div>1. Search or browse on tandem.ac</div>
-                    <div>2. Sign in on the web marketplace</div>
-                    <div>3. Purchase or redeem there later</div>
-                    <div>4. Open the pack detail page from the listing</div>
+                    <div>1. Keep the marketplace hidden until tandem.ac is ready.</div>
+                    <div>2. Promote these concepts into real listings later.</div>
+                    <div>3. Wire search, login, and purchase on the web marketplace first.</div>
+                    <div>4. Re-enable this page only when there is live catalog content.</div>
                   </div>
                 </div>
               </div>
             ) : (
-              <EmptyState text="Select a featured pack to open its listing." />
+              <EmptyState text="Select a featured concept." />
             )}
           </PanelCard>
         }
