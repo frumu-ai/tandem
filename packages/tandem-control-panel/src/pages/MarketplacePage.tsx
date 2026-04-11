@@ -11,7 +11,6 @@ type FeaturedMarketplacePack = {
   summary: string;
   audience: string;
   searchQuery: string;
-  detailPath: string;
   categories: string[];
   tags: string[];
   highlight: string;
@@ -25,7 +24,6 @@ const FEATURED_PACKS: FeaturedMarketplacePack[] = [
       "Kickoff, weekly status, meeting notes, and action tracking for teams that need clarity fast.",
     audience: "Project leads, operators, and team managers",
     searchQuery: "planning workflow pack",
-    detailPath: "/packs/planning-pack",
     categories: ["planning", "project management", "operations"],
     tags: ["kickoff", "weekly status", "action tracking"],
     highlight: "Best starting point for general-purpose planning workflows.",
@@ -37,7 +35,6 @@ const FEATURED_PACKS: FeaturedMarketplacePack[] = [
       "Draft, polish, and repurpose articles with an SEO-aware workflow that keeps the story readable.",
     audience: "Writers, editors, and marketers",
     searchQuery: "writing workflow pack",
-    detailPath: "/packs/writing-pack",
     categories: ["writing", "seo", "content marketing"],
     tags: ["blog drafts", "copy editing", "content refresh"],
     highlight: "Useful when the output needs to read well and rank well.",
@@ -49,7 +46,6 @@ const FEATURED_PACKS: FeaturedMarketplacePack[] = [
       "Turn rough questions into structured briefs, source checks, and comparative analysis.",
     audience: "Researchers, analysts, and product teams",
     searchQuery: "research workflow pack",
-    detailPath: "/packs/research-pack",
     categories: ["research", "analysis", "fact finding"],
     tags: ["briefs", "source verification", "competitive scan"],
     highlight: "Good for turning uncertainty into a clear evidence trail.",
@@ -61,7 +57,6 @@ const FEATURED_PACKS: FeaturedMarketplacePack[] = [
       "Break features into implementation tasks, review changes, and keep engineering work moving.",
     audience: "Developers, reviewers, and release teams",
     searchQuery: "build workflow pack",
-    detailPath: "/packs/build-pack",
     categories: ["engineering", "delivery", "release"],
     tags: ["feature breakdown", "bug triage", "pr review"],
     highlight: "Best when you want a workflow that maps directly to coding work.",
@@ -97,7 +92,6 @@ export function MarketplacePage(_props: AppPageProps) {
 
   const marketplaceHomeUrl = marketplaceUrl();
   const externalSearchUrl = marketplaceUrl("/search", { q: searchQuery });
-  const selectedListingUrl = marketplaceUrl(selectedPack?.detailPath || "");
   const selectedSearchUrl = marketplaceUrl("/search", { q: selectedPack?.searchQuery || "" });
 
   return (
@@ -105,7 +99,7 @@ export function MarketplacePage(_props: AppPageProps) {
       <PageHeader
         eyebrow="Marketplace"
         title="Workflow packs on tandem.ac"
-        subtitle="Browse featured packs here, then search tandem.ac for live catalog results, login, and purchase."
+        subtitle="These are starter concepts for the public marketplace. Search tandem.ac for live catalog results, login, and purchase."
         badges={
           <>
             <Badge tone="info">{FEATURED_PACKS.length} featured packs</Badge>
@@ -156,7 +150,7 @@ export function MarketplacePage(_props: AppPageProps) {
           <div className="grid gap-4">
             <PanelCard
               title="Featured shelf"
-              subtitle="These are the starter packs we should highlight first."
+              subtitle="These are starter concepts we plan to seed on tandem.ac, not live inventory."
             >
               <div className="grid gap-3">
                 {FEATURED_PACKS.map((pack) => {
@@ -173,6 +167,7 @@ export function MarketplacePage(_props: AppPageProps) {
                           <div className="mb-1 flex items-center gap-2">
                             <strong>{pack.title}</strong>
                             <Badge tone="info">{pack.packId}</Badge>
+                            <Badge tone="ghost">planned seed</Badge>
                           </div>
                           <div className="tcp-subtle text-sm">{pack.summary}</div>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs">
@@ -208,18 +203,18 @@ export function MarketplacePage(_props: AppPageProps) {
         }
         aside={
           <PanelCard
-            title="Selected pack"
-            subtitle="Open the listing on tandem.ac or search for similar packs there."
+            title="Selected concept"
+            subtitle="Search tandem.ac for live results matching this starter concept."
             actions={
               <div className="flex flex-wrap gap-2">
                 <a
                   className="tcp-btn-primary"
-                  href={selectedListingUrl}
+                  href={selectedSearchUrl}
                   target="_blank"
                   rel="noreferrer"
                 >
                   <i data-lucide="external-link"></i>
-                  Open listing
+                  Search concept
                 </a>
                 <a className="tcp-btn" href={selectedSearchUrl} target="_blank" rel="noreferrer">
                   <i data-lucide="search"></i>
@@ -234,6 +229,7 @@ export function MarketplacePage(_props: AppPageProps) {
                   <div className="mb-1 flex items-center justify-between gap-2">
                     <strong>{selectedPack.title}</strong>
                     <Badge tone="info">{selectedPack.packId}</Badge>
+                    <Badge tone="ghost">concept only</Badge>
                   </div>
                   <div className="tcp-subtle text-sm">{selectedPack.summary}</div>
                   <div className="mt-2 flex flex-wrap gap-2 text-xs">
