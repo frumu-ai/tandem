@@ -105,7 +105,7 @@ export function MarketplacePage(_props: AppPageProps) {
       <PageHeader
         eyebrow="Marketplace"
         title="Workflow packs on tandem.ac"
-        subtitle="Browse featured packs here, then open the public marketplace for search, login, and purchase."
+        subtitle="Browse featured packs here, then search tandem.ac for live catalog results, login, and purchase."
         badges={
           <>
             <Badge tone="info">{FEATURED_PACKS.length} featured packs</Badge>
@@ -117,7 +117,7 @@ export function MarketplacePage(_props: AppPageProps) {
 
       <PanelCard
         title="Find a workflow pack"
-        subtitle="Search launches the public marketplace. The control panel does not own checkout or install."
+        subtitle="Search opens tandem.ac marketplace results. The control panel does not own checkout or install."
       >
         <form
           className="flex flex-col gap-3 md:flex-row md:items-center"
@@ -141,11 +141,11 @@ export function MarketplacePage(_props: AppPageProps) {
               rel="noreferrer"
             >
               <i data-lucide="search"></i>
-              Search marketplace
+              Search on tandem.ac
             </a>
             <a className="tcp-btn" href={marketplaceHomeUrl} target="_blank" rel="noreferrer">
               <i data-lucide="external-link"></i>
-              Open tandem.ac
+              Open marketplace home
             </a>
           </div>
         </form>
