@@ -15,6 +15,8 @@ Treat Tandem as the execution authority.
 
 Do not build a parallel client-side GitHub adapter or require a separate `gh` login flow for the GitHub Projects path.
 
+For the concrete edit/diff/worktree loop, use [Coding Tasks With Tandem](./coding-tasks-with-tandem/).
+
 ## Expected Bootstrap Path
 
 For GitHub Projects work, prefer Tandem's built-in GitHub MCP bootstrap:

@@ -43,6 +43,7 @@ Token rules:
 6. Apply only when the user or agent has confirmed the result is ready to persist.
 7. Schedule recurring work only after the workflow is durable.
 8. Repair or recover runs instead of rebuilding the whole workflow when the failure is local.
+9. If the task turns into code edits, follow [Coding Tasks With Tandem](./coding-tasks-with-tandem/) for the workspace, diff, and verification loop.
 
 ## What to ask before compiling
 

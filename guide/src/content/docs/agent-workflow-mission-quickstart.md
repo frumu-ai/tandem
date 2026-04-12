@@ -120,6 +120,7 @@ If an agent is asked to “set this up for me,” the default safe sequence is:
 - [Engine Authentication For Agents](./engine-authentication-for-agents/)
 - [Choosing Providers And Models For Agents](./choosing-providers-and-models-for-agents/)
 - [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/)
+- [Coding Tasks With Tandem](./coding-tasks-with-tandem/)
 - [Prompting Workflows And Missions](./prompting-workflows-and-missions/)
 - [Scheduling Workflows And Automations](./sdk/scheduling-automations/)
 - [Control Panel (Web Admin)](./control-panel/)

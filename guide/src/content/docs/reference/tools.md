@@ -15,6 +15,8 @@ The Tandem Engine tool registry currently exposes the following tools.
 - **`glob`**: Find files by pattern.
   - Input: `pattern` (string, e.g., `src/**/*.rs`)
 
+For coding tasks, agents usually read first, use `edit` for narrow replacements, `write` for new or rewritten files, and `apply_patch` when the change is easier to review as a unified diff.
+
 ## Search
 
 - **`grep`**: Regex search in files.

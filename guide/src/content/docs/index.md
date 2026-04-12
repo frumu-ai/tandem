@@ -45,6 +45,7 @@ _You want to build custom clients, connect external tools via MCP, or programmat
 - **[Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/)** — Choose the right Tandem path and operate it correctly.
 - **[Engine Authentication For Agents](./engine-authentication-for-agents/)** — Get the token, authorize calls, and connect agents safely.
 - **[Autonomous Coding Agents with GitHub Projects](./autonomous-coding-agents-github-projects/)** — Build coding agents on Tandem's engine-native GitHub MCP path.
+- **[Coding Tasks With Tandem](./coding-tasks-with-tandem/)** — Learn the execution contract for worktrees, diffs, commits, and verification.
 - **[WebMCP for Agents](./webmcp-for-agents/)** — Expose local HTTP APIs to your agents.
 - **[Browser Setup and Testing](./browser-setup-and-testing/)** — Build, install, validate, and incorporate `tandem-browser`.
 - **SDKs:** Integrate Tandem into your own codebases using our official libraries.

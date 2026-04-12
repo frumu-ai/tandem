@@ -46,6 +46,8 @@ Primary surfaces:
 - `POST /automations/v2/{id}/run_now`
 - `GET /automations/v2/{id}/runs`
 
+If the automation will edit code, also use [Coding Tasks With Tandem](./coding-tasks-with-tandem/) so the run has an explicit workspace, worktree, diff, and verification contract.
+
 ### Use the mission builder when
 
 - the goal spans several dependent workstreams
