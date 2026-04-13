@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Desktop splash dismissal recovery**: The Windows startup splash now waits for both backend-ready and React-visible signals before dismissing, so a fully loaded engine can no longer leave the app stuck on the ready screen.
+- **Crate publish preflight hardening**: Release publishing now validates local path-dependency order up front and includes `tandem-enterprise-contract` in the publish sequence, so missing publish-list entries fail before the release job starts pushing crates.
 
 ### Added
 

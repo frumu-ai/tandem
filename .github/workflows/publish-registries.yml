@@ -193,6 +193,7 @@ jobs:
           from pathlib import Path
 
           crates = [
+              "crates/tandem-enterprise-contract",
               "crates/tandem-types",
               "crates/tandem-wire",
               "crates/tandem-observability",
@@ -238,20 +239,37 @@ jobs:
           for crate in crates:
               path = Path(crate) / "Cargo.toml"
               text = path.read_text()
+              crate_name = names[crate]
               for dep_name, dep_path, dep_ver in dep_re.findall(text):
-                  if dep_name not in versions:
-                      continue
-                  expected = versions[dep_name]
-                  if dep_ver != expected:
+                  dep_manifest = (path.parent / dep_path / "Cargo.toml").resolve()
+                  if not dep_manifest.exists():
                       raise SystemExit(
-                          f"Version mismatch in {path}: {dep_name}={dep_ver}, expected {expected}"
-                      )
-                  if order[dep_name] > order[names[crate]]:
-                      raise SystemExit(
-                          f"Publish order violation: {names[crate]} depends on {dep_name} but appears earlier"
+                          f"Could not resolve path dependency {dep_name} from {path} via {dep_path}"
                       )
 
-          print("Cargo manifest precheck passed for publish order and tandem-* dependency versions.")
+                  dep_text = dep_manifest.read_text()
+                  dep_name_match = re.search(r'(?m)^\s*name\s*=\s*"([^"]+)"', dep_text)
+                  dep_ver_match = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', dep_text)
+                  if not dep_name_match or not dep_ver_match:
+                      raise SystemExit(f"Missing package name/version in {dep_manifest}")
+
+                  dep_pkg_name = dep_name_match.group(1)
+                  dep_pkg_version = dep_ver_match.group(1)
+
+                  if dep_pkg_version != dep_ver:
+                      raise SystemExit(
+                          f"Version mismatch in {path}: {dep_name}={dep_ver}, expected {dep_pkg_version}"
+                      )
+                  if dep_pkg_name not in order:
+                      raise SystemExit(
+                          f"Publish order list omits dependency crate {dep_pkg_name} referenced by {path} via {dep_path}; add it before {crate_name}"
+                      )
+                  if order[dep_pkg_name] > order[crate_name]:
+                      raise SystemExit(
+                          f"Publish order violation: {crate_name} depends on {dep_pkg_name} but appears earlier"
+                      )
+
+          print("Cargo manifest precheck passed for publish order and path dependency versions.")
           PY
 
   publish_crates:

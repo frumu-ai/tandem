@@ -7,6 +7,7 @@ This is the canonical release-notes file used by release tooling.
 - **LLM workspace search acceleration**: The built-in `grep` tool now uses the ripgrep library stack (`grep-searcher`, `grep-regex`, `grep-matcher`) for faster repository search while keeping the same tool name, schema, and output shape.
 
 - **Desktop splash dismissal recovery**: The Windows startup splash now waits for both backend-ready and React-visible signals before dismissing, so a fully loaded engine can no longer leave the app stuck on the ready screen.
+- **Crate publish preflight hardening**: Release publishing now validates local path-dependency order up front and includes `tandem-enterprise-contract` in the publish sequence, so missing publish-list entries fail before the release job starts pushing crates.
 
 - **Automation engine stability overhaul** (Phases 5–8):
   - **Glob-loop circuit breaker**: Added `detect_glob_loop()` that fires a repair signal when `glob` is called ≥10 times without any `read`, or when total tool calls exceed 30 without any write. This prevents nodes from stalling indefinitely in discovery loops.

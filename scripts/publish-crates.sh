@@ -10,6 +10,7 @@ fi
 
 # Topological order of publishing (independent first)
 CRATES=(
+    "crates/tandem-enterprise-contract"
     "crates/tandem-types"
     "crates/tandem-wire"
     "crates/tandem-observability"

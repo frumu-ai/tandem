@@ -30,6 +30,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 CRATES=(
+  "crates/tandem-enterprise-contract"
   "crates/tandem-types"
   "crates/tandem-wire"
   "crates/tandem-observability"
@@ -200,8 +201,7 @@ mkdir -p "$(dirname "$LOG_FILE")"
 echo "Publishing crates in deterministic order..." | tee -a "$LOG_FILE"
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "Mode: dry-run" | tee -a "$LOG_FILE"
-  echo "Dry-run note: skipping cargo package/publish because crates.io dependency" | tee -a "$LOG_FILE"
-  echo "resolution for unpublished intra-workspace versions is expected to fail." | tee -a "$LOG_FILE"
+  echo "Dry-run note: running cargo check before publish." | tee -a "$LOG_FILE"
   echo "Running workspace compile check instead." | tee -a "$LOG_FILE"
   cargo check -p tandem-ai -p tandem-tui -p tandem-server -p tandem-core -p tandem-tools -p tandem-memory 2>&1 | tee -a "$LOG_FILE"
 fi
