@@ -2,6 +2,10 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.26 (Unreleased)
+
+- **LLM workspace search acceleration**: The built-in `grep` tool now uses the ripgrep library stack (`grep-searcher`, `grep-regex`, `grep-matcher`) for faster repository search while keeping the same tool name, schema, and output shape.
+
 ## v0.4.25 (Unreleased)
 
 - **Desktop splash dismissal recovery**: The Windows startup splash now waits for both backend-ready and React-visible signals before dismissing, so a fully loaded engine can no longer leave the app stuck on the ready screen.

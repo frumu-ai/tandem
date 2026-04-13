@@ -8,6 +8,10 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use grep_matcher::LineTerminator;
+use grep_regex::{RegexMatcher, RegexMatcherBuilder};
+use grep_searcher::sinks::Lossy;
+use grep_searcher::{BinaryDetection, MmapChoice, SearcherBuilder};
 use ignore::WalkBuilder;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -1283,6 +1287,56 @@ fn is_discovery_ignored_path(path: &Path) -> bool {
 }
 
 struct GrepTool;
+
+fn build_grep_matcher(pattern: &str) -> anyhow::Result<RegexMatcher> {
+    let matcher = RegexMatcherBuilder::new()
+        .line_terminator(Some(b'\n'))
+        .build(pattern);
+    match matcher {
+        Ok(matcher) => Ok(matcher),
+        Err(_) => RegexMatcherBuilder::new()
+            .build(pattern)
+            .map_err(|err| anyhow!(err.to_string())),
+    }
+}
+
+fn build_grep_searcher() -> grep_searcher::Searcher {
+    let mut builder = SearcherBuilder::new();
+    builder
+        .line_number(true)
+        // Use ripgrep's auto mmap heuristic as the fast path for read-only workspace search.
+        .memory_map(unsafe { MmapChoice::auto() })
+        .binary_detection(BinaryDetection::quit(b'\0'))
+        .bom_sniffing(false)
+        .line_terminator(LineTerminator::byte(b'\n'));
+    builder.build()
+}
+
+fn collect_grep_matches(
+    searcher: &mut grep_searcher::Searcher,
+    matcher: &RegexMatcher,
+    path: &Path,
+    out: &mut Vec<String>,
+    limit: usize,
+) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
+    let path_display = path.display().to_string();
+    let _ = searcher.search_file(
+        matcher,
+        &file,
+        Lossy(|line_number, line| {
+            if out.len() >= limit {
+                return Ok(false);
+            }
+            let line = line.trim_end_matches(['\r', '\n']);
+            out.push(format!("{}:{}:{}", path_display, line_number, line));
+            Ok(out.len() < limit)
+        }),
+    );
+}
+
 #[async_trait]
 impl Tool for GrepTool {
     fn schema(&self) -> ToolSchema {
@@ -1299,9 +1353,13 @@ impl Tool for GrepTool {
         let Some(root_path) = resolve_walk_root(root, &args) else {
             return Ok(sandbox_path_denied_result(root, &args));
         };
-        let regex = Regex::new(pattern)?;
+        let matcher = build_grep_matcher(pattern)?;
+        let mut searcher = build_grep_searcher();
         let mut out = Vec::new();
         for entry in WalkBuilder::new(&root_path).build().flatten() {
+            if out.len() >= 100 {
+                break;
+            }
             if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 continue;
             }
@@ -1309,19 +1367,7 @@ impl Tool for GrepTool {
             if is_discovery_ignored_path(path) {
                 continue;
             }
-            if let Ok(content) = fs::read_to_string(path).await {
-                for (idx, line) in content.lines().enumerate() {
-                    if regex.is_match(line) {
-                        out.push(format!("{}:{}:{}", path.display(), idx + 1, line));
-                        if out.len() >= 100 {
-                            break;
-                        }
-                    }
-                }
-            }
-            if out.len() >= 100 {
-                break;
-            }
+            collect_grep_matches(&mut searcher, &matcher, path, &mut out, 100);
         }
         Ok(ToolResult {
             output: out.join("\n"),
@@ -5006,6 +5052,7 @@ mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
+    use tempfile::TempDir;
     use tokio::fs;
     use tokio_util::sync::CancellationToken;
 
@@ -5141,6 +5188,81 @@ mod tests {
             apply_patch.capabilities.effects,
             vec![tandem_types::ToolEffect::Patch]
         );
+    }
+
+    fn grep_args(root: &Path, pattern: &str) -> Value {
+        let root = root.to_string_lossy().to_string();
+        json!({
+            "pattern": pattern,
+            "path": root.clone(),
+            "__workspace_root": root.clone(),
+            "__effective_cwd": root,
+        })
+    }
+
+    #[tokio::test]
+    async fn grep_tool_reports_matches_while_skipping_ignored_and_binary_paths() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let root = tempdir.path();
+        let visible = root.join("src").join("nested").join("notes.txt");
+        let ignored = root.join(".tandem").join("private").join("secret.txt");
+        let binary = root.join("binary.bin");
+
+        std::fs::create_dir_all(visible.parent().expect("visible parent"))
+            .expect("create visible dir");
+        std::fs::create_dir_all(ignored.parent().expect("ignored parent"))
+            .expect("create ignored dir");
+        std::fs::write(&visible, "first line\nneedle here\nlast line").expect("write visible file");
+        std::fs::write(&ignored, "needle should stay hidden").expect("write ignored file");
+        std::fs::write(&binary, b"\0needle after null\n").expect("write binary file");
+
+        let tool = GrepTool;
+        let result = tool
+            .execute(grep_args(root, "needle"))
+            .await
+            .expect("grep result");
+
+        assert_eq!(result.metadata["count"], json!(1));
+        assert_eq!(
+            result.output,
+            format!("{}:2:needle here", visible.display())
+        );
+        assert!(!result.output.contains(".tandem/private/secret.txt"));
+    }
+
+    #[tokio::test]
+    async fn grep_tool_caps_results_at_100_hits() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let root = tempdir.path();
+        let source = root.join("many.txt");
+        let lines = (1..=120)
+            .map(|idx| format!("match line {}", idx))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&source, lines).expect("write source file");
+
+        let tool = GrepTool;
+        let result = tool
+            .execute(grep_args(root, "match"))
+            .await
+            .expect("grep result");
+
+        assert_eq!(result.metadata["count"], json!(100));
+        assert_eq!(result.output.lines().count(), 100);
+        assert!(result.output.contains("match line 100"));
+        assert!(!result.output.contains("match line 101"));
+    }
+
+    #[tokio::test]
+    async fn grep_tool_rejects_invalid_regex_patterns() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let root = tempdir.path();
+        std::fs::write(root.join("notes.txt"), "needle").expect("write file");
+
+        let tool = GrepTool;
+        let err = tool.execute(grep_args(root, "(")).await;
+
+        assert!(err.is_err(), "expected invalid regex to fail");
     }
 
     #[tokio::test]

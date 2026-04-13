@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.26] - Unreleased
+
+### Changed
+
+- **LLM workspace search acceleration**: The built-in `grep` tool now uses the ripgrep library stack (`grep-searcher`, `grep-regex`, `grep-matcher`) for faster repository search while keeping the same tool name, schema, and output shape.
+
 ## [0.4.25] - Released 2026-04-13
 
 ### Fixed
