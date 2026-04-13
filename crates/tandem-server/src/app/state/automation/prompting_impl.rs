@@ -446,7 +446,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         &agent.mcp_policy.allowed_servers,
     ) {
         sections.push(format!(
-            "MCP Discovery:\n- MCP-backed work may be relevant for this node.\n- Allowed MCP servers: {}.\n- Call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available.\n- Prefer MCP-backed tools for source-specific systems when the connector exists.\n- If the objective depends on a connector-backed source and no relevant MCP tool is available, block or clarify instead of guessing.",
+            "MCP Discovery:\n- MCP-backed work may be relevant for this node.\n- Allowed MCP servers: {}.\n- Call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available.\n- Prefer MCP-backed tools for source-specific systems when the connector exists.\n- If the objective depends on a connector-backed source and no relevant MCP tool is available, finish the artifact from the local evidence you already have and record that limitation instead of repeating discovery calls.",
             serde_json::to_string_pretty(&agent.mcp_policy.allowed_servers)
                 .unwrap_or_else(|_| "[]".to_string())
         ));
@@ -504,6 +504,10 @@ pub(crate) fn render_automation_v2_prompt_with_options(
             "Artifact Delivery Order:\n- If MCP Discovery is present, call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available.\n- Read or inspect the concrete sources required by the node.\n- Write the required run artifact to `{}` before ending this attempt.\n- On retries, rewrite the file in the current attempt even if the content is identical.\n- Do not stop with only a chat summary; the file is the deliverable.",
             output_path
         ));
+        sections.push(
+            "Artifact Delivery Fallback:\n- If discovery does not reveal a useful connector-backed source, finish the artifact from the local evidence you already have and record that limitation in the file instead of repeating discovery calls."
+                .to_string(),
+        );
     }
     if automation_node_is_code_workflow(node) {
         let task_kind =

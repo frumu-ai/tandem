@@ -356,6 +356,199 @@ fn research_workflow_failure_kind_is_typed_from_unmet_requirements() {
 }
 
 #[test]
+fn compare_results_retry_without_current_artifact_surfaces_write_and_synthesis_actions() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-compare-results-retry-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(workspace_root.join("content/blog-memory")).expect("create workspace");
+    std::fs::write(
+        workspace_root.join("content/blog-memory/01-facts.md"),
+        "# Facts\n\nPersistent blog facts.\n",
+    )
+    .expect("write facts");
+    std::fs::write(
+        workspace_root.join("content/blog-memory/02-decisions.md"),
+        "# Decisions\n\nPersistent blog decisions.\n",
+    )
+    .expect("write decisions");
+    let snapshot =
+        automation_workspace_root_file_snapshot(workspace_root.to_str().expect("workspace root"));
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "compare_results".to_string(),
+        agent_id: "analyst".to_string(),
+        objective: "Review existing persistent blog memory and recent Tandem blog history to produce recent-blog-review.md. First summarize themes, angle types, repeated phrasing, unexplored ideas, and stylistic notes from content/blog-memory/. Then call mcp_list for blog-mcp and use only discovered blog history inspection functions to inspect recent Tandem blog posts, identifying repeated themes, title/framing patterns, structures, openings, and what not to repeat. Record mcp_list usage, discovered functions, and exact functions used.".to_string(),
+        depends_on: vec!["research_sources".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "research_sources".to_string(),
+            alias: "blog_memory".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": ".tandem/artifacts/compare-results.md"
+            }
+        })),
+    };
+    let mut session = Session::new(
+        Some("compare-results-retry".to_string()),
+        Some(workspace_root.to_str().expect("workspace root").to_string()),
+    );
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![
+            MessagePart::ToolInvocation {
+                tool: "mcp_list".to_string(),
+                args: json!({}),
+                result: Some(json!({
+                    "servers": [
+                        {
+                            "name": "blog-mcp",
+                            "tools": [
+                                "create_blog_draft",
+                                "get_blog_guidelines",
+                                "list_blog_drafts",
+                                "submit_blog_for_review",
+                                "update_blog_draft"
+                            ]
+                        }
+                    ]
+                })),
+                error: None,
+            },
+            MessagePart::ToolInvocation {
+                tool: "glob".to_string(),
+                args: json!({"pattern":"content/blog-memory/*.md"}),
+                result: Some(json!({
+                    "output": [
+                        workspace_root
+                            .join("content/blog-memory/01-facts.md")
+                            .display()
+                            .to_string(),
+                        workspace_root
+                            .join("content/blog-memory/02-decisions.md")
+                            .display()
+                            .to_string()
+                    ]
+                })),
+                error: None,
+            },
+            MessagePart::ToolInvocation {
+                tool: "read".to_string(),
+                args: json!({"path":"content/blog-memory/01-facts.md"}),
+                result: Some(json!({"output":"Persistent blog facts."})),
+                error: None,
+            },
+        ],
+    ));
+
+    let tool_telemetry = summarize_automation_tool_activity(
+        &node,
+        &session,
+        &[
+            "mcp_list".to_string(),
+            "glob".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+        ],
+    );
+    let upstream_evidence = AutomationUpstreamEvidence {
+        read_paths: vec![
+            "content/blog-memory/01-facts.md".to_string(),
+            "content/blog-memory/02-decisions.md".to_string(),
+        ],
+        discovered_relevant_paths: vec![
+            "content/blog-memory/01-facts.md".to_string(),
+            "content/blog-memory/02-decisions.md".to_string(),
+        ],
+        web_research_attempted: false,
+        web_research_succeeded: false,
+        citation_count: 2,
+        citations: vec![
+            "mcp_list".to_string(),
+            "mcp.blog_mcp.get_blog_guidelines".to_string(),
+        ],
+    };
+
+    let (accepted_output, artifact_validation, rejected) =
+        validate_automation_artifact_output_with_upstream(
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root"),
+            Some("run-compare"),
+            "Done\n\n{\"status\":\"completed\"}",
+            &tool_telemetry,
+            None,
+            None,
+            &snapshot,
+            Some(&upstream_evidence),
+        );
+
+    assert!(accepted_output.is_none());
+    assert_eq!(
+        rejected.as_deref(),
+        Some(
+            "required output `.tandem/runs/run-compare/artifacts/compare-results.md` was not created in the current attempt"
+        )
+    );
+    assert_eq!(
+        artifact_validation
+            .get("validation_outcome")
+            .and_then(Value::as_str),
+        Some("needs_repair")
+    );
+    assert_eq!(
+        artifact_validation
+            .get("blocking_classification")
+            .and_then(Value::as_str),
+        Some("artifact_write_missing")
+    );
+    assert!(artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("current_attempt_output_missing"))));
+    assert!(artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("upstream_evidence_not_synthesized"))));
+    assert!(artifact_validation
+        .get("required_next_tool_actions")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.iter().any(|value| {
+            value.as_str().is_some_and(|text| {
+                text.to_ascii_lowercase()
+                    .contains("synthesize the upstream evidence")
+            })
+        })));
+    assert!(artifact_validation
+        .get("required_next_tool_actions")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|text| text.contains("Write the required run artifact"))
+        })));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn research_workflow_status_is_needs_repair_before_repair_budget_is_exhausted() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

@@ -326,6 +326,12 @@ pub(crate) fn classify_research_validation_state(
     {
         return Some("handoff_missing");
     }
+    if unmet_requirements
+        .iter()
+        .any(|value| value == "current_attempt_output_missing")
+    {
+        return Some("artifact_write_missing");
+    }
     let requested_has_read = requested_tools
         .iter()
         .any(|value| value.as_str() == Some("read"));
@@ -393,6 +399,18 @@ pub(crate) fn research_required_next_tool_actions(
     if has_unmet("structured_handoff_missing") {
         actions.push(
             "Return the required structured JSON handoff in the final response instead of ending after tool calls or tool summaries."
+                .to_string(),
+        );
+    }
+    if has_unmet("upstream_evidence_not_synthesized") {
+        actions.push(
+            "Synthesize the upstream evidence into the final artifact using the concrete terminology, proof points, objections, risks, and citations already available upstream."
+                .to_string(),
+        );
+    }
+    if has_unmet("current_attempt_output_missing") {
+        actions.push(
+            "Write the required run artifact to the declared output path before ending this attempt."
                 .to_string(),
         );
     }

@@ -5010,6 +5010,12 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 accepted_output = Some((path.clone(), best.text.clone()));
             }
         } else if missing_current_attempt_output_write {
+            if rejected_reason.is_none() {
+                rejected_reason = Some(format!(
+                    "required output `{}` was not created in the current attempt",
+                    path
+                ));
+            }
             semantic_block_reason =
                 Some("required output was not created in the current attempt".to_string());
         }
@@ -5531,6 +5537,52 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         warning_requirements.push("undeclared_marker_files_cleaned".to_string());
         warning_requirements.sort();
         warning_requirements.dedup();
+    }
+    let required_output_path_for_retry = automation_node_required_output_path_for_run(node, run_id);
+    let current_attempt_output_materialized_for_retry = required_output_path_for_retry
+        .as_ref()
+        .is_some_and(|output_path| {
+            session_write_materialized_output_for_output(
+                session,
+                workspace_root,
+                output_path,
+                run_id,
+            ) || verified_output_materialized
+        });
+    if accepted_output.is_none()
+        && requires_current_attempt_output
+        && !current_attempt_output_materialized_for_retry
+        && !automation_node_allows_preexisting_output_reuse(node)
+    {
+        if rejected_reason.is_none() {
+            let missing_output_path = required_output_path_for_retry
+                .clone()
+                .unwrap_or_else(|| automation_node_required_output_path(node).unwrap_or_default());
+            rejected_reason = Some(format!(
+                "required output `{}` was not created in the current attempt",
+                missing_output_path
+            ));
+        }
+        if !unmet_requirements
+            .iter()
+            .any(|value| value == "current_attempt_output_missing")
+        {
+            unmet_requirements.push("current_attempt_output_missing".to_string());
+        }
+        if use_upstream_evidence
+            && upstream_evidence.is_some_and(|evidence| {
+                !evidence.read_paths.is_empty() || evidence.citation_count > 0
+            })
+            && !unmet_requirements
+                .iter()
+                .any(|value| value == "upstream_evidence_not_synthesized")
+        {
+            unmet_requirements.push("upstream_evidence_not_synthesized".to_string());
+        }
+        if semantic_block_reason.is_none() {
+            semantic_block_reason =
+                Some("required output was not created in the current attempt".to_string());
+        }
     }
     let (repair_attempt, repair_attempts_remaining, repair_exhausted) = infer_artifact_repair_state(
         parsed_status.as_ref(),

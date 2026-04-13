@@ -303,6 +303,8 @@ fn compare_results_prompt_prioritizes_mcp_discovery_and_artifact_delivery() {
     assert!(prompt.contains(
         "Write the required run artifact to `.tandem/runs/run-compare/artifacts/compare-results.md`"
     ));
+    assert!(prompt.contains("Artifact Delivery Fallback:"));
+    assert!(prompt.contains("finish the artifact from the local evidence you already have"));
     assert!(prompt.contains(
         "On retries, rewrite the file in the current attempt even if the content is identical."
     ));
