@@ -5,13 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.25] - Unreleased
+## [0.4.25] - Released 2026-04-13
 
 ### Fixed
 
 - **Desktop splash dismissal recovery**: The Windows startup splash now waits for both backend-ready and React-visible signals before dismissing, so a fully loaded engine can no longer leave the app stuck on the ready screen.
 
-## [0.4.24] - Unreleased
+## [0.4.24] - Released 2026-04-13
 
 ### Added
 
