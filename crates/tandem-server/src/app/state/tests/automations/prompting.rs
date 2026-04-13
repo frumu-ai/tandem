@@ -189,6 +189,126 @@ fn connector_backed_automation_prompt_surfaces_mcp_discovery_guidance() {
 }
 
 #[test]
+fn compare_results_prompt_prioritizes_mcp_discovery_and_artifact_delivery() {
+    let automation = AutomationV2Spec {
+        automation_id: "automation-compare-results".to_string(),
+        name: "Compare Results".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "compare_results".to_string(),
+        agent_id: "analyst".to_string(),
+        objective: "Compare the gathered evidence and write the final comparison.".to_string(),
+        depends_on: vec!["collect_inputs".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "collect_inputs".to_string(),
+            alias: "comparison_inputs".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Write the comparison as the run artifact.".to_string()),
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "title": "Compare Results",
+                "role": "analyst",
+                "prompt": "Compare the gathered evidence, call mcp_list when connector-backed sources may matter, and write the final comparison.",
+                "output_path": ".tandem/artifacts/compare-results.md"
+            }
+        })),
+    };
+    let agent = AutomationAgentProfile {
+        agent_id: "analyst".to_string(),
+        template_id: None,
+        display_name: "Analyst".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec![
+                "glob".to_string(),
+                "read".to_string(),
+                "write".to_string(),
+                "mcp_list".to_string(),
+            ],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: vec!["blog-mcp".to_string()],
+            allowed_tools: None,
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp",
+        "run-compare",
+        &node,
+        1,
+        &agent,
+        &[],
+        &[
+            "glob".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+            "mcp_list".to_string(),
+        ],
+        None,
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("MCP Discovery:"));
+    assert!(prompt.contains("Artifact Delivery Order:"));
+    assert!(prompt.contains("Call `mcp_list` before reading or comparing sources"));
+    assert!(prompt.contains(
+        "Write the required run artifact to `.tandem/runs/run-compare/artifacts/compare-results.md`"
+    ));
+    assert!(prompt.contains(
+        "On retries, rewrite the file in the current attempt even if the content is identical."
+    ));
+}
+
+#[test]
 fn automation_prompt_clarifies_file_paths_are_not_directories() {
     let automation = AutomationV2Spec {
         automation_id: "automation-file-paths".to_string(),

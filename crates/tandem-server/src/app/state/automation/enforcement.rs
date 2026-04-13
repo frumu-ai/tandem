@@ -50,10 +50,17 @@ fn automation_node_legacy_builder(
 }
 
 fn automation_node_legacy_web_research_expected(node: &AutomationFlowNode) -> bool {
-    automation_node_legacy_builder(node)
+    if let Some(explicit) = automation_node_legacy_builder(node)
         .and_then(|builder| builder.get("web_research_expected"))
         .and_then(Value::as_bool)
-        .unwrap_or(false)
+    {
+        return explicit;
+    }
+    let intent = automation_node_workspace_intent_text(node).to_ascii_lowercase();
+    intent.contains("web")
+        || intent.contains("online")
+        || intent.contains("current")
+        || intent.contains("latest")
 }
 
 pub(crate) fn automation_node_prefers_mcp_servers(node: &AutomationFlowNode) -> bool {

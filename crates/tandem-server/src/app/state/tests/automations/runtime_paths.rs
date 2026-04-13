@@ -31,6 +31,36 @@ fn standard_workflow_nodes_receive_default_workspace_output_paths() {
 }
 
 #[test]
+fn compare_results_nodes_receive_default_workspace_output_paths() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "compare_results".to_string(),
+        agent_id: "analyst".to_string(),
+        objective: "Compare the gathered evidence and write the final comparison.".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+
+    assert_eq!(
+        automation_node_required_output_path(&node).as_deref(),
+        Some(".tandem/artifacts/compare-results.md")
+    );
+}
+
+#[test]
 fn report_markdown_retries_accept_html_sibling_outputs() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-report-html-sibling-{}",
