@@ -12,7 +12,8 @@ use tandem_tools::{validate_tool_schemas, ToolRegistry};
 use tandem_types::{
     ContextMode, EngineEvent, HostOs, HostRuntimeContext, Message, MessagePart, MessagePartInput,
     MessageRole, ModelSpec, PathStyle, PrewriteCoverageMode, PrewriteRequirements,
-    SendMessageRequest, ShellFamily, ToolMode, ToolSchema,
+    SendMessageRequest, SharedToolProgressSink, ShellFamily, ToolMode, ToolProgressEvent,
+    ToolProgressSink, ToolSchema,
 };
 use tandem_wire::WireMessagePart;
 use tokio_util::sync::CancellationToken;
@@ -102,6 +103,69 @@ pub struct ToolPolicyContext {
 pub struct ToolPolicyDecision {
     pub allowed: bool,
     pub reason: Option<String>,
+}
+
+#[derive(Clone)]
+struct EngineToolProgressSink {
+    event_bus: EventBus,
+    session_id: String,
+    message_id: String,
+    tool_call_id: Option<String>,
+    source_tool: String,
+}
+
+impl ToolProgressSink for EngineToolProgressSink {
+    fn publish(&self, event: ToolProgressEvent) {
+        let properties = merge_tool_progress_properties(
+            event.properties,
+            &self.session_id,
+            &self.message_id,
+            self.tool_call_id.as_deref(),
+            &self.source_tool,
+        );
+        self.event_bus
+            .publish(EngineEvent::new(event.event_type, properties));
+    }
+}
+
+fn merge_tool_progress_properties(
+    properties: Value,
+    session_id: &str,
+    message_id: &str,
+    tool_call_id: Option<&str>,
+    source_tool: &str,
+) -> Value {
+    let mut base = Map::new();
+    base.insert(
+        "sessionID".to_string(),
+        Value::String(session_id.to_string()),
+    );
+    base.insert(
+        "messageID".to_string(),
+        Value::String(message_id.to_string()),
+    );
+    base.insert(
+        "sourceTool".to_string(),
+        Value::String(source_tool.to_string()),
+    );
+    if let Some(tool_call_id) = tool_call_id {
+        base.insert(
+            "toolCallID".to_string(),
+            Value::String(tool_call_id.to_string()),
+        );
+    }
+    match properties {
+        Value::Object(mut map) => {
+            for (key, value) in base {
+                map.insert(key, value);
+            }
+            Value::Object(map)
+        }
+        other => {
+            base.insert("data".to_string(), other);
+            Value::Object(base)
+        }
+    }
 }
 
 pub trait SpawnAgentHook: Send + Sync {
@@ -2777,6 +2841,13 @@ impl EngineLoop {
         ));
         let args_for_side_events = args.clone();
         let mutation_checkpoint = prepare_mutation_checkpoint(&tool, &args_for_side_events);
+        let progress_sink: SharedToolProgressSink = std::sync::Arc::new(EngineToolProgressSink {
+            event_bus: self.event_bus.clone(),
+            session_id: session_id.to_string(),
+            message_id: message_id.to_string(),
+            tool_call_id: invoke_part_id.clone(),
+            source_tool: tool.clone(),
+        });
         publish_tool_effect(
             invoke_part_id.as_deref(),
             ToolEffectLedgerPhase::Invocation,
@@ -3019,7 +3090,7 @@ impl EngineLoop {
             }
         }
         let result = match self
-            .execute_tool_with_timeout(&tool, args, cancel.clone())
+            .execute_tool_with_timeout(&tool, args, cancel.clone(), Some(progress_sink))
             .await
         {
             Ok(result) => result,
@@ -3225,11 +3296,13 @@ impl EngineLoop {
         tool: &str,
         args: Value,
         cancel: CancellationToken,
+        progress: Option<SharedToolProgressSink>,
     ) -> anyhow::Result<tandem_types::ToolResult> {
         let timeout_ms = tool_exec_timeout_ms() as u64;
         match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
-            self.tools.execute_with_cancel(tool, args, cancel),
+            self.tools
+                .execute_with_cancel_and_progress(tool, args, cancel, progress),
         )
         .await
         {

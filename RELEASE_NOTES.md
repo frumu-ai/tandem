@@ -5,6 +5,7 @@ This is the canonical release-notes file used by release tooling.
 ## v0.4.25 (Unreleased)
 
 - **LLM workspace search acceleration**: The built-in `grep` tool now uses the ripgrep library stack (`grep-searcher`, `grep-regex`, `grep-matcher`) for faster repository search while keeping the same tool name, schema, and output shape.
+- **Parallel search streaming**: `grep` now streams partial match chunks through engine events while it searches, so the harness can show results sooner without changing the final tool output.
 
 - **Desktop splash dismissal recovery**: The Windows startup splash now waits for both backend-ready and React-visible signals before dismissing, so a fully loaded engine can no longer leave the app stuck on the ready screen.
 - **Crate publish preflight hardening**: Release publishing now validates local path-dependency order up front and includes `tandem-enterprise-contract` in the publish sequence, so missing publish-list entries fail before the release job starts pushing crates.

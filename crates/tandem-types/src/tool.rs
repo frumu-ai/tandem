@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -154,6 +155,27 @@ pub struct ToolResult {
     #[serde(default)]
     pub metadata: Value,
 }
+
+#[derive(Debug, Clone)]
+pub struct ToolProgressEvent {
+    pub event_type: String,
+    pub properties: Value,
+}
+
+impl ToolProgressEvent {
+    pub fn new(event_type: impl Into<String>, properties: Value) -> Self {
+        Self {
+            event_type: event_type.into(),
+            properties,
+        }
+    }
+}
+
+pub trait ToolProgressSink: Send + Sync {
+    fn publish(&self, event: ToolProgressEvent);
+}
+
+pub type SharedToolProgressSink = Arc<dyn ToolProgressSink>;
 
 #[cfg(test)]
 mod tests {

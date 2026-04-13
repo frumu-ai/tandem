@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **LLM workspace search acceleration**: The built-in `grep` tool now uses the ripgrep library stack (`grep-searcher`, `grep-regex`, `grep-matcher`) for faster repository search while keeping the same tool name, schema, and output shape.
+- **Parallel search streaming**: `grep` now streams partial match chunks through engine events while it searches, so the harness can show results sooner without changing the final tool output.
 
 ### Fixed
 

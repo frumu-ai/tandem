@@ -2,8 +2,8 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -12,7 +12,7 @@ use grep_matcher::LineTerminator;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::sinks::Lossy;
 use grep_searcher::{BinaryDetection, MmapChoice, SearcherBuilder};
-use ignore::WalkBuilder;
+use ignore::{ParallelVisitor, ParallelVisitorBuilder, WalkBuilder, WalkState};
 use regex::Regex;
 use serde_json::{json, Value};
 use tandem_memory::embeddings::{get_embedding_service, EmbeddingService};
@@ -33,7 +33,7 @@ use tandem_agent_teams::{
 };
 use tandem_memory::types::{MemorySearchResult, MemoryTier};
 use tandem_memory::MemoryManager;
-use tandem_types::{ToolResult, ToolSchema};
+use tandem_types::{SharedToolProgressSink, ToolProgressEvent, ToolResult, ToolSchema};
 
 mod builtin_tools;
 mod tool_metadata;
@@ -50,6 +50,15 @@ pub trait Tool: Send + Sync {
         _cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         self.execute(args).await
+    }
+    async fn execute_with_progress(
+        &self,
+        args: Value,
+        cancel: CancellationToken,
+        progress: Option<SharedToolProgressSink>,
+    ) -> anyhow::Result<ToolResult> {
+        let _ = progress;
+        self.execute_with_cancel(args, cancel).await
     }
 }
 
@@ -302,6 +311,17 @@ impl ToolRegistry {
         args: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_with_cancel_and_progress(name, args, cancel, None)
+            .await
+    }
+
+    pub async fn execute_with_cancel_and_progress(
+        &self,
+        name: &str,
+        args: Value,
+        cancel: CancellationToken,
+        progress: Option<SharedToolProgressSink>,
+    ) -> anyhow::Result<ToolResult> {
         let tool = {
             let tools = self.tools.read().await;
             resolve_registered_tool(&tools, name)
@@ -312,7 +332,7 @@ impl ToolRegistry {
                 metadata: json!({}),
             });
         };
-        tool.execute_with_cancel(args, cancel).await
+        tool.execute_with_progress(args, cancel, progress).await
     }
 }
 
@@ -1288,6 +1308,229 @@ fn is_discovery_ignored_path(path: &Path) -> bool {
 
 struct GrepTool;
 
+#[derive(Debug, Clone)]
+struct GrepHit {
+    path: String,
+    line: usize,
+    text: String,
+    ordinal: usize,
+}
+
+fn grep_hit_to_value(hit: &GrepHit) -> Value {
+    json!({
+        "path": hit.path,
+        "line": hit.line,
+        "text": hit.text,
+        "ordinal": hit.ordinal,
+    })
+}
+
+fn emit_grep_progress_chunk(
+    progress: Option<&SharedToolProgressSink>,
+    tool: &str,
+    hits: &[GrepHit],
+) {
+    let Some(progress) = progress else {
+        return;
+    };
+    if hits.is_empty() {
+        return;
+    }
+    progress.publish(ToolProgressEvent::new(
+        "tool.search.chunk",
+        json!({
+            "tool": tool,
+            "hits": hits.iter().map(grep_hit_to_value).collect::<Vec<_>>(),
+        }),
+    ));
+}
+
+fn emit_grep_progress_done(
+    progress: Option<&SharedToolProgressSink>,
+    tool: &str,
+    path: &Path,
+    total_hits: usize,
+    truncated: bool,
+    cancelled: bool,
+) {
+    let Some(progress) = progress else {
+        return;
+    };
+    progress.publish(ToolProgressEvent::new(
+        "tool.search.done",
+        json!({
+            "tool": tool,
+            "path": path.to_string_lossy(),
+            "count": total_hits,
+            "truncated": truncated,
+            "cancelled": cancelled,
+        }),
+    ));
+}
+
+struct GrepSearchState {
+    hits: Mutex<Vec<GrepHit>>,
+    hit_count: AtomicUsize,
+    stop: AtomicBool,
+    cancel: CancellationToken,
+    limit: usize,
+    chunk_size: usize,
+    progress: Option<SharedToolProgressSink>,
+}
+
+impl GrepSearchState {
+    fn new(
+        cancel: CancellationToken,
+        limit: usize,
+        chunk_size: usize,
+        progress: Option<SharedToolProgressSink>,
+    ) -> Self {
+        Self {
+            hits: Mutex::new(Vec::new()),
+            hit_count: AtomicUsize::new(0),
+            stop: AtomicBool::new(false),
+            cancel,
+            limit,
+            chunk_size,
+            progress,
+        }
+    }
+
+    fn should_stop(&self) -> bool {
+        self.stop.load(AtomicOrdering::Acquire) || self.cancel.is_cancelled()
+    }
+
+    fn reserve_hit(&self) -> Option<usize> {
+        if self.should_stop() {
+            return None;
+        }
+        match self.hit_count.fetch_update(
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+            |current| (current < self.limit).then_some(current + 1),
+        ) {
+            Ok(previous) => {
+                let ordinal = previous + 1;
+                if ordinal >= self.limit {
+                    self.stop.store(true, AtomicOrdering::Release);
+                }
+                Some(ordinal)
+            }
+            Err(_) => {
+                self.stop.store(true, AtomicOrdering::Release);
+                None
+            }
+        }
+    }
+
+    fn push_hit(&self, hit: GrepHit) {
+        if let Ok(mut hits) = self.hits.lock() {
+            hits.push(hit);
+        }
+    }
+
+    fn sorted_hits(&self) -> Vec<GrepHit> {
+        let mut hits = self
+            .hits
+            .lock()
+            .map(|hits| hits.clone())
+            .unwrap_or_default();
+        hits.sort_by(|a, b| {
+            a.path
+                .cmp(&b.path)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.text.cmp(&b.text))
+                .then_with(|| a.ordinal.cmp(&b.ordinal))
+        });
+        hits
+    }
+}
+
+struct GrepParallelVisitorBuilder {
+    matcher: Arc<RegexMatcher>,
+    state: Arc<GrepSearchState>,
+    tool: String,
+}
+
+struct GrepParallelVisitor {
+    matcher: Arc<RegexMatcher>,
+    state: Arc<GrepSearchState>,
+    searcher: grep_searcher::Searcher,
+    tool: String,
+}
+
+impl<'s> ParallelVisitorBuilder<'s> for GrepParallelVisitorBuilder {
+    fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {
+        Box::new(GrepParallelVisitor {
+            matcher: Arc::clone(&self.matcher),
+            state: Arc::clone(&self.state),
+            searcher: build_grep_searcher(),
+            tool: self.tool.clone(),
+        })
+    }
+}
+
+impl ParallelVisitor for GrepParallelVisitor {
+    fn visit(&mut self, entry: Result<ignore::DirEntry, ignore::Error>) -> WalkState {
+        if self.state.should_stop() {
+            return WalkState::Quit;
+        }
+        let Ok(entry) = entry else {
+            return WalkState::Continue;
+        };
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            return WalkState::Continue;
+        }
+        let path = entry.path();
+        if is_discovery_ignored_path(path) {
+            return WalkState::Continue;
+        }
+        let Ok(file) = std::fs::File::open(path) else {
+            return WalkState::Continue;
+        };
+        let path_display = path.display().to_string();
+        let state = Arc::clone(&self.state);
+        let progress = state.progress.clone();
+        let tool = self.tool.clone();
+        let mut pending_chunk = Vec::with_capacity(state.chunk_size);
+        let _ = self.searcher.search_file(
+            &*self.matcher,
+            &file,
+            Lossy(|line_number, line| {
+                if state.should_stop() {
+                    return Ok(false);
+                }
+                let Some(ordinal) = state.reserve_hit() else {
+                    return Ok(false);
+                };
+                let line = line.trim_end_matches(['\r', '\n']);
+                let hit = GrepHit {
+                    path: path_display.clone(),
+                    line: line_number as usize,
+                    text: line.to_string(),
+                    ordinal,
+                };
+                state.push_hit(hit.clone());
+                pending_chunk.push(hit);
+                if pending_chunk.len() >= state.chunk_size {
+                    emit_grep_progress_chunk(progress.as_ref(), &tool, &pending_chunk);
+                    pending_chunk.clear();
+                }
+                if state.should_stop() {
+                    return Ok(false);
+                }
+                Ok(true)
+            }),
+        );
+        emit_grep_progress_chunk(progress.as_ref(), &tool, &pending_chunk);
+        if state.should_stop() {
+            WalkState::Quit
+        } else {
+            WalkState::Continue
+        }
+    }
+}
+
 fn build_grep_matcher(pattern: &str) -> anyhow::Result<RegexMatcher> {
     let matcher = RegexMatcherBuilder::new()
         .line_terminator(Some(b'\n'))
@@ -1312,31 +1555,6 @@ fn build_grep_searcher() -> grep_searcher::Searcher {
     builder.build()
 }
 
-fn collect_grep_matches(
-    searcher: &mut grep_searcher::Searcher,
-    matcher: &RegexMatcher,
-    path: &Path,
-    out: &mut Vec<String>,
-    limit: usize,
-) {
-    let Ok(file) = std::fs::File::open(path) else {
-        return;
-    };
-    let path_display = path.display().to_string();
-    let _ = searcher.search_file(
-        matcher,
-        &file,
-        Lossy(|line_number, line| {
-            if out.len() >= limit {
-                return Ok(false);
-            }
-            let line = line.trim_end_matches(['\r', '\n']);
-            out.push(format!("{}:{}:{}", path_display, line_number, line));
-            Ok(out.len() < limit)
-        }),
-    );
-}
-
 #[async_trait]
 impl Tool for GrepTool {
     fn schema(&self) -> ToolSchema {
@@ -1348,30 +1566,67 @@ impl Tool for GrepTool {
         )
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        self.execute_with_cancel(args, CancellationToken::new())
+            .await
+    }
+
+    async fn execute_with_cancel(
+        &self,
+        args: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_with_progress(args, cancel, None).await
+    }
+
+    async fn execute_with_progress(
+        &self,
+        args: Value,
+        cancel: CancellationToken,
+        progress: Option<SharedToolProgressSink>,
+    ) -> anyhow::Result<ToolResult> {
         let pattern = args["pattern"].as_str().unwrap_or("");
         let root = args["path"].as_str().unwrap_or(".");
         let Some(root_path) = resolve_walk_root(root, &args) else {
             return Ok(sandbox_path_denied_result(root, &args));
         };
         let matcher = build_grep_matcher(pattern)?;
-        let mut searcher = build_grep_searcher();
-        let mut out = Vec::new();
-        for entry in WalkBuilder::new(&root_path).build().flatten() {
-            if out.len() >= 100 {
-                break;
-            }
-            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                continue;
-            }
-            let path = entry.path();
-            if is_discovery_ignored_path(path) {
-                continue;
-            }
-            collect_grep_matches(&mut searcher, &matcher, path, &mut out, 100);
-        }
+        let state = Arc::new(GrepSearchState::new(
+            cancel.clone(),
+            100,
+            8,
+            progress.clone(),
+        ));
+        let mut builder = GrepParallelVisitorBuilder {
+            matcher: Arc::new(matcher),
+            state: Arc::clone(&state),
+            tool: "grep".to_string(),
+        };
+        WalkBuilder::new(&root_path)
+            .build_parallel()
+            .visit(&mut builder);
+        let out = state.sorted_hits();
+        let limit_reached = out.len() >= 100;
+        emit_grep_progress_done(
+            progress.as_ref(),
+            "grep",
+            &root_path,
+            out.len(),
+            limit_reached,
+            cancel.is_cancelled(),
+        );
         Ok(ToolResult {
-            output: out.join("\n"),
-            metadata: json!({"count": out.len(), "path": root_path.to_string_lossy()}),
+            output: out
+                .iter()
+                .map(|hit| format!("{}:{}:{}", hit.path, hit.line, hit.text))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            metadata: json!({
+                "count": out.len(),
+                "path": root_path.to_string_lossy(),
+                "truncated": limit_reached,
+                "cancelled": cancel.is_cancelled(),
+                "streaming": progress.is_some()
+            }),
         })
     }
 }
@@ -4850,10 +5105,31 @@ impl Tool for BatchTool {
         )
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        self.execute_with_cancel(args, CancellationToken::new())
+            .await
+    }
+
+    async fn execute_with_cancel(
+        &self,
+        args: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_with_progress(args, cancel, None).await
+    }
+
+    async fn execute_with_progress(
+        &self,
+        args: Value,
+        cancel: CancellationToken,
+        progress: Option<SharedToolProgressSink>,
+    ) -> anyhow::Result<ToolResult> {
         let calls = args["tool_calls"].as_array().cloned().unwrap_or_default();
         let registry = ToolRegistry::new();
         let mut outputs = Vec::new();
         for call in calls.iter().take(20) {
+            if cancel.is_cancelled() {
+                break;
+            }
             let Some(tool) = resolve_batch_call_tool_name(call) else {
                 continue;
             };
@@ -4861,7 +5137,14 @@ impl Tool for BatchTool {
                 continue;
             }
             let call_args = call.get("args").cloned().unwrap_or_else(|| json!({}));
-            let mut result = registry.execute(&tool, call_args.clone()).await?;
+            let mut result = registry
+                .execute_with_cancel_and_progress(
+                    &tool,
+                    call_args.clone(),
+                    cancel.clone(),
+                    progress.clone(),
+                )
+                .await?;
             if result.output.starts_with("Unknown tool:") {
                 if let Some(fallback_name) = call
                     .get("name")
@@ -4869,7 +5152,14 @@ impl Tool for BatchTool {
                     .map(str::trim)
                     .filter(|s| !s.is_empty() && *s != tool)
                 {
-                    result = registry.execute(fallback_name, call_args).await?;
+                    result = registry
+                        .execute_with_cancel_and_progress(
+                            fallback_name,
+                            call_args,
+                            cancel.clone(),
+                            progress.clone(),
+                        )
+                        .await?;
                 }
             }
             outputs.push(json!({
@@ -4960,7 +5250,9 @@ fn normalize_todos(items: Vec<Value>) -> Vec<Value> {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.trim().is_empty())
                 .map(ToString::to_string)
-                .unwrap_or_else(|| format!("todo-{}", TODO_SEQ.fetch_add(1, Ordering::Relaxed)));
+                .unwrap_or_else(|| {
+                    format!("todo-{}", TODO_SEQ.fetch_add(1, AtomicOrdering::Relaxed))
+                });
             let status = obj
                 .get("status")
                 .and_then(|v| v.as_str())
@@ -5051,10 +5343,22 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tandem_types::ToolProgressSink;
     use tempfile::TempDir;
     use tokio::fs;
     use tokio_util::sync::CancellationToken;
+
+    #[derive(Clone, Default)]
+    struct RecordingProgressSink {
+        events: Arc<Mutex<Vec<ToolProgressEvent>>>,
+    }
+
+    impl ToolProgressSink for RecordingProgressSink {
+        fn publish(&self, event: ToolProgressEvent) {
+            self.events.lock().expect("progress lock").push(event);
+        }
+    }
 
     struct TestTool {
         schema: ToolSchema,
@@ -5228,6 +5532,74 @@ mod tests {
             format!("{}:2:needle here", visible.display())
         );
         assert!(!result.output.contains(".tandem/private/secret.txt"));
+    }
+
+    #[tokio::test]
+    async fn grep_tool_streams_chunk_and_done_events() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let root = tempdir.path();
+        let first = root.join("a.txt");
+        let second = root.join("b.txt");
+
+        std::fs::write(
+            &first,
+            [
+                "needle a1",
+                "needle a2",
+                "needle a3",
+                "needle a4",
+                "needle a5",
+                "needle a6",
+            ]
+            .join("\n"),
+        )
+        .expect("write first file");
+        std::fs::write(
+            &second,
+            [
+                "needle b1",
+                "needle b2",
+                "needle b3",
+                "needle b4",
+                "needle b5",
+                "needle b6",
+            ]
+            .join("\n"),
+        )
+        .expect("write second file");
+
+        let sink = RecordingProgressSink::default();
+        let events = Arc::clone(&sink.events);
+        let progress: SharedToolProgressSink = Arc::new(sink);
+
+        let tool = GrepTool;
+        let result = tool
+            .execute_with_progress(
+                grep_args(root, "needle"),
+                CancellationToken::new(),
+                Some(progress),
+            )
+            .await
+            .expect("grep result");
+
+        assert_eq!(result.metadata["count"], json!(12));
+        let lines = result.output.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 12);
+        assert!(lines[0].starts_with(&first.display().to_string()));
+        assert!(lines[11].starts_with(&second.display().to_string()));
+
+        let events = events.lock().expect("events").clone();
+        assert!(!events.is_empty());
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "tool.search.chunk"));
+        let done = events
+            .iter()
+            .rev()
+            .find(|event| event.event_type == "tool.search.done")
+            .expect("done event");
+        assert_eq!(done.properties["count"], json!(12));
+        assert_eq!(done.properties["tool"], json!("grep"));
     }
 
     #[tokio::test]
