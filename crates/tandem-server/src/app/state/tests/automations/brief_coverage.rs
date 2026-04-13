@@ -34,6 +34,7 @@ fn brief_with_unreviewed_discovered_files_is_blocked_with_structured_metadata() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -146,6 +147,7 @@ fn research_brief_without_source_coverage_flag_gets_semantic_block_reason_and_ne
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({

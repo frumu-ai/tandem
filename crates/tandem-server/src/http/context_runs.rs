@@ -4655,6 +4655,7 @@ mod tests {
             output_contract: None,
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -4735,6 +4736,7 @@ mod tests {
             output_contract: None,
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({

@@ -11,6 +11,7 @@ fn bare_node() -> AutomationFlowNode {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -35,6 +36,7 @@ fn output_validator_defaults_follow_existing_runtime_heuristics() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -60,6 +62,7 @@ fn output_validator_defaults_follow_existing_runtime_heuristics() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: None,
@@ -80,6 +83,7 @@ fn output_validator_defaults_follow_existing_runtime_heuristics() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Review),
         gate: None,
         metadata: None,
@@ -117,6 +121,7 @@ fn output_validator_explicit_override_wins() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: None,
@@ -146,6 +151,7 @@ fn enrich_automation_node_output_overwrites_stale_validator_metadata() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: None,
@@ -232,6 +238,7 @@ fn artifact_validation_rejection_blocks_node_status() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -290,6 +297,7 @@ fn research_workflow_failure_kind_is_typed_from_unmet_requirements() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -365,6 +373,7 @@ fn research_workflow_status_is_needs_repair_before_repair_budget_is_exhausted() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -472,6 +481,7 @@ fn structured_json_node_requires_declared_workspace_files_for_current_attempt() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -561,6 +571,7 @@ fn structured_json_node_passes_when_declared_workspace_files_are_written() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -658,6 +669,7 @@ fn explicit_output_files_override_legacy_must_write_files() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -758,6 +770,7 @@ fn research_workflow_status_blocks_after_repair_budget_is_exhausted() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -822,6 +835,7 @@ fn research_workflow_status_ignores_llm_blocked_when_validation_is_repairable() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -881,6 +895,7 @@ fn research_workflow_status_keeps_blocked_when_repair_is_exhausted_even_if_llm_d
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -936,6 +951,7 @@ fn report_with_blocked_content_and_completed_status_is_not_blocked() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -984,6 +1000,7 @@ fn report_describing_test_failures_with_completed_status_passes() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1032,6 +1049,7 @@ fn explicit_blocked_status_still_detected() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1081,6 +1099,7 @@ fn render_automation_repair_brief_summarizes_previous_research_miss() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1158,6 +1177,7 @@ fn code_patch_repair_brief_mentions_patch_apply_test_loop() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1217,6 +1237,7 @@ fn render_automation_repair_brief_adds_final_attempt_escalation() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1266,6 +1287,7 @@ fn repair_brief_detects_activity_despite_empty_telemetry() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1350,6 +1372,7 @@ fn repair_attempt_with_concrete_read_and_changed_output_is_accepted() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1462,6 +1485,7 @@ fn automation_output_enforcement_prefers_contract_over_legacy_builder_metadata()
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1500,6 +1524,7 @@ fn automation_output_enforcement_backfills_research_contract_from_legacy_builder
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1545,6 +1570,7 @@ fn structured_handoff_workspace_bootstrap_nodes_treat_reads_as_optional() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: None,
@@ -1596,6 +1622,7 @@ fn bootstrap_workspace_output_nodes_require_inspection_but_not_concrete_reads() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -1639,6 +1666,7 @@ fn bootstrap_required_files_are_inferred_from_objective_paths_without_filename_h
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -1764,6 +1792,7 @@ fn research_nodes_default_to_five_attempts() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,

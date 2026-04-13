@@ -25,6 +25,7 @@ fn research_brief_passes_local_only_when_websearch_is_not_offered() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -115,6 +116,7 @@ fn research_brief_passes_when_source_audit_uses_markdown_tables() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({

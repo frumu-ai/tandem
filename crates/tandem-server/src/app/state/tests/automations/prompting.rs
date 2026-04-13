@@ -46,6 +46,7 @@ fn knowledge_context_is_injected_into_automation_prompt() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -145,6 +146,7 @@ fn connector_backed_automation_prompt_surfaces_mcp_discovery_guidance() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -239,6 +241,7 @@ fn automation_prompt_clarifies_file_paths_are_not_directories() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -331,6 +334,7 @@ fn bootstrap_prompt_allows_required_workspace_writes_beyond_run_artifact() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -438,6 +442,7 @@ fn prompt_resolves_reserved_runtime_placeholders_for_run() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -555,6 +560,7 @@ fn final_prompt_surfaces_automation_output_targets_as_required_workspace_writes(
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -658,6 +664,7 @@ fn first_attempt_research_prompt_requires_completed_status() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -767,6 +774,7 @@ fn code_patch_prompt_includes_code_agent_contract_instructions() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -845,6 +853,7 @@ fn automation_node_required_tools_reads_builder_metadata() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -903,6 +912,7 @@ fn wildcard_automation_allowlist_expands_to_minimal_research_tools() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -943,6 +953,7 @@ fn wildcard_automation_allowlist_keeps_email_delivery_tools_narrow() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1001,6 +1012,7 @@ fn wildcard_automation_allowlist_recognizes_outlook_reply_and_compose_email_tool
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1092,6 +1104,7 @@ fn structured_json_prompt_requires_json_only_without_follow_up_questions() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -1199,6 +1212,7 @@ fn handoff_only_structured_json_prompt_strips_internal_context_writes() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -1310,6 +1324,7 @@ fn json_output_artifact_prompt_requires_response_body_backup_copy() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1405,6 +1420,7 @@ fn external_research_prompt_handles_missing_websearch_tool() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -1539,6 +1555,7 @@ fn render_prompt_normalizes_upstream_research_paths_from_sources_root() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({

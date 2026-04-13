@@ -218,6 +218,48 @@ cargo test -p tandem test_parse_task_list_strict -- --nocapture
 cargo test -p tandem test_parse_validation_result_strict_rejects_prose -- --nocapture
 ```
 
+## Workflow test recovery loop
+
+When working on workflow runtime correctness, use this loop:
+
+1. Reproduce the issue from live workflow output or `error.log`.
+2. Add or extend a regression test before changing the runtime.
+3. Fix the runtime behavior.
+4. Re-run the fast tandem-server workflow baseline.
+5. Run a targeted deeper test only after the baseline is green.
+
+Recommended commands from `tandem/`:
+
+```bash
+# First recovery gate: ensure tandem-server workflow tests compile
+cargo test -p tandem-server --lib --tests --no-run
+
+# Fast validation after focused workflow-runtime edits
+cargo check -p tandem-server --lib
+
+# Focused workflow policy / validation areas
+cargo test -p tandem-server workflow_policy -- --nocapture
+cargo test -p tandem-server validation_ -- --nocapture
+
+# Broad tandem-server test run once the baseline is healthy
+cargo test -p tandem-server --lib --tests
+```
+
+Workflow-specific expectations:
+
+- Treat `cargo test -p tandem-server --lib --tests --no-run` as the minimum required health check before claiming workflow test coverage is restored.
+- Prefer regression tests for contradictions between validator state, stored run state, projected backlog state, and API-visible status.
+- If a focused named test is blocked by an unrelated workspace dependency compile error, record that blocker explicitly and keep the tandem-server no-run baseline green while the dependency issue is fixed.
+
+Current fast-gate invariant candidates:
+
+```bash
+cargo test -p tandem-server recover_in_flight_runs_does_not_relock_workspace_for_paused_runs -- --exact
+cargo test -p tandem-server automation_v2_run_projects_backlog_tasks_into_context_blackboard -- --exact
+cargo test -p tandem-server mcp_grounded_citations_artifact_passes_without_local_reads_or_websearch -- --exact
+cargo test -p tandem-server materialized_current_attempt_output_does_not_report_missing_output_requirement -- --exact
+```
+
 Desktop/CLI runtime contract closure tests:
 
 ```bash

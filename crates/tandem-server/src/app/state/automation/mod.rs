@@ -575,6 +575,56 @@ fn automation_connector_hint_text(node: &AutomationFlowNode) -> String {
     .join("\n")
 }
 
+fn automation_tool_telemetry_selected_mcp_servers(tool_telemetry: &Value) -> Vec<String> {
+    tool_telemetry
+        .get("capability_resolution")
+        .and_then(|value| value.get("mcp_tool_diagnostics"))
+        .and_then(|value| value.get("selected_servers"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn automation_tool_telemetry_has_mcp_usage(tool_telemetry: &Value) -> bool {
+    tool_telemetry
+        .get("executed_tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools.iter().any(|value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .is_some_and(|tool| tool.starts_with("mcp."))
+            })
+        })
+}
+
+fn automation_node_is_mcp_grounded_citations_artifact(
+    node: &AutomationFlowNode,
+    tool_telemetry: &Value,
+) -> bool {
+    let contract_kind = node
+        .output_contract
+        .as_ref()
+        .map(|contract| contract.kind.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    if contract_kind != "citations" {
+        return false;
+    }
+    let selected_servers = automation_tool_telemetry_selected_mcp_servers(tool_telemetry);
+    if selected_servers.is_empty() && !enforcement::automation_node_prefers_mcp_servers(node) {
+        return false;
+    }
+    automation_tool_telemetry_has_mcp_usage(tool_telemetry)
+}
+
 fn automation_text_mentions_mcp_server(text: &str, server_name: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
     let lowered_server = server_name.to_ascii_lowercase();
@@ -4559,6 +4609,8 @@ pub(crate) fn validate_automation_artifact_output_with_context(
     let mut artifact_candidates = Vec::<Value>::new();
     let mut accepted_candidate_source = None::<String>;
     let mut blocked_handoff_cleanup_action = None::<String>;
+    let mcp_grounded_citations_artifact =
+        automation_node_is_mcp_grounded_citations_artifact(node, tool_telemetry);
     let execution_mode = execution_policy
         .get("mode")
         .and_then(Value::as_str)
@@ -5000,6 +5052,16 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .iter()
             .any(|item| item == "web_sources_reviewed")
             && !web_research_unavailable;
+        let requires_local_source_reads =
+            requires_local_source_reads && !mcp_grounded_citations_artifact;
+        let requires_external_sources =
+            requires_external_sources && !mcp_grounded_citations_artifact;
+        let requires_files_reviewed = requires_files_reviewed && !mcp_grounded_citations_artifact;
+        let requires_files_not_reviewed =
+            requires_files_not_reviewed && !mcp_grounded_citations_artifact;
+        let requires_citations = requires_citations && !mcp_grounded_citations_artifact;
+        let requires_web_sources_reviewed =
+            requires_web_sources_reviewed && !mcp_grounded_citations_artifact;
         let has_research_contract = requires_local_source_reads
             || requires_external_sources
             || requires_files_reviewed
@@ -5038,9 +5100,10 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 && !selected_assessment
                     .is_some_and(|assessment| assessment.web_sources_reviewed_present)
                 && !upstream_web_sources_reviewed;
-            let preserve_current_attempt_output_missing = unmet_requirements
-                .iter()
-                .any(|value| value == "current_attempt_output_missing");
+            let preserve_current_attempt_output_missing = !current_attempt_output_materialized
+                && unmet_requirements
+                    .iter()
+                    .any(|value| value == "current_attempt_output_missing");
             unmet_requirements.clear();
             if preserve_current_attempt_output_missing {
                 unmet_requirements.push("current_attempt_output_missing".to_string());

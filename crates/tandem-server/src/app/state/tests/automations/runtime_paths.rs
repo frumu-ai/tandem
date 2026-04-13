@@ -18,6 +18,7 @@ fn standard_workflow_nodes_receive_default_workspace_output_paths() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -59,6 +60,7 @@ fn report_markdown_retries_accept_html_sibling_outputs() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -141,6 +143,7 @@ fn automation_resolve_verified_output_path_accepts_file_path_schema_with_dot_seg
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -203,6 +206,7 @@ fn citations_nodes_do_not_require_files_reviewed_sections_by_default() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -252,6 +256,7 @@ fn collect_inputs_nodes_write_deterministic_inline_artifacts() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -317,6 +322,7 @@ fn collect_inputs_without_explicit_inputs_do_not_use_deterministic_inline_artifa
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({

@@ -352,6 +352,7 @@ fn report_markdown_completed_status_does_not_trigger_blocked_handoff_cleanup() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -563,6 +564,7 @@ fn runnable_write_scope_filter_skips_overlapping_code_nodes() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -582,6 +584,7 @@ fn runnable_write_scope_filter_skips_overlapping_code_nodes() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -601,6 +604,7 @@ fn runnable_write_scope_filter_skips_overlapping_code_nodes() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -635,6 +639,7 @@ fn runnable_write_scope_filter_allows_non_code_nodes_to_run_in_parallel() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -676,6 +681,7 @@ fn runnable_write_scope_filter_allows_non_code_nodes_to_run_in_parallel() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -713,6 +719,7 @@ fn generic_required_tools_prewrite_requirements_enable_repair() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -776,6 +783,7 @@ fn research_finalize_prewrite_requirements_skip_same_node_reads_and_websearch() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -823,6 +831,7 @@ fn explicit_input_files_skip_workspace_inspection_but_still_require_concrete_rea
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -865,6 +874,7 @@ fn generic_required_tools_validation_needs_repair_when_read_unused() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -980,6 +990,7 @@ fn generic_required_tools_nodes_default_to_five_attempts() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1045,6 +1056,7 @@ fn first_attempt_required_tools_prompt_requires_completed_status() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1159,6 +1171,7 @@ fn first_attempt_required_tools_prompt_without_output_path_requires_handoff() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -1261,6 +1274,7 @@ fn prompt_includes_inline_metadata_inputs_and_temp_file_warning() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1361,6 +1375,7 @@ fn collect_inputs_prompt_requires_reading_before_writing() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1468,6 +1483,7 @@ fn prompt_includes_email_delivery_metadata_for_notify_user() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1594,6 +1610,7 @@ fn prompt_compacts_upstream_outputs_for_downstream_nodes() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -1725,6 +1742,7 @@ async fn execute_collect_inputs_node_uses_deterministic_shortcut() {
                 }),
                 retry_policy: None,
                 timeout_ms: None,
+                max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
                 metadata: Some(json!({
@@ -1912,6 +1930,7 @@ async fn automation_run_requeue_increments_attempt_counter() {
                 }),
                 retry_policy: None,
                 timeout_ms: None,
+                max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
                 metadata: Some(json!({
@@ -2513,6 +2532,7 @@ async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
                 output_contract: None,
                 retry_policy: None,
                 timeout_ms: None,
+                max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
                 metadata: None,
@@ -2799,6 +2819,7 @@ async fn automation_node_prompt_timeout_cancels_the_session() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: Some(1),
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -3113,6 +3134,7 @@ fn first_attempt_structured_json_prompt_without_output_path_requires_handoff_eve
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -3178,6 +3200,7 @@ fn report_generation_objective_does_not_imply_email_delivery_execution() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3208,6 +3231,7 @@ fn execute_goal_objective_with_gmail_draft_or_send_requires_email_delivery() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -3234,6 +3258,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -3294,6 +3319,7 @@ fn research_workflow_failure_kind_detects_missing_citations() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3347,6 +3373,7 @@ fn research_workflow_defaults_to_warning_without_strict_source_coverage() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3428,6 +3455,7 @@ fn artifact_validation_uses_structured_repair_exhaustion_state_from_session_text
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3519,6 +3547,7 @@ fn research_artifact_validation_requires_citations_and_web_sources_reviewed() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3641,6 +3670,7 @@ fn research_citations_validation_accepts_external_research_without_files_reviewe
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3799,6 +3829,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     }),
                     retry_policy: None,
                     timeout_ms: None,
+                    max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
                     metadata: Some(json!({
@@ -3832,6 +3863,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     }),
                     retry_policy: None,
                     timeout_ms: None,
+                    max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
                     metadata: None,
@@ -4006,6 +4038,7 @@ fn research_finalize_validation_accepts_upstream_read_evidence() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -4158,6 +4191,7 @@ fn generic_artifact_validation_rejects_stale_verified_output_on_retry() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4248,6 +4282,7 @@ fn mcp_grounding_citations_accept_verified_output_without_local_read_gates() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4341,6 +4376,7 @@ fn generic_artifact_validation_warns_on_weak_report_markdown() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4434,6 +4470,7 @@ fn publish_node_blocks_when_upstream_editorial_validation_failed() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -4488,6 +4525,7 @@ fn report_markdown_blocks_when_rich_upstream_evidence_is_reduced_to_generic_summ
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4608,6 +4646,7 @@ fn report_markdown_accepts_structured_synthesis_without_inline_citations_when_up
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4721,6 +4760,7 @@ fn report_markdown_legacy_metadata_is_forced_to_strict_without_emergency_rollbac
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -4850,6 +4890,7 @@ fn report_markdown_legacy_quality_mode_allows_generic_synthesis_with_emergency_r
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -4978,6 +5019,7 @@ fn report_markdown_rejects_generic_synthesis_without_evidence_anchors_when_upstr
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5094,6 +5136,7 @@ fn report_markdown_accepts_rich_html_synthesis_when_upstream_is_rich() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5225,6 +5268,7 @@ fn report_markdown_rejects_generic_html_synthesis_without_evidence_anchors_when_
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5357,6 +5401,7 @@ fn research_brief_full_pipeline_overrides_llm_blocked_to_needs_repair_without_so
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({

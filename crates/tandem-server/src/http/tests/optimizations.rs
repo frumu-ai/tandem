@@ -55,6 +55,7 @@ fn sample_automation(workspace_root: &str) -> crate::AutomationV2Spec {
                 }),
                 retry_policy: Some(json!({"max_attempts": 1})),
                 timeout_ms: Some(60_000),
+                max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
                 metadata: None,

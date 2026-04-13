@@ -28,6 +28,7 @@ fn bare_node() -> AutomationFlowNode {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -1427,6 +1428,7 @@ async fn reconcile_verified_output_path_waits_for_late_file_visibility() {
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -1479,6 +1481,7 @@ async fn reconcile_verified_output_path_times_out_when_file_never_appears() {
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -1537,6 +1540,7 @@ async fn reconcile_verified_output_path_marks_stale_existing_run_output_as_not_c
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -1597,6 +1601,7 @@ async fn reconcile_verified_output_path_recovers_json_artifact_from_session_text
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -1661,6 +1666,7 @@ async fn reconcile_verified_output_path_unwraps_json_handoff_wrapper_from_sessio
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -1735,6 +1741,7 @@ async fn reconcile_verified_output_path_promotes_legacy_workspace_artifact_into_
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -1812,6 +1819,7 @@ async fn reconcile_verified_output_path_does_not_promote_unrelated_workspace_fil
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({

@@ -18,6 +18,7 @@ fn summarize_automation_tool_activity_recovers_tools_from_synthetic_summary() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -84,6 +85,7 @@ fn summarize_automation_tool_activity_counts_auth_failed_websearch_as_attempted(
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -147,6 +149,7 @@ fn summarize_automation_tool_activity_treats_backend_unavailable_websearch_as_un
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -208,6 +211,7 @@ fn summarize_automation_tool_activity_treats_partial_websearch_with_results_as_s
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -281,6 +285,7 @@ fn summarize_automation_tool_activity_treats_runtime_websearch_string_result_as_
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -401,6 +406,7 @@ fn build_automation_attempt_evidence_captures_runtime_websearch_success() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -526,6 +532,7 @@ fn detect_automation_blocker_category_prefers_delivery_category_from_canonical_e
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -582,6 +589,7 @@ fn report_generation_objective_does_not_imply_email_delivery_execution() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -612,6 +620,7 @@ fn execute_goal_objective_with_gmail_draft_or_send_requires_email_delivery() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -638,6 +647,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: None,
@@ -698,6 +708,7 @@ fn research_workflow_failure_kind_detects_missing_citations() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -751,6 +762,7 @@ fn research_workflow_defaults_to_warning_without_strict_source_coverage() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -832,6 +844,7 @@ fn artifact_validation_uses_structured_repair_exhaustion_state_from_session_text
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -923,6 +936,7 @@ fn research_artifact_validation_requires_citations_and_web_sources_reviewed() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1048,6 +1062,7 @@ fn research_citations_validation_accepts_external_research_without_files_reviewe
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1133,6 +1148,115 @@ fn research_citations_validation_accepts_external_research_without_files_reviewe
 }
 
 #[test]
+fn mcp_grounded_citations_artifact_passes_without_local_reads_or_websearch() {
+    let workspace_root =
+        std::env::temp_dir().join(format!("tandem-mcp-citations-test-{}", now_ms()));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+
+    let output_path = ".tandem/runs/run-mcp-citations/artifacts/research-sources.json";
+    let node = AutomationNodeBuilder::new("research_sources")
+        .agent_id("researcher")
+        .objective("Research current product documentation through Tandem MCP")
+        .output_contract(AutomationFlowOutputContract {
+            kind: "citations".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return a citation handoff.".to_string()),
+        })
+        .metadata(json!({
+            "builder": {
+                "output_path": output_path,
+                "source_coverage_required": true,
+                "preferred_mcp_servers": ["tandem-mcp"]
+            }
+        }))
+        .build();
+    let mut session = Session::new(
+        Some("research sources via tandem mcp".to_string()),
+        Some(
+            workspace_root
+                .to_str()
+                .expect("workspace root string")
+                .to_string(),
+        ),
+    );
+    let artifact_text = "# Research Sources\n\n## Summary\nCollected current Tandem MCP documentation references.\n\n## Citations\n1. Tandem MCP Guide. Source note: tandem-mcp://docs/guide\n2. Tandem MCP API Reference. Source note: tandem-mcp://docs/api-reference\n";
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![
+            MessagePart::ToolInvocation {
+                tool: "mcp.tandem_mcp.search_docs".to_string(),
+                args: json!({"query":"research sources artifact contract"}),
+                result: Some(json!({"output":"Matched Tandem MCP docs"})),
+                error: None,
+            },
+            MessagePart::ToolInvocation {
+                tool: "write".to_string(),
+                args: json!({
+                    "path": output_path,
+                    "content": artifact_text,
+                }),
+                result: Some(json!({"output":"written"})),
+                error: None,
+            },
+        ],
+    ));
+
+    let tool_telemetry = json!({
+        "requested_tools": ["mcp.tandem_mcp.search_docs", "write"],
+        "executed_tools": ["mcp.tandem_mcp.search_docs", "write"],
+        "tool_call_counts": {
+            "mcp.tandem_mcp.search_docs": 1,
+            "write": 1
+        },
+        "capability_resolution": {
+            "mcp_tool_diagnostics": {
+                "selected_servers": ["tandem-mcp"]
+            }
+        }
+    });
+    let (_accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "Done\n\n{\"status\":\"completed\"}",
+        &tool_telemetry,
+        None,
+        Some((output_path.to_string(), artifact_text.to_string())),
+        &std::collections::BTreeSet::new(),
+    );
+
+    assert!(rejected.is_none());
+    assert_eq!(
+        artifact_validation
+            .get("validation_outcome")
+            .and_then(Value::as_str),
+        Some("passed")
+    );
+    assert!(!artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("current_attempt_output_missing"))));
+    assert!(!artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("no_concrete_reads"))));
+    assert!(!artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("missing_successful_web_research"))));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn marketing_template_automation_migrates_to_split_research_flow() {
     let mut automation = AutomationV2Spec {
         automation_id: "automation-v2-test".to_string(),
@@ -1206,6 +1330,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     }),
                     retry_policy: None,
                     timeout_ms: None,
+                    max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
                     metadata: Some(json!({
@@ -1239,6 +1364,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     }),
                     retry_policy: None,
                     timeout_ms: None,
+                    max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
                     metadata: None,
@@ -1413,6 +1539,7 @@ fn research_finalize_validation_accepts_upstream_read_evidence() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -1563,6 +1690,7 @@ fn generic_artifact_validation_blocks_weak_report_markdown() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1653,6 +1781,7 @@ fn publish_node_blocks_when_upstream_editorial_validation_failed() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -1707,6 +1836,7 @@ fn report_markdown_blocks_when_rich_upstream_evidence_is_reduced_to_generic_summ
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1827,6 +1957,7 @@ fn report_markdown_accepts_structured_synthesis_without_inline_citations_when_up
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -1940,6 +2071,7 @@ fn report_markdown_legacy_metadata_is_forced_to_strict_without_emergency_rollbac
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -2069,6 +2201,7 @@ fn report_markdown_legacy_quality_mode_allows_generic_synthesis_with_emergency_r
             }),
             retry_policy: None,
             timeout_ms: None,
+            max_tool_calls: None,
             stage_kind: None,
             gate: None,
             metadata: Some(json!({
@@ -2197,6 +2330,7 @@ fn report_markdown_rejects_generic_synthesis_without_evidence_anchors_when_upstr
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -2313,6 +2447,7 @@ fn report_markdown_accepts_rich_html_synthesis_when_upstream_is_rich() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -2444,6 +2579,7 @@ fn report_markdown_rejects_generic_html_synthesis_without_evidence_anchors_when_
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -2566,6 +2702,7 @@ fn execution_policy_reports_workflow_class() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -2590,6 +2727,7 @@ fn execution_policy_reports_workflow_class() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -2770,6 +2908,7 @@ fn code_workflow_verification_failure_sets_verify_failed_status() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -2823,6 +2962,7 @@ fn code_workflow_without_verification_run_is_blocked() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -2903,6 +3043,7 @@ fn collect_automation_external_action_receipts_records_bound_publisher_tools() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -3021,6 +3162,7 @@ fn collect_automation_external_action_receipts_ignores_non_outbound_nodes() {
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -3114,6 +3256,7 @@ fn collect_automation_external_action_receipts_stabilize_identity_across_retries
         output_contract: None,
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -3195,6 +3338,7 @@ fn code_workflow_with_full_verification_plan_reports_done() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3293,6 +3437,7 @@ fn code_workflow_with_partial_verification_is_blocked() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3379,6 +3524,7 @@ fn email_delivery_nodes_block_without_email_tool_execution() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3440,6 +3586,7 @@ fn email_delivery_nodes_request_repair_when_email_tools_were_offered_but_unused(
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3511,6 +3658,7 @@ fn email_delivery_nodes_without_email_tools_report_tool_unavailable_with_diagnos
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3625,6 +3773,7 @@ fn email_delivery_nodes_complete_after_email_tool_execution() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -3906,6 +4055,7 @@ fn code_workflow_rejects_unsafe_raw_source_rewrites() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4045,6 +4195,7 @@ fn research_finalize_prompt_includes_upstream_coverage_summary() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -4176,6 +4327,7 @@ fn data_json_rewrite_is_not_treated_as_unsafe_source_rewrite() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4276,6 +4428,7 @@ fn artifact_validation_restores_substantive_session_write_over_short_completion_
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4431,6 +4584,7 @@ fn artifact_validation_blocks_session_text_recovery_until_prewrite_is_satisfied(
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4524,6 +4678,7 @@ fn research_validation_does_not_accept_preexisting_output_without_current_attemp
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4618,6 +4773,7 @@ fn generic_artifact_validation_rejects_stale_preexisting_output_without_current_
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4713,6 +4869,7 @@ fn missing_required_output_requests_repair_before_attempt_budget_is_exhausted() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4749,6 +4906,94 @@ fn missing_required_output_requests_repair_before_attempt_budget_is_exhausted() 
 }
 
 #[test]
+fn materialized_current_attempt_output_does_not_report_missing_output_requirement() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-current-attempt-output-materialized-{}",
+        now_ms()
+    ));
+    std::fs::create_dir_all(workspace_root.join("outputs")).expect("create workspace");
+
+    let node = AutomationNodeBuilder::new("generate_report")
+        .agent_id("writer")
+        .objective("Generate the final report")
+        .output_contract(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        })
+        .metadata(json!({
+            "builder": {
+                "output_path": "outputs/generate-report.md"
+            }
+        }))
+        .build();
+    let artifact_text = "# Final Report\n\nCurrent-attempt artifact created successfully.\n";
+    let mut session = Session::new(
+        Some("generate report".to_string()),
+        Some(
+            workspace_root
+                .to_str()
+                .expect("workspace root string")
+                .to_string(),
+        ),
+    );
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "write".to_string(),
+            args: json!({
+                "path": "outputs/generate-report.md",
+                "content": artifact_text,
+            }),
+            result: Some(json!({"output":"written"})),
+            error: None,
+        }],
+    ));
+
+    let (accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root string"),
+        "Done\n\n{\"status\":\"completed\"}",
+        &json!({
+            "requested_tools": ["write"],
+            "executed_tools": ["write"],
+            "tool_call_counts": {"write": 1}
+        }),
+        None,
+        Some((
+            "outputs/generate-report.md".to_string(),
+            artifact_text.to_string(),
+        )),
+        &std::collections::BTreeSet::new(),
+    );
+
+    assert!(rejected.is_none(), "{artifact_validation:?}");
+    assert_eq!(
+        accepted_output.as_ref().map(|(path, _)| path.as_str()),
+        Some("outputs/generate-report.md")
+    );
+    assert_eq!(
+        artifact_validation
+            .get("validation_basis")
+            .and_then(Value::as_object)
+            .and_then(|value| value.get("current_attempt_output_materialized"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(!artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("current_attempt_output_missing"))));
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+#[test]
 fn required_tool_mode_write_unsatisfied_requests_repair_without_artifact_validation() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
@@ -4766,6 +5011,7 @@ fn required_tool_mode_write_unsatisfied_requests_repair_without_artifact_validat
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4813,6 +5059,7 @@ fn generic_artifact_semantic_block_requests_repair_before_attempt_budget_is_exha
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4865,6 +5112,7 @@ fn code_workflow_missing_verification_requests_repair() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4918,6 +5166,7 @@ fn code_workflow_without_structural_completion_signal_requests_repair() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -4972,6 +5221,7 @@ fn artifact_workflow_with_materialized_output_completes_without_explicit_status_
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5020,6 +5270,7 @@ fn code_workflow_accepts_status_json_when_it_appears_at_end_of_long_response() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5071,6 +5322,7 @@ fn code_workflow_accepts_fenced_status_json_after_markdown_summary() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5156,6 +5408,7 @@ fn report_markdown_validation_accepts_updated_verified_output_without_session_wr
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5308,6 +5561,7 @@ fn report_markdown_validation_rejects_bare_relative_artifact_hrefs() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5426,6 +5680,7 @@ fn research_validation_removes_blocked_handoff_artifact_without_preexisting_outp
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5509,6 +5764,7 @@ fn research_validation_restores_preexisting_output_without_accepting_blocked_han
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5597,6 +5853,7 @@ fn artifact_validation_prefers_structurally_stronger_candidate_without_phrase_ma
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5700,6 +5957,7 @@ fn completed_brief_without_read_is_blocked_even_if_it_looks_confident() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5751,6 +6009,7 @@ fn brief_with_timed_out_websearch_is_blocked_when_web_research_is_required() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5888,6 +6147,7 @@ fn brief_prewrite_requirements_follow_external_research_defaults() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -5949,6 +6209,7 @@ fn research_synthesis_prewrite_requirements_enable_repair_without_explicit_tools
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
@@ -6006,6 +6267,7 @@ fn brief_with_unreviewed_discovered_files_is_blocked_with_structured_metadata() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -6118,6 +6380,7 @@ fn research_brief_without_source_coverage_flag_gets_semantic_block_reason_and_ne
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -6235,6 +6498,7 @@ fn research_brief_full_pipeline_overrides_llm_blocked_to_needs_repair_without_so
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -6351,6 +6615,7 @@ fn research_brief_passes_when_websearch_is_auth_blocked_but_local_evidence_is_co
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -6467,6 +6732,7 @@ fn research_brief_passes_local_only_when_websearch_is_not_offered() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -6557,6 +6823,7 @@ fn research_brief_passes_when_source_audit_uses_markdown_tables() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: None,
         gate: None,
         metadata: Some(json!({
@@ -6688,6 +6955,7 @@ fn structured_handoff_nodes_fail_when_only_fallback_tool_summary_is_returned() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: None,
@@ -6766,6 +7034,7 @@ fn structured_handoff_missing_is_repairable_even_without_enforcement_metadata() 
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: None,
@@ -6890,6 +7159,7 @@ fn structured_handoff_nodes_require_concrete_reads_without_output_path() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: None,
@@ -6960,6 +7230,7 @@ fn wrap_automation_node_output_includes_parsed_structured_handoff() {
         }),
         retry_policy: None,
         timeout_ms: None,
+        max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: None,
