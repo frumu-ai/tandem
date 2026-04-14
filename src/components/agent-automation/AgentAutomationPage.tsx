@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { Button, Input } from "@/components/ui";
 import { ProjectSwitcher } from "@/components/sidebar";
-import { AutomationCalendar } from "@/components/agent-automation/AutomationCalendar";
 import {
   blockedNodeIds,
   completedNodeIds,
@@ -135,6 +134,11 @@ interface AgentAutomationPageProps {
   onOpenMcpExtensions?: () => void;
   initialRunId?: string | null;
 }
+
+const AutomationCalendar = lazy(async () => {
+  const mod = await import("@/components/agent-automation/AutomationCalendar");
+  return { default: mod.AutomationCalendar };
+});
 
 function buildDefaultWizard(
   activeProject: UserProject | null,
@@ -2483,12 +2487,20 @@ export function AgentAutomationPage({
             title="Workflow Calendar"
             subtitle="Week and day views for workflow automations. Legacy routines stay in the compatibility list for now."
           >
-            <AutomationCalendar
-              events={calendarEvents}
-              onRangeChange={setCalendarRange}
-              onOpenAutomation={openEditDraft}
-              onEventDrop={(info) => void updateCalendarAutomationFromEvent(info)}
-            />
+            <Suspense
+              fallback={
+                <div className="flex min-h-[220px] items-center justify-center rounded-lg border border-border bg-surface/40 text-sm text-text-muted">
+                  Loading workflow calendar...
+                </div>
+              }
+            >
+              <AutomationCalendar
+                events={calendarEvents}
+                onRangeChange={setCalendarRange}
+                onOpenAutomation={openEditDraft}
+                onEventDrop={(info) => void updateCalendarAutomationFromEvent(info)}
+              />
+            </Suspense>
           </SectionCard>
         ) : null}
 

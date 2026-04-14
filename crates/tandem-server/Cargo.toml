@@ -1,6 +1,6 @@
 [package]
 name = "tandem-server"
-version = "0.4.27"
+version = "0.4.28"
 description = "HTTP server for Tandem engine APIs"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -37,24 +37,25 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 zip = "2.4.2"
-tandem-core = { path = "../tandem-core", version = "0.4.27" }
-tandem-providers = { path = "../tandem-providers", version = "0.4.27" }
-tandem-runtime = { path = "../tandem-runtime", version = "0.4.27" }
-tandem-tools = { path = "../tandem-tools", version = "0.4.27" }
-tandem-skills = { path = "../tandem-skills", version = "0.4.27" }
-tandem-memory = { path = "../tandem-memory", version = "0.4.27", features = ["local-embeddings"] }
-tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.4.27" }
-tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.4.27" }
-tandem-types = { path = "../tandem-types", version = "0.4.27" }
-tandem-workflows = { path = "../tandem-workflows", version = "0.4.27" }
-tandem-wire = { path = "../tandem-wire", version = "0.4.27" }
-tandem-channels = { path = "../tandem-channels", version = "0.4.27" }
-tandem-browser = { path = "../tandem-browser", version = "0.4.27", optional = true }
-tandem-observability = { path = "../tandem-observability", version = "0.4.27" }
-tandem-plan-compiler = { path = "../tandem-plan-compiler", version = "0.4.27" }
+tandem-core = { path = "../tandem-core", version = "0.4.28" }
+tandem-providers = { path = "../tandem-providers", version = "0.4.28" }
+tandem-runtime = { path = "../tandem-runtime", version = "0.4.28" }
+tandem-tools = { path = "../tandem-tools", version = "0.4.28" }
+tandem-skills = { path = "../tandem-skills", version = "0.4.28" }
+tandem-memory = { path = "../tandem-memory", version = "0.4.28", features = ["local-embeddings"] }
+tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.4.28" }
+tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.4.28" }
+tandem-types = { path = "../tandem-types", version = "0.4.28" }
+tandem-workflows = { path = "../tandem-workflows", version = "0.4.28" }
+tandem-wire = { path = "../tandem-wire", version = "0.4.28" }
+tandem-channels = { path = "../tandem-channels", version = "0.4.28" }
+tandem-browser = { path = "../tandem-browser", version = "0.4.28", optional = true }
+tandem-observability = { path = "../tandem-observability", version = "0.4.28" }
+tandem-plan-compiler = { path = "../tandem-plan-compiler", version = "0.4.28" }
 
 [dev-dependencies]
 tower = "0.5"
+
 
 
 

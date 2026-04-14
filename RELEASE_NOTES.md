@@ -2,6 +2,11 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.28 (Released 2026-04-14)
+
+- **Packaged desktop startup crash after engine-ready**: Installed Tauri builds no longer eagerly load the workflow calendar and diff viewer libraries during desktop startup, preventing the `Cannot read properties of null (reading 'cssRules')` frontend crash that blocked the PIN/login UI from appearing after the backend came up.
+- **Desktop route-level code splitting**: The automation calendar and diff viewer now lazy-load only when those views are opened, keeping heavy CSS-in-JS and FullCalendar initialization out of the initial desktop boot path.
+
 ## v0.4.27 (Released 2026-04-14)
 
 - **Packaged desktop startup diagnostics**: The Tauri desktop app now boots through a lightweight startup loader before importing the full React workspace, so installed builds surface chunk-load and top-level frontend boot failures instead of hanging on the splash after the engine is ready.

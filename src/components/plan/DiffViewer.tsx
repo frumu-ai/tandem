@@ -1,5 +1,9 @@
-import { useMemo } from "react";
-import ReactDiffViewer from "react-diff-viewer-continued";
+import { Suspense, lazy, useMemo } from "react";
+
+const ReactDiffViewer = lazy(async () => {
+  const mod = await import("react-diff-viewer-continued");
+  return { default: mod.default };
+});
 
 interface DiffViewerProps {
   oldValue: string;
@@ -77,17 +81,25 @@ export function DiffViewer({
 
   return (
     <div className="rounded-lg overflow-hidden border border-border">
-      <ReactDiffViewer
-        oldValue={oldValue}
-        newValue={newValue}
-        leftTitle={oldTitle}
-        rightTitle={newTitle}
-        splitView={splitView}
-        useDarkTheme={true}
-        styles={styles}
-        showDiffOnly={false}
-        compareMethod={"diffWords" as any}
-      />
+      <Suspense
+        fallback={
+          <div className="flex min-h-[180px] items-center justify-center bg-surface-elevated/50 text-sm text-text-muted">
+            Loading diff viewer...
+          </div>
+        }
+      >
+        <ReactDiffViewer
+          oldValue={oldValue}
+          newValue={newValue}
+          leftTitle={oldTitle}
+          rightTitle={newTitle}
+          splitView={splitView}
+          useDarkTheme={true}
+          styles={styles}
+          showDiffOnly={false}
+          compareMethod={"diffWords" as any}
+        />
+      </Suspense>
     </div>
   );
 }

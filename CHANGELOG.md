@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.28] - Released 2026-04-14
+
+### Fixed
+
+- **Packaged desktop startup crash after engine-ready**: Installed Tauri builds no longer eagerly load the workflow calendar and diff viewer libraries during desktop startup, preventing the `Cannot read properties of null (reading 'cssRules')` frontend crash that blocked the PIN/login UI from appearing after the backend came up.
+- **Desktop route-level code splitting**: The automation calendar and diff viewer now lazy-load only when those views are opened, keeping heavy CSS-in-JS and FullCalendar initialization out of the initial desktop boot path.
+
 ## [0.4.27] - Released 2026-04-14
 
 ### Fixed

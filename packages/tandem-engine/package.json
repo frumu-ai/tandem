@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem",
-  "version": "0.4.27",
+  "version": "0.4.28",
   "description": "Tandem master CLI and engine binary distribution",
   "homepage": "https://tandem.ac",
   "bin": {
