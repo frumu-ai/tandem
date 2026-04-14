@@ -312,6 +312,16 @@ cargo test -p tandem-server --lib --tests --no-run --message-format=json
    - record the unrelated blocker explicitly in the release notes or handoff
    - do not mark workflow coverage restored unless the focused workflow subset is also green
 
+## Workflow bug replay loop
+
+For workflow-runtime failures, follow the replay process in [Workflow Bug Replay Guide](./WORKFLOW_BUG_REPLAY.md).
+
+Short rule:
+
+- do not merge or release a workflow-runtime fix unless a deterministic replay regression exists
+- prefer the narrowest replay test that protects the bug class
+- if the escaped bug is release-relevant, add that replay to the deep gate or targeted release subset
+
 Desktop/CLI runtime contract closure tests:
 
 ```bash

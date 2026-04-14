@@ -21,6 +21,7 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [GitHub Projects via MCP](./MCP_IMPROVEMENTS.md#implementation-note-github-projects-via-mcp) - Tandem auto-registers the official GitHub MCP server when a PAT is available, so GitHub Projects work without manual `mcp add`.
 - [Memory Tiers and Governance](./design/MEMORY_TIERS.md) - Global memory model, safety boundaries, and API/event contracts.
 - [Workflow Automation Runtime](./WORKFLOW_RUNTIME.md) - How Tandem's workflow runtime produces verifiable, trustworthy artifacts across multi-stage AI pipelines.
+- [Workflow Bug Replay Guide](./WORKFLOW_BUG_REPLAY.md) - How to turn live workflow failures into deterministic replay regressions and release gates.
 
 ## SDK & Development
 

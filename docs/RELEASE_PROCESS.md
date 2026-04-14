@@ -93,6 +93,8 @@ Before creating a release, ensure:
 - [ ] All changes are committed and pushed to `main`
 - [ ] `CHANGELOG.md` is updated with the new version
 - [ ] `RELEASE_NOTES.md` is updated with detailed release notes
+- [ ] Workflow-runtime fixes since the previous release have replay coverage
+- [ ] Workflow fast gate and deep gate are green for release-relevant workflow changes
 - [ ] **Version numbers are updated in ALL three files** (critical for auto-updater):
   - `src-tauri/tauri.conf.json` - **REQUIRED** (this is what the app reports as its version)
   - `package.json` - **REQUIRED**
@@ -151,6 +153,15 @@ Once the build completes:
 2. Verify the new release is published
 3. Check that all platform binaries are attached
 4. Review the auto-generated release notes
+
+## Workflow Runtime Release Rules
+
+If the release includes changes to workflow prompting, validation, repair routing, delivery routing, or status projection:
+
+1. Run the workflow release checklist in [Engine Testing](./ENGINE_TESTING.md).
+2. Confirm every workflow-runtime bug fix since the prior release has a deterministic replay regression.
+3. Use [Workflow Bug Replay Guide](./WORKFLOW_BUG_REPLAY.md) when converting operator-reported failures into regressions.
+4. Do not tag a release candidate if the workflow deep gate is red.
 
 ## Quick Reference
 
