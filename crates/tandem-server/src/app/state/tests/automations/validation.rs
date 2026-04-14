@@ -18,6 +18,157 @@ fn bare_node() -> AutomationFlowNode {
     }
 }
 
+struct StructuredJsonWriteMatrixCase<'a> {
+    name: &'a str,
+    output_files: &'a [&'a str],
+    writes: &'a [(&'a str, &'a str)],
+    expected_validation_outcome: &'a str,
+    expected_rejected: Option<&'a str>,
+    expected_missing_workspace_files: &'a [&'a str],
+}
+
+fn structured_json_write_matrix_node(output_files: &[&str]) -> AutomationFlowNode {
+    let mut builder = json!({
+        "output_path": "extract.json"
+    });
+    if !output_files.is_empty() {
+        builder["output_files"] = Value::Array(
+            output_files
+                .iter()
+                .map(|path| json!(path))
+                .collect::<Vec<_>>(),
+        );
+    }
+    AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "extract_pain_points".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Write synthesis".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": builder
+        })),
+    }
+}
+
+fn run_structured_json_write_matrix_case(case: StructuredJsonWriteMatrixCase<'_>) {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-structured-json-write-matrix-{}-{}",
+        case.name,
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let snapshot =
+        automation_workspace_root_file_snapshot(workspace_root.to_str().expect("workspace root"));
+    let node = structured_json_write_matrix_node(case.output_files);
+    let artifact_text =
+        "{\"status\":\"completed\",\"summary\":\"Synthesis artifact already written successfully.\"}"
+            .to_string();
+    std::fs::write(workspace_root.join("extract.json"), &artifact_text).expect("write artifact");
+
+    let mut session = Session::new(
+        Some(format!("structured-json-write-matrix-{}", case.name)),
+        Some(workspace_root.to_str().expect("workspace root").to_string()),
+    );
+    let mut parts = Vec::new();
+    parts.push(MessagePart::ToolInvocation {
+        tool: "write".to_string(),
+        args: json!({"path":"extract.json","content":artifact_text}),
+        result: Some(json!({"ok": true})),
+        error: None,
+    });
+    for (path, content) in case.writes {
+        if let Some(parent) = std::path::Path::new(path)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(workspace_root.join(parent)).expect("create write parent");
+        }
+        std::fs::write(workspace_root.join(path), content).expect("write side file");
+        parts.push(MessagePart::ToolInvocation {
+            tool: "write".to_string(),
+            args: json!({"path":path,"content":content}),
+            result: Some(json!({"ok": true})),
+            error: None,
+        });
+    }
+    session
+        .messages
+        .push(tandem_types::Message::new(MessageRole::Assistant, parts));
+
+    let tool_telemetry =
+        summarize_automation_tool_activity(&node, &session, &["write".to_string()]);
+    let (_accepted_output, metadata, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "{\"status\":\"completed\"}",
+        &tool_telemetry,
+        None,
+        Some(("extract.json".to_string(), artifact_text)),
+        &snapshot,
+    );
+
+    assert_eq!(
+        metadata.get("validation_outcome").and_then(Value::as_str),
+        Some(case.expected_validation_outcome),
+        "case={}",
+        case.name
+    );
+    assert_eq!(
+        rejected.as_deref(),
+        case.expected_rejected,
+        "case={}",
+        case.name
+    );
+    assert_eq!(
+        metadata
+            .get("validation_basis")
+            .and_then(|value| value.get("must_write_files"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        case.output_files
+            .iter()
+            .map(|path| Value::String((*path).to_string()))
+            .collect::<Vec<_>>(),
+        "case={}",
+        case.name
+    );
+    for expected_missing in case.expected_missing_workspace_files {
+        assert!(
+            metadata
+                .get("validation_basis")
+                .and_then(|value| value.get("must_write_file_statuses"))
+                .and_then(Value::as_array)
+                .is_some_and(|values| values.iter().any(|value| {
+                    value.get("path").and_then(Value::as_str) == Some(*expected_missing)
+                        && value
+                            .get("materialized_by_current_attempt")
+                            .and_then(Value::as_bool)
+                            == Some(false)
+                })),
+            "case={}",
+            case.name
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+}
+
 #[test]
 fn output_validator_defaults_follow_existing_runtime_heuristics() {
     let code = AutomationFlowNode {
@@ -869,6 +1020,47 @@ fn structured_json_node_requires_declared_workspace_files_for_current_attempt() 
         })));
 
     let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+#[test]
+fn structured_json_validation_matrix_covers_artifact_only_and_workspace_side_writes() {
+    let report_text = "# Reddit pain points\n\n- Brittle automations.\n";
+    let no_output_files: [&str; 0] = [];
+    let no_writes: [(&str, &str); 0] = [];
+    let no_missing_files: [&str; 0] = [];
+    let workspace_output_files = ["reports/pain-points.md"];
+    let workspace_missing_files = ["reports/pain-points.md"];
+    let workspace_writes = [("reports/pain-points.md", report_text)];
+    let cases = vec![
+        StructuredJsonWriteMatrixCase {
+            name: "artifact-only-pass",
+            output_files: &no_output_files,
+            writes: &no_writes,
+            expected_validation_outcome: "passed",
+            expected_rejected: None,
+            expected_missing_workspace_files: &no_missing_files,
+        },
+        StructuredJsonWriteMatrixCase {
+            name: "workspace-side-write-missing",
+            output_files: &workspace_output_files,
+            writes: &no_writes,
+            expected_validation_outcome: "blocked",
+            expected_rejected: Some("required workspace files were not written for this run"),
+            expected_missing_workspace_files: &workspace_missing_files,
+        },
+        StructuredJsonWriteMatrixCase {
+            name: "workspace-side-write-present",
+            output_files: &workspace_output_files,
+            writes: &workspace_writes,
+            expected_validation_outcome: "passed",
+            expected_rejected: None,
+            expected_missing_workspace_files: &no_missing_files,
+        },
+    ];
+
+    for case in cases {
+        run_structured_json_write_matrix_case(case);
+    }
 }
 
 #[test]
