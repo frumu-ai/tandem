@@ -58,6 +58,30 @@ struct RepairStateMatrixCase {
     expected_summary_outcome: &'static str,
 }
 
+struct UpstreamSynthesisMatrixCase {
+    name: &'static str,
+    node_id: &'static str,
+    output_path: &'static str,
+    artifact_text: &'static str,
+    session_text: &'static str,
+    write_path: &'static str,
+    tool_telemetry: Value,
+    upstream_evidence: AutomationUpstreamEvidence,
+    expected_validation_outcome: &'static str,
+    expected_rejected: Option<&'static str>,
+    expect_upstream_unsynthesized: bool,
+}
+
+struct CodeVerificationMatrixCase {
+    name: &'static str,
+    verification_command: Option<&'static str>,
+    session_text: &'static str,
+    tool_telemetry: Value,
+    expected_status: &'static str,
+    expected_reason: Option<&'static str>,
+    expected_failure_kind: Option<&'static str>,
+}
+
 fn structured_json_write_matrix_node(output_files: &[&str]) -> AutomationFlowNode {
     let mut builder = json!({
         "output_path": "extract.json"
@@ -482,6 +506,171 @@ fn run_repair_state_matrix_case(case: RepairStateMatrixCase) {
     );
     assert_eq!(
         summary.outcome, case.expected_summary_outcome,
+        "case={}",
+        case.name
+    );
+}
+
+fn report_markdown_synthesis_matrix_node(node_id: &str, output_path: &str) -> AutomationFlowNode {
+    AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: node_id.to_string(),
+        agent_id: "writer".to_string(),
+        objective: "Create the final report".to_string(),
+        depends_on: vec!["analyze_findings".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "analyze_findings".to_string(),
+            alias: "analysis".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": output_path
+            }
+        })),
+    }
+}
+
+fn run_upstream_synthesis_matrix_case(case: UpstreamSynthesisMatrixCase) {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-upstream-synthesis-matrix-{}-{}",
+        case.name,
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let snapshot =
+        automation_workspace_root_file_snapshot(workspace_root.to_str().expect("workspace root"));
+    let node = report_markdown_synthesis_matrix_node(case.node_id, case.output_path);
+    if let Some(parent) = std::path::Path::new(case.output_path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(workspace_root.join(parent)).expect("create output parent");
+    }
+    std::fs::write(workspace_root.join(case.output_path), case.artifact_text)
+        .expect("write output");
+
+    let mut session = Session::new(
+        Some(format!("upstream-synthesis-matrix-{}", case.name)),
+        Some(workspace_root.to_str().expect("workspace root").to_string()),
+    );
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "write".to_string(),
+            args: json!({
+                "path": case.write_path,
+                "content": case.artifact_text
+            }),
+            result: Some(json!("ok")),
+            error: None,
+        }],
+    ));
+
+    let (accepted_output, artifact_validation, rejected) =
+        validate_automation_artifact_output_with_upstream(
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root"),
+            None,
+            case.session_text,
+            &case.tool_telemetry,
+            None,
+            Some((case.output_path.to_string(), case.artifact_text.to_string())),
+            &snapshot,
+            Some(&case.upstream_evidence),
+        );
+
+    assert!(accepted_output.is_some(), "case={}", case.name);
+    assert_eq!(
+        artifact_validation
+            .get("validation_outcome")
+            .and_then(Value::as_str),
+        Some(case.expected_validation_outcome),
+        "case={}",
+        case.name
+    );
+    assert_eq!(
+        rejected.as_deref(),
+        case.expected_rejected,
+        "case={}",
+        case.name
+    );
+    assert_eq!(
+        artifact_validation
+            .get("unmet_requirements")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items
+                .iter()
+                .any(|value| value.as_str() == Some("upstream_evidence_not_synthesized"))),
+        case.expect_upstream_unsynthesized,
+        "case={}",
+        case.name
+    );
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+fn code_verification_matrix_node(verification_command: Option<&str>) -> AutomationFlowNode {
+    let mut builder = json!({
+        "task_kind": "code_change"
+    });
+    if let Some(command) = verification_command {
+        builder["verification_command"] = json!(command);
+    }
+    AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "implement".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Implement feature".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": builder
+        })),
+    }
+}
+
+fn run_code_verification_matrix_case(case: CodeVerificationMatrixCase) {
+    let node = code_verification_matrix_node(case.verification_command);
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(&node, case.session_text, None, &case.tool_telemetry, None);
+
+    assert_eq!(status, case.expected_status, "case={}", case.name);
+    assert_eq!(
+        reason.as_deref(),
+        case.expected_reason,
+        "case={}",
+        case.name
+    );
+    assert_eq!(approved, None, "case={}", case.name);
+    assert_eq!(
+        detect_automation_node_failure_kind(&node, &status, approved, reason.as_deref(), None)
+            .as_deref(),
+        case.expected_failure_kind,
         "case={}",
         case.name
     );
@@ -1150,73 +1339,6 @@ fn analyze_findings_retry_without_artifact_or_required_workspace_file_surfaces_d
 }
 
 #[test]
-fn research_workflow_status_is_needs_repair_before_repair_budget_is_exhausted() {
-    let node = AutomationFlowNode {
-        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        node_id: "research".to_string(),
-        agent_id: "agent-a".to_string(),
-        objective: "Research".to_string(),
-        depends_on: Vec::new(),
-        input_refs: Vec::new(),
-        output_contract: Some(AutomationFlowOutputContract {
-            kind: "brief".to_string(),
-            validator: None,
-            enforcement: None,
-            schema: None,
-            summary_guidance: None,
-        }),
-        retry_policy: None,
-        timeout_ms: None,
-        max_tool_calls: None,
-        stage_kind: None,
-        gate: None,
-        metadata: Some(json!({
-            "builder": {
-                "output_path": "marketing-brief.md",
-                "web_research_expected": true,
-                "source_coverage_required": true
-            }
-        })),
-    };
-    let tool_telemetry = json!({
-        "requested_tools": ["glob", "read", "websearch", "write"],
-        "executed_tools": ["glob", "write"],
-    });
-    let artifact_validation = json!({
-        "semantic_block_reason": "research completed without concrete file reads or required source coverage",
-        "unmet_requirements": ["no_concrete_reads", "missing_successful_web_research"],
-        "repair_exhausted": false,
-    });
-
-    let (status, reason, approved): (String, Option<String>, Option<bool>) =
-        detect_automation_node_status(
-            &node,
-            "Done — `marketing-brief.md` was written.",
-            Some(&(
-                "marketing-brief.md".to_string(),
-                "# Marketing Brief".to_string(),
-            )),
-            &tool_telemetry,
-            Some(&artifact_validation),
-        );
-
-    assert_eq!(status, "needs_repair");
-    assert!(matches!(
-        reason.as_deref(),
-        Some("research completed without concrete file reads or required source coverage")
-            | Some("research completed without required current web research")
-    ));
-    assert_eq!(approved, None);
-    let summary = build_automation_validator_summary(
-        crate::AutomationOutputValidatorKind::ResearchBrief,
-        &status,
-        reason.as_deref(),
-        Some(&artifact_validation),
-    );
-    assert_eq!(summary.outcome, "needs_repair");
-}
-
-#[test]
 fn node_with_bootstrap_intent_adds_workspace_inspection_prewrite_gate() {
     let mut node = bare_node();
     node.objective = "Initialize any missing directories or files if missing".to_string();
@@ -1576,6 +1698,165 @@ fn research_retry_state_matrix_covers_repairable_and_exhausted_statuses() {
 }
 
 #[test]
+fn upstream_synthesis_validation_matrix_covers_markdown_and_html_evidence_preservation() {
+    let thin_report = "# Strategic Summary\n\nTandem is an engineering agent for local execution.\n\n## Positioning\n\nIt connects human intent to repo changes.\n";
+    let structured_report = "# Strategy Analysis Report\n\n## 1. Executive Summary\nThis analysis synthesizes Tandem's internal product definitions and external research to refine positioning. Tandem is positioned as a high-autonomy engineering engine rather than a generic code assistant.\n\n## 2. Product Positioning\n* **Core Identity:** Tandem by Frumu AI\n* **Key Positioning:** Workspace-aware AI collaboration embedded in the engineering workflow.\n\n## 3. Risks & Proof Gaps\n* Need stronger empirical time-saved metrics.\n\n---\nSource verification: based on `.tandem/artifacts/collect-inputs.json` and `.tandem/artifacts/research-sources.json`.\n";
+    let generic_html_report = r#"
+<html>
+  <body>
+    <h1>Strategic Summary</h1>
+    <p>This report synthesizes the available upstream evidence into a concise outlook.</p>
+    <p>Strategic positioning remains promising.</p>
+  </body>
+</html>
+"#
+    .trim();
+    let anchored_html_report = r#"
+<html>
+  <body>
+    <h1>Frumu AI Tandem: Strategic Summary</h1>
+    <p>We synthesized the local Tandem docs and the external research into one report.</p>
+    <h3>Core Value Proposition</h3>
+    <p>Tandem is an engine-backed workflow system for local execution and agentic operations.</p>
+    <ul>
+      <li>Local workspace reads and patch-based code execution.</li>
+      <li>Current web research for externally grounded synthesis.</li>
+      <li>Explicit delivery gating for side effects.</li>
+    </ul>
+    <h3>Strategic Outlook</h3>
+    <p>The positioning emphasizes deterministic execution, provenance, and operator control.</p>
+    <p>Sources reviewed: <a href=".tandem/runs/run-123/artifacts/analyze-findings.md">analysis</a> and <a href=".tandem/runs/run-123/artifacts/research-sources.json">research</a>.</p>
+  </body>
+</html>
+"#
+    .trim();
+    let rich_upstream = AutomationUpstreamEvidence {
+        read_paths: vec![
+            ".tandem/artifacts/collect-inputs.json".to_string(),
+            ".tandem/artifacts/research-sources.json".to_string(),
+            ".tandem/artifacts/analyze-findings.md".to_string(),
+        ],
+        discovered_relevant_paths: vec![
+            ".tandem/artifacts/collect-inputs.json".to_string(),
+            ".tandem/artifacts/research-sources.json".to_string(),
+            ".tandem/artifacts/analyze-findings.md".to_string(),
+        ],
+        web_research_attempted: true,
+        web_research_succeeded: true,
+        citation_count: 3,
+        citations: vec![
+            "https://example.com/1".to_string(),
+            "https://example.com/2".to_string(),
+            "https://example.com/3".to_string(),
+        ],
+    };
+    let cases = vec![
+        UpstreamSynthesisMatrixCase {
+            name: "markdown-generic-summary-blocked",
+            node_id: "generate_report",
+            output_path: "report.md",
+            artifact_text: thin_report,
+            session_text: "Completed the report.",
+            write_path: "report.md",
+            tool_telemetry: json!({
+                "requested_tools": ["write"],
+                "executed_tools": ["write"],
+                "tool_call_counts": {
+                    "write": 1
+                }
+            }),
+            upstream_evidence: rich_upstream.clone(),
+            expected_validation_outcome: "blocked",
+            expected_rejected: Some(
+                "final artifact does not adequately synthesize the available upstream evidence",
+            ),
+            expect_upstream_unsynthesized: true,
+        },
+        UpstreamSynthesisMatrixCase {
+            name: "markdown-structured-synthesis-passes",
+            node_id: "analyze_findings",
+            output_path: "analyze-findings.md",
+            artifact_text: structured_report,
+            session_text: "Completed the report.",
+            write_path: "analyze-findings.md",
+            tool_telemetry: json!({
+                "requested_tools": ["read", "write"],
+                "executed_tools": ["read", "write"],
+                "tool_call_counts": {
+                    "read": 2,
+                    "write": 1
+                }
+            }),
+            upstream_evidence: AutomationUpstreamEvidence {
+                read_paths: vec![
+                    ".tandem/artifacts/collect-inputs.json".to_string(),
+                    ".tandem/artifacts/research-sources.json".to_string(),
+                ],
+                discovered_relevant_paths: vec![
+                    ".tandem/artifacts/collect-inputs.json".to_string(),
+                    "README.md".to_string(),
+                ],
+                web_research_attempted: true,
+                web_research_succeeded: true,
+                citation_count: 3,
+                citations: vec![
+                    "https://example.com/1".to_string(),
+                    "https://example.com/2".to_string(),
+                    "https://example.com/3".to_string(),
+                ],
+            },
+            expected_validation_outcome: "accepted_with_warnings",
+            expected_rejected: None,
+            expect_upstream_unsynthesized: false,
+        },
+        UpstreamSynthesisMatrixCase {
+            name: "html-generic-summary-blocked",
+            node_id: "generate_report",
+            output_path: "generate-report.md",
+            artifact_text: generic_html_report,
+            session_text: "Completed the report.",
+            write_path: "generate-report.md",
+            tool_telemetry: json!({
+                "requested_tools": ["write"],
+                "executed_tools": ["write"],
+                "tool_call_counts": {
+                    "write": 1
+                }
+            }),
+            upstream_evidence: rich_upstream.clone(),
+            expected_validation_outcome: "blocked",
+            expected_rejected: Some(
+                "final artifact does not adequately synthesize the available upstream evidence",
+            ),
+            expect_upstream_unsynthesized: true,
+        },
+        UpstreamSynthesisMatrixCase {
+            name: "html-anchored-synthesis-passes",
+            node_id: "generate_report",
+            output_path: "generate-report.md",
+            artifact_text: anchored_html_report,
+            session_text: "Completed the report.",
+            write_path: "generate-report.md",
+            tool_telemetry: json!({
+                "requested_tools": ["write"],
+                "executed_tools": ["write"],
+                "tool_call_counts": {
+                    "write": 1
+                }
+            }),
+            upstream_evidence: rich_upstream,
+            expected_validation_outcome: "passed",
+            expected_rejected: None,
+            expect_upstream_unsynthesized: false,
+        },
+    ];
+
+    for case in cases {
+        run_upstream_synthesis_matrix_case(case);
+    }
+}
+
+#[test]
 fn structured_json_node_passes_when_declared_workspace_files_are_written() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-must-write-present-{}",
@@ -1782,184 +2063,76 @@ fn explicit_output_files_override_legacy_must_write_files() {
 }
 
 #[test]
-fn research_workflow_status_blocks_after_repair_budget_is_exhausted() {
-    let node = AutomationFlowNode {
-        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        node_id: "research".to_string(),
-        agent_id: "agent-a".to_string(),
-        objective: "Research".to_string(),
-        depends_on: Vec::new(),
-        input_refs: Vec::new(),
-        output_contract: Some(AutomationFlowOutputContract {
-            kind: "brief".to_string(),
-            validator: None,
-            enforcement: None,
-            schema: None,
-            summary_guidance: None,
-        }),
-        retry_policy: None,
-        timeout_ms: None,
-        max_tool_calls: None,
-        stage_kind: None,
-        gate: None,
-        metadata: Some(json!({
-            "builder": {
-                "output_path": "marketing-brief.md",
-                "web_research_expected": true,
-                "source_coverage_required": true
-            }
-        })),
-    };
-    let tool_telemetry = json!({
-        "requested_tools": ["glob", "read", "websearch", "write"],
-        "executed_tools": ["glob", "write"],
-    });
-    let artifact_validation = json!({
-        "semantic_block_reason": "research completed without concrete file reads or required source coverage",
-        "unmet_requirements": ["no_concrete_reads", "missing_successful_web_research"],
-        "repair_exhausted": true,
-    });
+fn code_verification_status_matrix_covers_missing_failed_and_satisfied_checks() {
+    let cases = vec![
+        CodeVerificationMatrixCase {
+            name: "verification-failed",
+            verification_command: Some("cargo test"),
+            session_text: "Done\n\n{\"status\":\"completed\"}",
+            tool_telemetry: json!({
+                "requested_tools": ["glob", "read", "edit", "apply_patch", "write", "bash"],
+                "executed_tools": ["read", "apply_patch", "bash"],
+                "verification_expected": true,
+                "verification_ran": true,
+                "verification_failed": true,
+                "latest_verification_failure": "verification command failed with exit code 101: cargo test"
+            }),
+            expected_status: "verify_failed",
+            expected_reason: Some("verification command failed with exit code 101: cargo test"),
+            expected_failure_kind: Some("verification_failed"),
+        },
+        CodeVerificationMatrixCase {
+            name: "verification-missing",
+            verification_command: Some("cargo test"),
+            session_text: "Done\n\n{\"status\":\"completed\"}",
+            tool_telemetry: json!({
+                "requested_tools": ["glob", "read", "edit", "apply_patch", "write", "bash"],
+                "executed_tools": ["read", "apply_patch"],
+                "verification_expected": true,
+                "verification_ran": false,
+                "verification_failed": false
+            }),
+            expected_status: "needs_repair",
+            expected_reason: Some(
+                "coding task completed without running the declared verification command",
+            ),
+            expected_failure_kind: None,
+        },
+        CodeVerificationMatrixCase {
+            name: "verification-satisfied",
+            verification_command: Some("cargo test"),
+            session_text: "Done\n\n{\"status\":\"completed\"}",
+            tool_telemetry: json!({
+                "requested_tools": ["glob", "read", "edit", "apply_patch", "write", "bash"],
+                "executed_tools": ["read", "apply_patch", "bash"],
+                "verification_expected": true,
+                "verification_ran": true,
+                "verification_failed": false
+            }),
+            expected_status: "done",
+            expected_reason: None,
+            expected_failure_kind: Some("verification_passed"),
+        },
+        CodeVerificationMatrixCase {
+            name: "verification-not-required",
+            verification_command: None,
+            session_text: "Done\n\n{\"status\":\"completed\"}",
+            tool_telemetry: json!({
+                "requested_tools": ["glob", "read", "edit", "apply_patch", "write"],
+                "executed_tools": ["read", "apply_patch", "write"],
+                "verification_expected": false,
+                "verification_ran": false,
+                "verification_failed": false
+            }),
+            expected_status: "done",
+            expected_reason: None,
+            expected_failure_kind: Some("verification_passed"),
+        },
+    ];
 
-    let (status, reason, approved): (String, Option<String>, Option<bool>) =
-        detect_automation_node_status(
-            &node,
-            "Done — `marketing-brief.md` was written.",
-            Some(&(
-                "marketing-brief.md".to_string(),
-                "# Marketing Brief".to_string(),
-            )),
-            &tool_telemetry,
-            Some(&artifact_validation),
-        );
-
-    assert_eq!(status, "blocked");
-    assert_eq!(
-        detect_automation_node_failure_kind(
-            &node,
-            &status,
-            approved,
-            reason.as_deref(),
-            Some(&artifact_validation),
-        )
-        .as_deref(),
-        Some("research_retry_exhausted")
-    );
-}
-
-#[test]
-fn research_workflow_status_ignores_llm_blocked_when_validation_is_repairable() {
-    let node = AutomationFlowNode {
-        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        node_id: "research".to_string(),
-        agent_id: "agent-a".to_string(),
-        objective: "Research".to_string(),
-        depends_on: Vec::new(),
-        input_refs: Vec::new(),
-        output_contract: Some(AutomationFlowOutputContract {
-            kind: "brief".to_string(),
-            validator: None,
-            enforcement: None,
-            schema: None,
-            summary_guidance: None,
-        }),
-        retry_policy: None,
-        timeout_ms: None,
-        max_tool_calls: None,
-        stage_kind: None,
-        gate: None,
-        metadata: Some(json!({
-            "builder": {
-                "output_path": "marketing-brief.md",
-                "web_research_expected": true,
-                "source_coverage_required": true
-            }
-        })),
-    };
-    let tool_telemetry = json!({
-        "requested_tools": ["glob", "read", "websearch", "write"],
-        "executed_tools": ["glob", "write"],
-    });
-    let artifact_validation = json!({
-        "semantic_block_reason": "research completed without concrete file reads or required source coverage",
-        "unmet_requirements": ["no_concrete_reads", "missing_successful_web_research"],
-        "repair_exhausted": false,
-    });
-
-    let (status, reason, approved): (String, Option<String>, Option<bool>) =
-        detect_automation_node_status(
-            &node,
-            "The brief is blocked.\n\n{\"status\":\"blocked\",\"reason\":\"tools unavailable\"}",
-            Some(&(
-                "marketing-brief.md".to_string(),
-                "# Marketing Brief".to_string(),
-            )),
-            &tool_telemetry,
-            Some(&artifact_validation),
-        );
-
-    assert_eq!(status, "needs_repair");
-    assert!(matches!(
-        reason.as_deref(),
-        Some("research completed without concrete file reads or required source coverage")
-            | Some("research completed without required current web research")
-    ));
-    assert_eq!(approved, None);
-}
-
-#[test]
-fn research_workflow_status_keeps_blocked_when_repair_is_exhausted_even_if_llm_declares_blocked() {
-    let node = AutomationFlowNode {
-        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        node_id: "research".to_string(),
-        agent_id: "agent-a".to_string(),
-        objective: "Research".to_string(),
-        depends_on: Vec::new(),
-        input_refs: Vec::new(),
-        output_contract: Some(AutomationFlowOutputContract {
-            kind: "brief".to_string(),
-            validator: None,
-            enforcement: None,
-            schema: None,
-            summary_guidance: None,
-        }),
-        retry_policy: None,
-        timeout_ms: None,
-        max_tool_calls: None,
-        stage_kind: None,
-        gate: None,
-        metadata: Some(json!({
-            "builder": {
-                "output_path": "marketing-brief.md",
-                "web_research_expected": true,
-                "source_coverage_required": true
-            }
-        })),
-    };
-    let tool_telemetry = json!({
-        "requested_tools": ["glob", "read", "websearch", "write"],
-        "executed_tools": ["glob", "write"],
-    });
-    let artifact_validation = json!({
-        "semantic_block_reason": "research completed without concrete file reads or required source coverage",
-        "unmet_requirements": ["no_concrete_reads", "missing_successful_web_research"],
-        "repair_exhausted": true,
-    });
-
-    let (status, reason, approved): (String, Option<String>, Option<bool>) =
-        detect_automation_node_status(
-            &node,
-            "The brief is blocked.\n\n{\"status\":\"blocked\",\"reason\":\"tools unavailable\"}",
-            Some(&(
-                "marketing-brief.md".to_string(),
-                "# Marketing Brief".to_string(),
-            )),
-            &tool_telemetry,
-            Some(&artifact_validation),
-        );
-
-    assert_eq!(status, "blocked");
-    assert_eq!(reason.as_deref(), Some("tools unavailable"));
-    assert_eq!(approved, None);
+    for case in cases {
+        run_code_verification_matrix_case(case);
+    }
 }
 
 #[test]
