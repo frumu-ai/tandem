@@ -27,6 +27,27 @@ struct StructuredJsonWriteMatrixCase<'a> {
     expected_missing_workspace_files: &'a [&'a str],
 }
 
+struct ToolInvocationSpec {
+    tool: &'static str,
+    args: Value,
+    result: Value,
+}
+
+struct ResearchEvidenceMatrixCase {
+    name: &'static str,
+    node: AutomationFlowNode,
+    workspace_files: Vec<(&'static str, &'static str)>,
+    tool_invocations: Vec<ToolInvocationSpec>,
+    requested_tools: Vec<&'static str>,
+    accepted_output_path: &'static str,
+    accepted_output_content: &'static str,
+    session_text: &'static str,
+    expected_validation_outcome: &'static str,
+    expected_external_research_mode: Option<&'static str>,
+    absent_unmet: Vec<&'static str>,
+    expected_read_paths: Vec<&'static str>,
+}
+
 fn structured_json_write_matrix_node(output_files: &[&str]) -> AutomationFlowNode {
     let mut builder = json!({
         "output_path": "extract.json"
@@ -161,6 +182,205 @@ fn run_structured_json_write_matrix_case(case: StructuredJsonWriteMatrixCase<'_>
                             .and_then(Value::as_bool)
                             == Some(false)
                 })),
+            "case={}",
+            case.name
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+fn research_brief_matrix_node(
+    output_path: &str,
+    web_research_expected: bool,
+) -> AutomationFlowNode {
+    AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "research_brief".to_string(),
+        agent_id: "researcher".to_string(),
+        objective: "Write marketing brief".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "brief".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": output_path,
+                "web_research_expected": web_research_expected
+            }
+        })),
+    }
+}
+
+fn research_citations_matrix_node(
+    node_id: &str,
+    output_path: &str,
+    web_research_expected: bool,
+    preferred_mcp_servers: &[&str],
+) -> AutomationFlowNode {
+    let mut builder = json!({
+        "output_path": output_path,
+        "web_research_expected": web_research_expected,
+        "source_coverage_required": true
+    });
+    if !preferred_mcp_servers.is_empty() {
+        builder["preferred_mcp_servers"] = Value::Array(
+            preferred_mcp_servers
+                .iter()
+                .map(|server| json!(server))
+                .collect::<Vec<_>>(),
+        );
+    }
+    AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: node_id.to_string(),
+        agent_id: "researcher".to_string(),
+        objective: "Research sources for the current run".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "citations".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return a citation handoff.".to_string()),
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": builder
+        })),
+    }
+}
+
+fn run_research_evidence_matrix_case(case: ResearchEvidenceMatrixCase) {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-research-evidence-matrix-{}-{}",
+        case.name,
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    for (path, content) in &case.workspace_files {
+        if let Some(parent) = std::path::Path::new(path)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(workspace_root.join(parent)).expect("create input parent");
+        }
+        std::fs::write(workspace_root.join(path), content).expect("write workspace file");
+    }
+    if let Some(parent) = std::path::Path::new(case.accepted_output_path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(workspace_root.join(parent)).expect("create output parent");
+    }
+    std::fs::write(
+        workspace_root.join(case.accepted_output_path),
+        case.accepted_output_content,
+    )
+    .expect("write accepted output");
+
+    let mut session = Session::new(
+        Some(format!("research-evidence-matrix-{}", case.name)),
+        Some(workspace_root.to_str().expect("workspace root").to_string()),
+    );
+    let parts = case
+        .tool_invocations
+        .into_iter()
+        .map(|spec| MessagePart::ToolInvocation {
+            tool: spec.tool.to_string(),
+            args: spec.args,
+            result: Some(spec.result),
+            error: None,
+        })
+        .collect::<Vec<_>>();
+    session
+        .messages
+        .push(tandem_types::Message::new(MessageRole::Assistant, parts));
+
+    let tool_telemetry = summarize_automation_tool_activity(
+        &case.node,
+        &session,
+        &case
+            .requested_tools
+            .iter()
+            .map(|tool| (*tool).to_string())
+            .collect::<Vec<_>>(),
+    );
+    let (_accepted_output, artifact_validation, rejected) = validate_automation_artifact_output(
+        &case.node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        case.session_text,
+        &tool_telemetry,
+        None,
+        Some((
+            case.accepted_output_path.to_string(),
+            case.accepted_output_content.to_string(),
+        )),
+        &std::collections::BTreeSet::new(),
+    );
+
+    assert!(
+        rejected.is_none(),
+        "case={} rejected={rejected:?}",
+        case.name
+    );
+    assert_eq!(
+        artifact_validation
+            .get("validation_outcome")
+            .and_then(Value::as_str),
+        Some(case.expected_validation_outcome),
+        "case={}",
+        case.name
+    );
+    if let Some(expected_mode) = case.expected_external_research_mode {
+        assert_eq!(
+            artifact_validation
+                .get("external_research_mode")
+                .and_then(Value::as_str),
+            Some(expected_mode),
+            "case={}",
+            case.name
+        );
+    }
+    for unmet in case.absent_unmet {
+        assert!(
+            !artifact_validation
+                .get("unmet_requirements")
+                .and_then(Value::as_array)
+                .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(unmet))),
+            "case={}",
+            case.name
+        );
+    }
+    if !case.expected_read_paths.is_empty() {
+        let expected = case
+            .expected_read_paths
+            .iter()
+            .map(|path| json!(path))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            artifact_validation
+                .get("read_paths")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            expected,
             "case={}",
             case.name
         );
@@ -1060,6 +1280,149 @@ fn structured_json_validation_matrix_covers_artifact_only_and_workspace_side_wri
 
     for case in cases {
         run_structured_json_write_matrix_case(case);
+    }
+}
+
+#[test]
+fn research_evidence_validation_matrix_covers_local_web_mixed_and_mcp_grounding() {
+    let local_brief = "# Marketing Brief\n\n## Workspace source audit\nPrepared from workspace sources.\n\n## Campaign goal\nClarify positioning.\n\n## Target audience\n- Operators.\n\n## Core pain points\n- Coordination overhead.\n\n## Positioning angle\nTandem centralizes orchestration.\n\n## Competitor context\nLocal-only comparison for this run.\n\n## Proof points with citations\n1. Supported from docs/source.md. Source note: https://example.com/reference\n\n## Likely objections\n- Proof depth.\n\n## Channel considerations\n- Landing page.\n\n## Recommended message hierarchy\n1. Problem\n2. Promise\n\n## Files reviewed\n- docs/source.md\n\n## Files not reviewed\n- docs/extra.md: not needed for this first pass.\n";
+    let mixed_brief = "# Marketing Brief\n\n## Workspace source audit\nPrepared from workspace sources and current external research.\n\n## Campaign goal\nClarify positioning.\n\n## Target audience\n- Operators.\n\n## Core pain points\n- Coordination overhead.\n\n## Positioning angle\nTandem centralizes orchestration.\n\n## Competitor context\nExternal validation confirmed the same positioning pressure points.\n\n## Proof points with citations\n1. Supported from docs/source.md. Source note: https://example.com/reference\n2. Supported by current market coverage. Source note: https://example.com/current-market\n\n## Likely objections\n- Proof depth.\n\n## Channel considerations\n- Landing page.\n\n## Recommended message hierarchy\n1. Problem\n2. Promise\n\n## Files reviewed\n- docs/source.md\n\n## Files not reviewed\n- docs/extra.md: not needed for this pass.\n\n## Web sources reviewed\n- https://example.com/current-market\n";
+    let web_citations = "# Research Sources\n\n## Summary\nCurrent external research was gathered successfully.\n\n## Citations\n1. AI Agents in 2025: Expectations vs. Reality | IBM. Source note: https://www.ibm.com/think/insights/ai-agents-2025-expectations-vs-reality\n2. Agentic AI, explained | MIT Sloan. Source note: https://mitsloan.mit.edu/ideas-made-to-matter/agentic-ai-explained\n\n## Web sources reviewed\n- https://www.ibm.com/think/insights/ai-agents-2025-expectations-vs-reality\n- https://mitsloan.mit.edu/ideas-made-to-matter/agentic-ai-explained\n";
+    let mcp_citations = "# Research Sources\n\n## Summary\nCollected current Tandem MCP documentation references.\n\n## Citations\n1. Tandem MCP Guide. Source note: tandem-mcp://docs/guide\n2. Tandem MCP API Reference. Source note: tandem-mcp://docs/api-reference\n";
+    let cases = vec![
+        ResearchEvidenceMatrixCase {
+            name: "local-only",
+            node: research_brief_matrix_node("marketing-brief.md", true),
+            workspace_files: vec![("docs/source.md", "source")],
+            tool_invocations: vec![
+                ToolInvocationSpec {
+                    tool: "read",
+                    args: json!({"path":"docs/source.md"}),
+                    result: json!({"output":"source"}),
+                },
+                ToolInvocationSpec {
+                    tool: "write",
+                    args: json!({"path":"marketing-brief.md","content":local_brief}),
+                    result: json!({"ok": true}),
+                },
+            ],
+            requested_tools: vec!["glob", "read", "write"],
+            accepted_output_path: "marketing-brief.md",
+            accepted_output_content: local_brief,
+            session_text: "Done\n\n{\"status\":\"completed\"}",
+            expected_validation_outcome: "passed",
+            expected_external_research_mode: Some("waived_unavailable"),
+            absent_unmet: vec!["no_concrete_reads", "missing_successful_web_research"],
+            expected_read_paths: vec!["docs/source.md"],
+        },
+        ResearchEvidenceMatrixCase {
+            name: "web-grounded",
+            node: research_citations_matrix_node(
+                "research_sources",
+                ".tandem/artifacts/research-sources.json",
+                true,
+                &[],
+            ),
+            workspace_files: vec![("inputs/questions.md", "Question")],
+            tool_invocations: vec![
+                ToolInvocationSpec {
+                    tool: "read",
+                    args: json!({"path":"inputs/questions.md"}),
+                    result: json!({"output":"Question"}),
+                },
+                ToolInvocationSpec {
+                    tool: "websearch",
+                    args: json!({"query":"autonomous AI agentic workflows 2024 2025"}),
+                    result: json!({"output":"Search results found"}),
+                },
+                ToolInvocationSpec {
+                    tool: "write",
+                    args: json!({"path":".tandem/artifacts/research-sources.json","content":web_citations}),
+                    result: json!({"output":"written"}),
+                },
+            ],
+            requested_tools: vec!["read", "write", "websearch"],
+            accepted_output_path: ".tandem/artifacts/research-sources.json",
+            accepted_output_content: web_citations,
+            session_text: "",
+            expected_validation_outcome: "passed",
+            expected_external_research_mode: None,
+            absent_unmet: vec![
+                "no_concrete_reads",
+                "missing_successful_web_research",
+                "files_reviewed_missing",
+                "files_reviewed_not_backed_by_read",
+            ],
+            expected_read_paths: vec!["inputs/questions.md"],
+        },
+        ResearchEvidenceMatrixCase {
+            name: "mixed-local-web",
+            node: research_brief_matrix_node("marketing-brief.md", true),
+            workspace_files: vec![("docs/source.md", "source")],
+            tool_invocations: vec![
+                ToolInvocationSpec {
+                    tool: "read",
+                    args: json!({"path":"docs/source.md"}),
+                    result: json!({"output":"source"}),
+                },
+                ToolInvocationSpec {
+                    tool: "websearch",
+                    args: json!({"query":"workflow contract testing release safety"}),
+                    result: json!({"output":"Search results found"}),
+                },
+                ToolInvocationSpec {
+                    tool: "write",
+                    args: json!({"path":"marketing-brief.md","content":mixed_brief}),
+                    result: json!({"ok": true}),
+                },
+            ],
+            requested_tools: vec!["glob", "read", "write", "websearch"],
+            accepted_output_path: "marketing-brief.md",
+            accepted_output_content: mixed_brief,
+            session_text: "Done\n\n{\"status\":\"completed\"}",
+            expected_validation_outcome: "passed",
+            expected_external_research_mode: None,
+            absent_unmet: vec!["no_concrete_reads", "missing_successful_web_research"],
+            expected_read_paths: vec!["docs/source.md"],
+        },
+        ResearchEvidenceMatrixCase {
+            name: "mcp-grounded",
+            node: research_citations_matrix_node(
+                "research_sources",
+                ".tandem/runs/run-mcp-citations/artifacts/research-sources.json",
+                false,
+                &["tandem-mcp"],
+            ),
+            workspace_files: vec![],
+            tool_invocations: vec![
+                ToolInvocationSpec {
+                    tool: "mcp.tandem_mcp.search_docs",
+                    args: json!({"query":"research sources artifact contract"}),
+                    result: json!({"output":"Matched Tandem MCP docs"}),
+                },
+                ToolInvocationSpec {
+                    tool: "write",
+                    args: json!({"path":".tandem/runs/run-mcp-citations/artifacts/research-sources.json","content":mcp_citations}),
+                    result: json!({"output":"written"}),
+                },
+            ],
+            requested_tools: vec!["mcp.tandem_mcp.search_docs", "write"],
+            accepted_output_path: ".tandem/runs/run-mcp-citations/artifacts/research-sources.json",
+            accepted_output_content: mcp_citations,
+            session_text: "Done\n\n{\"status\":\"completed\"}",
+            expected_validation_outcome: "passed",
+            expected_external_research_mode: None,
+            absent_unmet: vec![
+                "current_attempt_output_missing",
+                "no_concrete_reads",
+                "missing_successful_web_research",
+            ],
+            expected_read_paths: vec![],
+        },
+    ];
+
+    for case in cases {
+        run_research_evidence_matrix_case(case);
     }
 }
 

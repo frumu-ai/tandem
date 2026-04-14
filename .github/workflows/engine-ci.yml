@@ -159,6 +159,7 @@ jobs:
           "$TEST_BIN" 'app::state::tests::automations::validation::compare_results_retry_without_current_artifact_surfaces_write_and_synthesis_actions' --exact --nocapture
           "$TEST_BIN" 'app::state::tests::automations::validation::analyze_findings_retry_without_artifact_or_required_workspace_file_surfaces_dual_write_actions' --exact --nocapture
           "$TEST_BIN" 'app::state::tests::automations::validation::structured_json_validation_matrix_covers_artifact_only_and_workspace_side_writes' --exact --nocapture
+          "$TEST_BIN" 'app::state::tests::automations::validation::research_evidence_validation_matrix_covers_local_web_mixed_and_mcp_grounding' --exact --nocapture
           "$TEST_BIN" 'app::state::tests::automations::integration::local_research_flow_completes_with_read_and_write_artifact' --exact --nocapture
           "$TEST_BIN" 'app::state::tests::automations::integration::mcp_grounded_research_flow_completes_with_mcp_tool_usage' --exact --nocapture
           "$TEST_BIN" 'app::state::tests::automations::integration::external_web_research_flow_completes_with_websearch_and_write' --exact --nocapture
