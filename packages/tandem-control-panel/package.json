@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem-panel",
-  "version": "0.4.25",
+  "version": "0.4.26",
   "description": "Full web control center for Tandem Engine (chat, routines, swarm, memory, channels, and ops)",
   "type": "module",
   "bin": {

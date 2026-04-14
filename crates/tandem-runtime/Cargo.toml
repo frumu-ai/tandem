@@ -1,6 +1,6 @@
 [package]
 name = "tandem-runtime"
-version = "0.4.25"
+version = "0.4.26"
 description = "Runtime utilities for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -18,8 +18,8 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", default-features = true, features = ["json"] }
 sha2 = "0.10"
-tandem-core = { path = "../tandem-core", version = "0.4.25" }
-tandem-types = { path = "../tandem-types", version = "0.4.25" }
+tandem-core = { path = "../tandem-core", version = "0.4.26" }
+tandem-types = { path = "../tandem-types", version = "0.4.26" }
 
 
 
