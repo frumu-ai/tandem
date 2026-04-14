@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.4.26 (Unreleased)
+## v0.4.26 (Released 2026-04-14)
 
 - **Installed desktop startup recovery**: Tauri-packaged builds now dismiss the splash based on actual React DOM mount, not just frontend-ready events, so the app can no longer stay stuck on the "engine ready" splash after the backend has fully started.
 - **Frontend boot failure visibility**: Desktop startup now surfaces JavaScript boot errors directly on the splash screen instead of hanging indefinitely behind a seemingly successful backend startup state.
