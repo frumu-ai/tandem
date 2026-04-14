@@ -82,6 +82,27 @@ struct CodeVerificationMatrixCase {
     expected_failure_kind: Option<&'static str>,
 }
 
+struct DeliveryMatrixCase {
+    name: &'static str,
+    session_text: &'static str,
+    tool_telemetry: Value,
+    expected_status: &'static str,
+    expected_reason: &'static str,
+    expected_blocker_category: &'static str,
+}
+
+struct UpstreamShapeMatrixCase {
+    name: &'static str,
+    quality_mode: Option<&'static str>,
+    legacy_rollback_enabled: Option<bool>,
+    artifact_text: &'static str,
+    upstream_evidence: Option<AutomationUpstreamEvidence>,
+    expected_validation_outcome: &'static str,
+    expected_rejected: Option<&'static str>,
+    expected_warning_count: Option<usize>,
+    expect_upstream_unsynthesized: bool,
+}
+
 fn structured_json_write_matrix_node(output_files: &[&str]) -> AutomationFlowNode {
     let mut builder = json!({
         "output_path": "extract.json"
@@ -674,6 +695,210 @@ fn run_code_verification_matrix_case(case: CodeVerificationMatrixCase) {
         "case={}",
         case.name
     );
+}
+
+fn email_delivery_matrix_node() -> AutomationFlowNode {
+    AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "execute_goal".to_string(),
+        agent_id: "operator".to_string(),
+        objective:
+            "Create a Gmail draft or send the final HTML summary email to test@example.com if mail tools are available."
+                .to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "approval_gate".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "delivery": {
+                "method": "email",
+                "to": "test@example.com",
+                "content_type": "text/html",
+                "inline_body_only": true,
+                "attachments": false
+            }
+        })),
+    }
+}
+
+fn run_delivery_matrix_case(case: DeliveryMatrixCase) {
+    let node = email_delivery_matrix_node();
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(&node, case.session_text, None, &case.tool_telemetry, None);
+
+    assert_eq!(status, case.expected_status, "case={}", case.name);
+    assert_eq!(
+        reason.as_deref(),
+        Some(case.expected_reason),
+        "case={}",
+        case.name
+    );
+    assert_eq!(approved, Some(true), "case={}", case.name);
+    assert_eq!(
+        detect_automation_blocker_category(
+            &node,
+            &status,
+            reason.as_deref(),
+            &case.tool_telemetry,
+            None,
+        )
+        .as_deref(),
+        Some(case.expected_blocker_category),
+        "case={}",
+        case.name
+    );
+}
+
+fn upstream_shape_matrix_node(quality_mode: Option<&str>) -> AutomationFlowNode {
+    let mut metadata = json!({
+        "builder": {
+            "output_path": "generate-report.md"
+        }
+    });
+    if let Some(mode) = quality_mode {
+        metadata["quality_mode"] = json!(mode);
+    }
+    AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "generate_report".to_string(),
+        agent_id: "writer".to_string(),
+        objective: "Create the final report".to_string(),
+        depends_on: vec!["analyze_findings".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "analyze_findings".to_string(),
+            alias: "analysis".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(metadata),
+    }
+}
+
+fn run_upstream_shape_matrix_case(case: UpstreamShapeMatrixCase) {
+    if let Some(enabled) = case.legacy_rollback_enabled {
+        with_legacy_quality_rollback_enabled(enabled, || {
+            run_upstream_shape_matrix_case_inner(&case);
+        });
+    } else {
+        run_upstream_shape_matrix_case_inner(&case);
+    }
+}
+
+fn run_upstream_shape_matrix_case_inner(case: &UpstreamShapeMatrixCase) {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-upstream-shape-matrix-{}-{}",
+        case.name,
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let snapshot =
+        automation_workspace_root_file_snapshot(workspace_root.to_str().expect("workspace root"));
+    let node = upstream_shape_matrix_node(case.quality_mode);
+    std::fs::write(
+        workspace_root.join("generate-report.md"),
+        case.artifact_text,
+    )
+    .expect("write artifact");
+
+    let mut session = Session::new(
+        Some(format!("upstream-shape-matrix-{}", case.name)),
+        Some(workspace_root.to_str().expect("workspace root").to_string()),
+    );
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "write".to_string(),
+            args: json!({
+                "path": "generate-report.md",
+                "content": case.artifact_text
+            }),
+            result: Some(json!("ok")),
+            error: None,
+        }],
+    ));
+
+    let (_accepted_output, artifact_validation, rejected) =
+        validate_automation_artifact_output_with_upstream(
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root"),
+            None,
+            "Completed the report.",
+            &json!({
+                "requested_tools": ["read", "write"],
+                "executed_tools": ["read", "write"],
+                "tool_call_counts": {
+                    "read": 1,
+                    "write": 1
+                }
+            }),
+            None,
+            Some((
+                "generate-report.md".to_string(),
+                case.artifact_text.to_string(),
+            )),
+            &snapshot,
+            case.upstream_evidence.as_ref(),
+        );
+
+    assert_eq!(
+        artifact_validation
+            .get("validation_outcome")
+            .and_then(Value::as_str),
+        Some(case.expected_validation_outcome),
+        "case={}",
+        case.name
+    );
+    assert_eq!(
+        rejected.as_deref(),
+        case.expected_rejected,
+        "case={}",
+        case.name
+    );
+    if let Some(expected_warning_count) = case.expected_warning_count {
+        assert_eq!(
+            artifact_validation
+                .get("warning_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_default() as usize,
+            expected_warning_count,
+            "case={}",
+            case.name
+        );
+    }
+    assert_eq!(
+        artifact_validation
+            .get("unmet_requirements")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items
+                .iter()
+                .any(|value| value.as_str() == Some("upstream_evidence_not_synthesized"))),
+        case.expect_upstream_unsynthesized,
+        "case={}",
+        case.name
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
 }
 
 #[test]
@@ -2132,6 +2357,223 @@ fn code_verification_status_matrix_covers_missing_failed_and_satisfied_checks() 
 
     for case in cases {
         run_code_verification_matrix_case(case);
+    }
+}
+
+#[test]
+fn email_delivery_status_matrix_covers_repairable_unavailable_failed_and_succeeded_paths() {
+    let cases = vec![
+        DeliveryMatrixCase {
+            name: "offered-tools-not-executed",
+            session_text: "A Gmail draft has been created.\n\n{\"status\":\"completed\",\"approved\":true}",
+            tool_telemetry: json!({
+                "requested_tools": ["glob", "read", "mcp_list"],
+                "executed_tools": ["read", "glob", "mcp_list"],
+                "email_delivery_attempted": false,
+                "email_delivery_succeeded": false,
+                "latest_email_delivery_failure": null,
+                "attempt_evidence": {
+                    "delivery": {"status": "not_attempted"}
+                },
+                "capability_resolution": {
+                    "email_tool_diagnostics": {
+                        "available_tools": ["mcp.composio_1.gmail_send_email", "mcp.composio_1.gmail_create_email_draft"],
+                        "offered_tools": ["mcp.composio_1.gmail_send_email", "mcp.composio_1.gmail_create_email_draft"],
+                        "available_send_tools": ["mcp.composio_1.gmail_send_email"],
+                        "offered_send_tools": ["mcp.composio_1.gmail_send_email"],
+                        "available_draft_tools": ["mcp.composio_1.gmail_create_email_draft"],
+                        "offered_draft_tools": ["mcp.composio_1.gmail_create_email_draft"]
+                    }
+                }
+            }),
+            expected_status: "needs_repair",
+            expected_reason:
+                "email delivery to `test@example.com` was requested but no email draft/send tool executed",
+            expected_blocker_category: "delivery_not_executed",
+        },
+        DeliveryMatrixCase {
+            name: "no-email-tools-available",
+            session_text: "{\"status\":\"completed\",\"approved\":true}",
+            tool_telemetry: json!({
+                "requested_tools": ["read", "mcp_list"],
+                "executed_tools": ["read", "mcp_list"],
+                "email_delivery_attempted": false,
+                "email_delivery_succeeded": false,
+                "latest_email_delivery_failure": null,
+                "attempt_evidence": {
+                    "delivery": {"status": "not_attempted"}
+                },
+                "capability_resolution": {
+                    "mcp_tool_diagnostics": {
+                        "selected_servers": ["gmail-main"],
+                        "remote_tools": [],
+                        "registered_tools": []
+                    },
+                    "email_tool_diagnostics": {
+                        "available_tools": [],
+                        "offered_tools": [],
+                        "available_send_tools": [],
+                        "offered_send_tools": [],
+                        "available_draft_tools": [],
+                        "offered_draft_tools": []
+                    }
+                }
+            }),
+            expected_status: "blocked",
+            expected_reason:
+                "email delivery to `test@example.com` was requested but no email-capable tools were available. Selected MCP servers: gmail-main. Remote MCP tools on selected servers: none. Registered tool-registry tools on selected servers: none. Discovered email-like tools: none. Offered email-like tools: none. This usually means the email connector is unavailable, MCP tools were not synced into the registry, or the tool names did not match email capability detection.",
+            expected_blocker_category: "tool_unavailable",
+        },
+        DeliveryMatrixCase {
+            name: "attempted-delivery-failed",
+            session_text: "{\"status\":\"completed\",\"approved\":true}",
+            tool_telemetry: json!({
+                "requested_tools": ["mcp.composio_1.gmail_send_email"],
+                "executed_tools": ["mcp.composio_1.gmail_send_email"],
+                "email_delivery_attempted": true,
+                "email_delivery_succeeded": false,
+                "latest_email_delivery_failure": "smtp unauthorized",
+                "attempt_evidence": {
+                    "delivery": {"status": "attempted_failed"}
+                },
+                "capability_resolution": {
+                    "email_tool_diagnostics": {
+                        "available_tools": ["mcp.composio_1.gmail_send_email"],
+                        "offered_tools": ["mcp.composio_1.gmail_send_email"],
+                        "available_send_tools": ["mcp.composio_1.gmail_send_email"],
+                        "offered_send_tools": ["mcp.composio_1.gmail_send_email"],
+                        "available_draft_tools": [],
+                        "offered_draft_tools": []
+                    }
+                }
+            }),
+            expected_status: "blocked",
+            expected_reason: "smtp unauthorized",
+            expected_blocker_category: "delivery_not_executed",
+        },
+        DeliveryMatrixCase {
+            name: "delivery-succeeded",
+            session_text: "{\"status\":\"completed\",\"approved\":true}",
+            tool_telemetry: json!({
+                "requested_tools": ["mcp.composio_1.gmail_send_email"],
+                "executed_tools": ["mcp.composio_1.gmail_send_email"],
+                "email_delivery_attempted": true,
+                "email_delivery_succeeded": true,
+                "latest_email_delivery_failure": null,
+                "attempt_evidence": {
+                    "delivery": {"status": "succeeded"}
+                },
+                "capability_resolution": {
+                    "email_tool_diagnostics": {
+                        "available_tools": ["mcp.composio_1.gmail_send_email"],
+                        "offered_tools": ["mcp.composio_1.gmail_send_email"],
+                        "available_send_tools": ["mcp.composio_1.gmail_send_email"],
+                        "offered_send_tools": ["mcp.composio_1.gmail_send_email"],
+                        "available_draft_tools": [],
+                        "offered_draft_tools": []
+                    }
+                }
+            }),
+            expected_status: "completed",
+            expected_reason: "",
+            expected_blocker_category: "",
+        },
+    ];
+
+    for case in cases {
+        if case.expected_blocker_category.is_empty() {
+            let node = email_delivery_matrix_node();
+            let (status, reason, approved): (String, Option<String>, Option<bool>) =
+                detect_automation_node_status(
+                    &node,
+                    case.session_text,
+                    None,
+                    &case.tool_telemetry,
+                    None,
+                );
+            assert_eq!(status, case.expected_status, "case={}", case.name);
+            assert_eq!(reason.as_deref(), None, "case={}", case.name);
+            assert_eq!(approved, Some(true), "case={}", case.name);
+            assert_eq!(
+                detect_automation_blocker_category(
+                    &node,
+                    &status,
+                    reason.as_deref(),
+                    &case.tool_telemetry,
+                    None,
+                ),
+                None,
+                "case={}",
+                case.name
+            );
+        } else {
+            run_delivery_matrix_case(case);
+        }
+    }
+}
+
+#[test]
+fn upstream_shape_matrix_covers_none_strict_rich_and_legacy_rich_modes() {
+    let generic_report = "# Summary\n\nPlaceholder update.\n";
+    let no_upstream_report = "# Summary\n\nA concise report without upstream dependencies.\n";
+    let rich_upstream = AutomationUpstreamEvidence {
+        read_paths: vec![
+            ".tandem/artifacts/collect-inputs.json".to_string(),
+            ".tandem/artifacts/research-sources.json".to_string(),
+        ],
+        discovered_relevant_paths: vec![
+            ".tandem/artifacts/collect-inputs.json".to_string(),
+            ".tandem/artifacts/research-sources.json".to_string(),
+        ],
+        web_research_attempted: true,
+        web_research_succeeded: true,
+        citation_count: 3,
+        citations: vec![
+            "https://example.com/legacy-1".to_string(),
+            "https://example.com/legacy-2".to_string(),
+            "https://example.com/legacy-3".to_string(),
+        ],
+    };
+    let cases = vec![
+        UpstreamShapeMatrixCase {
+            name: "no-upstream-generic-summary-passes",
+            quality_mode: None,
+            legacy_rollback_enabled: None,
+            artifact_text: no_upstream_report,
+            upstream_evidence: None,
+            expected_validation_outcome: "accepted_with_warnings",
+            expected_rejected: None,
+            expected_warning_count: None,
+            expect_upstream_unsynthesized: false,
+        },
+        UpstreamShapeMatrixCase {
+            name: "strict-rich-upstream-blocks-generic-summary",
+            quality_mode: None,
+            legacy_rollback_enabled: None,
+            artifact_text: generic_report,
+            upstream_evidence: Some(rich_upstream.clone()),
+            expected_validation_outcome: "blocked",
+            expected_rejected: Some(
+                "final artifact does not adequately synthesize the available upstream evidence",
+            ),
+            expected_warning_count: Some(2),
+            expect_upstream_unsynthesized: true,
+        },
+        UpstreamShapeMatrixCase {
+            name: "legacy-rich-upstream-allows-generic-summary",
+            quality_mode: Some("legacy"),
+            legacy_rollback_enabled: Some(true),
+            artifact_text: generic_report,
+            upstream_evidence: Some(rich_upstream),
+            expected_validation_outcome: "passed",
+            expected_rejected: None,
+            expected_warning_count: Some(0),
+            expect_upstream_unsynthesized: false,
+        },
+    ];
+
+    for case in cases {
+        run_upstream_shape_matrix_case(case);
     }
 }
 
