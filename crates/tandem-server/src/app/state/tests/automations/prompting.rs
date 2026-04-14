@@ -735,6 +735,118 @@ fn final_prompt_surfaces_automation_output_targets_as_required_workspace_writes(
 }
 
 #[test]
+fn structured_json_prompt_surfaces_explicit_output_files_for_analyze_findings() {
+    let automation = AutomationV2Spec {
+        automation_id: "automation-analyze-findings".to_string(),
+        name: "Analyze Findings".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: crate::AutomationFlowSpec { nodes: Vec::new() },
+        execution: crate::AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let node = AutomationFlowNode {
+        node_id: "analyze_findings".to_string(),
+        agent_id: "analyst".to_string(),
+        objective: "Synthesize the clustered findings into a structured analysis and update the durable summary file.".to_string(),
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        depends_on: vec!["cluster_topics".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "cluster_topics".to_string(),
+            alias: "clusters".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": ".tandem/artifacts/analyze-findings.json",
+                "output_files": ["reports/pain-points-analysis.md"]
+            }
+        })),
+    };
+    let agent = AutomationAgentProfile {
+        agent_id: "analyst".to_string(),
+        template_id: None,
+        display_name: "Analyst".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec!["glob".to_string(), "read".to_string(), "write".to_string()],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt_with_options(
+        &automation,
+        "/tmp",
+        "run-analyze-findings",
+        &node,
+        1,
+        &agent,
+        &[],
+        &["glob".to_string(), "read".to_string(), "write".to_string()],
+        None,
+        None,
+        None,
+        AutomationPromptRenderOptions {
+            summary_only_upstream: false,
+            knowledge_context: None,
+            runtime_values: None,
+        },
+    );
+
+    assert!(prompt.contains("Required Workspace Writes:"));
+    assert!(prompt.contains("reports/pain-points-analysis.md"));
+    assert!(prompt.contains(
+        "Use only approved write targets for this node: the declared run artifact plus these required workspace files"
+    ));
+    assert!(prompt.contains(
+        "In addition to the run artifact, create or update these required workspace files when needed: `reports/pain-points-analysis.md`."
+    ));
+}
+
+#[test]
 fn first_attempt_research_prompt_requires_completed_status() {
     let automation = AutomationV2Spec {
         automation_id: "automation-1".to_string(),

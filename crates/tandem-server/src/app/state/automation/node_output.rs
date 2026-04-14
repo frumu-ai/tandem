@@ -414,6 +414,12 @@ pub(crate) fn research_required_next_tool_actions(
                 .to_string(),
         );
     }
+    if has_unmet("required_workspace_files_missing") {
+        actions.push(
+            "Write the required workspace files approved for this node before ending this attempt."
+                .to_string(),
+        );
+    }
     if requested_has_read
         && (!executed_has_read
             || has_unmet("no_concrete_reads")

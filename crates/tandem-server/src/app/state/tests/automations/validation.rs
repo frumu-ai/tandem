@@ -549,6 +549,138 @@ fn compare_results_retry_without_current_artifact_surfaces_write_and_synthesis_a
 }
 
 #[test]
+fn analyze_findings_retry_without_artifact_or_required_workspace_file_surfaces_dual_write_actions()
+{
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-analyze-findings-retry-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(workspace_root.join("inputs")).expect("create workspace");
+    std::fs::write(
+        workspace_root.join("inputs/clustered-findings.md"),
+        "# Clustered findings\n\n- Repeated workflow repair failures.\n",
+    )
+    .expect("write clustered findings");
+    let snapshot =
+        automation_workspace_root_file_snapshot(workspace_root.to_str().expect("workspace root"));
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "analyze_findings".to_string(),
+        agent_id: "analyst".to_string(),
+        objective:
+            "Synthesize the clustered findings into structured JSON and update the durable analysis file."
+                .to_string(),
+        depends_on: vec!["cluster_topics".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "cluster_topics".to_string(),
+            alias: "clusters".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": ".tandem/artifacts/analyze-findings.json",
+                "output_files": ["reports/pain-points-analysis.md"]
+            }
+        })),
+    };
+    let session = Session::new(
+        Some("analyze-findings-retry".to_string()),
+        Some(workspace_root.to_str().expect("workspace root").to_string()),
+    );
+    let tool_telemetry = json!({
+        "requested_tools": ["glob", "read", "write"],
+        "executed_tools": [],
+        "tool_call_counts": {},
+        "verified_output_materialized_by_current_attempt": false,
+        "workspace_inspection_used": false,
+    });
+    let artifact_path =
+        ".tandem/runs/run-analyze-findings/artifacts/analyze-findings.json".to_string();
+    let artifact_text =
+        "{\"status\":\"completed\",\"summary\":\"Structured analysis generated.\"}".to_string();
+
+    let (accepted_output, artifact_validation, rejected) =
+        validate_automation_artifact_output_with_upstream(
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root"),
+            Some("run-analyze-findings"),
+            "TOOL_MODE_REQUIRED_NOT_SATISFIED: WRITE_REQUIRED_NOT_SATISFIED: tool_mode=required but the model ended without executing a productive tool call.",
+            &tool_telemetry,
+            None,
+            Some((artifact_path, artifact_text)),
+            &snapshot,
+            None,
+        );
+
+    assert!(accepted_output.is_none());
+    assert_eq!(
+        rejected.as_deref(),
+        Some(
+            "required output `.tandem/runs/run-analyze-findings/artifacts/analyze-findings.json` was not created in the current attempt"
+        )
+    );
+    assert_eq!(
+        artifact_validation
+            .get("semantic_block_reason")
+            .and_then(Value::as_str),
+        Some("required output was not created in the current attempt")
+    );
+    assert!(artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("current_attempt_output_missing"))));
+    assert!(artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values
+            .iter()
+            .any(|value| value.as_str() == Some("required_workspace_files_missing"))));
+    assert_eq!(
+        artifact_validation
+            .get("validation_basis")
+            .and_then(|value| value.get("workspace_inspection_satisfied"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        artifact_validation
+            .get("validation_basis")
+            .and_then(|value| value.get("must_write_files"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        vec![Value::String("reports/pain-points-analysis.md".to_string())]
+    );
+    assert!(artifact_validation
+        .get("validation_basis")
+        .and_then(|value| value.get("must_write_file_statuses"))
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.iter().any(|value| {
+            value.get("path").and_then(Value::as_str) == Some("reports/pain-points-analysis.md")
+                && value
+                    .get("materialized_by_current_attempt")
+                    .and_then(Value::as_bool)
+                    == Some(false)
+        })));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn research_workflow_status_is_needs_repair_before_repair_budget_is_exhausted() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

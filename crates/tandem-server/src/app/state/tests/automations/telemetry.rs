@@ -99,6 +99,32 @@ fn research_required_next_tool_actions_surface_generic_websearch_unavailability(
 }
 
 #[test]
+fn research_required_next_tool_actions_include_workspace_file_write_guidance() {
+    let requested_tools = vec![json!("glob"), json!("read"), json!("write")];
+    let executed_tools = vec![];
+    let unmet_requirements = vec![
+        "current_attempt_output_missing".to_string(),
+        "required_workspace_files_missing".to_string(),
+    ];
+
+    let actions = research_required_next_tool_actions(
+        &requested_tools,
+        &executed_tools,
+        false,
+        &unmet_requirements,
+        &Vec::new(),
+        None,
+    );
+
+    assert!(actions
+        .iter()
+        .any(|value| value.contains("Write the required run artifact")));
+    assert!(actions.iter().any(|value| value.contains(
+        "Write the required workspace files approved for this node before ending this attempt."
+    )));
+}
+
+#[test]
 fn summarize_automation_tool_activity_recovers_tools_from_synthetic_summary() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
