@@ -23,6 +23,38 @@ fn automation_prompt_render_path_bullets(paths: &[String]) -> String {
         .join("\n")
 }
 
+fn automation_prompt_infer_concrete_workspace_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for raw_token in text.split_whitespace() {
+        let token = raw_token
+            .trim_matches(|ch: char| {
+                matches!(
+                    ch,
+                    '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':'
+                )
+            })
+            .trim();
+        if token.is_empty() || token.contains("://") {
+            continue;
+        }
+        let path = std::path::Path::new(token);
+        let has_extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| !value.is_empty());
+        let looks_like_path = token.starts_with('/')
+            || token.starts_with("./")
+            || token.starts_with("../")
+            || token.contains('/');
+        if looks_like_path && has_extension {
+            paths.push(token.to_string());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 fn automation_prompt_apply_runtime_placeholders(
     text: &str,
     runtime_values: Option<&AutomationPromptRuntimeValues>,
@@ -227,6 +259,51 @@ fn automation_prompt_render_delivery_source_body(upstream_inputs: &[Value]) -> O
             .map(|line| format!("  {}", line))
             .collect::<Vec<_>>()
             .join("\n")
+    ))
+}
+
+fn automation_prompt_render_concrete_source_coverage(
+    node: &AutomationFlowNode,
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
+) -> Option<String> {
+    if automation_node_allows_optional_workspace_reads(node) {
+        return None;
+    }
+
+    let mut paths = automation_prompt_infer_concrete_workspace_paths(
+        &automation_prompt_apply_runtime_placeholders(&node.objective, runtime_values),
+    );
+    if let Some(builder) = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(Value::as_object)
+    {
+        if let Some(prompt) = builder.get("prompt").and_then(Value::as_str) {
+            paths.extend(automation_prompt_infer_concrete_workspace_paths(
+                &automation_prompt_apply_runtime_placeholders(prompt, runtime_values),
+            ));
+        }
+        if let Some(input_files) = builder.get("input_files").and_then(Value::as_array) {
+            paths.extend(
+                input_files
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "Concrete Source Coverage:\n- Read the concrete workspace file paths named in the objective before concluding this node.\n- `glob`, `grep`, and `codesearch` can help discover files, but they do not satisfy the concrete file-read requirement.\n- Concrete files for this node:\n{}",
+        automation_prompt_render_path_bullets(&paths)
     ))
 }
 
@@ -469,6 +546,11 @@ pub(crate) fn render_automation_v2_prompt_with_options(
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
+    }
+    if let Some(concrete_source_coverage) =
+        automation_prompt_render_concrete_source_coverage(node, runtime_values)
+    {
+        sections.push(concrete_source_coverage);
     }
     let execution_mode = automation_node_execution_mode(node, workspace_root);
     let required_output_path = automation_node_required_output_path_for_run(node, Some(run_id));

@@ -1789,6 +1789,109 @@ fn handoff_only_structured_json_prompt_strips_internal_context_writes() {
 }
 
 #[test]
+fn assess_prompt_surfaces_concrete_source_coverage_for_named_workspace_files() {
+    let automation = AutomationV2Spec {
+        automation_id: "automation-assess-source".to_string(),
+        name: "Assess Source".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "assess".to_string(),
+        agent_id: "research".to_string(),
+        objective: "Check whether /home/evan/job-hunt/resume_overview.md already exists, confirm /home/evan/job-hunt/RESUME.md is readable, and emit runtime gating data."
+            .to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return triage JSON.".to_string()),
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "title": "Assess",
+                "role": "watcher",
+                "prompt": "Return a JSON triage handoff."
+            }
+        })),
+    };
+    let agent = AutomationAgentProfile {
+        agent_id: "research".to_string(),
+        template_id: None,
+        display_name: "Research".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec!["glob".to_string(), "read".to_string(), "write".to_string()],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp",
+        "run-assess-source",
+        &node,
+        1,
+        &agent,
+        &[],
+        &["glob".to_string(), "read".to_string()],
+        None,
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("Concrete Source Coverage:"));
+    assert!(prompt.contains("Read the concrete workspace file paths named in the objective"));
+    assert!(prompt.contains("glob`, `grep`, and `codesearch` can help discover files"));
+    assert!(prompt.contains("/home/evan/job-hunt/resume_overview.md"));
+    assert!(prompt.contains("/home/evan/job-hunt/RESUME.md"));
+}
+
+#[test]
 fn json_output_artifact_prompt_requires_response_body_backup_copy() {
     let automation = AutomationV2Spec {
         automation_id: "automation-json-artifact".to_string(),

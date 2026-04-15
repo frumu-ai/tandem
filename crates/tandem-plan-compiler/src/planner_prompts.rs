@@ -47,6 +47,7 @@ fn workflow_plan_teaching_library_sections() -> String {
         "  - set metadata.triage_gate: true on the assess step so the engine skips downstream nodes when has_work is false\n",
         "  - subsequent steps depend on the assess step and can be as complex as needed; do not limit the plan to two steps\n",
         "  - the assess step should use a cheap model: set metadata.builder.triage_model: true\n",
+        "  - if a node names concrete workspace files, require at least one `read` on a concrete file path before the node is complete; discovery tools like `glob`, `grep`, or `codesearch` do not count as source coverage\n",
         "  - do not add a triage step for non-recurring or non-awareness tasks\n",
     )
     .to_string()
@@ -73,5 +74,6 @@ mod tests {
         assert!(sections.contains("monitor-pattern plans"));
         assert!(sections.contains("assess"));
         assert!(sections.contains("triage_gate"));
+        assert!(sections.contains("concrete workspace files"));
     }
 }
