@@ -2213,6 +2213,10 @@ fn assess_prompt_surfaces_concrete_source_coverage_for_named_workspace_files() {
 
     assert!(prompt.contains("Concrete Source Coverage:"));
     assert!(prompt.contains("Read the concrete workspace file paths named in the objective"));
+    assert!(prompt.contains("Required first action: if the workflow names an exact source file, call `read` on that exact path before any `glob`, `grep`, or `codesearch` call."));
+    assert!(prompt.contains(
+        "Do not start with discovery-only tools when an exact named source file is required."
+    ));
     assert!(prompt.contains("glob`, `grep`, and `codesearch` can help discover files"));
     assert!(prompt.contains("Similar backup or copy filenames do not satisfy the requirement"));
     assert!(prompt.contains("/home/evan/job-hunt/resume_overview.md"));

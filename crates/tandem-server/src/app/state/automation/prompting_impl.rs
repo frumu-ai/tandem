@@ -382,7 +382,7 @@ fn automation_prompt_render_concrete_source_coverage(
     let mut sections = Vec::new();
     if !paths.is_empty() {
         sections.push(format!(
-            "Concrete Source Coverage:\n- Read the concrete workspace file paths named in the objective before concluding this node.\n- `glob`, `grep`, and `codesearch` can help discover files, but they do not satisfy the concrete file-read requirement.\n- Similar backup or copy filenames do not satisfy the requirement when the workflow names an exact source file.\n- After reading a concrete source, carry its exact text forward in `structured_handoff.source_material` as `{{path, content}}` entries so downstream nodes can reuse the source without rereading it.\n- Concrete files for this node:\n{}",
+            "Concrete Source Coverage:\n- Read the concrete workspace file paths named in the objective before concluding this node.\n- Required first action: if the workflow names an exact source file, call `read` on that exact path before any `glob`, `grep`, or `codesearch` call.\n- Do not start with discovery-only tools when an exact named source file is required.\n- `glob`, `grep`, and `codesearch` can help discover files, but they do not satisfy the concrete file-read requirement.\n- Similar backup or copy filenames do not satisfy the requirement when the workflow names an exact source file.\n- After reading a concrete source, carry its exact text forward in `structured_handoff.source_material` as `{{path, content}}` entries so downstream nodes can reuse the source without rereading it.\n- Concrete files for this node:\n{}",
             automation_prompt_render_path_bullets(&paths)
         ));
     }
@@ -751,7 +751,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         .unwrap_or(false);
     if triage_gate && automation_node_required_output_path(node).is_none() {
         sections.push(
-            "Triage Workspace Inspection:\n- Use `glob` to probe required folders and expected bootstrap files.\n- Use `read` on concrete files when needed to decide `has_work`.\n- Do not include prose; return only the structured JSON handoff plus the final compact status object."
+            "Triage Workspace Inspection:\n- If the objective names an exact source file, call `read` on that exact path before concluding the triage handoff.\n- Use `glob` to probe required folders and expected bootstrap files only after the exact named source reads are satisfied, or when no exact source file was named.\n- Do not treat backup or copy filenames as substitutes for the named source file.\n- Use `read` on concrete files when needed to decide `has_work`.\n- Do not include prose; return only the structured JSON handoff plus the final compact status object."
                 .to_string(),
         );
     }
