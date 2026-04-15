@@ -7,14 +7,18 @@ use serde_json::{json, Value};
 use tandem_types::ModelSpec;
 use tandem_workflows::plan_package::{AutomationV2Schedule, WorkflowPlan, WorkflowPlanStep};
 
+use crate::decomposition::{
+    derive_workflow_decomposition_profile, workflow_plan_decomposition_observation,
+    workflow_plan_decomposition_sections,
+};
 use crate::host::{PlannerLlmInvocation, PlannerLoopHost, WorkspaceResolver};
 use crate::planner_invoke::invoke_planner_json;
 use crate::planner_prompts::workflow_plan_common_sections;
 use crate::planner_types::{PlannerClarifier, PlannerInvocationFailure};
 use crate::workflow_plan::{
-    build_minimal_fallback_plan, decode_planner_plan_value, manual_schedule,
-    normalize_and_validate_planner_plan, normalize_operator_preferences, normalize_prompt,
-    normalize_string_list, plan_save_options, plan_title, planner_diagnostics,
+    build_minimal_fallback_plan, decode_planner_plan_value, infer_explicit_output_targets,
+    manual_schedule, normalize_and_validate_planner_plan, normalize_operator_preferences,
+    normalize_prompt, normalize_string_list, plan_save_options, plan_title, planner_diagnostics,
     planner_llm_provider_unconfigured_hint, planner_model_spec, schedule_from_value, truncate_text,
     workflow_plan_should_surface_mcp_discovery, PlannerPlanMode, PlannerPlanNormalizationContext,
 };
@@ -130,6 +134,13 @@ where
     O: Clone + Default + serde::Serialize + DeserializeOwned,
     H: PlannerLoopHost + WorkspaceResolver,
 {
+    let explicit_output_targets = infer_explicit_output_targets(&request.prompt);
+    let decomposition_profile = derive_workflow_decomposition_profile(
+        &request.prompt,
+        &request.allowed_mcp_servers,
+        &explicit_output_targets,
+        request.explicit_schedule.is_some(),
+    );
     let resolved_workspace_root = match host
         .resolve_workspace_root(request.requested_workspace_root.as_deref())
         .await
@@ -162,7 +173,14 @@ where
                     "question": "The requested workspace root is invalid. Update it and try again.",
                     "options": [],
                 }),
-                planner_diagnostics: planner_diagnostics("invalid_workspace_root", None),
+                planner_diagnostics: planner_diagnostics(
+                    Some("invalid_workspace_root"),
+                    None,
+                    Some(workflow_plan_decomposition_observation(
+                        &decomposition_profile,
+                        0,
+                    )),
+                ),
             };
         }
     };
@@ -201,7 +219,14 @@ where
             ),
             assistant_text: None,
             clarifier: Value::Null,
-            planner_diagnostics: planner_diagnostics("no_planner_model", None),
+            planner_diagnostics: planner_diagnostics(
+                Some("no_planner_model"),
+                None,
+                Some(workflow_plan_decomposition_observation(
+                    &decomposition_profile,
+                    0,
+                )),
+            ),
         };
     };
 
@@ -231,7 +256,14 @@ where
                 "question": question,
                 "options": [],
             }),
-            planner_diagnostics: planner_diagnostics("provider_unconfigured", None),
+            planner_diagnostics: planner_diagnostics(
+                Some("provider_unconfigured"),
+                None,
+                Some(workflow_plan_decomposition_observation(
+                    &decomposition_profile,
+                    0,
+                )),
+            ),
         };
     }
 
@@ -246,6 +278,7 @@ where
         resolved_workspace_root.as_str(),
         &request.allowed_mcp_servers,
         request.operator_preferences.as_ref(),
+        &decomposition_profile,
     )
     .await
     {
@@ -281,16 +314,38 @@ where
                                 .to_string(),
                         )),
                         clarifier: Value::Null,
-                        planner_diagnostics: planner_diagnostics("invalid_json", None),
+                        planner_diagnostics: planner_diagnostics(
+                            Some("invalid_json"),
+                            None,
+                            Some(workflow_plan_decomposition_observation(
+                                &decomposition_profile,
+                                0,
+                            )),
+                        ),
                     };
                 };
 
-                match normalize_and_validate_planner_plan(candidate, &normalization_ctx, &mut normalize_step) {
-                    Ok(plan) => PlannerBuildResult {
-                        plan,
-                        assistant_text: payload.assistant_text,
-                        clarifier: Value::Null,
-                        planner_diagnostics: None,
+                let candidate_step_count = candidate.steps.len();
+                match normalize_and_validate_planner_plan(
+                    candidate,
+                    &normalization_ctx,
+                    &mut normalize_step,
+                ) {
+                    Ok(plan) => {
+                        let diagnostics = planner_diagnostics(
+                            None,
+                            None,
+                            Some(workflow_plan_decomposition_observation(
+                                &decomposition_profile,
+                                plan.steps.len(),
+                            )),
+                        );
+                        PlannerBuildResult {
+                            plan,
+                            assistant_text: payload.assistant_text,
+                            clarifier: Value::Null,
+                            planner_diagnostics: diagnostics,
+                        }
                     },
                     Err(error) => {
                         let detail = truncate_text(&error, 500);
@@ -317,8 +372,12 @@ where
                             )),
                             clarifier: Value::Null,
                             planner_diagnostics: planner_diagnostics(
-                                "validation_rejected",
+                                Some("validation_rejected"),
                                 Some(detail),
+                                Some(workflow_plan_decomposition_observation(
+                                    &decomposition_profile,
+                                    candidate_step_count,
+                                )),
                             ),
                         }
                     }
@@ -358,7 +417,14 @@ where
                         "question": question,
                         "options": [],
                     }),
-                    planner_diagnostics: planner_diagnostics("clarification_needed", None),
+                    planner_diagnostics: planner_diagnostics(
+                        Some("clarification_needed"),
+                        None,
+                        Some(workflow_plan_decomposition_observation(
+                            &decomposition_profile,
+                            0,
+                        )),
+                    ),
                 }
             }
         },
@@ -387,7 +453,14 @@ where
                 }),
             ),
             clarifier: Value::Null,
-            planner_diagnostics: planner_diagnostics(failure.reason, failure.detail),
+            planner_diagnostics: planner_diagnostics(
+                Some(failure.reason.as_str()),
+                failure.detail,
+                Some(workflow_plan_decomposition_observation(
+                    &decomposition_profile,
+                    0,
+                )),
+            ),
         },
     }
 }
@@ -463,6 +536,7 @@ async fn try_llm_build_workflow_plan<M, H>(
     workspace_root: &str,
     allowed_mcp_servers: &[String],
     operator_preferences: Option<&Value>,
+    decomposition_profile: &crate::decomposition::WorkflowDecompositionProfile,
 ) -> Result<PlannerBuildPayload, PlannerInvocationFailure>
 where
     M: serde::Serialize,
@@ -484,6 +558,7 @@ where
                 allowed_mcp_servers,
                 operator_preferences,
                 &capability_summary,
+                decomposition_profile,
             ),
             run_key: format!("workflow-plan-build:{plan_source}"),
             timeout_ms: config.timeout_ms,
@@ -502,8 +577,10 @@ fn build_llm_workflow_creation_prompt<M: serde::Serialize>(
     allowed_mcp_servers: &[String],
     operator_preferences: Option<&Value>,
     capability_summary: &Value,
+    decomposition_profile: &crate::decomposition::WorkflowDecompositionProfile,
 ) -> String {
     let common_sections = workflow_plan_common_sections();
+    let decomposition_sections = workflow_plan_decomposition_sections(decomposition_profile);
     let mcp_discovery_required =
         workflow_plan_should_surface_mcp_discovery(prompt, allowed_mcp_servers);
     let mcp_guidance = if mcp_discovery_required {
@@ -518,6 +595,7 @@ fn build_llm_workflow_creation_prompt<M: serde::Serialize>(
         concat!(
             "You are creating a Tandem automation workflow plan.\n",
             "Planner intelligence lives in the model. Return JSON only.\n",
+            "{}",
             "{}",
             "- include output_contract validators only when you are confident of the artifact kind\n",
             "Request context:\n",
@@ -539,6 +617,7 @@ fn build_llm_workflow_creation_prompt<M: serde::Serialize>(
             "Normalized prompt:\n{}\n"
         ),
         common_sections,
+        decomposition_sections,
         workspace_root,
         plan_source,
         serde_json::to_string_pretty(&explicit_schedule).unwrap_or_else(|_| "null".to_string()),
@@ -659,6 +738,12 @@ mod tests {
 
     #[test]
     fn build_workflow_plan_prompt_surfaces_mcp_discovery_guidance() {
+        let decomposition_profile = derive_workflow_decomposition_profile(
+            "Create a workflow about Reddit research",
+            &["github".to_string()],
+            &[],
+            false,
+        );
         let prompt = build_llm_workflow_creation_prompt::<Value>(
             "Create a workflow about Reddit research",
             "Create a workflow about Reddit research",
@@ -670,10 +755,13 @@ mod tests {
             &json!({
                 "runtime": {"mcp_inventory": []}
             }),
+            &decomposition_profile,
         );
 
         assert!(prompt.contains("MCP discovery:"));
         assert!(prompt.contains("Call `mcp_list`"));
         assert!(prompt.contains("Allowed MCP servers"));
+        assert!(prompt.contains("Decomposition profile:"));
+        assert!(prompt.contains("phase-aware microtask DAGs"));
     }
 }

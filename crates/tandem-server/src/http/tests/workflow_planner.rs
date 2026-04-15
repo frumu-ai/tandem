@@ -430,6 +430,20 @@ async fn workflow_plan_preview_accepts_valid_llm_created_plan() {
         Some(3)
     );
     assert!(payload.get("plan_package_bundle").is_some());
+    assert_eq!(
+        payload
+            .get("planner_diagnostics")
+            .and_then(|row| row.get("generated_step_count"))
+            .and_then(Value::as_u64),
+        Some(3)
+    );
+    assert!(
+        payload
+            .get("planner_diagnostics")
+            .and_then(|row| row.get("decomposition_profile"))
+            .is_some(),
+        "planner diagnostics should include a decomposition profile for a valid plan"
+    );
     let steps = payload
         .get("plan")
         .and_then(|row| row.get("steps"))
@@ -511,11 +525,19 @@ async fn workflow_plan_preview_accepts_partial_llm_plan_payload() {
             .map(|rows| rows.len()),
         Some(2)
     );
+    assert_eq!(
+        payload
+            .get("planner_diagnostics")
+            .and_then(|row| row.get("generated_step_count"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
     assert!(
         payload
             .get("planner_diagnostics")
-            .is_none_or(Value::is_null),
-        "planner diagnostics should not indicate fallback for a repaired partial plan"
+            .and_then(|row| row.get("decomposition_profile"))
+            .is_some(),
+        "planner diagnostics should include a decomposition profile for a repaired partial plan"
     );
 }
 
@@ -632,10 +654,18 @@ async fn workflow_plan_preview_accepts_allowed_step_id_suffix_variant() {
             .map(|rows| rows.len()),
         Some(2)
     );
+    assert_eq!(
+        payload
+            .get("planner_diagnostics")
+            .and_then(|row| row.get("generated_step_count"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
     assert!(
         payload
             .get("planner_diagnostics")
-            .is_none_or(Value::is_null),
+            .and_then(|row| row.get("decomposition_profile"))
+            .is_some(),
         "suffix-variant step ids should not force fallback"
     );
 }

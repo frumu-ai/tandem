@@ -12,6 +12,9 @@ use tandem_workflows::plan_package::{
 };
 
 use crate::contracts::{research_output_contract_policy_seed, ProjectedOutputValidatorKind};
+use crate::decomposition::{
+    derive_step_decomposition_hints, derive_workflow_decomposition_profile,
+};
 
 pub fn plan_save_options() -> Value {
     json!({
@@ -285,6 +288,56 @@ fn workflow_step_builder_string(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn workflow_step_decomposition_metadata_defaults(
+    step: &mut WorkflowPlanStep<impl WorkflowInputRefLike, impl Serialize>,
+    profile: &crate::decomposition::WorkflowDecompositionProfile,
+    step_index: usize,
+    step_count: usize,
+) {
+    let step_id = step.step_id.clone();
+    let kind = step.kind.clone();
+    let objective = step.objective.clone();
+    let output_contract_kind = step
+        .output_contract
+        .as_ref()
+        .and_then(|contract| serde_json::to_value(contract).ok())
+        .and_then(|contract| contract.get("kind").cloned())
+        .and_then(|value| value.as_str().map(str::to_string));
+    let hints = derive_step_decomposition_hints(
+        &step_id,
+        &kind,
+        &objective,
+        output_contract_kind.as_deref(),
+        &step.depends_on,
+        step_index,
+        step_count,
+        profile,
+    );
+    let Some(builder) = workflow_step_builder_map_mut(step) else {
+        return;
+    };
+    builder
+        .entry("phase_id".to_string())
+        .or_insert_with(|| Value::String(hints.phase_id.clone()));
+    builder
+        .entry("task_class".to_string())
+        .or_insert_with(|| Value::String(hints.task_class.clone()));
+    builder
+        .entry("task_kind".to_string())
+        .or_insert_with(|| Value::String(hints.task_class.clone()));
+    builder
+        .entry("task_family".to_string())
+        .or_insert_with(|| Value::String(hints.task_family.clone()));
+    builder
+        .entry("retry_class".to_string())
+        .or_insert_with(|| Value::String(hints.retry_class.clone()));
+    if let Some(parent_step_id) = hints.parent_step_id {
+        builder
+            .entry("parent_step_id".to_string())
+            .or_insert_with(|| Value::String(parent_step_id));
+    }
 }
 
 pub fn derive_workflow_step_file_contracts<S, I, O>(
@@ -1241,6 +1294,7 @@ pub fn normalize_and_validate_planner_plan<M, I, O>(
 where
     M: Clone,
     I: WorkflowInputRefLike,
+    O: Serialize,
 {
     candidate.plan_id = ctx.plan_id.to_string();
     candidate.planner_version = ctx.planner_version.to_string();
@@ -1292,8 +1346,26 @@ where
         }
     }
 
+    let decomposition_profile = derive_workflow_decomposition_profile(
+        ctx.original_prompt,
+        &candidate.allowed_mcp_servers,
+        &infer_explicit_output_targets(ctx.original_prompt),
+        !matches!(
+            &candidate.schedule.schedule_type,
+            AutomationV2ScheduleType::Manual
+        ),
+    );
+    let step_count = candidate.steps.len();
     for step in &mut candidate.steps {
         normalize_step(step);
+    }
+    for (step_index, step) in candidate.steps.iter_mut().enumerate() {
+        workflow_step_decomposition_metadata_defaults(
+            step,
+            &decomposition_profile,
+            step_index,
+            step_count,
+        );
     }
 
     validate_workflow_plan(&candidate)?;
@@ -1479,17 +1551,40 @@ pub(crate) fn planner_llm_provider_unconfigured_hint(provider_id: &str) -> Strin
 }
 
 pub(crate) fn planner_diagnostics(
-    reason: impl Into<String>,
+    reason: Option<&str>,
     detail: Option<String>,
+    decomposition_observation: Option<Value>,
 ) -> Option<Value> {
-    let reason = reason.into();
-    if reason.trim().is_empty() {
-        return None;
+    let mut payload = serde_json::Map::new();
+    if let Some(reason) = reason.map(str::trim).filter(|value| !value.is_empty()) {
+        payload.insert(
+            "fallback_reason".to_string(),
+            Value::String(reason.to_string()),
+        );
     }
-    Some(json!({
-        "fallback_reason": reason,
-        "detail": detail.filter(|value| !value.trim().is_empty()),
-    }))
+    if let Some(detail) = detail
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        payload.insert("detail".to_string(), Value::String(detail));
+    }
+    if let Some(decomposition_observation) = decomposition_observation {
+        if let Some(observation) = decomposition_observation.as_object() {
+            for (key, value) in observation {
+                payload.insert(key.clone(), value.clone());
+            }
+        } else {
+            payload.insert(
+                "decomposition_profile".to_string(),
+                decomposition_observation,
+            );
+        }
+    }
+    if payload.is_empty() {
+        None
+    } else {
+        Some(Value::Object(payload))
+    }
 }
 
 pub(crate) fn truncate_text(input: &str, max_len: usize) -> String {
@@ -1507,6 +1602,7 @@ pub(crate) fn truncate_text(input: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decomposition::workflow_plan_decomposition_observation;
     use tandem_workflows::plan_package::WorkflowPlanStep;
 
     fn test_plan_with_steps(
@@ -1674,6 +1770,89 @@ Here is the planner response:
                 .and_then(|space| space.get("scope"))
                 .and_then(Value::as_str),
             Some("project")
+        );
+    }
+
+    #[test]
+    fn workflow_step_decomposition_metadata_defaults_add_phase_and_retry_hints() {
+        let profile = crate::decomposition::WorkflowDecompositionProfile {
+            complexity_score: 80,
+            tier: crate::decomposition::WorkflowDecompositionTier::VeryComplex,
+            recommended_min_leaf_tasks: 30,
+            recommended_max_leaf_tasks: 50,
+            recommended_phase_count: 4,
+            requires_phased_dag: true,
+            signals: vec!["scheduled_workflow".to_string()],
+            guidance: vec!["Use phased microtasks.".to_string()],
+        };
+        let mut step: WorkflowPlanStep<Value, Value> = WorkflowPlanStep {
+            step_id: "send_report".to_string(),
+            kind: "deliver".to_string(),
+            objective: "Send the report by email.".to_string(),
+            depends_on: vec!["analyze_findings".to_string()],
+            agent_role: "sender".to_string(),
+            input_refs: vec![],
+            output_contract: Some(json!({"kind":"report_markdown"})),
+            metadata: None,
+        };
+
+        workflow_step_decomposition_metadata_defaults(&mut step, &profile, 3, 4);
+
+        let builder = step
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("builder"))
+            .and_then(Value::as_object)
+            .expect("builder");
+        assert_eq!(
+            builder.get("phase_id").and_then(Value::as_str),
+            Some("phase_4_deliver")
+        );
+        assert_eq!(
+            builder.get("task_class").and_then(Value::as_str),
+            Some("delivery")
+        );
+        assert_eq!(
+            builder.get("task_kind").and_then(Value::as_str),
+            Some("delivery")
+        );
+        assert_eq!(
+            builder.get("retry_class").and_then(Value::as_str),
+            Some("delivery_only")
+        );
+        assert_eq!(
+            builder.get("parent_step_id").and_then(Value::as_str),
+            Some("analyze_findings")
+        );
+    }
+
+    #[test]
+    fn planner_diagnostics_merges_decomposition_profile_into_payload() {
+        let profile = crate::decomposition::WorkflowDecompositionProfile {
+            complexity_score: 46,
+            tier: crate::decomposition::WorkflowDecompositionTier::Complex,
+            recommended_min_leaf_tasks: 20,
+            recommended_max_leaf_tasks: 30,
+            recommended_phase_count: 3,
+            requires_phased_dag: true,
+            signals: vec!["connector_backed_sources".to_string()],
+            guidance: vec!["Use explicit phases.".to_string()],
+        };
+        let observation = workflow_plan_decomposition_observation(&profile, 12);
+        let diagnostics = planner_diagnostics(None, None, Some(observation)).expect("diagnostics");
+
+        assert_eq!(
+            diagnostics
+                .get("generated_step_count")
+                .and_then(Value::as_u64),
+            Some(12)
+        );
+        assert_eq!(
+            diagnostics
+                .get("decomposition_profile")
+                .and_then(|value| value.get("recommended_phase_count"))
+                .and_then(Value::as_u64),
+            Some(3)
         );
     }
 

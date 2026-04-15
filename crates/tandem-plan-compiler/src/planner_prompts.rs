@@ -12,7 +12,8 @@ pub(crate) fn workflow_plan_common_sections() -> String {
             "- execution_target must be automation_v2\n",
             "- workspace_root must be a non-empty absolute path\n",
             "- do not invent unsupported step ids\n",
-            "- keep the graph minimal but sufficient\n",
+            "- decompose complex work into phase-aware microtask DAGs instead of forcing every plan into a flat 7-10 step graph\n",
+            "- keep each leaf task narrow enough to own one objective, one output contract, and one validation path\n",
             "- steps must form a valid DAG\n",
             "- input_refs and depends_on must reference existing steps\n",
             "WorkflowPlan.step schema:\n",
@@ -22,6 +23,7 @@ pub(crate) fn workflow_plan_common_sections() -> String {
             "- output_contract must be either null or {{\"kind\":\"structured_json|report_markdown|text_summary|urls|citations|brief|review|review_summary|approval_gate|code_patch\",\"validator\":\"structured_json|generic_artifact|research_brief|review_decision|code_patch\"}}\n",
             "- use `code_patch` for code-editing steps that should be judged by patch/apply/test behavior rather than a prose summary\n",
             "- when a step mainly produces a markdown, json, or text artifact such as a recap, report, ledger, or merged daily summary, use `report_markdown`, `structured_json`, or `text_summary` instead of `code_patch` even if the step compiles earlier findings into one file\n",
+            "- when a plan is complex, prefer metadata.builder.phase_id, task_class, retry_class, and parent_step_id so the runtime can keep retries narrow and phase-aware\n",
             "- when a research brief step needs current web coverage, set metadata.builder.web_research_expected to true; set it to false when local/file research is enough\n",
             "- when the request names connector-backed sources or `allowed_mcp_servers` is non-empty, plan MCP-backed steps instead of inventing hidden capabilities or defaulting to generic web search\n",
             "{}",
@@ -62,6 +64,8 @@ mod tests {
         assert!(sections.contains("proof points"));
         assert!(sections.contains("connector-backed work"));
         assert!(sections.contains("code_patch"));
+        assert!(sections.contains("phase-aware microtask DAGs"));
+        assert!(sections.contains("one objective, one output contract"));
         assert!(sections.contains("inspect -> patch -> apply -> test -> repair"));
         assert!(sections.contains("reserve `write` for brand-new files"));
         assert!(sections.contains("recap and synthesis files"));

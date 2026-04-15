@@ -14,6 +14,7 @@
 pub mod api;
 mod automation_projection;
 mod contracts;
+mod decomposition;
 mod dependency_planner;
 mod host;
 mod materialization;

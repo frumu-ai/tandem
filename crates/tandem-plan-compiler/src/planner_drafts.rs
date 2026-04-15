@@ -33,6 +33,7 @@ where
     pub assistant_text: String,
     pub change_summary: Vec<String>,
     pub clarifier: Value,
+    pub planner_diagnostics: Option<Value>,
 }
 
 pub async fn load_workflow_plan_draft<M, I, O, H>(
@@ -180,7 +181,7 @@ where
     draft.conversation.updated_at_ms = user_message.created_at_ms;
     draft.conversation.messages.push(user_message);
 
-    let (revised_plan, assistant_text, change_summary, clarifier) =
+    let (revised_plan, assistant_text, change_summary, clarifier, planner_diagnostics) =
         revise_workflow_plan_with_planner_loop(
             host,
             &draft.current_plan,
@@ -193,6 +194,7 @@ where
 
     draft.plan_revision = draft.plan_revision.saturating_add(1);
     draft.current_plan = revised_plan;
+    draft.planner_diagnostics = planner_diagnostics.clone();
     draft.conversation.messages.push(WorkflowPlanChatMessage {
         role: "assistant".to_string(),
         text: assistant_text.clone(),
@@ -211,6 +213,7 @@ where
         assistant_text,
         change_summary,
         clarifier,
+        planner_diagnostics,
     })
 }
 

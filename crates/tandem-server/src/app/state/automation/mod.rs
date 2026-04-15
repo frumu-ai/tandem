@@ -2910,7 +2910,7 @@ fn automation_output_target_matches_node_objective(
 }
 
 pub(crate) fn automation_node_must_write_files_for_automation(
-    automation: &AutomationV2Spec,
+    _automation: &AutomationV2Spec,
     node: &AutomationFlowNode,
     runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> Vec<String> {

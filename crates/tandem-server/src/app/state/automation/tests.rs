@@ -53,6 +53,14 @@ fn code_workflow_node() -> AutomationFlowNode {
     node
 }
 
+fn task_class_only_node() -> AutomationFlowNode {
+    let mut node = bare_node();
+    node.metadata = Some(json!({
+        "builder": { "task_class": "code_change" }
+    }));
+    node
+}
+
 fn repo_fix_workflow_node() -> AutomationFlowNode {
     let mut node = bare_node();
     node.node_id = "repo_fix_task".to_string();
@@ -199,6 +207,17 @@ fn knowledge_task_family_groups_equivalent_code_workflows() {
     );
 
     assert_eq!(code_key, repo_fix_key);
+}
+
+#[test]
+fn task_kind_falls_back_to_task_class() {
+    let node = task_class_only_node();
+
+    assert_eq!(
+        automation_node_task_kind(&node).as_deref(),
+        Some("code_change")
+    );
+    assert!(automation_node_is_code_workflow(&node));
 }
 
 #[test]

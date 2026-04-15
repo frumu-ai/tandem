@@ -77,6 +77,7 @@ pub(crate) fn automation_node_output_extension(node: &AutomationFlowNode) -> Opt
 
 pub(crate) fn automation_node_task_kind(node: &AutomationFlowNode) -> Option<String> {
     automation_node_builder_metadata(node, "task_kind")
+        .or_else(|| automation_node_builder_metadata(node, "task_class"))
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty())
 }
