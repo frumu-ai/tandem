@@ -27,6 +27,8 @@ pub(crate) fn workflow_plan_common_sections() -> String {
             "- when a research brief step needs current web coverage, set metadata.builder.web_research_expected to true; set it to false when local/file research is enough\n",
             "- when the request names connector-backed sources or `allowed_mcp_servers` is non-empty, plan MCP-backed steps instead of inventing hidden capabilities or defaulting to generic web search\n",
             "- when a prompt names a file as read-only or source of truth, never infer it as a write target; treat it as input-only unless the contract explicitly declares it as output\n",
+            "- when a prompt names concrete source files or output files, carry those exact names into the relevant step objectives instead of replacing them with generic workspace language\n",
+            "- when a prompt names `websearch`, `webfetch`, or another explicit tool, preserve that tool name in the step objective that will use it\n",
             "{}",
         ),
         allowed_step_ids,
@@ -79,5 +81,7 @@ mod tests {
         assert!(sections.contains("concrete workspace files"));
         assert!(sections.contains("read-only or source of truth"));
         assert!(sections.contains("source_material"));
+        assert!(sections.contains("concrete source files or output files"));
+        assert!(sections.contains("websearch"));
     }
 }

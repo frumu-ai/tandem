@@ -17,9 +17,10 @@ use crate::planner_prompts::workflow_plan_common_sections;
 use crate::planner_types::{PlannerClarifier, PlannerInvocationFailure};
 use crate::workflow_plan::{
     build_minimal_fallback_plan, decode_planner_plan_value, infer_explicit_output_targets,
-    manual_schedule, normalize_and_validate_planner_plan, normalize_operator_preferences,
-    normalize_prompt, normalize_string_list, plan_save_options, plan_title, planner_diagnostics,
-    planner_llm_provider_unconfigured_hint, planner_model_spec, schedule_from_value, truncate_text,
+    infer_read_only_source_paths, manual_schedule, normalize_and_validate_planner_plan,
+    normalize_operator_preferences, normalize_prompt, normalize_string_list, plan_save_options,
+    plan_title, planner_diagnostics, planner_llm_provider_unconfigured_hint, planner_model_spec,
+    schedule_from_value, truncate_text, workflow_plan_mentions_web_research_tools,
     workflow_plan_should_surface_mcp_discovery, PlannerPlanMode, PlannerPlanNormalizationContext,
 };
 
@@ -478,6 +479,19 @@ fn workflow_plan_is_too_flat_for_profile(
     profile.requires_phased_dag && step_count <= usize::from(profile.recommended_phase_count)
 }
 
+fn describe_path_set(label: &str, paths: &[String], fallback: &str) -> String {
+    if paths.is_empty() {
+        return fallback.to_string();
+    }
+    let values = paths
+        .iter()
+        .take(3)
+        .map(|path| format!("`{path}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{label} {values}")
+}
+
 fn build_decomposition_fallback_plan<S, I, O>(
     plan_id: &str,
     planner_version: &str,
@@ -525,10 +539,22 @@ where
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let source_targets = infer_read_only_source_paths(prompt);
+    let source_summary = describe_path_set(
+        "source file(s)",
+        &source_targets,
+        "the concrete source files",
+    );
+    let output_summary = describe_path_set(
+        "output path(s)",
+        explicit_output_targets,
+        "the requested output paths",
+    );
     let lower_prompt = prompt.to_ascii_lowercase();
     let wants_delivery = ["send", "email", "deliver", "publish", "post ", "notify"]
         .iter()
         .any(|needle| lower_prompt.contains(needle));
+    let wants_web_research = workflow_plan_mentions_web_research_tools(prompt);
 
     let mut steps = Vec::new();
     let mut push_step = |step_id: &str,
@@ -550,15 +576,20 @@ where
     push_step(
         "assess",
         "assess",
-        "Check workspace state, confirm the concrete source files and output paths, and determine whether this workflow can proceed.".to_string(),
+        format!(
+            "Check workspace state, confirm {} and {}, and determine whether this workflow can proceed.",
+            source_summary, output_summary
+        ),
         "agent_triage_agent",
         Vec::new(),
     );
     push_step(
         "collect_inputs",
         "collect",
-        "Read the concrete input files and capture the raw inputs needed for downstream steps."
-            .to_string(),
+        format!(
+            "Read {} and capture the raw inputs needed for downstream steps.",
+            source_summary
+        ),
         "agent_workspace_reader",
         vec!["assess".to_string()],
     );
@@ -599,8 +630,13 @@ where
             push_step(
                 "research_sources",
                 "research",
-                "Gather the relevant external or connector-backed sources for the workflow, then keep only supported matches."
-                    .to_string(),
+                if wants_web_research {
+                    "Use websearch/webfetch to gather the relevant external sources for the workflow, then keep only supported matches."
+                        .to_string()
+                } else {
+                    "Gather the relevant external or connector-backed sources for the workflow, then keep only supported matches."
+                        .to_string()
+                },
                 "agent_researcher",
                 vec!["extract_pain_points".to_string()],
             );
@@ -652,8 +688,13 @@ where
             push_step(
                 "research_sources",
                 "research",
-                "Gather the relevant external or connector-backed sources for the workflow, then keep only supported matches."
-                    .to_string(),
+                if wants_web_research {
+                    "Use websearch/webfetch to gather the relevant external sources for the workflow, then keep only supported matches."
+                        .to_string()
+                } else {
+                    "Gather the relevant external or connector-backed sources for the workflow, then keep only supported matches."
+                        .to_string()
+                },
                 "agent_researcher",
                 vec!["cluster_topics".to_string()],
             );
@@ -1016,5 +1057,85 @@ mod tests {
         assert!(prompt.contains("Allowed MCP servers"));
         assert!(prompt.contains("Decomposition profile:"));
         assert!(prompt.contains("phase-aware microtask DAGs"));
+    }
+
+    #[test]
+    fn build_decomposition_fallback_plan_surfaces_concrete_sources_and_web_search_tools() {
+        let prompt = "Analyze the local `RESUME.md` file and use it as the source of truth for skills, role targets, seniority, technologies, and geography preferences.
+
+This workflow must stay simple and deterministic.
+
+## Core rules
+
+- Never edit, rewrite, rename, move, or delete `RESUME.md`
+- Only read from `RESUME.md`
+- If `resume_overview.md` does not exist, create it
+- If `resume_overview.md` already exists, reuse it and do not regenerate it unless it is missing
+- Use the `websearch` tool to find relevant job boards and recruitment sites in Europe where jobs are posted for the skills found in `RESUME.md`
+- Save all results to a daily timestamped results file
+- This workflow may run many times in one day, so it must append new findings to the same daily file instead of creating many separate files for the same date
+
+Create or append to this daily file in the workspace root:
+
+`job_search_results_YYYY-MM-DD.md`
+
+Replace `YYYY-MM-DD` with the actual resolved date for the run.";
+
+        let explicit_output_targets = infer_explicit_output_targets(prompt);
+        let decomposition_profile =
+            derive_workflow_decomposition_profile(prompt, &[], &explicit_output_targets, true);
+        let fallback_step = crate::workflow_plan::plan_step_with_dep::<Value, Value>(
+            "collect_inputs",
+            "collect",
+            "Collect required inputs for the workflow.",
+            "worker",
+            &[] as &[String],
+            Vec::new(),
+            None,
+            None,
+        );
+
+        let plan = build_decomposition_fallback_plan(
+            "wfplan-test",
+            "v1",
+            "unit_test",
+            prompt,
+            &prompt.to_ascii_lowercase(),
+            "Test".to_string(),
+            "/tmp/workspace".to_string(),
+            manual_schedule("UTC".to_string(), Value::Null),
+            vec![],
+            None,
+            None,
+            &explicit_output_targets,
+            &decomposition_profile,
+            fallback_step,
+        );
+
+        assert!(
+            plan.steps[0].objective.contains("RESUME.md"),
+            "assess step should name the source-of-truth file"
+        );
+        assert!(
+            plan.steps[0].objective.contains("resume_overview.md"),
+            "assess step should name the expected output files"
+        );
+        assert!(
+            plan.steps[0]
+                .objective
+                .contains("job_search_results_YYYY-MM-DD.md"),
+            "assess step should name the daily results file"
+        );
+        assert!(
+            plan.steps[1].objective.contains("RESUME.md"),
+            "collect_inputs step should name the concrete input file"
+        );
+        assert!(
+            plan.steps
+                .iter()
+                .any(|step| step.objective.contains("websearch")
+                    || step.objective.contains("webfetch")),
+            "fallback plan should preserve explicit web search tooling"
+        );
     }
 }

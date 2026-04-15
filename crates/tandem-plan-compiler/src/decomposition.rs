@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-use crate::workflow_plan::workflow_plan_mentions_connector_backed_sources;
+use crate::workflow_plan::{
+    workflow_plan_mentions_connector_backed_sources, workflow_plan_mentions_web_research_tools,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -269,6 +271,10 @@ fn score_connector_signals(
     if workflow_plan_mentions_connector_backed_sources(prompt) {
         *score += 6;
         push_signal(signals, "connector_backed_sources");
+    }
+    if workflow_plan_mentions_web_research_tools(prompt) {
+        *score += 6;
+        push_signal(signals, "web_research_tools");
     }
 }
 
@@ -609,5 +615,9 @@ This workflow must stay simple and deterministic.
             .signals
             .iter()
             .any(|signal| signal.contains("output_targets")));
+        assert!(profile
+            .signals
+            .iter()
+            .any(|signal| signal == "web_research_tools"));
     }
 }

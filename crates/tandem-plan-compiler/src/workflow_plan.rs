@@ -559,8 +559,76 @@ fn prompt_token_has_context(prompt: &str, token: &str, needles: &[&str]) -> bool
     if !trailing.is_empty() {
         clauses.push(trailing.to_string());
     }
-    clauses.into_iter().any(|clause| {
+    if clauses.into_iter().any(|clause| {
         clause.contains(&lowered_token) && needles.iter().any(|needle| clause.contains(needle))
+    }) {
+        return true;
+    }
+
+    let lines = lowered_prompt.lines().collect::<Vec<_>>();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.contains(&lowered_token) {
+            continue;
+        }
+        if needles.iter().any(|needle| trimmed.contains(needle)) {
+            return true;
+        }
+
+        let start = index.saturating_sub(2);
+        let end = (index + 2).min(lines.len().saturating_sub(1));
+        for neighbor_index in start..=end {
+            if neighbor_index == index {
+                continue;
+            }
+            let neighbor = lines[neighbor_index].trim();
+            if neighbor.is_empty() {
+                continue;
+            }
+            if needles.iter().any(|needle| neighbor.contains(needle)) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn prompt_token_has_ordered_context(prompt: &str, token: &str, needles: &[&str]) -> bool {
+    let lowered_prompt = prompt.to_ascii_lowercase();
+    let lowered_token = token.to_ascii_lowercase();
+    if lowered_token.is_empty() {
+        return false;
+    }
+    let mut clauses = Vec::new();
+    let mut current = String::new();
+    let mut chars = lowered_prompt.chars().peekable();
+    while let Some(ch) = chars.next() {
+        current.push(ch);
+        let is_boundary = match ch {
+            '\n' | ';' | '!' | '?' => true,
+            '.' => chars.peek().is_none_or(|next| next.is_whitespace()),
+            _ => false,
+        };
+        if is_boundary {
+            let clause = current.trim();
+            if !clause.is_empty() {
+                clauses.push(clause.to_string());
+            }
+            current.clear();
+        }
+    }
+    let trailing = current.trim();
+    if !trailing.is_empty() {
+        clauses.push(trailing.to_string());
+    }
+    clauses.into_iter().any(|clause| {
+        let Some(token_index) = clause.find(&lowered_token) else {
+            return false;
+        };
+        needles
+            .iter()
+            .any(|needle| clause[token_index + lowered_token.len()..].contains(needle))
     })
 }
 
@@ -656,6 +724,9 @@ fn prompt_contains_read_only_intent(prompt: &str, token: &str) -> bool {
     }
     [
         format!("read {}", lowered_token),
+        format!("read from {}", lowered_token),
+        format!("only read from {}", lowered_token),
+        format!("read only from {}", lowered_token),
         format!("inspect {}", lowered_token),
         format!("review {}", lowered_token),
         format!("open {}", lowered_token),
@@ -682,6 +753,7 @@ fn prompt_contains_read_only_intent(prompt: &str, token: &str) -> bool {
     ]
     .iter()
     .any(|pattern| lowered_prompt.contains(pattern))
+        || prompt_token_has_ordered_context(prompt, token, &["source of truth"])
 }
 
 pub fn infer_explicit_output_targets(prompt: &str) -> Vec<String> {
@@ -721,6 +793,34 @@ pub fn infer_explicit_output_targets(prompt: &str) -> Vec<String> {
     targets.into_iter().collect()
 }
 
+pub fn infer_read_only_source_paths(prompt: &str) -> Vec<String> {
+    let mut sources = BTreeSet::new();
+    for raw_token in prompt.split_whitespace() {
+        let token = raw_token
+            .trim_matches(|ch: char| {
+                matches!(
+                    ch,
+                    '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':'
+                )
+            })
+            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?'))
+            .trim();
+        if token.is_empty() || token.contains("://") {
+            continue;
+        }
+        let path = Path::new(token);
+        let has_extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| !value.is_empty());
+        if !has_extension || !prompt_contains_read_only_intent(prompt, token) {
+            continue;
+        }
+        sources.insert(token.to_string());
+    }
+    sources.into_iter().collect()
+}
+
 pub fn workflow_plan_mentions_connector_backed_sources(prompt: &str) -> bool {
     let lowered = prompt.trim().to_ascii_lowercase();
     if lowered.is_empty() {
@@ -749,6 +849,25 @@ pub fn workflow_plan_mentions_connector_backed_sources(prompt: &str) -> bool {
         "discord",
         "intercom",
         "figma",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+pub fn workflow_plan_mentions_web_research_tools(prompt: &str) -> bool {
+    let lowered = prompt.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return false;
+    }
+    [
+        "websearch",
+        "web search",
+        "webfetch",
+        "web fetch",
+        "search the web",
+        "browse the web",
+        "browser search",
+        "browser",
     ]
     .iter()
     .any(|needle| lowered.contains(needle))
@@ -2233,6 +2352,18 @@ Here is the planner response:
     }
 
     #[test]
+    fn infer_explicit_output_targets_extracts_filenames_from_adjacent_write_lines() {
+        let prompt = "Create or append to this daily file in the workspace root:\n\n`job_search_results_YYYY-MM-DD.md`\n\nReplace `YYYY-MM-DD` with the actual resolved date for the run.";
+
+        let targets = infer_explicit_output_targets(prompt);
+
+        assert_eq!(
+            targets,
+            vec!["job_search_results_YYYY-MM-DD.md".to_string()]
+        );
+    }
+
+    #[test]
     fn infer_explicit_output_targets_skips_read_only_source_of_truth_files() {
         let prompt = "Analyze RESUME.md as the source of truth, then create resume_overview.md and save daily_results_2026-04-15.md.";
 
@@ -2243,6 +2374,15 @@ Here is the planner response:
         assert!(targets
             .iter()
             .any(|path| path == "daily_results_2026-04-15.md"));
+    }
+
+    #[test]
+    fn infer_read_only_source_paths_extracts_source_of_truth_files() {
+        let prompt = "Analyze RESUME.md as the source of truth for skills, role targets, seniority, technologies, and geography preferences. Never edit, rewrite, rename, move, or delete RESUME.md.";
+
+        let sources = infer_read_only_source_paths(prompt);
+
+        assert_eq!(sources, vec!["RESUME.md".to_string()]);
     }
 
     #[test]
@@ -2268,6 +2408,16 @@ Here is the planner response:
         assert!(!workflow_plan_should_surface_mcp_discovery(
             "Summarize the local workspace docs.",
             &[]
+        ));
+    }
+
+    #[test]
+    fn workflow_plan_mentions_web_research_tools_for_explicit_web_search_prompts() {
+        assert!(workflow_plan_mentions_web_research_tools(
+            "Use websearch to find relevant job boards and use webfetch when needed."
+        ));
+        assert!(!workflow_plan_mentions_web_research_tools(
+            "Summarize the local workspace docs."
         ));
     }
 }
