@@ -199,10 +199,38 @@ fn execution_error_blocker_category(detail: &str) -> &'static str {
     let lowered = detail.trim().to_ascii_lowercase();
     if lowered.contains("connect timeout") || lowered.contains("timed out") {
         "provider_connect_timeout"
+    } else if lowered.contains("provider returned error")
+        || lowered.contains("provider stream chunk error")
+        || lowered.contains("provider_server_error")
+        || lowered.contains("server error")
+    {
+        "provider_server_error"
     } else if lowered.contains("authentication") || lowered.contains("unauthorized") {
         "provider_auth"
     } else {
         "execution_error"
+    }
+}
+
+fn normalize_execution_error_detail(detail: &str) -> String {
+    let trimmed = detail.trim();
+    if trimmed.is_empty() {
+        return "node execution failed before producing a final response".to_string();
+    }
+    if trimmed.eq_ignore_ascii_case("Provider returned error") {
+        return "provider returned error before any node response was recorded".to_string();
+    }
+    trimmed.to_string()
+}
+
+fn transient_provider_retry_backoff_ms(detail: &str, attempts: u32) -> Option<u64> {
+    match execution_error_blocker_category(detail) {
+        "provider_connect_timeout" | "provider_server_error" => Some(match attempts {
+            0 | 1 => 2_000,
+            2 => 5_000,
+            _ => 8_000,
+        }),
+        _ => None,
     }
 }
 
@@ -225,12 +253,7 @@ pub(crate) fn build_node_execution_error_output_with_category(
     terminal: bool,
     blocker_category: &str,
 ) -> Value {
-    let reason = detail.trim();
-    let reason = if reason.is_empty() {
-        "node execution failed before producing a final response".to_string()
-    } else {
-        reason.to_string()
-    };
+    let reason = normalize_execution_error_detail(detail);
     let status = if terminal { "failed" } else { "needs_repair" };
     let summary = if terminal {
         format!(
@@ -1263,7 +1286,9 @@ pub async fn run_automation_v2_run(
                     if should_ignore {
                         continue;
                     }
-                    let detail = crate::app::state::truncate_text(&error.to_string(), 500);
+                    let detail = normalize_execution_error_detail(
+                        &crate::app::state::truncate_text(&error.to_string(), 500),
+                    );
                     let attempts = latest_attempts.get(&node_id).copied().unwrap_or(1);
                     let max_attempts = crate::app::state::automation_node_max_attempts(&node);
                     let terminal = attempts >= max_attempts;
@@ -1392,6 +1417,22 @@ pub async fn run_automation_v2_run(
                             ));
                         })
                         .await;
+                    if let Some(backoff_ms) = transient_provider_retry_backoff_ms(&detail, attempts)
+                    {
+                        let _ = state
+                            .update_automation_v2_run(&run_id, |row| {
+                                row.detail = Some(format!(
+                                    "retrying node `{}` after transient provider failure; waiting {} ms before attempt {}/{}: {}",
+                                    node_id,
+                                    backoff_ms,
+                                    attempts + 1,
+                                    max_attempts,
+                                    detail
+                                ));
+                            })
+                            .await;
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    }
                 }
             }
         }
@@ -1771,6 +1812,44 @@ mod tests {
                     |text| text.contains("Do not classify this attempt as a missing handoff")
                 ))
             ));
+    }
+
+    #[test]
+    fn generic_provider_error_is_classified_and_normalized() {
+        let node = &test_automation().flow.nodes[0];
+        let output = build_node_execution_error_output(node, "Provider returned error", false);
+        assert_eq!(node_output_status(&output), "needs_repair");
+        assert_eq!(
+            output.get("blocker_category").and_then(Value::as_str),
+            Some("provider_server_error")
+        );
+        assert_eq!(
+            output.get("blocked_reason").and_then(Value::as_str),
+            Some("provider returned error before any node response was recorded")
+        );
+    }
+
+    #[test]
+    fn transient_provider_retry_backoff_escalates_between_attempts() {
+        assert_eq!(
+            transient_provider_retry_backoff_ms("Provider returned error", 1),
+            Some(2_000)
+        );
+        assert_eq!(
+            transient_provider_retry_backoff_ms("Provider returned error", 2),
+            Some(5_000)
+        );
+        assert_eq!(
+            transient_provider_retry_backoff_ms(
+                "provider stream connect timeout after 90000 ms",
+                3
+            ),
+            Some(8_000)
+        );
+        assert_eq!(
+            transient_provider_retry_backoff_ms("authentication failed", 1),
+            None
+        );
     }
 
     #[test]
