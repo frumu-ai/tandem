@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Automation calendar schedule coverage**: The calendar now shows both cron and interval automations, expanding interval occurrences from the automation anchor time instead of hiding non-cron schedules from the scheduling view.
 - **Workflow synthesis calibration coverage**: Rich-upstream report validation now has explicit matrix coverage for generic summaries, single-anchor reports, and repaired multi-anchor syntheses so future validator tuning stays honest.
+- **Workflow learning API coverage**: Added focused HTTP coverage for workflow learning candidate listing, review, promotion, and revision-spawn guardrails so missing-candidate, invalid-filter, and missing-plan-bundle behavior stays deterministic as the feature hardens.
 - **Run debugger task density**: Task cards in the run debugger now start collapsed and expand in place on selection, keeping large workflows readable even when a single run has dozens of tasks.
 - **Settings layout cleanup**: The Settings page now uses the full content width after removing the empty right rail, and the shared split-view layout expands correctly in single-column mode.
 - **Control panel icon asset recovery**: Restored the missing control-panel icon wiring so the shell can render the expected built-in icon set without frontend lookup errors.

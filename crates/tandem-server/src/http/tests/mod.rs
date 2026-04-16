@@ -27,6 +27,7 @@ pub(super) mod routines;
 pub(super) mod sessions;
 pub(super) mod setup_understanding;
 pub(super) mod task_intake;
+pub(super) mod workflow_learning;
 pub(super) mod workflow_planner;
 pub(super) mod workflows;
 
