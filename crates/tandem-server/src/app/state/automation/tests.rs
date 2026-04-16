@@ -506,6 +506,104 @@ fn repair_automation_output_contracts_preserves_specialized_contracts() {
 }
 
 #[test]
+fn canonicalize_automation_output_paths_rewrites_legacy_timestamp_templates() {
+    let mut node = bare_node();
+    node.node_id = "finalize_outputs".to_string();
+    node.objective = "Write the final report.".to_string();
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": "reports/agent_automation_painpoints_YYYY-MM-DD_HH-MM-SS.md",
+            "output_files": [
+                "reports/agent_automation_painpoints_YYYY-MM-DD_HH-MM-SS.md",
+                "reports/index_YYYY-MM-DD_HHMM.json"
+            ],
+            "must_write_files": ["reports/{{date}}-summary.md"]
+        },
+        "studio": {
+            "output_path": "reports/agent_automation_painpoints_YYYY-MM-DD_HH-MM-SS.md",
+            "output_files": ["reports/index_YYYY-MM-DD_HHMM.json"]
+        }
+    }));
+
+    let mut automation = automation_with_output_targets(
+        vec![node],
+        vec![
+            "reports/agent_automation_painpoints_YYYY-MM-DD_HH-MM-SS.md".to_string(),
+            "reports/index_YYYY-MM-DD_HHMM.json".to_string(),
+            "reports/{{date}}-summary.md".to_string(),
+        ],
+    );
+
+    assert!(canonicalize_automation_output_paths(&mut automation));
+    assert_eq!(
+        automation.output_targets,
+        vec![
+            "reports/agent_automation_painpoints_{current_timestamp_filename}.md",
+            "reports/index_{current_date}_{current_time}.json",
+            "reports/{current_date}-summary.md",
+        ]
+    );
+
+    let metadata = automation.flow.nodes[0]
+        .metadata
+        .as_ref()
+        .expect("node metadata");
+    assert_eq!(
+        metadata
+            .get("builder")
+            .and_then(|builder| builder.get("output_path"))
+            .and_then(|value| value.as_str()),
+        Some("reports/agent_automation_painpoints_{current_timestamp_filename}.md")
+    );
+    assert_eq!(
+        metadata
+            .get("studio")
+            .and_then(|studio| studio.get("output_path"))
+            .and_then(|value| value.as_str()),
+        Some("reports/agent_automation_painpoints_{current_timestamp_filename}.md")
+    );
+    assert_eq!(
+        metadata
+            .get("builder")
+            .and_then(|builder| builder.get("output_files"))
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|entry| entry.as_str())
+                    .collect::<Vec<_>>()
+            }),
+        Some(vec![
+            "reports/agent_automation_painpoints_{current_timestamp_filename}.md",
+            "reports/index_{current_date}_{current_time}.json",
+        ])
+    );
+    assert_eq!(
+        metadata
+            .get("builder")
+            .and_then(|builder| builder.get("must_write_files"))
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|entry| entry.as_str())
+                    .collect::<Vec<_>>()
+            }),
+        Some(vec!["reports/{current_date}-summary.md"])
+    );
+}
+
+#[test]
+fn canonicalize_automation_output_paths_leaves_clean_paths_alone() {
+    let mut automation = automation_with_output_targets(
+        vec![bare_node()],
+        vec!["reports/{current_timestamp_filename}.md".to_string()],
+    );
+
+    assert!(!canonicalize_automation_output_paths(&mut automation));
+}
+
+#[test]
 fn knowledge_task_family_prefers_explicit_override() {
     let mut node = bare_node();
     node.metadata = Some(json!({

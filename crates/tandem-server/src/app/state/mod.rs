@@ -1304,6 +1304,7 @@ impl AppState {
         );
         for automation in merged.values_mut() {
             migrated = migrate_bundled_studio_research_split_automation(automation) || migrated;
+            migrated = canonicalize_automation_output_paths(automation) || migrated;
             migrated = repair_automation_output_contracts(automation) || migrated;
         }
         *self.automations_v2.write().await = merged;
@@ -2721,6 +2722,7 @@ impl AppState {
                 automation_schedule_next_fire_at_ms(&automation.schedule, now);
         }
         migrate_bundled_studio_research_split_automation(&mut automation);
+        canonicalize_automation_output_paths(&mut automation);
         repair_automation_output_contracts(&mut automation);
         let _guard = self.automations_v2_persistence.lock().await;
         self.automations_v2

@@ -241,6 +241,122 @@ function joinCsv(values: string[]) {
   return Array.isArray(values) ? values.join(", ") : "";
 }
 
+const STUDIO_OUTPUT_TOKEN_GUIDE = [
+  "{current_date}",
+  "{current_time}",
+  "{current_timestamp}",
+  "{current_timestamp_filename}",
+];
+
+function studioRuntimePreviewValues(now = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const year = now.getFullYear();
+  const month = pad(now.getMonth() + 1);
+  const day = pad(now.getDate());
+  const hour = pad(now.getHours());
+  const minute = pad(now.getMinutes());
+  const second = pad(now.getSeconds());
+  return {
+    current_date: `${year}-${month}-${day}`,
+    current_time: `${hour}${minute}`,
+    current_timestamp: `${year}-${month}-${day} ${hour}:${minute}`,
+    current_timestamp_filename: `${year}-${month}-${day}_${hour}-${minute}-${second}`,
+  };
+}
+
+function canonicalizeStudioOutputPathTemplate(value: string) {
+  const trimmed = safeString(value);
+  if (!trimmed) return "";
+  let next = trimmed;
+  [
+    ["{{current_timestamp_filename}}", "{current_timestamp_filename}"],
+    ["{{current_date}}", "{current_date}"],
+    ["{{current_time}}", "{current_time}"],
+    ["{{current_timestamp}}", "{current_timestamp}"],
+    ["{{date}}", "{current_date}"],
+    ["{date}", "{current_date}"],
+    ["YYYY-MM-DD_HH-MM-SS", "{current_timestamp_filename}"],
+    ["YYYY-MM-DD-HH-MM-SS", "{current_timestamp_filename}"],
+    ["YYYY-MM-DD_HHMMSS", "{current_timestamp_filename}"],
+    ["YYYY-MM-DD-HHMMSS", "{current_timestamp_filename}"],
+    ["YYYY-MM-DD_HHMM", "{current_date}_{current_time}"],
+    ["YYYY-MM-DD-HHMM", "{current_date}-{current_time}"],
+    ["YYYY-MM-DD", "{current_date}"],
+  ].forEach(([needle, replacement]) => {
+    next = next.split(needle).join(replacement);
+  });
+  if (!next.includes("HHMMSS")) {
+    next = next.split("HHMM").join("{current_time}");
+  }
+  return next;
+}
+
+function resolveStudioOutputPathTemplate(value: string, now = new Date()) {
+  const canonical = canonicalizeStudioOutputPathTemplate(value);
+  const runtime = studioRuntimePreviewValues(now);
+  return canonical
+    .split("{current_timestamp_filename}")
+    .join(runtime.current_timestamp_filename)
+    .split("{current_timestamp}")
+    .join(runtime.current_timestamp)
+    .split("{current_date}")
+    .join(runtime.current_date)
+    .split("{current_time}")
+    .join(runtime.current_time);
+}
+
+function studioOutputPathWarning(value: string) {
+  const canonical = canonicalizeStudioOutputPathTemplate(value);
+  if (!canonical) return "";
+  const unknownTokens = Array.from(
+    new Set(
+      (canonical.match(/\{[^}]+\}/g) || []).filter(
+        (token) => !STUDIO_OUTPUT_TOKEN_GUIDE.includes(token)
+      )
+    )
+  );
+  if (unknownTokens.length) {
+    return `Unknown output token${unknownTokens.length === 1 ? "" : "s"}: ${unknownTokens.join(", ")}`;
+  }
+  if (/(YYYY|YYYYMMDD|HHMMSS|HH-MM-SS|HH-MM|HH:MM|\{\{date\}\}|\{date\})/.test(canonical)) {
+    return "This path still contains legacy timestamp text Tandem cannot safely canonicalize on save.";
+  }
+  return "";
+}
+
+function canonicalizeStudioNodeOutputTemplates(node: StudioNodeDraft): StudioNodeDraft {
+  return {
+    ...node,
+    outputPath: canonicalizeStudioOutputPathTemplate(node.outputPath),
+    outputFiles: normalizeStringList(node.outputFiles).map(canonicalizeStudioOutputPathTemplate),
+  };
+}
+
+function canonicalizeStudioDraftOutputTemplates(draft: StudioWorkflowDraft): StudioWorkflowDraft {
+  return {
+    ...draft,
+    outputTargets: normalizeStringList(draft.outputTargets).map(
+      canonicalizeStudioOutputPathTemplate
+    ),
+    nodes: draft.nodes.map(canonicalizeStudioNodeOutputTemplates),
+  };
+}
+
+function collectStudioOutputPathWarnings(draft: StudioWorkflowDraft) {
+  const warnings: string[] = [];
+  draft.outputTargets.forEach((target) => {
+    const warning = studioOutputPathWarning(target);
+    if (warning) warnings.push(`Workflow target ${safeString(target)}: ${warning}`);
+  });
+  draft.nodes.forEach((node) => {
+    const outputPath = safeString(node.outputPath);
+    if (!outputPath) return;
+    const warning = studioOutputPathWarning(outputPath);
+    if (warning) warnings.push(`${safeString(node.title) || safeString(node.nodeId)}: ${warning}`);
+  });
+  return warnings;
+}
+
 function normalizeStringList(values: unknown) {
   if (!Array.isArray(values)) return [];
   return values
@@ -1060,12 +1176,14 @@ function normalizeNodesForSave(nodes: StudioNodeDraft[]) {
         alias: ref.alias,
       }))
     );
-    return normalizeNodeWorkflowClassification({
-      ...node,
-      nodeId: nextNodeId,
-      dependsOn,
-      inputRefs,
-    });
+    return canonicalizeStudioNodeOutputTemplates(
+      normalizeNodeWorkflowClassification({
+        ...node,
+        nodeId: nextNodeId,
+        dependsOn,
+        inputRefs,
+      })
+    );
   });
 }
 
@@ -1393,6 +1511,58 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
     ? effectiveNodeInputFiles(selectedNode, draft.nodes)
     : [];
   const selectedNodeOutputFiles = selectedNode ? effectiveNodeOutputFiles(selectedNode) : [];
+  const canonicalDraftOutputPreview = useMemo(
+    () => canonicalizeStudioDraftOutputTemplates(draft),
+    [draft]
+  );
+  const outputPathWarnings = useMemo(() => collectStudioOutputPathWarnings(draft), [draft]);
+  const outputPathPreviewRows = useMemo(() => {
+    const now = new Date();
+    const rows: Array<{
+      id: string;
+      label: string;
+      raw: string;
+      canonical: string;
+      resolved: string;
+      warning: string;
+    }> = [];
+    canonicalDraftOutputPreview.outputTargets.forEach((target, index) => {
+      const raw = safeString(draft.outputTargets[index] || target);
+      rows.push({
+        id: `target-${index}`,
+        label: `Workflow target ${index + 1}`,
+        raw,
+        canonical: target,
+        resolved: resolveStudioOutputPathTemplate(target, now),
+        warning: studioOutputPathWarning(raw),
+      });
+    });
+    canonicalDraftOutputPreview.nodes.forEach((node, index) => {
+      const raw = safeString(draft.nodes[index]?.outputPath || node.outputPath);
+      if (!safeString(node.outputPath) && !raw) return;
+      rows.push({
+        id: `node-${node.nodeId}`,
+        label: `${safeString(node.title) || safeString(node.nodeId) || `Stage ${index + 1}`}`,
+        raw: raw || safeString(node.outputPath),
+        canonical: safeString(node.outputPath),
+        resolved: resolveStudioOutputPathTemplate(safeString(node.outputPath), now),
+        warning: studioOutputPathWarning(raw || safeString(node.outputPath)),
+      });
+    });
+    return rows.filter((row) => row.raw || row.canonical);
+  }, [canonicalDraftOutputPreview, draft]);
+  const selectedNodeOutputPathPreview = useMemo(() => {
+    if (!selectedNode) return null;
+    const raw = safeString(selectedNode.outputPath);
+    const canonical = canonicalizeStudioOutputPathTemplate(raw);
+    if (!raw && !canonical) return null;
+    return {
+      raw,
+      canonical,
+      resolved: resolveStudioOutputPathTemplate(canonical || raw),
+      warning: studioOutputPathWarning(raw),
+    };
+  }, [selectedNode]);
   const selectedAgent =
     draft.agents.find((agent) => agent.agentId === (selectedAgentId || selectedNode?.agentId)) ||
     draft.agents.find((agent) => agent.agentId === selectedNode?.agentId) ||
@@ -1696,6 +1866,14 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
           `Model selection is required. Set a default provider/model in Settings or choose one for: ${modelMissingAgents.join(", ")}.`
         );
       }
+      const unresolvedOutputWarnings = collectStudioOutputPathWarnings(workingDraft);
+      if (unresolvedOutputWarnings.length) {
+        toast(
+          "warn",
+          `${unresolvedOutputWarnings[0]} Use the output preview to confirm the saved path before you run this workflow.`
+        );
+      }
+      workingDraft = canonicalizeStudioDraftOutputTemplates(workingDraft);
       const workflowSlug = slugify(workingDraft.name) || "studio-workflow";
       const linkedTemplateIds = new Map<string, string>();
       if (saveReusableTemplates) {
@@ -2445,6 +2623,49 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                       }
                       placeholder="content-brief.md, approved-post.md"
                     />
+                    <span className="text-[11px] text-slate-500">
+                      Supported runtime tokens: {STUDIO_OUTPUT_TOKEN_GUIDE.join(", ")}. Legacy
+                      patterns like <code>YYYY-MM-DD_HH-MM-SS</code> are normalized on save.
+                    </span>
+                    {outputPathWarnings.length ? (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-[11px] text-amber-100">
+                        <div className="font-medium uppercase tracking-wide text-amber-200/90">
+                          Output path warnings
+                        </div>
+                        {outputPathWarnings.slice(0, 3).map((warning) => (
+                          <div key={warning} className="mt-1">
+                            {warning}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {outputPathPreviewRows.length ? (
+                      <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 px-3 py-2 text-[11px] text-slate-300">
+                        <div className="font-medium uppercase tracking-wide text-slate-500">
+                          Output path preview
+                        </div>
+                        {outputPathPreviewRows.slice(0, 8).map((row) => (
+                          <div
+                            key={row.id}
+                            className="mt-2 grid gap-1 border-t border-slate-800/70 pt-2 first:mt-1 first:border-t-0 first:pt-0"
+                          >
+                            <div className="text-slate-400">{row.label}</div>
+                            <div>
+                              Draft: <code>{row.raw || row.canonical}</code>
+                            </div>
+                            <div>
+                              Saved: <code>{row.canonical}</code>
+                            </div>
+                            <div>
+                              Next run preview: <code>{row.resolved}</code>
+                            </div>
+                            {row.warning ? (
+                              <div className="text-amber-200">{row.warning}</div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </label>
                 </div>
 
@@ -2988,6 +3209,29 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                         })
                       }
                     />
+                    {selectedNodeOutputPathPreview ? (
+                      <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 px-3 py-2 text-[11px] text-slate-300">
+                        <div>
+                          Saved as:{" "}
+                          <code>
+                            {selectedNodeOutputPathPreview.canonical ||
+                              selectedNodeOutputPathPreview.raw}
+                          </code>
+                        </div>
+                        <div>
+                          Next run preview: <code>{selectedNodeOutputPathPreview.resolved}</code>
+                        </div>
+                        {selectedNodeOutputPathPreview.warning ? (
+                          <div className="text-amber-200">
+                            {selectedNodeOutputPathPreview.warning}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="text-[11px] text-slate-500">
+                        Use the same runtime tokens here as the workflow output targets.
+                      </span>
+                    )}
                   </label>
                   <label className="grid gap-1 sm:col-span-2">
                     <span className="text-xs text-slate-400">Input Files Contract</span>
