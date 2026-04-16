@@ -100,18 +100,262 @@ fn workflow_learning_run_artifact_refs(run: &AutomationV2RunRecord) -> Vec<Strin
     refs
 }
 
+fn workflow_learning_forensic_receipt_kind_for_path(path: &str) -> Option<&'static str> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        None
+    } else if trimmed.ends_with(".jsonl") {
+        Some("receipt_ledger")
+    } else if trimmed.ends_with(".json") {
+        Some("forensic_record")
+    } else {
+        None
+    }
+}
+
+fn workflow_learning_push_forensic_receipt_ref(
+    refs: &mut Vec<Value>,
+    kind: &str,
+    path: &str,
+    details: Option<&serde_json::Map<String, Value>>,
+) {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if refs.iter().any(|existing| {
+        existing.get("kind").and_then(Value::as_str) == Some(kind)
+            && existing.get("path").and_then(Value::as_str) == Some(trimmed)
+    }) {
+        return;
+    }
+    let mut entry = serde_json::Map::new();
+    entry.insert("kind".to_string(), json!(kind));
+    entry.insert("path".to_string(), json!(trimmed));
+    if let Some(details) = details {
+        for key in ["seq", "record_count", "attempt", "event_type"] {
+            if let Some(value) = details.get(key).cloned() {
+                entry.insert(key.to_string(), value);
+            }
+        }
+    }
+    refs.push(Value::Object(entry));
+}
+
+fn workflow_learning_forensic_receipt_refs(output: &Value) -> Vec<Value> {
+    let mut refs = Vec::new();
+    if let Some(attempt_evidence) = output.get("attempt_evidence").and_then(Value::as_object) {
+        if let Some(ledger) = attempt_evidence
+            .get("receipt_ledger")
+            .and_then(Value::as_object)
+        {
+            if let Some(path) = ledger.get("path").and_then(Value::as_str) {
+                workflow_learning_push_forensic_receipt_ref(
+                    &mut refs,
+                    "receipt_ledger",
+                    path,
+                    Some(ledger),
+                );
+            }
+        }
+        for (key, kind) in [
+            ("forensic_record_path", "forensic_record"),
+            ("standup_receipt_path", "standup_receipt"),
+        ] {
+            if let Some(path) = attempt_evidence.get(key).and_then(Value::as_str) {
+                workflow_learning_push_forensic_receipt_ref(&mut refs, kind, path, None);
+            }
+        }
+    }
+    if let Some(timeline) = output.get("receipt_timeline").and_then(Value::as_array) {
+        for item in timeline {
+            let Some(object) = item.as_object() else {
+                continue;
+            };
+            for key in [
+                "receipt_path",
+                "forensic_record_path",
+                "standup_receipt_path",
+                "path",
+            ] {
+                let Some(path) = object.get(key).and_then(Value::as_str) else {
+                    continue;
+                };
+                let kind = match key {
+                    "receipt_path" => Some("receipt_ledger"),
+                    "forensic_record_path" => Some("forensic_record"),
+                    "standup_receipt_path" => Some("standup_receipt"),
+                    _ => workflow_learning_forensic_receipt_kind_for_path(path),
+                };
+                if let Some(kind) = kind {
+                    workflow_learning_push_forensic_receipt_ref(
+                        &mut refs,
+                        kind,
+                        path,
+                        Some(object),
+                    );
+                }
+            }
+        }
+    }
+    refs
+}
+
+fn workflow_learning_validator_failure_summary(output: &Value) -> Option<Value> {
+    let validator_summary = output.get("validator_summary").and_then(Value::as_object)?;
+    let mut summary = serde_json::Map::new();
+    for key in [
+        "outcome",
+        "reason",
+        "verification_outcome",
+        "accepted_candidate_source",
+    ] {
+        if let Some(value) = validator_summary.get(key).cloned() {
+            summary.insert(key.to_string(), value);
+        }
+    }
+    for key in [
+        "unmet_requirements",
+        "warning_requirements",
+        "validation_basis",
+    ] {
+        if let Some(value) = validator_summary.get(key).cloned() {
+            summary.insert(key.to_string(), value);
+        }
+    }
+    if let Some(value) = validator_summary.get("warning_count").cloned() {
+        summary.insert("warning_count".to_string(), value);
+    }
+    if summary.is_empty() {
+        None
+    } else {
+        Some(Value::Object(summary))
+    }
+}
+
+fn workflow_learning_repair_state(output: &Value) -> Option<Value> {
+    let validator_summary = output.get("validator_summary").and_then(Value::as_object);
+    let artifact_validation = output.get("artifact_validation").and_then(Value::as_object);
+    let mut state = serde_json::Map::new();
+    for key in [
+        "repair_attempted",
+        "repair_attempt",
+        "repair_attempts_remaining",
+        "repair_succeeded",
+        "repair_exhausted",
+    ] {
+        if let Some(value) = validator_summary
+            .and_then(|summary| summary.get(key))
+            .cloned()
+            .or_else(|| {
+                artifact_validation
+                    .and_then(|summary| summary.get(key))
+                    .cloned()
+            })
+        {
+            state.insert(key.to_string(), value);
+        }
+    }
+    if let Some(value) = artifact_validation
+        .and_then(|artifact| artifact.get("rejected_artifact_reason"))
+        .cloned()
+    {
+        state.insert("rejected_artifact_reason".to_string(), value);
+    }
+    if let Some(value) = validator_summary
+        .and_then(|summary| summary.get("verification_outcome"))
+        .cloned()
+        .or_else(|| {
+            artifact_validation
+                .and_then(|summary| summary.get("verification_outcome"))
+                .cloned()
+        })
+    {
+        state.insert("verification_outcome".to_string(), value);
+    }
+    if state.is_empty() {
+        None
+    } else {
+        Some(Value::Object(state))
+    }
+}
+
+fn workflow_learning_artifact_validation_summary(output: &Value) -> Option<Value> {
+    let artifact_validation = output
+        .get("artifact_validation")
+        .and_then(Value::as_object)?;
+    let mut summary = serde_json::Map::new();
+    for key in [
+        "path",
+        "status",
+        "rejected_artifact_reason",
+        "verification_outcome",
+        "verification_expected",
+        "verification_ran",
+        "verification_failed",
+    ] {
+        if let Some(value) = artifact_validation.get(key).cloned() {
+            summary.insert(key.to_string(), value);
+        }
+    }
+    for key in ["unmet_requirements", "warning_requirements"] {
+        if let Some(value) = artifact_validation.get(key).cloned() {
+            summary.insert(key.to_string(), value);
+        }
+    }
+    if let Some(value) = artifact_validation.get("warning_count").cloned() {
+        summary.insert("warning_count".to_string(), value);
+    }
+    if summary.is_empty() {
+        None
+    } else {
+        Some(Value::Object(summary))
+    }
+}
+
 fn workflow_learning_output_evidence(output: &Value) -> Value {
     let mut evidence = serde_json::Map::new();
-    for key in ["status", "summary", "text", "path"] {
+    for key in [
+        "status",
+        "summary",
+        "text",
+        "path",
+        "blocked_reason",
+        "failure_kind",
+        "blocker_category",
+        "phase",
+    ] {
         if let Some(value) = output.get(key).cloned() {
             evidence.insert(key.to_string(), value);
         }
+    }
+    if let Some(value) = output.get("attempt_evidence").cloned() {
+        evidence.insert("attempt_evidence".to_string(), value);
+    }
+    if let Some(value) = output.get("receipt_timeline").cloned() {
+        evidence.insert("receipt_timeline".to_string(), value);
     }
     if let Some(value) = output.get("validator_summary").cloned() {
         evidence.insert("validator_summary".to_string(), value);
     }
     if let Some(value) = output.get("artifact_validation").cloned() {
         evidence.insert("artifact_validation".to_string(), value);
+    }
+    if let Some(value) = workflow_learning_validator_failure_summary(output) {
+        evidence.insert("validator_failure".to_string(), value);
+    }
+    if let Some(value) = workflow_learning_repair_state(output) {
+        evidence.insert("repair_state".to_string(), value);
+    }
+    if let Some(value) = workflow_learning_artifact_validation_summary(output) {
+        evidence.insert("artifact_validation_summary".to_string(), value);
+    }
+    let forensic_receipts = workflow_learning_forensic_receipt_refs(output);
+    if !forensic_receipts.is_empty() {
+        evidence.insert(
+            "forensic_receipts".to_string(),
+            Value::Array(forensic_receipts),
+        );
     }
     Value::Object(evidence)
 }

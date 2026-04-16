@@ -702,12 +702,59 @@ async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_
                         "status": "needs_repair",
                         "summary": "Report missing citation support",
                         "path": "artifacts/report.md",
+                        "failure_kind": "validator_rejection",
+                        "blocked_reason": "unsupported citations",
                         "validator_summary": {
                             "outcome": "failed",
-                            "reason": "unsupported citations"
+                            "reason": "unsupported citations",
+                            "unmet_requirements": ["citations"],
+                            "warning_requirements": ["add_source_links"],
+                            "warning_count": 1,
+                            "verification_outcome": "failed",
+                            "repair_attempted": true,
+                            "repair_attempt": 2,
+                            "repair_attempts_remaining": 1,
+                            "repair_succeeded": false,
+                            "repair_exhausted": false
                         },
+                        "attempt_evidence": {
+                            "receipt_ledger": {
+                                "path": format!(
+                                    ".tandem/state/automation_attempt_receipts/{}/node-1.jsonl",
+                                    run.run_id
+                                ),
+                                "seq": 5,
+                                "record_count": 3
+                            },
+                            "forensic_record_path": format!(
+                                ".tandem/runs/{}/attempts/node-1/2.json",
+                                run.run_id
+                            ),
+                            "evidence": {
+                                "read_paths": ["RESUME.md"],
+                                "web_research_status": "missing"
+                            }
+                        },
+                        "receipt_timeline": [
+                            {
+                                "event_type": "tool.read",
+                                "path": format!(
+                                    ".tandem/state/automation_attempt_receipts/{}/node-1.jsonl",
+                                    run.run_id
+                                )
+                            }
+                        ],
                         "artifact_validation": {
-                            "path": "artifacts/report.md"
+                            "path": "artifacts/report.md",
+                            "rejected_artifact_reason": "unsupported citations",
+                            "unmet_requirements": ["citations"],
+                            "warning_requirements": ["add_source_links"],
+                            "warning_count": 1,
+                            "verification_outcome": "failed",
+                            "repair_attempted": true,
+                            "repair_attempt": 2,
+                            "repair_attempts_remaining": 1,
+                            "repair_exhausted": false
                         }
                     }),
                 );
@@ -758,6 +805,82 @@ async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_
             .and_then(Value::as_u64),
         Some(2)
     );
+    assert_eq!(
+        repair_hint
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("node_output"))
+            .and_then(|row| row.get("validator_failure"))
+            .and_then(|row| row.get("reason"))
+            .and_then(Value::as_str),
+        Some("unsupported citations")
+    );
+    assert_eq!(
+        repair_hint
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("node_output"))
+            .and_then(|row| row.get("repair_state"))
+            .and_then(|row| row.get("repair_attempt"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        repair_hint
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("node_output"))
+            .and_then(|row| row.get("artifact_validation_summary"))
+            .and_then(|row| row.get("rejected_artifact_reason"))
+            .and_then(Value::as_str),
+        Some("unsupported citations")
+    );
+    assert_eq!(
+        repair_hint
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("node_output"))
+            .and_then(|row| row.get("receipt_timeline"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
+    );
+    assert_eq!(
+        repair_hint
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("node_output"))
+            .and_then(|row| row.get("forensic_receipts"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(2)
+    );
+    assert!(repair_hint
+        .evidence_refs
+        .first()
+        .and_then(|row| row.get("node_output"))
+        .and_then(|row| row.get("forensic_receipts"))
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|entry| {
+            entry.get("kind").and_then(Value::as_str) == Some("receipt_ledger")
+                && entry
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path.ends_with(".jsonl"))
+        })));
+    assert!(repair_hint
+        .evidence_refs
+        .first()
+        .and_then(|row| row.get("node_output"))
+        .and_then(|row| row.get("forensic_receipts"))
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|entry| {
+            entry.get("kind").and_then(Value::as_str) == Some("forensic_record")
+                && entry
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path.ends_with(".json"))
+        })));
     assert_eq!(
         repair_hint
             .evidence_refs
