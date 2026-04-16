@@ -5234,6 +5234,23 @@ fn normalize_tool_args_with_mode(
             missing_terminal = true;
             missing_terminal_reason = Some("QUERY_MISSING".to_string());
         }
+    } else if tool_name_requires_doc_path_arg(&normalized_tool) {
+        if let Some(path) = extract_doc_path_arg(&args) {
+            args = set_doc_path_arg(args, path);
+        } else if let Some(inferred) = infer_doc_path_from_text(latest_user_text) {
+            args_source = "inferred_from_user".to_string();
+            args_integrity = "recovered".to_string();
+            args = set_doc_path_arg(args, inferred);
+        } else if let Some(recovered) = infer_doc_path_from_text(latest_assistant_context) {
+            args_source = "recovered_from_context".to_string();
+            args_integrity = "recovered".to_string();
+            args = set_doc_path_arg(args, recovered);
+        } else {
+            args_source = "missing".to_string();
+            args_integrity = "empty".to_string();
+            missing_terminal = true;
+            missing_terminal_reason = Some("DOC_PATH_MISSING".to_string());
+        }
     } else if is_shell_tool_name(&normalized_tool) {
         if let Some(command) = extract_shell_command(&args) {
             args = set_shell_command(args, command);
@@ -5897,6 +5914,12 @@ fn set_query_arg(args: Value, query: Option<String>, _source: &str) -> Value {
     Value::Object(obj)
 }
 
+fn set_doc_path_arg(args: Value, path: String) -> Value {
+    let mut obj = args.as_object().cloned().unwrap_or_default();
+    obj.insert("path".to_string(), Value::String(path));
+    Value::Object(obj)
+}
+
 fn set_pack_builder_goal_arg(args: Value, goal: String) -> Value {
     let mut obj = args.as_object().cloned().unwrap_or_default();
     obj.insert("goal".to_string(), Value::String(goal));
@@ -6182,6 +6205,29 @@ fn extract_query_arg(args: &Value) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn extract_doc_path_arg(args: &Value) -> Option<String> {
+    const PATH_KEYS: [&str; 4] = ["path", "url", "doc", "page"];
+    for key in PATH_KEYS {
+        if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+            if let Some(path) = sanitize_doc_path_candidate(value) {
+                return Some(path);
+            }
+        }
+    }
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            for key in PATH_KEYS {
+                if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
+                    if let Some(path) = sanitize_doc_path_candidate(value) {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    args.as_str().and_then(sanitize_doc_path_candidate)
+}
+
 fn sanitize_websearch_query_candidate(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -6451,6 +6497,48 @@ fn infer_query_from_text(text: &str) -> Option<String> {
     }
 }
 
+fn infer_doc_path_from_text(text: &str) -> Option<String> {
+    if let Some(url) = infer_url_from_text(text) {
+        return Some(url);
+    }
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut candidates: Vec<String> = Vec::new();
+
+    let mut in_tick = false;
+    let mut tick_buf = String::new();
+    for ch in trimmed.chars() {
+        if ch == '`' {
+            if in_tick {
+                if let Some(path) = sanitize_doc_path_candidate(&tick_buf) {
+                    candidates.push(path);
+                }
+                tick_buf.clear();
+            }
+            in_tick = !in_tick;
+            continue;
+        }
+        if in_tick {
+            tick_buf.push(ch);
+        }
+    }
+
+    for raw in trimmed.split_whitespace() {
+        if let Some(path) = sanitize_doc_path_candidate(raw) {
+            candidates.push(path);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .find(|candidate| seen.insert(candidate.clone()))
+}
+
 fn tool_name_requires_task_arg(tool_name: &str) -> bool {
     let normalized = normalize_tool_name(tool_name);
     normalized == "answer_how_to" || normalized.ends_with(".answer_how_to")
@@ -6459,6 +6547,11 @@ fn tool_name_requires_task_arg(tool_name: &str) -> bool {
 fn tool_name_requires_query_arg(tool_name: &str) -> bool {
     let normalized = normalize_tool_name(tool_name);
     normalized == "search_docs" || normalized.ends_with(".search_docs")
+}
+
+fn tool_name_requires_doc_path_arg(tool_name: &str) -> bool {
+    let normalized = normalize_tool_name(tool_name);
+    normalized == "get_doc" || normalized.ends_with(".get_doc")
 }
 
 fn sanitize_url_candidate(raw: &str) -> Option<String> {
@@ -6478,6 +6571,39 @@ fn sanitize_url_candidate(raw: &str) -> Option<String> {
         return None;
     }
     Some(token.to_string())
+}
+
+fn sanitize_doc_path_candidate(raw: &str) -> Option<String> {
+    let token = raw
+        .trim()
+        .trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '*' | '|'))
+        .trim_start_matches(['(', '[', '{', '<'])
+        .trim_end_matches([',', ';', ':', ')', ']', '}', '>'])
+        .trim_end_matches('.')
+        .trim();
+
+    if token.is_empty() {
+        return None;
+    }
+
+    if let Some(url) = sanitize_url_candidate(token) {
+        return Some(url);
+    }
+
+    let lower = token.to_ascii_lowercase();
+    if token.starts_with('/')
+        || token.starts_with("./")
+        || token.starts_with("../")
+        || lower.starts_with("start-here")
+        || lower.starts_with("sdk/")
+        || lower.starts_with("desktop/")
+        || lower.starts_with("control-panel/")
+        || lower.starts_with("reference/")
+    {
+        return Some(token.to_string());
+    }
+
+    None
 }
 
 fn clean_path_candidate_token(raw: &str) -> Option<String> {
@@ -8742,6 +8868,36 @@ Call: todowrite(task_id=3, status="in_progress")
         assert_eq!(
             normalized.args.get("query").and_then(|v| v.as_str()),
             Some("oauth setup")
+        );
+        assert_eq!(normalized.args_source, "provider_json");
+        assert_eq!(normalized.args_integrity, "ok");
+    }
+
+    #[test]
+    fn normalize_tool_args_get_doc_infers_path_from_user_url() {
+        let user_text = "https://docs.tandem.ac/start-here/";
+        let normalized = normalize_tool_args("mcp.tandem_mcp.get_doc", json!({}), user_text, "");
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some(user_text)
+        );
+        assert_eq!(normalized.args_source, "inferred_from_user");
+        assert_eq!(normalized.args_integrity, "recovered");
+    }
+
+    #[test]
+    fn normalize_tool_args_get_doc_keeps_existing_path() {
+        let normalized = normalize_tool_args(
+            "mcp.tandem_mcp.get_doc",
+            json!({"path":"/start-here/"}),
+            "different user prompt",
+            "",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("/start-here/")
         );
         assert_eq!(normalized.args_source, "provider_json");
         assert_eq!(normalized.args_integrity, "ok");
