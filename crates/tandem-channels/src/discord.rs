@@ -103,6 +103,21 @@ fn normalize_incoming_content(content: &str, bot_user_id: &str) -> (Option<Strin
     (normalized, is_mentioned)
 }
 
+fn message_mentions_bot(message: &serde_json::Value, bot_user_id: &str) -> bool {
+    message
+        .get("mentions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|mentions| {
+            mentions.iter().any(|mention| {
+                mention
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| id == bot_user_id)
+                    .unwrap_or(false)
+            })
+        })
+}
+
 fn normalize_discord_identity(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed == "*" {
@@ -574,8 +589,10 @@ impl Channel for DiscordChannel {
                     let attachment_url = discord_attachment_url(d);
                     let attachment_filename = discord_attachment_filename(d);
                     let attachment_mime = discord_attachment_mime(d);
-                    let (normalized_content, was_explicitly_mentioned) =
+                    let (normalized_content, mentioned_in_content) =
                         normalize_incoming_content(content, &bot_user_id);
+                    let was_explicitly_mentioned =
+                        mentioned_in_content || message_mentions_bot(d, &bot_user_id);
                     let is_direct_message = d.get("guild_id").is_none();
                     let is_reply_to_bot = d
                         .get("referenced_message")
@@ -604,12 +621,45 @@ impl Channel for DiscordChannel {
                         normalized_content.is_some(),
                         attachment.is_some(),
                     ) {
+                        let message_id = d["id"].as_str().unwrap_or("unknown");
+                        let channel_id = d["channel_id"].as_str().unwrap_or("unknown");
+                        let guild_id = d
+                            .get("guild_id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("dm");
+                        info!(
+                            "Discord: dropped message id={} channel={} guild={} author={} direct={} mentioned={} reply_to_bot={} has_text={} has_attachment={} mention_only={}",
+                            message_id,
+                            channel_id,
+                            guild_id,
+                            author_id,
+                            is_direct_message,
+                            was_explicitly_mentioned,
+                            is_reply_to_bot,
+                            normalized_content.is_some(),
+                            attachment.is_some(),
+                            self.mention_only
+                        );
                         continue;
                     }
                     let clean_content = normalized_content.unwrap_or_default();
 
                     let message_id = d["id"].as_str().unwrap_or("");
                     let channel_id = d["channel_id"].as_str().unwrap_or("").to_string();
+                    info!(
+                        "Discord: accepted message id={} channel={} guild={} author={} direct={} mentioned={} reply_to_bot={} has_text={} has_attachment={}",
+                        if message_id.is_empty() { "generated" } else { message_id },
+                        if channel_id.is_empty() { "unknown" } else { channel_id.as_str() },
+                        d.get("guild_id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("dm"),
+                        author_id,
+                        is_direct_message,
+                        was_explicitly_mentioned,
+                        is_reply_to_bot,
+                        !clean_content.is_empty(),
+                        attachment.is_some()
+                    );
                     let scope = if is_direct_message {
                         ConversationScope {
                             kind: ConversationScopeKind::Direct,
@@ -864,6 +914,17 @@ mod tests {
         let (cleaned, mentioned) = normalize_incoming_content("hello", "12345");
         assert_eq!(cleaned.as_deref(), Some("hello"));
         assert!(!mentioned);
+    }
+
+    #[test]
+    fn mention_metadata_detects_bot_even_without_content_tag() {
+        let payload = json!({
+            "mentions": [
+                { "id": "12345" }
+            ]
+        });
+        assert!(message_mentions_bot(&payload, "12345"));
+        assert!(!message_mentions_bot(&payload, "67890"));
     }
 
     // ── Message splitting ─────────────────────────────────────────────
