@@ -1,5 +1,11 @@
 use super::context_runs::context_run_engine;
 use super::*;
+use crate::{
+    WorkflowLearningCandidate, WorkflowLearningCandidateKind, WorkflowLearningCandidateStatus,
+};
+use async_trait::async_trait;
+use tandem_memory::types::{DistilledFact, MemoryResult};
+use tandem_plan_compiler::api as compiler_api;
 use tandem_plan_compiler::api::schedule_from_value;
 use tandem_skills::SkillContent;
 
@@ -139,6 +145,35 @@ pub(super) struct MemoryListQuery {
 pub(super) struct MemoryDeleteQuery {
     project_id: Option<String>,
     channel_tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct WorkflowLearningCandidateListQuery {
+    workflow_id: Option<String>,
+    project_id: Option<String>,
+    status: Option<String>,
+    kind: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct WorkflowLearningCandidateReviewRequest {
+    action: Option<String>,
+    reviewer_id: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct WorkflowLearningCandidatePromoteRequest {
+    reviewer_id: Option<String>,
+    approval_id: Option<String>,
+    run_id: Option<String>,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct WorkflowLearningCandidateSpawnRevisionRequest {
+    reviewer_id: Option<String>,
+    title: Option<String>,
 }
 
 fn tenant_context_event_value(tenant_context: &TenantContext) -> Value {
@@ -1122,6 +1157,307 @@ pub(super) fn default_memory_capability_for(
     partition: &tandem_memory::MemoryPartition,
 ) -> MemoryCapabilityToken {
     issue_run_memory_capability(run_id, None, partition, RunMemoryCapabilityPolicy::Default)
+}
+
+fn workflow_learning_kind_from_str(value: &str) -> Option<WorkflowLearningCandidateKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "memory_fact" => Some(WorkflowLearningCandidateKind::MemoryFact),
+        "repair_hint" => Some(WorkflowLearningCandidateKind::RepairHint),
+        "prompt_patch" => Some(WorkflowLearningCandidateKind::PromptPatch),
+        "graph_patch" => Some(WorkflowLearningCandidateKind::GraphPatch),
+        _ => None,
+    }
+}
+
+fn workflow_learning_status_from_str(value: &str) -> Option<WorkflowLearningCandidateStatus> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "proposed" => Some(WorkflowLearningCandidateStatus::Proposed),
+        "approved" => Some(WorkflowLearningCandidateStatus::Approved),
+        "rejected" => Some(WorkflowLearningCandidateStatus::Rejected),
+        "applied" => Some(WorkflowLearningCandidateStatus::Applied),
+        "superseded" => Some(WorkflowLearningCandidateStatus::Superseded),
+        "regressed" => Some(WorkflowLearningCandidateStatus::Regressed),
+        _ => None,
+    }
+}
+
+fn workflow_learning_kind_label(kind: WorkflowLearningCandidateKind) -> &'static str {
+    match kind {
+        WorkflowLearningCandidateKind::MemoryFact => "memory_fact",
+        WorkflowLearningCandidateKind::RepairHint => "repair_hint",
+        WorkflowLearningCandidateKind::PromptPatch => "prompt_patch",
+        WorkflowLearningCandidateKind::GraphPatch => "graph_patch",
+    }
+}
+
+fn workflow_learning_candidate_partition(
+    tenant_context: &TenantContext,
+    candidate: &WorkflowLearningCandidate,
+    tier: tandem_memory::GovernedMemoryTier,
+) -> tandem_memory::MemoryPartition {
+    tandem_memory::MemoryPartition {
+        org_id: tenant_context.org_id.clone(),
+        workspace_id: tenant_context.workspace_id.clone(),
+        project_id: candidate.project_id.clone(),
+        tier,
+    }
+}
+
+fn workflow_learning_candidate_title(summary: &str, fallback: &str) -> String {
+    let trimmed = summary.trim();
+    if trimmed.is_empty() {
+        return fallback.to_string();
+    }
+    let clipped = trimmed.chars().take(60).collect::<String>();
+    if trimmed.chars().count() > 60 {
+        format!("{clipped}...")
+    } else {
+        clipped
+    }
+}
+
+fn workflow_learning_candidate_memory_content(
+    candidate: &WorkflowLearningCandidate,
+) -> Option<String> {
+    candidate
+        .proposed_memory_payload
+        .as_ref()
+        .and_then(|payload: &Value| {
+            payload
+                .get("content")
+                .and_then(Value::as_str)
+                .or_else(|| payload.get("text").and_then(Value::as_str))
+        })
+        .map(|value: &str| value.trim())
+        .filter(|value: &&str| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let trimmed = candidate.summary.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+}
+
+struct GovernedDistillationWriter {
+    state: AppState,
+    tenant_context: TenantContext,
+    partition: tandem_memory::MemoryPartition,
+    capability: MemoryCapabilityToken,
+    run_id: String,
+    workflow_id: Option<String>,
+    artifact_refs: Vec<String>,
+    subject: String,
+}
+
+impl GovernedDistillationWriter {
+    async fn upsert_memory_fact_candidate(
+        &self,
+        session_id: &str,
+        fact: &DistilledFact,
+        memory_id: Option<String>,
+        fingerprint: &str,
+    ) -> MemoryResult<String> {
+        let workflow_id = self
+            .workflow_id
+            .clone()
+            .unwrap_or_else(|| format!("session:{}", session_id.trim()));
+        let candidate = WorkflowLearningCandidate {
+            candidate_id: format!("wflearn-{}", Uuid::new_v4()),
+            workflow_id,
+            project_id: self.partition.project_id.clone(),
+            source_run_id: self.run_id.clone(),
+            kind: WorkflowLearningCandidateKind::MemoryFact,
+            status: WorkflowLearningCandidateStatus::Proposed,
+            confidence: fact.importance_score,
+            summary: fact.content.clone(),
+            fingerprint: fingerprint.to_string(),
+            node_id: None,
+            node_kind: None,
+            validator_family: None,
+            evidence_refs: vec![json!({
+                "session_id": session_id,
+                "run_id": self.run_id,
+                "distillation_id": fact.distillation_id,
+                "fact_id": fact.id,
+                "fact_category": fact.category,
+            })],
+            artifact_refs: self.artifact_refs.clone(),
+            proposed_memory_payload: Some(json!({
+                "content": fact.content,
+                "kind": "fact",
+                "classification": "internal",
+            })),
+            proposed_revision_prompt: None,
+            source_memory_id: memory_id,
+            promoted_memory_id: None,
+            needs_plan_bundle: false,
+            baseline_before: None,
+            latest_observed_metrics: None,
+            last_revision_session_id: None,
+            run_ids: vec![self.run_id.clone()],
+            created_at_ms: crate::now_ms(),
+            updated_at_ms: crate::now_ms(),
+        };
+        self.state
+            .upsert_workflow_learning_candidate(candidate)
+            .await
+            .map(|candidate| candidate.candidate_id)
+            .map_err(|error| tandem_memory::types::MemoryError::InvalidConfig(error.to_string()))
+    }
+
+    async fn store_fact(
+        &self,
+        session_id: &str,
+        fact: &DistilledFact,
+    ) -> MemoryResult<tandem_memory::DistillationMemoryWrite> {
+        let content_hash = hash_text(&fact.content);
+        let fact_category = fact.category.to_string();
+        let fingerprint = hash_text(&format!(
+            "{}:{}:{}:{}",
+            self.partition.project_id,
+            self.workflow_id.as_deref().unwrap_or(session_id),
+            fact.category,
+            fact.content
+        ));
+        let db = open_global_memory_db().await.ok_or_else(|| {
+            tandem_memory::types::MemoryError::InvalidConfig(
+                "global memory db unavailable".to_string(),
+            )
+        })?;
+        let existing = db
+            .list_global_memory(
+                &self.subject,
+                None,
+                Some(&self.partition.project_id),
+                None,
+                200,
+                0,
+            )
+            .await
+            .map_err(|error| tandem_memory::types::MemoryError::InvalidConfig(error.to_string()))?
+            .into_iter()
+            .find(|record| {
+                record.content_hash == content_hash
+                    && record
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("origin"))
+                        .and_then(Value::as_str)
+                        == Some("session_distillation")
+                    && record
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("fact_category"))
+                        .and_then(Value::as_str)
+                        == Some(fact_category.as_str())
+                    && record
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("workflow_id"))
+                        .and_then(Value::as_str)
+                        == self.workflow_id.as_deref()
+            });
+
+        if let Some(existing) = existing {
+            let mut next_metadata = existing.metadata.clone().unwrap_or_else(|| json!({}));
+            if let Some(object) = next_metadata.as_object_mut() {
+                object.insert("fingerprint".to_string(), json!(fingerprint));
+                object.insert("artifact_refs".to_string(), json!(self.artifact_refs));
+                object.insert("session_id".to_string(), json!(session_id));
+                object.insert("workflow_id".to_string(), json!(self.workflow_id));
+                object.insert("last_distilled_at_ms".to_string(), json!(crate::now_ms()));
+            }
+            let _ = db
+                .update_global_memory_context(
+                    &existing.id,
+                    &existing.visibility,
+                    existing.demoted,
+                    Some(&next_metadata),
+                    existing.provenance.as_ref(),
+                )
+                .await
+                .map_err(|error| {
+                    tandem_memory::types::MemoryError::InvalidConfig(error.to_string())
+                })?;
+            let candidate_id = self
+                .upsert_memory_fact_candidate(
+                    session_id,
+                    fact,
+                    Some(existing.id.clone()),
+                    &fingerprint,
+                )
+                .await?;
+            return Ok(tandem_memory::DistillationMemoryWrite {
+                stored: false,
+                deduped: true,
+                memory_id: Some(existing.id),
+                candidate_id: Some(candidate_id),
+            });
+        }
+
+        let request = MemoryPutRequest {
+            run_id: self.run_id.clone(),
+            partition: self.partition.clone(),
+            kind: tandem_memory::MemoryContentKind::Fact,
+            content: fact.content.clone(),
+            artifact_refs: self.artifact_refs.clone(),
+            classification: tandem_memory::MemoryClassification::Internal,
+            metadata: Some(json!({
+                "origin": "session_distillation",
+                "fact_category": fact.category,
+                "session_id": session_id,
+                "run_id": self.run_id,
+                "workflow_id": self.workflow_id,
+                "artifact_refs": self.artifact_refs,
+                "fingerprint": fingerprint,
+                "distillation_id": fact.distillation_id,
+                "fact_id": fact.id,
+            })),
+        };
+        let response = memory_put_impl(
+            &self.state,
+            &self.tenant_context,
+            request,
+            Some(self.capability.clone()),
+        )
+        .await
+        .map_err(|status| {
+            tandem_memory::types::MemoryError::InvalidConfig(format!(
+                "memory_put failed with status {status}"
+            ))
+        })?;
+        let candidate_id = self
+            .upsert_memory_fact_candidate(session_id, fact, Some(response.id.clone()), &fingerprint)
+            .await?;
+        Ok(tandem_memory::DistillationMemoryWrite {
+            stored: response.stored,
+            deduped: !response.stored,
+            memory_id: Some(response.id),
+            candidate_id: Some(candidate_id),
+        })
+    }
+}
+
+#[async_trait]
+impl tandem_memory::DistillationMemoryWriter for GovernedDistillationWriter {
+    async fn store_user_fact(
+        &self,
+        session_id: &str,
+        fact: &DistilledFact,
+    ) -> MemoryResult<tandem_memory::DistillationMemoryWrite> {
+        self.store_fact(session_id, fact).await
+    }
+
+    async fn store_agent_fact(
+        &self,
+        session_id: &str,
+        fact: &DistilledFact,
+    ) -> MemoryResult<tandem_memory::DistillationMemoryWrite> {
+        self.store_fact(session_id, fact).await
+    }
 }
 
 fn memory_metadata_with_storage_fields(
@@ -3213,6 +3549,18 @@ pub(super) struct ContextGenerateLayersRequest {
 pub(super) struct ContextDistillRequest {
     session_id: String,
     conversation: Vec<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    workflow_id: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    artifact_refs: Vec<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    importance_threshold: Option<f64>,
 }
 
 pub(super) async fn context_resolve_uri(
@@ -3272,27 +3620,419 @@ pub(super) async fn context_generate_layers(
 
 pub(super) async fn context_distill(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Json(input): Json<ContextDistillRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    use tandem_memory::SessionDistiller;
-
     let runtime_state = state.runtime.wait();
     let providers = runtime_state.providers.clone();
-
-    let distiller = SessionDistiller::new(Arc::new(providers));
+    let run_id = input
+        .run_id
+        .clone()
+        .unwrap_or_else(|| format!("distill-{}", input.session_id));
+    let project_id = input
+        .project_id
+        .clone()
+        .or_else(|| input.workflow_id.clone())
+        .unwrap_or_else(|| input.session_id.clone());
+    let subject = run_memory_subject(
+        input
+            .subject
+            .as_deref()
+            .or(tenant_context.actor_id.as_deref()),
+    );
+    let partition = tandem_memory::MemoryPartition {
+        org_id: tenant_context.org_id.clone(),
+        workspace_id: tenant_context.workspace_id.clone(),
+        project_id,
+        tier: tandem_memory::GovernedMemoryTier::Session,
+    };
+    let capability = issue_run_memory_capability(
+        &run_id,
+        Some(subject.as_str()),
+        &partition,
+        RunMemoryCapabilityPolicy::CoderWorkflow,
+    );
+    let writer = GovernedDistillationWriter {
+        state: state.clone(),
+        tenant_context: tenant_context.clone(),
+        partition,
+        capability,
+        run_id,
+        workflow_id: input.workflow_id.clone(),
+        artifact_refs: input.artifact_refs.clone(),
+        subject,
+    };
+    let threshold = input.importance_threshold.unwrap_or(0.5).clamp(0.0, 1.0);
+    let distiller = tandem_memory::SessionDistiller::with_threshold(Arc::new(providers), threshold);
     let report = distiller
-        .distill(&input.session_id, &input.conversation)
+        .distill_with_writer(&input.session_id, &input.conversation, &writer)
         .await
         .map_err(|e| {
             tracing::warn!("Failed to distill session: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    let distillation_id = report.distillation_id.clone();
+    let session_id = report.session_id.clone();
+    let facts_extracted = report.facts_extracted;
+    let stored_count = report.stored_count;
+    let deduped_count = report.deduped_count;
+    let memory_ids = report.memory_ids.clone();
+    let candidate_ids = report.candidate_ids.clone();
+    let status = report.status.clone();
 
     Ok(Json(json!({
         "ok": true,
-        "distillation_id": report.distillation_id,
-        "session_id": report.session_id,
-        "facts_extracted": report.facts_extracted,
+        "distillation_id": distillation_id,
+        "session_id": session_id,
+        "facts_extracted": facts_extracted,
+        "stored_count": stored_count,
+        "deduped_count": deduped_count,
+        "memory_ids": memory_ids,
+        "candidate_ids": candidate_ids,
+        "status": status,
+        "report": report,
+    })))
+}
+
+pub(super) async fn workflow_learning_candidates_list(
+    State(state): State<AppState>,
+    Query(query): Query<WorkflowLearningCandidateListQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let status = match query.status.as_deref() {
+        Some(value) => {
+            Some(workflow_learning_status_from_str(value).ok_or(StatusCode::BAD_REQUEST)?)
+        }
+        None => None,
+    };
+    let kind = match query.kind.as_deref() {
+        Some(value) => Some(workflow_learning_kind_from_str(value).ok_or(StatusCode::BAD_REQUEST)?),
+        None => None,
+    };
+    let mut candidates = state
+        .list_workflow_learning_candidates(query.workflow_id.as_deref(), status, kind)
+        .await;
+    if let Some(project_id) = query.project_id.as_deref() {
+        candidates.retain(|candidate| candidate.project_id == project_id);
+    }
+    let count = candidates.len();
+    Ok(Json(json!({
+        "candidates": candidates,
+        "count": count,
+    })))
+}
+
+pub(super) async fn workflow_learning_candidate_review(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<String>,
+    Json(input): Json<WorkflowLearningCandidateReviewRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let Some(candidate) = state.get_workflow_learning_candidate(&candidate_id).await else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let action = input
+        .action
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("approve")
+        .to_ascii_lowercase();
+    let next_status = match action.as_str() {
+        "approve" | "approved" => WorkflowLearningCandidateStatus::Approved,
+        "reject" | "rejected" => WorkflowLearningCandidateStatus::Rejected,
+        "applied" => WorkflowLearningCandidateStatus::Applied,
+        "supersede" | "superseded" => WorkflowLearningCandidateStatus::Superseded,
+        "regress" | "regressed" => WorkflowLearningCandidateStatus::Regressed,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let baseline = if matches!(
+        next_status,
+        WorkflowLearningCandidateStatus::Approved | WorkflowLearningCandidateStatus::Applied
+    ) {
+        Some(
+            state
+                .workflow_learning_metrics_for_workflow(&candidate.workflow_id)
+                .await,
+        )
+    } else {
+        None
+    };
+    let reviewed_at_ms = crate::now_ms();
+    let updated = state
+        .update_workflow_learning_candidate(&candidate_id, |candidate| {
+            candidate.status = next_status;
+            if candidate.baseline_before.is_none() {
+                candidate.baseline_before = baseline.clone();
+            }
+            if let Some(note) = input
+                .note
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                candidate.evidence_refs.push(json!({
+                    "review_note": note,
+                    "reviewer_id": input.reviewer_id,
+                    "reviewed_at_ms": reviewed_at_ms,
+                    "action": action,
+                }));
+            }
+        })
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(json!({
+        "ok": true,
+        "candidate": updated,
+    })))
+}
+
+pub(super) async fn workflow_learning_candidate_promote(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Path(candidate_id): Path<String>,
+    Json(input): Json<WorkflowLearningCandidatePromoteRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let Some(candidate) = state.get_workflow_learning_candidate(&candidate_id).await else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    if candidate.kind != WorkflowLearningCandidateKind::MemoryFact {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !matches!(
+        candidate.status,
+        WorkflowLearningCandidateStatus::Approved | WorkflowLearningCandidateStatus::Applied
+    ) {
+        return Err(StatusCode::CONFLICT);
+    }
+    let run_id = input
+        .run_id
+        .clone()
+        .unwrap_or_else(|| candidate.source_run_id.clone());
+    let session_partition = workflow_learning_candidate_partition(
+        &tenant_context,
+        &candidate,
+        tandem_memory::GovernedMemoryTier::Session,
+    );
+    let capability = issue_run_memory_capability(
+        &run_id,
+        tenant_context.actor_id.as_deref(),
+        &session_partition,
+        RunMemoryCapabilityPolicy::CoderWorkflow,
+    );
+    let source_memory_id = if let Some(memory_id) = candidate.source_memory_id.clone() {
+        memory_id
+    } else {
+        let content = workflow_learning_candidate_memory_content(&candidate)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let response = memory_put_impl(
+            &state,
+            &tenant_context,
+            MemoryPutRequest {
+                run_id: run_id.clone(),
+                partition: session_partition.clone(),
+                kind: tandem_memory::MemoryContentKind::Fact,
+                content,
+                artifact_refs: candidate.artifact_refs.clone(),
+                classification: tandem_memory::MemoryClassification::Internal,
+                metadata: Some(json!({
+                    "origin": "workflow_learning_candidate",
+                    "candidate_id": candidate.candidate_id,
+                    "workflow_id": candidate.workflow_id,
+                    "kind": workflow_learning_kind_label(candidate.kind),
+                })),
+            },
+            Some(capability.clone()),
+        )
+        .await?;
+        response.id
+    };
+    let promote_response = memory_promote_impl(
+        &state,
+        &tenant_context,
+        MemoryPromoteRequest {
+            run_id: run_id.clone(),
+            source_memory_id: source_memory_id.clone(),
+            from_tier: tandem_memory::GovernedMemoryTier::Session,
+            to_tier: tandem_memory::GovernedMemoryTier::Project,
+            partition: workflow_learning_candidate_partition(
+                &tenant_context,
+                &candidate,
+                tandem_memory::GovernedMemoryTier::Project,
+            ),
+            reason: input.reason.unwrap_or_else(|| {
+                format!(
+                    "approved workflow learning candidate {}",
+                    candidate.candidate_id
+                )
+            }),
+            review: tandem_memory::PromotionReview {
+                required: true,
+                reviewer_id: input
+                    .reviewer_id
+                    .clone()
+                    .or_else(|| tenant_context.actor_id.clone()),
+                approval_id: input.approval_id.clone(),
+            },
+        },
+        Some(capability),
+    )
+    .await?;
+    let updated = state
+        .update_workflow_learning_candidate(&candidate_id, |candidate| {
+            candidate.source_memory_id = Some(source_memory_id.clone());
+            candidate.promoted_memory_id = promote_response
+                .new_memory_id
+                .clone()
+                .or_else(|| Some(source_memory_id.clone()));
+        })
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(json!({
+        "ok": true,
+        "candidate": updated,
+        "promotion": promote_response,
+    })))
+}
+
+pub(super) async fn workflow_learning_candidate_spawn_revision(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<String>,
+    Json(input): Json<WorkflowLearningCandidateSpawnRevisionRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let Some(candidate) = state.get_workflow_learning_candidate(&candidate_id).await else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    if !matches!(
+        candidate.kind,
+        WorkflowLearningCandidateKind::PromptPatch | WorkflowLearningCandidateKind::GraphPatch
+    ) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !matches!(
+        candidate.status,
+        WorkflowLearningCandidateStatus::Approved | WorkflowLearningCandidateStatus::Applied
+    ) {
+        return Err(StatusCode::CONFLICT);
+    }
+    let Some(automation) = state.get_automation_v2(&candidate.workflow_id).await else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let metadata = automation.metadata.as_ref();
+    let bundle = metadata
+        .and_then(|value| value.get("plan_package_bundle").cloned())
+        .and_then(|value| {
+            serde_json::from_value::<compiler_api::PlanPackageImportBundle>(value).ok()
+        })
+        .or_else(|| {
+            metadata
+                .and_then(|value| value.get("plan_package").cloned())
+                .and_then(|value| serde_json::from_value::<compiler_api::PlanPackage>(value).ok())
+                .map(|plan_package| {
+                    let exported = compiler_api::export_plan_package_bundle(&plan_package);
+                    compiler_api::PlanPackageImportBundle {
+                        bundle_version: exported.bundle_version,
+                        plan: exported.plan,
+                        scope_snapshot: Some(exported.scope_snapshot),
+                    }
+                })
+        });
+    let Some(bundle) = bundle else {
+        let _ = state
+            .update_workflow_learning_candidate(&candidate_id, |candidate| {
+                candidate.needs_plan_bundle = true;
+            })
+            .await;
+        return Err(StatusCode::CONFLICT);
+    };
+    let validation = compiler_api::validate_plan_package_bundle(&bundle);
+    if !validation.compatible {
+        return Err(StatusCode::CONFLICT);
+    }
+    let default_workspace_root = state.workspace_index.snapshot().await.root;
+    let workspace_root = automation
+        .workspace_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or(default_workspace_root);
+    let preview = compiler_api::preview_plan_package_import_bundle(
+        &bundle,
+        &workspace_root,
+        input.reviewer_id.as_deref().unwrap_or("workflow_learning"),
+    );
+    let draft =
+        crate::http::workflow_planner::workflow_plan_import_draft(&preview, &workspace_root);
+    let now = crate::now_ms();
+    let notes = format!(
+        "Workflow learning candidate `{}` requested a `{}` revision.\n\nSummary:\n{}\n\nFingerprint:\n{}\n\nAffected runs:\n{}\n\nEvidence:\n{}\n\nConstraint:\nPreserve validated parts of the existing workflow and do not regress completion rate or validation pass rate.",
+        candidate.candidate_id,
+        workflow_learning_kind_label(candidate.kind),
+        candidate.summary,
+        candidate.fingerprint,
+        candidate.run_ids.join(", "),
+        serde_json::to_string_pretty(&candidate.evidence_refs).unwrap_or_default(),
+    );
+    let session = crate::http::workflow_planner::WorkflowPlannerSessionRecord {
+        session_id: format!("wfplan-session-{}", Uuid::new_v4()),
+        project_slug: candidate.project_id.clone(),
+        title: input.title.unwrap_or_else(|| {
+            workflow_learning_candidate_title(
+                &candidate.summary,
+                &format!(
+                    "Revise {} workflow",
+                    workflow_learning_kind_label(candidate.kind)
+                ),
+            )
+        }),
+        workspace_root: workspace_root.clone(),
+        source_kind: "workflow_learning_revision".to_string(),
+        source_bundle_digest: Some(preview.source_bundle_digest.clone()),
+        current_plan_id: Some(draft.current_plan.plan_id.clone()),
+        draft: Some(draft),
+        goal: format!(
+            "Revise workflow `{}` using approved {} candidate.",
+            automation.name,
+            workflow_learning_kind_label(candidate.kind)
+        ),
+        notes,
+        planner_provider: String::new(),
+        planner_model: String::new(),
+        plan_source: "workflow_learning_revision".to_string(),
+        allowed_mcp_servers: Vec::new(),
+        operator_preferences: Some(json!({
+            "candidate_id": candidate.candidate_id,
+            "requested_change_type": workflow_learning_kind_label(candidate.kind),
+            "fingerprint": candidate.fingerprint,
+            "run_ids": candidate.run_ids,
+        })),
+        import_validation: Some(validation),
+        import_transform_log: preview.import_transform_log.clone(),
+        import_scope_snapshot: Some(preview.derived_scope_snapshot.clone()),
+        published_at_ms: None,
+        published_tasks: Vec::new(),
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+    let stored = state
+        .put_workflow_planner_session(session)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let baseline = state
+        .workflow_learning_metrics_for_workflow(&candidate.workflow_id)
+        .await;
+    let updated = state
+        .update_workflow_learning_candidate(&candidate_id, |candidate| {
+            candidate.last_revision_session_id = Some(stored.session_id.clone());
+            if candidate.baseline_before.is_none() {
+                candidate.baseline_before = Some(baseline.clone());
+            }
+        })
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(json!({
+        "ok": true,
+        "candidate": updated,
+        "session": stored,
     })))
 }
 

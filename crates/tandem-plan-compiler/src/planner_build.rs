@@ -650,7 +650,7 @@ where
                 "draft_deliverable",
                 "draft",
                 format!(
-                    "Write the final report or daily artifact using the synthesized results for {}.",
+                    "Read and synthesize the strongest upstream artifacts from the prior steps, then write the final report or daily artifact for {} using concrete evidence rather than a generic recap.",
                     target_summary
                 ),
                 "agent_report_writer",
@@ -660,7 +660,7 @@ where
                 "finalize_outputs",
                 "finalize",
                 format!(
-                    "Complete the workflow by writing {} and preserve prior source-of-truth files.",
+                    "Complete the workflow by writing {}. Re-read the strongest upstream artifacts before finalizing, and preserve prior source-of-truth files.",
                     target_summary
                 ),
                 "agent_workflow_executor",
@@ -708,7 +708,7 @@ where
                 "draft_deliverable",
                 "draft",
                 format!(
-                    "Write the final report or daily artifact using the synthesized results for {}.",
+                    "Read and synthesize the strongest upstream artifacts from the prior steps, then write the final report or daily artifact for {} using concrete evidence rather than a generic recap.",
                     target_summary
                 ),
                 "agent_report_writer",
@@ -718,7 +718,7 @@ where
                 "finalize_outputs",
                 "finalize",
                 format!(
-                    "Complete the workflow by writing {} and preserve prior source-of-truth files.",
+                    "Complete the workflow by writing {}. Re-read the strongest upstream artifacts before finalizing, and preserve prior source-of-truth files.",
                     target_summary
                 ),
                 "agent_workflow_executor",
@@ -1138,6 +1138,12 @@ Replace `YYYY-MM-DD` with the actual resolved date for the run.";
                 .any(|step| step.objective.contains("websearch")
                     || step.objective.contains("webfetch")),
             "fallback plan should preserve explicit web search tooling"
+        );
+        assert!(
+            plan.steps.iter().any(|step| step
+                .objective
+                .contains("Read and synthesize the strongest upstream artifacts")),
+            "fallback plan should force final synthesis steps to re-read upstream artifacts"
         );
         assert!(
             !plan

@@ -540,7 +540,7 @@ fn workflow_plan_from_import_preview(
     }
 }
 
-fn workflow_plan_import_draft(
+pub(crate) fn workflow_plan_import_draft(
     preview: &compiler_api::PlanPackageImportPreview,
     workspace_root: &str,
 ) -> crate::WorkflowPlanDraftRecord {

@@ -1582,6 +1582,7 @@ mod tests {
             scheduler: None,
             trigger_reason: None,
             consumed_handoff_id: None,
+            learning_summary: None,
         }
     }
 

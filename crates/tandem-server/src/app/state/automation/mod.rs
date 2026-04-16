@@ -24,6 +24,7 @@ pub(crate) mod upstream;
 pub(crate) mod validation;
 pub(crate) mod verification;
 mod workflow_impl;
+pub(crate) mod workflow_learning;
 use assessment::*;
 pub(crate) use capability_impl::*;
 use enforcement::*;
@@ -52,6 +53,7 @@ use upstream::*;
 use validation::*;
 use verification::*;
 pub(crate) use workflow_impl::migrate_bundled_studio_research_split_automation;
+pub(crate) use workflow_learning::*;
 
 pub fn automation_node_output_enforcement(
     node: &AutomationFlowNode,
@@ -7657,6 +7659,9 @@ pub(crate) async fn execute_automation_v2_node(
     };
     let knowledge_preflight =
         automation_knowledge_preflight(state, automation, node, run_id, &project_id).await;
+    let (approved_learning_ids, workflow_learning_context) = state
+        .workflow_learning_context_for_automation_node(automation, node)
+        .await;
     let knowledge_context = {
         let base = knowledge_preflight.as_ref().and_then(|preflight| {
             if !preflight.is_reusable() {
@@ -7669,13 +7674,24 @@ pub(crate) async fn execute_automation_v2_node(
                 Some(rendered)
             }
         });
-        match (base, previous_standup_context) {
-            (Some(base), Some(prev)) => Some(format!("{base}\n\n{prev}")),
-            (Some(base), None) => Some(base),
-            (None, Some(prev)) => Some(prev),
-            (None, None) => None,
+        match (base, workflow_learning_context, previous_standup_context) {
+            (Some(base), Some(learning), Some(prev)) => {
+                Some(format!("{base}\n\n{learning}\n\n{prev}"))
+            }
+            (Some(base), Some(learning), None) => Some(format!("{base}\n\n{learning}")),
+            (Some(base), None, Some(prev)) => Some(format!("{base}\n\n{prev}")),
+            (None, Some(learning), Some(prev)) => Some(format!("{learning}\n\n{prev}")),
+            (Some(base), None, None) => Some(base),
+            (None, Some(learning), None) => Some(learning),
+            (None, None, Some(prev)) => Some(prev),
+            (None, None, None) => None,
         }
     };
+    if !approved_learning_ids.is_empty() {
+        let _ = state
+            .record_automation_v2_run_learning_usage(run_id, &approved_learning_ids)
+            .await;
+    }
     let max_attempts = automation_node_max_attempts(node);
     let mut prompt = render_automation_v2_prompt_with_options(
         automation,

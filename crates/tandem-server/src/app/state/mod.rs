@@ -90,6 +90,8 @@ pub struct AppState {
             >,
         >,
     >,
+    pub workflow_learning_candidates:
+        Arc<RwLock<std::collections::HashMap<String, WorkflowLearningCandidate>>>,
     pub(crate) context_packs: Arc<
         RwLock<std::collections::HashMap<String, crate::http::context_packs::ContextPackRecord>>,
     >,
@@ -128,6 +130,7 @@ pub struct AppState {
     pub external_actions_path: PathBuf,
     pub workflow_runs_path: PathBuf,
     pub workflow_planner_sessions_path: PathBuf,
+    pub workflow_learning_candidates_path: PathBuf,
     pub context_packs_path: PathBuf,
     pub workflow_hook_overrides_path: PathBuf,
     pub agent_teams: AgentTeamRuntime,
@@ -218,6 +221,7 @@ impl AppState {
             workflow_plans: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_plan_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_planner_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            workflow_learning_candidates: Arc::new(RwLock::new(std::collections::HashMap::new())),
             context_packs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             optimization_campaigns: Arc::new(RwLock::new(std::collections::HashMap::new())),
             optimization_experiments: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -252,6 +256,8 @@ impl AppState {
             external_actions_path: config::paths::resolve_external_actions_path(),
             workflow_runs_path: config::paths::resolve_workflow_runs_path(),
             workflow_planner_sessions_path: config::paths::resolve_workflow_planner_sessions_path(),
+            workflow_learning_candidates_path:
+                config::paths::resolve_workflow_learning_candidates_path(),
             context_packs_path: config::paths::resolve_context_packs_path(),
             workflow_hook_overrides_path: config::paths::resolve_workflow_hook_overrides_path(),
             agent_teams: AgentTeamRuntime::new(config::paths::resolve_agent_team_audit_path()),
@@ -412,6 +418,7 @@ impl AppState {
         let _ = self.load_bug_monitor_posts().await;
         let _ = self.load_external_actions().await;
         let _ = self.load_workflow_planner_sessions().await;
+        let _ = self.load_workflow_learning_candidates().await;
         let _ = self.load_context_packs().await;
         let _ = self.load_workflow_runs().await;
         let _ = self.load_workflow_hook_overrides().await;
@@ -3032,6 +3039,388 @@ impl AppState {
         removed
     }
 
+    pub async fn load_workflow_learning_candidates(&self) -> anyhow::Result<()> {
+        if !self.workflow_learning_candidates_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.workflow_learning_candidates_path).await?;
+        let parsed = serde_json::from_str::<
+            std::collections::HashMap<String, WorkflowLearningCandidate>,
+        >(&raw)
+        .unwrap_or_default();
+        *self.workflow_learning_candidates.write().await = parsed;
+        Ok(())
+    }
+
+    pub async fn persist_workflow_learning_candidates(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.workflow_learning_candidates_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.workflow_learning_candidates.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.workflow_learning_candidates_path, payload).await?;
+        Ok(())
+    }
+
+    pub async fn get_workflow_learning_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Option<WorkflowLearningCandidate> {
+        self.workflow_learning_candidates
+            .read()
+            .await
+            .get(candidate_id)
+            .cloned()
+    }
+
+    pub async fn list_workflow_learning_candidates(
+        &self,
+        workflow_id: Option<&str>,
+        status: Option<WorkflowLearningCandidateStatus>,
+        kind: Option<WorkflowLearningCandidateKind>,
+    ) -> Vec<WorkflowLearningCandidate> {
+        let mut rows = self
+            .workflow_learning_candidates
+            .read()
+            .await
+            .values()
+            .filter(|candidate| {
+                workflow_id
+                    .map(|value| candidate.workflow_id == value)
+                    .unwrap_or(true)
+                    && status
+                        .map(|value| candidate.status == value)
+                        .unwrap_or(true)
+                    && kind.map(|value| candidate.kind == value).unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows
+    }
+
+    pub async fn put_workflow_learning_candidate(
+        &self,
+        mut candidate: WorkflowLearningCandidate,
+    ) -> anyhow::Result<WorkflowLearningCandidate> {
+        if candidate.candidate_id.trim().is_empty() {
+            anyhow::bail!("candidate_id is required");
+        }
+        let now = now_ms();
+        if candidate.created_at_ms == 0 {
+            candidate.created_at_ms = now;
+        }
+        candidate.updated_at_ms = now;
+        self.workflow_learning_candidates
+            .write()
+            .await
+            .insert(candidate.candidate_id.clone(), candidate.clone());
+        self.persist_workflow_learning_candidates().await?;
+        Ok(candidate)
+    }
+
+    pub async fn upsert_workflow_learning_candidate(
+        &self,
+        mut candidate: WorkflowLearningCandidate,
+    ) -> anyhow::Result<WorkflowLearningCandidate> {
+        let now = now_ms();
+        if candidate.candidate_id.trim().is_empty() {
+            candidate.candidate_id = format!("wflearn-{}", uuid::Uuid::new_v4());
+        }
+        if candidate.created_at_ms == 0 {
+            candidate.created_at_ms = now;
+        }
+        candidate.updated_at_ms = now;
+
+        let stored = {
+            let mut guard = self.workflow_learning_candidates.write().await;
+            if let Some(existing) = guard.values_mut().find(|row| {
+                row.workflow_id == candidate.workflow_id
+                    && row.kind == candidate.kind
+                    && row.fingerprint == candidate.fingerprint
+            }) {
+                existing.summary = candidate.summary.clone();
+                existing.confidence = existing.confidence.max(candidate.confidence);
+                existing.updated_at_ms = now;
+                if existing.node_id.is_none() {
+                    existing.node_id = candidate.node_id.clone();
+                }
+                if existing.node_kind.is_none() {
+                    existing.node_kind = candidate.node_kind.clone();
+                }
+                if existing.validator_family.is_none() {
+                    existing.validator_family = candidate.validator_family.clone();
+                }
+                if existing.proposed_memory_payload.is_none() {
+                    existing.proposed_memory_payload = candidate.proposed_memory_payload.clone();
+                }
+                if existing.proposed_revision_prompt.is_none() {
+                    existing.proposed_revision_prompt = candidate.proposed_revision_prompt.clone();
+                }
+                if existing.source_memory_id.is_none() {
+                    existing.source_memory_id = candidate.source_memory_id.clone();
+                }
+                if existing.promoted_memory_id.is_none() {
+                    existing.promoted_memory_id = candidate.promoted_memory_id.clone();
+                }
+                if existing.baseline_before.is_none() {
+                    existing.baseline_before = candidate.baseline_before.clone();
+                }
+                if candidate.latest_observed_metrics.is_some() {
+                    existing.latest_observed_metrics = candidate.latest_observed_metrics.clone();
+                }
+                if candidate.last_revision_session_id.is_some() {
+                    existing.last_revision_session_id = candidate.last_revision_session_id.clone();
+                }
+                existing.needs_plan_bundle |= candidate.needs_plan_bundle;
+                for artifact_ref in candidate.artifact_refs {
+                    if !existing
+                        .artifact_refs
+                        .iter()
+                        .any(|value| value == &artifact_ref)
+                    {
+                        existing.artifact_refs.push(artifact_ref);
+                    }
+                }
+                for run_id in candidate.run_ids {
+                    if !existing.run_ids.iter().any(|value| value == &run_id) {
+                        existing.run_ids.push(run_id);
+                    }
+                }
+                for evidence_ref in candidate.evidence_refs {
+                    if !existing.evidence_refs.contains(&evidence_ref) {
+                        existing.evidence_refs.push(evidence_ref);
+                    }
+                }
+                existing.clone()
+            } else {
+                guard.insert(candidate.candidate_id.clone(), candidate.clone());
+                candidate
+            }
+        };
+        self.persist_workflow_learning_candidates().await?;
+        Ok(stored)
+    }
+
+    pub async fn update_workflow_learning_candidate(
+        &self,
+        candidate_id: &str,
+        update: impl FnOnce(&mut WorkflowLearningCandidate),
+    ) -> Option<WorkflowLearningCandidate> {
+        let updated = {
+            let mut guard = self.workflow_learning_candidates.write().await;
+            let candidate = guard.get_mut(candidate_id)?;
+            update(candidate);
+            candidate.updated_at_ms = now_ms();
+            candidate.clone()
+        };
+        let _ = self.persist_workflow_learning_candidates().await;
+        Some(updated)
+    }
+
+    pub async fn workflow_learning_metrics_for_workflow(
+        &self,
+        workflow_id: &str,
+    ) -> WorkflowLearningMetricsSnapshot {
+        let runs = self.list_automation_v2_runs(Some(workflow_id), 50).await;
+        crate::app::state::automation::workflow_learning_metrics_snapshot(&runs)
+    }
+
+    pub async fn workflow_learning_context_for_automation_node(
+        &self,
+        automation: &AutomationV2Spec,
+        node: &AutomationFlowNode,
+    ) -> (Vec<String>, Option<String>) {
+        let project_id = crate::app::state::automation::workflow_learning_project_id(automation);
+        let node_kind = node
+            .stage_kind
+            .as_ref()
+            .map(|kind| format!("{kind:?}").to_ascii_lowercase());
+        let validator_family = node
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.validator.as_ref())
+            .map(|validator| format!("{validator:?}").to_ascii_lowercase());
+        let candidates = self
+            .workflow_learning_candidates
+            .read()
+            .await
+            .values()
+            .filter(|candidate| {
+                matches!(
+                    candidate.status,
+                    WorkflowLearningCandidateStatus::Approved
+                        | WorkflowLearningCandidateStatus::Applied
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut ordered = Vec::new();
+        let mut push_unique = |candidate: WorkflowLearningCandidate| {
+            if ordered.iter().any(|existing: &WorkflowLearningCandidate| {
+                existing.candidate_id == candidate.candidate_id
+            }) {
+                return;
+            }
+            ordered.push(candidate);
+        };
+        for candidate in candidates
+            .iter()
+            .filter(|candidate| candidate.workflow_id == automation.automation_id)
+        {
+            push_unique(candidate.clone());
+        }
+        for candidate in candidates.iter().filter(|candidate| {
+            candidate.workflow_id == automation.automation_id
+                && (candidate.node_kind.as_deref() == node_kind.as_deref()
+                    || candidate.validator_family.as_deref() == validator_family.as_deref())
+        }) {
+            push_unique(candidate.clone());
+        }
+        for candidate in candidates.iter().filter(|candidate| {
+            candidate.project_id == project_id && candidate.workflow_id != automation.automation_id
+        }) {
+            push_unique(candidate.clone());
+        }
+        ordered.truncate(6);
+        let candidate_ids = ordered
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>();
+        let context =
+            crate::app::state::automation::workflow_learning_context_for_candidates(&ordered);
+        (candidate_ids, context)
+    }
+
+    pub async fn record_automation_v2_run_learning_usage(
+        &self,
+        run_id: &str,
+        candidate_ids: &[String],
+    ) -> Option<AutomationV2RunRecord> {
+        if candidate_ids.is_empty() {
+            return self.get_automation_v2_run(run_id).await;
+        }
+        let updated = {
+            let mut guard = self.automation_v2_runs.write().await;
+            let run = guard.get_mut(run_id)?;
+            let summary = run
+                .learning_summary
+                .get_or_insert_with(WorkflowLearningRunSummary::default);
+            for candidate_id in candidate_ids {
+                if !summary
+                    .approved_learning_ids_considered
+                    .iter()
+                    .any(|value| value == candidate_id)
+                {
+                    summary
+                        .approved_learning_ids_considered
+                        .push(candidate_id.clone());
+                }
+                if !summary
+                    .injected_learning_ids
+                    .iter()
+                    .any(|value| value == candidate_id)
+                {
+                    summary.injected_learning_ids.push(candidate_id.clone());
+                }
+            }
+            run.updated_at_ms = now_ms();
+            run.clone()
+        };
+        let _ = self.persist_automation_v2_runs().await;
+        let _ = self.persist_automation_v2_run_status_json(&updated).await;
+        Some(updated)
+    }
+
+    async fn finalize_terminal_automation_v2_run_learning(
+        &self,
+        run: &AutomationV2RunRecord,
+    ) -> anyhow::Result<()> {
+        let automation = if let Some(snapshot) = run.automation_snapshot.clone() {
+            snapshot
+        } else if let Some(current) = self.get_automation_v2(&run.automation_id).await {
+            current
+        } else {
+            return Ok(());
+        };
+        let recent_runs = self
+            .list_automation_v2_runs(Some(&run.automation_id), 50)
+            .await;
+        let metrics =
+            crate::app::state::automation::workflow_learning_metrics_snapshot(&recent_runs);
+        let existing_candidates = self
+            .list_workflow_learning_candidates(Some(&run.automation_id), None, None)
+            .await;
+        let generated =
+            crate::app::state::automation::workflow_learning_candidates_for_terminal_run(
+                &automation,
+                run,
+                &recent_runs,
+                &existing_candidates,
+            );
+        let mut generated_candidate_ids = Vec::new();
+        for candidate in generated {
+            let stored = self.upsert_workflow_learning_candidate(candidate).await?;
+            generated_candidate_ids.push(stored.candidate_id);
+        }
+        let candidate_ids = self
+            .list_workflow_learning_candidates(Some(&run.automation_id), None, None)
+            .await
+            .into_iter()
+            .filter(|candidate| {
+                matches!(
+                    candidate.status,
+                    WorkflowLearningCandidateStatus::Approved
+                        | WorkflowLearningCandidateStatus::Applied
+                ) && candidate.baseline_before.is_some()
+            })
+            .map(|candidate| candidate.candidate_id)
+            .collect::<Vec<_>>();
+        for candidate_id in candidate_ids {
+            let _ = self
+                .update_workflow_learning_candidate(&candidate_id, |candidate| {
+                    candidate.latest_observed_metrics = Some(metrics.clone());
+                    if candidate.status == WorkflowLearningCandidateStatus::Applied {
+                        if let Some(baseline) = candidate.baseline_before.as_ref() {
+                            if metrics.completion_rate + f64::EPSILON < baseline.completion_rate
+                                || metrics.validation_pass_rate + f64::EPSILON
+                                    < baseline.validation_pass_rate
+                            {
+                                candidate.status = WorkflowLearningCandidateStatus::Regressed;
+                            }
+                        }
+                    }
+                })
+                .await;
+        }
+        let updated_run = {
+            let mut guard = self.automation_v2_runs.write().await;
+            let Some(stored_run) = guard.get_mut(&run.run_id) else {
+                return Ok(());
+            };
+            let summary = stored_run
+                .learning_summary
+                .get_or_insert_with(WorkflowLearningRunSummary::default);
+            for candidate_id in generated_candidate_ids {
+                if !summary
+                    .generated_candidate_ids
+                    .iter()
+                    .any(|value| value == &candidate_id)
+                {
+                    summary.generated_candidate_ids.push(candidate_id);
+                }
+            }
+            summary.post_run_metrics = Some(metrics);
+            stored_run.clone()
+        };
+        self.persist_automation_v2_runs().await?;
+        self.persist_automation_v2_run_status_json(&updated_run)
+            .await?;
+        Ok(())
+    }
+
     pub async fn load_context_packs(&self) -> anyhow::Result<()> {
         if !self.context_packs_path.exists() {
             return Ok(());
@@ -4580,6 +4969,7 @@ impl AppState {
             scheduler: None,
             trigger_reason: None,
             consumed_handoff_id: None,
+            learning_summary: None,
         };
         self.automation_v2_runs
             .write()
@@ -4644,6 +5034,7 @@ impl AppState {
             scheduler: None,
             trigger_reason: None,
             consumed_handoff_id: None,
+            learning_summary: None,
         };
         self.automation_v2_runs
             .write()
@@ -5163,6 +5554,17 @@ impl AppState {
             .await;
         let _ = self.persist_automation_v2_runs().await;
         let _ = self.persist_automation_v2_run_status_json(&out).await;
+        if matches!(
+            out.status,
+            AutomationRunStatus::Completed
+                | AutomationRunStatus::Blocked
+                | AutomationRunStatus::Failed
+                | AutomationRunStatus::Cancelled
+        ) {
+            let _ = self
+                .finalize_terminal_automation_v2_run_learning(&out)
+                .await;
+        }
         Some(out)
     }
 
@@ -5210,6 +5612,7 @@ impl AppState {
             "blocked_nodes": run.checkpoint.blocked_nodes,
             "node_attempts": run.checkpoint.node_attempts,
             "last_failure": run.checkpoint.last_failure,
+            "learning_summary": run.learning_summary,
             "updated_at_ms": run.updated_at_ms,
         });
         fs::create_dir_all(&run_dir).await?;
@@ -5555,6 +5958,7 @@ impl AppState {
             scheduler: None,
             trigger_reason: Some(trigger_reason),
             consumed_handoff_id,
+            learning_summary: None,
         };
         self.automation_v2_runs
             .write()

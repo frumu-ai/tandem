@@ -37,4 +37,20 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(context_generate_layers),
         )
         .route("/memory/context/distill", post(context_distill))
+        .route(
+            "/workflow-learning/candidates",
+            get(workflow_learning_candidates_list),
+        )
+        .route(
+            "/workflow-learning/candidates/{candidate_id}/review",
+            post(workflow_learning_candidate_review),
+        )
+        .route(
+            "/workflow-learning/candidates/{candidate_id}/promote",
+            post(workflow_learning_candidate_promote),
+        )
+        .route(
+            "/workflow-learning/candidates/{candidate_id}/spawn-revision",
+            post(workflow_learning_candidate_spawn_revision),
+        )
 }

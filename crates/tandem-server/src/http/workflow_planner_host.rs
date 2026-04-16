@@ -25,6 +25,180 @@ pub(crate) async fn resolve_workspace_root(
     compiler_api::resolve_workspace_root_candidate(requested, &root, cwd.as_deref())
 }
 
+fn workflow_step_contract_kind(step: &crate::WorkflowPlanStep) -> String {
+    step.output_contract
+        .as_ref()
+        .map(|contract| contract.kind.trim().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn workflow_step_is_upstream_synthesis(step: &crate::WorkflowPlanStep) -> bool {
+    let has_upstream_dependencies = !step.depends_on.is_empty() || !step.input_refs.is_empty();
+    if !has_upstream_dependencies {
+        return false;
+    }
+    let contract_kind = workflow_step_contract_kind(step);
+    if !matches!(
+        contract_kind.as_str(),
+        "structured_json" | "report_markdown" | "text_summary" | "review_summary"
+    ) {
+        return false;
+    }
+    let lowered = format!(
+        "{}\n{}\n{}",
+        step.step_id.to_ascii_lowercase(),
+        step.kind.to_ascii_lowercase(),
+        step.objective.to_ascii_lowercase()
+    );
+    [
+        "summar",
+        "synthes",
+        "report",
+        "final",
+        "finalize",
+        "deliverable",
+        "append",
+        "merge",
+        "consolidat",
+        "recap",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn workflow_step_alias_from_step_id(step_id: &str) -> String {
+    let alias = step_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let alias = alias.trim_matches('_').replace("__", "_");
+    if alias.is_empty() {
+        "upstream_artifact".to_string()
+    } else if alias.ends_with("_artifact") {
+        alias
+    } else {
+        format!("{alias}_artifact")
+    }
+}
+
+fn strengthen_upstream_synthesis_step(step: &mut crate::WorkflowPlanStep) {
+    if !workflow_step_is_upstream_synthesis(step) {
+        return;
+    }
+
+    let mut upstream_step_ids = BTreeSet::new();
+    for dep in &step.depends_on {
+        let trimmed = dep.trim();
+        if !trimmed.is_empty() {
+            upstream_step_ids.insert(trimmed.to_string());
+        }
+    }
+    for input_ref in &step.input_refs {
+        let trimmed = input_ref.from_step_id.trim();
+        if !trimmed.is_empty() {
+            upstream_step_ids.insert(trimmed.to_string());
+        }
+    }
+    if upstream_step_ids.is_empty() {
+        return;
+    }
+
+    let mut existing_aliases = step
+        .input_refs
+        .iter()
+        .map(|input_ref| input_ref.alias.trim().to_string())
+        .collect::<BTreeSet<_>>();
+    let existing_inputs = step
+        .input_refs
+        .iter()
+        .map(|input_ref| input_ref.from_step_id.trim().to_string())
+        .collect::<BTreeSet<_>>();
+    for upstream_step_id in &upstream_step_ids {
+        if existing_inputs.contains(upstream_step_id) {
+            continue;
+        }
+        let alias_base = workflow_step_alias_from_step_id(upstream_step_id);
+        let mut alias = alias_base.clone();
+        let mut index = 2u32;
+        while existing_aliases.contains(&alias) {
+            alias = format!("{alias_base}_{index}");
+            index += 1;
+        }
+        existing_aliases.insert(alias.clone());
+        step.input_refs.push(crate::AutomationFlowInputRef {
+            from_step_id: upstream_step_id.clone(),
+            alias,
+        });
+    }
+
+    let upstream_summary = upstream_step_ids
+        .iter()
+        .take(4)
+        .map(|step_id| format!("`{step_id}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let synthesis_guidance = format!(
+        "Read and synthesize the strongest upstream artifacts from {}. Reuse the concrete filenames, named entities, URLs, counts, match reasons, risks, and proof points from those upstream steps instead of producing a generic recap.",
+        upstream_summary
+    );
+
+    if let Some(contract) = step.output_contract.as_mut() {
+        contract.summary_guidance = match contract.summary_guidance.take() {
+            Some(existing)
+                if existing
+                    .to_ascii_lowercase()
+                    .contains("read and synthesize the strongest upstream artifacts") =>
+            {
+                Some(existing)
+            }
+            Some(existing) if !existing.trim().is_empty() => {
+                Some(format!("{} {}", existing.trim(), synthesis_guidance))
+            }
+            _ => Some(synthesis_guidance.clone()),
+        };
+    }
+
+    let metadata = step.metadata.get_or_insert_with(|| serde_json::json!({}));
+    if let Some(builder) = metadata
+        .as_object_mut()
+        .map(|root| {
+            root.entry("builder".to_string())
+                .or_insert_with(|| serde_json::json!({}))
+        })
+        .and_then(Value::as_object_mut)
+    {
+        builder.insert(
+            "upstream_input_step_ids".to_string(),
+            serde_json::json!(upstream_step_ids.iter().cloned().collect::<Vec<_>>()),
+        );
+        let strengthened_prompt = format!(
+            "Before writing the final artifact, read and synthesize the strongest upstream artifacts from {}. Carry forward concrete evidence anchors from those steps and do not collapse the result into a vague recap.",
+            upstream_summary
+        );
+        match builder.get("prompt").and_then(Value::as_str).map(str::trim) {
+            Some(existing)
+                if existing
+                    .to_ascii_lowercase()
+                    .contains("read and synthesize the strongest upstream artifacts") => {}
+            Some(existing) if !existing.is_empty() => {
+                builder.insert(
+                    "prompt".to_string(),
+                    Value::String(format!("{existing} {strengthened_prompt}")),
+                );
+            }
+            _ => {
+                builder.insert("prompt".to_string(), Value::String(strengthened_prompt));
+            }
+        }
+    }
+}
+
 pub(crate) fn normalize_workflow_step_metadata(step: &mut crate::WorkflowPlanStep) {
     compiler_api::normalize_workflow_step_metadata(
         step,
@@ -62,6 +236,7 @@ pub(crate) fn normalize_workflow_step_metadata(step: &mut crate::WorkflowPlanSte
             step.metadata = Some(value);
         },
     );
+    strengthen_upstream_synthesis_step(step);
 }
 
 pub(crate) fn normalize_workflow_plan_file_contracts(plan: &mut crate::WorkflowPlan) {
@@ -695,6 +870,7 @@ fn filter_mcp_inventory_to_allowed(inventory: Value, allowed_mcp_servers: &[Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[tokio::test]
     async fn planner_capability_summary_skips_inventory_when_allowlist_is_empty() {
@@ -771,5 +947,88 @@ mod tests {
         assert!(prompt.contains("previous planner response was not valid JSON"));
         assert!(prompt.contains("Invalid planner response to repair"));
         assert!(prompt.contains("Build a workflow"));
+    }
+
+    fn synthesis_step() -> crate::WorkflowPlanStep {
+        crate::WorkflowPlanStep {
+            step_id: "summarize_search_run".to_string(),
+            kind: "summarize".to_string(),
+            objective: "Summarize the search run into a final results artifact.".to_string(),
+            agent_role: "writer".to_string(),
+            depends_on: vec![
+                "extract_job_board_sources".to_string(),
+                "detect_repeated_listings".to_string(),
+            ],
+            input_refs: Vec::new(),
+            output_contract: Some(crate::AutomationFlowOutputContract {
+                kind: "structured_json".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+                enforcement: None,
+                schema: None,
+                summary_guidance: None,
+            }),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn normalize_workflow_step_metadata_strengthens_upstream_synthesis_steps() {
+        let mut step = synthesis_step();
+
+        normalize_workflow_step_metadata(&mut step);
+
+        assert_eq!(step.input_refs.len(), 2);
+        assert_eq!(step.input_refs[0].from_step_id, "extract_job_board_sources");
+        assert_eq!(step.input_refs[1].from_step_id, "detect_repeated_listings");
+        assert!(step
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.summary_guidance.as_deref())
+            .is_some_and(|guidance| guidance
+                .contains("Read and synthesize the strongest upstream artifacts")));
+        assert!(step
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/builder/upstream_input_step_ids"))
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.len() == 2));
+        assert!(
+            step.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/builder/prompt"))
+                .and_then(Value::as_str)
+                .is_some_and(
+                    |prompt| prompt.contains("do not collapse the result into a vague recap")
+                )
+        );
+    }
+
+    #[test]
+    fn normalize_workflow_step_metadata_leaves_non_synthesis_steps_without_fabricated_inputs() {
+        let mut step = crate::WorkflowPlanStep {
+            step_id: "score_listing_relevance".to_string(),
+            kind: "score".to_string(),
+            objective: "Score listing relevance.".to_string(),
+            agent_role: "analyst".to_string(),
+            depends_on: vec!["extract_listing_candidates".to_string()],
+            input_refs: Vec::new(),
+            output_contract: Some(crate::AutomationFlowOutputContract {
+                kind: "structured_json".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+                enforcement: None,
+                schema: Some(json!({"type": "object"})),
+                summary_guidance: None,
+            }),
+            metadata: None,
+        };
+
+        normalize_workflow_step_metadata(&mut step);
+
+        assert!(step.input_refs.is_empty());
+        assert!(step
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.summary_guidance.as_deref())
+            .is_none());
     }
 }

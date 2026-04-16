@@ -150,6 +150,10 @@ pub(crate) fn resolve_workflow_planner_sessions_path() -> PathBuf {
     default_state_dir().join("workflow_planner_sessions.json")
 }
 
+pub(crate) fn resolve_workflow_learning_candidates_path() -> PathBuf {
+    resolve_canonical_data_file_path("workflow_learning_candidates.json")
+}
+
 pub(crate) fn resolve_context_packs_path() -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();

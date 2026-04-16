@@ -21,6 +21,7 @@ thiserror = "1"
 tokio = { version = "1", features = ["sync", "fs", "io-util", "macros", "rt-multi-thread"] }
 tracing = "0.1"
 anyhow = "1"
+async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 tiktoken-rs = "0.6"
 ignore = "0.4"
@@ -32,7 +33,6 @@ tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.4.29" }
 
 [dev-dependencies]
 tempfile = "3"
-
 
 
 

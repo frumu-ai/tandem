@@ -740,6 +740,16 @@ pub struct DistillationReport {
     pub importance_threshold: f64,
     pub user_memory_updated: bool,
     pub agent_memory_updated: bool,
+    #[serde(default)]
+    pub stored_count: usize,
+    #[serde(default)]
+    pub deduped_count: usize,
+    #[serde(default)]
+    pub memory_ids: Vec<String>,
+    #[serde(default)]
+    pub candidate_ids: Vec<String>,
+    #[serde(default)]
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

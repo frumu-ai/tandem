@@ -8,12 +8,14 @@ This release hardens workflow release safety while improving schedule visibility
 
 - **Workflow replay suite**: Added focused replay coverage for escaped resume/job-search workflow failures so exact-source-read and upstream-synthesis regressions are easier to pin before release.
 - **Workflow calibration docs**: Added an internal replay template and a planner/runtime/validator contract matrix so new workflow-runtime bugs can be turned into reproducible coverage instead of one-off firefights.
+- **Workflow learning loop foundation**: Tandem now persists session distillation facts into governed session-tier memory, creates reviewable workflow learning candidates from those facts and repeated run failures, and exposes API flows to review, promote, and spin approved prompt/graph learnings into planner revisions.
 - **Synthesis validator calibration**: Rich-upstream report validation now has explicit coverage for generic summaries, single-anchor reports, and repaired multi-anchor syntheses.
 - **Complex fallback decomposition guard**: Added a planner regression that keeps complex fallback workflows from collapsing back into a single vague step when the prompt names concrete files and tools.
 - **Automation calendar drill-down**: The control panel calendar now supports hour-level drill-down so crowded schedule cells can be inspected without guessing which automation owns a slot.
 - **Interval automation visibility**: Calendar views now expand interval schedules alongside cron schedules, using the automation anchor time to generate visible occurrences instead of hiding interval-based runs.
 - **Run debugger task density**: The run debugger now keeps task cards collapsed by default and expands them in place on selection, which makes large runs much easier to scan.
 - **Settings layout cleanup**: Settings now uses the full width of the main panel after removing the empty right rail, and the shared split-view layout expands correctly when there is no aside.
+- **Control panel icon recovery**: Restored the missing control-panel icon wiring so the built-in shell icons render again without frontend lookup errors.
 - **Calendar timezone and slot drill-down**: Calendar previews now respect the automation timezone and browser-local display time, and clicking a slot opens the exact 30-minute block instead of just switching the whole day.
 
 ## v0.4.29 (Released 2026-04-15)

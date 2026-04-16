@@ -2792,6 +2792,7 @@ fn workflow_state_events_capture_typed_stability_transitions() {
         scheduler: None,
         trigger_reason: None,
         consumed_handoff_id: None,
+        learning_summary: None,
     };
     let output = json!({
         "status": "blocked",

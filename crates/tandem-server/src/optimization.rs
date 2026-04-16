@@ -1679,6 +1679,7 @@ mod tests {
             scheduler: None,
             trigger_reason: None,
             consumed_handoff_id: None,
+            learning_summary: None,
         };
         let metrics = derive_phase1_metrics_from_run(&run, &workflow, &phase1).expect("metrics");
         assert!((metrics.artifact_validator_pass_rate - 0.5).abs() < 1e-9);

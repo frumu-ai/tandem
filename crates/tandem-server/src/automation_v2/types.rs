@@ -926,6 +926,102 @@ pub struct AutomationFailureRecord {
     pub failed_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowLearningCandidateKind {
+    MemoryFact,
+    RepairHint,
+    PromptPatch,
+    GraphPatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowLearningCandidateStatus {
+    Proposed,
+    Approved,
+    Rejected,
+    Applied,
+    Superseded,
+    Regressed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkflowLearningMetricsSnapshot {
+    #[serde(default)]
+    pub sample_size: usize,
+    #[serde(default)]
+    pub completion_rate: f64,
+    #[serde(default)]
+    pub validation_pass_rate: f64,
+    #[serde(default)]
+    pub mean_attempts_per_node: f64,
+    #[serde(default)]
+    pub repairable_failure_rate: f64,
+    #[serde(default)]
+    pub median_wall_clock_ms: u64,
+    #[serde(default)]
+    pub human_intervention_count: u64,
+    #[serde(default)]
+    pub computed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowLearningCandidate {
+    pub candidate_id: String,
+    pub workflow_id: String,
+    pub project_id: String,
+    pub source_run_id: String,
+    pub kind: WorkflowLearningCandidateKind,
+    pub status: WorkflowLearningCandidateStatus,
+    #[serde(default)]
+    pub confidence: f64,
+    pub summary: String,
+    pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator_family: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<Value>,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_memory_payload: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_revision_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_memory_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_memory_id: Option<String>,
+    #[serde(default)]
+    pub needs_plan_bundle: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_before: Option<WorkflowLearningMetricsSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_observed_metrics: Option<WorkflowLearningMetricsSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_revision_session_id: Option<String>,
+    #[serde(default)]
+    pub run_ids: Vec<String>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkflowLearningRunSummary {
+    #[serde(default)]
+    pub generated_candidate_ids: Vec<String>,
+    #[serde(default)]
+    pub injected_learning_ids: Vec<String>,
+    #[serde(default)]
+    pub approved_learning_ids_considered: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_run_metrics: Option<WorkflowLearningMetricsSnapshot>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationRunCheckpoint {
     #[serde(default)]
@@ -1002,6 +1098,8 @@ pub struct AutomationV2RunRecord {
     /// Used for idempotency: a retry of this run will not re-consume a second handoff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_handoff_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_summary: Option<WorkflowLearningRunSummary>,
 }
 
 fn default_tenant_context() -> TenantContext {
