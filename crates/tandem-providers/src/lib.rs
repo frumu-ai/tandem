@@ -162,6 +162,21 @@ fn normalize_openai_function_parameters(schema: serde_json::Value) -> serde_json
     schema
 }
 
+fn normalize_codex_function_parameters(schema: serde_json::Value) -> serde_json::Value {
+    let mut schema = normalize_openai_function_parameters(schema);
+    let Some(obj) = schema.as_object_mut() else {
+        return json!({"type":"object","properties":{}});
+    };
+
+    // Codex rejects root-level combinators and root enum/not constraints even when
+    // the nested property schemas are otherwise valid JSON Schema.
+    for key in ["anyOf", "oneOf", "allOf", "enum", "not"] {
+        obj.remove(key);
+    }
+
+    schema
+}
+
 fn normalize_openai_schema_node(node: &mut serde_json::Value) {
     let Some(obj) = node.as_object_mut() else {
         return;
@@ -1704,7 +1719,7 @@ impl Provider for OpenAIResponsesProvider {
                     "type": "function",
                     "name": safe_name,
                     "description": tool.description,
-                    "parameters": normalize_openai_function_parameters(tool.input_schema),
+                    "parameters": normalize_codex_function_parameters(tool.input_schema),
                 })
             })
             .collect::<Vec<_>>();
@@ -3060,9 +3075,24 @@ mod tests {
                 attachments: Vec::new(),
             },
         ];
+        let tools = vec![ToolSchema::new(
+            "browser_wait",
+            "Wait for a selector.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" },
+                    "selector": { "type": "string" }
+                },
+                "required": ["session_id"],
+                "anyOf": [
+                    { "required": ["selector"] }
+                ]
+            }),
+        )];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::None, None, cancel)
+            .stream(messages, None, ToolMode::Auto, Some(tools), cancel)
             .await
             .expect("stream");
 
@@ -3086,11 +3116,13 @@ mod tests {
             .contains("authorization: bearer codex-test-token"));
         assert!(body.contains("\"input\""));
         assert!(body.contains("\"store\":false"));
-        assert!(body.contains("\"tools\":[]"));
+        assert!(body.contains("\"tools\":["));
         assert!(body.contains("\"tool_choice\":\"auto\""));
         assert!(body.contains("\"parallel_tool_calls\":false"));
         assert!(body.contains("\"instructions\":\"Be concise.\""));
         assert!(body.contains("\"gpt-5.4\""));
+        assert!(body.contains("\"browser_wait\""));
+        assert!(!body.contains("\"anyOf\""));
         assert!(!body.contains("\"role\":\"developer\""));
         assert!(!body.contains("\"max_output_tokens\""));
 
@@ -3301,6 +3333,35 @@ mod tests {
             normalized["properties"]["filters"]["properties"].is_object(),
             "nested object schemas should include properties for OpenAI validation"
         );
+    }
+
+    #[test]
+    fn normalize_codex_function_parameters_strips_root_combinators() {
+        let normalized = normalize_codex_function_parameters(json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string" },
+                "selector": { "type": "string" }
+            },
+            "required": ["session_id"],
+            "anyOf": [
+                { "required": ["selector"] }
+            ],
+            "not": {
+                "required": ["forbidden"]
+            }
+        }));
+
+        assert_eq!(
+            normalized.get("type").and_then(|value| value.as_str()),
+            Some("object")
+        );
+        assert!(normalized
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .is_some());
+        assert!(normalized.get("anyOf").is_none());
+        assert!(normalized.get("not").is_none());
     }
 
     #[test]
