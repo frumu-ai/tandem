@@ -394,3 +394,162 @@ async fn record_automation_run_learning_usage_tracks_injected_ids() {
         Some(2)
     );
 }
+
+#[tokio::test]
+async fn completed_runs_generate_memory_fact_candidates() {
+    let state = ready_test_state().await;
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-workflow-learning-completed-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+
+    let automation = AutomationSpecBuilder::new("workflow-learning-completed")
+        .workspace_root(workspace_root.to_string_lossy().to_string())
+        .nodes(vec![AutomationNodeBuilder::new("node-1").build()])
+        .build();
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let updated = state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Completed;
+            row.detail = Some("Remember that this workflow completed cleanly".to_string());
+        })
+        .await
+        .expect("complete run");
+
+    let candidates = state
+        .list_workflow_learning_candidates(Some(&automation.automation_id), None, None)
+        .await;
+    assert_eq!(candidates.len(), 1);
+    let candidate = &candidates[0];
+    assert_eq!(candidate.kind, WorkflowLearningCandidateKind::MemoryFact);
+    assert_eq!(candidate.status, WorkflowLearningCandidateStatus::Proposed);
+    assert!(candidate.summary.contains("completed cleanly"));
+    assert_eq!(
+        updated
+            .learning_summary
+            .as_ref()
+            .map(|summary| summary.generated_candidate_ids.len()),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_graph_patch() {
+    let state = ready_test_state().await;
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-workflow-learning-failures-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+
+    let automation = AutomationSpecBuilder::new("workflow-learning-failures")
+        .workspace_root(workspace_root.to_string_lossy().to_string())
+        .nodes(vec![AutomationNodeBuilder::new("node-1")
+            .output_contract(AutomationFlowOutputContract {
+                kind: "report".to_string(),
+                validator: Some(AutomationOutputValidatorKind::ResearchBrief),
+                enforcement: None,
+                schema: None,
+                summary_guidance: Some("Summarize the report.".to_string()),
+            })
+            .build()])
+        .build();
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+
+    for index in 1..=2 {
+        let run = state
+            .create_automation_v2_run(&automation, "manual")
+            .await
+            .expect("create failed run");
+        state
+            .update_automation_v2_run(&run.run_id, |row| {
+                row.status = AutomationRunStatus::Failed;
+                row.checkpoint.last_failure = Some(AutomationFailureRecord {
+                    node_id: "node-1".to_string(),
+                    reason: "validator rejected unsupported citations".to_string(),
+                    failed_at_ms: current_test_ms() + index,
+                });
+            })
+            .await
+            .expect("mark failed run");
+    }
+
+    let after_two = state
+        .list_workflow_learning_candidates(Some(&automation.automation_id), None, None)
+        .await;
+    assert_eq!(after_two.len(), 2);
+    assert_eq!(
+        after_two
+            .iter()
+            .filter(|candidate| candidate.kind == WorkflowLearningCandidateKind::RepairHint)
+            .count(),
+        1
+    );
+    assert_eq!(
+        after_two
+            .iter()
+            .filter(|candidate| candidate.kind == WorkflowLearningCandidateKind::PromptPatch)
+            .count(),
+        1
+    );
+    assert_eq!(
+        after_two
+            .iter()
+            .filter(|candidate| candidate.kind == WorkflowLearningCandidateKind::GraphPatch)
+            .count(),
+        0
+    );
+
+    let third_run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create third failed run");
+    state
+        .update_automation_v2_run(&third_run.run_id, |row| {
+            row.status = AutomationRunStatus::Failed;
+            row.checkpoint.last_failure = Some(AutomationFailureRecord {
+                node_id: "node-1".to_string(),
+                reason: "validator rejected unsupported citations".to_string(),
+                failed_at_ms: current_test_ms() + 3,
+            });
+        })
+        .await
+        .expect("mark third failed run");
+
+    let after_three = state
+        .list_workflow_learning_candidates(Some(&automation.automation_id), None, None)
+        .await;
+    assert_eq!(
+        after_three
+            .iter()
+            .filter(|candidate| candidate.kind == WorkflowLearningCandidateKind::RepairHint)
+            .count(),
+        1
+    );
+    assert_eq!(
+        after_three
+            .iter()
+            .filter(|candidate| candidate.kind == WorkflowLearningCandidateKind::PromptPatch)
+            .count(),
+        1
+    );
+    assert_eq!(
+        after_three
+            .iter()
+            .filter(|candidate| candidate.kind == WorkflowLearningCandidateKind::GraphPatch)
+            .count(),
+        1
+    );
+}
