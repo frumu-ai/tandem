@@ -100,6 +100,22 @@ fn workflow_learning_run_artifact_refs(run: &AutomationV2RunRecord) -> Vec<Strin
     refs
 }
 
+fn workflow_learning_output_evidence(output: &Value) -> Value {
+    let mut evidence = serde_json::Map::new();
+    for key in ["status", "summary", "text", "path"] {
+        if let Some(value) = output.get(key).cloned() {
+            evidence.insert(key.to_string(), value);
+        }
+    }
+    if let Some(value) = output.get("validator_summary").cloned() {
+        evidence.insert("validator_summary".to_string(), value);
+    }
+    if let Some(value) = output.get("artifact_validation").cloned() {
+        evidence.insert("artifact_validation".to_string(), value);
+    }
+    Value::Object(evidence)
+}
+
 fn workflow_learning_run_duration_ms(run: &AutomationV2RunRecord) -> u64 {
     match (run.started_at_ms, run.finished_at_ms) {
         (Some(started), Some(finished)) if finished >= started => finished - started,
@@ -286,11 +302,26 @@ fn workflow_learning_failure_signature(
     );
     let evidence = vec![json!({
         "run_id": run.run_id,
+        "run_status": run.status,
+        "detail": run.detail,
         "node_id": failure.node_id,
         "reason": failure.reason,
         "failed_at_ms": failure.failed_at_ms,
+        "node_attempts": run
+            .checkpoint
+            .node_attempts
+            .get(&failure.node_id)
+            .copied()
+            .unwrap_or(0),
         "validator_family": validator_family,
         "node_kind": node_kind,
+        "node_output": run
+            .checkpoint
+            .node_outputs
+            .get(&failure.node_id)
+            .map(workflow_learning_output_evidence)
+            .unwrap_or(Value::Null),
+        "artifact_refs": workflow_learning_run_artifact_refs(run),
     })];
     Some((
         fingerprint,
@@ -363,6 +394,8 @@ pub(crate) fn workflow_learning_candidates_for_terminal_run(
                         "run_id": run.run_id,
                         "status": run.status,
                         "detail": run.detail,
+                        "completed_nodes": run.checkpoint.completed_nodes,
+                        "artifact_refs": artifact_refs,
                     })],
                     artifact_refs: artifact_refs.clone(),
                     proposed_memory_payload: Some(json!({

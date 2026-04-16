@@ -421,6 +421,15 @@ async fn completed_runs_generate_memory_fact_candidates() {
         .update_automation_v2_run(&run.run_id, |row| {
             row.status = AutomationRunStatus::Completed;
             row.detail = Some("Remember that this workflow completed cleanly".to_string());
+            row.checkpoint.completed_nodes = vec!["node-1".to_string()];
+            row.checkpoint.node_outputs.insert(
+                "node-1".to_string(),
+                json!({
+                    "status": "completed",
+                    "summary": "Final report written",
+                    "path": "artifacts/final-report.md"
+                }),
+            );
         })
         .await
         .expect("complete run");
@@ -433,6 +442,24 @@ async fn completed_runs_generate_memory_fact_candidates() {
     assert_eq!(candidate.kind, WorkflowLearningCandidateKind::MemoryFact);
     assert_eq!(candidate.status, WorkflowLearningCandidateStatus::Proposed);
     assert!(candidate.summary.contains("completed cleanly"));
+    assert_eq!(
+        candidate
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("completed_nodes"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
+    );
+    assert_eq!(
+        candidate
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("artifact_refs"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
+    );
     assert_eq!(
         updated
             .learning_summary
@@ -476,6 +503,23 @@ async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_
         state
             .update_automation_v2_run(&run.run_id, |row| {
                 row.status = AutomationRunStatus::Failed;
+                row.detail = Some("validator blocked final report".to_string());
+                row.checkpoint.node_attempts.insert("node-1".to_string(), 2);
+                row.checkpoint.node_outputs.insert(
+                    "node-1".to_string(),
+                    json!({
+                        "status": "needs_repair",
+                        "summary": "Report missing citation support",
+                        "path": "artifacts/report.md",
+                        "validator_summary": {
+                            "outcome": "failed",
+                            "reason": "unsupported citations"
+                        },
+                        "artifact_validation": {
+                            "path": "artifacts/report.md"
+                        }
+                    }),
+                );
                 row.checkpoint.last_failure = Some(AutomationFailureRecord {
                     node_id: "node-1".to_string(),
                     reason: "validator rejected unsupported citations".to_string(),
@@ -510,6 +554,37 @@ async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_
             .filter(|candidate| candidate.kind == WorkflowLearningCandidateKind::GraphPatch)
             .count(),
         0
+    );
+    let repair_hint = after_two
+        .iter()
+        .find(|candidate| candidate.kind == WorkflowLearningCandidateKind::RepairHint)
+        .expect("repair hint candidate");
+    assert_eq!(
+        repair_hint
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("node_attempts"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        repair_hint
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("node_output"))
+            .and_then(|row| row.get("validator_summary"))
+            .and_then(|row| row.get("outcome"))
+            .and_then(Value::as_str),
+        Some("failed")
+    );
+    assert_eq!(
+        repair_hint
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("artifact_refs"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
     );
 
     let third_run = state
@@ -551,5 +626,17 @@ async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_
             .filter(|candidate| candidate.kind == WorkflowLearningCandidateKind::GraphPatch)
             .count(),
         1
+    );
+    let graph_patch = after_three
+        .iter()
+        .find(|candidate| candidate.kind == WorkflowLearningCandidateKind::GraphPatch)
+        .expect("graph patch candidate");
+    assert_eq!(
+        graph_patch
+            .evidence_refs
+            .first()
+            .and_then(|row| row.get("detail"))
+            .and_then(Value::as_str),
+        Some("validator blocked final report")
     );
 }
