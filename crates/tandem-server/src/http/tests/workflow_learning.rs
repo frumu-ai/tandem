@@ -591,3 +591,110 @@ async fn workflow_learning_candidate_spawn_revision_creates_planner_session_with
     );
     assert!(updated_candidate.baseline_before.is_some());
 }
+
+#[tokio::test]
+async fn workflow_learning_graph_patch_spawn_revision_tracks_change_type_metadata() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let workspace_root = std::env::temp_dir()
+        .join(format!(
+            "wflearn-workspace-graph-session-{}",
+            uuid::Uuid::new_v4()
+        ))
+        .to_string_lossy()
+        .to_string();
+    let mut automation = sample_automation(&workspace_root, "workflow-graph-session");
+    automation.metadata = Some(json!({
+        "plan_package_bundle": sample_plan_package_bundle()
+    }));
+    state
+        .put_automation_v2(automation)
+        .await
+        .expect("put automation");
+    let mut candidate = sample_candidate(
+        "wflearn-graph-session",
+        "workflow-graph-session",
+        crate::WorkflowLearningCandidateKind::GraphPatch,
+        crate::WorkflowLearningCandidateStatus::Approved,
+    );
+    candidate.summary = "Split the synthesis node and adjust dependency boundaries".to_string();
+    candidate.fingerprint = "fingerprint-graph-session".to_string();
+    candidate.run_ids = vec!["run-graph-a".to_string(), "run-graph-b".to_string()];
+    candidate.evidence_refs = vec![json!({
+        "run_id": "run-graph-b",
+        "node_id": "node-1",
+        "reason": "validator failed after repeated synthesis retries"
+    })];
+    state
+        .put_workflow_learning_candidate(candidate)
+        .await
+        .expect("put graph candidate");
+
+    let spawn_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-learning/candidates/wflearn-graph-session/spawn-revision")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "reviewer_id": "reviewer-graph",
+                "title": "Restructure workflow from graph learning"
+            })
+            .to_string(),
+        ))
+        .expect("spawn request");
+    let spawn_resp = app
+        .clone()
+        .oneshot(spawn_req)
+        .await
+        .expect("spawn response");
+    assert_eq!(spawn_resp.status(), StatusCode::OK);
+    let spawn_payload: Value = serde_json::from_slice(
+        &to_bytes(spawn_resp.into_body(), usize::MAX)
+            .await
+            .expect("spawn body"),
+    )
+    .expect("spawn json");
+    assert_eq!(
+        spawn_payload
+            .get("session")
+            .and_then(|row| row.get("operator_preferences"))
+            .and_then(|row| row.get("requested_change_type"))
+            .and_then(Value::as_str),
+        Some("graph_patch")
+    );
+    let notes = spawn_payload
+        .get("session")
+        .and_then(|row| row.get("notes"))
+        .and_then(Value::as_str)
+        .expect("graph notes");
+    assert!(notes.contains("Requested change type: graph_patch."));
+    assert!(notes.contains("run-graph-a, run-graph-b"));
+    assert!(notes.contains("fingerprint-graph-session"));
+    let session_id = spawn_payload
+        .get("session")
+        .and_then(|row| row.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .expect("session id");
+    let stored_session = state
+        .get_workflow_planner_session(&session_id)
+        .await
+        .expect("stored planner session");
+    assert_eq!(
+        stored_session
+            .operator_preferences
+            .as_ref()
+            .and_then(|row| row.get("requested_change_type"))
+            .and_then(Value::as_str),
+        Some("graph_patch")
+    );
+    let updated_candidate = state
+        .get_workflow_learning_candidate("wflearn-graph-session")
+        .await
+        .expect("updated graph candidate");
+    assert_eq!(updated_candidate.needs_plan_bundle, false);
+    assert_eq!(
+        updated_candidate.last_revision_session_id.as_deref(),
+        Some(session_id.as_str())
+    );
+}
