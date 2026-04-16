@@ -10,11 +10,16 @@ This release adds the first real Tandem path for using a Codex account allocatio
 - **Engine-owned local OAuth flow**: Added provider OAuth authorize, callback, status, disconnect, PKCE/state handling, credential persistence, and refresh-aware auth lifecycle for local Codex account sign-in.
 - **Structured provider credentials**: Provider auth can now store typed API-key and OAuth records with expiry, account identity, and ownership metadata, which is the groundwork needed for account-connected auth to coexist cleanly with normal API keys.
 - **Control panel `Connect Codex Account` flow**: The local control panel now exposes browser-based Codex account sign-in, pending-state polling, connected account identity, reconnect, and disconnect actions.
+- **Tandem-branded OAuth completion page**: Successful Codex account sign-in now lands on a Tandem-styled completion page instead of a generic callback screen.
 - **OAuth-aware provider readiness**: Provider status and onboarding now understand OAuth-backed account connections instead of assuming every remote provider is API-key-only.
 - **Distinct `openai-codex` routing**: Codex account usage now routes through a separate provider/catalog entry with starter models so it can be managed independently from the normal OpenAI API-key path.
 - **Safer auth failure behavior**: Expired or invalid Codex sessions now surface explicit `reauth_required` state rather than silently behaving like a healthy saved-key provider.
+- **Codex backend request compatibility**: Tandem now speaks the Codex backend’s actual request contract, including the Codex-specific responses route, required `instructions`, `store: false`, and removal of unsupported public-API fields like `max_output_tokens`.
+- **Codex tool schema hardening**: Codex-bound browser and MCP tool schemas are normalized to avoid root-level JSON Schema combinators that the Codex backend rejects.
+- **Default-provider promotion after connect**: When a Codex account is connected, Tandem now correctly routes local runs through `openai-codex` instead of continuing to hit quota-limited OpenAI API-key paths.
+- **Discord guild-channel recovery**: Discord channel handling is now fixed for guild traffic, including empty `guild_id` normalization, working channel replies outside DMs, and stable mention-only intake.
+- **Mention-only docs-tool recovery**: Discord mention-only prompts that route into Tandem Docs now recover the `task` argument from the actual user message instead of surfacing raw MCP 400 errors.
 - **Cost-control path for local testing**: This release is the first real step toward moving test-heavy local runs off OpenRouter spend and onto a Codex subscription allocation when one is available.
-- **Research and rollout docs**: Added an internal Codex account auth research report plus a delivery Kanban covering the phased strategy, tradeoffs, and remaining follow-up items such as Tauri parity and local Codex CLI session reuse.
 
 ## v0.4.29 (Released 2026-04-15)
 

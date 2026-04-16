@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Local provider OAuth lifecycle**: Added provider OAuth authorize, callback, status, disconnect, PKCE/state handling, secure credential persistence, and refresh-aware auth state for local engine-backed Codex account sign-in.
 - **Structured provider credential storage**: Provider auth is no longer limited to raw `provider_id -> token` storage. Tandem now supports typed API-key and OAuth credential records with expiry, account identity, and ownership metadata.
 - **Control panel Codex connection flow**: The local Tandem control panel now exposes `Connect Codex Account`, browser-based sign-in, pending-state polling, connected-account display, reconnect, and disconnect actions.
-- **Codex auth research + delivery tracking**: Added a detailed internal Codex account auth research memo and a Kanban board covering phased rollout, risks, and follow-up work.
+- **Codex callback completion UI**: Successful browser sign-in now returns to a Tandem-branded completion page instead of a plain utility screen, making the account-connection handoff feel like part of the product.
 
 ### Changed
 
@@ -21,12 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Provider readiness logic**: Tandem now treats OAuth-backed providers as first-class configured providers rather than forcing API-key-only readiness assumptions.
 - **OpenAI provider routing**: `openai-codex` now exists as its own provider/catalog entry with starter models, so Codex-account traffic can be separated cleanly from standard OpenAI API-key usage.
 - **Settings guidance**: The control panel provider settings now explain Codex account auth separately from API-key auth and only expose the browser sign-in flow when the control panel is connected to a local engine.
+- **Codex transport behavior**: `openai-codex` now routes through the Codex-specific ChatGPT backend and request shape instead of reusing the normal OpenAI API-key transport.
 
 ### Fixed
 
 - **OpenRouter cost escape hatch**: Local Tandem installs can now route eligible work toward a connected Codex account instead of requiring OpenRouter-only paid usage for every heavy test loop.
 - **Auth failure visibility**: Expired or invalid Codex OAuth sessions now fail closed with explicit `reauth_required` state instead of masquerading as a healthy saved-key configuration.
 - **Browser secret handling**: Refresh-capable Codex credentials stay engine-owned; the control panel only initiates and observes the OAuth flow rather than persisting refresh tokens in browser state.
+- **Codex backend compatibility**: Tandem now matches the Codex backend contract for responses requests, including the Codex-specific route, required `instructions`, `store: false`, and removal of unsupported fields such as `max_output_tokens`.
+- **Codex tool schema compatibility**: Codex-bound tool definitions are now sanitized to remove root-level schema combinators that the Codex backend rejects, preventing browser-tool and MCP-heavy sessions from failing before execution.
+- **Control panel default-provider behavior**: Connecting a Codex account now correctly promotes `openai-codex` for Tandem runs so chats and channel traffic stop silently falling back to quota-limited API-key providers.
+- **Discord guild message intake**: Discord channel messages now survive empty `guild_id` config values, and guild-channel intake no longer silently black-holes messages while DMs continue to work.
+- **Discord mention-only handling**: Mention-only Discord mode now cleanly accepts explicit mentions and reply-to-bot flows without dropping valid guild messages or surfacing raw Tandem Docs MCP errors for empty tool args.
 
 ## [0.4.29] - Released 2026-04-15
 
