@@ -36,6 +36,27 @@ fn bare_node() -> AutomationFlowNode {
     }
 }
 
+fn runtime_values(date: &str, time: &str, timestamp: &str) -> AutomationPromptRuntimeValues {
+    let time_hms = if time.len() == 4 {
+        format!("{time}00")
+    } else {
+        time.to_string()
+    };
+    let timestamp_filename = if time.len() == 4 {
+        format!("{}_{}-{}-00", date, &time[..2], &time[2..])
+    } else {
+        format!("{}_{}", date, time)
+    };
+    AutomationPromptRuntimeValues {
+        current_date: date.to_string(),
+        current_time: time.to_string(),
+        current_timestamp: timestamp.to_string(),
+        current_date_compact: date.replace('-', ""),
+        current_time_hms: time_hms,
+        current_timestamp_filename: timestamp_filename,
+    }
+}
+
 fn node_with_input_ref() -> AutomationFlowNode {
     let mut node = bare_node();
     node.input_refs = vec![AutomationFlowInputRef {
@@ -802,11 +823,7 @@ fn required_source_read_paths_focus_on_exact_named_source_files() {
             &automation,
             &node,
             "/home/evan/job-hunt",
-            Some(&AutomationPromptRuntimeValues {
-                current_date: "2026-04-15".to_string(),
-                current_time: "1446".to_string(),
-                current_timestamp: "2026-04-15 14:46".to_string(),
-            }),
+            Some(&runtime_values("2026-04-15", "1446", "2026-04-15 14:46")),
         );
 
     assert_eq!(required_paths, vec!["RESUME.md".to_string()]);
@@ -867,11 +884,7 @@ fn required_source_read_paths_handles_punctuation_backticks_and_mixed_language()
             &automation,
             &node,
             "/home/evan/job-hunt",
-            Some(&AutomationPromptRuntimeValues {
-                current_date: "2026-04-15".to_string(),
-                current_time: "1500".to_string(),
-                current_timestamp: "2026-04-15 15:00".to_string(),
-            }),
+            Some(&runtime_values("2026-04-15", "1500", "2026-04-15 15:00")),
         );
 
     assert_eq!(required_paths, vec!["RESUME.md".to_string()]);
@@ -1013,11 +1026,7 @@ fn automation_output_targets_fill_in_final_node_workspace_writes() {
     let must_write_files = automation_node_must_write_files_for_automation(
         &automation,
         &node,
-        Some(&AutomationPromptRuntimeValues {
-            current_date: "2026-04-09".to_string(),
-            current_time: "1304".to_string(),
-            current_timestamp: "2026-04-09 13:04".to_string(),
-        }),
+        Some(&runtime_values("2026-04-09", "1304", "2026-04-09 13:04")),
     );
 
     assert!(
@@ -1087,11 +1096,7 @@ fn automation_output_targets_replace_runtime_placeholders_before_dedup() {
     let must_write_files = automation_node_must_write_files_for_automation(
         &automation,
         &node,
-        Some(&AutomationPromptRuntimeValues {
-            current_date: "2026-04-09".to_string(),
-            current_time: "2138".to_string(),
-            current_timestamp: "2026-04-09 21:38".to_string(),
-        }),
+        Some(&runtime_values("2026-04-09", "2138", "2026-04-09 21:38")),
     );
 
     assert_eq!(
@@ -1137,11 +1142,7 @@ fn intermediate_nodes_cannot_treat_live_output_targets_as_input_files() {
     finalize.depends_on = vec!["gather_fintech_candidates".to_string()];
 
     let automation = automation_with_live_output_target(vec![gather.clone(), finalize]);
-    let runtime_values = AutomationPromptRuntimeValues {
-        current_date: "2026-04-16".to_string(),
-        current_time: "1530".to_string(),
-        current_timestamp: "2026-04-16 15:30".to_string(),
-    };
+    let runtime_values = runtime_values("2026-04-16", "1530", "2026-04-16 15:30");
 
     let input_files = automation_node_effective_input_files_for_automation(
         &automation,
@@ -1171,11 +1172,7 @@ fn terminal_report_node_may_access_live_output_target() {
     }));
 
     let automation = automation_with_live_output_target(vec![gather, finalize.clone()]);
-    let runtime_values = AutomationPromptRuntimeValues {
-        current_date: "2026-04-16".to_string(),
-        current_time: "1530".to_string(),
-        current_timestamp: "2026-04-16 15:30".to_string(),
-    };
+    let runtime_values = runtime_values("2026-04-16", "1530", "2026-04-16 15:30");
 
     let input_files = automation_node_effective_input_files_for_automation(
         &automation,
@@ -1244,11 +1241,7 @@ fn report_markdown_nodes_do_not_infer_template_filenames_as_workspace_writes() {
     let must_write_files = automation_node_must_write_files_for_automation(
         &automation,
         &node,
-        Some(&AutomationPromptRuntimeValues {
-            current_date: "2026-04-09".to_string(),
-            current_time: "2138".to_string(),
-            current_timestamp: "2026-04-09 21:38".to_string(),
-        }),
+        Some(&runtime_values("2026-04-09", "2138", "2026-04-09 21:38")),
     );
 
     assert!(!must_write_files.iter().any(|path| {
@@ -1347,11 +1340,7 @@ fn automation_wide_read_only_rules_filter_later_node_write_targets() {
     let must_write_files = automation_node_must_write_files_for_automation(
         &automation,
         &write_node,
-        Some(&AutomationPromptRuntimeValues {
-            current_date: "2026-04-15".to_string(),
-            current_time: "1049".to_string(),
-            current_timestamp: "2026-04-15 10:49".to_string(),
-        }),
+        Some(&runtime_values("2026-04-15", "1049", "2026-04-15 10:49")),
     );
 
     assert!(!must_write_files.iter().any(|path| path == "RESUME.md"));
@@ -2063,6 +2052,46 @@ fn required_output_path_scopes_shared_artifacts_for_run() {
 }
 
 #[test]
+fn required_output_path_with_runtime_resolves_legacy_timestamp_templates() {
+    let mut node = bare_node();
+    node.node_id = "finalize_outputs".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "report_markdown".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": "reports/agent_automation_painpoints_YYYY-MM-DD_HH-MM-SS.md"
+        }
+    }));
+
+    assert_eq!(
+        automation_node_required_output_path_with_runtime_for_run(
+            &node,
+            Some("run-ts"),
+            Some(&runtime_values("2026-04-17", "1024", "2026-04-17 10:24")),
+        ),
+        Some("reports/agent_automation_painpoints_2026-04-17_10-24-00.md".to_string())
+    );
+}
+
+#[test]
+fn runtime_placeholder_replace_supports_legacy_timestamp_tokens() {
+    let replaced = automation_runtime_placeholder_replace(
+        "reports/run_YYYY-MM-DD_HH-MM-SS.md and logs/YYYYMMDD_HHMMSS.json",
+        Some(&runtime_values("2026-04-17", "1024", "2026-04-17 10:24")),
+    );
+
+    assert_eq!(
+        replaced,
+        "reports/run_2026-04-17_10-24-00.md and logs/20260417_102400.json"
+    );
+}
+
+#[test]
 fn session_write_materialized_output_detects_run_scoped_artifact_files() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-current-attempt-output-{}",
@@ -2097,6 +2126,7 @@ fn session_write_materialized_output_detects_run_scoped_artifact_files() {
         workspace_root.to_str().expect("workspace root"),
         ".tandem/artifacts/report.md",
         Some(run_id),
+        None,
     ));
 
     std::fs::remove_file(&artifact_path).expect("remove artifact");
@@ -2106,6 +2136,7 @@ fn session_write_materialized_output_detects_run_scoped_artifact_files() {
         workspace_root.to_str().expect("workspace root"),
         ".tandem/artifacts/report.md",
         Some(run_id),
+        None,
     ));
 
     let _ = std::fs::remove_dir_all(&workspace_root);
@@ -3017,6 +3048,7 @@ fn session_write_candidates_accepts_file_path_schema_with_normalized_run_scoped_
         workspace_root.to_str().expect("workspace root"),
         ".tandem/artifacts/report.md",
         Some(run_id),
+        None,
     );
 
     assert_eq!(candidates, vec!["report body".to_string()]);
@@ -3063,6 +3095,7 @@ fn session_write_materialized_output_accepts_absolute_legacy_artifact_paths() {
         workspace_root.to_str().expect("workspace root"),
         ".tandem/artifacts/report.md",
         Some(run_id),
+        None,
     ));
 
     let _ = std::fs::remove_dir_all(&workspace_root);
@@ -3106,6 +3139,7 @@ fn session_write_materialized_output_accepts_file_path_schema_with_normalized_ru
         workspace_root.to_str().expect("workspace root"),
         ".tandem/artifacts/report.md",
         Some(run_id),
+        None,
     ));
 
     let _ = std::fs::remove_dir_all(&workspace_root);
@@ -3138,6 +3172,7 @@ fn session_write_candidates_supports_variant_path_and_content_keys() {
         workspace_root.to_str().expect("workspace root"),
         ".tandem/artifacts/report.md",
         Some("run-variants"),
+        None,
     );
     assert_eq!(candidates, vec!["variant payload".to_string()]);
 

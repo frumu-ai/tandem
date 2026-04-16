@@ -3914,6 +3914,7 @@ fn session_write_candidates_accepts_json_string_tool_args() {
         workspace_root.to_str().expect("workspace root string"),
         "brief.md",
         None,
+        None,
     );
 
     assert_eq!(candidates, vec!["Draft body".to_string()]);
@@ -3952,6 +3953,7 @@ fn session_write_touched_output_detects_target_path_without_content() {
         &session,
         workspace_root.to_str().expect("workspace root string"),
         "brief.md",
+        None,
         None,
     );
 

@@ -166,6 +166,9 @@ pub(crate) struct AutomationPromptRuntimeValues {
     pub(crate) current_date: String,
     pub(crate) current_time: String,
     pub(crate) current_timestamp: String,
+    pub(crate) current_date_compact: String,
+    pub(crate) current_time_hms: String,
+    pub(crate) current_timestamp_filename: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -175,7 +178,9 @@ pub(crate) struct AutomationPromptRenderOptions {
     pub(crate) runtime_values: Option<AutomationPromptRuntimeValues>,
 }
 
-fn automation_prompt_runtime_values(started_at_ms: Option<u64>) -> AutomationPromptRuntimeValues {
+pub(crate) fn automation_prompt_runtime_values(
+    started_at_ms: Option<u64>,
+) -> AutomationPromptRuntimeValues {
     let started_at_ms = started_at_ms.unwrap_or_else(now_ms);
     let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(started_at_ms as i64)
         .unwrap_or_else(chrono::Utc::now);
@@ -183,6 +188,9 @@ fn automation_prompt_runtime_values(started_at_ms: Option<u64>) -> AutomationPro
         current_date: timestamp.format("%Y-%m-%d").to_string(),
         current_time: timestamp.format("%H%M").to_string(),
         current_timestamp: timestamp.format("%Y-%m-%d %H:%M").to_string(),
+        current_date_compact: timestamp.format("%Y%m%d").to_string(),
+        current_time_hms: timestamp.format("%H%M%S").to_string(),
+        current_timestamp_filename: timestamp.format("%Y-%m-%d_%H-%M-%S").to_string(),
     }
 }
 
@@ -2109,7 +2117,13 @@ fn automation_effective_required_output_path_for_run(
     run_id: &str,
     started_at_ms: u64,
 ) -> Option<String> {
-    automation_node_required_output_path_for_run(node, Some(run_id)).or_else(|| {
+    let runtime_values = automation_prompt_runtime_values(Some(started_at_ms));
+    automation_node_required_output_path_with_runtime_for_run(
+        node,
+        Some(run_id),
+        Some(&runtime_values),
+    )
+    .or_else(|| {
         if is_agent_standup_automation(automation) && node.node_id == "standup_synthesis" {
             resolve_standup_report_path_for_run(automation, started_at_ms)
         } else {
@@ -3008,16 +3022,132 @@ fn automation_node_must_write_files(node: &AutomationFlowNode) -> Vec<String> {
     files
 }
 
-fn automation_runtime_placeholder_replace(
+pub(crate) fn automation_runtime_placeholder_replace(
     text: &str,
     runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> String {
     let Some(runtime_values) = runtime_values else {
         return text.to_string();
     };
-    text.replace("{current_date}", &runtime_values.current_date)
-        .replace("{current_time}", &runtime_values.current_time)
-        .replace("{current_timestamp}", &runtime_values.current_timestamp)
+    let hm_dashed = if runtime_values.current_time.len() == 4 {
+        format!(
+            "{}-{}",
+            &runtime_values.current_time[..2],
+            &runtime_values.current_time[2..]
+        )
+    } else {
+        runtime_values.current_time.clone()
+    };
+    let hm_colon = hm_dashed.replace('-', ":");
+    let hms_dashed = if runtime_values.current_time_hms.len() == 6 {
+        format!(
+            "{}-{}-{}",
+            &runtime_values.current_time_hms[..2],
+            &runtime_values.current_time_hms[2..4],
+            &runtime_values.current_time_hms[4..]
+        )
+    } else {
+        runtime_values.current_time_hms.clone()
+    };
+    let hms_colon = hms_dashed.replace('-', ":");
+    let timestamp_compact = format!(
+        "{}_{}",
+        runtime_values.current_date, runtime_values.current_time
+    );
+    let timestamp_hyphen_compact = format!(
+        "{}-{}",
+        runtime_values.current_date, runtime_values.current_time
+    );
+    let timestamp_compact_hms = format!(
+        "{}_{}",
+        runtime_values.current_date, runtime_values.current_time_hms
+    );
+    let timestamp_hyphen_compact_hms = format!(
+        "{}-{}",
+        runtime_values.current_date, runtime_values.current_time_hms
+    );
+    let compact_timestamp = format!(
+        "{}_{}",
+        runtime_values.current_date_compact, runtime_values.current_time
+    );
+    let compact_timestamp_hms = format!(
+        "{}_{}",
+        runtime_values.current_date_compact, runtime_values.current_time_hms
+    );
+    let timestamp_filename_hyphen = runtime_values.current_timestamp_filename.replace('_', "-");
+    let date_hm_dashed = format!("{}_{}", runtime_values.current_date, hm_dashed);
+    let date_hm_hyphen = format!("{}-{}", runtime_values.current_date, hm_dashed);
+
+    let replacements = [
+        (
+            "{{current_timestamp_filename}}",
+            runtime_values.current_timestamp_filename.as_str(),
+        ),
+        (
+            "{current_timestamp_filename}",
+            runtime_values.current_timestamp_filename.as_str(),
+        ),
+        ("{{current_date}}", runtime_values.current_date.as_str()),
+        ("{{current_time}}", runtime_values.current_time.as_str()),
+        (
+            "{{current_timestamp}}",
+            runtime_values.current_timestamp.as_str(),
+        ),
+        ("{current_date}", runtime_values.current_date.as_str()),
+        ("{current_time}", runtime_values.current_time.as_str()),
+        (
+            "{current_timestamp}",
+            runtime_values.current_timestamp.as_str(),
+        ),
+        ("{{date}}", runtime_values.current_date.as_str()),
+        ("{date}", runtime_values.current_date.as_str()),
+        (
+            "YYYY-MM-DD_HH-MM-SS",
+            runtime_values.current_timestamp_filename.as_str(),
+        ),
+        ("YYYY-MM-DD-HH-MM-SS", timestamp_filename_hyphen.as_str()),
+        ("YYYY-MM-DD_HHMMSS", timestamp_compact_hms.as_str()),
+        ("YYYY-MM-DD-HHMMSS", timestamp_hyphen_compact_hms.as_str()),
+        ("YYYY-MM-DD_HH-MM", date_hm_dashed.as_str()),
+        ("YYYY-MM-DD-HH-MM", date_hm_hyphen.as_str()),
+        ("YYYY-MM-DD_HHMM", timestamp_compact.as_str()),
+        ("YYYY-MM-DD-HHMM", timestamp_hyphen_compact.as_str()),
+        ("YYYYMMDD_HHMMSS", compact_timestamp_hms.as_str()),
+        ("YYYYMMDD_HHMM", compact_timestamp.as_str()),
+        ("YYYYMMDD", runtime_values.current_date_compact.as_str()),
+        ("YYYY-MM-DD", runtime_values.current_date.as_str()),
+        ("HH-MM-SS", hms_dashed.as_str()),
+        ("HH:MM:SS", hms_colon.as_str()),
+        ("HHMMSS", runtime_values.current_time_hms.as_str()),
+        ("HH-MM", hm_dashed.as_str()),
+        ("HH:MM", hm_colon.as_str()),
+        ("HHMM", runtime_values.current_time.as_str()),
+    ];
+
+    let mut replaced = text.to_string();
+    for (needle, value) in replacements {
+        replaced = replaced.replace(needle, value);
+    }
+    replaced
+}
+
+pub(crate) fn automation_node_required_output_path_with_runtime_for_run(
+    node: &AutomationFlowNode,
+    run_id: Option<&str>,
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
+) -> Option<String> {
+    automation_node_required_output_path_for_run(node, run_id)
+        .map(|path| automation_runtime_placeholder_replace(&path, runtime_values))
+}
+
+pub(crate) fn resolve_automation_output_path_with_runtime_for_run(
+    workspace_root: &str,
+    run_id: &str,
+    output_path: &str,
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
+) -> anyhow::Result<PathBuf> {
+    let resolved_output_path = automation_runtime_placeholder_replace(output_path, runtime_values);
+    resolve_automation_output_path_for_run(workspace_root, run_id, &resolved_output_path)
 }
 
 fn automation_keyword_variants(token: &str) -> Vec<String> {
@@ -3285,7 +3415,7 @@ fn maybe_promote_legacy_workspace_artifact_for_run(
     {
         return Ok(None);
     }
-    if !session_write_touched_output_for_output(session, workspace_root, output_path, None) {
+    if !session_write_touched_output_for_output(session, workspace_root, output_path, None, None) {
         return Ok(None);
     }
 
@@ -3784,8 +3914,13 @@ async fn reconcile_automation_resolve_verified_output_path(
     max_wait_ms: u64,
     poll_interval_ms: u64,
 ) -> anyhow::Result<Option<AutomationVerifiedOutputResolution>> {
-    let output_touched =
-        session_write_touched_output_for_output(session, workspace_root, output_path, Some(run_id));
+    let output_touched = session_write_touched_output_for_output(
+        session,
+        workspace_root,
+        output_path,
+        Some(run_id),
+        None,
+    );
     let poll_interval_ms = poll_interval_ms.max(1);
     let start_ms = now_ms() as u64;
 
@@ -4540,9 +4675,14 @@ pub(crate) fn session_write_candidates_for_output(
     workspace_root: &str,
     declared_output_path: &str,
     run_id: Option<&str>,
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> Vec<String> {
-    let target_path =
-        automation_session_write_target_path(workspace_root, declared_output_path, run_id);
+    let target_path = automation_session_write_target_path(
+        workspace_root,
+        declared_output_path,
+        run_id,
+        runtime_values,
+    );
     let Some(target_path) = target_path else {
         return Vec::new();
     };
@@ -4567,9 +4707,17 @@ pub(crate) fn session_write_candidates_for_output(
                 continue;
             };
             let Ok(candidate_path) = (if let Some(run_id) = run_id {
-                resolve_automation_output_path_for_run(workspace_root, run_id, path)
+                resolve_automation_output_path_with_runtime_for_run(
+                    workspace_root,
+                    run_id,
+                    path,
+                    runtime_values,
+                )
             } else {
-                resolve_automation_output_path(workspace_root, path)
+                resolve_automation_output_path(
+                    workspace_root,
+                    &automation_runtime_placeholder_replace(path, runtime_values),
+                )
             }) else {
                 continue;
             };
@@ -4591,13 +4739,25 @@ fn automation_session_write_target_path(
     workspace_root: &str,
     declared_output_path: &str,
     run_id: Option<&str>,
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> Option<PathBuf> {
     run_id
         .and_then(|run_id| {
-            resolve_automation_output_path_for_run(workspace_root, run_id, declared_output_path)
-                .ok()
+            resolve_automation_output_path_with_runtime_for_run(
+                workspace_root,
+                run_id,
+                declared_output_path,
+                runtime_values,
+            )
+            .ok()
         })
-        .or_else(|| resolve_automation_output_path(workspace_root, declared_output_path).ok())
+        .or_else(|| {
+            resolve_automation_output_path(
+                workspace_root,
+                &automation_runtime_placeholder_replace(declared_output_path, runtime_values),
+            )
+            .ok()
+        })
 }
 
 pub(crate) fn session_write_touched_output_for_output(
@@ -4605,9 +4765,14 @@ pub(crate) fn session_write_touched_output_for_output(
     workspace_root: &str,
     declared_output_path: &str,
     run_id: Option<&str>,
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> bool {
-    let target_path =
-        automation_session_write_target_path(workspace_root, declared_output_path, run_id);
+    let target_path = automation_session_write_target_path(
+        workspace_root,
+        declared_output_path,
+        run_id,
+        runtime_values,
+    );
     let Some(target_path) = target_path else {
         return false;
     };
@@ -4631,9 +4796,17 @@ pub(crate) fn session_write_touched_output_for_output(
                 continue;
             };
             let Ok(candidate_path) = (if let Some(run_id) = run_id {
-                resolve_automation_output_path_for_run(workspace_root, run_id, path)
+                resolve_automation_output_path_with_runtime_for_run(
+                    workspace_root,
+                    run_id,
+                    path,
+                    runtime_values,
+                )
             } else {
-                resolve_automation_output_path(workspace_root, path)
+                resolve_automation_output_path(
+                    workspace_root,
+                    &automation_runtime_placeholder_replace(path, runtime_values),
+                )
             }) else {
                 continue;
             };
@@ -4650,9 +4823,14 @@ pub(crate) fn session_write_materialized_output_for_output(
     workspace_root: &str,
     declared_output_path: &str,
     run_id: Option<&str>,
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> bool {
-    let target_path =
-        automation_session_write_target_path(workspace_root, declared_output_path, run_id);
+    let target_path = automation_session_write_target_path(
+        workspace_root,
+        declared_output_path,
+        run_id,
+        runtime_values,
+    );
     let Some(target_path) = target_path else {
         return false;
     };
@@ -4661,6 +4839,7 @@ pub(crate) fn session_write_materialized_output_for_output(
         workspace_root,
         declared_output_path,
         run_id,
+        runtime_values,
     ) {
         return false;
     }
@@ -5168,8 +5347,13 @@ pub(crate) fn validate_automation_artifact_output_with_context(
     }
 
     if let Some((path, text)) = accepted_output.clone() {
-        let session_write_candidates =
-            session_write_candidates_for_output(session, workspace_root, &path, run_id);
+        let session_write_candidates = session_write_candidates_for_output(
+            session,
+            workspace_root,
+            &path,
+            run_id,
+            runtime_values,
+        );
         let requested_tools_for_contract = tool_telemetry
             .get("requested_tools")
             .and_then(Value::as_array)
@@ -5317,7 +5501,8 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let required_output_path = automation_node_required_output_path_for_run(node, run_id);
+        let required_output_path =
+            automation_node_required_output_path_with_runtime_for_run(node, run_id, runtime_values);
         let current_attempt_output_materialized_via_filesystem =
             required_output_path.as_ref().is_some_and(|output_path| {
                 session_write_materialized_output_for_output(
@@ -5325,6 +5510,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     workspace_root,
                     output_path,
                     run_id,
+                    runtime_values,
                 )
             });
         let current_attempt_has_recorded_activity = !executed_tools_for_attempt.is_empty()
@@ -5347,12 +5533,14 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     workspace_root,
                     required_path,
                     None,
+                    runtime_values,
                 );
                 let materialized_by_current_attempt = session_write_materialized_output_for_output(
                     session,
                     workspace_root,
                     required_path,
                     None,
+                    runtime_values,
                 );
                 json!({
                     "path": required_path,
@@ -5387,6 +5575,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     workspace_root,
                     &path,
                     run_id,
+                    runtime_values,
                 )),
             );
             object.insert(
@@ -5856,7 +6045,13 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         let repair_promoted_after_write = repair_attempted
             && execution_mode == "artifact_write"
             && accepted_output.is_some()
-            && session_write_touched_output_for_output(session, workspace_root, &path, run_id);
+            && session_write_touched_output_for_output(
+                session,
+                workspace_root,
+                &path,
+                run_id,
+                runtime_values,
+            );
         let repair_promoted_after_read_and_output_change = repair_attempted
             && execution_mode == "artifact_write"
             && accepted_output.is_some()
@@ -6071,7 +6266,8 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         warning_requirements.sort();
         warning_requirements.dedup();
     }
-    let required_output_path_for_retry = automation_node_required_output_path_for_run(node, run_id);
+    let required_output_path_for_retry =
+        automation_node_required_output_path_with_runtime_for_run(node, run_id, runtime_values);
     let current_attempt_output_materialized_for_retry = required_output_path_for_retry
         .as_ref()
         .is_some_and(|output_path| {
@@ -6080,6 +6276,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 workspace_root,
                 output_path,
                 run_id,
+                runtime_values,
             ) || verified_output_materialized
         });
     if accepted_output.is_none()
