@@ -1572,6 +1572,9 @@ impl Provider for OpenAIResponsesProvider {
             "model": model,
             "store": false,
             "instructions": default_openai_responses_instructions(),
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": false,
             "input": [{
                 "role": "user",
                 "content": [{
@@ -1580,7 +1583,7 @@ impl Provider for OpenAIResponsesProvider {
                 }]
             }],
             "stream": false,
-            "max_output_tokens": provider_max_tokens_for(&self.id),
+            "include": [],
         });
         if should_default_openai_reasoning(model) {
             body["reasoning"] = json!({
@@ -1705,21 +1708,17 @@ impl Provider for OpenAIResponsesProvider {
                 })
             })
             .collect::<Vec<_>>();
-        let has_tools = !wire_tools.is_empty();
-
-        let max_output_tokens = provider_max_tokens_for(&self.id);
         let mut body = json!({
             "model": model,
             "store": false,
             "instructions": instructions,
+            "tools": wire_tools,
+            "tool_choice": openai_tool_choice(&tool_mode),
+            "parallel_tool_calls": false,
             "input": wire_messages,
             "stream": true,
-            "max_output_tokens": max_output_tokens,
+            "include": [],
         });
-        if has_tools {
-            body["tools"] = serde_json::Value::Array(wire_tools);
-            body["tool_choice"] = json!(openai_tool_choice(&tool_mode));
-        }
         if should_default_openai_reasoning(model) {
             body["reasoning"] = json!({
                 "effort": "high",
@@ -3087,10 +3086,13 @@ mod tests {
             .contains("authorization: bearer codex-test-token"));
         assert!(body.contains("\"input\""));
         assert!(body.contains("\"store\":false"));
+        assert!(body.contains("\"tools\":[]"));
+        assert!(body.contains("\"tool_choice\":\"auto\""));
+        assert!(body.contains("\"parallel_tool_calls\":false"));
         assert!(body.contains("\"instructions\":\"Be concise.\""));
-        assert!(body.contains("\"max_output_tokens\""));
         assert!(body.contains("\"gpt-5.4\""));
         assert!(!body.contains("\"role\":\"developer\""));
+        assert!(!body.contains("\"max_output_tokens\""));
 
         let text_deltas = chunks
             .iter()
