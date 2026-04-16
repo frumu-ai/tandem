@@ -764,7 +764,7 @@ fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {
         &mut providers,
         "openai-codex",
         "OpenAI Codex",
-        "https://chatgpt.com/backend-api",
+        "https://chatgpt.com/backend-api/codex",
         "gpt-5.4",
         true,
         272_000,
@@ -3004,7 +3004,7 @@ mod tests {
         let provider = OpenAIResponsesProvider {
             id: "openai-codex".to_string(),
             name: "OpenAI Codex".to_string(),
-            base_url: format!("http://{}", addr),
+            base_url: format!("http://{}/codex", addr),
             api_key: Some("codex-test-token".to_string()),
             default_model: "gpt-5.4".to_string(),
             context_window: 272_000,
@@ -3036,7 +3036,7 @@ mod tests {
         let (request_line, headers, body) = rx.await.expect("request");
         server.await.expect("server task");
 
-        assert_eq!(request_line, "POST /responses HTTP/1.1");
+        assert_eq!(request_line, "POST /codex/responses HTTP/1.1");
         assert!(headers
             .to_ascii_lowercase()
             .contains("authorization: bearer codex-test-token"));

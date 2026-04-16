@@ -85,7 +85,7 @@ const OPENAI_CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_CODEX_OAUTH_ISSUER: &str = "https://auth.openai.com";
 const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
 const OPENAI_CODEX_DEFAULT_MODEL: &str = "gpt-5.4";
-const OPENAI_CODEX_API_BASE_URL: &str = "https://chatgpt.com/backend-api";
+const OPENAI_CODEX_API_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_CODEX_OAUTH_REFRESH_SKEW_MS: u64 = 5 * 60 * 1000;
 const OPENAI_CODEX_LOCAL_CALLBACK_ADDR: &str = "127.0.0.1:1455";
 // Match the Codex CLI browser flow. auth.openai.com expects this localhost callback shape.
