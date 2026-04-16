@@ -1570,6 +1570,7 @@ impl Provider for OpenAIResponsesProvider {
         let url = format!("{}/responses", self.base_url);
         let mut body = json!({
             "model": model,
+            "store": false,
             "instructions": default_openai_responses_instructions(),
             "input": [{
                 "role": "user",
@@ -1709,6 +1710,7 @@ impl Provider for OpenAIResponsesProvider {
         let max_output_tokens = provider_max_tokens_for(&self.id);
         let mut body = json!({
             "model": model,
+            "store": false,
             "instructions": instructions,
             "input": wire_messages,
             "stream": true,
@@ -3084,6 +3086,7 @@ mod tests {
             .to_ascii_lowercase()
             .contains("authorization: bearer codex-test-token"));
         assert!(body.contains("\"input\""));
+        assert!(body.contains("\"store\":false"));
         assert!(body.contains("\"instructions\":\"Be concise.\""));
         assert!(body.contains("\"max_output_tokens\""));
         assert!(body.contains("\"gpt-5.4\""));
