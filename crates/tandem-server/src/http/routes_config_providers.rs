@@ -27,6 +27,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             get(provider_oauth_callback_get).post(provider_oauth_callback_post),
         )
         .route(
+            "/provider/{id}/oauth/session/local",
+            post(provider_oauth_local_session),
+        )
+        .route(
             "/provider/{id}/oauth/session",
             delete(provider_oauth_disconnect),
         )

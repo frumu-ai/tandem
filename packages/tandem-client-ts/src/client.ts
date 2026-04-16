@@ -1114,6 +1114,13 @@ class Providers {
     );
   }
 
+  /** Import a local CLI-managed OAuth session for a provider. */
+  async oauthUseLocalSession(providerId: string): Promise<JsonObject> {
+    return this.req<JsonObject>(`/provider/${encodeURIComponent(providerId)}/oauth/session/local`, {
+      method: "POST",
+    });
+  }
+
   /** Disconnect a provider-owned OAuth session. */
   async oauthDisconnect(providerId: string): Promise<JsonObject> {
     return this.req<JsonObject>(`/provider/${encodeURIComponent(providerId)}/oauth/session`, {

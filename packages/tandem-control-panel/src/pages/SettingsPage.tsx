@@ -1139,6 +1139,15 @@ export function SettingsPage({
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
+  const getCodexDefaultModelId = () =>
+    String(
+      providersConfig.data?.providers?.[OPENAI_CODEX_PROVIDER_ID]?.default_model ||
+        providersConfig.data?.providers?.[OPENAI_CODEX_PROVIDER_ID]?.defaultModel ||
+        "gpt-5.4"
+    ).trim() || "gpt-5.4";
+  const promoteCodexAsDefaultProvider = async () => {
+    await client.providers.setDefaults(OPENAI_CODEX_PROVIDER_ID, getCodexDefaultModelId());
+  };
   const saveCustomProviderMutation = useMutation({
     mutationFn: async ({
       providerId,
@@ -1373,12 +1382,14 @@ export function SettingsPage({
       const providerId = String(vars.providerId || "")
         .trim()
         .toLowerCase();
+      const ok = payload?.ok !== false;
+      const error = String(payload?.error || payload?.message || "").trim();
       const sessionId = String(payload?.session_id || payload?.sessionId || "").trim();
       const authorizationUrl = String(
         payload?.authorization_url || payload?.authorizationUrl || payload?.url || ""
       ).trim();
-      if (!providerId || !sessionId || !authorizationUrl) {
-        toast("err", "OAuth authorize response was incomplete.");
+      if (!ok || !providerId || !sessionId || !authorizationUrl) {
+        toast("err", error || "OAuth authorize response was incomplete.");
         return;
       }
       setOauthSessionByProvider((current) => ({ ...current, [providerId]: sessionId }));
@@ -1412,6 +1423,58 @@ export function SettingsPage({
           ? "Codex account disconnected."
           : `${providerId} disconnected.`
       );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "providers"] }),
+        refreshProviderStatus(),
+      ]);
+    },
+    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
+  });
+  const useLocalCodexSessionMutation = useMutation({
+    mutationFn: ({ providerId }: { providerId: string }) =>
+      client.providers.oauthUseLocalSession(providerId),
+    onSuccess: async (payload: any, vars) => {
+      const providerId = String(vars.providerId || "")
+        .trim()
+        .toLowerCase();
+      const ok = payload?.ok !== false;
+      const error = String(payload?.error || payload?.message || "").trim();
+      if (!ok) {
+        toast(
+          "err",
+          error ||
+            "Unable to import the local Codex session. Make sure Codex CLI is signed in on this machine."
+        );
+        return;
+      }
+      setOauthSessionByProvider((current) => {
+        if (!current[providerId]) return current;
+        const next = { ...current };
+        delete next[providerId];
+        return next;
+      });
+      const email = String(payload?.email || "").trim();
+      toast(
+        "ok",
+        providerId === OPENAI_CODEX_PROVIDER_ID
+          ? email
+            ? `Local Codex session imported: ${email}`
+            : "Local Codex session imported."
+          : `${providerId} local session imported.`
+      );
+      if (providerId === OPENAI_CODEX_PROVIDER_ID) {
+        try {
+          await promoteCodexAsDefaultProvider();
+          toast("ok", "Codex is now the default provider for Tandem runs.");
+        } catch (error) {
+          toast(
+            "warn",
+            error instanceof Error
+              ? error.message
+              : "Codex session imported, but Tandem could not switch the default provider."
+          );
+        }
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["settings", "providers"] }),
         refreshProviderStatus(),
@@ -1476,6 +1539,19 @@ export function SettingsPage({
         if (status === "connected") {
           const email = String(payload?.email || "").trim();
           toast("ok", email ? `Codex account connected: ${email}` : "Codex account connected.");
+          if (result.providerId === OPENAI_CODEX_PROVIDER_ID) {
+            try {
+              await promoteCodexAsDefaultProvider();
+              toast("ok", "Codex is now the default provider for Tandem runs.");
+            } catch (error) {
+              toast(
+                "warn",
+                error instanceof Error
+                  ? error.message
+                  : "Codex connected, but Tandem could not switch the default provider."
+              );
+            }
+          }
         } else if (status === "expired") {
           toast("warn", "Codex sign-in expired. Start the connection again.");
         } else {
@@ -2744,6 +2820,14 @@ export function SettingsPage({
                                 (providerHints as Record<string, any>)[providerId] || null;
                               const keyUrl = String(providerHint?.keyUrl || "").trim();
                               const providerAuth = providerAuthById[providerId] || {};
+                              const currentDefaultProvider = String(
+                                providersConfig.data?.default || ""
+                              )
+                                .trim()
+                                .toLowerCase();
+                              const codexIsDefaultProvider =
+                                providerId === OPENAI_CODEX_PROVIDER_ID &&
+                                currentDefaultProvider === OPENAI_CODEX_PROVIDER_ID;
                               const authKind = String(
                                 providerAuth?.auth_kind || providerAuth?.authKind || ""
                               )
@@ -2762,6 +2846,9 @@ export function SettingsPage({
                               const oauthExpiresAtMs = Number(
                                 providerAuth?.expires_at_ms || providerAuth?.expiresAtMs || 0
                               );
+                              const localCodexSessionAvailable =
+                                providerAuth?.local_session_available === true ||
+                                providerAuth?.localSessionAvailable === true;
                               const oauthSessionId = String(
                                 oauthSessionByProvider[providerId] || ""
                               ).trim();
@@ -2904,6 +2991,21 @@ export function SettingsPage({
                                               {new Date(oauthExpiresAtMs).toLocaleString()}.
                                             </div>
                                           ) : null}
+                                          {providerId === OPENAI_CODEX_PROVIDER_ID &&
+                                          oauthConnected &&
+                                          !codexIsDefaultProvider ? (
+                                            <div>
+                                              Tandem is connected to Codex, but new runs are still
+                                              using a different default provider.
+                                            </div>
+                                          ) : null}
+                                          {canUseOAuthHere ? (
+                                            <div>
+                                              {localCodexSessionAvailable
+                                                ? "Local Codex CLI session detected on this machine."
+                                                : "If the Codex CLI is already signed in on this machine, you can mirror that session here instead of starting a fresh browser login."}
+                                            </div>
+                                          ) : null}
                                           {!canUseOAuthHere ? (
                                             <div>
                                               Codex account sign-in is only enabled when this
@@ -2930,6 +3032,45 @@ export function SettingsPage({
                                               ? "Reconnect Codex Account"
                                               : "Connect Codex Account"}
                                           </button>
+                                          <button
+                                            type="button"
+                                            className="tcp-btn h-10 px-4 text-sm"
+                                            disabled={
+                                              !canUseOAuthHere ||
+                                              authorizeProviderOAuthMutation.isPending ||
+                                              useLocalCodexSessionMutation.isPending
+                                            }
+                                            onClick={() => {
+                                              setOauthSessionByProvider((current) => {
+                                                if (!current[providerId]) return current;
+                                                const next = { ...current };
+                                                delete next[providerId];
+                                                return next;
+                                              });
+                                              useLocalCodexSessionMutation.mutate({ providerId });
+                                            }}
+                                          >
+                                            <i data-lucide="link-2"></i>
+                                            Use Local Codex Session
+                                          </button>
+                                          {providerId === OPENAI_CODEX_PROVIDER_ID &&
+                                          oauthConnected &&
+                                          !codexIsDefaultProvider ? (
+                                            <button
+                                              type="button"
+                                              className="tcp-btn h-10 px-4 text-sm"
+                                              disabled={setDefaultsMutation.isPending}
+                                              onClick={() =>
+                                                setDefaultsMutation.mutate({
+                                                  providerId,
+                                                  modelId: defaultModel || "gpt-5.4",
+                                                })
+                                              }
+                                            >
+                                              <i data-lucide="sparkles"></i>
+                                              Use for Tandem Runs
+                                            </button>
+                                          ) : null}
                                           <button
                                             type="button"
                                             className="tcp-btn h-10 px-4 text-sm"

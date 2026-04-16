@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -57,6 +59,36 @@ fn provider_credential_account(provider_id: &str) -> String {
     )
 }
 
+fn resolve_codex_cli_home() -> PathBuf {
+    let configured = std::env::var("CODEX_HOME")
+        .ok()
+        .map(|value| value.trim().to_string());
+    if let Some(configured) = configured {
+        if configured.is_empty() {
+            return dirs::home_dir()
+                .map(|home| home.join(".codex"))
+                .unwrap_or_else(|| PathBuf::from(".codex"));
+        }
+        if configured == "~" {
+            return dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        }
+        if let Some(rest) = configured.strip_prefix("~/") {
+            return dirs::home_dir()
+                .map(|home| home.join(rest))
+                .unwrap_or_else(|| PathBuf::from(rest));
+        }
+        return PathBuf::from(configured);
+    }
+
+    dirs::home_dir()
+        .map(|home| home.join(".codex"))
+        .unwrap_or_else(|| PathBuf::from(".codex"))
+}
+
+fn resolve_codex_cli_auth_path() -> PathBuf {
+    resolve_codex_cli_home().join("auth.json")
+}
+
 fn keyring_entry(provider_id: &str) -> Option<keyring::Entry> {
     keyring::Entry::new(PROVIDER_AUTH_SERVICE, &provider_auth_account(provider_id)).ok()
 }
@@ -87,6 +119,25 @@ pub struct OAuthProviderCredential {
     pub managed_by: String,
     #[serde(default)]
     pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CodexCliAuthTokens {
+    #[serde(alias = "accessToken")]
+    access_token: Option<String>,
+    #[serde(alias = "refreshToken")]
+    refresh_token: Option<String>,
+    #[serde(alias = "accountId")]
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CodexCliAuthFile {
+    #[serde(alias = "authMode")]
+    auth_mode: Option<String>,
+    tokens: Option<CodexCliAuthTokens>,
+    #[serde(alias = "lastRefresh")]
+    last_refresh: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,6 +200,13 @@ fn read_json(path: &PathBuf) -> anyhow::Result<Value> {
     }
     let raw = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({})))
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn load_provider_index() -> HashSet<String> {
@@ -312,6 +370,137 @@ fn normalize_provider_credential(
             Ok(ProviderCredential::OAuth(oauth))
         }
     }
+}
+
+fn decode_codex_jwt_claims(token: &str) -> Option<Value> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice::<Value>(&decoded).ok()
+}
+
+fn jwt_string_claim(claims: &Value, key: &str) -> Option<String> {
+    claims
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn jwt_nested_string_claim(claims: &Value, scope: &str, key: &str) -> Option<String> {
+    claims
+        .get(scope)
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn resolve_codex_cli_identity(
+    access_token: &str,
+    account_id_hint: Option<&str>,
+) -> (Option<String>, Option<String>, Option<String>, u64) {
+    let claims = decode_codex_jwt_claims(access_token);
+    let account_id = account_id_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            claims
+                .as_ref()
+                .and_then(|value| jwt_string_claim(value, "chatgpt_account_id"))
+        })
+        .or_else(|| {
+            claims.as_ref().and_then(|value| {
+                jwt_nested_string_claim(
+                    value,
+                    "https://api.openai.com/auth",
+                    "chatgpt_account_user_id",
+                )
+            })
+        })
+        .or_else(|| {
+            claims.as_ref().and_then(|value| {
+                jwt_nested_string_claim(value, "https://api.openai.com/auth", "chatgpt_user_id")
+            })
+        })
+        .or_else(|| {
+            claims
+                .as_ref()
+                .and_then(|value| jwt_string_claim(value, "sub"))
+        });
+    let email = claims.as_ref().and_then(|value| {
+        jwt_nested_string_claim(value, "https://api.openai.com/profile", "email")
+            .or_else(|| jwt_string_claim(value, "email"))
+    });
+    let display_name = email.clone().or_else(|| {
+        account_id.as_deref().map(|value| {
+            format!(
+                "id-{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value)
+            )
+        })
+    });
+    let expires_at_ms = claims
+        .as_ref()
+        .and_then(|value| value.get("exp"))
+        .and_then(Value::as_i64)
+        .and_then(|value| u64::try_from(value).ok())
+        .map(|value| value.saturating_mul(1000))
+        .unwrap_or_else(|| now_ms().saturating_add(50 * 60 * 1000));
+
+    (account_id, email, display_name, expires_at_ms)
+}
+
+fn read_codex_cli_auth_file(path: &Path) -> Option<CodexCliAuthFile> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<CodexCliAuthFile>(&raw).ok()
+}
+
+fn load_codex_cli_oauth_credential_at(path: &Path) -> Option<OAuthProviderCredential> {
+    let auth = read_codex_cli_auth_file(path)?;
+    let auth_mode = auth.auth_mode.as_deref().map(str::trim).unwrap_or("");
+    if !auth_mode.is_empty() && auth_mode != "chatgpt" && auth_mode != "oauth" {
+        return None;
+    }
+    let tokens = auth.tokens?;
+    let access_token = tokens
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)?;
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)?;
+
+    let (account_id, email, display_name, expires_at_ms) =
+        resolve_codex_cli_identity(&access_token, tokens.account_id.as_deref());
+
+    Some(OAuthProviderCredential {
+        provider_id: "openai-codex".to_string(),
+        access_token,
+        refresh_token,
+        expires_at_ms,
+        account_id,
+        email,
+        display_name,
+        managed_by: "codex-cli".to_string(),
+        api_key: None,
+    })
+}
+
+pub fn load_openai_codex_cli_oauth_credential() -> Option<OAuthProviderCredential> {
+    load_codex_cli_oauth_credential_at(&resolve_codex_cli_auth_path())
 }
 
 fn load_credential_fallback_map() -> HashMap<String, ProviderCredential> {
@@ -546,4 +735,55 @@ pub fn delete_provider_credential(provider_id: &str) -> anyhow::Result<bool> {
     save_provider_credentials_index(&known)?;
 
     Ok(removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tempfile::tempdir;
+
+    fn make_jwt(payload: serde_json::Value) -> String {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"alg":"none","typ":"JWT"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_string(&payload).expect("payload json"));
+        format!("{header}.{payload}.signature")
+    }
+
+    #[test]
+    fn load_codex_cli_oauth_credential_reads_auth_file() {
+        let dir = tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        let jwt = make_jwt(serde_json::json!({
+            "exp": 2_000_000_000,
+            "email": "user@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_user_id": "acct_123"
+            }
+        }));
+        std::fs::write(
+            &auth_path,
+            serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": jwt,
+                    "refresh_token": "refresh-token-123",
+                    "account_id": "acct_123"
+                },
+                "last_refresh": 123
+            })
+            .to_string(),
+        )
+        .expect("write auth");
+
+        let credential = load_codex_cli_oauth_credential_at(&auth_path).expect("credential");
+        assert_eq!(credential.provider_id, "openai-codex");
+        assert_eq!(credential.managed_by, "codex-cli");
+        assert_eq!(credential.refresh_token, "refresh-token-123");
+        assert_eq!(credential.account_id.as_deref(), Some("acct_123"));
+        assert_eq!(credential.email.as_deref(), Some("user@example.com"));
+        assert_eq!(credential.display_name.as_deref(), Some("user@example.com"));
+        assert!(credential.expires_at_ms > 0);
+    }
 }

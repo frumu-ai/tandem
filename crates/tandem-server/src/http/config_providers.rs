@@ -3,7 +3,8 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
-    Json,
+    routing::get,
+    Json, Router,
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -11,10 +12,13 @@ use serde_json::{json, Value};
 use sha2::Digest;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tandem_wire::{
     WireProviderCatalog, WireProviderEntry, WireProviderModel, WireProviderModelLimit,
 };
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize, Default)]
@@ -83,6 +87,9 @@ const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
 const OPENAI_CODEX_DEFAULT_MODEL: &str = "gpt-5.4";
 const OPENAI_CODEX_API_BASE_URL: &str = "https://api.openai.com/v1";
 const OPENAI_CODEX_OAUTH_REFRESH_SKEW_MS: u64 = 5 * 60 * 1000;
+const OPENAI_CODEX_LOCAL_CALLBACK_ADDR: &str = "127.0.0.1:1455";
+// Match the Codex CLI browser flow. auth.openai.com expects this localhost callback shape.
+const OPENAI_CODEX_LOCAL_CALLBACK_URI: &str = "http://localhost:1455/auth/callback";
 
 fn is_internal_secret_id(raw: &str) -> bool {
     let normalized = raw.trim().to_ascii_lowercase();
@@ -425,6 +432,8 @@ pub(super) async fn provider_auth(State(state): State<AppState>) -> Json<Value> 
             .find_map(|alias| persisted_credentials.get(*alias))
             .or_else(|| persisted_credentials.get(&provider_id));
         let has_oauth_credential = oauth_credential.is_some();
+        let local_session_available = provider_id == OPENAI_CODEX_PROVIDER_ID
+            && tandem_core::load_openai_codex_cli_oauth_credential().is_some();
         let has_key = has_env_key || has_runtime_key || has_config_key || has_persisted_key;
         let source = if has_oauth_credential {
             "oauth"
@@ -449,6 +458,7 @@ pub(super) async fn provider_auth(State(state): State<AppState>) -> Json<Value> 
             "source": source,
             "auth_kind": auth_kind,
             "status": if has_oauth_credential { "connected" } else if has_key { "configured" } else { "missing" },
+            "local_session_available": local_session_available,
         });
         if let Some(tandem_core::ProviderCredential::OAuth(oauth)) = oauth_credential {
             payload["expires_at_ms"] = json!(oauth.expires_at_ms);
@@ -484,6 +494,12 @@ pub(super) async fn provider_oauth_authorize(
     let expires_at_ms = created_at_ms.saturating_add(10 * 60 * 1000);
     let (code_verifier, code_challenge) = generate_pkce_pair();
     let state_token = generate_oauth_state();
+    if let Err(error) = ensure_openai_codex_local_callback_server(state.clone()).await {
+        return Json(json!({
+            "ok": false,
+            "error": format!("failed to start local Codex callback server: {error}"),
+        }));
+    }
     let redirect_uri = provider_oauth_redirect_uri(&state, &provider_id);
     let authorization_url =
         build_openai_codex_authorization_url(&redirect_uri, &code_challenge, &state_token);
@@ -554,6 +570,7 @@ pub(super) async fn provider_oauth_status(
             "managed_by": oauth.managed_by,
             "account_id": oauth.account_id,
             "expires_at_ms": oauth.expires_at_ms,
+            "local_session_available": tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
         }));
     }
 
@@ -561,6 +578,7 @@ pub(super) async fn provider_oauth_status(
         "ok": true,
         "status": "missing",
         "connected": false,
+        "local_session_available": tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
     }))
 }
 
@@ -594,10 +612,322 @@ pub(super) async fn provider_oauth_callback_get(
             .to_string()
     };
 
-    Html(format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title><style>body{{font-family:system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;background:#0f172a;color:#e2e8f0;padding:32px}}main{{max-width:560px;margin:0 auto;border:1px solid rgba(148,163,184,.3);border-radius:16px;padding:24px;background:rgba(15,23,42,.8)}}h1{{font-size:24px;margin:0 0 12px}}p{{line-height:1.5;color:#cbd5e1}}</style></head><body><main><h1>{title}</h1><p>{detail}</p></main></body></html>"
-    ))
-    .into_response()
+    Html(render_provider_oauth_result_page(&title, &detail, ok)).into_response()
+}
+
+fn escape_html(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn render_provider_oauth_result_page(title: &str, detail: &str, ok: bool) -> String {
+    let title = escape_html(title);
+    let detail = escape_html(detail);
+    let status_text = if ok {
+        "Connected"
+    } else {
+        "Connection needs attention"
+    };
+    let status_tone = if ok { "#4ade80" } else { "#fb7185" };
+    let status_bg = if ok {
+        "rgba(74, 222, 128, 0.12)"
+    } else {
+        "rgba(251, 113, 133, 0.12)"
+    };
+    let status_border = if ok {
+        "rgba(74, 222, 128, 0.35)"
+    } else {
+        "rgba(251, 113, 133, 0.35)"
+    };
+    let accent_glow = if ok {
+        "rgba(59, 130, 246, 0.28)"
+    } else {
+        "rgba(244, 63, 94, 0.28)"
+    };
+    let icon_path = if ok {
+        r#"<path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm4.3 7.7-4.9 5a1 1 0 0 1-.7.3 1 1 0 0 1-.7-.3l-2.4-2.4a1 1 0 1 1 1.4-1.4l1.7 1.7 4.2-4.3a1 1 0 1 1 1.4 1.4Z"/>"#
+    } else {
+        r#"<path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm4.2 12.8a1 1 0 1 1-1.4 1.4L12 13.4l-2.8 2.8a1 1 0 0 1-1.4-1.4l2.8-2.8-2.8-2.8a1 1 0 0 1 1.4-1.4l2.8 2.8 2.8-2.8a1 1 0 1 1 1.4 1.4L13.4 12l2.8 2.8Z"/>"#
+    };
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #090f1f;
+      --bg-2: #10182d;
+      --card: rgba(10, 16, 32, 0.92);
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #ecf2ff;
+      --muted: #a9b8d4;
+      --accent: {status_tone};
+      --accent-bg: {status_bg};
+      --accent-border: {status_border};
+      --accent-glow: {accent_glow};
+    }}
+    * {{ box-sizing: border-box; }}
+    html, body {{ min-height: 100%; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(99, 102, 241, 0.18), transparent 30%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+    }}
+    body::before {{
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent);
+      opacity: 0.45;
+    }}
+    .shell {{
+      position: relative;
+      width: min(720px, 100%);
+    }}
+    .card {{
+      position: relative;
+      overflow: hidden;
+      border-radius: 28px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(12, 18, 35, 0.96), rgba(8, 12, 24, 0.94));
+      box-shadow:
+        0 34px 90px rgba(2, 6, 23, 0.6),
+        0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+      backdrop-filter: blur(18px);
+      padding: 32px;
+    }}
+    .card::before {{
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at top right, var(--accent-glow), transparent 42%);
+      pointer-events: none;
+    }}
+    .brand {{
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 28px;
+      position: relative;
+      z-index: 1;
+    }}
+    .mark {{
+      width: 46px;
+      height: 46px;
+      border-radius: 16px;
+      display: grid;
+      place-items: center;
+      flex: none;
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.95), rgba(99, 102, 241, 0.92));
+      box-shadow: 0 14px 32px rgba(59, 130, 246, 0.32);
+    }}
+    .mark svg {{
+      width: 28px;
+      height: 28px;
+      fill: white;
+    }}
+    .brand-copy {{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }}
+    .eyebrow {{
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }}
+    .brand-copy strong {{
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }}
+    .badge {{
+      margin-left: auto;
+      padding: 9px 13px;
+      border-radius: 999px;
+      border: 1px solid var(--accent-border);
+      background: var(--accent-bg);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }}
+    h1 {{
+      position: relative;
+      z-index: 1;
+      margin: 0 0 14px;
+      font-size: clamp(28px, 4vw, 40px);
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }}
+    p {{
+      position: relative;
+      z-index: 1;
+      margin: 0;
+      max-width: 60ch;
+      font-size: 16px;
+      line-height: 1.7;
+      color: var(--muted);
+    }}
+    .foot {{
+      position: relative;
+      z-index: 1;
+      margin-top: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      color: #93a5c7;
+      font-size: 13px;
+    }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.66);
+    }}
+    .actions {{
+      position: relative;
+      z-index: 1;
+      margin-top: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }}
+    .button {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 16px;
+      border-radius: 12px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14px;
+    }}
+    .button.primary {{
+      color: white;
+      background: linear-gradient(135deg, #2563eb, #4f46e5);
+      box-shadow: 0 12px 24px rgba(37, 99, 235, 0.24);
+    }}
+    .button.secondary {{
+      color: var(--text);
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.58);
+    }}
+    @media (max-width: 640px) {{
+      body {{ padding: 16px; }}
+      .card {{ padding: 24px; border-radius: 24px; }}
+      .brand {{ align-items: flex-start; flex-direction: column; }}
+      .badge {{ margin-left: 0; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="card" aria-live="polite">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="presentation" focusable="false">{icon_path}</svg>
+        </div>
+        <div class="brand-copy">
+          <div class="eyebrow">Tandem</div>
+          <strong>Codex account</strong>
+        </div>
+        <div class="badge">{status_text}</div>
+      </div>
+      <h1>{title}</h1>
+      <p>{detail}</p>
+      <div class="actions">
+        <div class="pill">You can close this tab and return to Tandem.</div>
+        <div class="pill">Browser sign-in completed through Tandem's local auth bridge.</div>
+      </div>
+      <div class="foot">
+        <span>Secure browser handoff</span>
+        <span>•</span>
+        <span>Local OAuth callback</span>
+      </div>
+    </section>
+  </main>
+</body>
+</html>"#,
+        title = title,
+        detail = detail,
+        status_text = status_text,
+        status_tone = status_tone,
+        status_bg = status_bg,
+        accent_glow = accent_glow,
+        icon_path = icon_path
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_codex_authorization_url_matches_codex_cli_flow() {
+        let url = build_openai_codex_authorization_url(
+            "http://localhost:1455/auth/callback",
+            "challenge123",
+            "state123",
+        );
+        assert!(url.starts_with("https://auth.openai.com/oauth/authorize?"));
+        assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"));
+        assert!(url.contains("scope=openid%20profile%20email%20offline_access"));
+        assert!(url.contains("code_challenge=challenge123"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("id_token_add_organizations=true"));
+        assert!(url.contains("codex_cli_simplified_flow=true"));
+        assert!(url.contains("state=state123"));
+        assert!(!url.contains("originator="));
+        assert!(!url.contains("api.connectors.read"));
+        assert!(!url.contains("api.connectors.invoke"));
+    }
+
+    #[test]
+    fn oauth_callback_page_escapes_untrusted_text() {
+        let html = render_provider_oauth_result_page(
+            "Connected <script>",
+            "Email: user@example.com & friends",
+            true,
+        );
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("&amp; friends"));
+        assert!(!html.contains("<script>"));
+    }
 }
 
 pub(super) async fn provider_oauth_callback_post(
@@ -606,6 +936,34 @@ pub(super) async fn provider_oauth_callback_post(
     Json(input): Json<ProviderOAuthCallbackInput>,
 ) -> Json<Value> {
     Json(finish_provider_oauth_callback(state, id, input).await)
+}
+
+async fn openai_codex_local_callback_get(
+    State(state): State<AppState>,
+    Query(input): Query<ProviderOAuthCallbackInput>,
+) -> Response {
+    let response = provider_oauth_callback_get(
+        State(state),
+        Path(OPENAI_CODEX_PROVIDER_ID.to_string()),
+        Query(input),
+    )
+    .await;
+    stop_openai_codex_local_callback_server();
+    response
+}
+
+async fn openai_codex_local_callback_post(
+    State(state): State<AppState>,
+    Json(input): Json<ProviderOAuthCallbackInput>,
+) -> Json<Value> {
+    let response = provider_oauth_callback_post(
+        State(state),
+        Path(OPENAI_CODEX_PROVIDER_ID.to_string()),
+        Json(input),
+    )
+    .await;
+    stop_openai_codex_local_callback_server();
+    response
 }
 
 pub(super) async fn provider_oauth_disconnect(
@@ -628,6 +986,7 @@ pub(super) async fn provider_oauth_disconnect(
         .await
         .is_ok();
     state.auth.write().await.remove(OPENAI_CODEX_PROVIDER_ID);
+    stop_openai_codex_local_callback_server();
 
     if persisted_removed || runtime_removed {
         let _ = crate::audit::append_protected_audit_event(
@@ -651,6 +1010,70 @@ pub(super) async fn provider_oauth_disconnect(
 
     Json(json!({
         "ok": persisted_removed || runtime_removed,
+    }))
+}
+
+pub(super) async fn provider_oauth_local_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    let provider_id = canonical_provider_id(&id);
+    if provider_id != OPENAI_CODEX_PROVIDER_ID {
+        return Json(json!({
+            "ok": false,
+            "error": format!("oauth is not supported for provider `{provider_id}`"),
+        }));
+    }
+
+    let Some(credential) = tandem_core::load_openai_codex_cli_oauth_credential() else {
+        return Json(json!({
+            "ok": false,
+            "error": "No local Codex CLI session was found. Sign in with the Codex CLI on this machine first.",
+        }));
+    };
+
+    let backend = match tandem_core::set_provider_oauth_credential(
+        OPENAI_CODEX_PROVIDER_ID,
+        credential.clone(),
+    ) {
+        Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
+        Ok(tandem_core::ProviderAuthBackend::File) => "file",
+        Err(error) => {
+            return Json(json!({
+                "ok": false,
+                "error": error.to_string(),
+            }));
+        }
+    };
+
+    ensure_openai_codex_runtime_provider(&state).await;
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "provider.oauth.updated",
+        &tandem_types::TenantContext::local_implicit(),
+        None,
+        json!({
+            "providerID": OPENAI_CODEX_PROVIDER_ID,
+            "backend": backend,
+            "managedBy": "codex-cli",
+            "email": credential.email,
+        }),
+    )
+    .await;
+
+    Json(json!({
+        "ok": true,
+        "provider_id": OPENAI_CODEX_PROVIDER_ID,
+        "managed_by": "codex-cli",
+        "backend": backend,
+        "email": credential.email,
+        "display_name": credential.display_name,
+        "expires_at_ms": credential.expires_at_ms,
     }))
 }
 
@@ -1474,6 +1897,9 @@ fn provider_requires_api_key(provider_id: &str) -> bool {
 }
 
 fn provider_oauth_redirect_uri(state: &AppState, provider_id: &str) -> String {
+    if canonical_provider_id(provider_id) == OPENAI_CODEX_PROVIDER_ID {
+        return OPENAI_CODEX_LOCAL_CALLBACK_URI.to_string();
+    }
     let base = state
         .server_base_url
         .read()
@@ -1512,23 +1938,80 @@ fn build_openai_codex_authorization_url(
         ("response_type", "code".to_string()),
         ("client_id", OPENAI_CODEX_OAUTH_CLIENT_ID.to_string()),
         ("redirect_uri", redirect_uri.to_string()),
-        (
-            "scope",
-            "openid profile email offline_access api.connectors.read api.connectors.invoke"
-                .to_string(),
-        ),
+        ("scope", "openid profile email offline_access".to_string()),
         ("code_challenge", code_challenge.to_string()),
         ("code_challenge_method", "S256".to_string()),
         ("id_token_add_organizations", "true".to_string()),
         ("codex_cli_simplified_flow", "true".to_string()),
         ("state", state.to_string()),
-        ("originator", "tandem".to_string()),
     ]
     .into_iter()
     .map(|(key, value)| format!("{key}={}", urlencoding::encode(&value)))
     .collect::<Vec<_>>()
     .join("&");
     format!("{OPENAI_CODEX_OAUTH_ISSUER}/oauth/authorize?{query}")
+}
+
+fn openai_codex_local_callback_shutdown_slot() -> &'static Mutex<Option<oneshot::Sender<()>>> {
+    static SLOT: OnceLock<Mutex<Option<oneshot::Sender<()>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn stop_openai_codex_local_callback_server() {
+    if let Ok(mut guard) = openai_codex_local_callback_shutdown_slot().lock() {
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+async fn ensure_openai_codex_local_callback_server(state: AppState) -> anyhow::Result<()> {
+    if openai_codex_local_callback_shutdown_slot()
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    let listener = TcpListener::bind(OPENAI_CODEX_LOCAL_CALLBACK_ADDR).await?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    {
+        let mut guard = openai_codex_local_callback_shutdown_slot()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("codex callback server lock poisoned"))?;
+        if guard.is_some() {
+            return Ok(());
+        }
+        *guard = Some(shutdown_tx);
+    }
+
+    let app = Router::new()
+        .route(
+            "/auth/callback",
+            get(openai_codex_local_callback_get).post(openai_codex_local_callback_post),
+        )
+        .with_state(state);
+
+    tokio::spawn(async move {
+        let result = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                tokio::select! {
+                    _ = shutdown_rx => {},
+                    _ = tokio::time::sleep(Duration::from_secs(10 * 60)) => {},
+                }
+            })
+            .await;
+        if let Err(error) = result {
+            tracing::warn!(%error, "OpenAI Codex local callback server stopped");
+        }
+        if let Ok(mut guard) = openai_codex_local_callback_shutdown_slot().lock() {
+            *guard = None;
+        }
+    });
+
+    Ok(())
 }
 
 fn decode_jwt_claims(token: &str) -> Option<Value> {
@@ -1666,7 +2149,7 @@ async fn refresh_openai_codex_oauth_if_needed(state: &AppState) -> anyhow::Resul
         return Ok(());
     };
     if credential.managed_by != "tandem" {
-        return Ok(());
+        return refresh_openai_codex_cli_oauth_if_needed(state).await;
     }
     let now = crate::now_ms();
     if credential.expires_at_ms > now.saturating_add(OPENAI_CODEX_OAUTH_REFRESH_SKEW_MS) {
@@ -1713,6 +2196,31 @@ async fn refresh_openai_codex_oauth_if_needed(state: &AppState) -> anyhow::Resul
         }
     }
     let _ = tandem_core::set_provider_oauth_credential(OPENAI_CODEX_PROVIDER_ID, credential)?;
+    ensure_openai_codex_runtime_provider(state).await;
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+    Ok(())
+}
+
+async fn refresh_openai_codex_cli_oauth_if_needed(state: &AppState) -> anyhow::Result<()> {
+    let Some(existing) = tandem_core::load_provider_oauth_credential(OPENAI_CODEX_PROVIDER_ID)
+    else {
+        return Ok(());
+    };
+    if existing.managed_by != "codex-cli" {
+        return Ok(());
+    }
+
+    let Some(incoming) = tandem_core::load_openai_codex_cli_oauth_credential() else {
+        return Ok(());
+    };
+    if existing == incoming {
+        return Ok(());
+    }
+
+    tandem_core::set_provider_oauth_credential(OPENAI_CODEX_PROVIDER_ID, incoming)?;
     ensure_openai_codex_runtime_provider(state).await;
     state
         .providers
