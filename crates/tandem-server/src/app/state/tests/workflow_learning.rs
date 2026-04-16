@@ -256,3 +256,141 @@ async fn automation_run_learning_summary_persists_to_state_and_status_json() {
         Some("wflearn-injected")
     );
 }
+
+#[tokio::test]
+async fn workflow_learning_context_only_surfaces_approved_candidates() {
+    let state = ready_test_state().await;
+    let automation = AutomationSpecBuilder::new("workflow-context")
+        .metadata(json!({
+            "project_id": "proj-1"
+        }))
+        .build();
+    let node = AutomationNodeBuilder::new("node-1")
+        .output_contract(AutomationFlowOutputContract {
+            kind: "report".to_string(),
+            validator: Some(AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        })
+        .build();
+
+    let approved_same_workflow = sample_candidate(
+        "wflearn-approved-same",
+        "workflow-context",
+        WorkflowLearningCandidateKind::MemoryFact,
+        WorkflowLearningCandidateStatus::Approved,
+        "ctx-approved-same",
+    );
+    let mut applied_project_candidate = sample_candidate(
+        "wflearn-applied-project",
+        "workflow-other",
+        WorkflowLearningCandidateKind::PromptPatch,
+        WorkflowLearningCandidateStatus::Applied,
+        "ctx-applied-project",
+    );
+    applied_project_candidate.project_id = "proj-1".to_string();
+    let proposed_same_workflow = sample_candidate(
+        "wflearn-proposed",
+        "workflow-context",
+        WorkflowLearningCandidateKind::RepairHint,
+        WorkflowLearningCandidateStatus::Proposed,
+        "ctx-proposed",
+    );
+
+    state
+        .put_workflow_learning_candidate(approved_same_workflow)
+        .await
+        .expect("put approved candidate");
+    state
+        .put_workflow_learning_candidate(applied_project_candidate)
+        .await
+        .expect("put applied project candidate");
+    state
+        .put_workflow_learning_candidate(proposed_same_workflow)
+        .await
+        .expect("put proposed candidate");
+
+    let (candidate_ids, context) = state
+        .workflow_learning_context_for_automation_node(&automation, &node)
+        .await;
+
+    assert_eq!(
+        candidate_ids,
+        vec![
+            "wflearn-approved-same".to_string(),
+            "wflearn-applied-project".to_string()
+        ]
+    );
+    let context = context.expect("learning context");
+    assert!(context.contains("<learning_context>"));
+    assert!(context.contains("summary for wflearn-approved-same"));
+    assert!(context.contains("summary for wflearn-applied-project"));
+    assert!(!context.contains("summary for wflearn-proposed"));
+}
+
+#[tokio::test]
+async fn record_automation_run_learning_usage_tracks_injected_ids() {
+    let state = ready_test_state().await;
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-workflow-learning-usage-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+
+    let automation = AutomationSpecBuilder::new("workflow-learning-usage")
+        .workspace_root(workspace_root.to_string_lossy().to_string())
+        .nodes(vec![AutomationNodeBuilder::new("node-1").build()])
+        .build();
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+
+    let updated = state
+        .record_automation_v2_run_learning_usage(
+            &run.run_id,
+            &[
+                "wflearn-approved-a".to_string(),
+                "wflearn-approved-b".to_string(),
+                "wflearn-approved-a".to_string(),
+            ],
+        )
+        .await
+        .expect("updated run");
+    let summary = updated
+        .learning_summary
+        .as_ref()
+        .expect("learning summary on updated run");
+    assert_eq!(
+        summary.injected_learning_ids,
+        vec![
+            "wflearn-approved-a".to_string(),
+            "wflearn-approved-b".to_string()
+        ]
+    );
+    assert_eq!(
+        summary.approved_learning_ids_considered,
+        vec![
+            "wflearn-approved-a".to_string(),
+            "wflearn-approved-b".to_string()
+        ]
+    );
+
+    let status_path = workspace_root
+        .join(".tandem")
+        .join("runs")
+        .join(&run.run_id)
+        .join("status.json");
+    let status_payload: Value =
+        serde_json::from_str(&std::fs::read_to_string(&status_path).expect("read status json"))
+            .expect("status json");
+    assert_eq!(
+        status_payload
+            .get("learning_summary")
+            .and_then(|row| row.get("approved_learning_ids_considered"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(2)
+    );
+}
