@@ -698,3 +698,224 @@ async fn workflow_learning_graph_patch_spawn_revision_tracks_change_type_metadat
         Some(session_id.as_str())
     );
 }
+
+#[tokio::test]
+async fn context_distill_persists_and_dedupes_session_memory_facts() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    let provider_app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(|| async {
+            axum::Json(json!({
+                "choices": [
+                    {
+                        "message": {
+                            "content": r#"[{"category":"fact","content":"The user prefers concise release summaries with explicit validation notes.","importance":0.91,"follow_up_needed":false}]"#
+                        }
+                    }
+                ]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, provider_app)
+            .await
+            .expect("serve test provider");
+    });
+
+    let state = test_state().await;
+    state
+        .config
+        .patch_project(json!({
+            "default_provider": "openai",
+            "providers": {
+                "openai": {
+                    "url": format!("http://{addr}/v1")
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    state
+        .auth
+        .write()
+        .await
+        .insert("openai".to_string(), "test-key".to_string());
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+
+    let app = app_router(state.clone());
+    let request_body = json!({
+        "session_id": "distill-session-1",
+        "conversation": [
+            "We are reviewing the release train, the workflow learning rollout, and the API notes in enough detail to preserve durable context for future runs.",
+            "Please remember that the user prefers concise release summaries with explicit validation notes, risk callouts, and direct references to workflow-learning status."
+        ],
+        "run_id": "distill-run-1",
+        "workflow_id": "workflow-distill-1",
+        "project_id": "proj-distill-1",
+        "artifact_refs": ["artifact://distill/report.md"],
+        "subject": "default",
+        "importance_threshold": 0.5
+    });
+
+    let first_req = Request::builder()
+        .method("POST")
+        .uri("/memory/context/distill")
+        .header("content-type", "application/json")
+        .body(Body::from(request_body.to_string()))
+        .expect("first request");
+    let first_resp = app
+        .clone()
+        .oneshot(first_req)
+        .await
+        .expect("first response");
+    assert_eq!(first_resp.status(), StatusCode::OK);
+    let first_payload: Value = serde_json::from_slice(
+        &to_bytes(first_resp.into_body(), usize::MAX)
+            .await
+            .expect("first body"),
+    )
+    .expect("first json");
+    assert_eq!(
+        first_payload.get("facts_extracted").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        first_payload.get("stored_count").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        first_payload.get("deduped_count").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        first_payload.get("status").and_then(Value::as_str),
+        Some("stored")
+    );
+    let first_memory_ids = first_payload
+        .get("memory_ids")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("first memory ids");
+    let first_candidate_ids = first_payload
+        .get("candidate_ids")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("first candidate ids");
+    assert_eq!(first_memory_ids.len(), 1);
+    assert_eq!(first_candidate_ids.len(), 1);
+
+    let list_req = Request::builder()
+        .method("GET")
+        .uri("/memory?project_id=proj-distill-1&q=concise%20release%20summaries")
+        .body(Body::empty())
+        .expect("list request");
+    let list_resp = app.clone().oneshot(list_req).await.expect("list response");
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_payload: Value = serde_json::from_slice(
+        &to_bytes(list_resp.into_body(), usize::MAX)
+            .await
+            .expect("list body"),
+    )
+    .expect("list json");
+    let items = list_payload
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("memory items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].get("kind").and_then(Value::as_str), Some("fact"));
+    assert_eq!(
+        items[0].get("tier").and_then(Value::as_str),
+        Some("session")
+    );
+    assert_eq!(
+        items[0]
+            .get("metadata")
+            .and_then(|row| row.get("origin"))
+            .and_then(Value::as_str),
+        Some("session_distillation")
+    );
+    assert_eq!(
+        items[0]
+            .get("metadata")
+            .and_then(|row| row.get("workflow_id"))
+            .and_then(Value::as_str),
+        Some("workflow-distill-1")
+    );
+
+    let second_req = Request::builder()
+        .method("POST")
+        .uri("/memory/context/distill")
+        .header("content-type", "application/json")
+        .body(Body::from(request_body.to_string()))
+        .expect("second request");
+    let second_resp = app
+        .clone()
+        .oneshot(second_req)
+        .await
+        .expect("second response");
+    server.abort();
+
+    assert_eq!(second_resp.status(), StatusCode::OK);
+    let second_payload: Value = serde_json::from_slice(
+        &to_bytes(second_resp.into_body(), usize::MAX)
+            .await
+            .expect("second body"),
+    )
+    .expect("second json");
+    assert_eq!(
+        second_payload.get("stored_count").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        second_payload.get("deduped_count").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        second_payload.get("status").and_then(Value::as_str),
+        Some("stored")
+    );
+    assert_eq!(
+        second_payload.get("memory_ids"),
+        Some(&Value::Array(first_memory_ids.clone()))
+    );
+    assert_eq!(
+        second_payload.get("candidate_ids"),
+        Some(&Value::Array(first_candidate_ids.clone()))
+    );
+
+    let candidates_req = Request::builder()
+        .method("GET")
+        .uri("/workflow-learning/candidates?workflow_id=workflow-distill-1&kind=memory_fact")
+        .body(Body::empty())
+        .expect("candidates request");
+    let candidates_resp = app
+        .oneshot(candidates_req)
+        .await
+        .expect("candidates response");
+    assert_eq!(candidates_resp.status(), StatusCode::OK);
+    let candidates_payload: Value = serde_json::from_slice(
+        &to_bytes(candidates_resp.into_body(), usize::MAX)
+            .await
+            .expect("candidates body"),
+    )
+    .expect("candidates json");
+    assert_eq!(
+        candidates_payload.get("count").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        candidates_payload
+            .get("candidates")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("candidate_id")),
+        Some(&first_candidate_ids[0])
+    );
+}
