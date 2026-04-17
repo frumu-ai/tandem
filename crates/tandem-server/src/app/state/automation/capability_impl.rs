@@ -513,7 +513,7 @@ fn automation_selected_mcp_servers_from_allowlist(
     selected
 }
 
-pub(crate) fn automation_infer_selected_mcp_servers(
+fn infer_selected_mcp_servers_from_capability_state(
     allowed_servers: &[String],
     allowlist: &[String],
     enabled_server_names: &[String],
@@ -548,7 +548,7 @@ async fn sync_automation_allowed_mcp_servers(
         .filter(|server| server.enabled)
         .map(|server| server.name.clone())
         .collect::<Vec<_>>();
-    let selected_servers = automation_infer_selected_mcp_servers(
+    let selected_servers = infer_selected_mcp_servers_from_capability_state(
         allowed_servers,
         allowlist,
         &enabled_server_names,

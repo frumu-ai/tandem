@@ -60,6 +60,115 @@ fn normalized_output_target_token(raw: &str) -> Option<String> {
     }
 }
 
+fn canonicalize_output_path_placeholder_tokens(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut canonical = trimmed.to_string();
+    for (needle, replacement) in [
+        (
+            "{{current_timestamp_filename}}",
+            "{current_timestamp_filename}",
+        ),
+        ("{{current_date}}", "{current_date}"),
+        ("{{current_time}}", "{current_time}"),
+        ("{{current_timestamp}}", "{current_timestamp}"),
+        ("{{date}}", "{current_date}"),
+        ("{date}", "{current_date}"),
+        ("YYYY-MM-DD_HH-MM-SS", "{current_timestamp_filename}"),
+        ("YYYY-MM-DD-HH-MM-SS", "{current_timestamp_filename}"),
+        ("YYYY-MM-DD_HHMMSS", "{current_timestamp_filename}"),
+        ("YYYY-MM-DD-HHMMSS", "{current_timestamp_filename}"),
+        ("YYYY-MM-DD_HHMM", "{current_date}_{current_time}"),
+        ("YYYY-MM-DD-HHMM", "{current_date}-{current_time}"),
+        ("YYYY-MM-DD", "{current_date}"),
+    ] {
+        canonical = canonical.replace(needle, replacement);
+    }
+    if !canonical.contains("HHMMSS") {
+        canonical = canonical.replace("HHMM", "{current_time}");
+    }
+    canonical
+}
+
+fn canonicalize_output_path_list(paths: &[String]) -> (Vec<String>, bool) {
+    let mut changed = false;
+    let canonical = paths
+        .iter()
+        .filter_map(|path| {
+            let canonical = canonicalize_output_path_placeholder_tokens(path);
+            if canonical.is_empty() {
+                return None;
+            }
+            if canonical != path.trim() {
+                changed = true;
+            }
+            Some(canonical)
+        })
+        .collect::<Vec<_>>();
+    (normalize_non_empty_list(canonical), changed)
+}
+
+fn canonicalize_output_path_value(value: &mut Value) -> bool {
+    let Some(text) = value.as_str() else {
+        return false;
+    };
+    let canonical = canonicalize_output_path_placeholder_tokens(text);
+    if canonical.is_empty() || canonical == text.trim() {
+        return false;
+    }
+    *value = Value::String(canonical);
+    true
+}
+
+fn canonicalize_output_path_array(value: &mut Value) -> bool {
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    let values = items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let (canonical, changed) = canonicalize_output_path_list(&values);
+    if !changed {
+        return false;
+    }
+    *value = Value::Array(canonical.into_iter().map(Value::String).collect());
+    true
+}
+
+pub(crate) fn canonicalize_automation_output_paths(automation: &mut AutomationV2Spec) -> bool {
+    let (canonical_targets, targets_changed) =
+        canonicalize_output_path_list(&automation.output_targets.clone());
+    if targets_changed {
+        automation.output_targets = canonical_targets;
+    }
+
+    let mut changed = targets_changed;
+    for node in &mut automation.flow.nodes {
+        let Some(metadata) = node.metadata.as_mut() else {
+            continue;
+        };
+        for scope in ["builder", "studio"] {
+            let Some(section) = metadata.get_mut(scope).and_then(Value::as_object_mut) else {
+                continue;
+            };
+            if let Some(output_path) = section.get_mut("output_path") {
+                changed = canonicalize_output_path_value(output_path) || changed;
+            }
+            for key in ["output_files", "must_write_files"] {
+                if let Some(items) = section.get_mut(key) {
+                    changed = canonicalize_output_path_array(items) || changed;
+                }
+            }
+        }
+    }
+    changed
+}
+
 fn output_target_matches_suffix(target: &str, suffixes: &[&str]) -> bool {
     normalized_output_target_token(target)
         .is_some_and(|normalized| suffixes.iter().any(|suffix| normalized.ends_with(suffix)))

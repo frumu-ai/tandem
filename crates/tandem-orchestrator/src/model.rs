@@ -183,16 +183,15 @@ pub fn normalize_knowledge_segment(segment: &str) -> String {
         if ch.is_ascii_alphanumeric() {
             buf.push(ch);
             prev_dash = false;
-        } else if ch == '_' || ch == '-' || ch == '/' {
-            if !prev_dash {
-                buf.push('-');
-                prev_dash = true;
-            }
-        } else if ch.is_whitespace() || ch.is_ascii_punctuation() {
-            if !prev_dash {
-                buf.push('-');
-                prev_dash = true;
-            }
+        } else if (ch == '_'
+            || ch == '-'
+            || ch == '/'
+            || ch.is_whitespace()
+            || ch.is_ascii_punctuation())
+            && !prev_dash
+        {
+            buf.push('-');
+            prev_dash = true;
         }
     }
     let normalized = buf.trim_matches('-').to_string();
@@ -213,16 +212,11 @@ pub fn normalize_knowledge_subject(subject: &str) -> String {
         if ch.is_ascii_alphanumeric() {
             buf.push(ch);
             prev_sep = false;
-        } else if ch == '_' || ch == '-' {
-            if !prev_sep {
-                buf.push('-');
-                prev_sep = true;
-            }
-        } else if ch.is_whitespace() || ch.is_ascii_punctuation() {
-            if !prev_sep {
-                buf.push('-');
-                prev_sep = true;
-            }
+        } else if (ch == '_' || ch == '-' || ch.is_whitespace() || ch.is_ascii_punctuation())
+            && !prev_sep
+        {
+            buf.push('-');
+            prev_sep = true;
         }
     }
     let normalized = buf.trim_matches('-').to_string();

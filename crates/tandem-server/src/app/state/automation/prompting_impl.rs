@@ -154,12 +154,7 @@ fn automation_prompt_apply_runtime_placeholders(
     text: &str,
     runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> String {
-    let Some(runtime_values) = runtime_values else {
-        return text.to_string();
-    };
-    text.replace("{current_date}", &runtime_values.current_date)
-        .replace("{current_time}", &runtime_values.current_time)
-        .replace("{current_timestamp}", &runtime_values.current_timestamp)
+    super::automation_runtime_placeholder_replace(text, runtime_values)
 }
 
 fn automation_prompt_apply_runtime_placeholders_to_value(
@@ -569,10 +564,17 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     }
     if let Some(runtime_values) = runtime_values {
         sections.push(format!(
-            "Resolved Runtime Values:\n- Use these exact values for this run.\n- `current_date` = `{}`\n- `current_time` = `{}`\n- `current_timestamp` = `{}`\n- Replace any literal `{{current_date}}`, `{{current_time}}`, and `{{current_timestamp}}` tokens in objectives, paths, or file contents before reading or writing workspace files.",
+            "Resolved Runtime Values:
+- Use these exact values for this run.
+- `current_date` = `{}`
+- `current_time` = `{}`
+- `current_timestamp` = `{}`
+- `current_timestamp_filename` = `{}`
+- Replace any literal `{{current_date}}`, `{{current_time}}`, `{{current_timestamp}}`, `{{current_timestamp_filename}}`, `YYYY-MM-DD`, `HHMM`, or `HH-MM-SS` tokens in objectives, paths, or file contents before reading or writing workspace files.",
             runtime_values.current_date,
             runtime_values.current_time,
             runtime_values.current_timestamp,
+            runtime_values.current_timestamp_filename,
         ));
     }
     sections.push(format!(
@@ -674,7 +676,11 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         sections.push(concrete_source_coverage);
     }
     let execution_mode = automation_node_execution_mode(node, workspace_root);
-    let required_output_path = automation_node_required_output_path_for_run(node, Some(run_id));
+    let required_output_path = automation_node_required_output_path_with_runtime_for_run(
+        node,
+        Some(run_id),
+        runtime_values,
+    );
     let required_workspace_write_targets =
         automation_node_must_write_files_for_automation(automation, node, runtime_values)
             .into_iter()

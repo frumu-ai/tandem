@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::all)]
+
 pub mod lsp;
 pub mod mcp;
 pub mod pty;

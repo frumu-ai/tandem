@@ -891,6 +891,14 @@ pub async fn run_automation_v2_run(
         let outcomes = join_all(tasks).await;
 
         let mut terminal_failure = None::<String>;
+        let run_started_at_ms = state
+            .get_automation_v2_run(&run_id)
+            .await
+            .and_then(|row| row.started_at_ms)
+            .unwrap_or_else(crate::now_ms);
+        let runtime_values = crate::app::state::automation::automation_prompt_runtime_values(Some(
+            run_started_at_ms,
+        ));
         let latest_attempts = state
             .get_automation_v2_run(&run_id)
             .await
@@ -910,16 +918,23 @@ pub async fn run_automation_v2_run(
                             )
                             .await;
                         let required_output_path =
-                            crate::app::state::automation::automation_node_required_output_path_for_run(
+                            crate::app::state::automation::automation_node_required_output_path_with_runtime_for_run(
                                 &node,
                                 Some(&run_id),
+                                Some(&runtime_values),
                             )
-                            .unwrap_or_else(|| output_path.clone());
+                            .unwrap_or_else(|| {
+                                crate::app::state::automation::automation_runtime_placeholder_replace(
+                                    &output_path,
+                                    Some(&runtime_values),
+                                )
+                            });
                         if let Ok(resolved) =
-                            crate::app::state::automation::resolve_automation_output_path_for_run(
+                            crate::app::state::automation::resolve_automation_output_path_with_runtime_for_run(
                                 &workspace_root,
                                 &run_id,
                                 &output_path,
+                                Some(&runtime_values),
                             )
                         {
                             let mut observed_artifact_text =
@@ -1320,10 +1335,11 @@ pub async fn run_automation_v2_run(
                                     );
                                 let recovered = crate::app::state::automation::extract_recoverable_json_artifact(&session_text)
                                     .and_then(|payload| {
-                                        crate::app::state::automation::resolve_automation_output_path_for_run(
+                                        crate::app::state::automation::resolve_automation_output_path_with_runtime_for_run(
                                             &workspace_root,
                                             &run_id,
                                             output_path,
+                                            Some(&runtime_values),
                                         )
                                         .ok()
                                         .map(|resolved| (payload, resolved))

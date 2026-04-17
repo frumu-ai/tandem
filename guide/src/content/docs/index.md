@@ -16,6 +16,7 @@ _You want to run the native Tandem desktop app or terminal UI to assist you with
 
 - **[TUI Guide](./tui-guide/)** — Learn how to navigate the Terminal UI.
 - **[Control Panel (Web Admin)](./control-panel/)** — Run the official browser UI or scaffold an editable panel app.
+- **[How Tandem Works Under the Hood](./how-tandem-works/)** — Canonical runtime reference for sessions, runs, context, memory, and channels.
 - **[Agents & Sessions](./agents-and-sessions/)** — Understand how sessions and context work.
 - **[Agent Teams](./agent-teams/)** — Learn how Tandem orchestrates specialized sub-agents.
 - **[Configuration](./configuration/)** — Setup providers, API keys, and system instructions.
@@ -54,6 +55,7 @@ _You want to build custom clients, connect external tools via MCP, or programmat
 - **SDKs:** Integrate Tandem into your own codebases using our official libraries.
   - 📘 **[TypeScript SDK](./sdk/typescript/)**
   - 🐍 **[Python SDK](./sdk/python/)**
+- **[How Tandem Works Under the Hood](./how-tandem-works/)** — Canonical runtime reference for sessions, runs, context, memory, and channels.
 - **[Tandem Architecture](./architecture/)** — Understand the internal design of the Engine.
 
 ---

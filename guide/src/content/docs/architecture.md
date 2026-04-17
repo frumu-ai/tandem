@@ -4,6 +4,8 @@ title: Architecture
 
 This page gives a practical mental model of how Tandem components fit together.
 
+For the more complete runtime walkthrough, see [How Tandem Works Under the Hood](./how-tandem-works/).
+
 ## System Overview
 
 ```mermaid

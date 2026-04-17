@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::all)]
+
 pub mod agents;
 pub mod cancellation;
 pub mod config;

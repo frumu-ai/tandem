@@ -39,11 +39,11 @@ impl DefaultMissionReducer {
         let mut changed = false;
 
         match event {
-            MissionEvent::MissionStarted { mission_id } if mission_id == next.mission_id => {
-                if next.status != MissionStatus::Running {
-                    next.status = MissionStatus::Running;
-                    changed = true;
-                }
+            MissionEvent::MissionStarted { mission_id }
+                if mission_id == next.mission_id && next.status != MissionStatus::Running =>
+            {
+                next.status = MissionStatus::Running;
+                changed = true;
             }
             MissionEvent::RunStarted {
                 mission_id,

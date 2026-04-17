@@ -33,6 +33,7 @@ pub(crate) struct ShellExecutionPlan {
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ShellCommandPlan {
     Execute(ShellExecutionPlan),
     Blocked(ToolResult),

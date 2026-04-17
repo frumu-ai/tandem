@@ -5,6 +5,8 @@ description: Telegram, Discord, and Slack channel behavior, media handling, and 
 
 Tandem channels let users chat with the same engine sessions from Telegram, Discord, or Slack.
 
+For the full runtime model behind this behavior, see [How Tandem Works Under the Hood](./how-tandem-works/).
+
 ## What channels do
 
 1. Receive inbound channel messages.
@@ -143,6 +145,8 @@ The engine dedupes retries of the same exchange automatically.
 - Tandem archives one completed exchange, not every partial stream event.
 - Raw session history remains the source of truth even if retrieval memory is compacted or re-ranked later.
 - Prompt context still stays bounded by normal memory search limits rather than unbounded chat log replay.
+
+For the engine-side explanation of this layering, see [How Tandem Works Under the Hood](./how-tandem-works/).
 
 ## Workflow planning from channels
 

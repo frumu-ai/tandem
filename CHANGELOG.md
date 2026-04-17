@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.31] - Released 2026-04-17
+
+### Added
+
+- **Workflow output path previewing**: The Studio workflow editor now shows draft, saved, and next-run-resolved output paths so operators can see exactly how timestamped filenames will materialize before saving or running.
+- **Workflow output token guidance**: Studio now documents the supported runtime filename tokens directly in workflow settings and stage editing, reducing guesswork when authoring timestamped reports and artifacts.
+
+### Changed
+
+- **Workflow output path canonicalization**: Legacy filename placeholders such as `YYYY-MM-DD_HH-MM-SS`, `YYYY-MM-DD_HHMM`, and `{{date}}` are now normalized to Tandem-native runtime tokens on automation save/load instead of being stored literally.
+- **Workflow planner timeout defaults**: Workflow generation now gives Codex-backed planning more time before aborting, making long-form workflow drafting and mission-plan generation less brittle.
+
+### Fixed
+
+- **Workflow planner failure visibility**: The workflow wizard now surfaces planning failures instead of silently dismissing the progress window when a planner attempt times out or fails.
+- **Workflow output-contract repair**: Fallback-generated workflow steps now infer the correct output contract across markdown, text, JSON, and code/config file types instead of collapsing final deliverables into junky `structured_json` outputs.
+- **Saved automation auto-heal**: Already-persisted malformed workflows now repair their output contracts, upstream input refs, and output path templates automatically on load/save instead of requiring manual JSON surgery.
+- **Timestamped workflow filenames**: Automation prompts, validators, and artifact reconciliation now resolve runtime filename placeholders consistently, so workflows that ask for timestamped outputs stop writing to literal `YYYY-MM-DD...` paths or failing validation against unresolved targets.
+- **Studio output-path authoring UX**: Workflow authors now get inline warnings when an output path still contains ambiguous placeholder text, making bad timestamp/path patterns much easier to catch before a run.
+
 ## [0.4.30] - Released 2026-04-16
 
 ### Added
