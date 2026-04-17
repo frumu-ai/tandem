@@ -2,6 +2,15 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.31 (Released 2026-04-17)
+
+This release focuses on workflow reliability and authoring clarity after the `v0.4.30` Codex launch.
+
+- **Workflow planner timeout resilience**: Workflow and mission-plan generation now allow longer planner runs and surface planner failures in the UI instead of silently dropping the progress state.
+- **Generalized workflow deliverable repair**: Workflow fallback steps now infer the correct output contract for markdown reports, plain-text outputs, JSON exports, and code/config artifacts, which fixes the “run-log garbage report” class of workflow failures.
+- **Automatic repair for saved malformed workflows**: Existing saved automations now self-heal output contracts, upstream handoff refs, and related synthesis metadata on load/save instead of requiring manual edits to `automations_v2.json`.
+- **Timestamped output-path normalization**: Workflow output targets and node output paths now normalize legacy placeholders such as `YYYY-MM-DD_HH-MM-SS` into Tandem-native runtime tokens, and runtime validation resolves them consistently during execution.
+- **Studio output-path previews and warnings**: Workflow Studio now shows draft, saved, and next-run output-path previews plus inline warnings for ambiguous placeholder syntax, making timestamped artifact authoring much more predictable.
 ## v0.4.30 (Released 2026-04-16)
 
 This release adds the first real Tandem path for using a Codex account allocation instead of burning API-key credits on every heavy local run.
