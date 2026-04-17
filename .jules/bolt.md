@@ -1,0 +1,3 @@
+## 2024-04-18 - [Hoisted Regex Instantiation in React Components]
+**Learning:** Instantiating complex `RegExp` objects with the `/g` flag inside a React component causes recompilation on every render, which is a significant performance bottleneck, especially in components rendered heavily like `Message.tsx`.
+**Action:** Always hoist global `RegExp` objects outside React components. When doing so, replace `while (regex.exec(text))` loops with `for (const match of text.matchAll(regex))` to avoid mutating the shared `lastIndex` property across concurrent renders, which is a common source of bugs with hoisted global regular expressions.

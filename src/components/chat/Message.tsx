@@ -282,6 +282,9 @@ const FILE_PATH_EXACT = new RegExp(`^${FILE_PATH_BASE}$`, "i");
 const normalizeFilePath = (rawPath: string) =>
   rawPath.startsWith("@") ? rawPath.slice(1) : rawPath;
 
+// Hoisted out of component to prevent recompilation on every render
+const FILE_PATH_REGEX = new RegExp(`${FILE_PATH_BASE}\\b`, "gi");
+
 /**
  * FilePathParser - Detects file paths in text and renders them as clickable links
  * Matches common file path patterns:
@@ -298,13 +301,10 @@ function FilePathParser({
   text: string;
   onFileOpen?: (filePath: string) => void;
 }) {
-  const filePathRegex = new RegExp(`${FILE_PATH_BASE}\\b`, "gi");
-
   const parts: (string | ReactNode)[] = [];
   let lastIndex = 0;
-  let match;
 
-  while ((match = filePathRegex.exec(text)) !== null) {
+  for (const match of text.matchAll(FILE_PATH_REGEX)) {
     const rawPath = match[0]; // Full matched path (may include @)
     const filePath = normalizeFilePath(rawPath);
     const matchStart = match.index;
