@@ -16,6 +16,7 @@
 
 - /control-panel/ - Browser control panel and editable panel app path.
 - /tui-guide/ - Terminal UI guide.
+- /how-tandem-works/ - Canonical runtime reference for sessions, runs, context, memory, and channels.
 - /agents-and-sessions/ - Sessions and execution model.
 - /agent-teams/ - Agent-team architecture and behavior.
 - /configuration/ - Providers, keys, and system instructions.
@@ -46,6 +47,7 @@
 
 ## Architecture and reference
 
+- /how-tandem-works/ - Canonical runtime reference for sessions, runs, context, memory, and channels.
 - /architecture/ - Internal architecture overview.
 - /protocol-matrix/ - Protocol compatibility matrix.
 - /engine-testing/ - Engine testing guidance.
@@ -80,6 +82,7 @@
 - If it needs to choose the correct runtime path, use `/creating-and-running-workflows-and-missions/`.
 - If it needs engine auth or token handling, use `/engine-authentication-for-agents/`.
 - If it needs implementation details, use the `/reference/` pages plus `/protocol-matrix/` and `/architecture/`.
+- If it needs the canonical under-the-hood runtime reference, use `/how-tandem-works/`.
 
 ## External
 

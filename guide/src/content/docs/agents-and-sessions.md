@@ -41,6 +41,8 @@ You are a code review agent. Focus on finding bugs and security issues.
 
 A **Session** is a conversation thread with an agent.
 
+For the full runtime walkthrough, see [How Tandem Works Under the Hood](./how-tandem-works/).
+
 - Sessions are persisted in `storage/session/`.
 - Each session maintains its own message history and context.
 - You can switch agents mid-session, though it is usually better to start a new session for a different mode of work.
@@ -60,7 +62,7 @@ flowchart TD
   F --> G[Transmit Safe Payload to LLM]
 ```
 
-As your conversation grows, Tandem employs a strict sliding window: it gracefully truncates older turns, replacing them with a static placeholder marking the omission. Instead of forcing the LLM to re-read summarized rules repetitively, the engine relies on a governed knowledge layer: run-scoped working state stays local, validated project knowledge is reused selectively, and the engine records why knowledge was reused, skipped, or refreshed. This keeps the context boundary stable without turning memory into a garbage dump.
+As your conversation grows, Tandem employs a strict sliding window: it gracefully truncates older turns, replacing them with a static placeholder marking the omission. Instead of forcing the LLM to re-read everything repetitively, the engine keeps the active payload bounded and relies on retrieval memory for reusable facts. This keeps the context boundary stable without turning memory into a garbage dump.
 
 ## The Loop
 
