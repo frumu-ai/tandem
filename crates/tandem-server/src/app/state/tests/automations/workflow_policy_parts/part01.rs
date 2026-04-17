@@ -1255,4 +1255,3 @@ fn mcp_grounded_citations_artifact_passes_without_local_reads_or_websearch() {
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
-

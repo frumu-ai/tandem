@@ -625,7 +625,7 @@ pub(crate) fn research_required_next_tool_actions(
             .collect::<Vec<_>>();
         if !upstream_artifact_summary.is_empty() {
             actions.push(format!(
-                "Read and synthesize the strongest upstream artifacts before finalizing: {}. Rewrite the final report as a substantive multi-section synthesis that reuses the concrete terminology, named entities, objections, risks, and proof points already present upstream, and mention at least {} distinct upstream evidence anchors in the body.",
+                "Read and synthesize the upstream evidence from the strongest upstream artifacts before finalizing: {}. Rewrite the final report as a substantive multi-section synthesis that reuses the concrete terminology, named entities, objections, risks, and proof points already present upstream, and mention at least {} distinct upstream evidence anchors in the body.",
                 upstream_artifact_summary.join(", "),
                 anchor_target.max(1)
             ));
@@ -935,4 +935,3 @@ fn parse_status_json_with_tail_window(raw: &str) -> Option<Value> {
         parse_status_json(&tail)
     })
 }
-
