@@ -1,4 +1,3 @@
-
 pub(crate) fn render_automation_repair_brief(
     node: &AutomationFlowNode,
     prior_output: Option<&Value>,
@@ -322,7 +321,9 @@ pub(crate) fn is_agent_standup_automation(automation: &AutomationV2Spec) -> bool
         .unwrap_or(false)
 }
 
-pub(crate) fn resolve_standup_report_path_template(automation: &AutomationV2Spec) -> Option<String> {
+pub(crate) fn resolve_standup_report_path_template(
+    automation: &AutomationV2Spec,
+) -> Option<String> {
     automation
         .metadata
         .as_ref()
@@ -688,7 +689,10 @@ pub(crate) fn workspace_has_git_repo(workspace_root: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn automation_node_execution_mode(node: &AutomationFlowNode, workspace_root: &str) -> &'static str {
+pub(crate) fn automation_node_execution_mode(
+    node: &AutomationFlowNode,
+    workspace_root: &str,
+) -> &'static str {
     node_runtime_impl::automation_node_execution_mode(node, workspace_root)
 }
 
@@ -915,7 +919,9 @@ pub(crate) fn validation_requirement_is_warning(profile: &str, requirement: &str
     }
 }
 
-pub(crate) fn semantic_block_reason_for_requirements(unmet_requirements: &[String]) -> Option<String> {
+pub(crate) fn semantic_block_reason_for_requirements(
+    unmet_requirements: &[String],
+) -> Option<String> {
     let has_unmet = |needle: &str| unmet_requirements.iter().any(|value| value == needle);
     if has_unmet("current_attempt_output_missing") {
         Some("required output was not created in the current attempt".to_string())
@@ -1552,9 +1558,9 @@ pub(crate) enum AutomationArtifactPublishMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AutomationArtifactPublishSpec {
-    scope: AutomationArtifactPublishScope,
-    path: String,
-    mode: AutomationArtifactPublishMode,
+    pub(crate) scope: AutomationArtifactPublishScope,
+    pub(crate) path: String,
+    pub(crate) mode: AutomationArtifactPublishMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

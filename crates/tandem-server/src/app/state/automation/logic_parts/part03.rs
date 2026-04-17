@@ -1,4 +1,3 @@
-
 pub(crate) fn normalize_automation_path_text(raw_path: &str) -> Option<String> {
     let trimmed = raw_path.trim();
     if trimmed.is_empty() {
@@ -86,7 +85,9 @@ pub(crate) fn resolve_automation_output_path_for_run(
     resolve_automation_output_path(workspace_root, &scoped_output_path)
 }
 
-pub(crate) fn automation_node_output_sibling_extensions(node: &AutomationFlowNode) -> &'static [&'static str] {
+pub(crate) fn automation_node_output_sibling_extensions(
+    node: &AutomationFlowNode,
+) -> &'static [&'static str] {
     let kind = node
         .output_contract
         .as_ref()
@@ -518,14 +519,14 @@ pub(crate) fn revert_read_only_source_snapshot_files(
     restored_events
 }
 
-struct ReadOnlySourceSnapshotRollback<'a> {
+pub(crate) struct ReadOnlySourceSnapshotRollback<'a> {
     workspace_root: String,
     snapshot: &'a std::collections::BTreeMap<String, Vec<u8>>,
     active: bool,
 }
 
 impl<'a> ReadOnlySourceSnapshotRollback<'a> {
-    fn armed(
+    pub(crate) fn armed(
         workspace_root: &str,
         snapshot: &'a std::collections::BTreeMap<String, Vec<u8>>,
     ) -> Self {
@@ -536,7 +537,7 @@ impl<'a> ReadOnlySourceSnapshotRollback<'a> {
         }
     }
 
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.active = false;
     }
 }
@@ -912,7 +913,10 @@ async fn collect_automation_upstream_research_evidence(
     evidence
 }
 
-pub(crate) fn session_discovered_relevant_paths(session: &Session, workspace_root: &str) -> Vec<String> {
+pub(crate) fn session_discovered_relevant_paths(
+    session: &Session,
+    workspace_root: &str,
+) -> Vec<String> {
     let workspace = PathBuf::from(workspace_root);
     let mut paths = Vec::new();
     for message in &session.messages {
