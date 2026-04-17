@@ -486,7 +486,7 @@ impl Tool for MemoryListTool {
             }
         }
 
-        chunks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        chunks.sort_by_key(|chunk| std::cmp::Reverse(chunk.created_at));
         chunks.truncate(limit);
         let rows = chunks
             .iter()
@@ -991,4 +991,3 @@ impl Tool for ApplyPatchTool {
         })
     }
 }
-
