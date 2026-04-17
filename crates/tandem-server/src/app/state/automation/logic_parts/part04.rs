@@ -1,4 +1,3 @@
-
 pub(crate) fn validate_automation_artifact_output_with_context(
     automation: &AutomationV2Spec,
     node: &AutomationFlowNode,
@@ -690,7 +689,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             let missing_file_coverage = (requires_files_reviewed
                 && !selected_assessment
                     .is_some_and(|assessment| assessment.files_reviewed_present))
-                || !files_reviewed_backed
+                || (requires_files_reviewed && !files_reviewed_backed)
                 || (requires_files_not_reviewed && !unreviewed_relevant_paths.is_empty());
             let missing_web_research = requires_external_sources && !web_research_succeeded;
             let upstream_has_citations =
@@ -1532,6 +1531,7 @@ pub(crate) fn summarize_automation_tool_activity(
                 let metadata = automation_tool_result_metadata(result.as_ref())
                     .cloned()
                     .unwrap_or(Value::Null);
+                let output_payload = automation_tool_result_output_payload(result.as_ref());
                 let output = automation_tool_result_output_text(result.as_ref())
                     .unwrap_or_default()
                     .trim()
@@ -1546,18 +1546,30 @@ pub(crate) fn summarize_automation_tool_activity(
                     .get("count")
                     .and_then(Value::as_u64)
                     .is_some_and(|count| count > 0)
-                    || automation_tool_result_output_payload(result.as_ref()).is_some_and(
-                        |payload| {
-                            payload
-                                .get("result_count")
-                                .and_then(Value::as_u64)
-                                .is_some_and(|count| count > 0)
-                                || payload
-                                    .get("results")
-                                    .and_then(Value::as_array)
-                                    .is_some_and(|results| !results.is_empty())
-                        },
-                    );
+                    || output_payload.as_ref().is_some_and(|payload| {
+                        payload
+                            .get("result_count")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|count| count > 0)
+                            || payload
+                                .get("results")
+                                .and_then(Value::as_array)
+                                .is_some_and(|results| !results.is_empty())
+                    });
+                let explicit_zero_results = output_payload.as_ref().is_some_and(|payload| {
+                    payload
+                        .get("result_count")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|count| count == 0)
+                        || payload
+                            .get("count")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|count| count == 0)
+                        || payload
+                            .get("results")
+                            .and_then(Value::as_array)
+                            .is_some_and(|results| results.is_empty())
+                });
                 let timed_out = result_error
                     .as_deref()
                     .is_some_and(|value| value.eq_ignore_ascii_case("timeout"))
@@ -1570,6 +1582,14 @@ pub(crate) fn summarize_automation_tool_activity(
                     || web_research_unavailable_failure(&output);
                 let meaningful_web_result = if is_websearch {
                     result_has_sources
+                        || (!output.is_empty()
+                            && !explicit_zero_results
+                            && !output.contains("no results")
+                            && !output.contains("0 results")
+                            && !output.contains("\"result_count\": 0")
+                            && !output.contains("\"result_count\":0")
+                            && !output.contains("\"count\": 0")
+                            && !output.contains("\"count\":0"))
                 } else {
                     !output.is_empty()
                 };

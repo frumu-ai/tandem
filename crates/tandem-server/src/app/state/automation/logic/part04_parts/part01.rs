@@ -1,4 +1,3 @@
-
 fn parsed_status_u32(status: Option<&Value>, key: &str) -> Option<u32> {
     status
         .and_then(|value| value.get(key))
@@ -128,6 +127,7 @@ pub(crate) fn summarize_automation_tool_activity(
                 let metadata = automation_tool_result_metadata(result.as_ref())
                     .cloned()
                     .unwrap_or(Value::Null);
+                let output_payload = automation_tool_result_output_payload(result.as_ref());
                 let output = automation_tool_result_output_text(result.as_ref())
                     .unwrap_or_default()
                     .trim()
@@ -142,18 +142,30 @@ pub(crate) fn summarize_automation_tool_activity(
                     .get("count")
                     .and_then(Value::as_u64)
                     .is_some_and(|count| count > 0)
-                    || automation_tool_result_output_payload(result.as_ref()).is_some_and(
-                        |payload| {
-                            payload
-                                .get("result_count")
-                                .and_then(Value::as_u64)
-                                .is_some_and(|count| count > 0)
-                                || payload
-                                    .get("results")
-                                    .and_then(Value::as_array)
-                                    .is_some_and(|results| !results.is_empty())
-                        },
-                    );
+                    || output_payload.as_ref().is_some_and(|payload| {
+                        payload
+                            .get("result_count")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|count| count > 0)
+                            || payload
+                                .get("results")
+                                .and_then(Value::as_array)
+                                .is_some_and(|results| !results.is_empty())
+                    });
+                let explicit_zero_results = output_payload.as_ref().is_some_and(|payload| {
+                    payload
+                        .get("result_count")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|count| count == 0)
+                        || payload
+                            .get("count")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|count| count == 0)
+                        || payload
+                            .get("results")
+                            .and_then(Value::as_array)
+                            .is_some_and(|results| results.is_empty())
+                });
                 let timed_out = result_error
                     .as_deref()
                     .is_some_and(|value| value.eq_ignore_ascii_case("timeout"))
@@ -166,6 +178,14 @@ pub(crate) fn summarize_automation_tool_activity(
                     || web_research_unavailable_failure(&output);
                 let meaningful_web_result = if is_websearch {
                     result_has_sources
+                        || (!output.is_empty()
+                            && !explicit_zero_results
+                            && !output.contains("no results")
+                            && !output.contains("0 results")
+                            && !output.contains("\"result_count\": 0")
+                            && !output.contains("\"result_count\":0")
+                            && !output.contains("\"count\": 0")
+                            && !output.contains("\"count\":0"))
                 } else {
                     !output.is_empty()
                 };
@@ -952,4 +972,3 @@ fn automation_declared_output_paths(automation: &AutomationV2Spec) -> Vec<String
     }
     paths
 }
-

@@ -803,7 +803,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             let missing_file_coverage = (requires_files_reviewed
                 && !selected_assessment
                     .is_some_and(|assessment| assessment.files_reviewed_present))
-                || !files_reviewed_backed
+                || (requires_files_reviewed && !files_reviewed_backed)
                 || (requires_files_not_reviewed && !unreviewed_relevant_paths.is_empty());
             let missing_web_research = requires_external_sources && !web_research_succeeded;
             let upstream_has_citations =
