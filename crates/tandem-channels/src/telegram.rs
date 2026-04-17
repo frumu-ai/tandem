@@ -351,10 +351,8 @@ impl TelegramMarkdownV2Writer {
 
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
-            Tag::Paragraph => {
-                if !self.current.is_empty() {
-                    self.newline();
-                }
+            Tag::Paragraph if !self.current.is_empty() => {
+                self.newline();
             }
             Tag::Heading { level, .. } => {
                 let _ = level;

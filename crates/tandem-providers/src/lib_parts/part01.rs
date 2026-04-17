@@ -278,10 +278,8 @@ fn canonical_openai_tool_name(
 
 fn push_openai_text_fragments(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
-        serde_json::Value::String(text) => {
-            if !text.is_empty() {
-                out.push(text.to_string());
-            }
+        serde_json::Value::String(text) if !text.is_empty() => {
+            out.push(text.to_string());
         }
         serde_json::Value::Array(items) => {
             for item in items {
