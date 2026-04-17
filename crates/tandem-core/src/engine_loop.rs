@@ -21,10 +21,10 @@ mod loop_tuning;
 mod prewrite_gate;
 mod prewrite_mode;
 mod prompt_context;
-mod tool_execution;
 mod prompt_execution;
-mod prompt_runtime;
 mod prompt_helpers;
+mod prompt_runtime;
+mod tool_execution;
 mod tool_output;
 mod tool_parsing;
 mod types;
@@ -43,8 +43,8 @@ use prompt_context::{
     format_context_mode, mcp_catalog_in_system_prompt_enabled, semantic_tool_retrieval_enabled,
     semantic_tool_retrieval_k, tandem_runtime_system_prompt,
 };
-use prompt_runtime::*;
 use prompt_helpers::*;
+use prompt_runtime::*;
 use tool_output::*;
 use tool_parsing::*;
 use types::{EngineToolProgressSink, StreamedToolCall, WritePathRecoveryMode};
@@ -216,7 +216,6 @@ impl EngineLoop {
         self.run_prompt_async_with_context(session_id, req, None)
             .await
     }
-
 
     pub async fn run_oneshot(&self, prompt: String) -> anyhow::Result<String> {
         self.providers.default_complete(&prompt).await
@@ -1176,7 +1175,6 @@ impl EngineLoop {
             16_000,
         )))
     }
-
 }
 
 #[cfg(test)]

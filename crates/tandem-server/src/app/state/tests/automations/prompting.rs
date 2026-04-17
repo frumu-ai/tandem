@@ -21,6 +21,5 @@ fn runtime_values(date: &str, time: &str, timestamp: &str) -> AutomationPromptRu
     }
 }
 
-
 include!("prompting_parts/part01.rs");
 include!("prompting_parts/part02.rs");

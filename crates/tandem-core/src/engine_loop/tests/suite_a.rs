@@ -367,8 +367,7 @@ fn streamed_websearch_args_strip_arg_key_value_wrappers() {
 
 #[test]
 fn normalize_tool_args_websearch_infers_from_user_text() {
-    let normalized =
-        normalize_tool_args("websearch", json!({}), "web search meaning of life", "");
+    let normalized = normalize_tool_args("websearch", json!({}), "web search meaning of life", "");
     assert_eq!(
         normalized.args.get("query").and_then(|v| v.as_str()),
         Some("meaning of life")
@@ -448,8 +447,7 @@ fn normalize_tool_args_webfetch_fails_when_url_unrecoverable() {
 #[test]
 fn normalize_tool_args_answer_how_to_infers_task_from_user_prompt() {
     let user_text = "what is tandem and how do i use it?";
-    let normalized =
-        normalize_tool_args("mcp.tandem_mcp.answer_how_to", json!({}), user_text, "");
+    let normalized = normalize_tool_args("mcp.tandem_mcp.answer_how_to", json!({}), user_text, "");
     assert!(!normalized.missing_terminal);
     assert_eq!(
         normalized.args.get("task").and_then(|v| v.as_str()),
@@ -479,8 +477,7 @@ fn normalize_tool_args_answer_how_to_keeps_existing_task() {
 #[test]
 fn normalize_tool_args_search_docs_infers_query_from_user_prompt() {
     let user_text = "https://docs.tandem.ac/start-here/";
-    let normalized =
-        normalize_tool_args("mcp.tandem_mcp.search_docs", json!({}), user_text, "");
+    let normalized = normalize_tool_args("mcp.tandem_mcp.search_docs", json!({}), user_text, "");
     assert!(!normalized.missing_terminal);
     assert_eq!(
         normalized.args.get("query").and_then(|v| v.as_str()),
@@ -580,8 +577,7 @@ fn normalize_tool_args_pack_builder_keeps_existing_goal_and_mode() {
 fn normalize_tool_args_pack_builder_confirm_reuses_plan_from_context() {
     let assistant_context =
         "Pack Builder Preview\n- Plan ID: plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    let normalized =
-        normalize_tool_args("pack_builder", json!({}), "confirm", assistant_context);
+    let normalized = normalize_tool_args("pack_builder", json!({}), "confirm", assistant_context);
     assert!(!normalized.missing_terminal);
     assert_eq!(
         normalized.args.get("mode").and_then(|v| v.as_str()),

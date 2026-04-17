@@ -1,8 +1,10 @@
-use super::*;
 use super::loop_guards::{parse_budget_override, HARD_TOOL_CALL_CEILING};
+use super::*;
 use crate::{EventBus, Storage};
 use std::sync::{Mutex, OnceLock};
-use tandem_types::{HostOs, PathStyle, PrewriteCoverageMode, PrewriteRequirements, ShellFamily, Session};
+use tandem_types::{
+    HostOs, PathStyle, PrewriteCoverageMode, PrewriteRequirements, Session, ShellFamily,
+};
 use uuid::Uuid;
 
 fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {

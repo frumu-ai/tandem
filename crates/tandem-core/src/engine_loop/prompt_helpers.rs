@@ -60,7 +60,8 @@ pub(super) fn provider_error_code(error_text: &str) -> &'static str {
     {
         return "TOOL_SCHEMA_INVALID";
     }
-    if lower.contains("rate limit") || lower.contains("too many requests") || lower.contains("429") {
+    if lower.contains("rate limit") || lower.contains("too many requests") || lower.contains("429")
+    {
         return "RATE_LIMIT_EXCEEDED";
     }
     if lower.contains("context length")
@@ -165,7 +166,9 @@ pub(super) fn has_email_action_tools(schemas: &[ToolSchema]) -> bool {
 pub(super) fn tool_name_looks_like_email_action(name: &str) -> bool {
     let normalized = normalize_tool_name(name);
     if normalized.starts_with("mcp.") {
-        return normalized.contains("gmail") || normalized.contains("mail") || normalized.contains("email");
+        return normalized.contains("gmail")
+            || normalized.contains("mail")
+            || normalized.contains("email");
     }
     normalized.contains("mail") || normalized.contains("email")
 }
@@ -177,7 +180,9 @@ pub(super) fn completion_claims_email_sent(text: &str) -> bool {
         || lower.contains("email sent")
         || lower.contains("sent to");
     has_email_marker
-        && (lower.contains("sent") || lower.contains("delivered") || lower.contains("has been sent"))
+        && (lower.contains("sent")
+            || lower.contains("delivered")
+            || lower.contains("has been sent"))
 }
 
 pub(super) fn extract_tool_candidate_paths(tool: &str, args: &Value) -> Vec<String> {

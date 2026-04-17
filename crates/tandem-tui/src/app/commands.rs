@@ -9,15 +9,21 @@ use crate::app::{
 };
 use crate::command_catalog::HELP_TEXT;
 
+macro_rules! basic_command_match_arms {
+    () => {
+        include!("commands_parts/match_arms_part01.rs");
+        include!("commands_parts/match_arms_part02.rs");
+        include!("commands_parts/match_arms_part03.rs");
+    };
+}
+
 pub(super) async fn try_execute_basic_command(
     app: &mut App,
     cmd_name: &str,
     args: &[&str],
 ) -> Option<String> {
     match cmd_name {
-        include!("commands_parts/match_arms_part01.rs");
-        include!("commands_parts/match_arms_part02.rs");
-        include!("commands_parts/match_arms_part03.rs");
+        basic_command_match_arms!(),
         _ => None,
     }
 }

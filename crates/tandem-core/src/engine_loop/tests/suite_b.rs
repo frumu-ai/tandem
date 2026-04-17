@@ -137,10 +137,8 @@ fn duplicate_signature_output_detector_matches_expected_text() {
 #[test]
 fn summarize_duplicate_signature_outputs_returns_run_scoped_message() {
     let outputs = vec![
-        "Tool `bash` call skipped: duplicate call signature retry limit reached (2)."
-            .to_string(),
-        "Tool `bash` call skipped: duplicate call signature retry limit reached (2)."
-            .to_string(),
+        "Tool `bash` call skipped: duplicate call signature retry limit reached (2).".to_string(),
+        "Tool `bash` call skipped: duplicate call signature retry limit reached (2).".to_string(),
     ];
     let summary =
         summarize_duplicate_signature_outputs(&outputs).expect("expected duplicate summary");
@@ -601,8 +599,8 @@ fn summarize_auth_pending_outputs_returns_none_for_mixed_outputs() {
 #[test]
 fn invalid_tool_args_retry_context_handles_missing_bash_command() {
     let outputs = vec!["Tool `bash` result:\nBASH_COMMAND_MISSING".to_string()];
-    let message = build_invalid_tool_args_retry_context_from_outputs(&outputs, 0)
-        .expect("retry expected");
+    let message =
+        build_invalid_tool_args_retry_context_from_outputs(&outputs, 0).expect("retry expected");
     assert!(message.contains("required `command` field"));
     assert!(message.contains("Prefer `ls`, `glob`, `search`, and `read`"));
 }
@@ -610,8 +608,8 @@ fn invalid_tool_args_retry_context_handles_missing_bash_command() {
 #[test]
 fn invalid_tool_args_retry_context_escalates_on_repeat_bash_failure() {
     let outputs = vec!["Tool `bash` result:\nBASH_COMMAND_MISSING".to_string()];
-    let message = build_invalid_tool_args_retry_context_from_outputs(&outputs, 1)
-        .expect("retry expected");
+    let message =
+        build_invalid_tool_args_retry_context_from_outputs(&outputs, 1).expect("retry expected");
     assert!(message.contains("Do not repeat an empty bash call"));
 }
 
@@ -823,7 +821,9 @@ fn prewrite_requirements_exhausted_completion_reports_structured_repair_state() 
     assert!(message.contains("\"repairAttempt\":2"));
     assert!(message.contains("\"repairAttemptsRemaining\":0"));
     assert!(message.contains("\"repairExhausted\":true"));
-    assert!(message.contains("\"unmetRequirements\":[\"concrete_read_required\", \"successful_web_research_required\"]"));
+    assert!(message.contains(
+        "\"unmetRequirements\":[\"concrete_read_required\", \"successful_web_research_required\"]"
+    ));
 }
 
 #[test]
