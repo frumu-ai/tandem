@@ -70,6 +70,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Install Linux dependencies
         run: |
@@ -97,6 +99,9 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings || true
+
+      - name: Check touched Rust/TSX file sizes
+        run: bash scripts/ci-file-size-check.sh
 
   test-sdks:
     name: Test SDKs
