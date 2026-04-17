@@ -419,9 +419,10 @@ pub struct GlobalMemorySearchHit {
 }
 
 /// Status for a reusable knowledge item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum KnowledgeItemStatus {
+    #[default]
     Working,
     Promoted,
     ApprovedDefault,
@@ -449,12 +450,6 @@ impl std::str::FromStr for KnowledgeItemStatus {
             "deprecated" => Ok(Self::Deprecated),
             other => Err(format!("unknown knowledge item status: {}", other)),
         }
-    }
-}
-
-impl Default for KnowledgeItemStatus {
-    fn default() -> Self {
-        Self::Working
     }
 }
 

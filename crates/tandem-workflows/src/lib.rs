@@ -334,7 +334,13 @@ fn load_source_into(
         registry
             .workflows
             .insert(workflow.workflow_id.clone(), workflow.clone());
-        registry.hooks.retain(|hook| hook.workflow_id != workflow.workflow_id || !matches!(hook.source.as_ref(), Some(src) if src.path.as_deref() == Some(&entry.to_string_lossy().to_string())));
+        registry.hooks.retain(|hook| {
+            hook.workflow_id != workflow.workflow_id
+                || !matches!(
+                    hook.source.as_ref(),
+                    Some(src) if src.path.as_deref() == Some(entry.to_string_lossy().as_ref())
+                )
+        });
         registry.hooks.extend(workflow.hooks.clone());
     }
     for entry in collect_yaml_files(&source.root.join("hooks"))? {

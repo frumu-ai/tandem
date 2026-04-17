@@ -725,7 +725,7 @@ impl Tool for WebSearchTool {
         if let Some(message) = outcome.unavailable_message {
             return Ok(ToolResult {
                 output: message,
-                metadata: metadata,
+                metadata,
             });
         }
 
@@ -963,7 +963,7 @@ async fn execute_tandem_search(
     let partial = body
         .get("partial")
         .and_then(Value::as_bool)
-        .unwrap_or_else(|| raw_results.len() > results.len());
+        .unwrap_or(raw_results.len() > results.len());
     Ok(SearchExecutionOutcome {
         results,
         partial,
@@ -1214,4 +1214,3 @@ async fn execute_brave_search(
         attempted_backends: vec!["brave".to_string()],
     })
 }
-

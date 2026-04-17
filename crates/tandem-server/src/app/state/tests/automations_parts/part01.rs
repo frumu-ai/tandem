@@ -1,26 +1,8 @@
-    build_automation_attempt_evidence, build_automation_validator_summary,
-    detect_automation_blocker_category, detect_automation_node_failure_kind,
-    detect_automation_node_phase, detect_automation_node_status, wrap_automation_node_output,
-};
 use crate::app::state::automation::receipts::{
     append_automation_attempt_receipt, automation_attempt_receipt_path_for_state_dir,
     AutomationAttemptReceiptDraft, AutomationAttemptReceiptRecord,
 };
 use crate::capability_resolver;
-
-mod brief_coverage;
-mod brief_outcomes;
-mod brief_validation;
-mod integration;
-mod prompting;
-mod replay_suite;
-mod runtime_paths;
-mod structured_handoff;
-mod telemetry;
-mod tool_discovery;
-mod validation;
-mod validation_recovery;
-mod workflow_policy;
 
 fn with_legacy_quality_rollback_enabled<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();

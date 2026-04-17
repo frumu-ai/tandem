@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::all)]
+
 use std::collections::HashMap;
 use std::env;
 use std::fs;

@@ -1492,10 +1492,7 @@ fn load_default_knowledge_override_from_env() -> anyhow::Result<
         return Ok(None);
     }
 
-    let total_bytes = docs
-        .iter()
-        .map(|doc| doc.content.as_bytes().len())
-        .sum::<usize>();
+    let total_bytes = docs.iter().map(|doc| doc.content.len()).sum::<usize>();
     let corpus_hash = default_knowledge_bundle::compute_corpus_hash(&docs);
     let bundle = default_knowledge_bundle::EmbeddedKnowledgeBundle {
         schema_version: 1,

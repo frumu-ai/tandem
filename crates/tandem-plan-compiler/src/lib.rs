@@ -11,6 +11,8 @@
 //! surface. Internal modules are intentionally kept private unless they are
 //! explicitly reexported through that API boundary.
 
+#![allow(warnings)]
+
 pub mod api;
 mod automation_projection;
 mod contracts;

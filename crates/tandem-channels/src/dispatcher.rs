@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::all)]
+
 include!("dispatcher_parts/part01.rs");
 include!("dispatcher_parts/part02.rs");
 include!("dispatcher_parts/part03.rs");

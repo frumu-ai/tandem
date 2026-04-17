@@ -182,11 +182,11 @@ fn normalize_openai_schema_node(node: &mut serde_json::Value) {
         return;
     };
 
-    if obj.get("type").and_then(|v| v.as_str()) == Some("object") || obj.contains_key("properties")
+    if (obj.get("type").and_then(|v| v.as_str()) == Some("object")
+        || obj.contains_key("properties"))
+        && (!obj.contains_key("properties") || !obj["properties"].is_object())
     {
-        if !obj.contains_key("properties") || !obj["properties"].is_object() {
-            obj.insert("properties".to_string(), json!({}));
-        }
+        obj.insert("properties".to_string(), json!({}));
     }
 
     if obj.get("type").and_then(|v| v.as_str()) == Some("array") && !obj.contains_key("items") {
@@ -983,6 +983,7 @@ fn add_openai_provider(
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_openai_responses_provider(
     config: &AppConfig,
     providers: &mut Vec<Arc<dyn Provider>>,

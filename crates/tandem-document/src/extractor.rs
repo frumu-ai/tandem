@@ -116,16 +116,11 @@ fn extract_ooxml_text(xml: &[u8], kind: OoxmlKind) -> Result<String> {
             Ok(Event::End(_)) => {
                 in_text = false;
             }
-            Ok(Event::Text(text)) => {
-                if in_text {
-                    let decoded = text.decode().map_err(|err| {
-                        DocumentError::ExtractionFailed(format!(
-                            "XML decode/unescape error: {}",
-                            err
-                        ))
-                    })?;
-                    out.push_str(&decoded);
-                }
+            Ok(Event::Text(text)) if in_text => {
+                let decoded = text.decode().map_err(|err| {
+                    DocumentError::ExtractionFailed(format!("XML decode/unescape error: {}", err))
+                })?;
+                out.push_str(&decoded);
             }
             Ok(Event::Eof) => break,
             Err(err) => {

@@ -57,19 +57,16 @@ pub struct AutomationPrincipal {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutionPrincipal {
     Request(RequestPrincipal),
     Automation(AutomationPrincipal),
-    ServiceAccount { service_account_id: String },
+    ServiceAccount {
+        service_account_id: String,
+    },
+    #[default]
     Unknown,
-}
-
-impl Default for ExecutionPrincipal {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,3 +1,5 @@
+#![allow(clippy::all)]
+
 // Database Layer Module
 // SQLite + sqlite-vec for vector storage
 

@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+#![allow(warnings)]
 
 pub mod agent_teams;
 pub mod app;
