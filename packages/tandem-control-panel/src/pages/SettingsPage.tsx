@@ -89,6 +89,27 @@ type SearchSettingsResponse = {
   } | null;
 };
 
+type InstallProfileResponse = {
+  control_panel_mode?: string;
+  control_panel_mode_source?: string;
+  control_panel_mode_reason?: string;
+  aca_integration?: boolean;
+  control_panel_config_path?: string;
+  control_panel_config_ready?: boolean;
+  control_panel_config_missing?: string[];
+  control_panel_compact_nav?: boolean;
+  hosted_managed?: boolean;
+  hosted_provider?: string;
+  hosted_deployment_id?: string;
+  hosted_deployment_slug?: string;
+  hosted_hostname?: string;
+  hosted_public_url?: string;
+  hosted_control_plane_url?: string;
+  hosted_release_version?: string;
+  hosted_release_channel?: string;
+  hosted_update_policy?: string;
+};
+
 type SchedulerSettingsResponse = {
   available?: boolean;
   local_engine?: boolean;
@@ -868,7 +889,10 @@ export function SettingsPage({
 
   const installProfileQuery = useQuery({
     queryKey: ["settings", "install", "profile"],
-    queryFn: () => api("/api/install/profile", { method: "GET" }).catch(() => null),
+    queryFn: () =>
+      (api("/api/install/profile", { method: "GET" }) as Promise<InstallProfileResponse>).catch(
+        () => null
+      ),
     refetchInterval: 30_000,
   });
   const installConfigQuery = useQuery({
@@ -2497,6 +2521,44 @@ export function SettingsPage({
                             </span>
                           </div>
                         </div>
+                      </div>
+                      <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                        <div className="font-medium">Hosted management</div>
+                        <div className="tcp-subtle mt-1 text-xs">
+                          Detect whether this panel is running on a Tandem-managed hosted deployment so hosted-only update and notification UX can stay gated.
+                        </div>
+                        <div className="mt-3 grid gap-2 text-xs">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Managed hosted server</span>
+                            <span>{installProfileQuery.data?.hosted_managed ? "yes" : "no"}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Provider</span>
+                            <span>{installProfileQuery.data?.hosted_provider || "—"}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Deployment slug</span>
+                            <span>{installProfileQuery.data?.hosted_deployment_slug || "—"}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Release</span>
+                            <span>
+                              {installProfileQuery.data?.hosted_release_version || "—"}
+                              {installProfileQuery.data?.hosted_release_channel
+                                ? ` · ${installProfileQuery.data.hosted_release_channel}`
+                                : ""}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="tcp-subtle">Update policy</span>
+                            <span>{installProfileQuery.data?.hosted_update_policy || "—"}</span>
+                          </div>
+                        </div>
+                        {installProfileQuery.data?.hosted_managed ? (
+                          <div className="mt-3 rounded-xl border border-lime-500/20 bg-lime-500/10 px-3 py-2 text-xs text-lime-200">
+                            Hosted-managed features can safely key off this signal instead of guessing from hostname or environment.
+                          </div>
+                        ) : null}
                       </div>
                       <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
                         <div className="font-medium">Config file</div>

@@ -166,6 +166,16 @@ export function createCapabilitiesHandler(deps) {
         ? installProfile.control_panel_config_missing
         : [],
       control_panel_compact_nav: !!installProfile?.control_panel_compact_nav,
+      hosted_managed: installProfile?.hosted_managed === true,
+      hosted_provider: installProfile?.hosted_provider || "",
+      hosted_deployment_id: installProfile?.hosted_deployment_id || "",
+      hosted_deployment_slug: installProfile?.hosted_deployment_slug || "",
+      hosted_hostname: installProfile?.hosted_hostname || "",
+      hosted_public_url: installProfile?.hosted_public_url || "",
+      hosted_control_plane_url: installProfile?.hosted_control_plane_url || "",
+      hosted_release_version: installProfile?.hosted_release_version || "",
+      hosted_release_channel: installProfile?.hosted_release_channel || "",
+      hosted_update_policy: installProfile?.hosted_update_policy || "",
       _internal: {
         capability_detect_duration_ms: durationMs,
       },

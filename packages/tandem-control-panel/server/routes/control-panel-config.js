@@ -64,6 +64,16 @@ export function createControlPanelConfigHandler(deps) {
       control_panel_config_ready: summary.ready,
       control_panel_config_missing: summary.missing,
       control_panel_compact_nav: !!summary.control_panel?.aca_compact_nav,
+      hosted_managed: summary.hosted?.managed === true,
+      hosted_provider: String(summary.hosted?.provider || "").trim(),
+      hosted_deployment_id: String(summary.hosted?.deployment_id || "").trim(),
+      hosted_deployment_slug: String(summary.hosted?.deployment_slug || "").trim(),
+      hosted_hostname: String(summary.hosted?.hostname || "").trim(),
+      hosted_public_url: String(summary.hosted?.public_url || "").trim(),
+      hosted_control_plane_url: String(summary.hosted?.control_plane_url || "").trim(),
+      hosted_release_version: String(summary.hosted?.release_version || "").trim(),
+      hosted_release_channel: String(summary.hosted?.release_channel || "").trim(),
+      hosted_update_policy: String(summary.hosted?.update_policy || "").trim(),
       config: summary,
     };
   }

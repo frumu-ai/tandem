@@ -21,6 +21,22 @@ const DEFAULT_CONTROL_PANEL_CONFIG = {
     update_policy: "notify",
     engine_command: "scripts/tandem-engine-serve.sh",
   },
+  hosted: {
+    managed: false,
+    provider: "",
+    deployment_id: "",
+    deployment_slug: "",
+    hostname: "",
+    public_url: "",
+    control_plane_url: "",
+    release_version: "",
+    release_channel: "",
+    engine_image: "",
+    aca_image: "",
+    control_panel_image: "",
+    proxy_image: "",
+    update_policy: "manual",
+  },
   task_source: {
     type: "kanban_board",
     owner: "",
@@ -179,6 +195,7 @@ function summarizeControlPanelConfig(config) {
   }
   return {
     ...normalized,
+    hosted: normalized.hosted || {},
     missing,
     ready: missing.length === 0,
   };

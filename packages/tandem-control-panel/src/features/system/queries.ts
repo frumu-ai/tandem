@@ -41,6 +41,16 @@ export interface Capabilities {
   control_panel_config_ready?: boolean;
   control_panel_config_missing?: string[];
   control_panel_compact_nav?: boolean;
+  hosted_managed?: boolean;
+  hosted_provider?: string;
+  hosted_deployment_id?: string;
+  hosted_deployment_slug?: string;
+  hosted_hostname?: string;
+  hosted_public_url?: string;
+  hosted_control_plane_url?: string;
+  hosted_release_version?: string;
+  hosted_release_channel?: string;
+  hosted_update_policy?: string;
 }
 
 export function useCapabilities(enabled = true) {
