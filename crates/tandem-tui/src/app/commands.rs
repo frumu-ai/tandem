@@ -14,7 +14,7 @@ pub(super) async fn try_execute_basic_command(
     cmd_name: &str,
     args: &[&str],
 ) -> Option<String> {
-    include!("commands_parts/all_match_arms.rs")
+    include!("commands_parts/all_match_arms.inc")
 }
 
 #[cfg(test)]

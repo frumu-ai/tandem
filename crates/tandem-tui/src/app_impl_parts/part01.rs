@@ -1713,7 +1713,7 @@ impl App {
     }
 
     pub async fn update(&mut self, action: Action) -> anyhow::Result<()> {
-        include!("../app_update_match_arms_parts/all.rs");
+        include!("../app_update_match_arms_parts/all.inc");
         Ok(())
     }
 }

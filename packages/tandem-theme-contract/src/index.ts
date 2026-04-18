@@ -16,7 +16,7 @@ export type ThemeDefinition = {
   cssVars: Record<string, string>;
 };
 
-export const DEFAULT_THEME_ID: ThemeId = "charcoal_fire";
+export const DEFAULT_THEME_ID: ThemeId = "electric_blue";
 
 export const STRUCTURAL_THEME_VARS: Record<string, string> = {
   "--radius": "0px",

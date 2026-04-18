@@ -51,6 +51,8 @@
                     previous, current
                 )
             }
+            _ => "Usage: /workspace show | use <path>".to_string(),
+        }),
         "engine" => Some(match args.first().copied() {
             Some("status") => {
                 if let Some(client) = &app.client {
