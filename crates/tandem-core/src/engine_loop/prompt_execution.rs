@@ -55,6 +55,15 @@ impl EngineLoop {
             .map(|tool| normalize_tool_name(&tool))
             .filter(|tool| !tool.trim().is_empty())
             .collect::<HashSet<_>>();
+        // Propagate per-request tool allowlist to session-level enforcement so
+        // that execution-time checks (and mcp_list scoping) also respect it.
+        if !request_tool_allowlist.is_empty() {
+            self.set_session_allowed_tools(
+                &session_id,
+                request_tool_allowlist.iter().cloned().collect(),
+            )
+            .await;
+        }
         let text = req
             .parts
             .iter()

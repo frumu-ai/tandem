@@ -2380,7 +2380,7 @@ class Routines {
 class WorkflowPlans {
   constructor(private req: TandemClient["_request"]) {}
 
-  private readonly chatTimeoutMs = 90_000;
+  private readonly chatTimeoutMs = 200_000;
 
   async preview(options: {
     prompt: string;
@@ -2529,7 +2529,7 @@ class WorkflowPlans {
 class WorkflowPlannerSessions {
   constructor(private req: TandemClient["_request"]) {}
 
-  private readonly chatTimeoutMs = 90_000;
+  private readonly chatTimeoutMs = 200_000;
 
   async list(options?: {
     projectSlug?: string;

@@ -386,6 +386,58 @@ fn filter_mcp_inventory_snapshot_to_servers(snapshot: Value, allowed_servers: &[
     snapshot
 }
 
+/// Filter MCP inventory by namespace segments (e.g. `["tandem_mcp"]`) derived
+/// from `session_allowed_tools` patterns like `mcp.tandem_mcp.*`.  Server names
+/// are matched by applying `mcp_namespace_segment` so that `"tandem-mcp"` matches
+/// the segment `"tandem_mcp"`.
+fn filter_mcp_snapshot_by_namespace_segments(
+    snapshot: Value,
+    allowed_segments: &[String],
+) -> Value {
+    let mut snapshot = snapshot;
+    let segments_set: std::collections::HashSet<&str> =
+        allowed_segments.iter().map(|s| s.as_str()).collect();
+    let keep_server = |name: &str| segments_set.contains(mcp_namespace_segment(name).as_str());
+    let allowed_tool_prefixes: Vec<String> = allowed_segments
+        .iter()
+        .map(|seg| format!("mcp.{}.", seg))
+        .collect();
+
+    if let Some(root) = snapshot.as_object_mut() {
+        if let Some(Value::Array(rows)) = root.get_mut("servers") {
+            rows.retain(|row| {
+                row.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(keep_server)
+            });
+        }
+        if let Some(Value::Array(rows)) = root.get_mut("connected_server_names") {
+            rows.retain(|row| row.as_str().is_some_and(keep_server));
+        }
+        if let Some(Value::Array(rows)) = root.get_mut("enabled_server_names") {
+            rows.retain(|row| row.as_str().is_some_and(keep_server));
+        }
+        if let Some(Value::Array(rows)) = root.get_mut("remote_tools") {
+            rows.retain(|row| {
+                row.get("server_name")
+                    .and_then(Value::as_str)
+                    .is_some_and(keep_server)
+            });
+        }
+        if let Some(Value::Array(rows)) = root.get_mut("registered_tools") {
+            rows.retain(|row| {
+                row.as_str().is_some_and(|tool_name| {
+                    tool_name == "mcp_list"
+                        || allowed_tool_prefixes
+                            .iter()
+                            .any(|prefix| tool_name.starts_with(prefix))
+                })
+            });
+        }
+    }
+    snapshot
+}
+
 async fn scoped_mcp_servers_for_session(state: &AppState, session_id: &str) -> Vec<String> {
     state
         .automation_v2_session_mcp_servers
@@ -423,13 +475,34 @@ impl Tool for McpListTool {
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
         let mut snapshot = mcp_inventory_snapshot(&self.state).await;
-        let allowed_servers =
-            if let Some(session_id) = args.get("__session_id").and_then(Value::as_str) {
-                scoped_mcp_servers_for_session(&self.state, session_id).await
-            } else {
-                Vec::new()
-            };
-        if !allowed_servers.is_empty() {
+        let session_id = args.get("__session_id").and_then(Value::as_str);
+        let mut allowed_servers = if let Some(sid) = session_id {
+            scoped_mcp_servers_for_session(&self.state, sid).await
+        } else {
+            Vec::new()
+        };
+        // If no automation-level MCP scoping, check session_allowed_tools
+        // (set by per-request tool_allowlist from channel dispatchers).
+        if allowed_servers.is_empty() {
+            if let Some(sid) = session_id {
+                if let Some(rt) = self.state.runtime.get() {
+                    let session_tools = rt.engine_loop.get_session_allowed_tools(sid).await;
+                    let allowed_segments: Vec<String> = session_tools
+                        .iter()
+                        .filter_map(|pattern| {
+                            pattern
+                                .strip_prefix("mcp.")
+                                .and_then(|rest| rest.strip_suffix(".*"))
+                                .map(|s| s.to_string())
+                        })
+                        .collect();
+                    if !allowed_segments.is_empty() {
+                        snapshot =
+                            filter_mcp_snapshot_by_namespace_segments(snapshot, &allowed_segments);
+                    }
+                }
+            }
+        } else {
             snapshot = filter_mcp_inventory_snapshot_to_servers(snapshot, &allowed_servers);
         }
         let output =

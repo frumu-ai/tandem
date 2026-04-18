@@ -150,6 +150,15 @@ impl EngineLoop {
         self.session_allowed_tools.write().await.remove(session_id);
     }
 
+    pub async fn get_session_allowed_tools(&self, session_id: &str) -> Vec<String> {
+        self.session_allowed_tools
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub async fn set_session_auto_approve_permissions(&self, session_id: &str, enabled: bool) {
         if enabled {
             self.session_auto_approve_permissions
