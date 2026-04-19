@@ -4,7 +4,7 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.4.32 (Released 2026-04-19)
 
-This release makes Codex account sign-in work on Tandem-hosted provisioned servers, so hosted workflows can connect to a real LLM instead of falling back to the generic default provider.
+This release makes Codex account sign-in work on Tandem-hosted provisioned servers, so hosted workflows can connect to a real LLM instead of falling back to the generic default provider. It also adds a managed file explorer for hosted uploads, artifacts, and exports.
 
 ### Hosted Codex auth
 
@@ -12,6 +12,13 @@ This release makes Codex account sign-in work on Tandem-hosted provisioned serve
 - **Public callback for hosted servers**: Codex OAuth redirect handling now uses the hosted public callback route when Tandem is running in hosted-managed mode, so the authorization flow can complete on a remote VM.
 - **Hosted settings gate**: The control panel settings page now enables Codex account connect/reconnect actions for hosted-managed servers and explains that hosted servers use the hosted OAuth path.
 - **Hosted provider fallback fix**: Provisioned servers no longer get stuck on the generic fallback provider simply because the Codex connect button was disabled in hosted mode.
+
+### Hosted file explorer
+
+- **Managed three-pane explorer**: The Files route now opens a folder-aware explorer for uploads, artifacts, and exports instead of a flat file list.
+- **Preview and download actions**: Text, markdown, JSON, YAML, images, and PDFs can preview inline, and everything else falls back to metadata plus download.
+- **Chat and run handoff links**: Chat attachments and automation artifact panels can jump directly into the correct folder or file in Files.
+- **Tree-aware file API**: `/api/files/list` now returns directory metadata plus `parent` links so the explorer can keep nested folder state stable.
 
 ## v0.4.31 (Released 2026-04-17)
 

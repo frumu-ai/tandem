@@ -10,15 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Hosted-safe Codex OAuth**: Tandem-hosted control panels can now connect Codex on provisioned servers through the hosted OAuth flow instead of being blocked behind the local-engine-only browser path.
+- **Hosted control-panel file explorer**: The Files route now opens a managed three-pane explorer for uploads, artifacts, and exports, with folder navigation, inline previews, downloads, and deep links from chat and automation artifacts.
 
 ### Changed
 
 - **Hosted provider UX**: The Codex account connect/reconnect controls in Settings now stay enabled on Tandem-hosted managed servers, with copy updated to explain that hosted mode uses the hosted OAuth path.
+- **Directory-aware file APIs**: `/api/files/list`, `/api/files/upload`, `/api/files/read`, and `/api/files/download` now work with visible managed paths and tree-aware metadata instead of a flat file list.
 
 ### Fixed
 
 - **Codex callback routing for hosted servers**: Codex OAuth now uses the hosted public callback route when Tandem is running in hosted-managed mode, so provisioned servers can complete the authorization flow without relying on a localhost callback.
 - **Hosted fallback behavior**: Hosted control panels no longer get stuck on generic provider fallback just because Codex account sign-in was gated to local-engine-only mode.
+- **Managed file path handling**: File explorer handoffs and download/read routes now normalize visible bucket paths, reject traversal, and degrade gracefully for non-previewable files.
 
 ## [0.4.31] - Released 2026-04-17
 
