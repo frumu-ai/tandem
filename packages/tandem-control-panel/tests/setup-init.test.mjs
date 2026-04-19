@@ -18,6 +18,17 @@ test("resolveSetupPaths uses canonical linux roots", () => {
   assert.equal(paths.envFile, "/home/tester/.config/tandem/control-panel.env");
 });
 
+test("resolveSetupPaths uses AppData roots on windows", () => {
+  const paths = resolveSetupPaths({
+    platform: "win32",
+    home: "/Users/tester",
+    env: {},
+  });
+  assert.equal(paths.configDir, "/Users/tester/AppData/Roaming/tandem");
+  assert.equal(paths.dataDir, "/Users/tester/AppData/Local/tandem");
+  assert.equal(paths.envFile, "/Users/tester/AppData/Roaming/tandem/control-panel.env");
+});
+
 test("resolveSetupPaths uses Application Support on macOS", () => {
   const paths = resolveSetupPaths({
     platform: "darwin",

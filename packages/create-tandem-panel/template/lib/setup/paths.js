@@ -5,12 +5,23 @@ function defaultConfigBase(platform, home, env) {
   if (platform === "darwin") {
     return env.XDG_CONFIG_HOME || join(home, "Library", "Application Support");
   }
+  if (platform === "win32") {
+    return env.XDG_CONFIG_HOME || env.APPDATA || join(home, "AppData", "Roaming");
+  }
   return env.XDG_CONFIG_HOME || join(home, ".config");
 }
 
 function defaultDataBase(platform, home, env) {
   if (platform === "darwin") {
     return env.XDG_DATA_HOME || join(home, "Library", "Application Support");
+  }
+  if (platform === "win32") {
+    return (
+      env.XDG_DATA_HOME ||
+      env.LOCALAPPDATA ||
+      env.APPDATA ||
+      join(home, "AppData", "Local")
+    );
   }
   return env.XDG_DATA_HOME || join(home, ".local", "share");
 }
