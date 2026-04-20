@@ -1,6 +1,6 @@
 [package]
 name = "tandem-tools"
-version = "0.4.35"
+version = "0.4.36"
 description = "Tooling and integrations for the Tandem engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -22,16 +22,17 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tracing = "0.1"
-tandem-types = { path = "../tandem-types", version = "0.4.35" }
+tandem-types = { path = "../tandem-types", version = "0.4.36" }
 html2md = "0.2"
-tandem-skills = { path = "../tandem-skills", version = "0.4.35" }
-tandem-memory = { path = "../tandem-memory", version = "0.4.35" }
-tandem-document = { path = "../tandem-document", version = "0.4.35" }
-tandem-agent-teams = { path = "../tandem-agent-teams", version = "0.4.35" }
+tandem-skills = { path = "../tandem-skills", version = "0.4.36" }
+tandem-memory = { path = "../tandem-memory", version = "0.4.36" }
+tandem-document = { path = "../tandem-document", version = "0.4.36" }
+tandem-agent-teams = { path = "../tandem-agent-teams", version = "0.4.36" }
 dirs = "5.0"
 
 [dev-dependencies]
 tempfile = "3"
+
 
 
 

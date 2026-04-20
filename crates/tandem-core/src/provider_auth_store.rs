@@ -140,6 +140,12 @@ struct CodexCliAuthFile {
     #[serde(alias = "authMode")]
     auth_mode: Option<String>,
     tokens: Option<CodexCliAuthTokens>,
+    #[serde(alias = "accessToken")]
+    access_token: Option<String>,
+    #[serde(alias = "refreshToken")]
+    refresh_token: Option<String>,
+    #[serde(alias = "accountId")]
+    account_id: Option<String>,
     #[serde(alias = "lastRefresh")]
     last_refresh: Option<u64>,
 }
@@ -473,22 +479,26 @@ fn load_codex_cli_oauth_credential_at(path: &Path) -> Option<OAuthProviderCreden
     if !auth_mode.is_empty() && auth_mode != "chatgpt" && auth_mode != "oauth" {
         return None;
     }
-    let tokens = auth.tokens?;
+    let tokens = auth.tokens.unwrap_or_default();
     let access_token = tokens
         .access_token
         .as_deref()
+        .or(auth.access_token.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)?;
     let refresh_token = tokens
         .refresh_token
         .as_deref()
+        .or(auth.refresh_token.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)?;
 
-    let (account_id, email, display_name, expires_at_ms) =
-        resolve_codex_cli_identity(&access_token, tokens.account_id.as_deref());
+    let (account_id, email, display_name, expires_at_ms) = resolve_codex_cli_identity(
+        &access_token,
+        tokens.account_id.as_deref().or(auth.account_id.as_deref()),
+    );
 
     Some(OAuthProviderCredential {
         provider_id: "openai-codex".to_string(),
@@ -830,5 +840,39 @@ mod tests {
             credential.display_name.as_deref(),
             Some("hosted@example.com")
         );
+    }
+
+    #[test]
+    fn load_codex_cli_oauth_credential_reads_flat_auth_file() {
+        let dir = tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        let jwt = make_jwt(serde_json::json!({
+            "exp": 2_000_000_000,
+            "email": "flat@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_user_id": "acct_flat"
+            }
+        }));
+        std::fs::write(
+            &auth_path,
+            serde_json::json!({
+                "auth_mode": "chatgpt",
+                "access_token": jwt,
+                "refresh_token": "refresh-token-flat",
+                "account_id": "acct_flat",
+                "last_refresh": 789
+            })
+            .to_string(),
+        )
+        .expect("write auth");
+
+        let credential = load_codex_cli_oauth_credential_at(&auth_path).expect("credential");
+        assert_eq!(credential.provider_id, "openai-codex");
+        assert_eq!(credential.managed_by, "codex-cli");
+        assert_eq!(credential.refresh_token, "refresh-token-flat");
+        assert_eq!(credential.account_id.as_deref(), Some("acct_flat"));
+        assert_eq!(credential.email.as_deref(), Some("flat@example.com"));
+        assert_eq!(credential.display_name.as_deref(), Some("flat@example.com"));
+        assert!(credential.expires_at_ms > 0);
     }
 }

@@ -93,6 +93,7 @@ function normalizeProjects(raw: any) {
   return Array.from(bySignature.values())
     .map((row: any) => {
       const repo = row?.repo || {};
+      const taskSource = row?.task_source || row?.taskSource || {};
       return {
         slug: String(row?.slug || "").trim(),
         name: String(row?.name || row?.display_name || row?.displayName || row?.slug || "").trim(),

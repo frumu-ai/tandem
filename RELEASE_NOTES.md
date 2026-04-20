@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.4.35 (Released 2026-04-20)
+## v0.4.36 (Released 2026-04-20)
 
 This release smooths the first-run flow for Tandem-hosted managed servers, makes hosted-only settings visible without relying on a localhost engine URL, hardens hosted Codex sign-in and recovery, and improves OAuth-backed MCP setup for provisioned installs.
 

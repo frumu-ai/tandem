@@ -1128,7 +1128,12 @@ async fn build_runtime(
     let plugins = PluginRegistry::new(".").await?;
     let agents = AgentRegistry::new(".").await?;
     let tools = ToolRegistry::new();
-    tools.index_all().await;
+    {
+        let tools_for_index = tools.clone();
+        tokio::spawn(async move {
+            tools_for_index.index_all().await;
+        });
+    }
     if startup_state.is_none() {
         browser.register_tools(&tools, None).await?;
     }
