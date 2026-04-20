@@ -29,6 +29,26 @@ function normalizeStatusKey(value: any) {
     .toLowerCase();
 }
 
+function providerAuthSummary(providerStatus: AppPageProps["providerStatus"]) {
+  if (!providerStatus.ready) return "";
+  if (providerStatus.defaultProvider !== "openai-codex") {
+    if (providerStatus.defaultProviderAuthKind === "oauth") return "OAuth session active";
+    if (providerStatus.defaultProviderSource === "env") return "Env-managed credentials";
+    if (providerStatus.defaultProviderSource === "persisted") return "Stored credentials";
+    return "";
+  }
+  if (providerStatus.defaultProviderManagedBy === "codex-upload") {
+    return "Imported auth.json on hosted server";
+  }
+  if (providerStatus.defaultProviderManagedBy === "codex-cli") {
+    return "Mirrored from local Codex CLI";
+  }
+  if (providerStatus.defaultProviderAuthKind === "oauth") {
+    return "Codex account session active";
+  }
+  return "";
+}
+
 export function DashboardPage(props: AppPageProps) {
   const { api, client, navigate, providerStatus } = props;
   const [selectedWorkflowContextRunId, setSelectedWorkflowContextRunId] = useState("");
@@ -123,6 +143,7 @@ export function DashboardPage(props: AppPageProps) {
         .toLowerCase()
     )
   );
+  const providerAuthDetail = providerAuthSummary(providerStatus);
 
   const tokenUsageBuckets = useMemo(() => {
     type Bucket = { label: string; runs: number; tokens: number; cost: number };
@@ -253,6 +274,7 @@ export function DashboardPage(props: AppPageProps) {
               <Badge tone={providerStatus.ready ? "ok" : "warn"}>
                 {providerStatus.ready ? providerStatus.defaultProvider : "Provider setup required"}
               </Badge>
+              {providerAuthDetail ? <Badge tone="info">{providerAuthDetail}</Badge> : null}
               {swarmRunning ? (
                 <StatusPulse tone="live" text={`Swarm ${swarmStatus}`} />
               ) : (

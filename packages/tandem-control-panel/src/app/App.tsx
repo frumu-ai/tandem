@@ -82,6 +82,9 @@ function useProviderStatus(client: TandemClient | null, enabled: boolean) {
           connected: [],
           error: "",
           needsOnboarding: false,
+          defaultProviderAuthKind: "",
+          defaultProviderSource: "",
+          defaultProviderManagedBy: "",
         };
       }
       try {
@@ -107,6 +110,9 @@ function useProviderStatus(client: TandemClient | null, enabled: boolean) {
           connected: [],
           error: error instanceof Error ? error.message : String(error),
           needsOnboarding: false,
+          defaultProviderAuthKind: "",
+          defaultProviderSource: "",
+          defaultProviderManagedBy: "",
         };
       }
     },
@@ -484,6 +490,9 @@ function AppBody() {
       connected: providerQuery.data?.connected || [],
       error: providerQuery.data?.error || "",
       needsOnboarding: !!providerQuery.data?.needsOnboarding,
+      defaultProviderAuthKind: providerQuery.data?.defaultProviderAuthKind || "",
+      defaultProviderSource: providerQuery.data?.defaultProviderSource || "",
+      defaultProviderManagedBy: providerQuery.data?.defaultProviderManagedBy || "",
     },
     identity,
     refreshProviderStatus,

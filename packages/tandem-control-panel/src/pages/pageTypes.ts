@@ -11,6 +11,9 @@ export type ProviderStatus = {
   connected: string[];
   error: string;
   needsOnboarding: boolean;
+  defaultProviderAuthKind: string;
+  defaultProviderSource: string;
+  defaultProviderManagedBy: string;
 };
 
 export type IdentityInfo = {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AppPageProps } from "./pageTypes";
 import { PageCard } from "./ui";
@@ -6,9 +6,16 @@ import { PageCard } from "./ui";
 type McpServer = {
   name: string;
   transport: string;
+  authKind: string;
   connected: boolean;
   enabled: boolean;
   lastError: string;
+  lastAuthChallenge?: {
+    message?: string;
+    authorization_url?: string;
+    authorizationUrl?: string;
+  } | null;
+  authorizationUrl?: string;
   headers: Record<string, string>;
   toolCache: any[];
 };
@@ -24,6 +31,7 @@ type CatalogServer = {
   toolCount: number;
   requiresAuth: boolean;
   requiresSetup: boolean;
+  authKind: string;
 };
 
 type Catalog = {
@@ -71,6 +79,23 @@ function isComposioTransport(transport: string) {
   return host.endsWith("composio.dev");
 }
 
+function isNotionMcpTransport(transport: string) {
+  const url = parseUrl(transport);
+  if (!url) return false;
+  const host = String(url.hostname || "").toLowerCase();
+  return host === "mcp.notion.com" || host.endsWith(".notion.com");
+}
+
+function getOauthGuidance(name: string, transport: string) {
+  const normalizedName = String(name || "")
+    .trim()
+    .toLowerCase();
+  if (normalizedName === "notion" || isNotionMcpTransport(transport)) {
+    return "Notion uses browser OAuth. Add the server, finish Notion sign-in in your browser, then return here and click Mark sign-in complete.";
+  }
+  return "OAuth-backed MCP servers start a browser sign-in on connect. Finish the authorization page, then return to Tandem to complete setup.";
+}
+
 const CONTROL_PANEL_READINESS_WORKFLOW_ID = "control-panel-readiness";
 
 function normalizeServerRow(input: any, fallbackName = ""): McpServer | null {
@@ -78,17 +103,55 @@ function normalizeServerRow(input: any, fallbackName = ""): McpServer | null {
   const row = input;
   const name = String(row.name || fallbackName || "").trim();
   if (!name) return null;
+  const lastAuthChallenge = row.last_auth_challenge || row.lastAuthChallenge || null;
   return {
     name,
     transport: String(row.transport || "").trim(),
+    authKind: String(row.auth_kind || row.authKind || "")
+      .trim()
+      .toLowerCase(),
     connected: !!row.connected,
     enabled: row.enabled !== false,
     lastError: String(row.last_error || row.lastError || "").trim(),
+    lastAuthChallenge:
+      lastAuthChallenge && typeof lastAuthChallenge === "object" ? lastAuthChallenge : null,
+    authorizationUrl: String(row.authorization_url || row.authorizationUrl || "").trim(),
     headers: row.headers && typeof row.headers === "object" ? row.headers : {},
     toolCache: Array.isArray(row.tool_cache || row.toolCache)
       ? row.tool_cache || row.toolCache
       : [],
   };
+}
+
+function inferMcpCatalogAuthKind(catalog: Catalog, name: string, transport: string) {
+  const normalizedName = String(name || "")
+    .trim()
+    .toLowerCase();
+  const normalizedTransport = String(transport || "")
+    .trim()
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  const match = catalog.servers.find((row) => {
+    const rowTransport = String(row.transportUrl || "")
+      .trim()
+      .replace(/\/+$/, "")
+      .toLowerCase();
+    const rowSlug = String(row.slug || "")
+      .trim()
+      .toLowerCase();
+    const rowConfigName = String(row.serverConfigName || "")
+      .trim()
+      .toLowerCase();
+    return (
+      (normalizedTransport && rowTransport && rowTransport === normalizedTransport) ||
+      (normalizedTransport && rowTransport && rowTransport.includes(normalizedTransport)) ||
+      (normalizedTransport && rowTransport && normalizedTransport.includes(rowTransport)) ||
+      (!!normalizedName && (rowSlug === normalizedName || rowConfigName === normalizedName))
+    );
+  });
+  return String(match?.authKind || "")
+    .trim()
+    .toLowerCase();
 }
 
 function normalizeServers(raw: any): McpServer[] {
@@ -156,6 +219,9 @@ function normalizeCatalog(raw: any): Catalog {
           toolCount: Number.isFinite(Number(row.tool_count)) ? Number(row.tool_count) : 0,
           requiresAuth: row.requires_auth !== false,
           requiresSetup: !!row.requires_setup,
+          authKind: String(row.auth_kind || row.authKind || "")
+            .trim()
+            .toLowerCase(),
         };
       })
       .filter((row): row is CatalogServer => !!row && !!row.slug && !!row.transportUrl)
@@ -164,6 +230,9 @@ function normalizeCatalog(raw: any): Catalog {
 }
 
 function authPreview(authMode: string, token: string, customHeader: string, transport: string) {
+  if (authMode === "oauth") {
+    return getOauthGuidance("", transport);
+  }
   const hasToken = !!String(token || "").trim();
   if (!hasToken || authMode === "none") return "No auth header will be sent.";
 
@@ -190,6 +259,7 @@ function buildHeaders({
   transport: string;
 }) {
   const rawToken = String(token || "").trim();
+  if (authMode === "oauth") return {};
   if (!rawToken || authMode === "none") return {};
 
   if (authMode === "custom") {
@@ -280,6 +350,73 @@ export function McpPage({ client, api, toast }: AppPageProps) {
       })
       .slice(0, 50);
   }, [catalog.servers, catalogSearch]);
+  useEffect(() => {
+    const pendingServers = servers.filter((server) => {
+      const authKind = String(server.authKind || "")
+        .trim()
+        .toLowerCase();
+      const challengeUrl = String(
+        server.lastAuthChallenge?.authorization_url ||
+          server.lastAuthChallenge?.authorizationUrl ||
+          server.authorizationUrl ||
+          ""
+      ).trim();
+      return authKind === "oauth" && (!!server.lastAuthChallenge || !!challengeUrl);
+    });
+    if (!pendingServers.length) return;
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const poll = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const results = await Promise.all(
+          pendingServers.map(async (server) => {
+            try {
+              const payload = await api(
+                `/api/engine/mcp/${encodeURIComponent(server.name)}/auth/authenticate`,
+                {
+                  method: "POST",
+                }
+              );
+              return { payload, error: null as Error | null };
+            } catch (error) {
+              return {
+                payload: null,
+                error: error instanceof Error ? error : new Error(String(error)),
+              };
+            }
+          })
+        );
+        if (cancelled) return;
+        const completed = results.some(({ payload, error }) => {
+          if (error) return false;
+          return !(
+            payload?.pendingAuth === true ||
+            payload?.lastAuthChallenge ||
+            payload?.authorizationUrl
+          );
+        });
+        if (completed) {
+          await queryClient.invalidateQueries({ queryKey: ["mcp"] });
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [api, queryClient, servers]);
 
   const invalidateMcp = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ["mcp"] });
@@ -299,15 +436,39 @@ export function McpPage({ client, api, toast }: AppPageProps) {
         const payload = value;
         await (client.mcp as any).add(payload);
         if (value.connectAfterAdd) {
-          const result = await client.mcp.connect(payload.name);
-          if (!result?.ok) {
+          const result: any = await client.mcp.connect(payload.name);
+          const pendingAuth =
+            result?.pendingAuth === true ||
+            !!result?.lastAuthChallenge ||
+            !!result?.authorizationUrl;
+          if (
+            !result?.ok &&
+            !pendingAuth &&
+            String(payload?.auth_kind || "")
+              .trim()
+              .toLowerCase() !== "oauth"
+          ) {
             const snapshot = normalizeServers(await client.mcp.list().catch(() => ({})));
             const failed = snapshot.find((row) => row.name === payload.name);
             const detail = failed?.lastError ? ` ${failed.lastError}` : "";
             throw new Error(`Added \"${payload.name}\" but connect failed.${detail}`);
           }
+          return {
+            name: payload.name,
+            connectAfterAdd: true,
+            connectResult: result,
+            authKind: String(payload?.auth_kind || "")
+              .trim()
+              .toLowerCase(),
+          };
         }
-        return;
+        return {
+          name: payload.name,
+          connectAfterAdd: false,
+          authKind: String(payload?.auth_kind || "")
+            .trim()
+            .toLowerCase(),
+        };
       }
 
       if (!server) throw new Error("No server selected.");
@@ -315,6 +476,10 @@ export function McpPage({ client, api, toast }: AppPageProps) {
       if (action === "connect") return client.mcp.connect(server.name);
       if (action === "disconnect") return client.mcp.disconnect(server.name);
       if (action === "refresh") return client.mcp.refresh(server.name);
+      if (action === "authenticate")
+        return api(`/api/engine/mcp/${encodeURIComponent(server.name)}/auth/authenticate`, {
+          method: "POST",
+        });
       if (action === "toggle-enabled")
         return (client.mcp as any).setEnabled(server.name, !server.enabled);
       if (action === "delete")
@@ -322,22 +487,124 @@ export function McpPage({ client, api, toast }: AppPageProps) {
 
       throw new Error(`Unknown action: ${action}`);
     },
-    onSuccess: async (_, vars) => {
+    onSuccess: async (result, vars) => {
       await invalidateMcp();
-      if (vars.action === "connect") toast("ok", `Connected ${vars.server?.name}.`);
+      const pendingAuth =
+        !!(result as any)?.pendingAuth ||
+        !!(result as any)?.lastAuthChallenge ||
+        !!(result as any)?.authorizationUrl;
+      const actionOk = (result as any)?.ok !== false;
+      const serverAuthKind = String(vars.server?.authKind || "")
+        .trim()
+        .toLowerCase();
+      if (vars.action === "connect") {
+        if (pendingAuth || (!actionOk && serverAuthKind === "oauth")) {
+          const challenge = (result as any)?.lastAuthChallenge || {};
+          const message = String(challenge?.message || "").trim();
+          toast(
+            "warn",
+            message
+              ? `OAuth authorization required for ${vars.server?.name}: ${message}`
+              : `OAuth authorization required for ${vars.server?.name}.`
+          );
+        } else if (!actionOk) {
+          const errorMessage = String(
+            (result as any)?.error?.message || (result as any)?.error || ""
+          ).trim();
+          toast(
+            "err",
+            errorMessage
+              ? `Failed to connect ${vars.server?.name}: ${errorMessage}`
+              : `Failed to connect ${vars.server?.name}.`
+          );
+        } else {
+          toast("ok", `Connected ${vars.server?.name}.`);
+        }
+      }
       if (vars.action === "disconnect") toast("ok", `Disconnected ${vars.server?.name}.`);
-      if (vars.action === "refresh") toast("ok", `Refreshed ${vars.server?.name}.`);
+      if (vars.action === "refresh") {
+        if (pendingAuth || (!actionOk && serverAuthKind === "oauth")) {
+          const challenge = (result as any)?.lastAuthChallenge || {};
+          const message = String(challenge?.message || "").trim();
+          toast(
+            "warn",
+            message
+              ? `OAuth authorization required for ${vars.server?.name}: ${message}`
+              : `OAuth authorization required for ${vars.server?.name}.`
+          );
+        } else if (!actionOk) {
+          const errorMessage = String(
+            (result as any)?.error?.message || (result as any)?.error || ""
+          ).trim();
+          toast(
+            "err",
+            errorMessage
+              ? `Failed to refresh ${vars.server?.name}: ${errorMessage}`
+              : `Failed to refresh ${vars.server?.name}.`
+          );
+        } else {
+          toast("ok", `Refreshed ${vars.server?.name}.`);
+        }
+      }
+      if (vars.action === "authenticate") {
+        const actionOk = (result as any)?.ok !== false;
+        const errorMessage = String(
+          (result as any)?.error?.message || (result as any)?.error || ""
+        ).trim();
+        if (!actionOk && !pendingAuth) {
+          toast(
+            "err",
+            errorMessage
+              ? `OAuth authorization check failed for ${vars.server?.name}: ${errorMessage}`
+              : `OAuth authorization check failed for ${vars.server?.name}.`
+          );
+        } else if (pendingAuth) {
+          const challenge = (result as any)?.lastAuthChallenge || {};
+          const message = String(challenge?.message || "").trim();
+          toast(
+            "warn",
+            message
+              ? `OAuth authorization still pending for ${vars.server?.name}: ${message}`
+              : `OAuth authorization still pending for ${vars.server?.name}.`
+          );
+        } else {
+          toast("ok", `Marked ${vars.server?.name} as signed in.`);
+        }
+      }
       if (vars.action === "toggle-enabled") {
         toast("ok", `${vars.server?.enabled ? "Disabled" : "Enabled"} ${vars.server?.name}.`);
       }
       if (vars.action === "delete") toast("ok", `Deleted ${vars.server?.name}.`);
       if (vars.action === "add") {
-        toast(
-          "ok",
-          vars.value.connectAfterAdd
-            ? `MCP \"${vars.value.name}\" added and connected.`
-            : `MCP \"${vars.value.name}\" added.`
-        );
+        const serverName = String((result as any)?.name || vars.value?.name || "").trim();
+        const connectAfterAdd = (result as any)?.connectAfterAdd ?? vars.value?.connectAfterAdd;
+        const connectResult = (result as any)?.connectResult;
+        const authKind = String((result as any)?.authKind || vars.value?.auth_kind || "")
+          .trim()
+          .toLowerCase();
+        const addPendingAuth =
+          !!connectResult?.pendingAuth ||
+          !!connectResult?.lastAuthChallenge ||
+          !!connectResult?.authorizationUrl;
+        if (connectAfterAdd && addPendingAuth) {
+          const challenge = connectResult?.lastAuthChallenge || {};
+          const message = String(challenge?.message || "").trim();
+          toast(
+            "warn",
+            message
+              ? `MCP "${serverName}" added and OAuth authorization is still required: ${message}`
+              : `MCP "${serverName}" added and OAuth authorization is still required.`
+          );
+        } else if (connectAfterAdd && authKind === "oauth" && connectResult?.ok !== true) {
+          toast(
+            "warn",
+            `MCP "${serverName}" was added as OAuth-backed. If it still needs authorization, open the auth link from the server row and refresh after signing in.`
+          );
+        } else if (connectAfterAdd) {
+          toast("ok", `MCP "${serverName}" added and connected.`);
+        } else {
+          toast("ok", `MCP "${serverName}" added.`);
+        }
       }
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
@@ -384,12 +651,26 @@ export function McpPage({ client, api, toast }: AppPageProps) {
     const keys = Object.keys(headers);
     const authKey = keys.find((key) => String(key).toLowerCase() === "authorization");
     const apiKey = keys.find((key) => String(key).toLowerCase() === "x-api-key");
+    const challengeUrl = String(
+      server.lastAuthChallenge?.authorization_url ||
+        server.lastAuthChallenge?.authorizationUrl ||
+        server.authorizationUrl ||
+        ""
+    ).trim();
+    const serverAuthKind = String(server.authKind || "")
+      .trim()
+      .toLowerCase();
+    const inferredAuthKind =
+      serverAuthKind || inferMcpCatalogAuthKind(catalog, server.name, server.transport);
+    const nextAuthMode = challengeUrl || inferredAuthKind === "oauth" ? "oauth" : "none";
 
-    setAuthMode("none");
+    setAuthMode(nextAuthMode);
     setToken("");
     setCustomHeader("");
 
-    if (apiKey) {
+    if (nextAuthMode === "oauth") {
+      setToken("");
+    } else if (apiKey) {
       setAuthMode("x-api-key");
       setToken(String(headers[apiKey] || "").trim());
     } else if (authKey) {
@@ -427,6 +708,7 @@ export function McpPage({ client, api, toast }: AppPageProps) {
         transport: transportValue,
         enabled: true,
         connectAfterAdd,
+        auth_kind: authMode === "oauth" ? "oauth" : "",
       };
       if (Object.keys(headers).length) payload.headers = headers;
 
@@ -464,6 +746,11 @@ export function McpPage({ client, api, toast }: AppPageProps) {
                   const inferred = inferNameFromTransport(value);
                   if (inferred) setName(inferred);
                 }
+                const inferredAuthKind = inferMcpCatalogAuthKind(catalog, name, value);
+                if (inferredAuthKind === "oauth" && (authMode === "none" || authMode === "auto")) {
+                  setAuthMode("oauth");
+                  setToken("");
+                }
               }}
               placeholder="https://example.com/mcp"
             />
@@ -473,10 +760,15 @@ export function McpPage({ client, api, toast }: AppPageProps) {
             <select
               className="tcp-select"
               value={authMode}
-              onChange={(event) => setAuthMode((event.target as HTMLSelectElement).value)}
+              onChange={(event) => {
+                const nextMode = (event.target as HTMLSelectElement).value;
+                setAuthMode(nextMode);
+                if (nextMode === "oauth") setToken("");
+              }}
             >
               <option value="none">No Auth Header</option>
               <option value="auto">Auto (x-api-key for known providers, else Bearer)</option>
+              <option value="oauth">OAuth</option>
               <option value="x-api-key">x-api-key</option>
               <option value="bearer">Authorization Bearer</option>
               <option value="custom">Custom Header</option>
@@ -493,17 +785,23 @@ export function McpPage({ client, api, toast }: AppPageProps) {
               />
             </div>
           ) : null}
-          <div>
-            <label className="mb-1 block text-sm text-slate-300">Token (optional)</label>
-            <input
-              className="tcp-input"
-              type="password"
-              value={token}
-              onInput={(event) => setToken((event.target as HTMLInputElement).value)}
-              placeholder="token"
-            />
-          </div>
-          <p className="tcp-subtle text-xs">{authPreviewText}</p>
+          {authMode === "oauth" ? (
+            <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-xs text-slate-200">
+              {authPreviewText}
+            </div>
+          ) : (
+            <div>
+              <label className="mb-1 block text-sm text-slate-300">Token (optional)</label>
+              <input
+                className="tcp-input"
+                type="password"
+                value={token}
+                onInput={(event) => setToken((event.target as HTMLInputElement).value)}
+                placeholder="token"
+              />
+              <p className="tcp-subtle mt-2 text-xs">{authPreviewText}</p>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             <button
               className="tcp-btn"
@@ -564,9 +862,13 @@ export function McpPage({ client, api, toast }: AppPageProps) {
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <span className="tcp-badge-info">Tools: {row.toolCount}</span>
-                        <span className={row.requiresAuth ? "tcp-badge-warn" : "tcp-badge-ok"}>
-                          {row.requiresAuth ? "Auth" : "Authless"}
-                        </span>
+                        {row.authKind === "oauth" ? (
+                          <span className="tcp-badge-info">OAuth</span>
+                        ) : (
+                          <span className={row.requiresAuth ? "tcp-badge-warn" : "tcp-badge-ok"}>
+                            {row.requiresAuth ? "Auth" : "Authless"}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="tcp-subtle line-clamp-2 break-all text-xs">
@@ -575,13 +877,26 @@ export function McpPage({ client, api, toast }: AppPageProps) {
                     {row.description ? (
                       <div className="line-clamp-2 text-xs text-slate-200">{row.description}</div>
                     ) : null}
+                    {row.authKind === "oauth" ? (
+                      <div className="rounded-xl border border-sky-700/40 bg-sky-950/20 px-3 py-2 text-xs text-sky-100">
+                        Add this pack, then finish the browser sign-in flow. Tandem will keep the
+                        server pending until authorization completes.
+                      </div>
+                    ) : null}
                     <div className="mt-auto flex flex-wrap gap-2">
                       <button
                         className="tcp-btn"
                         onClick={() => {
                           setName(normalizeName(row.serverConfigName || row.slug || row.name));
                           setTransport(row.transportUrl);
-                          toast("ok", `Loaded pack ${row.name}. Add + Connect when ready.`);
+                          setAuthMode(row.authKind === "oauth" ? "oauth" : "none");
+                          if (row.authKind === "oauth") setToken("");
+                          toast(
+                            "ok",
+                            row.authKind === "oauth"
+                              ? `Loaded pack ${row.name}. Add it to start browser sign-in.`
+                              : `Loaded pack ${row.name}. Add + Connect when ready.`
+                          );
                         }}
                       >
                         Apply
@@ -606,7 +921,11 @@ export function McpPage({ client, api, toast }: AppPageProps) {
                           void handleAdd(true);
                         }}
                       >
-                        {alreadyConfigured ? "Added" : "Add + Connect"}
+                        {alreadyConfigured
+                          ? "Added"
+                          : row.authKind === "oauth"
+                            ? "Add + Start OAuth"
+                            : "Add + Connect"}
                       </button>
                       <button
                         className="tcp-btn"
@@ -703,6 +1022,51 @@ export function McpPage({ client, api, toast }: AppPageProps) {
                     {server.lastError ? (
                       <div className="rounded-xl border border-rose-700/60 bg-rose-950/20 px-2 py-1 text-xs text-rose-300">
                         {server.lastError}
+                      </div>
+                    ) : null}
+                    {server.lastAuthChallenge ? (
+                      <div className="rounded-xl border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-100">
+                        <div className="font-medium">OAuth authorization pending</div>
+                        <div className="tcp-subtle mt-1">
+                          {String(server.lastAuthChallenge.message || "").trim() ||
+                            "Open the authorization URL to finish connecting this MCP server."}
+                        </div>
+                        <div className="tcp-subtle mt-1">
+                          Tandem will keep checking for completion automatically while this page is
+                          open.
+                        </div>
+                        {String(
+                          server.lastAuthChallenge.authorization_url ||
+                            server.lastAuthChallenge.authorizationUrl ||
+                            server.authorizationUrl ||
+                            ""
+                        ).trim() ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <a
+                              className="tcp-btn inline-flex h-8 px-3 text-xs"
+                              href={String(
+                                server.lastAuthChallenge.authorization_url ||
+                                  server.lastAuthChallenge.authorizationUrl ||
+                                  server.authorizationUrl ||
+                                  ""
+                              ).trim()}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open auth URL
+                            </a>
+                            <button
+                              type="button"
+                              className="tcp-btn inline-flex h-8 px-3 text-xs"
+                              disabled={actionMutation.isPending}
+                              onClick={() =>
+                                actionMutation.mutate({ action: "authenticate", server })
+                              }
+                            >
+                              Mark sign-in complete
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                     <div className="tcp-subtle text-xs">

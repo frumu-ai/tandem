@@ -1,4 +1,5 @@
 use super::*;
+use tandem_runtime::McpAuthChallenge;
 
 const BUILTIN_GITHUB_MCP_SERVER_NAME: &str = "github";
 const BUILTIN_GITHUB_MCP_TRANSPORT_URL: &str = "https://api.githubcopilot.com/mcp/";
@@ -166,6 +167,7 @@ pub(super) async fn ensure_builtin_github_mcp_server(state: &AppState) -> bool {
 pub(super) struct McpAddInput {
     pub name: Option<String>,
     pub transport: Option<String>,
+    pub auth_kind: Option<String>,
     pub headers: Option<HashMap<String, String>>,
     pub secret_headers: Option<HashMap<String, tandem_runtime::McpSecretRef>>,
     pub enabled: Option<bool>,
@@ -208,6 +210,7 @@ pub(super) async fn add_mcp(
 ) -> Json<Value> {
     let name = input.name.unwrap_or_else(|| "default".to_string());
     let transport = input.transport.unwrap_or_else(|| "stdio".to_string());
+    let auth_kind = normalize_mcp_auth_kind(input.auth_kind.as_deref().unwrap_or_default());
     let audit_transport = transport.clone();
     state
         .mcp
@@ -219,6 +222,9 @@ pub(super) async fn add_mcp(
             input.enabled.unwrap_or(true),
         )
         .await;
+    if !auth_kind.is_empty() {
+        let _ = state.mcp.set_auth_kind(&name, auth_kind.clone()).await;
+    }
     state.event_bus.publish(EngineEvent::new(
         "mcp.server.updated",
         json!({
@@ -231,13 +237,23 @@ pub(super) async fn add_mcp(
         &tandem_types::TenantContext::local_implicit(),
         None,
         json!({
-            "name": name,
-            "transport": audit_transport,
+                "name": name,
+                "transport": audit_transport,
             "enabled": input.enabled.unwrap_or(true),
+            "auth_kind": auth_kind,
         }),
     )
     .await;
     Json(json!({"ok": true}))
+}
+
+fn normalize_mcp_auth_kind(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "oauth" | "auto" | "bearer" | "x-api-key" | "custom" | "none" => {
+            raw.trim().to_ascii_lowercase()
+        }
+        _ => String::new(),
+    }
 }
 
 fn mcp_tool_names_for_server(tool_names: &[String], server_name: &str) -> Vec<String> {
@@ -306,6 +322,7 @@ pub(crate) async fn mcp_inventory_snapshot(state: &AppState) -> Value {
             "enabled": server.enabled,
             "connected": server.connected,
             "last_error": server.last_error,
+            "last_auth_challenge": server.last_auth_challenge,
             "pending_auth_tools": pending_auth_tools,
             "remote_tool_count": remote_tool_names.len(),
             "registered_tool_count": registered_names.len(),
@@ -331,6 +348,15 @@ pub(crate) async fn mcp_inventory_snapshot(state: &AppState) -> Value {
         "registered_tools": all_registered_tool_names,
         "servers": servers,
     })
+}
+
+async fn current_mcp_auth_challenge(state: &AppState, name: &str) -> Option<McpAuthChallenge> {
+    state
+        .mcp
+        .list()
+        .await
+        .get(name)
+        .and_then(|server| server.last_auth_challenge.clone())
 }
 
 fn filter_mcp_inventory_snapshot_to_servers(snapshot: Value, allowed_servers: &[String]) -> Value {
@@ -569,6 +595,11 @@ pub(super) async fn connect_mcp(
     Path(name): Path<String>,
 ) -> Json<Value> {
     let ok = state.mcp.connect(&name).await;
+    let auth_challenge = if ok {
+        None
+    } else {
+        current_mcp_auth_challenge(&state, &name).await
+    };
     if ok {
         let count = sync_mcp_tools_for_server(&state, &name).await;
         state.event_bus.publish(EngineEvent::new(
@@ -597,7 +628,12 @@ pub(super) async fn connect_mcp(
             }),
         ));
     }
-    Json(json!({"ok": ok}))
+    Json(json!({
+        "ok": ok,
+        "pendingAuth": auth_challenge.is_some(),
+        "lastAuthChallenge": auth_challenge,
+        "authorizationUrl": auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()),
+    }))
 }
 
 pub(super) async fn disconnect_mcp(
@@ -716,6 +752,7 @@ pub(super) async fn refresh_mcp(
             }))
         }
         Err(error) => {
+            let auth_challenge = current_mcp_auth_challenge(&state, &name).await;
             let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
             let removed = state.tools.unregister_by_prefix(&prefix).await;
             state.event_bus.publish(EngineEvent::new(
@@ -729,26 +766,66 @@ pub(super) async fn refresh_mcp(
             Json(json!({
                 "ok": false,
                 "error": error,
+                "pendingAuth": auth_challenge.is_some(),
+                "lastAuthChallenge": auth_challenge,
+                "authorizationUrl": auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()),
                 "removedToolCount": removed
             }))
         }
     }
 }
 
-pub(super) async fn auth_mcp(Path(name): Path<String>) -> Json<Value> {
-    Json(json!({"authorizationUrl": format!("https://example.invalid/mcp/{name}/authorize")}))
+pub(super) async fn auth_mcp(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    if let Some(auth_challenge) = current_mcp_auth_challenge(&state, &name).await {
+        return Json(json!({
+            "ok": true,
+            "pending": true,
+            "lastAuthChallenge": auth_challenge,
+            "authorizationUrl": auth_challenge.authorization_url,
+        }));
+    }
+    Json(json!({
+        "ok": false,
+        "pending": false,
+        "name": name,
+        "message": "No MCP auth challenge recorded yet.",
+    }))
 }
 
-pub(super) async fn callback_mcp(Path(name): Path<String>) -> Json<Value> {
-    Json(json!({"ok": true, "name": name}))
+pub(super) async fn callback_mcp(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    authenticate_mcp(State(state), Path(name)).await
 }
 
-pub(super) async fn authenticate_mcp(Path(name): Path<String>) -> Json<Value> {
-    Json(json!({"ok": true, "name": name, "authenticated": true}))
+pub(super) async fn authenticate_mcp(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    let ok = state.mcp.complete_auth(&name).await;
+    let current = state.mcp.list().await.get(&name).cloned();
+    let last_auth_challenge = current
+        .as_ref()
+        .and_then(|server| server.last_auth_challenge.clone());
+    Json(json!({
+        "ok": ok,
+        "authenticated": ok,
+        "connected": current.as_ref().map(|server| server.connected).unwrap_or(false),
+        "pendingAuth": last_auth_challenge.is_some(),
+        "lastAuthChallenge": last_auth_challenge,
+        "authorizationUrl": last_auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()),
+    }))
 }
 
-pub(super) async fn delete_auth_mcp(Path(name): Path<String>) -> Json<Value> {
-    Json(json!({"ok": true, "name": name}))
+pub(super) async fn delete_auth_mcp(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    disconnect_mcp(State(state), Path(name)).await
 }
 
 pub(super) async fn mcp_catalog_index() -> Result<Json<Value>, StatusCode> {

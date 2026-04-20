@@ -4,7 +4,7 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.4.34 (Unreleased)
 
-This release smooths the first-run flow for Tandem-hosted managed servers, makes hosted-only settings visible without relying on a localhost engine URL, and adds a hosted Codex auth import path for provisioned installs.
+This release smooths the first-run flow for Tandem-hosted managed servers, makes hosted-only settings visible without relying on a localhost engine URL, hardens hosted Codex sign-in and recovery, and improves OAuth-backed MCP setup for provisioned installs.
 
 ### Control panel onboarding
 
@@ -15,6 +15,14 @@ This release smooths the first-run flow for Tandem-hosted managed servers, makes
 
 - **Codex auth import**: Provisioned servers can now import a Codex `auth.json` from the Settings page, and Tandem stores it under the VM's persistent Codex home so the connected session survives restarts and updates.
 - **Persistent hosted Codex home**: Hosted provisioning now seeds the Codex home on the mounted engine volume so imported Codex credentials land in the right place automatically.
+- **Refresh-safe pending sign-in**: If an operator refreshes Settings during a hosted Codex browser sign-in, the control panel now restores the pending session and resumes checking status instead of losing the in-progress handoff.
+- **Hosted callback regression coverage**: The server test suite now proves that hosted-managed Codex authorize flows build a public hosted callback URL rather than silently dropping back to the localhost-only Codex CLI redirect.
+- **Provider source visibility**: The dashboard and shared provider status surface now expose when the default Codex provider is running from an imported `auth.json`, which makes hosted support and operator triage much clearer.
+
+### MCP OAuth setup
+
+- **OAuth-first MCP guidance**: OAuth-backed MCP servers such as Notion now present an explicit browser sign-in flow in Settings and the dedicated MCP page instead of reading like a token-only connector form.
+- **Pending OAuth recovery**: Tandem now keeps OAuth-backed MCP servers in a visible pending state, shows the authorization link and completion action, and automatically rechecks pending sessions while the page is open so operators do not need to spam manual refresh.
 
 ## v0.4.33 (Released 2026-04-19)
 

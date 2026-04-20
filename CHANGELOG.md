@@ -10,11 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Hosted Codex auth import**: Tandem-hosted managed servers can now import a Codex `auth.json` from Settings, and the VM stores it under the persistent Codex home so the session survives restarts.
+- **Hosted Codex sign-in recovery**: Pending Codex browser sign-ins now survive a control-panel refresh in the current browser session, so operators can return to Settings without losing the in-progress handoff.
+- **Provider auth-source visibility**: The control panel now carries the default provider's auth source and management mode through provider status, so hosted Codex setups can surface that they are running from an imported `auth.json` or a mirrored local Codex session.
 
 ### Fixed
 
 - **Providers-first onboarding**: The provider setup gate now routes to Providers and expands the provider catalog on first view instead of landing on the Install section.
 - **Hosted settings visibility**: Web Search and Scheduler settings are now available on Tandem-hosted managed servers, so provisioned installs can configure Brave/Exa keys and scheduler defaults without a local engine URL.
+- **Hosted Codex callback regression coverage**: The server now has a real authorize-route regression test proving hosted-managed Codex OAuth uses the public hosted callback URL instead of falling back to `localhost:1455`.
+- **MCP OAuth hosted handoff UX**: OAuth-backed MCP packs such as Notion now clearly steer operators into browser sign-in, keep pending auth visible in both MCP surfaces, and recheck pending sessions automatically without requiring a manual refresh loop.
 
 ## [0.4.33] - Released 2026-04-19
 

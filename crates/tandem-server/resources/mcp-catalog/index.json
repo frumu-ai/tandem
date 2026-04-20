@@ -1951,6 +1951,7 @@
       "tool_count": 0,
       "tool_names": [],
       "requires_auth": true,
+      "auth_kind": "oauth",
       "requires_setup": false,
       "visibility": ["curated"],
       "works_with": ["claude", "claude-api", "claude-code", "codex"],

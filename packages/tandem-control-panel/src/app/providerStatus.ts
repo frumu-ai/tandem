@@ -5,6 +5,9 @@ export type ProviderState = {
   connected: string[];
   error: string;
   needsOnboarding: boolean;
+  defaultProviderAuthKind: string;
+  defaultProviderSource: string;
+  defaultProviderManagedBy: string;
 };
 
 function providerNeedsApiKey(providerId: string) {
@@ -51,6 +54,18 @@ function providerHasStoredKey(authStatus: any, providerId: string) {
   return readCandidate(authStatus[id]) || readCandidate(authStatus.providers?.[id]);
 }
 
+function readProviderAuthEntry(authStatus: any, providerId: string) {
+  const id = String(providerId || "")
+    .trim()
+    .toLowerCase();
+  if (!id || !authStatus || typeof authStatus !== "object") return null;
+  const direct = authStatus[id];
+  if (direct && typeof direct === "object") return direct;
+  const nested = authStatus.providers?.[id];
+  if (nested && typeof nested === "object") return nested;
+  return null;
+}
+
 export function deriveProviderState(config: any, catalog: any, authStatus: any): ProviderState {
   const defaultProvider = String(
     config?.default || config?.selected_model?.provider_id || ""
@@ -70,6 +85,7 @@ export function deriveProviderState(config: any, catalog: any, authStatus: any):
         .toLowerCase()
     )
   );
+  const authEntry = readProviderAuthEntry(authStatus, defaultProvider);
   const hasStoredKey = providerHasStoredKey(authStatus, defaultProvider);
   const ready =
     !!defaultProvider && !!defaultModel && (!providerNeedsApiKey(defaultProvider) || hasStoredKey);
@@ -81,5 +97,14 @@ export function deriveProviderState(config: any, catalog: any, authStatus: any):
     connected: [...connected],
     error: "",
     needsOnboarding: !ready,
+    defaultProviderAuthKind: String(authEntry?.auth_kind || authEntry?.authKind || "")
+      .trim()
+      .toLowerCase(),
+    defaultProviderSource: String(authEntry?.source || "")
+      .trim()
+      .toLowerCase(),
+    defaultProviderManagedBy: String(authEntry?.managed_by || authEntry?.managedBy || "")
+      .trim()
+      .toLowerCase(),
   };
 }

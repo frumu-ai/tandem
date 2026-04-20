@@ -143,6 +143,7 @@ mod tests {
         let server = McpServer {
             name: "arcade".to_string(),
             transport: "https://example.com/mcp".to_string(),
+            auth_kind: String::new(),
             enabled: true,
             connected: true,
             pid: None,
@@ -200,6 +201,7 @@ mod tests {
         let mut server = McpServer {
             name: "arcade".to_string(),
             transport: "https://example.com/mcp".to_string(),
+            auth_kind: String::new(),
             enabled: true,
             connected: true,
             pid: None,
@@ -240,6 +242,7 @@ mod tests {
         let mut server = McpServer {
             name: "arcade".to_string(),
             transport: "https://example.com/mcp".to_string(),
+            auth_kind: String::new(),
             enabled: true,
             connected: true,
             pid: None,
@@ -276,6 +279,7 @@ mod tests {
         let mut server = McpServer {
             name: "arcade".to_string(),
             transport: "https://example.com/mcp".to_string(),
+            auth_kind: String::new(),
             enabled: true,
             connected: true,
             pid: None,

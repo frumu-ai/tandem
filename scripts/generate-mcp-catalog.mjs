@@ -87,6 +87,7 @@ const CURATED_ENTRIES = [
     visibility: ["curated"],
     requiresAuth: true,
     requiresSetup: false,
+    authKind: "oauth",
     serverName: "com.notion/mcp",
     serverVersion: "",
     displayName: "Notion (Official)",
@@ -202,6 +203,9 @@ function buildToml(entry, generatedAt) {
   lines.push(`directory_url = ${toTomlString(entry.directoryUrl)}`);
   lines.push(`requires_auth = ${truthy(entry.requiresAuth)}`);
   lines.push(`requires_setup = ${truthy(entry.requiresSetup)}`);
+  if (entry.authKind) {
+    lines.push(`auth_kind = ${toTomlString(entry.authKind)}`);
+  }
   lines.push(`works_with = ${toTomlArray(entry.worksWith)}`);
   lines.push(`use_cases = ${toTomlArray(entry.useCases)}`);
   lines.push(`tool_names = ${toTomlArray(entry.toolNames)}`);
@@ -295,6 +299,7 @@ function toCatalogEntry(row, dedupeState, catalogVersion, catalogVisibility) {
   const worksWith = Array.isArray(meta.worksWith) ? meta.worksWith.map((row) => String(row || "").trim()).filter(Boolean) : [];
   const description = String(meta.oneLiner || server.description || "").trim();
   const requiresAuth = !meta.isAuthless;
+  const authKind = String(meta.authKind || meta.auth_kind || "").trim() || undefined;
 
   return {
     source: "anthropic-mcp-registry",
@@ -317,6 +322,7 @@ function toCatalogEntry(row, dedupeState, catalogVersion, catalogVisibility) {
     visibility,
     requiresAuth,
     requiresSetup: inferRequiresSetup(remotes),
+    authKind,
     uuid: String(meta.uuid || "").trim(),
     rank: Number.isFinite(Number(meta.rank)) ? Number(meta.rank) : 0,
     authorName: String(meta.author?.name || "").trim(),
@@ -355,6 +361,7 @@ function toCuratedEntry(def, catalogVersion, catalogVisibility) {
     visibility: Array.isArray(def.visibility) ? def.visibility.map((row) => String(row || "").trim()).filter(Boolean) : ["curated"],
     requiresAuth: def.requiresAuth !== false,
     requiresSetup: !!def.requiresSetup,
+    authKind: String(def.authKind || def.auth_kind || "").trim() || undefined,
     uuid: String(def.uuid || `curated:${slug}`).trim(),
     rank: Number.isFinite(Number(def.rank)) ? Number(def.rank) : 0,
     authorName: String(def.authorName || "").trim(),
@@ -436,6 +443,7 @@ async function main() {
       tool_names: entry.toolNames,
       requires_auth: entry.requiresAuth,
       requires_setup: entry.requiresSetup,
+      ...(entry.authKind ? { auth_kind: entry.authKind } : {}),
       visibility: entry.visibility,
       works_with: entry.worksWith,
       use_cases: entry.useCases,

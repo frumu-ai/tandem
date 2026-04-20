@@ -10,6 +10,7 @@ description = "Official Notion remote MCP server for pages, databases, and works
 documentation_url = "https://developers.notion.com/docs/mcp"
 directory_url = "https://notion.com"
 requires_auth = true
+auth_kind = "oauth"
 requires_setup = false
 works_with = ["claude", "claude-api", "claude-code", "codex"]
 use_cases = ["productivity", "notes", "knowledge-base"]

@@ -31,6 +31,8 @@ pub struct McpToolCacheEntry {
 pub struct McpServer {
     pub name: String,
     pub transport: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth_kind: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub connected: bool,
@@ -90,6 +92,18 @@ pub struct PendingMcpAuth {
     pub status: String,
     pub first_seen_ms: u64,
     pub last_probe_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+enum DiscoverRemoteToolsError {
+    Message(String),
+    AuthChallenge(McpAuthChallenge),
+}
+
+impl From<String> for DiscoverRemoteToolsError {
+    fn from(value: String) -> Self {
+        Self::Message(value)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +226,10 @@ impl McpRegistry {
         let server = McpServer {
             name: normalized_name.clone(),
             transport,
+            auth_kind: existing
+                .as_ref()
+                .map(|row| row.auth_kind.clone())
+                .unwrap_or_default(),
             enabled,
             connected: false,
             pid: None,
@@ -337,11 +355,30 @@ impl McpRegistry {
 
         let request_headers = effective_headers(&server);
         let (tools, session_id) = match self
-            .discover_remote_tools(&endpoint, &request_headers)
+            .discover_remote_tools(name, &endpoint, &request_headers)
             .await
         {
             Ok(result) => result,
-            Err(err) => {
+            Err(DiscoverRemoteToolsError::AuthChallenge(challenge)) => {
+                let mut servers = self.servers.write().await;
+                if let Some(entry) = servers.get_mut(name) {
+                    entry.connected = false;
+                    entry.pid = None;
+                    entry.last_error = Some(challenge.message.clone());
+                    entry.last_auth_challenge = Some(challenge.clone());
+                    entry.mcp_session_id = None;
+                    entry.pending_auth_by_tool.clear();
+                    entry.tool_cache.clear();
+                    entry.tools_fetched_at_ms = None;
+                }
+                drop(servers);
+                self.persist_state().await;
+                return Err(format!(
+                    "MCP server '{name}' requires authorization: {}",
+                    challenge.message
+                ));
+            }
+            Err(DiscoverRemoteToolsError::Message(err)) => {
                 let mut servers = self.servers.write().await;
                 if let Some(entry) = servers.get_mut(name) {
                     entry.connected = false;
@@ -404,6 +441,31 @@ impl McpRegistry {
             return true;
         }
         false
+    }
+
+    pub async fn complete_auth(&self, name: &str) -> bool {
+        let mut servers = self.servers.write().await;
+        let Some(server) = servers.get_mut(name) else {
+            return false;
+        };
+        server.last_error = None;
+        server.last_auth_challenge = None;
+        server.pending_auth_by_tool.clear();
+        drop(servers);
+        self.persist_state().await;
+        true
+    }
+
+    pub async fn set_auth_kind(&self, name: &str, auth_kind: String) -> bool {
+        let normalized = normalize_auth_kind(&auth_kind);
+        let mut servers = self.servers.write().await;
+        let Some(server) = servers.get_mut(name) else {
+            return false;
+        };
+        server.auth_kind = normalized;
+        drop(servers);
+        self.persist_state().await;
+        true
     }
 
     pub async fn list_tools(&self) -> Vec<McpRemoteTool> {
@@ -637,9 +699,10 @@ impl McpRegistry {
 
     async fn discover_remote_tools(
         &self,
+        server_name: &str,
         endpoint: &str,
         headers: &HashMap<String, String>,
-    ) -> Result<(Vec<McpRemoteTool>, Option<String>), String> {
+    ) -> Result<(Vec<McpRemoteTool>, Option<String>), DiscoverRemoteToolsError> {
         let initialize = json!({
             "jsonrpc": "2.0",
             "id": "initialize-1",
@@ -656,11 +719,14 @@ impl McpRegistry {
         let (init_response, mut session_id) =
             post_json_rpc_with_session(endpoint, headers, initialize, None).await?;
         if let Some(err) = init_response.get("error") {
+            if let Some(challenge) = extract_auth_challenge(err, server_name) {
+                return Err(DiscoverRemoteToolsError::AuthChallenge(challenge));
+            }
             let message = err
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("MCP initialize failed");
-            return Err(message.to_string());
+            return Err(DiscoverRemoteToolsError::Message(message.to_string()));
         }
 
         let tools_list = json!({
@@ -676,11 +742,14 @@ impl McpRegistry {
             session_id = next_session_id;
         }
         if let Some(err) = tools_response.get("error") {
+            if let Some(challenge) = extract_auth_challenge(err, server_name) {
+                return Err(DiscoverRemoteToolsError::AuthChallenge(challenge));
+            }
             let message = err
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("MCP tools/list failed");
-            return Err(message.to_string());
+            return Err(DiscoverRemoteToolsError::Message(message.to_string()));
         }
 
         let tools = tools_response
@@ -937,6 +1006,15 @@ fn redacted_server_view(server: &McpServer) -> McpServer {
     clone
 }
 
+fn normalize_auth_kind(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "oauth" | "auto" | "bearer" | "x-api-key" | "custom" | "none" => {
+            raw.trim().to_ascii_lowercase()
+        }
+        _ => String::new(),
+    }
+}
+
 fn redacted_secret_header_value(secret_ref: &McpSecretRef) -> String {
     match secret_ref {
         McpSecretRef::BearerEnv { .. } => "Bearer ".to_string(),
@@ -976,4 +1054,3 @@ fn delete_secret_header_refs(
         }
     }
 }
-
