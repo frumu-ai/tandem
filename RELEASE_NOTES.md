@@ -24,6 +24,7 @@ This release smooths the first-run flow for Tandem-hosted managed servers, makes
 - **OAuth-first MCP guidance**: OAuth-backed MCP servers such as Notion now present an explicit browser sign-in flow in Settings and the dedicated MCP page instead of reading like a token-only connector form.
 - **Pending OAuth recovery**: Tandem now keeps OAuth-backed MCP servers in a visible pending state, shows the authorization link and completion action, and automatically rechecks pending sessions while the page is open so operators do not need to spam manual refresh.
 - **Real MCP OAuth bootstrap**: Tandem now handles Notion-style MCP OAuth discovery from the remote server's `401` challenge, follows protected-resource and authorization-server metadata, performs dynamic client registration plus PKCE, accepts the hosted callback, stores the bearer token on the MCP server, and reconnects the server automatically after sign-in.
+- **Browser-origin MCP callbacks**: MCP OAuth redirects now prefer the forwarded control-panel/browser origin, so local or LAN control-panel installs no longer send Notion back to `127.0.0.1:39731` and fail behind the raw engine API-token check.
 
 ## v0.4.33 (Released 2026-04-19)
 

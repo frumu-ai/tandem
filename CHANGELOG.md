@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hosted Codex callback regression coverage**: The server now has a real authorize-route regression test proving hosted-managed Codex OAuth uses the public hosted callback URL instead of falling back to `localhost:1455`.
 - **MCP OAuth hosted handoff UX**: OAuth-backed MCP packs such as Notion now clearly steer operators into browser sign-in, keep pending auth visible in both MCP surfaces, and recheck pending sessions automatically without requiring a manual refresh loop.
 - **MCP OAuth protocol bootstrap**: Remote MCP OAuth servers such as Notion can now start authorization from a `401` + `WWW-Authenticate` challenge, complete PKCE client registration and callback handling server-side, store the returned bearer token, and reconnect automatically after browser sign-in.
+- **MCP callback origin correction**: MCP OAuth callbacks now use the forwarded control-panel/browser origin instead of falling back to the raw engine bind address, which fixes local-IP installs that were redirecting to `127.0.0.1:39731` and tripping the engine API-token gate.
 
 ## [0.4.33] - Released 2026-04-19
 
