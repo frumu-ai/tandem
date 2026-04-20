@@ -38,6 +38,11 @@ pub(super) struct ProviderOAuthStatusQuery {
     pub session_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct ProviderOAuthSessionImportInput {
+    pub auth_json: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ProviderOAuthSessionRecord {
     pub session_id: String,
@@ -1088,6 +1093,98 @@ pub(super) async fn provider_oauth_local_session(
         "ok": true,
         "provider_id": OPENAI_CODEX_PROVIDER_ID,
         "managed_by": "codex-cli",
+        "backend": backend,
+        "email": credential.email,
+        "display_name": credential.display_name,
+        "expires_at_ms": credential.expires_at_ms,
+    }))
+}
+
+pub(super) async fn provider_oauth_session_import(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<ProviderOAuthSessionImportInput>,
+) -> Json<Value> {
+    let provider_id = canonical_provider_id(&id);
+    if provider_id != OPENAI_CODEX_PROVIDER_ID {
+        return Json(json!({
+            "ok": false,
+            "error": format!("oauth is not supported for provider `{provider_id}`"),
+        }));
+    }
+
+    let raw_auth_json = input.auth_json.unwrap_or_default();
+    let trimmed_auth_json = raw_auth_json.trim();
+    if trimmed_auth_json.is_empty() {
+        return Json(json!({
+            "ok": false,
+            "error": "Codex auth.json content cannot be empty.",
+        }));
+    }
+
+    let auth_json: Value = match serde_json::from_str(trimmed_auth_json) {
+        Ok(value) => value,
+        Err(error) => {
+            return Json(json!({
+                "ok": false,
+                "error": format!("Codex auth.json is not valid JSON: {error}"),
+            }));
+        }
+    };
+
+    if let Err(error) = tandem_core::write_openai_codex_cli_auth_json(&auth_json) {
+        return Json(json!({
+            "ok": false,
+            "error": format!("failed to persist Codex auth.json: {error}"),
+        }));
+    }
+
+    let Some(mut credential) = tandem_core::load_openai_codex_cli_oauth_credential() else {
+        return Json(json!({
+            "ok": false,
+            "error": "The imported Codex auth.json could not be read back on this machine.",
+        }));
+    };
+    credential.managed_by = "codex-upload".to_string();
+
+    let backend = match tandem_core::set_provider_oauth_credential(
+        OPENAI_CODEX_PROVIDER_ID,
+        credential.clone(),
+    ) {
+        Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
+        Ok(tandem_core::ProviderAuthBackend::File) => "file",
+        Err(error) => {
+            return Json(json!({
+                "ok": false,
+                "error": error.to_string(),
+            }));
+        }
+    };
+
+    ensure_openai_codex_runtime_provider(&state).await;
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "provider.oauth.updated",
+        &tandem_types::TenantContext::local_implicit(),
+        None,
+        json!({
+            "providerID": OPENAI_CODEX_PROVIDER_ID,
+            "backend": backend,
+            "managedBy": "codex-upload",
+            "email": credential.email,
+        }),
+    )
+    .await;
+
+    Json(json!({
+        "ok": true,
+        "provider_id": OPENAI_CODEX_PROVIDER_ID,
+        "managed_by": "codex-upload",
         "backend": backend,
         "email": credential.email,
         "display_name": credential.display_name,

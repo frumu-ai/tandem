@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.34] - Unreleased
 
+### Added
+
+- **Hosted Codex auth import**: Tandem-hosted managed servers can now import a Codex `auth.json` from Settings, and the VM stores it under the persistent Codex home so the session survives restarts.
+
 ### Fixed
 
 - **Providers-first onboarding**: The provider setup gate now routes to Providers and expands the provider catalog on first view instead of landing on the Install section.

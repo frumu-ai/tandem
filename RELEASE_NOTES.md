@@ -4,12 +4,17 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.4.34 (Unreleased)
 
-This release smooths the first-run flow for Tandem-hosted managed servers and makes hosted-only settings visible without relying on a localhost engine URL.
+This release smooths the first-run flow for Tandem-hosted managed servers, makes hosted-only settings visible without relying on a localhost engine URL, and adds a hosted Codex auth import path for provisioned installs.
 
 ### Control panel onboarding
 
 - **Providers-first setup gate**: The provider setup requirement now opens the Providers tab and expands the provider catalog immediately, so new hosted installs land where they can actually select and configure a provider.
 - **Hosted settings access**: Web Search and Scheduler settings are now editable on Tandem-hosted managed servers, so Brave/Exa keys and scheduler defaults show up on provisioned deployments even when the engine URL is remote.
+
+### Hosted Codex auth
+
+- **Codex auth import**: Provisioned servers can now import a Codex `auth.json` from the Settings page, and Tandem stores it under the VM's persistent Codex home so the connected session survives restarts and updates.
+- **Persistent hosted Codex home**: Hosted provisioning now seeds the Codex home on the mounted engine volume so imported Codex credentials land in the right place automatically.
 
 ## v0.4.33 (Released 2026-04-19)
 

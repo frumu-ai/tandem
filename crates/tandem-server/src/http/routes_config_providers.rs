@@ -31,6 +31,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(provider_oauth_local_session),
         )
         .route(
+            "/provider/{id}/oauth/session/import",
+            post(provider_oauth_session_import),
+        )
+        .route(
             "/provider/{id}/oauth/session",
             delete(provider_oauth_disconnect),
         )

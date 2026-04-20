@@ -808,6 +808,7 @@ export function SettingsPage({
   const [customProviderModel, setCustomProviderModel] = useState("");
   const [customProviderApiKey, setCustomProviderApiKey] = useState("");
   const [customProviderMakeDefault, setCustomProviderMakeDefault] = useState(true);
+  const [codexAuthJsonText, setCodexAuthJsonText] = useState("");
   const [channelDrafts, setChannelDrafts] = useState<Record<string, ChannelDraft>>({});
   const channelDraftsHydratedRef = useRef<Record<string, boolean>>({
     telegram: false,
@@ -847,6 +848,8 @@ export function SettingsPage({
   const [bugMonitorWorkspaceBrowserDir, setBugMonitorWorkspaceBrowserDir] = useState("");
   const [bugMonitorWorkspaceBrowserSearch, setBugMonitorWorkspaceBrowserSearch] = useState("");
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const codexAuthInputRef = useRef<HTMLInputElement | null>(null);
+  const [codexAuthFileName, setCodexAuthFileName] = useState("");
 
   const loadIdentityConfig = async () => {
     const identityApi = (client as any)?.identity;
@@ -1525,6 +1528,87 @@ export function SettingsPage({
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
+  const importCodexAuthJsonMutation = useMutation({
+    mutationFn: ({ providerId, authJson }: { providerId: string; authJson: string }) =>
+      api(`/api/engine/provider/${encodeURIComponent(providerId)}/oauth/session/import`, {
+        method: "POST",
+        body: JSON.stringify({ auth_json: authJson }),
+      }),
+    onSuccess: async (payload: any, vars) => {
+      const providerId = String(vars.providerId || "")
+        .trim()
+        .toLowerCase();
+      const ok = payload?.ok !== false;
+      const error = String(payload?.error || payload?.message || "").trim();
+      if (!ok) {
+        toast(
+          "err",
+          error ||
+            "Unable to import the Codex auth.json file. Make sure it was copied from a signed-in Codex CLI session."
+        );
+        return;
+      }
+      setCodexAuthJsonText("");
+      setOauthSessionByProvider((current) => {
+        if (!current[providerId]) return current;
+        const next = { ...current };
+        delete next[providerId];
+        return next;
+      });
+      const email = String(payload?.email || "").trim();
+      toast(
+        "ok",
+        providerId === OPENAI_CODEX_PROVIDER_ID
+          ? email
+            ? `Codex auth.json imported: ${email}`
+            : "Codex auth.json imported."
+          : `${providerId} auth.json imported.`
+      );
+      if (providerId === OPENAI_CODEX_PROVIDER_ID) {
+        try {
+          await promoteCodexAsDefaultProvider();
+          toast("ok", "Codex is now the default provider for Tandem runs.");
+        } catch (error) {
+          toast(
+            "warn",
+            error instanceof Error
+              ? error.message
+              : "Codex auth.json imported, but Tandem could not switch the default provider."
+          );
+        }
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "providers"] }),
+        refreshProviderStatus(),
+      ]);
+    },
+    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
+  });
+  const importCodexAuthFile = useCallback(
+    async (providerId: string, file: File | null | undefined) => {
+      if (!file) return;
+      try {
+        const text = await file.text();
+        setCodexAuthFileName(file.name || "auth.json");
+        setCodexAuthJsonText(text);
+        if (!text.trim()) {
+          toast("warn", "Selected auth.json file was empty.");
+          return;
+        }
+        importCodexAuthJsonMutation.mutate({
+          providerId,
+          authJson: text,
+        });
+      } catch (error) {
+        toast("err", error instanceof Error ? error.message : String(error));
+      } finally {
+        if (codexAuthInputRef.current) {
+          codexAuthInputRef.current.value = "";
+        }
+      }
+    },
+    [importCodexAuthJsonMutation, toast]
+  );
   useEffect(() => {
     const entries = Object.entries(oauthSessionByProvider).filter(
       ([providerId, sessionId]) => !!providerId && !!sessionId
@@ -2955,6 +3039,8 @@ export function SettingsPage({
                                   : oauthStatus === "reauth_required"
                                     ? { tone: "warn" as const, text: "reauth required" }
                                     : { tone: "warn" as const, text: "not connected" };
+                              const hostedCodexImportFlow =
+                                hostedManaged && providerId === OPENAI_CODEX_PROVIDER_ID;
 
                               return (
                                 <motion.details key={providerId} layout className="tcp-list-item">
@@ -3065,7 +3151,9 @@ export function SettingsPage({
                                               Managed by{" "}
                                               {oauthManagedBy === "codex-cli"
                                                 ? "the local Codex CLI session"
-                                                : "Tandem"}
+                                                : oauthManagedBy === "codex-upload"
+                                                  ? "an uploaded Codex auth.json"
+                                                  : "Tandem"}
                                               .
                                             </div>
                                           ) : null}
@@ -3085,9 +3173,8 @@ export function SettingsPage({
                                           ) : null}
                                           {canUseOAuthHere ? (
                                             <div>
-                                              {hostedManaged &&
-                                              providerId === OPENAI_CODEX_PROVIDER_ID
-                                                ? "This Tandem-hosted server can connect Codex directly through the hosted OAuth flow."
+                                              {hostedCodexImportFlow
+                                                ? "This Tandem-hosted server can import a Codex auth.json from a signed-in machine and keep the session on the VM."
                                                 : localCodexSessionAvailable
                                                   ? "Local Codex CLI session detected on this machine."
                                                   : "If the Codex CLI is already signed in on this machine, you can mirror that session here instead of starting a fresh browser login."}
@@ -3102,99 +3189,233 @@ export function SettingsPage({
                                           ) : null}
                                         </div>
 
-                                        <div className="flex flex-wrap gap-2">
-                                          <button
-                                            type="button"
-                                            className="tcp-btn"
-                                            disabled={
-                                              !canUseOAuthHere ||
-                                              oauthPending ||
-                                              disconnectProviderOAuthMutation.isPending
-                                            }
-                                            onClick={() =>
-                                              authorizeProviderOAuthMutation.mutate({ providerId })
-                                            }
-                                          >
-                                            <i data-lucide="log-in"></i>
-                                            {oauthConnected
-                                              ? "Reconnect Codex Account"
-                                              : "Connect Codex Account"}
-                                          </button>
-                                          {localEngine &&
-                                          providerId === OPENAI_CODEX_PROVIDER_ID &&
-                                          localCodexSessionAvailable ? (
+                                        {hostedCodexImportFlow ? (
+                                          <div className="grid gap-3">
+                                            <input
+                                              ref={codexAuthInputRef}
+                                              type="file"
+                                              accept=".json,application/json"
+                                              className="hidden"
+                                              onChange={(event) => {
+                                                const file = event.target.files?.[0] || null;
+                                                void importCodexAuthFile(providerId, file);
+                                              }}
+                                            />
+                                            <textarea
+                                              className="tcp-input min-h-40 resize-y rounded-xl p-3 font-mono text-xs leading-5"
+                                              value={codexAuthJsonText}
+                                              onChange={(event) =>
+                                                setCodexAuthJsonText(event.target.value)
+                                              }
+                                              placeholder={`Paste the contents of ~/.codex/auth.json here.\n\nTandem will store it on this server and reuse it for Codex sessions.`}
+                                            />
+                                            <div className="grid gap-1 text-xs tcp-subtle">
+                                              <div>
+                                                You can paste the JSON directly, or choose the file
+                                                from a signed-in machine.
+                                              </div>
+                                              {codexAuthFileName ? (
+                                                <div>Loaded file: {codexAuthFileName}</div>
+                                              ) : null}
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                              <button
+                                                type="button"
+                                                className="tcp-btn"
+                                                disabled={
+                                                  !canUseOAuthHere ||
+                                                  !codexAuthJsonText.trim() ||
+                                                  importCodexAuthJsonMutation.isPending ||
+                                                  disconnectProviderOAuthMutation.isPending
+                                                }
+                                                onClick={() =>
+                                                  importCodexAuthJsonMutation.mutate({
+                                                    providerId,
+                                                    authJson: codexAuthJsonText,
+                                                  })
+                                                }
+                                              >
+                                                <i data-lucide="upload"></i>
+                                                {oauthConnected
+                                                  ? "Replace Codex Session"
+                                                  : "Import pasted JSON"}
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="tcp-btn"
+                                                disabled={
+                                                  importCodexAuthJsonMutation.isPending ||
+                                                  disconnectProviderOAuthMutation.isPending
+                                                }
+                                                onClick={() => codexAuthInputRef.current?.click()}
+                                              >
+                                                <i data-lucide="file-up"></i>
+                                                Choose auth.json
+                                              </button>
+                                              {localCodexSessionAvailable ? (
+                                                <button
+                                                  type="button"
+                                                  className="tcp-btn h-10 px-4 text-sm"
+                                                  disabled={
+                                                    !canUseOAuthHere ||
+                                                    authorizeProviderOAuthMutation.isPending ||
+                                                    useLocalCodexSessionMutation.isPending
+                                                  }
+                                                  onClick={() => {
+                                                    setOauthSessionByProvider((current) => {
+                                                      if (!current[providerId]) return current;
+                                                      const next = { ...current };
+                                                      delete next[providerId];
+                                                      return next;
+                                                    });
+                                                    useLocalCodexSessionMutation.mutate({
+                                                      providerId,
+                                                    });
+                                                  }}
+                                                >
+                                                  <i data-lucide="link-2"></i>
+                                                  Use Local Codex Session
+                                                </button>
+                                              ) : null}
+                                              {providerId === OPENAI_CODEX_PROVIDER_ID &&
+                                              oauthConnected &&
+                                              !codexIsDefaultProvider ? (
+                                                <button
+                                                  type="button"
+                                                  className="tcp-btn h-10 px-4 text-sm"
+                                                  disabled={setDefaultsMutation.isPending}
+                                                  onClick={() =>
+                                                    setDefaultsMutation.mutate({
+                                                      providerId,
+                                                      modelId: defaultModel || "gpt-5.4",
+                                                    })
+                                                  }
+                                                >
+                                                  <i data-lucide="sparkles"></i>
+                                                  Use for Tandem Runs
+                                                </button>
+                                              ) : null}
+                                              <button
+                                                type="button"
+                                                className="tcp-btn h-10 px-4 text-sm"
+                                                disabled={
+                                                  !oauthConnected ||
+                                                  disconnectProviderOAuthMutation.isPending ||
+                                                  importCodexAuthJsonMutation.isPending ||
+                                                  oauthPending
+                                                }
+                                                onClick={() =>
+                                                  disconnectProviderOAuthMutation.mutate({
+                                                    providerId,
+                                                  })
+                                                }
+                                              >
+                                                <i data-lucide="unlink"></i>
+                                                Disconnect
+                                              </button>
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <div className="flex flex-wrap gap-2">
+                                            <button
+                                              type="button"
+                                              className="tcp-btn"
+                                              disabled={
+                                                !canUseOAuthHere ||
+                                                oauthPending ||
+                                                disconnectProviderOAuthMutation.isPending
+                                              }
+                                              onClick={() =>
+                                                authorizeProviderOAuthMutation.mutate({
+                                                  providerId,
+                                                })
+                                              }
+                                            >
+                                              <i data-lucide="log-in"></i>
+                                              {oauthConnected
+                                                ? "Reconnect Codex Account"
+                                                : "Connect Codex Account"}
+                                            </button>
+                                            {localEngine &&
+                                            providerId === OPENAI_CODEX_PROVIDER_ID &&
+                                            localCodexSessionAvailable ? (
+                                              <button
+                                                type="button"
+                                                className="tcp-btn h-10 px-4 text-sm"
+                                                disabled={
+                                                  !canUseOAuthHere ||
+                                                  authorizeProviderOAuthMutation.isPending ||
+                                                  useLocalCodexSessionMutation.isPending
+                                                }
+                                                onClick={() => {
+                                                  setOauthSessionByProvider((current) => {
+                                                    if (!current[providerId]) return current;
+                                                    const next = { ...current };
+                                                    delete next[providerId];
+                                                    return next;
+                                                  });
+                                                  useLocalCodexSessionMutation.mutate({
+                                                    providerId,
+                                                  });
+                                                }}
+                                              >
+                                                <i data-lucide="link-2"></i>
+                                                Use Local Codex Session
+                                              </button>
+                                            ) : null}
+                                            {providerId === OPENAI_CODEX_PROVIDER_ID &&
+                                            oauthConnected &&
+                                            !codexIsDefaultProvider ? (
+                                              <button
+                                                type="button"
+                                                className="tcp-btn h-10 px-4 text-sm"
+                                                disabled={setDefaultsMutation.isPending}
+                                                onClick={() =>
+                                                  setDefaultsMutation.mutate({
+                                                    providerId,
+                                                    modelId: defaultModel || "gpt-5.4",
+                                                  })
+                                                }
+                                              >
+                                                <i data-lucide="sparkles"></i>
+                                                Use for Tandem Runs
+                                              </button>
+                                            ) : null}
                                             <button
                                               type="button"
                                               className="tcp-btn h-10 px-4 text-sm"
                                               disabled={
-                                                !canUseOAuthHere ||
-                                                authorizeProviderOAuthMutation.isPending ||
-                                                useLocalCodexSessionMutation.isPending
+                                                !oauthConnected ||
+                                                disconnectProviderOAuthMutation.isPending ||
+                                                oauthPending
                                               }
-                                              onClick={() => {
-                                                setOauthSessionByProvider((current) => {
-                                                  if (!current[providerId]) return current;
-                                                  const next = { ...current };
-                                                  delete next[providerId];
-                                                  return next;
-                                                });
-                                                useLocalCodexSessionMutation.mutate({ providerId });
-                                              }}
-                                            >
-                                              <i data-lucide="link-2"></i>
-                                              Use Local Codex Session
-                                            </button>
-                                          ) : null}
-                                          {providerId === OPENAI_CODEX_PROVIDER_ID &&
-                                          oauthConnected &&
-                                          !codexIsDefaultProvider ? (
-                                            <button
-                                              type="button"
-                                              className="tcp-btn h-10 px-4 text-sm"
-                                              disabled={setDefaultsMutation.isPending}
                                               onClick={() =>
-                                                setDefaultsMutation.mutate({
+                                                disconnectProviderOAuthMutation.mutate({
                                                   providerId,
-                                                  modelId: defaultModel || "gpt-5.4",
                                                 })
                                               }
                                             >
-                                              <i data-lucide="sparkles"></i>
-                                              Use for Tandem Runs
+                                              <i data-lucide="unlink"></i>
+                                              Disconnect
                                             </button>
-                                          ) : null}
-                                          <button
-                                            type="button"
-                                            className="tcp-btn h-10 px-4 text-sm"
-                                            disabled={
-                                              !oauthConnected ||
-                                              disconnectProviderOAuthMutation.isPending ||
-                                              oauthPending
-                                            }
-                                            onClick={() =>
-                                              disconnectProviderOAuthMutation.mutate({ providerId })
-                                            }
-                                          >
-                                            <i data-lucide="unlink"></i>
-                                            Disconnect
-                                          </button>
-                                          {oauthPending ? (
-                                            <button
-                                              type="button"
-                                              className="tcp-btn h-10 px-4 text-sm"
-                                              onClick={() =>
-                                                window.open(
-                                                  "https://chatgpt.com/codex",
-                                                  "_blank",
-                                                  "noopener,noreferrer"
-                                                )
-                                              }
-                                            >
-                                              <i data-lucide="external-link"></i>
-                                              Open Codex
-                                            </button>
-                                          ) : null}
-                                        </div>
+                                            {oauthPending ? (
+                                              <button
+                                                type="button"
+                                                className="tcp-btn h-10 px-4 text-sm"
+                                                onClick={() =>
+                                                  window.open(
+                                                    "https://chatgpt.com/codex",
+                                                    "_blank",
+                                                    "noopener,noreferrer"
+                                                  )
+                                                }
+                                              >
+                                                <i data-lucide="external-link"></i>
+                                                Open Codex
+                                              </button>
+                                            ) : null}
+                                          </div>
+                                        )}
                                       </div>
                                     ) : (
                                       <form

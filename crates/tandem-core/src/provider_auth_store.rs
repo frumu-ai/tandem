@@ -89,6 +89,10 @@ fn resolve_codex_cli_auth_path() -> PathBuf {
     resolve_codex_cli_home().join("auth.json")
 }
 
+fn write_codex_cli_auth_json_at(path: &Path, auth_json: &Value) -> anyhow::Result<()> {
+    write_secure_json(&path.to_path_buf(), auth_json)
+}
+
 fn keyring_entry(provider_id: &str) -> Option<keyring::Entry> {
     keyring::Entry::new(PROVIDER_AUTH_SERVICE, &provider_auth_account(provider_id)).ok()
 }
@@ -503,6 +507,12 @@ pub fn load_openai_codex_cli_oauth_credential() -> Option<OAuthProviderCredentia
     load_codex_cli_oauth_credential_at(&resolve_codex_cli_auth_path())
 }
 
+pub fn write_openai_codex_cli_auth_json(auth_json: &Value) -> anyhow::Result<PathBuf> {
+    let path = resolve_codex_cli_auth_path();
+    write_codex_cli_auth_json_at(&path, auth_json)?;
+    Ok(path)
+}
+
 fn load_credential_fallback_map() -> HashMap<String, ProviderCredential> {
     let path = provider_credentials_fallback_path();
     let json = read_json(&path).unwrap_or_else(|_| json!({}));
@@ -785,5 +795,40 @@ mod tests {
         assert_eq!(credential.email.as_deref(), Some("user@example.com"));
         assert_eq!(credential.display_name.as_deref(), Some("user@example.com"));
         assert!(credential.expires_at_ms > 0);
+    }
+
+    #[test]
+    fn write_openai_codex_cli_auth_json_persists_auth_file() {
+        let dir = tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        let jwt = make_jwt(serde_json::json!({
+            "exp": 2_000_000_000,
+            "email": "hosted@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_user_id": "acct_456"
+            }
+        }));
+        let payload = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": jwt,
+                "refresh_token": "refresh-token-456",
+                "account_id": "acct_456"
+            },
+            "last_refresh": 456
+        });
+
+        write_codex_cli_auth_json_at(&auth_path, &payload).expect("write auth");
+
+        let credential = load_codex_cli_oauth_credential_at(&auth_path).expect("credential");
+        assert_eq!(credential.provider_id, "openai-codex");
+        assert_eq!(credential.managed_by, "codex-cli");
+        assert_eq!(credential.refresh_token, "refresh-token-456");
+        assert_eq!(credential.account_id.as_deref(), Some("acct_456"));
+        assert_eq!(credential.email.as_deref(), Some("hosted@example.com"));
+        assert_eq!(
+            credential.display_name.as_deref(),
+            Some("hosted@example.com")
+        );
     }
 }
