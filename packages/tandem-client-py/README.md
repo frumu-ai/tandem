@@ -330,20 +330,27 @@ await client.agent_teams.delete_template("marketing-writer")
 ### `client.mcp`
 
 ```python
-await client.mcp.add("arcade", "https://mcp.arcade.ai/mcp")
+await client.mcp.add(
+    "arcade",
+    "https://mcp.arcade.ai/mcp",
+    allowed_tools=["search", "search_docs"],
+)
 await client.mcp.connect("arcade")
 tools = await client.mcp.list_tools()
+await client.mcp.patch("arcade", allowed_tools=["search"])
+await client.mcp.patch("arcade", clear_allowed_tools=True)
 ```
 
-| Method                                        | Description                 |
-| --------------------------------------------- | --------------------------- |
-| `list()`                                      | List registered MCP servers |
-| `list_tools()`                                | List discovered tools       |
-| `add(name, transport, *, headers?, enabled?)` | Register an MCP server      |
-| `connect(name)`                               | Connect and discover tools  |
-| `disconnect(name)`                            | Disconnect                  |
-| `refresh(name)`                               | Re-discover tools           |
-| `set_enabled(name, enabled)`                  | Enable/disable              |
+| Method                                                           | Description                 |
+| ---------------------------------------------------------------- | --------------------------- |
+| `list()`                                                         | List registered MCP servers |
+| `list_tools()`                                                   | List discovered tools       |
+| `add(name, transport, *, headers?, enabled?, allowed_tools?)`    | Register an MCP server      |
+| `patch(name, *, enabled?, allowed_tools?, clear_allowed_tools?)` | Update MCP server settings  |
+| `connect(name)`                                                  | Connect and discover tools  |
+| `disconnect(name)`                                               | Disconnect                  |
+| `refresh(name)`                                                  | Re-discover tools           |
+| `set_enabled(name, enabled)`                                     | Enable/disable              |
 
 ### `client.channels`
 

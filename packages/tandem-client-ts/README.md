@@ -235,15 +235,22 @@ const intake = await client.coder.intakeProjectItem("repo-123", {
 | `list()`                    | List registered MCP servers |
 | `listTools()`               | List all discovered tools   |
 | `add(options)`              | Register an MCP server      |
+| `patch(name, patch)`        | Update MCP server settings  |
 | `connect(name)`             | Connect and discover tools  |
 | `disconnect(name)`          | Disconnect                  |
 | `refresh(name)`             | Re-discover tools           |
 | `setEnabled(name, enabled)` | Enable/disable              |
 
 ```typescript
-await client.mcp.add({ name: "arcade", transport: "https://mcp.arcade.ai/mcp" });
+await client.mcp.add({
+  name: "arcade",
+  transport: "https://mcp.arcade.ai/mcp",
+  allowed_tools: ["search", "search_docs"],
+});
 await client.mcp.connect("arcade");
 const tools = await client.mcp.listTools();
+await client.mcp.patch("arcade", { allowed_tools: ["search"] });
+await client.mcp.patch("arcade", { clear_allowed_tools: true });
 ```
 
 ### `client.channels`

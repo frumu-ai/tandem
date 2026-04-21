@@ -242,10 +242,16 @@ print(verification.ok)
 ### `client.mcp`
 
 ```python
-await client.mcp.add("arcade", "https://mcp.arcade.ai/mcp")
+await client.mcp.add(
+    "arcade",
+    "https://mcp.arcade.ai/mcp",
+    allowed_tools=["search", "search_docs"],
+)
 await client.mcp.connect("arcade")
 tools = await client.mcp.list_tools()
 resources = await client.mcp.list_resources()
+await client.mcp.patch("arcade", allowed_tools=["search"])
+await client.mcp.patch("arcade", clear_allowed_tools=True)
 await client.mcp.set_enabled("arcade", False)
 ```
 
@@ -435,7 +441,10 @@ automation = await client.automations_v2.create({
                 }
             },
             "tool_policy": {"allowlist": ["read", "websearch"], "denylist": []},
-            "mcp_policy": {"allowed_servers": ["composio"]},
+            "mcp_policy": {
+                "allowed_servers": ["composio"],
+                "allowed_tools": ["mcp.composio.github_issues_list"],
+            },
         },
         {
             "agent_id": "writer",
@@ -447,7 +456,7 @@ automation = await client.automations_v2.create({
                 }
             },
             "tool_policy": {"allowlist": ["read", "write", "edit"], "denylist": []},
-            "mcp_policy": {"allowed_servers": []},
+            "mcp_policy": {"allowed_servers": [], "allowed_tools": []},
         },
     ],
     "flow": {

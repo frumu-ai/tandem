@@ -228,10 +228,16 @@ console.log(verification.ok);
 ### `client.mcp`
 
 ```typescript
-await client.mcp.add({ name: "arcade", transport: "https://mcp.arcade.ai/mcp" });
+await client.mcp.add({
+  name: "arcade",
+  transport: "https://mcp.arcade.ai/mcp",
+  allowed_tools: ["search", "search_docs"],
+});
 await client.mcp.connect("arcade");
 const tools = await client.mcp.listTools();
 const resources = await client.mcp.listResources();
+await client.mcp.patch("arcade", { allowed_tools: ["search"] });
+await client.mcp.patch("arcade", { clear_allowed_tools: true });
 await client.mcp.setEnabled("arcade", false);
 ```
 
@@ -422,7 +428,10 @@ await client.automationsV2.create({
         },
       },
       tool_policy: { allowlist: ["read", "websearch"], denylist: [] },
-      mcp_policy: { allowed_servers: ["composio"] },
+      mcp_policy: {
+        allowed_servers: ["composio"],
+        allowed_tools: ["mcp.composio.github_issues_list"],
+      },
     },
     {
       agent_id: "writer",
@@ -434,7 +443,7 @@ await client.automationsV2.create({
         },
       },
       tool_policy: { allowlist: ["read", "write", "edit"], denylist: [] },
-      mcp_policy: { allowed_servers: [] },
+      mcp_policy: { allowed_servers: [], allowed_tools: [] },
     },
   ],
   flow: {

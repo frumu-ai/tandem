@@ -69,6 +69,19 @@ curl -sS -X POST http://127.0.0.1:39731/mcp \
   }'
 ```
 
+Add an MCP server with a server-level tool allowlist:
+
+```bash
+curl -sS -X POST http://127.0.0.1:39731/mcp \
+  -H "content-type: application/json" \
+  -d '{
+    "name": "notion",
+    "transport": "https://your-mcp-server.example/mcp",
+    "enabled": true,
+    "allowed_tools": ["search", "get_page", "list_databases"]
+  }'
+```
+
 Connect it (this performs discovery and caches tools):
 
 ```bash
@@ -92,6 +105,27 @@ List all tool IDs (built-ins + MCP):
 ```bash
 curl -sS http://127.0.0.1:39731/tool/ids
 ```
+
+Update an existing MCP server to narrow or clear its allowlist:
+
+```bash
+curl -sS -X PATCH http://127.0.0.1:39731/mcp/notion \
+  -H "content-type: application/json" \
+  -d '{ "allowed_tools": ["search", "get_page"] }'
+
+curl -sS -X PATCH http://127.0.0.1:39731/mcp/notion \
+  -H "content-type: application/json" \
+  -d '{ "clear_allowed_tools": true }'
+```
+
+### Server-Level MCP Tool Allowlists
+
+- Use MCP server `allowed_tools` when a connector should expose only a subset of its discovered tools.
+- The desktop control panel now surfaces those discovered tools as checkboxes after a server connects.
+- `GET /mcp/tools`, `mcp_list`, and the runtime MCP registry only show tools that survive that server-level policy.
+- `clear_allowed_tools: true` restores the default behavior of exposing every discovered tool for that server.
+
+Tool names inside `allowed_tools` are the remote MCP tool names for that server, not the fully qualified Tandem IDs. For example, if the Tandem tool ID is `mcp.notion.search`, the MCP server allowlist entry is `search`.
 
 ### Provider Notes: Arcade
 
@@ -202,6 +236,8 @@ curl -sS "http://127.0.0.1:39731/automations/runs?routine_id=daily-mcp-research&
 
 Each run record includes `allowed_tools` so you can verify tool scope at execution time.
 
+When a routine or automation uses exact MCP tool IDs, Tandem intersects those IDs with the server-level MCP allowlist before exposing tools to the run.
+
 ### V2 Path (Recommended): Persistent Multi-Agent DAG Automation
 
 For per-agent model routing and DAG checkpoints, use `/automations/v2`:
@@ -228,8 +264,11 @@ curl -sS -X POST http://127.0.0.1:39731/automations/v2 \
             "model_id": "openai/gpt-4o-mini"
           }
         },
-        "tool_policy": { "allowlist": ["read", "websearch", "mcp.composio.*"], "denylist": [] },
-        "mcp_policy": { "allowed_servers": ["composio"] }
+        "tool_policy": { "allowlist": ["read", "websearch", "mcp.composio.github_issues_list"], "denylist": [] },
+        "mcp_policy": {
+          "allowed_servers": ["composio"],
+          "allowed_tools": ["mcp.composio.github_issues_list"]
+        }
       },
       {
         "agent_id": "writer",
@@ -241,7 +280,7 @@ curl -sS -X POST http://127.0.0.1:39731/automations/v2 \
           }
         },
         "tool_policy": { "allowlist": ["read", "write", "edit"], "denylist": [] },
-        "mcp_policy": { "allowed_servers": [] }
+        "mcp_policy": { "allowed_servers": [], "allowed_tools": [] }
       }
     ],
     "flow": {
@@ -252,6 +291,8 @@ curl -sS -X POST http://127.0.0.1:39731/automations/v2 \
     }
   }'
 ```
+
+Use `mcp_policy.allowed_tools` when one agent should only see exact MCP tools from an allowed server. This is especially useful for public bots and automation workflows where a connector is enabled, but only a few actions should ever reach the model context.
 
 Run immediately:
 

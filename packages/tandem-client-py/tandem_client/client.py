@@ -900,12 +900,15 @@ class _Mcp:
         headers: Optional[dict[str, str]] = None,
         secret_headers: Optional[dict[str, Any]] = None,
         enabled: bool = True,
+        allowed_tools: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"name": name, "transport": transport, "enabled": enabled}
         if headers:
             payload["headers"] = headers
         if secret_headers:
             payload["secret_headers"] = secret_headers
+        if allowed_tools is not None:
+            payload["allowed_tools"] = allowed_tools
         res = await self._http.post("/mcp", json=payload)
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
@@ -925,10 +928,27 @@ class _Mcp:
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
-    async def set_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
-        res = await self._http.patch(f"/mcp/{quote(name)}", json={"enabled": enabled})
+    async def patch(
+        self,
+        name: str,
+        *,
+        enabled: Optional[bool] = None,
+        allowed_tools: Optional[list[str]] = None,
+        clear_allowed_tools: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if enabled is not None:
+            payload["enabled"] = enabled
+        if allowed_tools is not None:
+            payload["allowed_tools"] = allowed_tools
+        if clear_allowed_tools is not None:
+            payload["clear_allowed_tools"] = clear_allowed_tools
+        res = await self._http.patch(f"/mcp/{quote(name)}", json=payload)
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
+
+    async def set_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        return await self.patch(name, enabled=enabled)
 
     async def delete(self, name: str) -> dict[str, Any]:
         res = await self._http.delete(f"/mcp/{quote(name)}")
