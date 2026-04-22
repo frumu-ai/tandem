@@ -1,6 +1,6 @@
 [package]
 name = "tandem-skills"
-version = "0.4.37"
+version = "0.4.38"
 description = "Skill packaging and discovery for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -16,6 +16,7 @@ walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"
+
 
 
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tandem-client"
-version = "0.4.37"
+version = "0.4.38"
 description = "Python client for the Tandem autonomous agent engine HTTP + SSE API"
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,6 +28,7 @@ asyncio_mode = "auto"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tandem_client"]
+
 
 
 
