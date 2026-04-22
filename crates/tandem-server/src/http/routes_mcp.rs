@@ -20,6 +20,7 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         )
         .route("/mcp/{name}/auth/authenticate", post(authenticate_mcp))
         .route("/mcp/catalog", get(mcp_catalog_index))
+        .route("/mcp/request-capability", post(mcp_request_capability))
         .route("/mcp/catalog/{slug}/toml", get(mcp_catalog_toml))
         .route("/mcp/tools", get(mcp_tools))
         .route("/mcp/resources", get(mcp_resources))

@@ -1055,15 +1055,17 @@ impl AppState {
         &self,
         automation_id: &str,
     ) -> anyhow::Result<Option<AutomationV2Spec>> {
-        let _guard = self.automations_v2_persistence.lock().await;
-        let removed = self.automations_v2.write().await.remove(automation_id);
+        let deleted_by =
+            crate::automation_v2::governance::GovernanceActorRef::system("automation_v2_delete");
+        let removed = self
+            .delete_automation_v2_with_governance(automation_id, deleted_by)
+            .await?;
         let removed_run_count = {
             let mut runs = self.automation_v2_runs.write().await;
             let before = runs.len();
             runs.retain(|_, run| run.automation_id != automation_id);
             before.saturating_sub(runs.len())
         };
-        self.persist_automations_v2_locked().await?;
         if removed_run_count > 0 {
             self.persist_automation_v2_runs().await?;
         }
@@ -1743,7 +1745,7 @@ impl AppState {
         }
         let out = run.clone();
         drop(guard);
-        self.sync_automation_scheduler_for_run_transition(previous_status, &out)
+        self.sync_automation_scheduler_for_run_transition(previous_status.clone(), &out)
             .await;
         let _ = self.persist_automation_v2_runs().await;
         let _ = self.persist_automation_v2_run_status_json(&out).await;
@@ -1757,6 +1759,16 @@ impl AppState {
             let _ = self
                 .finalize_terminal_automation_v2_run_learning(&out)
                 .await;
+            if !Self::automation_run_is_terminal(&previous_status) {
+                let _ = self
+                    .record_automation_review_progress(
+                        &out.automation_id,
+                        crate::automation_v2::governance::AutomationLifecycleReviewKind::RunDrift,
+                        Some(out.run_id.clone()),
+                        out.detail.clone().or_else(|| out.stop_reason.clone()),
+                    )
+                    .await;
+            }
         }
         Some(out)
     }

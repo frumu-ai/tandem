@@ -599,6 +599,8 @@ pub(super) struct AutomationV2CreateInput {
     #[serde(default)]
     pub metadata: Option<Value>,
     #[serde(default)]
+    pub capabilities: Option<crate::automation_v2::governance::AutomationDeclaredCapabilities>,
+    #[serde(default)]
     pub scope_policy: Option<crate::automation_v2::types::AutomationScopePolicy>,
     #[serde(default)]
     pub watch_conditions: Option<Vec<crate::automation_v2::types::WatchCondition>>,
@@ -628,6 +630,8 @@ pub(super) struct AutomationV2PatchInput {
     pub workspace_root: Option<String>,
     #[serde(default)]
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub capabilities: Option<crate::automation_v2::governance::AutomationDeclaredCapabilities>,
     #[serde(default)]
     pub scope_policy: Option<crate::automation_v2::types::AutomationScopePolicy>,
     #[serde(default)]

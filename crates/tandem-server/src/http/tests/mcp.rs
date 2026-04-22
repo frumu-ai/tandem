@@ -672,3 +672,260 @@ async fn mcp_refresh_silently_renews_expired_oauth_token() {
 
     drop(server);
 }
+
+#[tokio::test]
+async fn mcp_catalog_overlay_surfaces_connected_and_uncataloged_states() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    let app = app_router(state.clone());
+
+    state
+        .mcp
+        .add_or_update("orphaned".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    assert!(state.mcp.connect("orphaned").await);
+
+    let tool_names = state
+        .tools
+        .list()
+        .await
+        .into_iter()
+        .map(|schema| schema.name)
+        .collect::<Vec<_>>();
+    assert!(tool_names.iter().any(|name| name == "mcp_list_catalog"));
+    assert!(tool_names
+        .iter()
+        .any(|name| name == "mcp_request_capability"));
+
+    let catalog_req = Request::builder()
+        .method("GET")
+        .uri("/mcp/catalog")
+        .body(Body::empty())
+        .expect("catalog request");
+    let catalog_resp = app.oneshot(catalog_req).await.expect("catalog response");
+    assert_eq!(catalog_resp.status(), StatusCode::OK);
+    let catalog_body = to_bytes(catalog_resp.into_body(), usize::MAX)
+        .await
+        .expect("catalog body");
+    let catalog_payload: Value = serde_json::from_slice(&catalog_body).expect("catalog json");
+
+    let servers = catalog_payload
+        .get("servers")
+        .and_then(Value::as_array)
+        .expect("servers array");
+    let github = servers
+        .iter()
+        .find(|row| row.get("slug").and_then(Value::as_str) == Some("github"))
+        .expect("github server row");
+    assert_eq!(
+        github.get("connection_status").and_then(Value::as_str),
+        Some("connected_enabled")
+    );
+    assert_eq!(
+        github.get("execution_available").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let notion = servers
+        .iter()
+        .find(|row| row.get("slug").and_then(Value::as_str) == Some("notion"))
+        .expect("notion server row");
+    assert_eq!(
+        notion.get("connection_status").and_then(Value::as_str),
+        Some("cataloged_not_connected")
+    );
+
+    let overlay = catalog_payload
+        .get("overlay")
+        .and_then(Value::as_object)
+        .expect("overlay object");
+    let status_counts = overlay
+        .get("status_counts")
+        .and_then(Value::as_object)
+        .expect("status counts");
+    assert_eq!(
+        status_counts
+            .get("connected_enabled")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        status_counts
+            .get("uncataloged_connected")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+
+    let uncataloged_connected_servers = overlay
+        .get("uncataloged_connected_servers")
+        .and_then(Value::as_array)
+        .expect("uncataloged connected servers");
+    let orphaned = uncataloged_connected_servers
+        .iter()
+        .find(|row| row.get("name").and_then(Value::as_str) == Some("orphaned"))
+        .expect("orphaned server row");
+    assert_eq!(
+        orphaned.get("connection_status").and_then(Value::as_str),
+        Some("uncataloged_connected")
+    );
+
+    let catalog_output = state
+        .tools
+        .execute("mcp_list_catalog", json!({}))
+        .await
+        .expect("execute mcp_list_catalog");
+    let tool_payload: Value =
+        serde_json::from_str(&catalog_output.output).expect("catalog tool json");
+    assert_eq!(
+        tool_payload
+            .get("overlay")
+            .and_then(|row| row.get("status_counts"))
+            .and_then(|row| row.get("uncataloged_connected"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+
+    drop(server);
+}
+
+#[tokio::test]
+async fn mcp_request_capability_route_creates_approval_request() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/mcp/request-capability")
+        .header("content-type", "application/json")
+        .header("x-tandem-agent-id", "agent-self-operator")
+        .body(Body::from(
+            json!({
+                "agent_id": "agent-self-operator",
+                "mcp_name": "notion",
+                "catalog_slug": "notion",
+                "rationale": "Need Notion access for the weekly competitor pulse.",
+                "requested_tools": ["notion_search"],
+                "context": {
+                    "gap": "daily competitor pulse",
+                    "source": "self-operator"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("capability request");
+    let resp = app.oneshot(req).await.expect("capability response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("capability body");
+    let payload: Value = serde_json::from_slice(&body).expect("capability json");
+
+    let approval = payload
+        .get("approval")
+        .and_then(Value::as_object)
+        .expect("approval object");
+    let approval_id = approval
+        .get("approval_id")
+        .and_then(Value::as_str)
+        .expect("approval id");
+    assert_eq!(
+        approval.get("request_type").and_then(Value::as_str),
+        Some("capability_request")
+    );
+    assert_eq!(
+        approval
+            .get("target_resource")
+            .and_then(|row| row.get("type"))
+            .and_then(Value::as_str),
+        Some("agent")
+    );
+    assert_eq!(
+        approval
+            .get("target_resource")
+            .and_then(|row| row.get("id"))
+            .and_then(Value::as_str),
+        Some("agent-self-operator")
+    );
+    assert_eq!(
+        approval
+            .get("requested_by")
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("agent")
+    );
+    assert_eq!(
+        approval
+            .get("context")
+            .and_then(|row| row.get("capability_key"))
+            .and_then(Value::as_str),
+        Some("mcp:notion")
+    );
+    assert!(approval
+        .get("context")
+        .and_then(|row| row.get("catalog_match"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false));
+
+    let approvals = state.list_approval_requests(None, None).await;
+    assert!(approvals.iter().any(|row| row.approval_id == approval_id));
+}
+
+#[tokio::test]
+async fn mcp_request_capability_tool_creates_approval_request() {
+    let state = test_state().await;
+
+    let output = state
+        .tools
+        .execute(
+            "mcp_request_capability",
+            json!({
+                "__session_id": "self-operator-session",
+                "agent_id": "agent-self-operator",
+                "mcp_name": "notion",
+                "rationale": "Need Notion access for the weekly competitor pulse.",
+                "requested_tools": ["notion_search"],
+                "context": {
+                    "gap": "daily competitor pulse"
+                }
+            }),
+        )
+        .await
+        .expect("execute mcp_request_capability");
+    let payload: Value = serde_json::from_str(&output.output).expect("capability tool json");
+
+    assert_eq!(payload.get("ok").and_then(Value::as_bool), Some(true));
+    let approval = payload
+        .get("approval")
+        .and_then(Value::as_object)
+        .expect("approval object");
+    assert_eq!(
+        approval.get("request_type").and_then(Value::as_str),
+        Some("capability_request")
+    );
+    assert_eq!(
+        approval
+            .get("requested_by")
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("agent")
+    );
+    assert_eq!(
+        approval
+            .get("requested_by")
+            .and_then(|row| row.get("actor_id"))
+            .and_then(Value::as_str),
+        Some("agent-self-operator")
+    );
+    assert!(approval
+        .get("requested_by")
+        .and_then(|row| row.get("source"))
+        .and_then(Value::as_str)
+        .is_some_and(|source| source.contains("tool:self-operator-session")));
+    assert_eq!(
+        approval
+            .get("context")
+            .and_then(|row| row.get("capability_key"))
+            .and_then(Value::as_str),
+        Some("mcp:notion")
+    );
+}

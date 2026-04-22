@@ -26,6 +26,9 @@ impl AppState {
             routine_history: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automations_v2: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            automation_governance: Arc::new(RwLock::new(
+                crate::automation_v2::governance::GovernanceState::default(),
+            )),
             automation_v2_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automation_scheduler: Arc::new(RwLock::new(automation::AutomationScheduler::new(
                 config::env::resolve_scheduler_max_concurrent_runs(),
@@ -62,6 +65,7 @@ impl AppState {
             routine_history_path: config::paths::resolve_routine_history_path(),
             routine_runs_path: config::paths::resolve_routine_runs_path(),
             automations_v2_path: config::paths::resolve_automations_v2_path(),
+            automation_governance_path: config::paths::resolve_automation_governance_path(),
             automation_v2_runs_path: config::paths::resolve_automation_v2_runs_path(),
             automation_v2_runs_archive_path: config::paths::resolve_automation_v2_runs_archive_path(
             ),
@@ -207,6 +211,20 @@ impl AppState {
                 Arc::new(crate::http::mcp::McpListTool::new(self.clone())),
             )
             .await;
+        self.tools
+            .register_tool(
+                "mcp_list_catalog".to_string(),
+                Arc::new(crate::http::mcp::McpListCatalogTool::new(self.clone())),
+            )
+            .await;
+        self.tools
+            .register_tool(
+                "mcp_request_capability".to_string(),
+                Arc::new(crate::http::mcp::McpRequestCapabilityTool::new(
+                    self.clone(),
+                )),
+            )
+            .await;
         self.engine_loop
             .set_spawn_agent_hook(std::sync::Arc::new(
                 crate::agent_teams::ServerSpawnAgentHook::new(self.clone()),
@@ -227,6 +245,8 @@ impl AppState {
         let _ = self.load_routine_history().await;
         let _ = self.load_routine_runs().await;
         self.load_automations_v2().await?;
+        let _ = self.load_automation_governance().await;
+        let _ = self.bootstrap_automation_governance().await;
         let _ = self.load_automation_v2_runs().await;
         let _ = self.load_optimization_campaigns().await;
         let _ = self.load_optimization_experiments().await;

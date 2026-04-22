@@ -5,10 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.37] - Released 2026-04-21
+## [0.4.37] - Released 2026-04-22
 
 ### Added
 
+- **Self-Operator governance foundation**: Automation v2 now persists provenance, lineage depth, grants, approval requests, and soft-delete retention, with server-side creation and mutation enforcement.
+- **Tenant agent-creation controls**: Per-agent creation pauses, rolling daily quotas, and active agent-authored automation caps are now enforced at the engine route layer.
+- **Declared-capability recursion gate**: Agent-authored automations now carry declared capability flags, and server-side checks block unapproved `creates_agents` or `modifies_grants` escalation at create and patch time.
+- **Agent spend accounting and caps**: Automation v2 usage now rolls up per-agent daily, weekly, monthly, and lifetime spend summaries, warns at a configurable threshold, hard-stops agents at the weekly cap, and creates quota-override approval requests when spend guardrails trip.
+- **Lifecycle review and retirement**: Agent-authored automations now trigger creation and run-based review thresholds, expire on a configurable timer, pause on expiration, expose retire/extend routes, and feed a periodic health-check drift pass into the shared approval inbox.
+- **Revocation-driven pause/review**: Revoking a modify grant or narrowing an automation agent's MCP policy now pauses the automation, records a dependency-revocation review, and routes the operator through the shared approval queue before agent mutation can continue.
+- **MCP catalog overlay and capability requests**: `/mcp/catalog` now returns a connection-status overlay on top of the embedded catalog, and agents can file `mcp_request_capability` approval requests through the shared governance queue when they discover a gap.
 - **Custom control-panel modals**: Native browser alerts, confirms, and prompts have been replaced with Tandem-styled modal dialogs across Files, Task Planning, and KB document actions so naming and destructive flows stay inside the app shell.
 - **Knowledgebase document actions**: The KB viewer now supports inline preview expansion, edit-in-place, and delete for uploaded documents, with icon-first controls and a cleaner accordion-style layout.
 - **Channel exact MCP tool scopes**: Channel tool preferences now support exact MCP tool allowlists in addition to server-level MCP enables, which lets public or constrained channels grant just the tools they need.

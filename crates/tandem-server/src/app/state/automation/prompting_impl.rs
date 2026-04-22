@@ -689,7 +689,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         &agent.mcp_policy.allowed_servers,
     ) {
         sections.push(format!(
-            "MCP Discovery:\n- MCP-backed work may be relevant for this node.\n- Allowed MCP servers: {}.\n- Call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available.\n- Prefer MCP-backed tools for source-specific systems when the connector exists.\n- If the objective depends on a connector-backed source and no relevant MCP tool is available, finish the artifact from the local evidence you already have and record that limitation instead of repeating discovery calls.",
+            "MCP Discovery:\n- MCP-backed work may be relevant for this node.\n- Allowed MCP servers: {}.\n- Call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available. If you need the catalog overlay, follow up with `mcp_list_catalog`, and if you have identified a gap that needs human approval, use `mcp_request_capability`.\n- Prefer MCP-backed tools for source-specific systems when the connector exists.\n- If the objective depends on a connector-backed source and no relevant MCP tool is available, finish the artifact from the local evidence you already have and record that limitation instead of repeating discovery calls.",
             serde_json::to_string_pretty(&agent.mcp_policy.allowed_servers)
                 .unwrap_or_else(|_| "[]".to_string())
         ));
@@ -753,7 +753,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     ));
     if let Some(output_path) = required_output_path.as_ref() {
         sections.push(format!(
-            "Artifact Delivery Order:\n- If MCP Discovery is present, call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available.\n- Read or inspect the concrete sources required by the node.\n- Write the required run artifact to `{}` before ending this attempt.\n- On retries, rewrite the file in the current attempt even if the content is identical.\n- Do not stop with only a chat summary; the file is the deliverable.",
+            "Artifact Delivery Order:\n- If MCP Discovery is present, call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available.\n- If you need to understand catalog availability or surface a missing connector, call `mcp_list_catalog` next.\n- If the gap requires operator review, use `mcp_request_capability` to file it through the approval queue.\n- Read or inspect the concrete sources required by the node.\n- Write the required run artifact to `{}` before ending this attempt.\n- On retries, rewrite the file in the current attempt even if the content is identical.\n- Do not stop with only a chat summary; the file is the deliverable.",
             output_path
         ));
         sections.push(

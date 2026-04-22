@@ -745,6 +745,9 @@ impl AppState {
             .await
             .insert(automation.automation_id.clone(), automation.clone());
         self.persist_automations_v2_locked().await?;
+        let _ = self
+            .sync_automation_governance_from_spec(&automation, None)
+            .await;
         self.verify_automation_v2_persisted_locked(&automation.automation_id, true)
             .await?;
         Ok(automation)

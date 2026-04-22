@@ -40,6 +40,15 @@ impl AppState {
             }
             drop(guard);
             let _ = self.persist_automation_v2_runs().await;
+            let _ = self
+                .record_automation_v2_spend(
+                    &run_id,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    delta_cost,
+                )
+                .await;
         }
     }
 

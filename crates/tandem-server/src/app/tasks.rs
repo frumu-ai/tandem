@@ -88,6 +88,15 @@ async fn apply_provider_usage_to_automation_v2_run(
     }
     drop(guard);
     let _ = state.persist_automation_v2_runs().await;
+    let _ = state
+        .record_automation_v2_spend(
+            run_id,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            delta_cost,
+        )
+        .await;
 }
 
 fn event_tenant_context_value(event: &EngineEvent) -> Value {

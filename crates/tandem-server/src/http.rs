@@ -63,6 +63,7 @@ pub(crate) mod context_types;
 mod enterprise;
 mod external_actions;
 mod global;
+pub(crate) mod governance;
 mod marketplace;
 pub(crate) mod mcp;
 mod middleware;
@@ -84,6 +85,7 @@ mod routes_config_providers;
 mod routes_context;
 mod routes_external_actions;
 mod routes_global;
+mod routes_governance;
 mod routes_marketplace;
 mod routes_mcp;
 mod routes_mission_builder;
@@ -260,6 +262,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let agent_team_supervisor_state = state.clone();
     let global_memory_ingestor_state = state.clone();
     let bug_monitor_state = state.clone();
+    let governance_health_state = state.clone();
     let mcp_bootstrap_state = state.clone();
     tokio::spawn(async move {
         bootstrap_mcp_servers_when_ready(mcp_bootstrap_state).await;
@@ -399,6 +402,47 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         }
     });
 
+    let automation_governance_health_checker = tokio::spawn(async move {
+        loop {
+            if governance_health_state.is_automation_scheduler_stopping() {
+                return;
+            }
+            let startup = governance_health_state.startup_snapshot().await;
+            if matches!(startup.status, crate::app::startup::StartupStatus::Ready) {
+                break;
+            }
+            if matches!(startup.status, crate::app::startup::StartupStatus::Failed) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        loop {
+            let interval_ms = governance_health_state
+                .automation_governance
+                .read()
+                .await
+                .limits
+                .health_check_interval_ms
+                .max(60 * 1000);
+            match governance_health_state
+                .run_automation_governance_health_check()
+                .await
+            {
+                Ok(count) if count > 0 => {
+                    tracing::info!(
+                        finding_count = count,
+                        "automation governance health check recorded findings"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(error = %error, "automation governance health check failed");
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+        }
+    });
+
     // Channel listeners are started during runtime initialization
     // (`initialize_runtime()` in `engine/src/main.rs`) so `serve()` only owns
     // the HTTP server lifecycle.
@@ -436,6 +480,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     bug_monitor.abort();
     global_memory_ingestor.abort();
     hygiene_task.abort();
+    automation_governance_health_checker.abort();
     result?;
     Ok(())
 }

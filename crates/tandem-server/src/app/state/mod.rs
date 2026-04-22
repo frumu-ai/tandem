@@ -33,6 +33,7 @@ use tandem_workflows::{
 
 use crate::agent_teams::AgentTeamRuntime;
 use crate::app::startup::{StartupSnapshot, StartupState, StartupStatus};
+use crate::automation_v2::governance::GovernanceState;
 use crate::automation_v2::types::*;
 use crate::bug_monitor::types::*;
 use crate::capability_resolver::CapabilityResolver;
@@ -76,6 +77,7 @@ pub struct AppState {
     pub routine_history: Arc<RwLock<std::collections::HashMap<String, Vec<RoutineHistoryEvent>>>>,
     pub routine_runs: Arc<RwLock<std::collections::HashMap<String, RoutineRunRecord>>>,
     pub automations_v2: Arc<RwLock<std::collections::HashMap<String, AutomationV2Spec>>>,
+    pub automation_governance: Arc<RwLock<GovernanceState>>,
     pub automation_v2_runs: Arc<RwLock<std::collections::HashMap<String, AutomationV2RunRecord>>>,
     pub automation_scheduler: Arc<RwLock<automation::AutomationScheduler>>,
     pub automation_scheduler_stopping: Arc<AtomicBool>,
@@ -131,6 +133,7 @@ pub struct AppState {
     pub routine_history_path: PathBuf,
     pub routine_runs_path: PathBuf,
     pub automations_v2_path: PathBuf,
+    pub automation_governance_path: PathBuf,
     pub automation_v2_runs_path: PathBuf,
     pub automation_v2_runs_archive_path: PathBuf,
     pub optimization_campaigns_path: PathBuf,
@@ -201,6 +204,7 @@ include!("app_state_impl_parts/part01.rs");
 include!("app_state_impl_parts/part02.rs");
 include!("app_state_impl_parts/part03.rs");
 include!("app_state_impl_parts/part04.rs");
+pub(crate) mod governance;
 
 /// Returns the canonical filename for a handoff artifact JSON file.
 fn handoff_filename(handoff_id: &str) -> String {

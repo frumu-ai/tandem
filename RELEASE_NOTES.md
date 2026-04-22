@@ -2,9 +2,20 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.4.37 (Released 2026-04-21)
+## v0.4.37 (Released 2026-04-22)
 
-This release tightens the control panel experience around KB document browsing, exact channel MCP scopes, and app-native dialogs so destructive actions and naming flows stay consistent across the UI.
+This release adds the first governance layer for Self-Operator, with provenance, quotas, lineage limits, and approval surfaces enforced server-side, while also tightening the control panel experience around KB document browsing, exact channel MCP scopes, and app-native dialogs.
+
+### Self-Operator governance foundation
+
+- **Provenance-based automation ownership**: Automation v2 now records creator identity, chain of custody, and soft-delete retention, and the engine enforces ownership-aware create, patch, delete, run-now, pause, and resume paths.
+- **Human approval surfaces**: The engine now exposes approval inbox routes plus grant/revoke and restore surfaces for governed automation changes.
+- **Creation controls**: Tenant-level creation toggles, per-agent daily quotas, active caps, and per-agent creation pauses are enforced server-side.
+- **Recursion gate**: Agent-authored automation creation and patching now require approval before escalating declared capabilities such as `creates_agents`, and server-side lineage depth checks block runaway custody chains.
+- **Spend accounting and caps**: Automation v2 usage now rolls up per-agent daily, weekly, monthly, and lifetime spend summaries, warns at a configurable threshold, and hard-stops agents at the weekly spend cap with a quota-override approval request.
+- **Lifecycle review and retirement**: Agent-authored automations now enter review after configurable creation or run thresholds, expire on schedule, surface health-check drift findings, and support retire/extend routes through the same operator review flow.
+- **Dependency-revocation guardrail**: Removing a modify grant or narrowing MCP access now pauses the affected automation, creates a dependency-revoked lifecycle review, and keeps the automation blocked from agent mutation until the review is acknowledged.
+- **MCP discovery overlay**: The MCP catalog endpoint now reports connected, cataloged, disabled, and uncataloged server states, and agents can file capability-gap requests through `mcp_request_capability` into the same approval queue used for other governed actions.
 
 ### Control panel UX
 

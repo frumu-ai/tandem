@@ -26,6 +26,7 @@ pub(super) fn build_router(state: AppState) -> Router {
     router = super::routes_config_providers::apply(router);
     router = super::routes_system_api::apply(router);
     router = super::routes_routines_automations::apply(router);
+    router = super::routes_governance::apply(router);
     router = super::routes_permissions_questions::apply(router);
     router = super::routes_resources::apply(router);
     router = super::routes_capabilities::apply(router);

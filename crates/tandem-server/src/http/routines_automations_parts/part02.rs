@@ -1,3 +1,28 @@
+fn merge_automation_capabilities_metadata(
+    metadata: Option<Value>,
+    capabilities: Option<crate::automation_v2::governance::AutomationDeclaredCapabilities>,
+) -> Result<Option<Value>, (StatusCode, Json<Value>)> {
+    let Some(capabilities) = capabilities else {
+        return Ok(metadata);
+    };
+    match metadata {
+        None => Ok(Some(json!({ "capabilities": capabilities }))),
+        Some(Value::Object(mut map)) => {
+            map.insert(
+                "capabilities".to_string(),
+                serde_json::to_value(capabilities).unwrap_or_else(|_| json!({})),
+            );
+            Ok(Some(Value::Object(map)))
+        }
+        Some(_) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "metadata must be an object when capabilities are declared",
+                "code": "AUTOMATION_V2_INVALID_METADATA",
+            })),
+        )),
+    }
+}
 
 pub(super) async fn automations_patch(
     State(state): State<AppState>,
@@ -520,11 +545,125 @@ pub(super) fn normalize_automation_v2_agent(
     agent
 }
 
+fn normalize_sorted_strings(values: &[String]) -> Vec<String> {
+    let mut values = values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn removed_strings(before: &[String], after: &[String]) -> Vec<String> {
+    let after = after.iter().collect::<std::collections::HashSet<_>>();
+    let mut removed = before
+        .iter()
+        .filter(|value| !after.contains(value))
+        .cloned()
+        .collect::<Vec<_>>();
+    removed.sort();
+    removed.dedup();
+    removed
+}
+
+fn mcp_policy_dependency_revocation_details(
+    before_agents: &[AutomationAgentProfile],
+    after_agents: &[AutomationAgentProfile],
+) -> Option<Value> {
+    let before_map = before_agents
+        .iter()
+        .map(|agent| (&agent.agent_id, agent))
+        .collect::<std::collections::HashMap<_, _>>();
+    let after_map = after_agents
+        .iter()
+        .map(|agent| (&agent.agent_id, agent))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let mut changes = Vec::new();
+    for (agent_id, previous) in before_map {
+        let Some(next) = after_map.get(agent_id) else {
+            changes.push(json!({
+                "agentID": agent_id,
+                "changeType": "agent_removed",
+                "previousPolicy": &previous.mcp_policy,
+                "nextPolicy": Value::Null,
+                "removedServers": normalize_sorted_strings(&previous.mcp_policy.allowed_servers),
+                "removedTools": previous
+                    .mcp_policy
+                    .allowed_tools
+                    .as_ref()
+                    .map(|tools| normalize_sorted_strings(tools))
+                    .unwrap_or_default(),
+                "allowedToolsNarrowedFromUnrestricted": previous.mcp_policy.allowed_tools.is_none(),
+            }));
+            continue;
+        };
+
+        let removed_servers = removed_strings(
+            &previous.mcp_policy.allowed_servers,
+            &next.mcp_policy.allowed_servers,
+        );
+        let previous_tools = previous
+            .mcp_policy
+            .allowed_tools
+            .as_ref()
+            .map(|tools| normalize_sorted_strings(tools));
+        let next_tools = next
+            .mcp_policy
+            .allowed_tools
+            .as_ref()
+            .map(|tools| normalize_sorted_strings(tools));
+        let removed_tools = match (&previous_tools, &next_tools) {
+            (None, None) => Vec::new(),
+            (None, Some(_)) => Vec::new(),
+            (Some(previous), None) => previous.clone(),
+            (Some(previous), Some(next)) => removed_strings(previous, next),
+        };
+        let allowed_tools_narrowed_from_unrestricted =
+            previous.mcp_policy.allowed_tools.is_none() && next.mcp_policy.allowed_tools.is_some();
+        if removed_servers.is_empty()
+            && removed_tools.is_empty()
+            && !allowed_tools_narrowed_from_unrestricted
+        {
+            continue;
+        }
+        changes.push(json!({
+            "agentID": agent_id,
+            "changeType": "mcp_policy_narrowed",
+            "previousPolicy": &previous.mcp_policy,
+            "nextPolicy": &next.mcp_policy,
+            "removedServers": removed_servers,
+            "removedTools": removed_tools,
+            "allowedToolsNarrowedFromUnrestricted": allowed_tools_narrowed_from_unrestricted,
+        }));
+    }
+
+    if changes.is_empty() {
+        None
+    } else {
+        Some(json!({
+            "trigger": "mcp_policy_narrowed",
+            "dependencyChanges": changes,
+        }))
+    }
+}
+
 pub(super) async fn automations_v2_create(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Json(input): Json<AutomationV2CreateInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let now = crate::now_ms();
+    let provenance = super::governance::resolve_governance_provenance(
+        &headers,
+        &tenant_context,
+        &request_principal,
+    );
     let workspace_root = input
         .workspace_root
         .as_deref()
@@ -539,6 +678,15 @@ pub(super) async fn automations_v2_create(
                 })),
             )
         })?;
+    let metadata = merge_automation_capabilities_metadata(input.metadata, input.capabilities)?;
+    let declared_capabilities =
+        crate::automation_v2::governance::AutomationDeclaredCapabilities::from_metadata(
+            metadata.as_ref(),
+        );
+    state
+        .can_create_automation_for_actor(&provenance.creator, &provenance, &declared_capabilities)
+        .await
+        .map_err(super::governance::governance_error_response)?;
     let automation = AutomationV2Spec {
         automation_id: input
             .automation_id
@@ -564,9 +712,14 @@ pub(super) async fn automations_v2_create(
         output_targets: input.output_targets.unwrap_or_default(),
         created_at_ms: now,
         updated_at_ms: now,
-        creator_id: input.creator_id.unwrap_or_else(|| "unknown".to_string()),
+        creator_id: provenance
+            .creator
+            .actor_id
+            .clone()
+            .or(input.creator_id)
+            .unwrap_or_else(|| "unknown".to_string()),
         workspace_root,
-        metadata: input.metadata,
+        metadata,
         next_fire_at_ms: None,
         last_fired_at_ms: None,
         scope_policy: input.scope_policy,
@@ -588,6 +741,24 @@ pub(super) async fn automations_v2_create(
             })),
         )
     })?;
+    let _ = state
+        .set_automation_governance_provenance(&stored.automation_id, provenance.clone())
+        .await;
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.created",
+        &tenant_context,
+        provenance
+            .creator
+            .actor_id
+            .clone()
+            .or_else(|| provenance.creator.source.clone()),
+        json!({
+            "automationID": stored.automation_id.clone(),
+            "provenance": provenance.clone(),
+        }),
+    )
+    .await;
     Ok(Json(json!({ "automation": stored })))
 }
 
@@ -616,6 +787,9 @@ pub(super) async fn automations_v2_get(
 
 pub(super) async fn automations_v2_patch(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<AutomationV2PatchInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -627,6 +801,18 @@ pub(super) async fn automations_v2_patch(
             ),
         ));
     };
+    let actor =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    let governance = state
+        .get_or_bootstrap_automation_governance(&automation)
+        .await;
+    state
+        .can_mutate_automation(&id, &actor, false)
+        .await
+        .map_err(super::governance::governance_error_response)?;
+    let previous_declared_capabilities = governance.declared_capabilities.clone();
+    let before = automation.clone();
+    let input_agents = input.agents.clone();
     if let Some(name) = input.name {
         automation.name = name;
     }
@@ -639,7 +825,7 @@ pub(super) async fn automations_v2_patch(
     if let Some(schedule) = input.schedule {
         automation.schedule = schedule;
     }
-    if let Some(agents) = input.agents {
+    if let Some(agents) = input_agents.clone() {
         automation.agents = agents
             .into_iter()
             .map(normalize_automation_v2_agent)
@@ -667,9 +853,11 @@ pub(super) async fn automations_v2_patch(
             })?;
         automation.workspace_root = Some(normalized);
     }
-    if let Some(metadata) = input.metadata {
-        automation.metadata = Some(metadata);
-    }
+    let current_metadata = automation.metadata.clone();
+    automation.metadata = merge_automation_capabilities_metadata(
+        input.metadata.or_else(|| current_metadata),
+        input.capabilities,
+    )?;
     if let Some(scope_policy) = input.scope_policy {
         automation.scope_policy = Some(scope_policy);
     }
@@ -679,6 +867,18 @@ pub(super) async fn automations_v2_patch(
     if let Some(handoff_config) = input.handoff_config {
         automation.handoff_config = Some(handoff_config);
     }
+    let next_declared_capabilities =
+        crate::automation_v2::governance::AutomationDeclaredCapabilities::from_metadata(
+            automation.metadata.as_ref(),
+        );
+    state
+        .can_escalate_declared_capabilities(
+            &actor,
+            &previous_declared_capabilities,
+            &next_declared_capabilities,
+        )
+        .await
+        .map_err(super::governance::governance_error_response)?;
     validate_shared_context_pack_bindings(
         &state,
         automation.workspace_root.as_deref(),
@@ -694,30 +894,92 @@ pub(super) async fn automations_v2_patch(
             })),
         )
     })?;
+    let dependency_revocation_evidence = input_agents
+        .as_ref()
+        .and_then(|_| mcp_policy_dependency_revocation_details(&before.agents, &stored.agents));
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.updated",
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
+        json!({
+            "automationID": id,
+            "before": before,
+            "after": stored.clone(),
+        }),
+    )
+    .await;
+    if let Some(evidence) = dependency_revocation_evidence {
+        state
+            .pause_automation_for_dependency_revocation(
+                &id,
+                "mcp capabilities were narrowed".to_string(),
+                evidence,
+            )
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": error.to_string(),
+                        "code": "AUTOMATION_GOVERNANCE_DEPENDENCY_PAUSE_FAILED",
+                    })),
+                )
+            })?;
+    }
     Ok(Json(json!({ "automation": stored })))
 }
 
 pub(super) async fn automations_v2_delete(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let deleted = state.delete_automation_v2(&id).await.map_err(|error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "error": error.to_string(),
-                "code": "AUTOMATION_V2_DELETE_FAILED",
-            })),
-        )
-    })?;
-    if deleted.is_none() {
+    let Some(automation) = state.get_automation_v2(&id).await else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(
                 json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": id}),
             ),
         ));
-    }
+    };
+    let actor =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    let _ = state
+        .get_or_bootstrap_automation_governance(&automation)
+        .await;
+    state
+        .can_mutate_automation(&id, &actor, true)
+        .await
+        .map_err(super::governance::governance_error_response)?;
+    let deleted = state
+        .delete_automation_v2_with_governance(&id, actor)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "AUTOMATION_V2_DELETE_FAILED",
+                })),
+            )
+        })?;
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.deleted",
+        &tenant_context,
+        request_principal
+            .actor_id
+            .clone()
+            .or_else(|| tenant_context.actor_id.clone()),
+        json!({
+            "automationID": id,
+            "automation": deleted,
+        }),
+    )
+    .await;
     Ok(Json(
         json!({ "ok": true, "deleted": true, "automationID": id }),
     ))
@@ -725,6 +987,9 @@ pub(super) async fn automations_v2_delete(
 
 pub(super) async fn automations_v2_run_now(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<AutomationV2RunNowInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -736,6 +1001,15 @@ pub(super) async fn automations_v2_run_now(
             ),
         ));
     };
+    let actor =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    let _ = state
+        .get_or_bootstrap_automation_governance(&automation)
+        .await;
+    state
+        .can_mutate_automation(&id, &actor, false)
+        .await
+        .map_err(super::governance::governance_error_response)?;
     let dry_run = input.dry_run;
     let run = if dry_run {
         state
@@ -781,6 +1055,22 @@ pub(super) async fn automations_v2_run_now(
         .await
         .unwrap_or(run);
     let _ = super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &run).await;
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.run_requested",
+        &tenant_context,
+        request_principal
+            .actor_id
+            .clone()
+            .or_else(|| tenant_context.actor_id.clone()),
+        json!({
+            "automationID": id,
+            "runID": run.run_id,
+            "dryRun": dry_run,
+            "requestedBy": actor,
+        }),
+    )
+    .await;
     let context_run_id = super::context_runs::automation_v2_context_run_id(&run.run_id);
     Ok(Json(json!({
         "ok": true,
@@ -793,6 +1083,9 @@ pub(super) async fn automations_v2_run_now(
 
 pub(super) async fn automations_v2_pause(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -804,6 +1097,15 @@ pub(super) async fn automations_v2_pause(
             ),
         ));
     };
+    let actor =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    let _ = state
+        .get_or_bootstrap_automation_governance(&automation)
+        .await;
+    state
+        .can_mutate_automation(&id, &actor, false)
+        .await
+        .map_err(super::governance::governance_error_response)?;
     automation.status = AutomationV2Status::Paused;
     let stored = state.put_automation_v2(automation).await.map_err(|error| {
         (
@@ -847,11 +1149,29 @@ pub(super) async fn automations_v2_pause(
                 .await;
         }
     }
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.paused",
+        &tenant_context,
+        request_principal
+            .actor_id
+            .clone()
+            .or_else(|| tenant_context.actor_id.clone()),
+        json!({
+            "automationID": id,
+            "reason": reason,
+            "automation": stored.clone(),
+        }),
+    )
+    .await;
     Ok(Json(json!({ "ok": true, "automation": stored })))
 }
 
 pub(super) async fn automations_v2_resume(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Some(mut automation) = state.get_automation_v2(&id).await else {
@@ -862,6 +1182,15 @@ pub(super) async fn automations_v2_resume(
             ),
         ));
     };
+    let actor =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    let _ = state
+        .get_or_bootstrap_automation_governance(&automation)
+        .await;
+    state
+        .can_mutate_automation(&id, &actor, false)
+        .await
+        .map_err(super::governance::governance_error_response)?;
     automation.status = AutomationV2Status::Active;
     let stored = state.put_automation_v2(automation).await.map_err(|error| {
         (
@@ -869,6 +1198,20 @@ pub(super) async fn automations_v2_resume(
             Json(json!({"error": error.to_string(), "code":"AUTOMATION_V2_UPDATE_FAILED"})),
         )
     })?;
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.resumed",
+        &tenant_context,
+        request_principal
+            .actor_id
+            .clone()
+            .or_else(|| tenant_context.actor_id.clone()),
+        json!({
+            "automationID": id,
+            "automation": stored.clone(),
+        }),
+    )
+    .await;
     Ok(Json(json!({ "ok": true, "automation": stored })))
 }
 
