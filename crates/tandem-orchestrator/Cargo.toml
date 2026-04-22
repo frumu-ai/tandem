@@ -1,6 +1,6 @@
 [package]
 name = "tandem-orchestrator"
-version = "0.4.36"
+version = "0.4.37"
 description = "Orchestrator models for Tandem missions and routines"
 edition = "2021"
 license = "MIT OR Apache-2.0"

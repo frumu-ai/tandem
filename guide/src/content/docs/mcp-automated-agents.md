@@ -4,6 +4,8 @@ title: MCP Automated Agents
 
 Set up scheduled agents that can use MCP connector tools with explicit per-agent tool allowlists.
 
+If you are building a governed recursive agent that has to inspect Tandem, discover a gap, request approval, author an automation, and publish a report, start with [Self-Operator Playbook](./self-operator-playbook/).
+
 If another LLM or agent is generating the workflow or mission definition itself, use [Prompting Workflows And Missions](./prompting-workflows-and-missions/) to keep stage prompts, handoffs, and recurring mission structure strong.
 
 For the operational path after prompting, use [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/). For engine tokens and authenticated HTTP or SDK calls, use [Engine Authentication For Agents](./engine-authentication-for-agents/).
@@ -24,6 +26,8 @@ For provider and model routing choices, use [Choosing Providers And Models For A
 - Auto MCP tool discovery on connect (`initialize` + `tools/list`)
 - Namespaced MCP tools in the global tool registry (for example `mcp.arcade.search`)
 - `mcp_list` for a structured inventory of configured and connected MCP servers/tools
+- `mcp_list_catalog` for the catalog overlay that distinguishes connected, cataloged, disabled, and uncataloged servers
+- `mcp_request_capability` for filing a capability gap into the approval queue
 - Routine-level `allowed_tools` policy for scheduled bots
 - Agent Automation visibility for connector status and scheduled runs
 
@@ -34,15 +38,16 @@ The public discovery path is:
 
 1. Use `mcp_list` to get the engine's current MCP inventory snapshot.
 2. Treat that as the low-context discovery step before loading any larger tool lists into the prompt.
-3. Connect the MCP server.
-4. List discovered tools with `GET /mcp/tools`.
-5. List all engine tool IDs with `GET /tool/ids`.
-6. Filter the returned tool list locally by prefix, server name, or tool name.
-7. Execute the chosen tool directly through the engine or via `mcp_debug` when you need to call a remote MCP server by URL.
+3. If you need to distinguish cataloged versus uncataloged capabilities, call `mcp_list_catalog`.
+4. Connect the MCP server through the normal operator path.
+5. List discovered tools with `GET /mcp/tools`.
+6. List all engine tool IDs with `GET /tool/ids`.
+7. Filter the returned tool list locally by prefix, server name, or tool name.
+8. Execute the chosen tool directly through the engine or via `mcp_debug` when you need to call a remote MCP server by URL.
 
-If the required MCP server or tool is missing from `mcp_list`, do not guess. Tell the user which MCP must be connected or added, or switch to a workflow that only uses already-available tools.
+If the required MCP server or tool is missing from `mcp_list`, do not guess. If `mcp_list_catalog` shows it as cataloged but not connected, ask a human to connect it. If it is uncataloged, file a capability request instead of switching to a different tool.
 
-If the workflow requires an external tool the agent cannot see in `mcp_list`, stop and explain that the MCP must be added or connected before compilation can continue.
+If the workflow requires an external tool the agent cannot see in `mcp_list`, stop and explain whether the server is cataloged, disconnected, or uncataloged before continuing.
 
 The engine does have internal semantic tool retrieval for prompt-time tool selection, but that ranking path is separate from `mcp_list` and is not a public registry search endpoint.
 
@@ -668,5 +673,8 @@ Use this checklist before shipping:
 - [Headless Service](./headless-service/)
 - [Agent Command Center](./agent-command-center/)
 - [WebMCP for Agents](./webmcp-for-agents/)
+- [Self-Operator Playbook](./self-operator-playbook/)
+- [MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/)
+- [Automation Governance Lifecycle](./reference/governance-lifecycle/)
 - [Engine Commands](./reference/engine-commands/)
 - [Tools Reference](./reference/tools/)

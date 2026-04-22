@@ -5,7 +5,7 @@ description: Telegram, Discord, and Slack channel behavior, media handling, and 
 
 Tandem channels let users chat with the same engine sessions from Telegram, Discord, or Slack.
 
-For the full runtime model behind this behavior, see [How Tandem Works Under the Hood](./how-tandem-works/).
+For the full runtime model behind this behavior, see [How Tandem Works Under the Hood](https://docs.tandem.ac/how-tandem-works/).
 
 ## What channels do
 
@@ -130,7 +130,7 @@ Channel sessions now keep memory in two layers:
 
 This lets future channel sessions recall prior work without loading full transcript history into every run.
 
-For the storage-level breakdown of these layers, see [Memory Internals](./memory-internals/).
+For the storage-level breakdown of these layers, see [Memory Internals](https://docs.tandem.ac/memory-internals/).
 
 ### What gets archived
 
@@ -148,7 +148,7 @@ The engine dedupes retries of the same exchange automatically.
 - Raw session history remains the source of truth even if retrieval memory is compacted or re-ranked later.
 - Prompt context still stays bounded by normal memory search limits rather than unbounded chat log replay.
 
-For the engine-side explanation of this layering, see [How Tandem Works Under the Hood](./how-tandem-works/).
+For the engine-side explanation of this layering, see [How Tandem Works Under the Hood](https://docs.tandem.ac/how-tandem-works/).
 
 ## Workflow planning from channels
 

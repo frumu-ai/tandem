@@ -5,7 +5,7 @@ description: Canonical reference for Tandem provenance chains, capability grants
 
 Tandem keeps governance explicit so agent-authored work stays auditable, scoped, and revocable.
 
-If you are looking for the runtime token and transport layer, see [Engine Authentication For Agents](../engine-authentication-for-agents/).
+If you are looking for the runtime token and transport layer, see [Engine Authentication For Agents](https://docs.tandem.ac/engine-authentication-for-agents/).
 This page is about authorization scope, lineage, approvals, and audit.
 
 ## The short version
@@ -52,6 +52,8 @@ Use an approval queue when:
 
 Agents should emit structured requests for review instead of self-approving.
 
+For the concrete state machine behind these reviews, see [Automation Governance Lifecycle](./governance-lifecycle/).
+
 ## Audit events
 
 Audit events make the governance model inspectable.
@@ -74,8 +76,11 @@ That trail is what lets Tandem answer:
 
 ## Related docs
 
-- [How Tandem Works Under the Hood](../how-tandem-works/)
-- [Creating And Running Workflows And Missions](../creating-and-running-workflows-and-missions/)
-- [Prompting Workflows And Missions](../prompting-workflows-and-missions/)
-- [Agent Workflow And Mission Quickstart](../agent-workflow-mission-quickstart/)
-- [Engine Authentication For Agents](../engine-authentication-for-agents/)
+- [How Tandem Works Under the Hood](https://docs.tandem.ac/how-tandem-works/)
+- [Creating And Running Workflows And Missions](https://docs.tandem.ac/creating-and-running-workflows-and-missions/)
+- [Prompting Workflows And Missions](https://docs.tandem.ac/prompting-workflows-and-missions/)
+- [Agent Workflow And Mission Quickstart](https://docs.tandem.ac/agent-workflow-mission-quickstart/)
+- [Engine Authentication For Agents](https://docs.tandem.ac/engine-authentication-for-agents/)
+- [Self-Operator Playbook](../self-operator-playbook/)
+- [MCP Capability Discovery And Request Flow](../mcp-capability-discovery-and-request-flow/)
+- [Automation Governance Lifecycle](./governance-lifecycle/)

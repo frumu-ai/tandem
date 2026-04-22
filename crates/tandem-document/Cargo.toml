@@ -1,6 +1,6 @@
 [package]
 name = "tandem-document"
-version = "0.4.36"
+version = "0.4.37"
 description = "Document text extraction for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"

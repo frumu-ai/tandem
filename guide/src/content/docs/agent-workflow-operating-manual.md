@@ -45,6 +45,8 @@ Token rules:
 8. Repair or recover runs instead of rebuilding the whole workflow when the failure is local.
 9. If the task turns into code edits, follow [Coding Tasks With Tandem](./coding-tasks-with-tandem/) for the workspace, diff, and verification loop.
 
+If the task is a governed recursive automation or a Self-Operator loop, also follow [Self-Operator Playbook](./self-operator-playbook/) and [Automation Governance Lifecycle](./reference/governance-lifecycle/).
+
 ## What to ask before compiling
 
 Ask only the questions that change the plan:
@@ -111,6 +113,7 @@ Agents should preserve and read provenance:
 - run id
 
 For the schema-level governance model behind those records, see [Governance Reference](./reference/governance/).
+For the concrete review and pause state machine, see [Automation Governance Lifecycle](./reference/governance-lifecycle/).
 
 If you are helping a user find an older workflow, search from the Workflow Center first.
 
@@ -140,3 +143,9 @@ const applied = await client.workflowPlans.apply({
 - Do not apply a workflow before validating it.
 - Do not arm a recurring schedule on import without showing the user.
 - Do not rebuild a failed workflow from scratch when repair or recover is enough.
+
+## Related Docs
+
+- [Self-Operator Playbook](./self-operator-playbook/)
+- [MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/)
+- [Automation Governance Lifecycle](./reference/governance-lifecycle/)

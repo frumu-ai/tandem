@@ -42,6 +42,8 @@ _You want to deploy Tandem to a VPS or headless server so that you, or your exte
 _You want to build custom clients, connect external tools via MCP, or programmatically trigger agent workflows._
 
 - **[Building Automated Agents](./mcp-automated-agents/)** — Trigger agent pipelines automatically.
+- **[Self-Operator Playbook](./self-operator-playbook/)** — Operate governed recursive automations safely.
+- **[MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/)** — Distinguish connected, cataloged, and uncataloged MCPs before requesting new capabilities.
 - **[Prompting Workflows And Missions](./prompting-workflows-and-missions/)** — Turn human intent into strong staged workflows and missions.
 - **[Agent Workflow And Mission Quickstart](./agent-workflow-mission-quickstart/)** — Minimal checklist for agents creating and running Tandem systems.
 - **[Tandem Wow Demo Playbook](./tandem-wow-demo-playbook/)** — Teach agents how to turn docs into showcase payloads with clear handoffs and tight tool scopes.
@@ -51,6 +53,7 @@ _You want to build custom clients, connect external tools via MCP, or programmat
 - **[Build an Automation With the AI Assistant](./automation-composer-workflows/)** — Prompt-first workflow authoring with preview, validation, and run-now.
 - **[Memory Internals](./memory-internals/)** — Learn how Tandem stores transcript history, retrieval memory, replay state, and reusable knowledge.
 - **[Governance Reference](./reference/governance/)** — Review provenance chains, capability grants, approval queues, and audit events.
+- **[Automation Governance Lifecycle](./reference/governance-lifecycle/)** — Inspect the concrete review, pause, approval, and retirement state machine.
 - **[Engine Authentication For Agents](./engine-authentication-for-agents/)** — Get the token, authorize calls, and connect agents safely.
 - **[Autonomous Coding Agents with GitHub Projects](./autonomous-coding-agents-github-projects/)** — Build coding agents on Tandem's engine-native GitHub MCP path.
 - **[Coding Tasks With Tandem](./coding-tasks-with-tandem/)** — Learn the execution contract for worktrees, diffs, commits, and verification.

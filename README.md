@@ -17,6 +17,11 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
+<p align="center">
+  <strong>Interested in Tandem Hosted?</strong>
+  <a href="https://tandem.ac/agents?utm_source=github&utm_medium=readme&utm_campaign=hosted_waitlist&utm_content=top_banner">Join the waitlist</a>
+</p>
+
 Tandem is an **engine-owned workflow runtime** for coordinated autonomous work.
 
 While the current landscape of AI agents is flooded with "chat-first assistants," these conversational routing models inevitably fail at scale due to context bloat and concurrency blindness. **Chat is fine as an interface, but it is weak as an authoritative coordination substrate for parallel, durable engineering workflows.**

@@ -276,7 +276,7 @@ curl -s http://127.0.0.1:39731/global/health \
 
 ## See Also
 
-- [Headless Service](./headless-service/)
-- [Channel Integrations](./channel-integrations/)
-- [Configuration](./configuration/)
-- [Build from Source](./build-from-source/)
+- [Headless Service](https://docs.tandem.ac/headless-service/)
+- [Channel Integrations](https://docs.tandem.ac/channel-integrations/)
+- [Configuration](https://docs.tandem.ac/configuration/)
+- [Build from Source](https://docs.tandem.ac/build-from-source/)

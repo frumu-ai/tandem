@@ -6,7 +6,7 @@ title: Agents & Sessions
 
 In Tandem, an **Agent** is a specialized persona with specific instructions, permissions, and tools.
 
-For policy-gated multi-agent spawning and lineage tracking, see [Agent Teams](./agent-teams/).
+For policy-gated multi-agent spawning and lineage tracking, see [Agent Teams](https://docs.tandem.ac/agent-teams/).
 
 ### Built-in Agents
 
@@ -41,7 +41,7 @@ You are a code review agent. Focus on finding bugs and security issues.
 
 A **Session** is a conversation thread with an agent.
 
-For the full runtime walkthrough, see [How Tandem Works Under the Hood](./how-tandem-works/).
+For the full runtime walkthrough, see [How Tandem Works Under the Hood](https://docs.tandem.ac/how-tandem-works/).
 
 - Sessions are persisted in `storage/session/`.
 - Each session maintains its own message history and context.

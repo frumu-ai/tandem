@@ -88,6 +88,10 @@ pub(crate) fn resolve_automation_v2_runs_archive_path() -> PathBuf {
     resolve_canonical_data_file_path("automation_v2_runs_archive.json")
 }
 
+pub(crate) fn resolve_automation_governance_path() -> PathBuf {
+    resolve_canonical_data_file_path("automation_governance.json")
+}
+
 pub(crate) fn resolve_optimization_campaigns_path() -> PathBuf {
     resolve_canonical_data_file_path("optimization_campaigns.json")
 }

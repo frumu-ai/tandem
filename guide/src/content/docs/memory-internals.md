@@ -225,9 +225,9 @@ The most common mistakes are:
 
 ## Related docs
 
-- [How Tandem Works Under the Hood](./how-tandem-works/)
-- [Agents & Sessions](./agents-and-sessions/)
-- [Channel Integrations](./channel-integrations/)
-- [Headless Service](./headless-service/)
-- [TypeScript SDK](./sdk/typescript/)
-- [Python SDK](./sdk/python/)
+- [How Tandem Works Under the Hood](https://docs.tandem.ac/how-tandem-works/)
+- [Agents & Sessions](https://docs.tandem.ac/agents-and-sessions/)
+- [Channel Integrations](https://docs.tandem.ac/channel-integrations/)
+- [Headless Service](https://docs.tandem.ac/headless-service/)
+- [TypeScript SDK](https://docs.tandem.ac/sdk/typescript/)
+- [Python SDK](https://docs.tandem.ac/sdk/python/)

@@ -33,7 +33,7 @@ When you are building agent flows around `tandem-engine`, WebMCP can shorten ite
 
 ## See Also
 
-- [MCP Automated Agents](./mcp-automated-agents/)
-- [Headless Service](./headless-service/)
-- [Tools Reference](./reference/tools/)
+- [MCP Automated Agents](https://docs.tandem.ac/mcp-automated-agents/)
+- [Headless Service](https://docs.tandem.ac/headless-service/)
+- [Tools Reference](https://docs.tandem.ac/reference/tools/)
 - [WebMCP](https://webmcp.dev/)

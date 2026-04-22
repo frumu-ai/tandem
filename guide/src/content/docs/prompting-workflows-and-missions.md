@@ -279,11 +279,11 @@ The same discipline applies whether the blueprint is created by a human, an LLM,
 
 ## See also
 
-- [Agent Workflow And Mission Quickstart](./agent-workflow-mission-quickstart/)
-- [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/)
-- [Engine Authentication For Agents](./engine-authentication-for-agents/)
-- [Control Panel (Web Admin)](./control-panel/)
-- [Agents & Sessions](./agents-and-sessions/)
-- [MCP Automated Agents](./mcp-automated-agents/)
-- [Scheduling Workflows And Automations](./sdk/scheduling-automations/)
-- [Architecture](./architecture/)
+- [Agent Workflow And Mission Quickstart](https://docs.tandem.ac/agent-workflow-mission-quickstart/)
+- [Creating And Running Workflows And Missions](https://docs.tandem.ac/creating-and-running-workflows-and-missions/)
+- [Engine Authentication For Agents](https://docs.tandem.ac/engine-authentication-for-agents/)
+- [Control Panel (Web Admin)](https://docs.tandem.ac/control-panel/)
+- [Agents & Sessions](https://docs.tandem.ac/agents-and-sessions/)
+- [MCP Automated Agents](https://docs.tandem.ac/mcp-automated-agents/)
+- [Scheduling Workflows And Automations](https://docs.tandem.ac/sdk/scheduling-automations/)
+- [Architecture](https://docs.tandem.ac/architecture/)

@@ -146,7 +146,7 @@ This is designed so that:
 - memory retrieval stays much smaller than full transcript replay
 - the raw transcript remains preserved even if retrieval memory is compacted later
 
-For the storage-level breakdown of these layers, see [Memory Internals](./memory-internals/).
+For the storage-level breakdown of these layers, see [Memory Internals](https://docs.tandem.ac/memory-internals/).
 
 ## Security Notes
 
@@ -154,12 +154,12 @@ For the storage-level breakdown of these layers, see [Memory Internals](./memory
 - Put TLS in front of Tandem when exposing it on a network.
 - Do not expose the service directly to the public internet without a reverse proxy.
 
-If an agent or external service needs to create workflows, missions, or automations against this engine, start with [Engine Authentication For Agents](./engine-authentication-for-agents/) and [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/).
+If an agent or external service needs to create workflows, missions, or automations against this engine, start with [Engine Authentication For Agents](https://docs.tandem.ac/engine-authentication-for-agents/) and [Creating And Running Workflows And Missions](https://docs.tandem.ac/creating-and-running-workflows-and-missions/).
 
 ## See Also
 
-- [Engine Commands](./reference/engine-commands/)
-- [MCP Automated Agents](./mcp-automated-agents/)
-- [Configuration](./configuration/)
-- [Start Here](./start-here/)
-- [Headless Deployment (Docker/systemd)](./desktop/headless-deployment/)
+- [Engine Commands](https://docs.tandem.ac/reference/engine-commands/)
+- [MCP Automated Agents](https://docs.tandem.ac/mcp-automated-agents/)
+- [Configuration](https://docs.tandem.ac/configuration/)
+- [Start Here](https://docs.tandem.ac/start-here/)
+- [Headless Deployment (Docker/systemd)](https://docs.tandem.ac/desktop/headless-deployment/)

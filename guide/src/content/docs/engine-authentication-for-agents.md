@@ -147,7 +147,7 @@ After authentication is set up:
 - use V2 automations when the DAG is already known
 - use missions runtime when you are updating mission work state
 
-See [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/) for the path selection guide.
+See [Creating And Running Workflows And Missions](https://docs.tandem.ac/creating-and-running-workflows-and-missions/) for the path selection guide.
 
 ## Safe patterns for agents
 
@@ -224,10 +224,10 @@ Import preview is read-only, but durable import, apply, and repair all mutate en
 
 ## See also
 
-- [Agent Workflow And Mission Quickstart](./agent-workflow-mission-quickstart/)
-- [Choosing Providers And Models For Agents](./choosing-providers-and-models-for-agents/)
-- [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/)
-- [Prompting Workflows And Missions](./prompting-workflows-and-missions/)
-- [Headless Service](./headless-service/)
-- [TypeScript SDK](./sdk/typescript/)
-- [Python SDK](./sdk/python/)
+- [Agent Workflow And Mission Quickstart](https://docs.tandem.ac/agent-workflow-mission-quickstart/)
+- [Choosing Providers And Models For Agents](https://docs.tandem.ac/choosing-providers-and-models-for-agents/)
+- [Creating And Running Workflows And Missions](https://docs.tandem.ac/creating-and-running-workflows-and-missions/)
+- [Prompting Workflows And Missions](https://docs.tandem.ac/prompting-workflows-and-missions/)
+- [Headless Service](https://docs.tandem.ac/headless-service/)
+- [TypeScript SDK](https://docs.tandem.ac/sdk/typescript/)
+- [Python SDK](https://docs.tandem.ac/sdk/python/)

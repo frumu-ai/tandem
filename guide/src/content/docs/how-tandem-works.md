@@ -100,7 +100,7 @@ Channel sessions add a second retrieval layer for long-lived chat integrations:
 
 This is the key reason the docs need a canonical under-the-hood page: if someone asks about "Discord session context" or "Telegram channel memory", the correct answer is not "the whole channel transcript is loaded every time". The correct answer is that Tandem keeps the transcript and retrieval memory separate, then archives selected completed exchanges for reuse.
 
-For a deeper storage-level breakdown of the memory layers, see [Memory Internals](./memory-internals/).
+For a deeper storage-level breakdown of the memory layers, see [Memory Internals](https://docs.tandem.ac/memory-internals/).
 
 ## Channel Flow
 
@@ -171,9 +171,9 @@ The wire format uses stable identifiers like `sessionID` and `runID`, and tool p
 
 ## See Also
 
-- [Architecture](./architecture/)
-- [Agents & Sessions](./agents-and-sessions/)
-- [Memory Internals](./memory-internals/)
-- [Channel Integrations](./channel-integrations/)
-- [Protocol Matrix](./protocol-matrix/)
-- [Engine Commands](./reference/engine-commands/)
+- [Architecture](https://docs.tandem.ac/architecture/)
+- [Agents & Sessions](https://docs.tandem.ac/agents-and-sessions/)
+- [Memory Internals](https://docs.tandem.ac/memory-internals/)
+- [Channel Integrations](https://docs.tandem.ac/channel-integrations/)
+- [Protocol Matrix](https://docs.tandem.ac/protocol-matrix/)
+- [Engine Commands](https://docs.tandem.ac/reference/engine-commands/)
