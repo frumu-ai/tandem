@@ -34,12 +34,35 @@ pub(crate) async fn invoke_planner_provider(
     );
 
     let planner_future = async {
+        let planner_failure = |error: &str| tandem_plan_compiler::api::PlannerInvocationFailure {
+            reason: super::workflow_planner_policy::classify_planner_provider_failure_reason(error)
+                .to_string(),
+            detail: Some(truncate_text(error, 500)),
+        };
+        let completion_fallback = || async {
+            tracing::warn!(
+                session_id = %session_id,
+                provider_id = %model.provider_id,
+                model_id = %model.model_id,
+                "workflow planner stream decode failed; retrying with non-streamed completion"
+            );
+            state
+                .providers
+                .complete_for_provider(
+                    Some(model.provider_id.as_str()),
+                    &prompt,
+                    Some(model.model_id.as_str()),
+                )
+                .await
+                .map(|output| (output, None))
+                .map_err(|error| planner_failure(&error.to_string()))
+        };
         let messages = vec![ChatMessage {
             role: "user".to_string(),
-            content: prompt,
+            content: prompt.clone(),
             attachments: Vec::new(),
         }];
-        let stream = state
+        let stream = match state
             .providers
             .stream_for_provider(
                 Some(model.provider_id.as_str()),
@@ -50,16 +73,16 @@ pub(crate) async fn invoke_planner_provider(
                 cancel.clone(),
             )
             .await
-            .map_err(
-                |error| tandem_plan_compiler::api::PlannerInvocationFailure {
-                    reason:
-                        super::workflow_planner_policy::classify_planner_provider_failure_reason(
-                            &error.to_string(),
-                        )
-                        .to_string(),
-                    detail: Some(truncate_text(&error.to_string(), 500)),
-                },
-            )?;
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                let error_text = error.to_string();
+                if should_retry_planner_completion_fallback(&error_text) {
+                    return completion_fallback().await;
+                }
+                return Err(planner_failure(&error_text));
+            }
+        };
         tokio::pin!(stream);
         let mut output = String::new();
         let mut saw_first_delta = false;
@@ -103,13 +126,11 @@ pub(crate) async fn invoke_planner_provider(
                 | Ok(StreamChunk::ToolCallDelta { .. })
                 | Ok(StreamChunk::ToolCallEnd { .. }) => {}
                 Err(error) => {
-                    return Err(tandem_plan_compiler::api::PlannerInvocationFailure {
-                        reason: super::workflow_planner_policy::classify_planner_provider_failure_reason(
-                            &error.to_string(),
-                        )
-                        .to_string(),
-                        detail: Some(truncate_text(&error.to_string(), 500)),
-                    });
+                    let error_text = error.to_string();
+                    if should_retry_planner_completion_fallback(&error_text) {
+                        return completion_fallback().await;
+                    }
+                    return Err(planner_failure(&error_text));
                 }
             }
         }
@@ -202,5 +223,34 @@ fn truncate_text(input: &str, max_len: usize) -> String {
         format!("{}...", truncated.trim_end())
     } else {
         truncated
+    }
+}
+
+fn should_retry_planner_completion_fallback(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("error decoding response body")
+        || lower.contains("stream chunk error")
+        || lower.contains("unexpected eof")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_retry_planner_completion_fallback;
+
+    #[test]
+    fn planner_completion_fallback_retries_stream_decode_failures() {
+        assert!(should_retry_planner_completion_fallback(
+            "provider stream chunk error: error decoding response body"
+        ));
+        assert!(should_retry_planner_completion_fallback(
+            "stream ended with unexpected eof"
+        ));
+    }
+
+    #[test]
+    fn planner_completion_fallback_ignores_auth_failures() {
+        assert!(!should_retry_planner_completion_fallback(
+            "provider authentication failed (401)"
+        ));
     }
 }

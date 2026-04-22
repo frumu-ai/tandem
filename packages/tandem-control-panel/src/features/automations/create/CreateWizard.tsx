@@ -56,6 +56,11 @@ interface McpServerOption {
   name: string;
   connected: boolean;
   enabled: boolean;
+  authKind: string;
+  lastError: string;
+  pendingAuth: boolean;
+  authMessage: string;
+  authorizationUrl: string;
 }
 
 type PlannerClarificationState = {
@@ -180,6 +185,7 @@ function buildPlannerLatencyAdvisory(wizard: WizardState) {
 
 export const AUTOMATION_WIZARD_CONFIG = parseAutomationWizardConfig(AUTOMATION_WIZARD_SOURCE || "");
 const AUTOMATION_PLANNER_SEED_KEY = "tandem.automations.plannerSeed";
+const AUTOMATION_WIZARD_DRAFT_KEY = "tandem.automations.createWizardDraft";
 
 function createDefaultWizardState(
   defaultProvider: string,
@@ -234,7 +240,24 @@ function normalizeMcpServers(raw: any): McpServerOption[] {
       .map((row: any) => {
         const name = String(row?.name || "").trim();
         if (!name) return null;
-        return { name, connected: !!row?.connected, enabled: row?.enabled !== false };
+        const lastAuthChallenge = row?.last_auth_challenge || row?.lastAuthChallenge || null;
+        const authorizationUrl = safeString(
+          lastAuthChallenge?.authorization_url ||
+            lastAuthChallenge?.authorizationUrl ||
+            row?.authorization_url ||
+            row?.authorizationUrl
+        );
+        const authMessage = safeString(lastAuthChallenge?.message);
+        return {
+          name,
+          connected: !!row?.connected,
+          enabled: row?.enabled !== false,
+          authKind: safeString(row?.auth_kind || row?.authKind).toLowerCase(),
+          lastError: safeString(row?.last_error || row?.lastError),
+          pendingAuth: !!lastAuthChallenge || !!authorizationUrl,
+          authMessage,
+          authorizationUrl,
+        };
       })
       .filter((row): row is McpServerOption => !!row)
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -245,16 +268,50 @@ function normalizeMcpServers(raw: any): McpServerOption[] {
         const cleanName = String(name || "").trim();
         if (!cleanName) return null;
         const cfg = row && typeof row === "object" ? row : {};
+        const lastAuthChallenge =
+          (cfg as any)?.last_auth_challenge || (cfg as any)?.lastAuthChallenge || null;
+        const authorizationUrl = safeString(
+          lastAuthChallenge?.authorization_url ||
+            lastAuthChallenge?.authorizationUrl ||
+            (cfg as any)?.authorization_url ||
+            (cfg as any)?.authorizationUrl
+        );
+        const authMessage = safeString(lastAuthChallenge?.message);
         return {
           name: cleanName,
           connected: !!(cfg as any).connected,
           enabled: (cfg as any).enabled !== false,
+          authKind: safeString((cfg as any).auth_kind || (cfg as any).authKind).toLowerCase(),
+          lastError: safeString((cfg as any).last_error || (cfg as any).lastError),
+          pendingAuth: !!lastAuthChallenge || !!authorizationUrl,
+          authMessage,
+          authorizationUrl,
         };
       })
       .filter((row): row is McpServerOption => !!row)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
   return [];
+}
+
+function saveAutomationWizardDraft(payload: {
+  wizard: WizardState;
+  step: WizardStep;
+  planSource: string;
+}) {
+  try {
+    sessionStorage.setItem(
+      AUTOMATION_WIZARD_DRAFT_KEY,
+      JSON.stringify({
+        wizard: payload.wizard,
+        step: payload.step,
+        plan_source: safeString(payload.planSource) || "automations_page",
+        saved_at: Date.now(),
+      })
+    );
+  } catch {
+    // ignore storage failures
+  }
 }
 
 function toSchedulePayload(wizard: WizardState) {
@@ -462,6 +519,9 @@ export function CreateWizard({
     });
   }, [workspaceDirectories, workspaceSearchQuery]);
   const plannerLatencyAdvisory = useMemo(() => buildPlannerLatencyAdvisory(wizard), [wizard]);
+  const invalidateMcp = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["mcp"] });
+  };
 
   useEffect(() => {
     const configDefaultProvider = String(
@@ -599,6 +659,92 @@ export function CreateWizard({
       toast("err", message);
     },
   });
+  const mcpActionMutation = useMutation({
+    mutationFn: async ({
+      action,
+      server,
+    }: {
+      action: "connect" | "authenticate";
+      server: McpServerOption;
+    }) => {
+      if (action === "connect") return client.mcp.connect(server.name);
+      return api(`/api/engine/mcp/${encodeURIComponent(server.name)}/auth/authenticate`, {
+        method: "POST",
+      });
+    },
+    onSuccess: async (result, vars) => {
+      await invalidateMcp();
+      const pendingAuth =
+        !!(result as any)?.pendingAuth ||
+        !!(result as any)?.lastAuthChallenge ||
+        !!(result as any)?.authorizationUrl;
+      const actionOk = (result as any)?.ok !== false;
+      const challenge = (result as any)?.lastAuthChallenge || {};
+      const challengeUrl = safeString(
+        challenge?.authorization_url ||
+          challenge?.authorizationUrl ||
+          (result as any)?.authorizationUrl ||
+          vars.server.authorizationUrl
+      );
+      const message = safeString(challenge?.message || vars.server.authMessage);
+
+      if (vars.action === "connect") {
+        if (pendingAuth || (!actionOk && vars.server.authKind === "oauth")) {
+          if (challengeUrl) {
+            window.open(challengeUrl, "_blank", "noopener,noreferrer");
+          }
+          toast(
+            "warn",
+            message
+              ? `OAuth authorization required for ${vars.server.name}: ${message}`
+              : `OAuth authorization required for ${vars.server.name}. Finish sign-in in your browser, then click Mark sign-in complete.`
+          );
+          return;
+        }
+        if (!actionOk) {
+          const errorMessage = safeString(
+            (result as any)?.error?.message || (result as any)?.error
+          );
+          toast(
+            "err",
+            errorMessage
+              ? `Failed to connect ${vars.server.name}: ${errorMessage}`
+              : `Failed to connect ${vars.server.name}.`
+          );
+          return;
+        }
+        toast("ok", `Connected ${vars.server.name}.`);
+        return;
+      }
+
+      if (!actionOk && !pendingAuth) {
+        const errorMessage = safeString((result as any)?.error?.message || (result as any)?.error);
+        toast(
+          "err",
+          errorMessage
+            ? `OAuth authorization check failed for ${vars.server.name}: ${errorMessage}`
+            : `OAuth authorization check failed for ${vars.server.name}.`
+        );
+        return;
+      }
+      if (pendingAuth) {
+        if (challengeUrl) {
+          window.open(challengeUrl, "_blank", "noopener,noreferrer");
+        }
+        toast(
+          "warn",
+          message
+            ? `OAuth authorization still pending for ${vars.server.name}: ${message}`
+            : `OAuth authorization still pending for ${vars.server.name}.`
+        );
+        return;
+      }
+      toast("ok", `Marked ${vars.server.name} as signed in.`);
+    },
+    onError: (error) => {
+      toast("err", error instanceof Error ? error.message : String(error));
+    },
+  });
   const validateSkillMutation = useMutation({
     mutationFn: async (skillName: string) => {
       if (!client?.skills?.get || !client?.skills?.validate) return null;
@@ -708,6 +854,11 @@ export function CreateWizard({
       });
     },
     onSuccess: async (res) => {
+      try {
+        sessionStorage.removeItem(AUTOMATION_WIZARD_DRAFT_KEY);
+      } catch {
+        // ignore storage failures
+      }
       const exportStatus = res?.pack_builder_export?.status;
       toast(
         "ok",
@@ -857,7 +1008,29 @@ export function CreateWizard({
   };
 
   useEffect(() => {
-    if (step !== 1) return;
+    try {
+      const rawDraft = sessionStorage.getItem(AUTOMATION_WIZARD_DRAFT_KEY);
+      if (rawDraft) {
+        sessionStorage.removeItem(AUTOMATION_WIZARD_DRAFT_KEY);
+        const saved = JSON.parse(rawDraft);
+        const savedWizard = saved?.wizard;
+        if (savedWizard && typeof savedWizard === "object") {
+          setWizard((current) => ({ ...current, ...(savedWizard as Partial<WizardState>) }));
+          const savedStep = Number(saved?.step);
+          if (savedStep >= 1 && savedStep <= 4) {
+            setStep(savedStep as WizardStep);
+          }
+          const nextPlanSource = safeString(saved?.plan_source);
+          if (nextPlanSource) {
+            setPlanSource(nextPlanSource);
+          }
+          toast("info", "Restored your automation draft after returning from MCP setup.");
+          return;
+        }
+      }
+    } catch {
+      // ignore invalid draft payloads
+    }
     try {
       const raw = sessionStorage.getItem(AUTOMATION_PLANNER_SEED_KEY);
       if (!raw) return;
@@ -871,7 +1044,7 @@ export function CreateWizard({
     } catch {
       return;
     }
-  }, [step]);
+  }, [toast]);
 
   return (
     <div className="flex flex-col h-full gap-4 min-h-0 relative">
@@ -1038,7 +1211,35 @@ export function CreateWizard({
                     : [...s.selectedMcpServers, name],
                 }))
               }
-              onOpenMcpSettings={() => navigate("mcp")}
+              onConnectMcpServer={(name) => {
+                const server = mcpServers.find((row) => row.name === name);
+                if (!server) return;
+                void mcpActionMutation.mutateAsync({ action: "connect", server });
+              }}
+              onCompleteMcpSignIn={(name) => {
+                const server = mcpServers.find((row) => row.name === name);
+                if (!server) return;
+                void mcpActionMutation.mutateAsync({ action: "authenticate", server });
+              }}
+              onRefreshMcpServers={() => {
+                void invalidateMcp();
+              }}
+              onOpenMcpSettings={() => {
+                saveAutomationWizardDraft({ wizard, step, planSource });
+                toast(
+                  "info",
+                  "Saved this automation draft. After connecting your MCPs, return to Automations and the wizard will restore where you left off."
+                );
+                navigate("mcp");
+              }}
+              activeMcpAction={
+                mcpActionMutation.isPending
+                  ? {
+                      name: mcpActionMutation.variables?.server?.name || "",
+                      action: mcpActionMutation.variables?.action || "",
+                    }
+                  : null
+              }
               workspaceRootError={workspaceRootError}
               plannerModelError={plannerModelError}
               workspaceBrowserOpen={workspaceBrowserOpen}

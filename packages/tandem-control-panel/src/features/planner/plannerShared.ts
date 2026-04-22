@@ -66,6 +66,19 @@ function safeString(value: unknown) {
   return String(value || "").trim();
 }
 
+function compactKnowledgeSubject(subject: string) {
+  const clean = safeString(subject);
+  if (!clean) return "";
+  const firstMeaningfulLine =
+    clean
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) || clean;
+  const normalized = firstMeaningfulLine.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 180) return normalized;
+  return `${normalized.slice(0, 177).trimEnd()}...`;
+}
+
 export function formatRelativePlannerTime(updatedAtMs: number) {
   const value = Number(updatedAtMs || 0);
   if (!value) return "unknown";
@@ -339,7 +352,7 @@ export function buildPlannerProviderOptions(options: {
 }
 
 export function buildDefaultKnowledgeOperatorPreferences(subject: string) {
-  const cleanSubject = safeString(subject);
+  const cleanSubject = compactKnowledgeSubject(subject);
   return {
     knowledge: {
       enabled: true,

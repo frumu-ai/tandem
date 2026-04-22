@@ -6,7 +6,16 @@ type ExecutionMode = "single" | "team" | "swarm";
 type WorkflowToolAccessMode = "all" | "custom";
 
 type ProviderOption = { id: string; models: string[] };
-type McpServerOption = { name: string; connected: boolean; enabled: boolean };
+type McpServerOption = {
+  name: string;
+  connected: boolean;
+  enabled: boolean;
+  authKind: string;
+  lastError: string;
+  pendingAuth: boolean;
+  authMessage: string;
+  authorizationUrl: string;
+};
 type ExecutionModeInfo = {
   id: ExecutionMode;
   label: string;
@@ -42,7 +51,11 @@ type Step3ModeProps = {
   mcpServers: McpServerOption[];
   selectedMcpServers: string[];
   onToggleMcpServer: (name: string) => void;
+  onConnectMcpServer: (name: string) => void;
+  onCompleteMcpSignIn: (name: string) => void;
+  onRefreshMcpServers: () => void;
   onOpenMcpSettings: () => void;
+  activeMcpAction: { name: string; action: string } | null;
   workspaceRootError: string;
   plannerModelError: string;
   workspaceBrowserOpen: boolean;
@@ -87,7 +100,11 @@ export function Step3Mode(props: Step3ModeProps) {
     mcpServers,
     selectedMcpServers,
     onToggleMcpServer,
+    onConnectMcpServer,
+    onCompleteMcpSignIn,
+    onRefreshMcpServers,
     onOpenMcpSettings,
+    activeMcpAction,
     workspaceRootError,
     plannerModelError,
     workspaceBrowserOpen,
@@ -104,8 +121,6 @@ export function Step3Mode(props: Step3ModeProps) {
     filteredWorkspaceDirectories,
   } = props;
 
-  const modelOptions = providerOptions.find((p) => p.id === providerId)?.models || [];
-  const plannerModelOptions = providerOptions.find((p) => p.id === plannerProviderId)?.models || [];
   const workspaceSearchQuery = String(workspaceBrowserSearch || "")
     .trim()
     .toLowerCase();
@@ -355,22 +370,107 @@ export function Step3Mode(props: Step3ModeProps) {
       <div className="grid gap-2 rounded-xl border border-slate-700/50 bg-slate-900/30 p-3">
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs uppercase tracking-wide text-slate-500">MCP Servers</div>
-          <button className="tcp-btn h-7 px-2 text-xs" onClick={onOpenMcpSettings}>
-            Add MCP Server
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="tcp-btn h-7 px-2 text-xs"
+              type="button"
+              onClick={onRefreshMcpServers}
+            >
+              Reload
+            </button>
+            <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onOpenMcpSettings}>
+              Open MCP Settings
+            </button>
+          </div>
+        </div>
+        <div className="text-xs text-slate-500">
+          Select the servers this automation may use. You can connect existing servers here, or open
+          MCP Settings to add/edit servers without losing this draft.
         </div>
         {mcpServers.length ? (
-          <div className="flex flex-wrap gap-2">
+          <div className="grid gap-2">
             {mcpServers.map((server) => {
               const isSelected = selectedMcpServers.includes(server.name);
+              const actionPendingForServer = activeMcpAction?.name === server.name;
+              const connectPending =
+                actionPendingForServer && activeMcpAction?.action === "connect";
+              const authPending =
+                actionPendingForServer && activeMcpAction?.action === "authenticate";
               return (
-                <button
+                <div
                   key={server.name}
-                  className={`tcp-btn h-7 px-2 text-xs ${isSelected ? "border-amber-400/60 bg-amber-400/10 text-amber-300" : ""}`}
-                  onClick={() => onToggleMcpServer(server.name)}
+                  className={`grid gap-2 rounded-lg border px-3 py-3 ${
+                    isSelected
+                      ? "border-amber-400/50 bg-amber-400/10"
+                      : "border-slate-700/60 bg-slate-950/20"
+                  }`}
                 >
-                  {server.name} {server.connected ? "• connected" : "• disconnected"}
-                </button>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      className={`text-left ${isSelected ? "text-amber-200" : "text-slate-100"}`}
+                      onClick={() => onToggleMcpServer(server.name)}
+                    >
+                      <div className="font-medium">{server.name}</div>
+                      <div className="text-xs text-slate-400">
+                        {isSelected
+                          ? "Selected for this automation"
+                          : "Click to allow this automation to use the server"}
+                      </div>
+                    </button>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      <span className={server.connected ? "tcp-badge-ok" : "tcp-badge-warn"}>
+                        {server.connected ? "Connected" : "Disconnected"}
+                      </span>
+                      <span className={server.enabled ? "tcp-badge-info" : "tcp-badge-warn"}>
+                        {server.enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </div>
+                  </div>
+                  {server.lastError ? (
+                    <div className="rounded-lg border border-rose-700/60 bg-rose-950/20 px-3 py-2 text-xs text-rose-200">
+                      {server.lastError}
+                    </div>
+                  ) : null}
+                  {server.pendingAuth ? (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                      {server.authMessage ||
+                        "Browser sign-in is still required for this MCP server."}
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    {!server.connected ? (
+                      <button
+                        type="button"
+                        className="tcp-btn h-7 px-2 text-xs"
+                        onClick={() => onConnectMcpServer(server.name)}
+                        disabled={actionPendingForServer}
+                      >
+                        {connectPending ? "Connecting..." : "Connect"}
+                      </button>
+                    ) : null}
+                    {(server.pendingAuth || server.authKind === "oauth") && !server.connected ? (
+                      <button
+                        type="button"
+                        className="tcp-btn h-7 px-2 text-xs"
+                        onClick={() => onCompleteMcpSignIn(server.name)}
+                        disabled={actionPendingForServer}
+                      >
+                        {authPending ? "Checking..." : "Mark Sign-In Complete"}
+                      </button>
+                    ) : null}
+                    {server.authorizationUrl ? (
+                      <a
+                        className="tcp-btn h-7 px-2 text-xs"
+                        href={server.authorizationUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open Sign-In
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
               );
             })}
           </div>

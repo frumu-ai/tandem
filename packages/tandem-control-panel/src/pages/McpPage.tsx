@@ -99,6 +99,7 @@ function getOauthGuidance(name: string, transport: string) {
 }
 
 const CONTROL_PANEL_READINESS_WORKFLOW_ID = "control-panel-readiness";
+const AUTOMATION_WIZARD_DRAFT_KEY = "tandem.automations.createWizardDraft";
 
 function normalizeServerRow(input: any, fallbackName = ""): McpServer | null {
   if (!input || typeof input !== "object") return null;
@@ -294,7 +295,7 @@ function parseCsv(value: string) {
     .filter(Boolean);
 }
 
-export function McpPage({ client, api, toast }: AppPageProps) {
+export function McpPage({ client, api, toast, navigate }: AppPageProps) {
   const queryClient = useQueryClient();
 
   const [name, setName] = useState("");
@@ -311,6 +312,7 @@ export function McpPage({ client, api, toast }: AppPageProps) {
     body: string;
     loading: boolean;
   } | null>(null);
+  const [hasSavedAutomationDraft, setHasSavedAutomationDraft] = useState(false);
 
   const serversQuery = useQuery({
     queryKey: ["mcp", "servers"],
@@ -357,6 +359,14 @@ export function McpPage({ client, api, toast }: AppPageProps) {
       })
       .slice(0, 50);
   }, [catalog.servers, catalogSearch]);
+
+  useEffect(() => {
+    try {
+      setHasSavedAutomationDraft(!!sessionStorage.getItem(AUTOMATION_WIZARD_DRAFT_KEY));
+    } catch {
+      setHasSavedAutomationDraft(false);
+    }
+  }, []);
   useEffect(() => {
     const pendingServers = servers.filter((server) => {
       const authKind = String(server.authKind || "")
@@ -745,483 +755,514 @@ export function McpPage({ client, api, toast }: AppPageProps) {
   };
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[440px_1fr]">
-      <PageCard
-        title="Add MCP Server"
-        subtitle="Paste endpoint URL and optional auth token/header."
-      >
-        <div className="grid gap-3">
-          <div>
-            <label className="mb-1 block text-sm text-slate-300">Name</label>
-            <input
-              className="tcp-input"
-              value={name}
-              onInput={(event) => setName((event.target as HTMLInputElement).value)}
-              placeholder="mcp-server"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm text-slate-300">Transport URL</label>
-            <input
-              className="tcp-input"
-              value={transport}
-              onInput={(event) => {
-                const value = (event.target as HTMLInputElement).value;
-                setTransport(value);
-                if (!name.trim() || name.trim() === "mcp-server" || name.trim() === "composio") {
-                  const inferred = inferNameFromTransport(value);
-                  if (inferred) setName(inferred);
-                }
-                const inferredAuthKind = inferMcpCatalogAuthKind(catalog, name, value);
-                if (inferredAuthKind === "oauth" && (authMode === "none" || authMode === "auto")) {
-                  setAuthMode("oauth");
-                  setToken("");
-                }
-              }}
-              placeholder="https://example.com/mcp"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm text-slate-300">Auth Mode</label>
-            <select
-              className="tcp-select"
-              value={authMode}
-              onChange={(event) => {
-                const nextMode = (event.target as HTMLSelectElement).value;
-                setAuthMode(nextMode);
-                if (nextMode === "oauth") setToken("");
-              }}
-            >
-              <option value="none">No Auth Header</option>
-              <option value="auto">Auto (x-api-key for known providers, else Bearer)</option>
-              <option value="oauth">OAuth</option>
-              <option value="x-api-key">x-api-key</option>
-              <option value="bearer">Authorization Bearer</option>
-              <option value="custom">Custom Header</option>
-            </select>
-          </div>
-          {authMode === "custom" ? (
-            <div>
-              <label className="mb-1 block text-sm text-slate-300">Custom Header Name</label>
-              <input
-                className="tcp-input"
-                value={customHeader}
-                onInput={(event) => setCustomHeader((event.target as HTMLInputElement).value)}
-                placeholder="X-My-Token"
-              />
+    <div className="grid gap-4">
+      {hasSavedAutomationDraft ? (
+        <PageCard title="Automation draft saved" subtitle="Return to the wizard after MCP setup.">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="tcp-subtle text-sm">
+              Your automation draft is preserved in this browser session. When you go back to
+              Automations, the wizard will restore where you left off.
             </div>
-          ) : null}
-          {authMode === "oauth" ? (
-            <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-xs text-slate-200">
-              {authPreviewText}
-            </div>
-          ) : (
-            <div>
-              <label className="mb-1 block text-sm text-slate-300">Token (optional)</label>
-              <input
-                className="tcp-input"
-                type="password"
-                value={token}
-                onInput={(event) => setToken((event.target as HTMLInputElement).value)}
-                placeholder="token"
-              />
-              <p className="tcp-subtle mt-2 text-xs">{authPreviewText}</p>
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2">
             <button
-              className="tcp-btn"
-              onClick={() => void handleAdd(false)}
-              disabled={actionMutation.isPending}
-            >
-              Add
-            </button>
-            <button
+              type="button"
               className="tcp-btn-primary"
-              onClick={() => void handleAdd(true)}
-              disabled={actionMutation.isPending}
+              onClick={() => navigate("automations")}
             >
-              <i data-lucide="plug-zap"></i>
-              Add + Connect
+              Return to Automations
             </button>
           </div>
-        </div>
-      </PageCard>
+        </PageCard>
+      ) : null}
 
-      <div className="grid gap-4">
+      <div className="grid gap-4 xl:grid-cols-[440px_1fr]">
         <PageCard
-          title={`Remote MCP Packs (${catalog.count})`}
-          subtitle={
-            catalog.generatedAt ? `Generated ${catalog.generatedAt}` : "Catalog unavailable"
-          }
+          title="Add MCP Server"
+          subtitle="Paste endpoint URL and optional auth token/header."
         >
-          <p className="tcp-subtle mb-3 text-xs">
-            Remote MCP packs exported as per-server TOML templates. Apply to prefill transport/name.
-          </p>
-          <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
-            <input
-              className="tcp-input"
-              placeholder="Search pack name, slug, or URL"
-              value={catalogSearch}
-              onInput={(event) => setCatalogSearch((event.target as HTMLInputElement).value)}
-            />
-            <button className="tcp-btn" onClick={() => void catalogQuery.refetch()}>
-              <i data-lucide="refresh-cw"></i>
-              Refresh
-            </button>
-          </div>
-          <div className="grid max-h-[520px] gap-2 overflow-auto pr-1 md:grid-cols-2 2xl:grid-cols-3">
-            {filteredCatalog.length ? (
-              filteredCatalog.map((row) => {
-                const alreadyConfigured = configuredServerNames.has(
-                  String(row.serverConfigName || row.slug || "").toLowerCase()
-                );
-                return (
-                  <div key={row.slug} className="tcp-list-item grid h-full content-start gap-2">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <div className="font-semibold">{row.name}</div>
-                        <div className="tcp-subtle text-xs">
-                          {row.slug}
-                          {row.requiresSetup ? " · setup required" : ""}
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <span className="tcp-badge-info">Tools: {row.toolCount}</span>
-                        {row.authKind === "oauth" ? (
-                          <span className="tcp-badge-info">OAuth</span>
-                        ) : (
-                          <span className={row.requiresAuth ? "tcp-badge-warn" : "tcp-badge-ok"}>
-                            {row.requiresAuth ? "Auth" : "Authless"}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="tcp-subtle line-clamp-2 break-all text-xs">
-                      {row.transportUrl}
-                    </div>
-                    {row.description ? (
-                      <div className="line-clamp-2 text-xs text-slate-200">{row.description}</div>
-                    ) : null}
-                    {row.authKind === "oauth" ? (
-                      <div className="rounded-xl border border-sky-700/40 bg-sky-950/20 px-3 py-2 text-xs text-sky-100">
-                        Add this pack, then finish the browser sign-in flow. Tandem will keep the
-                        server pending until authorization completes.
-                      </div>
-                    ) : null}
-                    <div className="mt-auto flex flex-wrap gap-2">
-                      <button
-                        className="tcp-btn"
-                        onClick={() => {
-                          setName(normalizeName(row.serverConfigName || row.slug || row.name));
-                          setTransport(row.transportUrl);
-                          setAuthMode(row.authKind === "oauth" ? "oauth" : "none");
-                          if (row.authKind === "oauth") setToken("");
-                          toast(
-                            "ok",
-                            row.authKind === "oauth"
-                              ? `Loaded pack ${row.name}. Add it to start browser sign-in.`
-                              : `Loaded pack ${row.name}. Add + Connect when ready.`
-                          );
-                        }}
-                      >
-                        Apply
-                      </button>
-                      <button
-                        className="tcp-btn"
-                        disabled={alreadyConfigured || actionMutation.isPending}
-                        onClick={() => {
-                          setName(normalizeName(row.serverConfigName || row.slug || row.name));
-                          setTransport(row.transportUrl);
-                          void handleAdd(false);
-                        }}
-                      >
-                        {alreadyConfigured ? "Added" : "Add"}
-                      </button>
-                      <button
-                        className="tcp-btn-primary"
-                        disabled={alreadyConfigured || actionMutation.isPending}
-                        onClick={() => {
-                          setName(normalizeName(row.serverConfigName || row.slug || row.name));
-                          setTransport(row.transportUrl);
-                          void handleAdd(true);
-                        }}
-                      >
-                        {alreadyConfigured
-                          ? "Added"
-                          : row.authKind === "oauth"
-                            ? "Add + Start OAuth"
-                            : "Add + Connect"}
-                      </button>
-                      <button
-                        className="tcp-btn"
-                        onClick={async () => {
-                          setTomlModal({
-                            slug: row.slug,
-                            title: row.name,
-                            body: "Loading TOML...",
-                            loading: true,
-                          });
-                          try {
-                            const res = await fetch(
-                              `/api/engine/mcp/catalog/${encodeURIComponent(row.slug)}/toml`,
-                              {
-                                method: "GET",
-                                credentials: "include",
-                                headers: { Accept: "application/toml,text/plain;q=0.9,*/*;q=0.8" },
-                              }
-                            );
-                            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                            const body = await res.text();
-                            setTomlModal({
-                              slug: row.slug,
-                              title: row.name,
-                              body: body || "Empty TOML response.",
-                              loading: false,
-                            });
-                          } catch (error) {
-                            setTomlModal({
-                              slug: row.slug,
-                              title: row.name,
-                              body: `Failed to load TOML for ${row.slug}: ${error instanceof Error ? error.message : String(error)}`,
-                              loading: false,
-                            });
-                          }
-                        }}
-                      >
-                        View TOML
-                      </button>
-                      {row.documentationUrl ? (
-                        <a
-                          className="tcp-btn"
-                          href={row.documentationUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Docs
-                        </a>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })
+          <div className="grid gap-3">
+            <div>
+              <label className="mb-1 block text-sm text-slate-300">Name</label>
+              <input
+                className="tcp-input"
+                value={name}
+                onInput={(event) => setName((event.target as HTMLInputElement).value)}
+                placeholder="mcp-server"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-300">Transport URL</label>
+              <input
+                className="tcp-input"
+                value={transport}
+                onInput={(event) => {
+                  const value = (event.target as HTMLInputElement).value;
+                  setTransport(value);
+                  if (!name.trim() || name.trim() === "mcp-server" || name.trim() === "composio") {
+                    const inferred = inferNameFromTransport(value);
+                    if (inferred) setName(inferred);
+                  }
+                  const inferredAuthKind = inferMcpCatalogAuthKind(catalog, name, value);
+                  if (
+                    inferredAuthKind === "oauth" &&
+                    (authMode === "none" || authMode === "auto")
+                  ) {
+                    setAuthMode("oauth");
+                    setToken("");
+                  }
+                }}
+                placeholder="https://example.com/mcp"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-300">Auth Mode</label>
+              <select
+                className="tcp-select"
+                value={authMode}
+                onChange={(event) => {
+                  const nextMode = (event.target as HTMLSelectElement).value;
+                  setAuthMode(nextMode);
+                  if (nextMode === "oauth") setToken("");
+                }}
+              >
+                <option value="none">No Auth Header</option>
+                <option value="auto">Auto (x-api-key for known providers, else Bearer)</option>
+                <option value="oauth">OAuth</option>
+                <option value="x-api-key">x-api-key</option>
+                <option value="bearer">Authorization Bearer</option>
+                <option value="custom">Custom Header</option>
+              </select>
+            </div>
+            {authMode === "custom" ? (
+              <div>
+                <label className="mb-1 block text-sm text-slate-300">Custom Header Name</label>
+                <input
+                  className="tcp-input"
+                  value={customHeader}
+                  onInput={(event) => setCustomHeader((event.target as HTMLInputElement).value)}
+                  placeholder="X-My-Token"
+                />
+              </div>
+            ) : null}
+            {authMode === "oauth" ? (
+              <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-xs text-slate-200">
+                {authPreviewText}
+              </div>
             ) : (
-              <p className="tcp-subtle">No catalog entries match your search.</p>
+              <div>
+                <label className="mb-1 block text-sm text-slate-300">Token (optional)</label>
+                <input
+                  className="tcp-input"
+                  type="password"
+                  value={token}
+                  onInput={(event) => setToken((event.target as HTMLInputElement).value)}
+                  placeholder="token"
+                />
+                <p className="tcp-subtle mt-2 text-xs">{authPreviewText}</p>
+              </div>
             )}
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="tcp-btn"
+                onClick={() => void handleAdd(false)}
+                disabled={actionMutation.isPending}
+              >
+                Add
+              </button>
+              <button
+                className="tcp-btn-primary"
+                onClick={() => void handleAdd(true)}
+                disabled={actionMutation.isPending}
+              >
+                <i data-lucide="plug-zap"></i>
+                Add + Connect
+              </button>
+            </div>
           </div>
         </PageCard>
 
-        <PageCard
-          title={`Servers (${servers.length})`}
-          subtitle="Configured MCP servers and controls"
-        >
-          <div className="mb-3 flex items-center justify-end">
-            <button className="tcp-btn" onClick={() => void invalidateMcp()}>
-              <i data-lucide="refresh-cw"></i>
-              Reload
-            </button>
-          </div>
-          <div className="tcp-list">
-            {servers.length ? (
-              servers.map((server) => {
-                const headerKeys = Object.keys(server.headers || {}).filter(Boolean);
-                const toolCount = Array.isArray(server.toolCache) ? server.toolCache.length : 0;
-                return (
-                  <div key={server.name} className="tcp-list-item grid gap-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div className="font-semibold">{server.name}</div>
-                        <div className="tcp-subtle text-sm">
-                          {server.transport || "No transport set"}
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <span className={server.connected ? "tcp-badge-ok" : "tcp-badge-warn"}>
-                          {server.connected ? "Connected" : "Disconnected"}
-                        </span>
-                        <span className={server.enabled ? "tcp-badge-info" : "tcp-badge-warn"}>
-                          {server.enabled ? "Enabled" : "Disabled"}
-                        </span>
-                        <span className="tcp-badge-info">Tools: {toolCount}</span>
-                      </div>
-                    </div>
-                    {server.lastError ? (
-                      <div className="rounded-xl border border-rose-700/60 bg-rose-950/20 px-2 py-1 text-xs text-rose-300">
-                        {server.lastError}
-                      </div>
-                    ) : null}
-                    {server.lastAuthChallenge ? (
-                      <div className="rounded-xl border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-100">
-                        <div className="font-medium">OAuth authorization pending</div>
-                        <div className="tcp-subtle mt-1">
-                          {String(server.lastAuthChallenge.message || "").trim() ||
-                            "Open the authorization URL to finish connecting this MCP server."}
-                        </div>
-                        <div className="tcp-subtle mt-1">
-                          Tandem will keep checking for completion automatically while this page is
-                          open.
-                        </div>
-                        {String(
-                          server.lastAuthChallenge.authorization_url ||
-                            server.lastAuthChallenge.authorizationUrl ||
-                            server.authorizationUrl ||
-                            ""
-                        ).trim() ? (
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            <a
-                              className="tcp-btn inline-flex h-8 px-3 text-xs"
-                              href={String(
-                                server.lastAuthChallenge.authorization_url ||
-                                  server.lastAuthChallenge.authorizationUrl ||
-                                  server.authorizationUrl ||
-                                  ""
-                              ).trim()}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Open auth URL
-                            </a>
-                            <button
-                              type="button"
-                              className="tcp-btn inline-flex h-8 px-3 text-xs"
-                              disabled={actionMutation.isPending}
-                              onClick={() =>
-                                actionMutation.mutate({ action: "authenticate", server })
-                              }
-                            >
-                              Mark sign-in complete
-                            </button>
+        <div className="grid gap-4">
+          <PageCard
+            title={`Remote MCP Packs (${catalog.count})`}
+            subtitle={
+              catalog.generatedAt ? `Generated ${catalog.generatedAt}` : "Catalog unavailable"
+            }
+          >
+            <p className="tcp-subtle mb-3 text-xs">
+              Remote MCP packs exported as per-server TOML templates. Apply to prefill
+              transport/name.
+            </p>
+            <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
+              <input
+                className="tcp-input"
+                placeholder="Search pack name, slug, or URL"
+                value={catalogSearch}
+                onInput={(event) => setCatalogSearch((event.target as HTMLInputElement).value)}
+              />
+              <button className="tcp-btn" onClick={() => void catalogQuery.refetch()}>
+                <i data-lucide="refresh-cw"></i>
+                Refresh
+              </button>
+            </div>
+            <div className="grid max-h-[520px] gap-2 overflow-auto pr-1 md:grid-cols-2 2xl:grid-cols-3">
+              {filteredCatalog.length ? (
+                filteredCatalog.map((row) => {
+                  const alreadyConfigured = configuredServerNames.has(
+                    String(row.serverConfigName || row.slug || "").toLowerCase()
+                  );
+                  return (
+                    <div key={row.slug} className="tcp-list-item grid h-full content-start gap-2">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <div className="font-semibold">{row.name}</div>
+                          <div className="tcp-subtle text-xs">
+                            {row.slug}
+                            {row.requiresSetup ? " · setup required" : ""}
                           </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <span className="tcp-badge-info">Tools: {row.toolCount}</span>
+                          {row.authKind === "oauth" ? (
+                            <span className="tcp-badge-info">OAuth</span>
+                          ) : (
+                            <span className={row.requiresAuth ? "tcp-badge-warn" : "tcp-badge-ok"}>
+                              {row.requiresAuth ? "Auth" : "Authless"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="tcp-subtle line-clamp-2 break-all text-xs">
+                        {row.transportUrl}
+                      </div>
+                      {row.description ? (
+                        <div className="line-clamp-2 text-xs text-slate-200">{row.description}</div>
+                      ) : null}
+                      {row.authKind === "oauth" ? (
+                        <div className="rounded-xl border border-sky-700/40 bg-sky-950/20 px-3 py-2 text-xs text-sky-100">
+                          Add this pack, then finish the browser sign-in flow. Tandem will keep the
+                          server pending until authorization completes.
+                        </div>
+                      ) : null}
+                      <div className="mt-auto flex flex-wrap gap-2">
+                        <button
+                          className="tcp-btn"
+                          onClick={() => {
+                            setName(normalizeName(row.serverConfigName || row.slug || row.name));
+                            setTransport(row.transportUrl);
+                            setAuthMode(row.authKind === "oauth" ? "oauth" : "none");
+                            if (row.authKind === "oauth") setToken("");
+                            toast(
+                              "ok",
+                              row.authKind === "oauth"
+                                ? `Loaded pack ${row.name}. Add it to start browser sign-in.`
+                                : `Loaded pack ${row.name}. Add + Connect when ready.`
+                            );
+                          }}
+                        >
+                          Apply
+                        </button>
+                        <button
+                          className="tcp-btn"
+                          disabled={alreadyConfigured || actionMutation.isPending}
+                          onClick={() => {
+                            setName(normalizeName(row.serverConfigName || row.slug || row.name));
+                            setTransport(row.transportUrl);
+                            void handleAdd(false);
+                          }}
+                        >
+                          {alreadyConfigured ? "Added" : "Add"}
+                        </button>
+                        <button
+                          className="tcp-btn-primary"
+                          disabled={alreadyConfigured || actionMutation.isPending}
+                          onClick={() => {
+                            setName(normalizeName(row.serverConfigName || row.slug || row.name));
+                            setTransport(row.transportUrl);
+                            void handleAdd(true);
+                          }}
+                        >
+                          {alreadyConfigured
+                            ? "Added"
+                            : row.authKind === "oauth"
+                              ? "Add + Start OAuth"
+                              : "Add + Connect"}
+                        </button>
+                        <button
+                          className="tcp-btn"
+                          onClick={async () => {
+                            setTomlModal({
+                              slug: row.slug,
+                              title: row.name,
+                              body: "Loading TOML...",
+                              loading: true,
+                            });
+                            try {
+                              const res = await fetch(
+                                `/api/engine/mcp/catalog/${encodeURIComponent(row.slug)}/toml`,
+                                {
+                                  method: "GET",
+                                  credentials: "include",
+                                  headers: {
+                                    Accept: "application/toml,text/plain;q=0.9,*/*;q=0.8",
+                                  },
+                                }
+                              );
+                              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                              const body = await res.text();
+                              setTomlModal({
+                                slug: row.slug,
+                                title: row.name,
+                                body: body || "Empty TOML response.",
+                                loading: false,
+                              });
+                            } catch (error) {
+                              setTomlModal({
+                                slug: row.slug,
+                                title: row.name,
+                                body: `Failed to load TOML for ${row.slug}: ${error instanceof Error ? error.message : String(error)}`,
+                                loading: false,
+                              });
+                            }
+                          }}
+                        >
+                          View TOML
+                        </button>
+                        {row.documentationUrl ? (
+                          <a
+                            className="tcp-btn"
+                            href={row.documentationUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Docs
+                          </a>
                         ) : null}
                       </div>
-                    ) : null}
-                    <div className="tcp-subtle text-xs">
-                      {headerKeys.length
-                        ? `Auth headers: ${headerKeys.join(", ")}`
-                        : "No stored auth headers."}
                     </div>
-                    <McpToolAllowlistEditor
-                      title="Tool access"
-                      subtitle="Leave all discovered tools selected to expose the full MCP server, or uncheck tools to hide them from agents and workflows."
-                      discoveredTools={Array.isArray(server.toolCache) ? server.toolCache : []}
-                      value={server.allowedTools}
-                      disabled={mcpToolPolicyMutation.isPending}
-                      onChange={(next) =>
-                        mcpToolPolicyMutation.mutate({
-                          serverName: server.name,
-                          allowedTools: next,
-                        })
-                      }
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      <button className="tcp-btn" onClick={() => loadServerIntoForm(server)}>
-                        Edit
-                      </button>
-                      <button
-                        className="tcp-btn"
-                        disabled={actionMutation.isPending}
-                        onClick={() =>
-                          actionMutation.mutate({
-                            action: server.connected ? "disconnect" : "connect",
-                            server,
+                  );
+                })
+              ) : (
+                <p className="tcp-subtle">No catalog entries match your search.</p>
+              )}
+            </div>
+          </PageCard>
+
+          <PageCard
+            title={`Servers (${servers.length})`}
+            subtitle="Configured MCP servers and controls"
+          >
+            <div className="mb-3 flex items-center justify-end">
+              <button className="tcp-btn" onClick={() => void invalidateMcp()}>
+                <i data-lucide="refresh-cw"></i>
+                Reload
+              </button>
+            </div>
+            <div className="tcp-list">
+              {servers.length ? (
+                servers.map((server) => {
+                  const headerKeys = Object.keys(server.headers || {}).filter(Boolean);
+                  const toolCount = Array.isArray(server.toolCache) ? server.toolCache.length : 0;
+                  return (
+                    <div key={server.name} className="tcp-list-item grid gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="font-semibold">{server.name}</div>
+                          <div className="tcp-subtle text-sm">
+                            {server.transport || "No transport set"}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <span className={server.connected ? "tcp-badge-ok" : "tcp-badge-warn"}>
+                            {server.connected ? "Connected" : "Disconnected"}
+                          </span>
+                          <span className={server.enabled ? "tcp-badge-info" : "tcp-badge-warn"}>
+                            {server.enabled ? "Enabled" : "Disabled"}
+                          </span>
+                          <span className="tcp-badge-info">Tools: {toolCount}</span>
+                        </div>
+                      </div>
+                      {server.lastError ? (
+                        <div className="rounded-xl border border-rose-700/60 bg-rose-950/20 px-2 py-1 text-xs text-rose-300">
+                          {server.lastError}
+                        </div>
+                      ) : null}
+                      {server.lastAuthChallenge ? (
+                        <div className="rounded-xl border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-100">
+                          <div className="font-medium">OAuth authorization pending</div>
+                          <div className="tcp-subtle mt-1">
+                            {String(server.lastAuthChallenge.message || "").trim() ||
+                              "Open the authorization URL to finish connecting this MCP server."}
+                          </div>
+                          <div className="tcp-subtle mt-1">
+                            Tandem will keep checking for completion automatically while this page
+                            is open.
+                          </div>
+                          {String(
+                            server.lastAuthChallenge.authorization_url ||
+                              server.lastAuthChallenge.authorizationUrl ||
+                              server.authorizationUrl ||
+                              ""
+                          ).trim() ? (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <a
+                                className="tcp-btn inline-flex h-8 px-3 text-xs"
+                                href={String(
+                                  server.lastAuthChallenge.authorization_url ||
+                                    server.lastAuthChallenge.authorizationUrl ||
+                                    server.authorizationUrl ||
+                                    ""
+                                ).trim()}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Open auth URL
+                              </a>
+                              <button
+                                type="button"
+                                className="tcp-btn inline-flex h-8 px-3 text-xs"
+                                disabled={actionMutation.isPending}
+                                onClick={() =>
+                                  actionMutation.mutate({ action: "authenticate", server })
+                                }
+                              >
+                                Mark sign-in complete
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <div className="tcp-subtle text-xs">
+                        {headerKeys.length
+                          ? `Auth headers: ${headerKeys.join(", ")}`
+                          : "No stored auth headers."}
+                      </div>
+                      <McpToolAllowlistEditor
+                        title="Tool access"
+                        subtitle="Leave all discovered tools selected to expose the full MCP server, or uncheck tools to hide them from agents and workflows."
+                        discoveredTools={Array.isArray(server.toolCache) ? server.toolCache : []}
+                        value={server.allowedTools}
+                        disabled={mcpToolPolicyMutation.isPending}
+                        onChange={(next) =>
+                          mcpToolPolicyMutation.mutate({
+                            serverName: server.name,
+                            allowedTools: next,
                           })
                         }
-                      >
-                        {server.connected ? "Disconnect" : "Connect"}
-                      </button>
-                      <button
-                        className="tcp-btn"
-                        disabled={actionMutation.isPending}
-                        onClick={() => actionMutation.mutate({ action: "refresh", server })}
-                      >
-                        Refresh
-                      </button>
-                      <button
-                        className="tcp-btn"
-                        disabled={actionMutation.isPending}
-                        onClick={() => actionMutation.mutate({ action: "toggle-enabled", server })}
-                      >
-                        {server.enabled ? "Disable" : "Enable"}
-                      </button>
-                      <button
-                        className="tcp-btn-danger"
-                        disabled={actionMutation.isPending}
-                        onClick={() => actionMutation.mutate({ action: "delete", server })}
-                      >
-                        Delete
-                      </button>
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <button className="tcp-btn" onClick={() => loadServerIntoForm(server)}>
+                          Edit
+                        </button>
+                        <button
+                          className="tcp-btn"
+                          disabled={actionMutation.isPending}
+                          onClick={() =>
+                            actionMutation.mutate({
+                              action: server.connected ? "disconnect" : "connect",
+                              server,
+                            })
+                          }
+                        >
+                          {server.connected ? "Disconnect" : "Connect"}
+                        </button>
+                        <button
+                          className="tcp-btn"
+                          disabled={actionMutation.isPending}
+                          onClick={() => actionMutation.mutate({ action: "refresh", server })}
+                        >
+                          Refresh
+                        </button>
+                        <button
+                          className="tcp-btn"
+                          disabled={actionMutation.isPending}
+                          onClick={() =>
+                            actionMutation.mutate({ action: "toggle-enabled", server })
+                          }
+                        >
+                          {server.enabled ? "Disable" : "Enable"}
+                        </button>
+                        <button
+                          className="tcp-btn-danger"
+                          disabled={actionMutation.isPending}
+                          onClick={() => actionMutation.mutate({ action: "delete", server })}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })
-            ) : (
-              <p className="tcp-subtle">No MCP servers configured.</p>
-            )}
-          </div>
-        </PageCard>
-
-        <PageCard
-          title={`Discovered MCP Tools (${toolIds.length})`}
-          subtitle="Tools available across MCP servers"
-        >
-          <pre className="tcp-code max-h-[320px] overflow-auto">
-            {toolIds.slice(0, 350).join("\n") || "No tools discovered yet. Connect a server first."}
-          </pre>
-        </PageCard>
-
-        <PageCard
-          title="Capability Readiness Check"
-          subtitle="Validate required capabilities before running templates"
-        >
-          <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-            <input
-              className="tcp-input"
-              value={requiredCapabilities}
-              onInput={(event) => setRequiredCapabilities((event.target as HTMLInputElement).value)}
-              placeholder="github.list_issues,github.create_pull_request"
-            />
-            <button className="tcp-btn" onClick={() => readinessMutation.mutate()}>
-              <i data-lucide="shield-check"></i>
-              Check
-            </button>
-          </div>
-          <pre className="tcp-code mt-3 max-h-[260px] overflow-auto">{readinessResult}</pre>
-        </PageCard>
-      </div>
-
-      {tomlModal ? (
-        <div className="tcp-confirm-overlay" onClick={() => setTomlModal(null)}>
-          <div
-            className="tcp-doc-dialog w-[min(64rem,96vw)]"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="tcp-doc-header">
-              <h3 className="tcp-doc-title">TOML · {tomlModal.title}</h3>
-              <div className="tcp-doc-actions">
-                <button
-                  type="button"
-                  className="tcp-btn"
-                  disabled={tomlModal.loading}
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(tomlModal.body || "");
-                      toast("ok", "TOML copied.");
-                    } catch {
-                      toast("err", "Failed to copy TOML.");
-                    }
-                  }}
-                >
-                  Copy
-                </button>
-                <button type="button" className="tcp-btn" onClick={() => setTomlModal(null)}>
-                  Close
-                </button>
-              </div>
+                  );
+                })
+              ) : (
+                <p className="tcp-subtle">No MCP servers configured.</p>
+              )}
             </div>
-            <pre className="tcp-doc-pre">{tomlModal.body}</pre>
-          </div>
+          </PageCard>
+
+          <PageCard
+            title={`Discovered MCP Tools (${toolIds.length})`}
+            subtitle="Tools available across MCP servers"
+          >
+            <pre className="tcp-code max-h-[320px] overflow-auto">
+              {toolIds.slice(0, 350).join("\n") ||
+                "No tools discovered yet. Connect a server first."}
+            </pre>
+          </PageCard>
+
+          <PageCard
+            title="Capability Readiness Check"
+            subtitle="Validate required capabilities before running templates"
+          >
+            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+              <input
+                className="tcp-input"
+                value={requiredCapabilities}
+                onInput={(event) =>
+                  setRequiredCapabilities((event.target as HTMLInputElement).value)
+                }
+                placeholder="github.list_issues,github.create_pull_request"
+              />
+              <button className="tcp-btn" onClick={() => readinessMutation.mutate()}>
+                <i data-lucide="shield-check"></i>
+                Check
+              </button>
+            </div>
+            <pre className="tcp-code mt-3 max-h-[260px] overflow-auto">{readinessResult}</pre>
+          </PageCard>
         </div>
-      ) : null}
+
+        {tomlModal ? (
+          <div className="tcp-confirm-overlay" onClick={() => setTomlModal(null)}>
+            <div
+              className="tcp-doc-dialog w-[min(64rem,96vw)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="tcp-doc-header">
+                <h3 className="tcp-doc-title">TOML · {tomlModal.title}</h3>
+                <div className="tcp-doc-actions">
+                  <button
+                    type="button"
+                    className="tcp-btn"
+                    disabled={tomlModal.loading}
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(tomlModal.body || "");
+                        toast("ok", "TOML copied.");
+                      } catch {
+                        toast("err", "Failed to copy TOML.");
+                      }
+                    }}
+                  >
+                    Copy
+                  </button>
+                  <button type="button" className="tcp-btn" onClick={() => setTomlModal(null)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+              <pre className="tcp-doc-pre">{tomlModal.body}</pre>
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
