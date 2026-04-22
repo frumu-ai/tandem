@@ -8,6 +8,8 @@ Welcome to the **Tandem Engine Documentation**. Tandem is an **engine-owned work
 
 To help you find what you need quickly, please select the path that best describes how you plan to use Tandem:
 
+> AI assistant or agent? Start at the [For LLMs section](https://tandem.ac/#for-llms) for the fast path to correct results.
+
 ---
 
 ## 🖥️ I am a Desktop User
@@ -48,6 +50,7 @@ _You want to build custom clients, connect external tools via MCP, or programmat
 - **[Automation Examples For Teams](./automation-examples-for-teams/)** — End-to-end workflow proofs for control-panel and SDK-driven automation.
 - **[Build an Automation With the AI Assistant](./automation-composer-workflows/)** — Prompt-first workflow authoring with preview, validation, and run-now.
 - **[Memory Internals](./memory-internals/)** — Learn how Tandem stores transcript history, retrieval memory, replay state, and reusable knowledge.
+- **[Governance Reference](./reference/governance/)** — Review provenance chains, capability grants, approval queues, and audit events.
 - **[Engine Authentication For Agents](./engine-authentication-for-agents/)** — Get the token, authorize calls, and connect agents safely.
 - **[Autonomous Coding Agents with GitHub Projects](./autonomous-coding-agents-github-projects/)** — Build coding agents on Tandem's engine-native GitHub MCP path.
 - **[Coding Tasks With Tandem](./coding-tasks-with-tandem/)** — Learn the execution contract for worktrees, diffs, commits, and verification.

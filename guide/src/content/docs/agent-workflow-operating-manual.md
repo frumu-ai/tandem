@@ -110,6 +110,8 @@ Agents should preserve and read provenance:
 - automation id
 - run id
 
+For the schema-level governance model behind those records, see [Governance Reference](./reference/governance/).
+
 If you are helping a user find an older workflow, search from the Workflow Center first.
 
 ## Minimal example
