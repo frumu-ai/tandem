@@ -66,6 +66,7 @@ mod global;
 pub(crate) mod governance;
 mod marketplace;
 pub(crate) mod mcp;
+pub(crate) mod mcp_discovery;
 mod middleware;
 mod mission_builder;
 mod mission_builder_host;

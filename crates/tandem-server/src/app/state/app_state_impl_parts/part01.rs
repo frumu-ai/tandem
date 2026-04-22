@@ -223,13 +223,15 @@ impl AppState {
         self.tools
             .register_tool(
                 "mcp_list_catalog".to_string(),
-                Arc::new(crate::http::mcp::McpListCatalogTool::new(self.clone())),
+                Arc::new(crate::http::mcp_discovery::McpListCatalogTool::new(
+                    self.clone(),
+                )),
             )
             .await;
         self.tools
             .register_tool(
                 "mcp_request_capability".to_string(),
-                Arc::new(crate::http::mcp::McpRequestCapabilityTool::new(
+                Arc::new(crate::http::mcp_discovery::McpRequestCapabilityTool::new(
                     self.clone(),
                 )),
             )
