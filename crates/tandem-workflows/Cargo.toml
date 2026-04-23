@@ -1,6 +1,6 @@
 [package]
 name = "tandem-workflows"
-version = "0.4.38"
+version = "0.4.39"
 description = "Workflow definitions and loading for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -11,11 +11,12 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.4.38" }
-tandem-types = { path = "../tandem-types", version = "0.4.38" }
+tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.4.39" }
+tandem-types = { path = "../tandem-types", version = "0.4.39" }
 
 [dev-dependencies]
 tempfile = "3"
+
 
 
 

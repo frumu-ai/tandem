@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.4.39 (Unreleased)
+## v0.4.39 (Released 2026-04-23)
 
 This release makes governed workflow repair durable. Strict-quality automation nodes now pass their repair policy into the engine, fail closed when required evidence never materializes, and stop downstream workflow branches from advancing on placeholder artifacts.
 
