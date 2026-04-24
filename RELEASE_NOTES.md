@@ -42,6 +42,7 @@ This unreleased build adds chat-native automation drafts for Discord, Telegram, 
 - **Internal runbook**: Added `docs/internal/CHAT_WORKFLOW_PLANNER_DEMO.md` with setup, happy-path, missing-details, blocked-capability, and troubleshooting steps.
 - **KB-first channel grounding**: Hosted and external knowledgebase MCPs can now be marked as grounding-required, and channel sessions that enable those KB MCP tools must inspect KB evidence before returning factual answers instead of relying on model memory.
 - **KB admin fail-closed check**: The control panel now treats the KB upload/browse surface as available only after `/api/knowledgebase/config` verifies that the KB admin backend is reachable, preventing `/collections` and `/documents` 502s from firing when the admin service is down or misconfigured.
+- **Nested KB document deletes**: The control-panel KB proxy now forwards nested document slugs with a single encoded slash, so admin deletes work for documents stored below folders such as `automation/...`.
 
 ## v0.4.40 (Released 2026-04-24)
 

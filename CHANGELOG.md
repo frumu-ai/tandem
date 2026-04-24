@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Connector-heavy workflow prompts**: Scheduled workflow prompts that mention MCPs or destinations such as Notion now route to workflow planning instead of being mistaken for integration setup.
 - **Planner thread hijacking**: Linked workflow planner sessions no longer capture ordinary informational chat like "what is ..." or "what do I do?", and planner-model setup pauses now explain the admin action instead of asking for an impossible answer.
 - **KB endpoint fail-closed gating**: Control-panel KB upload/browse queries now wait for `/api/knowledgebase/config` to confirm the KB admin service is reachable, avoiding noisy `/collections` and `/documents` 502s when the admin backend is configured but down.
+- **KB nested document deletes**: Control-panel KB admin proxy requests now preserve encoded slashes in document slugs, so documents stored under nested paths can be deleted instead of returning 404.
 
 ## [0.4.40] - Released 2026-04-24
 

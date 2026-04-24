@@ -110,6 +110,15 @@ async function probeKbAdminConfig(baseUrl, deps) {
   }
 }
 
+function encodeIncomingPathSegment(segment) {
+  const raw = String(segment || "");
+  try {
+    return encodeURIComponent(decodeURIComponent(raw));
+  } catch {
+    return encodeURIComponent(raw);
+  }
+}
+
 function resolveTargetPath(pathname) {
   const parts = String(pathname || "").split("/").filter(Boolean);
   if (parts[0] !== "api" || parts[1] !== "knowledgebase") return "";
@@ -119,7 +128,7 @@ function resolveTargetPath(pathname) {
   if (rest[0] === "collections") return "/admin/collections";
   if (rest[0] === "documents" && rest.length === 1) return "/admin/documents";
   if (rest[0] === "documents" && rest.length >= 3) {
-    return `/admin/documents/${encodeURIComponent(rest[1])}/${encodeURIComponent(rest[2])}`;
+    return `/admin/documents/${encodeIncomingPathSegment(rest[1])}/${encodeIncomingPathSegment(rest[2])}`;
   }
   if (rest[0] === "reindex") return "/admin/reindex";
   if (rest[0] === "config") return "/admin/config";
