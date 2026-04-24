@@ -103,7 +103,7 @@ pub struct SessionRecord {
 
 /// `{channel_name}:{sender_id}` → Tandem `SessionRecord`
 pub type SessionMap = Arc<Mutex<HashMap<String, SessionRecord>>>;
-type SetupClarifierMap = Arc<Mutex<HashMap<String, PendingSetupClarifier>>>;
+type PendingChannelInteractionMap = Arc<Mutex<HashMap<String, PendingChannelInteraction>>>;
 type ChannelSecurityMap = Arc<HashMap<String, ChannelSecurityProfile>>;
 
 const PUBLIC_DEMO_ALLOWED_TOOLS: &[&str] = &[
@@ -116,9 +116,21 @@ const PUBLIC_DEMO_ALLOWED_TOOLS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone)]
-struct PendingSetupClarifier {
-    intent_options: Vec<String>,
-    original_text: String,
+struct PendingChannelInteraction {
+    draft_id: String,
+    expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ChannelAutomationDraftApiResponse {
+    draft: ChannelAutomationDraftApiRecord,
+    message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ChannelAutomationDraftApiRecord {
+    draft_id: String,
+    status: String,
     expires_at_ms: u64,
 }
 
@@ -1069,6 +1081,7 @@ pub async fn start_channel_listeners_with_diagnostics(
     );
 
     let session_map: SessionMap = Arc::new(Mutex::new(initial_map));
+    let pending_interactions: PendingChannelInteractionMap = Arc::new(Mutex::new(HashMap::new()));
     let mut security_profiles = HashMap::new();
     let mut set = JoinSet::new();
 
@@ -1086,6 +1099,7 @@ pub async fn start_channel_listeners_with_diagnostics(
             (spec.security_profile)(&config).unwrap_or_default(),
         );
         let map = session_map.clone();
+        let pending = pending_interactions.clone();
         let base_url = config.server_base_url.clone();
         let api_token = config.api_token.clone();
         let profiles = Arc::new(security_profiles.clone());
@@ -1096,6 +1110,7 @@ pub async fn start_channel_listeners_with_diagnostics(
             base_url,
             api_token,
             map,
+            pending,
             profiles,
             diagnostics.clone(),
             channel_name,
@@ -1134,6 +1149,7 @@ async fn supervise(
     base_url: String,
     api_token: String,
     session_map: SessionMap,
+    pending_interactions: PendingChannelInteractionMap,
     security_profiles: ChannelSecurityMap,
     diagnostics: ChannelRuntimeDiagnostics,
     channel_name: String,
@@ -1190,9 +1206,10 @@ async fn supervise(
             let base = base_url.clone();
             let tok = api_token.clone();
             let map = session_map.clone();
+            let pending = pending_interactions.clone();
             let profiles = security_profiles.clone();
             tokio::spawn(async move {
-                process_channel_message(msg, ch, &base, &tok, &map, &profiles).await;
+                process_channel_message(msg, ch, &base, &tok, &map, &pending, &profiles).await;
             });
         }
 
@@ -1244,6 +1261,7 @@ async fn process_channel_message(
     base_url: &str,
     api_token: &str,
     session_map: &SessionMap,
+    pending_interactions: &PendingChannelInteractionMap,
     security_profiles: &ChannelSecurityMap,
 ) {
     let security_profile = channel_security_profile(&msg.channel, security_profiles);
@@ -1287,6 +1305,51 @@ async fn process_channel_message(
         }
     };
     let thread_key = format!("{}:{}", msg.channel, msg.reply_target);
+
+    if let Some(draft_id) = pending_channel_automation_draft_id(&msg, pending_interactions).await {
+        let reply = if is_channel_automation_cancel_text(&msg.content) {
+            cancel_channel_automation_draft(
+                base_url,
+                api_token,
+                &msg,
+                &draft_id,
+                pending_interactions,
+            )
+            .await
+        } else if is_channel_automation_confirm_text(&msg.content) {
+            confirm_channel_automation_draft(
+                base_url,
+                api_token,
+                &msg,
+                &draft_id,
+                pending_interactions,
+            )
+            .await
+        } else {
+            answer_channel_automation_draft(
+                base_url,
+                api_token,
+                &msg,
+                &draft_id,
+                pending_interactions,
+            )
+            .await
+        };
+        if let Err(e) = channel
+            .send(&SendMessage {
+                content: reply,
+                recipient: msg.reply_target.clone(),
+                image_urls: Vec::new(),
+            })
+            .await
+        {
+            error!(
+                "failed to send channel automation draft reply via '{}': {e}",
+                channel.name()
+            );
+        }
+        return;
+    }
 
     if let Some(cmd) = parse_pack_builder_reply_command(&msg.content) {
         let response = match cmd {
@@ -1658,15 +1721,18 @@ async fn process_channel_message(
                             .filter(|value| !value.is_empty())
                             .map(ToOwned::to_owned)
                             .unwrap_or_else(|| prompt_content.clone());
-                        preview_setup_automation(
+                        start_channel_automation_draft(
                             base_url,
                             api_token,
+                            &msg,
                             &session_id,
                             &thread_key,
                             &automation_prompt,
+                            &tool_prefs,
+                            security_profile,
+                            pending_interactions,
                         )
                         .await
-                        .unwrap_or_else(|| format_setup_guidance_message(&setup))
                     }
                     SetupIntentKind::ProviderSetup
                     | SetupIntentKind::IntegrationSetup

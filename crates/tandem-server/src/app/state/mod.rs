@@ -78,6 +78,14 @@ pub struct AppState {
     pub routine_history: Arc<RwLock<std::collections::HashMap<String, Vec<RoutineHistoryEvent>>>>,
     pub routine_runs: Arc<RwLock<std::collections::HashMap<String, RoutineRunRecord>>>,
     pub automations_v2: Arc<RwLock<std::collections::HashMap<String, AutomationV2Spec>>>,
+    pub channel_automation_drafts: Arc<
+        RwLock<
+            std::collections::HashMap<
+                String,
+                crate::http::channel_automation_drafts::ChannelAutomationDraftRecord,
+            >,
+        >,
+    >,
     pub automation_governance: Arc<RwLock<GovernanceState>>,
     pub governance_engine: Arc<dyn GovernancePolicyEngine>,
     pub automation_v2_runs: Arc<RwLock<std::collections::HashMap<String, AutomationV2RunRecord>>>,
@@ -135,6 +143,7 @@ pub struct AppState {
     pub routine_history_path: PathBuf,
     pub routine_runs_path: PathBuf,
     pub automations_v2_path: PathBuf,
+    pub channel_automation_drafts_path: PathBuf,
     pub automation_governance_path: PathBuf,
     pub automation_v2_runs_path: PathBuf,
     pub automation_v2_runs_archive_path: PathBuf,

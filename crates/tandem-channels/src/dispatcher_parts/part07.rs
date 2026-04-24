@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
 
     fn dispatcher_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -921,5 +922,99 @@ mod tests {
             "partial reply",
             deadline
         ));
+    }
+
+    fn pending_test_message(sender: &str, scope_id: &str, content: &str) -> ChannelMessage {
+        ChannelMessage {
+            id: format!("{sender}-{scope_id}"),
+            sender: sender.to_string(),
+            reply_target: scope_id.to_string(),
+            content: content.to_string(),
+            channel: "discord".to_string(),
+            timestamp: chrono::Utc::now(),
+            attachment: None,
+            attachment_url: None,
+            attachment_path: None,
+            attachment_mime: None,
+            attachment_filename: None,
+            trigger: crate::traits::MessageTriggerContext::default(),
+            scope: crate::traits::ConversationScope {
+                kind: crate::traits::ConversationScopeKind::Room,
+                id: scope_id.to_string(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_channel_interaction_matches_same_sender_and_scope() {
+        let map: PendingChannelInteractionMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let msg = pending_test_message("alice", "room-1", "answer");
+        let response = ChannelAutomationDraftApiResponse {
+            draft: ChannelAutomationDraftApiRecord {
+                draft_id: "draft-1".to_string(),
+                status: "collecting".to_string(),
+                expires_at_ms: now_unix_ms() + 60_000,
+            },
+            message: Some("question".to_string()),
+        };
+        remember_pending_channel_automation_draft(&msg, &response, &map).await;
+
+        assert_eq!(
+            pending_channel_automation_draft_id(&msg, &map).await,
+            Some("draft-1".to_string())
+        );
+        assert_eq!(
+            pending_channel_automation_draft_id(
+                &pending_test_message("bob", "room-1", "answer"),
+                &map
+            )
+            .await,
+            None
+        );
+        assert_eq!(
+            pending_channel_automation_draft_id(
+                &pending_test_message("alice", "room-2", "answer"),
+                &map
+            )
+            .await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_channel_interaction_expires_and_can_clear() {
+        let map: PendingChannelInteractionMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let msg = pending_test_message("alice", "room-1", "answer");
+        {
+            let mut guard = map.lock().await;
+            guard.insert(
+                pending_channel_interaction_key(&msg),
+                PendingChannelInteraction {
+                    draft_id: "draft-expired".to_string(),
+                    expires_at_ms: now_unix_ms().saturating_sub(1),
+                },
+            );
+        }
+        assert_eq!(pending_channel_automation_draft_id(&msg, &map).await, None);
+
+        let response = ChannelAutomationDraftApiResponse {
+            draft: ChannelAutomationDraftApiRecord {
+                draft_id: "draft-clear".to_string(),
+                status: "preview_ready".to_string(),
+                expires_at_ms: now_unix_ms() + 60_000,
+            },
+            message: Some("preview".to_string()),
+        };
+        remember_pending_channel_automation_draft(&msg, &response, &map).await;
+        clear_pending_channel_automation_draft(&msg, &map).await;
+        assert_eq!(pending_channel_automation_draft_id(&msg, &map).await, None);
+    }
+
+    #[test]
+    fn channel_automation_confirm_cancel_text_is_plain_text_only() {
+        assert!(is_channel_automation_confirm_text("confirm"));
+        assert!(is_channel_automation_cancel_text("never mind"));
+        assert!(!is_channel_automation_confirm_text("/confirm"));
+        assert!(!is_channel_automation_cancel_text("/cancel"));
     }
 }

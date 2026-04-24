@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Chat-native automation drafts**: Discord, Telegram, Slack, and direct chat requests can now start bounded automation drafts in the same channel context without routing through the experimental workflow planner.
+- **Channel automation draft API**: Added `/automations/channel-drafts` endpoints to start or continue a draft, answer follow-up questions, confirm creation, cancel drafts, and inspect pending drafts for diagnostics.
+- **Pending channel interactions**: Channel dispatch now tracks pending draft questions by platform, scope, thread/session, and sender so the next eligible reply from the same user answers the draft while other users, scopes, and slash commands are ignored.
+- **Control-panel chat guidance**: Channel settings now explain next-reply capture, confirmation, cancellation, and same-channel bounds for chat-created automations.
 - **Workflow-planning visibility and provenance**: Chat-seeded workflow planning now persists explicit `workflow_planning` state with draft and session IDs, source channel/platform, requesting actor, allowed and blocked tools, known and missing requirements, and validation state.
 - **Clarification-first drafting**: Missing workflow details now trigger focused follow-up questions about triggers, inputs, outputs, publish behavior, required tools, approval, and memory/files instead of generating a vague draft.
 - **Control-panel handoff and audit events**: Workflow drafts now surface a review banner in the control panel, emit structured planning lifecycle events, and include a short preview plus review link in external replies.
@@ -17,11 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Capability governance stays explicit**: Blocked tools, missing requirements, and approval requests now flow through the existing planner and session structures instead of being widened silently.
+- **Ordinary automation requests stay chat-native**: Setup understanding and channel dispatch route `automation_create` intents into the new draft flow, while the workflow planner remains gated for explicit planner requests.
 - **External channels stay draft-first**: Telegram, Discord, and Slack continue to return compact review-oriented responses and cannot directly activate workflows.
 - **Planner provenance**: Control-panel initiated requests remain human-owned, and agent-authored drafts retain their source provenance through reloads.
 
 ### Fixed
 
+- **Cross-channel draft safety**: Pending draft answers now expire, require the same sender and chat scope, and can be cancelled with `cancel`, `stop`, or `never mind`.
 - **Docs MCP is not authoring permission**: Tandem Docs MCP availability no longer implies workflow-planning permission.
 - **Workflow planning fallthrough**: Bare workflow requests no longer fall through to generic setup when the channel has workflow planning enabled.
 

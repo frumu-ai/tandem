@@ -52,6 +52,7 @@ use crate::{
 mod automation_projection_runtime;
 pub(crate) mod bug_monitor;
 mod capabilities;
+pub(crate) mod channel_automation_drafts;
 mod channels_api;
 mod coder;
 pub(crate) mod config_providers;
@@ -81,6 +82,7 @@ mod resources;
 mod router;
 mod routes_bug_monitor;
 mod routes_capabilities;
+mod routes_channel_automation_drafts;
 mod routes_coder;
 mod routes_config_providers;
 mod routes_context;

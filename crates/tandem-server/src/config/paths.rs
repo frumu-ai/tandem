@@ -80,6 +80,10 @@ pub(crate) fn resolve_automations_v2_path() -> PathBuf {
     resolve_canonical_data_file_path("automations_v2.json")
 }
 
+pub(crate) fn resolve_channel_automation_drafts_path() -> PathBuf {
+    resolve_canonical_data_file_path("channel_automation_drafts.json")
+}
+
 pub(crate) fn resolve_automation_v2_runs_path() -> PathBuf {
     resolve_canonical_data_file_path("automation_v2_runs.json")
 }

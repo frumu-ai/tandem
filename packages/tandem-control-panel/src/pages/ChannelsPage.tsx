@@ -35,6 +35,40 @@ export function ChannelsPage({ client, toast }: AppPageProps) {
 
   return (
     <div className="grid gap-4">
+      <PageCard
+        title="Chat automation drafts"
+        subtitle="How Tandem turns channel messages into bounded automations"
+      >
+        <div className="grid gap-3 text-sm">
+          <p className="tcp-subtle">
+            When someone asks Tandem to create an automation from Discord, Telegram, Slack, or a
+            direct chat, Tandem keeps the draft in that same conversation instead of opening the
+            workflow editor.
+          </p>
+          <div className="grid gap-2 md:grid-cols-3">
+            <div className="tcp-list-item">
+              <strong>Questions</strong>
+              <div className="tcp-subtle mt-1 text-xs">
+                Tandem captures the next non-command reply from the same person in the same chat
+                scope.
+              </div>
+            </div>
+            <div className="tcp-list-item">
+              <strong>Confirmation</strong>
+              <div className="tcp-subtle mt-1 text-xs">
+                The draft is only created after a plain text confirm. Reply cancel to stop.
+              </div>
+            </div>
+            <div className="tcp-list-item">
+              <strong>Bounds</strong>
+              <div className="tcp-subtle mt-1 text-xs">
+                The created automation records the source channel, sender, scope, and allowed tool
+                policy.
+              </div>
+            </div>
+          </div>
+        </div>
+      </PageCard>
       <PageCard title="Channels" subtitle="Connector health and quick reconnect">
         <div className="grid gap-2">
           {rows.length ? (

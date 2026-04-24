@@ -3,6 +3,7 @@ use super::*;
 pub(super) mod agent_teams;
 pub(super) mod bug_monitor;
 pub(super) mod capabilities;
+pub(super) mod channel_automation_drafts;
 pub(super) mod channels;
 pub(super) mod coder;
 pub(super) mod context_packs;
@@ -147,6 +148,7 @@ pub(super) async fn test_state() -> AppState {
     );
     let mut state = AppState::new_starting(Uuid::new_v4().to_string(), false);
     state.shared_resources_path = root.join("shared_resources.json");
+    state.channel_automation_drafts_path = root.join("channel_automation_drafts.json");
     state.memory_audit_path = root.join("memory").join("audit.log.jsonl");
     state.protected_audit_path = root.join("audit").join("protected_events.log.jsonl");
     state

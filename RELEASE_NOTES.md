@@ -4,7 +4,16 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.4.41 (Unreleased)
 
-This unreleased build hardens chat-based workflow planning so drafts stay runtime-owned, visible, and governed before they are reviewed in the control panel.
+This unreleased build adds chat-native automation drafts for Discord, Telegram, Slack, and direct channel conversations, while also hardening workflow-planning handoff for explicit planner flows.
+
+### Chat-native automation drafts
+
+- **Same-channel draft flow**: Automation creation requests now create bounded channel drafts that ask one follow-up question at a time in the same chat context instead of forcing users into the experimental workflow planner.
+- **Durable draft API**: New channel-draft endpoints start or continue drafts, accept answers, return previews, confirm creation, cancel abandoned drafts, and expose pending drafts for diagnostics.
+- **Consistent reply capture**: When Tandem asks a draft question, the next eligible non-command message from the same sender in the same room, thread, DM, or session answers that draft; other users and other scopes are ignored.
+- **Explicit confirmation before activation**: Completed drafts return a plain-text preview and only create an active automation after the user replies with confirmation.
+- **Channel-bounded automation metadata**: Confirmed automations carry source platform, channel, sender, scope, output target, and channel-derived tool/security bounds so chat-created automations stay within the channel's configured permissions.
+- **Control-panel guidance**: Channel settings now describe next-reply capture, cancellation, confirmation, same-channel output defaults, and pending draft behavior without requiring a separate workflow-editor handoff.
 
 ### Workflow planning visibility
 
@@ -15,6 +24,7 @@ This unreleased build hardens chat-based workflow planning so drafts stay runtim
 ### Governance and handoff
 
 - **Explicit blocked capabilities**: Required tools or MCPs that are not allowed stay blocked, are surfaced in the draft, and route through the existing approval queue instead of being silently widened.
+- **Ordinary automation creation stays chat-native**: `automation_create` intents now use the channel draft flow, while workflow planner handling stays behind the existing experimental gate for explicit planner requests.
 - **Draft-first external channels**: Telegram, Discord, and Slack still return a compact preview plus the control-panel review link, and they do not directly activate workflows in V1.1.
 - **Control-panel review details**: The planner review surface now shows the original request, source platform/channel, actor, draft status, validation status, required capabilities, blocked capabilities, approval requirements, and the generated preview.
 

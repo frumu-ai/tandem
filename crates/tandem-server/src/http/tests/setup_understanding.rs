@@ -124,6 +124,47 @@ async fn setup_understand_intercepts_automation_creation() {
 }
 
 #[tokio::test]
+async fn setup_understand_routes_channel_automation_to_automation_create() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/setup/understand")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "surface": "channel",
+                "channel": "discord",
+                "text": "Create an automation from this chat that posts a daily summary here",
+                "trigger": {
+                    "source": "mention",
+                    "is_direct_message": false,
+                    "was_explicitly_mentioned": true,
+                    "is_reply_to_bot": false
+                },
+                "scope": {
+                    "kind": "room",
+                    "id": "room-1"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("decision").and_then(Value::as_str),
+        Some("intercept")
+    );
+    assert_eq!(
+        payload.get("intent_kind").and_then(Value::as_str),
+        Some("automation_create")
+    );
+}
+
+#[tokio::test]
 async fn setup_understand_intercepts_workflow_planning() {
     let state = test_state().await;
     let app = app_router(state);

@@ -101,63 +101,229 @@ async fn understand_setup_request(
     Ok(serde_json::from_str(&body)?)
 }
 
-async fn remember_setup_clarifier(
-    conversation_key: String,
-    clarifier: &SetupClarifier,
-    original_text: String,
-    setup_clarifiers: &SetupClarifierMap,
+fn pending_channel_interaction_key(msg: &ChannelMessage) -> String {
+    session_map_key(msg)
+}
+
+fn channel_automation_draft_status_is_open(status: &str) -> bool {
+    matches!(status, "collecting" | "preview_ready" | "blocked")
+}
+
+fn is_channel_automation_confirm_text(content: &str) -> bool {
+    matches!(
+        content.trim().to_ascii_lowercase().as_str(),
+        "ok" | "okay"
+            | "yes"
+            | "y"
+            | "confirm"
+            | "confirmed"
+            | "approve"
+            | "approved"
+            | "go"
+            | "go ahead"
+            | "proceed"
+            | "do it"
+            | "run it"
+            | "apply"
+    )
+}
+
+fn is_channel_automation_cancel_text(content: &str) -> bool {
+    matches!(
+        content.trim().to_ascii_lowercase().as_str(),
+        "cancel" | "stop" | "abort" | "never mind" | "nevermind"
+    )
+}
+
+async fn remember_pending_channel_automation_draft(
+    msg: &ChannelMessage,
+    response: &ChannelAutomationDraftApiResponse,
+    pending_interactions: &PendingChannelInteractionMap,
 ) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let pending = PendingSetupClarifier {
-        intent_options: clarifier.options.iter().map(|row| row.id.clone()).collect(),
-        original_text,
-        expires_at_ms: now + 5 * 60 * 1000,
-    };
-    let mut guard = setup_clarifiers.lock().await;
-    guard.insert(conversation_key, pending);
+    let key = pending_channel_interaction_key(msg);
+    let mut guard = pending_interactions.lock().await;
+    guard.insert(
+        key,
+        PendingChannelInteraction {
+            draft_id: response.draft.draft_id.clone(),
+            expires_at_ms: response.draft.expires_at_ms,
+        },
+    );
 }
 
-async fn consume_setup_clarifier_reply(
-    conversation_key: &str,
-    reply: &str,
-    setup_clarifiers: &SetupClarifierMap,
+async fn clear_pending_channel_automation_draft(
+    msg: &ChannelMessage,
+    pending_interactions: &PendingChannelInteractionMap,
+) {
+    let key = pending_channel_interaction_key(msg);
+    pending_interactions.lock().await.remove(&key);
+}
+
+async fn pending_channel_automation_draft_id(
+    msg: &ChannelMessage,
+    pending_interactions: &PendingChannelInteractionMap,
 ) -> Option<String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let mut guard = setup_clarifiers.lock().await;
-    guard.retain(|_, value| value.expires_at_ms > now);
-    let pending = guard.get(conversation_key)?.clone();
-    let selected = parse_setup_clarifier_selection(reply, &pending.intent_options)?;
-    guard.remove(conversation_key);
-    Some(format!("{} {}", pending.original_text, selected))
+    let now = now_unix_ms();
+    let key = pending_channel_interaction_key(msg);
+    let mut guard = pending_interactions.lock().await;
+    guard.retain(|_, pending| pending.expires_at_ms > now);
+    guard.get(&key).map(|pending| pending.draft_id.clone())
 }
 
-fn parse_setup_clarifier_selection(reply: &str, options: &[String]) -> Option<String> {
-    let normalized = reply.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return None;
+async fn apply_channel_automation_draft_response(
+    msg: &ChannelMessage,
+    pending_interactions: &PendingChannelInteractionMap,
+    response: ChannelAutomationDraftApiResponse,
+) -> String {
+    if channel_automation_draft_status_is_open(&response.draft.status) {
+        remember_pending_channel_automation_draft(msg, &response, pending_interactions).await;
+    } else {
+        clear_pending_channel_automation_draft(msg, pending_interactions).await;
     }
-    match normalized.as_str() {
-        "1" => return options.first().cloned(),
-        "2" => return options.get(1).cloned(),
-        "3" => return options.get(2).cloned(),
-        _ => {}
+    response
+        .message
+        .unwrap_or_else(|| "Automation draft updated.".to_string())
+}
+
+async fn channel_automation_draft_post(
+    base_url: &str,
+    api_token: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> anyhow::Result<ChannelAutomationDraftApiResponse> {
+    let client = reqwest::Client::new();
+    let resp = add_auth(
+        client.post(format!("{base_url}{path}")).json(&body),
+        api_token,
+    )
+    .send()
+    .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("channel automation draft failed ({status}): {body}");
     }
-    options.iter().find_map(|option| {
-        let normalized_option = option.to_ascii_lowercase();
-        if normalized == normalized_option
-            || normalized.contains(&normalized_option.replace('_', " "))
-        {
-            Some(option.clone())
-        } else {
-            None
+    Ok(serde_json::from_str(&body)?)
+}
+
+async fn start_channel_automation_draft(
+    base_url: &str,
+    api_token: &str,
+    msg: &ChannelMessage,
+    session_id: &str,
+    thread_key: &str,
+    prompt: &str,
+    tool_prefs: &ChannelToolPreferences,
+    security_profile: ChannelSecurityProfile,
+    pending_interactions: &PendingChannelInteractionMap,
+) -> String {
+    let allowed_tools =
+        build_channel_tool_allowlist(None, tool_prefs, security_profile).unwrap_or_default();
+    let body = serde_json::json!({
+        "text": prompt,
+        "session_id": session_id,
+        "thread_key": thread_key,
+        "channel_context": {
+            "source_platform": msg.channel.clone(),
+            "scope_kind": scope_kind_label(&msg.scope.kind),
+            "scope_id": msg.scope.id.clone(),
+            "reply_target": msg.reply_target.clone(),
+            "sender": msg.sender.clone(),
+            "session_id": session_id,
+            "thread_key": thread_key,
+            "trigger_source": trigger_source_label(&msg.trigger.source)
+        },
+        "allowed_tools": allowed_tools,
+        "allowed_mcp_servers": tool_prefs.enabled_mcp_servers.clone(),
+        "allowed_mcp_tools": tool_prefs.enabled_mcp_tools.clone(),
+        "security_profile": format!("{security_profile:?}")
+    });
+    match channel_automation_draft_post(
+        base_url,
+        api_token,
+        "/automations/channel-drafts",
+        body,
+    )
+    .await
+    {
+        Ok(response) => {
+            apply_channel_automation_draft_response(msg, pending_interactions, response).await
         }
-    })
+        Err(error) => format!("I understood that as an automation setup request, but I could not start a chat draft right now: {error}"),
+    }
+}
+
+async fn answer_channel_automation_draft(
+    base_url: &str,
+    api_token: &str,
+    msg: &ChannelMessage,
+    draft_id: &str,
+    pending_interactions: &PendingChannelInteractionMap,
+) -> String {
+    let path = format!(
+        "/automations/channel-drafts/{}/answer",
+        sanitize_resource_segment(draft_id)
+    );
+    match channel_automation_draft_post(
+        base_url,
+        api_token,
+        &path,
+        serde_json::json!({ "answer": msg.content }),
+    )
+    .await
+    {
+        Ok(response) => {
+            apply_channel_automation_draft_response(msg, pending_interactions, response).await
+        }
+        Err(error) => {
+            clear_pending_channel_automation_draft(msg, pending_interactions).await;
+            format!("Automation draft answer failed: {error}")
+        }
+    }
+}
+
+async fn confirm_channel_automation_draft(
+    base_url: &str,
+    api_token: &str,
+    msg: &ChannelMessage,
+    draft_id: &str,
+    pending_interactions: &PendingChannelInteractionMap,
+) -> String {
+    let path = format!(
+        "/automations/channel-drafts/{}/confirm",
+        sanitize_resource_segment(draft_id)
+    );
+    match channel_automation_draft_post(base_url, api_token, &path, serde_json::json!({})).await {
+        Ok(response) => {
+            apply_channel_automation_draft_response(msg, pending_interactions, response).await
+        }
+        Err(error) => {
+            clear_pending_channel_automation_draft(msg, pending_interactions).await;
+            format!("Automation draft confirmation failed: {error}")
+        }
+    }
+}
+
+async fn cancel_channel_automation_draft(
+    base_url: &str,
+    api_token: &str,
+    msg: &ChannelMessage,
+    draft_id: &str,
+    pending_interactions: &PendingChannelInteractionMap,
+) -> String {
+    let path = format!(
+        "/automations/channel-drafts/{}/cancel",
+        sanitize_resource_segment(draft_id)
+    );
+    match channel_automation_draft_post(base_url, api_token, &path, serde_json::json!({})).await {
+        Ok(response) => {
+            apply_channel_automation_draft_response(msg, pending_interactions, response).await
+        }
+        Err(error) => {
+            clear_pending_channel_automation_draft(msg, pending_interactions).await;
+            format!("Automation draft cancellation failed: {error}")
+        }
+    }
 }
 
 fn format_setup_clarifier_message(clarifier: &SetupClarifier) -> String {
