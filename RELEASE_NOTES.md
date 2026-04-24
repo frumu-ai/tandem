@@ -32,6 +32,7 @@ This unreleased build adds chat-native automation drafts for Discord, Telegram, 
 
 - **Explicit blocked capabilities**: Required tools or MCPs that are not allowed stay blocked, are surfaced in the draft, and route through the existing approval queue instead of being silently widened.
 - **Ordinary automation creation stays chat-native**: `automation_create` intents now use the channel draft flow, while workflow planner handling stays behind the existing experimental gate for explicit planner requests.
+- **Workflow planner replies stay in chat**: Channel workflow-planning responses now surface planner questions, draft summaries, validation state, and blocked capabilities in the chat thread, with the control-panel link kept for review/apply.
 - **Draft-first external channels**: Telegram, Discord, and Slack still return a compact preview plus the control-panel review link, and they do not directly activate workflows in V1.1.
 - **Control-panel review details**: The planner review surface now shows the original request, source platform/channel, actor, draft status, validation status, required capabilities, blocked capabilities, approval requirements, and the generated preview.
 

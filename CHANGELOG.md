@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Engine auth is secure by default**: Tokenless engine serving is now an explicit unsafe opt-out instead of the default fallback when no `TANDEM_API_TOKEN` is provided.
 - **Capability governance stays explicit**: Blocked tools, missing requirements, and approval requests now flow through the existing planner and session structures instead of being widened silently.
 - **Ordinary automation requests stay chat-native**: Setup understanding and channel dispatch route `automation_create` intents into the new draft flow, while the workflow planner remains gated for explicit planner requests.
+- **Workflow planner replies stay in chat**: Channel workflow-planning responses now surface planner questions, draft summaries, validation state, and blocked capabilities in the chat thread, with the control-panel link kept for review/apply.
 - **External channels stay draft-first**: Telegram, Discord, and Slack continue to return compact review-oriented responses and cannot directly activate workflows.
 - **Planner provenance**: Control-panel initiated requests remain human-owned, and agent-authored drafts retain their source provenance through reloads.
 

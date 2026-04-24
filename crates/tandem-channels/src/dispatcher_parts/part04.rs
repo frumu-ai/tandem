@@ -255,6 +255,179 @@ fn workflow_plan_change_summary(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+async fn workflow_planner_poll_session(
+    base_url: &str,
+    api_token: &str,
+    session_id: &str,
+) -> Option<serde_json::Value> {
+    let mut latest = None;
+    for _ in 0..20 {
+        let payload = json_request(
+            reqwest::Method::GET,
+            &format!(
+                "/workflow-plans/sessions/{}",
+                sanitize_resource_segment(session_id)
+            ),
+            None,
+            base_url,
+            api_token,
+        )
+        .await
+        .ok()?;
+        let status = payload
+            .get("session")
+            .and_then(|session| session.get("operation"))
+            .and_then(|operation| operation.get("status"))
+            .and_then(|status| status.as_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        latest = Some(payload);
+        if status != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    latest
+}
+
+fn workflow_planner_compact_items(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|entry| entry.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.as_str())
+                .map(str::trim)
+                .filter(|row| !row.is_empty())
+                .take(4)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn workflow_planner_plan_from_session<'a>(
+    session: &'a serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+    session
+        .get("operation")
+        .and_then(|operation| operation.get("response"))
+        .and_then(|response| response.get("plan"))
+        .or_else(|| {
+            session
+                .get("draft")
+                .and_then(|draft| draft.get("current_plan"))
+        })
+}
+
+fn workflow_planner_assistant_text(session: &serde_json::Value) -> Option<String> {
+    session
+        .get("operation")
+        .and_then(|operation| operation.get("response"))
+        .and_then(assistant_message_text)
+}
+
+fn workflow_planner_clarifier_question(session: &serde_json::Value) -> Option<String> {
+    session
+        .get("operation")
+        .and_then(|operation| operation.get("response"))
+        .and_then(|response| response.get("clarifier"))
+        .and_then(|clarifier| clarifier.get("question"))
+        .and_then(|question| question.as_str())
+        .map(str::trim)
+        .filter(|question| !question.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn workflow_planner_channel_summary_reply(
+    session_payload: Option<&serde_json::Value>,
+    session_id: &str,
+    preview: &str,
+) -> String {
+    let link = workflow_planner_control_panel_url(session_id);
+    let Some(session) = session_payload.and_then(|payload| payload.get("session")) else {
+        return format!(
+            "Workflow drafting started here.\nPreview: {preview}\nReply here with changes or missing details.\nReview/apply link: {link}\nSession: `{session_id}`"
+        );
+    };
+
+    let operation = session.get("operation");
+    if let Some(error) = operation
+        .and_then(|operation| operation.get("error"))
+        .and_then(|error| error.as_str())
+        .filter(|error| !error.trim().is_empty())
+    {
+        return format!(
+            "Workflow draft hit an error: {error}\nReply here with a simpler request or more detail.\nReview/apply link: {link}\nSession: `{session_id}`"
+        );
+    }
+
+    let status = operation
+        .and_then(|operation| operation.get("status"))
+        .and_then(|status| status.as_str())
+        .unwrap_or_default();
+    if status.eq_ignore_ascii_case("running") {
+        return format!(
+            "Workflow drafting is still running here.\nPreview: {preview}\nReply with extra constraints anytime and I'll update this draft thread.\nReview/apply link: {link}\nSession: `{session_id}`"
+        );
+    }
+
+    let planning = session.get("planning");
+    let validation_state = planning
+        .and_then(|planning| planning.get("validation_state"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            planning
+                .and_then(|planning| planning.get("validation_status"))
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or("pending");
+    let blocked =
+        workflow_planner_compact_items(planning.and_then(|planning| planning.get("blocked_tools")));
+    let missing = workflow_planner_compact_items(
+        planning.and_then(|planning| planning.get("missing_requirements")),
+    );
+
+    let mut lines = Vec::new();
+    if let Some(question) = workflow_planner_clarifier_question(session) {
+        lines.push("Workflow draft needs one answer.".to_string());
+        lines.push(format!("Question: {question}"));
+    } else if let Some(text) = workflow_planner_assistant_text(session) {
+        lines.push(text);
+    } else if let Some(plan) = workflow_planner_plan_from_session(session) {
+        let title = plan
+            .get("title")
+            .and_then(|title| title.as_str())
+            .unwrap_or("Workflow draft");
+        let steps = plan
+            .get("steps")
+            .and_then(|steps| steps.as_array())
+            .map(Vec::len)
+            .unwrap_or(0);
+        lines.push(format!("Workflow draft created: {title}"));
+        lines.push(format!("Steps: {steps}"));
+        if let Some(schedule) = plan.get("schedule") {
+            lines.push(format!("Schedule: {}", compact_json(schedule)));
+        }
+    } else {
+        lines.push("Workflow draft started here.".to_string());
+        lines.push(format!("Preview: {preview}"));
+    }
+
+    lines.push(format!("Validation: {validation_state}"));
+    if !blocked.is_empty() {
+        lines.push(format!("Blocked capabilities: {}", blocked.join(", ")));
+    }
+    if !missing.is_empty() {
+        lines.push(format!("Missing details: {}", missing.join(", ")));
+    }
+    lines.push(
+        "Reply here with answers or changes; activation still requires review/apply.".to_string(),
+    );
+    lines.push(format!("Review/apply link: {link}"));
+    lines.push(format!("Session: `{session_id}`"));
+    lines.join("\n")
+}
+
 fn assistant_message_text(value: &serde_json::Value) -> Option<String> {
     value
         .get("assistant_message")

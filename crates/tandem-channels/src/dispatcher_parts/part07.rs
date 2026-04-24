@@ -638,6 +638,66 @@ mod tests {
     }
 
     #[test]
+    fn workflow_planner_channel_summary_surfaces_questions_in_chat() {
+        let payload = serde_json::json!({
+            "session": {
+                "operation": {
+                    "status": "completed",
+                    "response": {
+                        "clarifier": {
+                            "question": "Should Notion saves draft pages or publish pages?"
+                        }
+                    }
+                },
+                "planning": {
+                    "validation_state": "incomplete",
+                    "blocked_tools": [],
+                    "missing_requirements": ["notion publish mode"]
+                }
+            }
+        });
+
+        let reply =
+            workflow_planner_channel_summary_reply(Some(&payload), "wfplan-session-1", "preview");
+
+        assert!(reply.contains("Workflow draft needs one answer."));
+        assert!(reply.contains("Should Notion saves draft pages or publish pages?"));
+        assert!(reply.contains("Missing details: notion publish mode"));
+        assert!(reply.contains("Reply here with answers or changes"));
+    }
+
+    #[test]
+    fn workflow_planner_channel_summary_surfaces_blocked_capabilities_in_chat() {
+        let payload = serde_json::json!({
+            "session": {
+                "operation": {
+                    "status": "completed",
+                    "response": {
+                        "plan": {
+                            "title": "Reddit research workflow",
+                            "steps": [{ "step_id": "collect" }],
+                            "schedule": { "kind": "interval", "hours": 4 }
+                        }
+                    }
+                },
+                "planning": {
+                    "validation_state": "needs_approval",
+                    "blocked_tools": ["mcp.notion.pages_create"],
+                    "missing_requirements": []
+                }
+            }
+        });
+
+        let reply =
+            workflow_planner_channel_summary_reply(Some(&payload), "wfplan-session-2", "preview");
+
+        assert!(reply.contains("Workflow draft created: Reddit research workflow"));
+        assert!(reply.contains("Validation: needs_approval"));
+        assert!(reply.contains("Blocked capabilities: mcp.notion.pages_create"));
+        assert!(reply.contains("activation still requires review/apply"));
+    }
+
+    #[test]
     fn channel_mcp_server_names_are_normalized_into_tool_allowlist_patterns() {
         let prefs = ChannelToolPreferences {
             enabled_mcp_servers: vec!["composio-1".to_string(), "tandem-mcp".to_string()],

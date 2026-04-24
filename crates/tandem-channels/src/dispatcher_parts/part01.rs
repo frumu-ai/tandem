@@ -1480,10 +1480,12 @@ async fn process_channel_message(
         .await;
         match response {
             Ok(_) => {
-                let reply = format!(
-                    "🗓️ Workflow planning is in progress.\nReview it in the planner: {}\nSession: `{}`",
-                    workflow_planner_control_panel_url(&planner_session_id),
-                    planner_session_id,
+                let session_payload =
+                    workflow_planner_poll_session(base_url, api_token, &planner_session_id).await;
+                let reply = workflow_planner_channel_summary_reply(
+                    session_payload.as_ref(),
+                    &planner_session_id,
+                    &prompt_content,
                 );
                 if let Err(e) = channel
                     .send(&SendMessage {
@@ -1700,12 +1702,21 @@ async fn process_channel_message(
                             .await;
                             let link = workflow_planner_control_panel_url(&planner_session_id);
                             match start_result {
-                                Ok(_) => format!(
-                                    "🗓️ Workflow planning started.\nPreview: {}\nReview it in the planner: {}\nSession: `{}`",
-                                    workflow_preview, link, planner_session_id
-                                ),
+                                Ok(_) => {
+                                    let session_payload = workflow_planner_poll_session(
+                                        base_url,
+                                        api_token,
+                                        &planner_session_id,
+                                    )
+                                    .await;
+                                    workflow_planner_channel_summary_reply(
+                                        session_payload.as_ref(),
+                                        &planner_session_id,
+                                        &workflow_preview,
+                                    )
+                                }
                                 Err(error) => format!(
-                                    "🗓️ Workflow planner session created, but draft start failed: {}\nPreview: {}\nReview it in the planner: {}\nSession: `{}`",
+                                    "Workflow planner session was created, but draft start failed: {}\nPreview: {}\nReview/apply link: {}\nSession: `{}`",
                                     error, workflow_preview, link, planner_session_id
                                 ),
                             }
