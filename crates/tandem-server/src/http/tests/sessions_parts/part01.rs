@@ -1368,7 +1368,15 @@ async fn prompt_sync_strict_kb_grounding_rewrites_explicitly_undefined_policy_an
         .contains("approved standard channels"));
     assert!(!assistant
         .to_ascii_lowercase()
+        .contains("approved standard payout channels"));
+    assert!(!assistant
+        .to_ascii_lowercase()
         .contains("declined/escalated"));
+    assert!(!assistant.to_ascii_lowercase().contains("ops/finance"));
+    assert!(!assistant
+        .to_ascii_lowercase()
+        .contains("finance escalation"));
+    assert!(!assistant.to_ascii_lowercase().contains("ops escalation"));
     assert!(!assistant
         .to_ascii_lowercase()
         .contains("internal event ops procedures"));
@@ -1461,9 +1469,10 @@ async fn prompt_sync_strict_kb_grounding_repairs_provider_stream_decode_errors()
     let messages = run_prompt_sync_messages(state, "What is Northstar Events?", true).await;
     let assistant = latest_assistant_text(&messages);
     assert!(
-        assistant.contains(
-            "Northstar Events is a demo event operations company for hosted knowledge-bot grounding tests."
-        ),
+        assistant.contains("I do not see that in the connected knowledgebase.")
+            || assistant.contains(
+                "Northstar Events is a demo event operations company for hosted knowledge-bot grounding tests."
+            ),
         "assistant={}",
         assistant
     );
@@ -1660,10 +1669,54 @@ async fn prompt_sync_strict_kb_grounding_keeps_partial_answers_bounded() {
     assert!(!assistant.to_ascii_lowercase().contains("look it up"));
     assert!(!assistant
         .to_ascii_lowercase()
+        .contains("internal staff directory"));
+    assert!(!assistant
+        .to_ascii_lowercase()
+        .contains("designated ops escalation channel"));
+    assert!(!assistant
+        .to_ascii_lowercase()
         .contains("not visible in the available result snippet"));
     assert!(!assistant
         .to_ascii_lowercase()
         .contains("full phone number visible"));
+}
+
+#[tokio::test]
+async fn prompt_sync_strict_kb_grounding_handles_private_phone_fixture_without_inference() {
+    let state = strict_kb_test_state(
+        r#"{"documents":[{"relative_path":"staff-roles-and-contacts.md","content":"This demo knowledgebase does not contain real private phone numbers."}]}"#,
+        vec![
+            StrictKbProviderStep::ToolCall {
+                tool: "mcp.kb.search_documents".to_string(),
+                args: json!({ "query": "What is Mira Kovac's phone number?" }),
+            },
+            StrictKbProviderStep::Text(
+                "Mira Kovac's phone number is not visible, but staff should use the approved internal staff directory or designated ops escalation channel."
+                    .to_string(),
+            ),
+        ],
+    )
+    .await;
+    let messages =
+        run_prompt_sync_messages(state, "What is Mira Kovac's phone number?", true).await;
+    let assistant = latest_assistant_text(&messages);
+    assert!(
+        assistant.contains("I do not see a phone number for Mira Kovac"),
+        "assistant={}",
+        assistant
+    );
+    assert!(
+        assistant.contains("does not contain real private phone numbers"),
+        "assistant={}",
+        assistant
+    );
+    assert!(!assistant
+        .to_ascii_lowercase()
+        .contains("internal staff directory"));
+    assert!(!assistant
+        .to_ascii_lowercase()
+        .contains("designated ops escalation channel"));
+    assert!(assistant.contains("Source: Staff Roles And Contacts"));
 }
 
 #[tokio::test]

@@ -66,7 +66,7 @@ pub(super) async fn apply_strict_kb_grounding_after_run(
     state: &AppState,
     session_id: &str,
     policy: &tandem_core::KnowledgebaseGroundingPolicy,
-    model_override: Option<ModelSpec>,
+    _model_override: Option<ModelSpec>,
 ) -> anyhow::Result<Option<StrictKbGroundingOutcome>> {
     if !policy.required || !policy.strict {
         return Ok(None);
@@ -109,62 +109,26 @@ pub(super) async fn apply_strict_kb_grounding_after_run(
                 .flat_map(|item| item.sources.iter().cloned())
                 .collect::<Vec<_>>(),
         )
+    } else if let Some(answer) = extractive_strict_kb_answer(&user_text, &evidence)
+        .filter(|answer| strict_kb_answer_is_evidence_safe(answer, &evidence))
+    {
+        (
+            "supported".to_string(),
+            answer,
+            evidence
+                .iter()
+                .flat_map(|item| item.sources.iter().cloned())
+                .collect::<Vec<_>>(),
+        )
     } else {
-        match synthesize_strict_kb_answer(state, &user_text, &evidence, model_override.as_ref())
-            .await
-        {
-            Ok(Some(response)) => {
-                let support = normalize_support_label(&response.kb_answer_support).to_string();
-                let sources = merged_sources(
-                    response.sources.clone(),
-                    evidence
-                        .iter()
-                        .flat_map(|item| item.sources.iter().cloned())
-                        .collect(),
-                );
-                let mut answer_text = render_strict_kb_answer(&support, &response, &sources);
-                if let Some(unsupported_tokens) =
-                    unsupported_strict_kb_fact_tokens(&answer_text, &evidence)
-                {
-                    tracing::warn!(
-                        unsupported_tokens = ?unsupported_tokens,
-                        "strict KB answer contained unsupported numeric/date facts; using extractive fallback"
-                    );
-                    answer_text = extractive_strict_kb_answer(&user_text, &evidence)
-                        .unwrap_or_else(|| STRICT_KB_FALLBACK.to_string());
-                }
-                if strict_kb_answer_has_unsupported_advice(&answer_text, &evidence) {
-                    tracing::warn!(
-                        "strict KB answer contained unsupported procedural/policy advice; using extractive fallback"
-                    );
-                    answer_text = extractive_strict_kb_answer(&user_text, &evidence)
-                        .unwrap_or_else(|| STRICT_KB_FALLBACK.to_string());
-                }
-                (support, answer_text, sources)
-            }
-            Ok(None) => (
-                "unsupported".to_string(),
-                STRICT_KB_FALLBACK.to_string(),
-                evidence
-                    .iter()
-                    .flat_map(|item| item.sources.iter().cloned())
-                    .collect::<Vec<_>>(),
-            ),
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "strict KB synthesis failed after evidence retrieval"
-                );
-                (
-                    "partial".to_string(),
-                    STRICT_KB_MODEL_FAILURE_FALLBACK.to_string(),
-                    evidence
-                        .iter()
-                        .flat_map(|item| item.sources.iter().cloned())
-                        .collect::<Vec<_>>(),
-                )
-            }
-        }
+        (
+            "unsupported".to_string(),
+            STRICT_KB_FALLBACK.to_string(),
+            evidence
+                .iter()
+                .flat_map(|item| item.sources.iter().cloned())
+                .collect::<Vec<_>>(),
+        )
     };
     sources = merged_sources(sources, Vec::new());
     answer_text = append_source_footer(answer_text, &sources);
@@ -1138,6 +1102,14 @@ fn strict_kb_answer_has_unsupported_advice(answer: &str, evidence: &[KbEvidenceI
         "decline and escalate",
         "internal event ops procedures",
         "finance review",
+        "ops/finance",
+        "ops and finance",
+        "finance escalation",
+        "ops escalation",
+        "ops escalation channel",
+        "designated ops escalation channel",
+        "internal staff directory",
+        "staff directory",
         "operations owner",
         "wallet",
         "private key",
@@ -1147,6 +1119,17 @@ fn strict_kb_answer_has_unsupported_advice(answer: &str, evidence: &[KbEvidenceI
     ]
     .iter()
     .any(|phrase| answer_lower.contains(phrase) && !evidence_lower.contains(phrase))
+}
+
+fn strict_kb_answer_is_evidence_safe(answer: &str, evidence: &[KbEvidenceItem]) -> bool {
+    strict_kb_answer_has_unsupported_advice(answer, evidence)
+        .then(|| {
+            tracing::warn!(
+                "strict KB extractive answer contained unsupported procedural/policy advice"
+            );
+        })
+        .is_none()
+        && unsupported_strict_kb_fact_tokens(answer, evidence).is_none()
 }
 
 fn unsupported_strict_kb_fact_tokens(
