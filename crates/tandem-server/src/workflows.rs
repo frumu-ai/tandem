@@ -1,5 +1,6 @@
 use anyhow::Context;
 use serde_json::{json, Value};
+use std::time::Duration;
 use tandem_types::{EngineEvent, MessagePartInput, SendMessageRequest, Session, TenantContext};
 use tandem_workflows::{
     WorkflowActionRunRecord, WorkflowActionRunStatus, WorkflowActionSpec, WorkflowHookBinding,
@@ -613,6 +614,17 @@ pub async fn dispatch_workflow_event(state: &AppState, event: &EngineEvent) {
 }
 
 pub async fn run_workflow_dispatcher(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        let startup = state.startup_snapshot().await;
+        tracing::warn!(
+            component = "workflow_dispatcher",
+            startup_status = ?startup.status,
+            startup_phase = %startup.phase,
+            attempt_id = %startup.attempt_id,
+            "workflow dispatcher exiting before runtime access because startup did not become ready"
+        );
+        return;
+    }
     let mut rx = state.event_bus.subscribe();
     loop {
         match rx.recv().await {
@@ -1118,6 +1130,7 @@ async fn execute_action(
                 agent: Some(agent_id.clone()),
                 tool_mode: None,
                 tool_allowlist: None,
+                strict_kb_grounding: None,
                 context_mode: None,
                 write_required: None,
                 prewrite_requirements: None,

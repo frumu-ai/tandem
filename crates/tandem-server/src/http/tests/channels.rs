@@ -10,13 +10,15 @@ async fn channels_config_returns_non_secret_shape() {
                 "telegram": {
                     "bot_token": "tg-secret",
                     "allowed_users": ["@alice", "@bob"],
-                    "mention_only": true
+                    "mention_only": true,
+                    "strict_kb_grounding": true
                 },
                 "discord": {
                     "bot_token": "dc-secret",
                     "allowed_users": ["*"],
                     "mention_only": false,
                     "guild_id": "1234",
+                    "strict_kb_grounding": true,
                     "model_provider_id": "openai",
                     "model_id": "gpt-4.1-mini"
                 },
@@ -24,7 +26,8 @@ async fn channels_config_returns_non_secret_shape() {
                     "bot_token": "sl-secret",
                     "channel_id": "C123",
                     "allowed_users": ["U1"],
-                    "mention_only": true
+                    "mention_only": true,
+                    "strict_kb_grounding": false
                 }
             }
         }))
@@ -56,14 +59,28 @@ async fn channels_config_returns_non_secret_shape() {
             .get("telegram")
             .and_then(|v| v.get("token_masked"))
             .and_then(Value::as_str),
-        Some("********")
+        Some("****")
     );
     assert_eq!(
         payload
             .get("discord")
             .and_then(|v| v.get("token_masked"))
             .and_then(Value::as_str),
-        Some("********")
+        Some("****")
+    );
+    assert_eq!(
+        payload
+            .get("discord")
+            .and_then(|v| v.get("strict_kb_grounding"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        payload
+            .get("telegram")
+            .and_then(|v| v.get("strict_kb_grounding"))
+            .and_then(Value::as_bool),
+        Some(true)
     );
     assert_eq!(
         payload
@@ -84,7 +101,7 @@ async fn channels_config_returns_non_secret_shape() {
             .get("slack")
             .and_then(|v| v.get("token_masked"))
             .and_then(Value::as_str),
-        Some("********")
+        Some("****")
     );
     assert!(payload
         .get("telegram")
@@ -122,6 +139,7 @@ async fn channels_put_roundtrips_model_override() {
                 "allowed_users": ["*"],
                 "mention_only": true,
                 "guild_id": "1234",
+                "strict_kb_grounding": true,
                 "model_provider_id": "openai",
                 "model_id": "gpt-4.1-mini"
             })
@@ -143,6 +161,13 @@ async fn channels_put_roundtrips_model_override() {
         .await
         .expect("response body");
     let payload: Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(
+        payload
+            .get("discord")
+            .and_then(|v| v.get("strict_kb_grounding"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
     assert_eq!(
         payload
             .get("discord")
@@ -187,6 +212,7 @@ async fn channels_put_preserves_existing_token_when_only_model_changes() {
                 "allowed_users": ["*"],
                 "mention_only": true,
                 "guild_id": "1234",
+                "strict_kb_grounding": true,
                 "model_provider_id": "openai",
                 "model_id": "gpt-4.1-mini"
             })
@@ -208,6 +234,13 @@ async fn channels_put_preserves_existing_token_when_only_model_changes() {
         .await
         .expect("response body");
     let payload: Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(
+        payload
+            .get("discord")
+            .and_then(|v| v.get("strict_kb_grounding"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
     assert_eq!(
         payload
             .get("discord")

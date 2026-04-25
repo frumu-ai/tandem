@@ -107,6 +107,8 @@ pub struct SendMessageRequest {
     pub tool_mode: Option<ToolMode>,
     #[serde(default, alias = "toolAllowlist", alias = "tool_allowlist")]
     pub tool_allowlist: Option<Vec<String>>,
+    #[serde(default, alias = "strictKbGrounding", alias = "strict_kb_grounding")]
+    pub strict_kb_grounding: Option<bool>,
     #[serde(default, alias = "contextMode", alias = "context_mode")]
     pub context_mode: Option<ContextMode>,
     #[serde(default, alias = "writeRequired", alias = "write_required")]

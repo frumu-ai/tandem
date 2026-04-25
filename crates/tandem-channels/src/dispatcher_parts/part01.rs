@@ -1305,50 +1305,122 @@ async fn process_channel_message(
         }
     };
     let thread_key = format!("{}:{}", msg.channel, msg.reply_target);
+    let tool_prefs = load_channel_tool_preferences(&msg.channel, &msg.scope.id).await;
+    let channel_runtime_config =
+        fetch_channel_runtime_config(&reqwest::Client::new(), base_url, api_token, &msg.channel)
+            .await
+            .unwrap_or_default();
+    let strict_kb_has_explicit_mcp_context = channel_has_enabled_mcp_context(&tool_prefs);
+    let strict_kb_is_factual_question = channel_message_is_factual_question(&msg.content);
+    let strict_kb_has_explicit_workflow_intent =
+        channel_message_has_explicit_workflow_intent(&msg.content);
+    let strict_kb_answer_mode_preferred = strict_kb_prefers_answer_mode(
+        &msg.content,
+        channel_runtime_config.strict_kb_grounding,
+        &tool_prefs,
+    );
+    let workflow_planner_enabled = channel_workflow_planner_enabled(&tool_prefs);
+    warn!(
+        prefix = "CHANNEL_ROUTING_DECISION",
+        message_text = %msg.content,
+        platform = %channel.name(),
+        channel = %msg.channel,
+        session_id = %session_id,
+        scope_id = %msg.scope.id,
+        strict_kb_grounding = channel_runtime_config.strict_kb_grounding,
+        kb_connected_or_selected = channel_runtime_config.strict_kb_grounding || strict_kb_has_explicit_mcp_context,
+        explicit_mcp_context = strict_kb_has_explicit_mcp_context,
+        workflow_planner_enabled,
+        factual_question = strict_kb_is_factual_question,
+        explicit_workflow_intent = strict_kb_has_explicit_workflow_intent,
+        strict_kb_answer_mode = strict_kb_answer_mode_preferred,
+        workflow_disabled_message = false,
+        understand_setup_request_called = !strict_kb_answer_mode_preferred,
+        start_channel_automation_draft_called = false,
+        "CHANNEL_ROUTING_DECISION"
+    );
 
     if let Some(draft_id) = pending_channel_automation_draft_id(&msg, pending_interactions).await {
-        let reply = if is_channel_automation_cancel_text(&msg.content) {
-            cancel_channel_automation_draft(
-                base_url,
-                api_token,
-                &msg,
-                &draft_id,
-                pending_interactions,
-            )
-            .await
-        } else if is_channel_automation_confirm_text(&msg.content) {
-            confirm_channel_automation_draft(
-                base_url,
-                api_token,
-                &msg,
-                &draft_id,
-                pending_interactions,
-            )
-            .await
-        } else {
-            answer_channel_automation_draft(
-                base_url,
-                api_token,
-                &msg,
-                &draft_id,
-                pending_interactions,
-            )
-            .await
-        };
-        if let Err(e) = channel
-            .send(&SendMessage {
-                content: reply,
-                recipient: msg.reply_target.clone(),
-                image_urls: Vec::new(),
-            })
-            .await
-        {
-            error!(
-                "failed to send channel automation draft reply via '{}': {e}",
-                channel.name()
+        if strict_kb_answer_mode_preferred {
+            warn!(
+                prefix = "CHANNEL_ROUTING_DECISION",
+                message_text = %msg.content,
+                platform = %channel.name(),
+                channel = %msg.channel,
+                session_id = %session_id,
+                scope_id = %msg.scope.id,
+                draft_id = %draft_id,
+                strict_kb_grounding = channel_runtime_config.strict_kb_grounding,
+                strict_kb_answer_mode = true,
+                workflow_disabled_message = false,
+                understand_setup_request_called = false,
+                start_channel_automation_draft_called = false,
+                "CHANNEL_ROUTING_DECISION bypassed pending automation draft for strict KB factual question"
             );
+            clear_pending_channel_automation_draft(&msg, pending_interactions).await;
+        } else {
+            warn!(
+                prefix = "CHANNEL_AUTOMATION_DRAFT_INTERCEPT",
+                message_text = %msg.content,
+                platform = %channel.name(),
+                channel = %msg.channel,
+                session_id = %session_id,
+                scope_id = %msg.scope.id,
+                draft_id = %draft_id,
+                caller = "pending_channel_automation_draft",
+                reason = "pending channel automation draft consumed the message before normal chat",
+                strict_kb_grounding = channel_runtime_config.strict_kb_grounding,
+                factual_question = strict_kb_is_factual_question,
+                explicit_workflow_intent = strict_kb_has_explicit_workflow_intent,
+                strict_kb_answer_mode = false,
+                start_channel_automation_draft_called = false,
+                "CHANNEL_AUTOMATION_DRAFT_INTERCEPT"
+            );
+            let reply = if is_channel_automation_cancel_text(&msg.content) {
+                cancel_channel_automation_draft(
+                    base_url,
+                    api_token,
+                    &msg,
+                    &draft_id,
+                    pending_interactions,
+                )
+                .await
+            } else if is_channel_automation_confirm_text(&msg.content) {
+                confirm_channel_automation_draft(
+                    base_url,
+                    api_token,
+                    &msg,
+                    &draft_id,
+                    pending_interactions,
+                )
+                .await
+            } else {
+                answer_channel_automation_draft(
+                    base_url,
+                    api_token,
+                    &msg,
+                    &draft_id,
+                    &tool_prefs,
+                    channel_runtime_config.strict_kb_grounding,
+                    pending_interactions,
+                )
+                .await
+            };
+            if let Err(e) = channel
+                .send(&SendMessage {
+                    content: reply,
+                    recipient: msg.reply_target.clone(),
+                    image_urls: Vec::new(),
+                })
+                .await
+            {
+                error!(
+                    "failed to send channel automation draft reply via '{}': {e}",
+                    channel.name()
+                );
+            }
+            return;
         }
-        return;
     }
 
     if let Some(cmd) = parse_pack_builder_reply_command(&msg.content) {
@@ -1439,7 +1511,14 @@ async fn process_channel_message(
         );
     }
 
-    let tool_prefs = load_channel_tool_preferences(&msg.channel, &msg.scope.id).await;
+    let strict_kb_is_factual_question = channel_message_is_factual_question(&prompt_content);
+    let strict_kb_has_explicit_workflow_intent =
+        channel_message_has_explicit_workflow_intent(&prompt_content);
+    let strict_kb_answer_mode_preferred = strict_kb_prefers_answer_mode(
+        &prompt_content,
+        channel_runtime_config.strict_kb_grounding,
+        &tool_prefs,
+    );
     let linked_planner_session_id = {
         let guard = session_map.lock().await;
         guard
@@ -1447,14 +1526,28 @@ async fn process_channel_message(
             .and_then(|record| record.workflow_planner_session_id.clone())
     };
     if let Some(planner_session_id) = linked_planner_session_id
+        .filter(|_| !strict_kb_answer_mode_preferred)
         .filter(|_| workflow_planner_channel_message_should_update(&prompt_content))
     {
         if !channel_workflow_planner_enabled(&tool_prefs) {
+            warn!(
+                prefix = "CHANNEL_ROUTING_DECISION",
+                message_text = %prompt_content,
+                platform = %channel.name(),
+                channel = %msg.channel,
+                session_id = %session_id,
+                scope_id = %msg.scope.id,
+                strict_kb_grounding = channel_runtime_config.strict_kb_grounding,
+                workflow_planner_enabled = false,
+                factual_question = strict_kb_is_factual_question,
+                explicit_workflow_intent = strict_kb_has_explicit_workflow_intent,
+                strict_kb_answer_mode = strict_kb_answer_mode_preferred,
+                workflow_disabled_message = true,
+                "CHANNEL_ROUTING_DECISION workflow planner disabled message"
+            );
             if let Err(e) = channel
                 .send(&SendMessage {
-                    content:
-                        "🗓️ Workflow drafting is disabled for this channel. Enable the workflow planner gate in Settings to continue this thread."
-                            .to_string(),
+                    content: workflow_planner_disabled_channel_message(true).to_string(),
                     recipient: msg.reply_target.clone(),
                     image_urls: Vec::new(),
                 })
@@ -1530,140 +1623,187 @@ async fn process_channel_message(
         }
     }
 
-    let setup_response = understand_setup_request(
-        base_url,
-        api_token,
-        &msg,
-        Some(&session_id),
-        &prompt_content,
-    )
-    .await
-    .ok();
+    let setup_response = if strict_kb_answer_mode_preferred {
+        info!(
+            channel = %msg.channel,
+            platform = %channel.name(),
+            strict_kb_grounding = channel_runtime_config.strict_kb_grounding,
+            "channel routing bypassed setup-understanding for strict KB factual question"
+        );
+        None
+    } else {
+        understand_setup_request(
+            base_url,
+            api_token,
+            &msg,
+            Some(&session_id),
+            &prompt_content,
+        )
+        .await
+        .ok()
+    };
     if let Some(setup) = setup_response {
         if setup.decision != SetupDecision::PassThrough {
-            let reply = match setup.decision {
-                SetupDecision::Clarify => setup
-                    .clarifier
-                    .as_ref()
-                    .map(format_setup_clarifier_message)
-                    .unwrap_or_else(|| format_setup_guidance_message(&setup)),
-                SetupDecision::Intercept => match setup.intent_kind {
-                    SetupIntentKind::WorkflowPlannerCreate => {
-                        if !channel_workflow_planner_enabled(&tool_prefs) {
-                            "🗓️ Workflow drafting is disabled for this channel. Enable the workflow planner gate in Settings to continue."
-                                .to_string()
-                        } else {
-                            let workflow_prompt = setup
-                                .proposed_action
-                                .payload
-                                .get("prompt")
-                                .and_then(|value| value.as_str())
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                                .map(ToOwned::to_owned)
-                                .unwrap_or_else(|| prompt_content.clone());
-                            let plan_source = setup
-                                .proposed_action
-                                .payload
-                                .get("plan_source")
-                                .and_then(|value| value.as_str())
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                                .map(ToOwned::to_owned)
-                                .unwrap_or_else(|| "channel_setup".to_string());
-                            let workspace_root = workflow_planner_workspace_root(
-                                &msg,
-                                base_url,
-                                api_token,
-                                session_map,
-                            )
-                            .await;
-                            let workflow_preview = if workflow_prompt.chars().count() > 120 {
-                                let mut clipped =
-                                    workflow_prompt.chars().take(117).collect::<String>();
-                                clipped.push('…');
-                                clipped
+            if setup.decision == SetupDecision::Intercept
+                && setup_intent_requires_explicit_workflow_authoring(&setup.intent_kind)
+                && !strict_kb_has_explicit_workflow_intent
+            {
+                warn!(
+                    prefix = "CHANNEL_ROUTING_DECISION",
+                    message_text = %prompt_content,
+                    channel = %msg.channel,
+                    platform = %channel.name(),
+                    session_id = %session_id,
+                    scope_id = %msg.scope.id,
+                    setup_intent = ?setup.intent_kind,
+                    strict_kb_grounding = channel_runtime_config.strict_kb_grounding,
+                    factual_question = strict_kb_is_factual_question,
+                    explicit_workflow_intent = strict_kb_has_explicit_workflow_intent,
+                    strict_kb_answer_mode = strict_kb_answer_mode_preferred,
+                    workflow_disabled_message = false,
+                    start_channel_automation_draft_called = false,
+                    "CHANNEL_ROUTING_DECISION ignored setup-understanding workflow intercept without explicit authoring intent"
+                );
+            } else {
+                let reply = match setup.decision {
+                    SetupDecision::Clarify => setup
+                        .clarifier
+                        .as_ref()
+                        .map(format_setup_clarifier_message)
+                        .unwrap_or_else(|| format_setup_guidance_message(&setup)),
+                    SetupDecision::Intercept => match setup.intent_kind {
+                        SetupIntentKind::WorkflowPlannerCreate => {
+                            if !channel_workflow_planner_enabled(&tool_prefs) {
+                                warn!(
+                                    prefix = "CHANNEL_ROUTING_DECISION",
+                                    message_text = %prompt_content,
+                                    platform = %channel.name(),
+                                    channel = %msg.channel,
+                                    session_id = %session_id,
+                                    scope_id = %msg.scope.id,
+                                    strict_kb_grounding = channel_runtime_config.strict_kb_grounding,
+                                    workflow_planner_enabled = false,
+                                    factual_question = strict_kb_is_factual_question,
+                                    explicit_workflow_intent = strict_kb_has_explicit_workflow_intent,
+                                    strict_kb_answer_mode = strict_kb_answer_mode_preferred,
+                                    workflow_disabled_message = true,
+                                    "CHANNEL_ROUTING_DECISION workflow planner disabled message"
+                                );
+                                workflow_planner_disabled_channel_message(false).to_string()
                             } else {
-                                workflow_prompt.clone()
-                            };
-                            let mut allowed_mcp_servers = tool_prefs.enabled_mcp_servers.clone();
-                            if !allowed_mcp_servers
-                                .iter()
-                                .any(|server| server.eq_ignore_ascii_case("tandem-mcp"))
-                            {
-                                allowed_mcp_servers.push("tandem-mcp".to_string());
-                            }
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis() as u64;
-                            let create_body = serde_json::json!({
-                                "project_slug": format!("channel-{}", msg.channel.to_ascii_lowercase()),
-                                "title": workflow_planner_channel_title(
-                                    &workflow_prompt,
-                                    &msg.channel,
-                                    &msg.sender,
-                                ),
-                                "workspace_root": workspace_root.clone(),
-                                "goal": workflow_prompt.clone(),
-                                "notes": format!(
-                                    "Channel workflow handoff from {} / {}",
-                                    msg.channel, msg.sender
-                                ),
-                                "plan_source": plan_source.clone(),
-                                "allowed_mcp_servers": allowed_mcp_servers.clone(),
-                                "planning": {
-                                    "mode": "workflow_planning",
-                                    "source_platform": msg.channel.clone(),
-                                    "source_channel": msg.scope.id.clone(),
-                                    "requesting_actor": msg.sender.clone(),
-                                    "created_by_agent": "channel_dispatcher",
-                                    "linked_channel_session_id": session_id.clone(),
-                                    "allowed_tools": [WORKFLOW_PLANNER_PSEUDO_TOOL],
-                                    "blocked_tools": [],
-                                    "known_requirements": [],
-                                    "missing_requirements": [],
-                                    "validation_status": "pending",
-                                    "approval_status": "not_required",
-                                    "docs_mcp_enabled": true,
-                                    "started_at_ms": now,
-                                    "updated_at_ms": now,
-                                }
-                            });
-                            let created = workflow_plan_post(
-                                "/workflow-plans/sessions",
-                                create_body,
-                                base_url,
-                                api_token,
-                            )
-                            .await;
-                            let planner_session_id = match created {
-                                Ok(response) => response
-                                    .get("session")
-                                    .and_then(|value| value.get("session_id"))
+                                let workflow_prompt = setup
+                                    .proposed_action
+                                    .payload
+                                    .get("prompt")
                                     .and_then(|value| value.as_str())
-                                    .map(|value| value.to_string()),
-                                Err(error) => {
-                                    let message =
-                                        format!("⚠️ Could not start workflow planning: {error}");
-                                    if let Err(send_error) = channel
-                                        .send(&SendMessage {
-                                            content: message,
-                                            recipient: msg.reply_target.clone(),
-                                            image_urls: Vec::new(),
-                                        })
-                                        .await
-                                    {
-                                        error!(
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                                    .map(ToOwned::to_owned)
+                                    .unwrap_or_else(|| prompt_content.clone());
+                                let plan_source = setup
+                                    .proposed_action
+                                    .payload
+                                    .get("plan_source")
+                                    .and_then(|value| value.as_str())
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                                    .map(ToOwned::to_owned)
+                                    .unwrap_or_else(|| "channel_setup".to_string());
+                                let workspace_root = workflow_planner_workspace_root(
+                                    &msg,
+                                    base_url,
+                                    api_token,
+                                    session_map,
+                                )
+                                .await;
+                                let workflow_preview = if workflow_prompt.chars().count() > 120 {
+                                    let mut clipped =
+                                        workflow_prompt.chars().take(117).collect::<String>();
+                                    clipped.push('…');
+                                    clipped
+                                } else {
+                                    workflow_prompt.clone()
+                                };
+                                let mut allowed_mcp_servers =
+                                    tool_prefs.enabled_mcp_servers.clone();
+                                if !allowed_mcp_servers
+                                    .iter()
+                                    .any(|server| server.eq_ignore_ascii_case("tandem-mcp"))
+                                {
+                                    allowed_mcp_servers.push("tandem-mcp".to_string());
+                                }
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as u64;
+                                let create_body = serde_json::json!({
+                                    "project_slug": format!("channel-{}", msg.channel.to_ascii_lowercase()),
+                                    "title": workflow_planner_channel_title(
+                                        &workflow_prompt,
+                                        &msg.channel,
+                                        &msg.sender,
+                                    ),
+                                    "workspace_root": workspace_root.clone(),
+                                    "goal": workflow_prompt.clone(),
+                                    "notes": format!(
+                                        "Channel workflow handoff from {} / {}",
+                                        msg.channel, msg.sender
+                                    ),
+                                    "plan_source": plan_source.clone(),
+                                    "allowed_mcp_servers": allowed_mcp_servers.clone(),
+                                    "planning": {
+                                        "mode": "workflow_planning",
+                                        "source_platform": msg.channel.clone(),
+                                        "source_channel": msg.scope.id.clone(),
+                                        "requesting_actor": msg.sender.clone(),
+                                        "created_by_agent": "channel_dispatcher",
+                                        "linked_channel_session_id": session_id.clone(),
+                                        "allowed_tools": [WORKFLOW_PLANNER_PSEUDO_TOOL],
+                                        "blocked_tools": [],
+                                        "known_requirements": [],
+                                        "missing_requirements": [],
+                                        "validation_status": "pending",
+                                        "approval_status": "not_required",
+                                        "docs_mcp_enabled": true,
+                                        "started_at_ms": now,
+                                        "updated_at_ms": now,
+                                    }
+                                });
+                                let created = workflow_plan_post(
+                                    "/workflow-plans/sessions",
+                                    create_body,
+                                    base_url,
+                                    api_token,
+                                )
+                                .await;
+                                let planner_session_id = match created {
+                                    Ok(response) => response
+                                        .get("session")
+                                        .and_then(|value| value.get("session_id"))
+                                        .and_then(|value| value.as_str())
+                                        .map(|value| value.to_string()),
+                                    Err(error) => {
+                                        let message = format!(
+                                            "⚠️ Could not start workflow planning: {error}"
+                                        );
+                                        if let Err(send_error) = channel
+                                            .send(&SendMessage {
+                                                content: message,
+                                                recipient: msg.reply_target.clone(),
+                                                image_urls: Vec::new(),
+                                            })
+                                            .await
+                                        {
+                                            error!(
                                             "failed to send workflow-planner create error via '{}': {send_error}",
                                             channel.name()
                                         );
+                                        }
+                                        return;
                                     }
-                                    return;
-                                }
-                            };
-                            let Some(planner_session_id) = planner_session_id else {
-                                if let Err(send_error) = channel
+                                };
+                                let Some(planner_session_id) = planner_session_id else {
+                                    if let Err(send_error) = channel
                                     .send(&SendMessage {
                                         content:
                                             "⚠️ Workflow planning started, but Tandem could not read the planner session id."
@@ -1678,32 +1818,32 @@ async fn process_channel_message(
                                         channel.name()
                                     );
                                 }
-                                return;
-                            };
-                            set_channel_workflow_planner_session_id(
-                                &msg,
-                                session_map,
-                                Some(planner_session_id.clone()),
-                            )
-                            .await;
-                            let start_body = serde_json::json!({
-                                "prompt": workflow_prompt,
-                                "plan_source": plan_source,
-                                "allowed_mcp_servers": allowed_mcp_servers,
-                                "workspace_root": workspace_root,
-                            });
-                            let start_result = workflow_plan_post(
-                                &format!(
-                                    "/workflow-plans/sessions/{}/start-async",
-                                    sanitize_resource_segment(&planner_session_id)
-                                ),
-                                start_body,
-                                base_url,
-                                api_token,
-                            )
-                            .await;
-                            let link = workflow_planner_control_panel_url(&planner_session_id);
-                            match start_result {
+                                    return;
+                                };
+                                set_channel_workflow_planner_session_id(
+                                    &msg,
+                                    session_map,
+                                    Some(planner_session_id.clone()),
+                                )
+                                .await;
+                                let start_body = serde_json::json!({
+                                    "prompt": workflow_prompt,
+                                    "plan_source": plan_source,
+                                    "allowed_mcp_servers": allowed_mcp_servers,
+                                    "workspace_root": workspace_root,
+                                });
+                                let start_result = workflow_plan_post(
+                                    &format!(
+                                        "/workflow-plans/sessions/{}/start-async",
+                                        sanitize_resource_segment(&planner_session_id)
+                                    ),
+                                    start_body,
+                                    base_url,
+                                    api_token,
+                                )
+                                .await;
+                                let link = workflow_planner_control_panel_url(&planner_session_id);
+                                match start_result {
                                 Ok(_) => {
                                     let session_payload = workflow_planner_poll_session(
                                         base_url,
@@ -1722,53 +1862,72 @@ async fn process_channel_message(
                                     error, workflow_preview, link, planner_session_id
                                 ),
                             }
+                            }
                         }
-                    }
-                    SetupIntentKind::AutomationCreate => {
-                        let automation_prompt = setup
-                            .proposed_action
-                            .payload
-                            .get("prompt")
-                            .and_then(|value| value.as_str())
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                            .map(ToOwned::to_owned)
-                            .unwrap_or_else(|| prompt_content.clone());
-                        start_channel_automation_draft(
-                            base_url,
-                            api_token,
-                            &msg,
-                            &session_id,
-                            &thread_key,
-                            &automation_prompt,
-                            &tool_prefs,
-                            security_profile,
-                            pending_interactions,
-                        )
-                        .await
-                    }
-                    SetupIntentKind::ProviderSetup
-                    | SetupIntentKind::IntegrationSetup
-                    | SetupIntentKind::ChannelSetupHelp
-                    | SetupIntentKind::SetupHelp
-                    | SetupIntentKind::General => format_setup_guidance_message(&setup),
-                },
-                SetupDecision::PassThrough => format_setup_guidance_message(&setup),
-            };
-            if let Err(e) = channel
-                .send(&SendMessage {
-                    content: reply,
-                    recipient: msg.reply_target.clone(),
-                    image_urls: Vec::new(),
-                })
-                .await
-            {
-                error!(
-                    "failed to send setup-intercept reply via '{}': {e}",
-                    channel.name()
-                );
+                        SetupIntentKind::AutomationCreate => {
+                            warn!(
+                                prefix = "CHANNEL_AUTOMATION_DRAFT_INTERCEPT",
+                                message_text = %prompt_content,
+                                channel = %msg.channel,
+                                platform = %channel.name(),
+                                session_id = %session_id,
+                                scope_id = %msg.scope.id,
+                                caller = "setup_understanding_automation_create",
+                                reason = "setup_understanding returned AutomationCreate",
+                                strict_kb_grounding = channel_runtime_config.strict_kb_grounding,
+                                factual_question = strict_kb_is_factual_question,
+                                explicit_workflow_intent = strict_kb_has_explicit_workflow_intent,
+                                explicit_mcp_context = strict_kb_has_explicit_mcp_context,
+                                strict_kb_answer_mode = strict_kb_answer_mode_preferred,
+                                start_channel_automation_draft_called = true,
+                                "CHANNEL_AUTOMATION_DRAFT_INTERCEPT"
+                            );
+                            let automation_prompt = setup
+                                .proposed_action
+                                .payload
+                                .get("prompt")
+                                .and_then(|value| value.as_str())
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(ToOwned::to_owned)
+                                .unwrap_or_else(|| prompt_content.clone());
+                            start_channel_automation_draft(
+                                base_url,
+                                api_token,
+                                &msg,
+                                &session_id,
+                                &thread_key,
+                                &automation_prompt,
+                                &tool_prefs,
+                                channel_runtime_config.strict_kb_grounding,
+                                security_profile,
+                                pending_interactions,
+                            )
+                            .await
+                        }
+                        SetupIntentKind::ProviderSetup
+                        | SetupIntentKind::IntegrationSetup
+                        | SetupIntentKind::ChannelSetupHelp
+                        | SetupIntentKind::SetupHelp
+                        | SetupIntentKind::General => format_setup_guidance_message(&setup),
+                    },
+                    SetupDecision::PassThrough => format_setup_guidance_message(&setup),
+                };
+                if let Err(e) = channel
+                    .send(&SendMessage {
+                        content: reply,
+                        recipient: msg.reply_target.clone(),
+                        image_urls: Vec::new(),
+                    })
+                    .await
+                {
+                    error!(
+                        "failed to send setup-intercept reply via '{}': {e}",
+                        channel.name()
+                    );
+                }
+                return;
             }
-            return;
         }
     }
 

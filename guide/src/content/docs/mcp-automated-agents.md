@@ -31,6 +31,18 @@ For provider and model routing choices, use [Choosing Providers And Models For A
 - Routine-level `allowed_tools` policy for scheduled bots
 - Agent Automation visibility for connector status and scheduled runs
 
+## Strict knowledge-bot channels
+
+If an external chat channel is acting as a knowledge bot instead of a general assistant, pair the KB MCP allowlist with the channel setting:
+
+```json
+{
+  "strict_kb_grounding": true
+}
+```
+
+That combination keeps the same MCP tool names and request flow, but the final channel answer is rewritten from retrieved KB excerpts only. When the KB does not support the answer, Tandem returns `I do not see that in the connected knowledgebase.` instead of blending in general model knowledge.
+
 ## How Tool Discovery Works
 
 Tandem does not expose a separate "search the MCP registry by keyword" API.

@@ -17,6 +17,10 @@ use crate::{
 };
 
 const CHANNEL_DRAFT_TTL_MS: u64 = 10 * 60 * 1000;
+const CHANNEL_WORKFLOW_DRAFTING_DISABLED_MESSAGE: &str =
+    "Workflow drafting is disabled for this channel. Enable the workflow planner gate in Settings to continue.";
+const STRICT_KB_FACTUAL_DRAFT_BLOCKED_MESSAGE: &str =
+    "I do not see that in the connected knowledgebase.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -92,6 +96,14 @@ pub struct ChannelAutomationDraftRecord {
     pub allowed_mcp_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_planner_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_kb_grounding: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factual_question: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_workflow_intent: Option<bool>,
     pub channel_context: ChannelAutomationDraftChannelContext,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
@@ -115,11 +127,27 @@ pub struct ChannelAutomationDraftStartRequest {
     pub allowed_mcp_tools: Vec<String>,
     #[serde(default)]
     pub security_profile: Option<String>,
+    #[serde(default)]
+    pub workflow_planner_enabled: Option<bool>,
+    #[serde(default)]
+    pub strict_kb_grounding: Option<bool>,
+    #[serde(default)]
+    pub factual_question: Option<bool>,
+    #[serde(default)]
+    pub explicit_workflow_intent: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelAutomationDraftAnswerRequest {
     pub answer: String,
+    #[serde(default)]
+    pub workflow_planner_enabled: Option<bool>,
+    #[serde(default)]
+    pub strict_kb_grounding: Option<bool>,
+    #[serde(default)]
+    pub factual_question: Option<bool>,
+    #[serde(default)]
+    pub explicit_workflow_intent: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -171,6 +199,15 @@ pub(super) async fn channel_automation_drafts_start(
     if context.thread_key.is_none() {
         context.thread_key = input.thread_key;
     }
+    let strict_kb_grounding = input
+        .strict_kb_grounding
+        .unwrap_or(channel_strict_kb_grounding(&state, &context.source_platform).await);
+    let factual_question = input
+        .factual_question
+        .unwrap_or_else(|| channel_draft_message_is_factual_question(&text));
+    let explicit_workflow_intent = input
+        .explicit_workflow_intent
+        .unwrap_or_else(|| channel_draft_message_has_explicit_workflow_intent(&text));
     let mut draft = ChannelAutomationDraftRecord {
         draft_id: format!("channel-draft-{}", Uuid::new_v4()),
         status: ChannelAutomationDraftStatus::Collecting,
@@ -186,11 +223,28 @@ pub(super) async fn channel_automation_drafts_start(
         allowed_mcp_servers: normalize_list(input.allowed_mcp_servers),
         allowed_mcp_tools: normalize_list(input.allowed_mcp_tools),
         security_profile: input.security_profile,
+        workflow_planner_enabled: input.workflow_planner_enabled,
+        strict_kb_grounding: Some(strict_kb_grounding),
+        factual_question: Some(factual_question),
+        explicit_workflow_intent: Some(explicit_workflow_intent),
         channel_context: context,
         created_at_ms: now,
         updated_at_ms: now,
         expires_at_ms: now.saturating_add(CHANNEL_DRAFT_TTL_MS),
     };
+    if let Some(payload) = producer_guarded_response(
+        &state,
+        &mut draft,
+        None,
+        ProducerCaller::Start,
+        strict_kb_grounding,
+        factual_question,
+        explicit_workflow_intent,
+    )
+    .await
+    {
+        return Ok(Json(payload));
+    }
     advance_draft(&mut draft, now);
     state
         .channel_automation_drafts
@@ -212,6 +266,37 @@ pub(super) async fn channel_automation_drafts_answer(
     let answer = input.answer.trim().to_string();
     if answer.is_empty() {
         return Err(bad_request("answer is required"));
+    }
+    let strict_kb_grounding = input
+        .strict_kb_grounding
+        .or(draft.strict_kb_grounding)
+        .unwrap_or(
+            channel_strict_kb_grounding(&state, &draft.channel_context.source_platform).await,
+        );
+    let factual_question = input
+        .factual_question
+        .unwrap_or_else(|| channel_draft_message_is_factual_question(&answer));
+    let explicit_workflow_intent = input
+        .explicit_workflow_intent
+        .unwrap_or_else(|| channel_draft_message_has_explicit_workflow_intent(&answer));
+    draft.workflow_planner_enabled = input
+        .workflow_planner_enabled
+        .or(draft.workflow_planner_enabled);
+    draft.strict_kb_grounding = Some(strict_kb_grounding);
+    draft.factual_question = Some(factual_question);
+    draft.explicit_workflow_intent = Some(explicit_workflow_intent);
+    if let Some(payload) = producer_guarded_response(
+        &state,
+        &mut draft,
+        Some(draft_id.as_str()),
+        ProducerCaller::Answer,
+        strict_kb_grounding,
+        factual_question,
+        explicit_workflow_intent,
+    )
+    .await
+    {
+        return Ok(Json(payload));
     }
     if is_cancel_text(&answer) {
         draft.status = ChannelAutomationDraftStatus::Cancelled;
@@ -476,10 +561,222 @@ fn advance_draft(draft: &mut ChannelAutomationDraftRecord, now: u64) {
 }
 
 fn draft_response(draft: &ChannelAutomationDraftRecord) -> Value {
+    let message = format_channel_draft_message(draft);
+    log_channel_automation_draft_response_producer(
+        draft,
+        None,
+        draft.workflow_planner_enabled,
+        draft.strict_kb_grounding.unwrap_or(false),
+        draft.factual_question.unwrap_or(false),
+        draft.explicit_workflow_intent.unwrap_or(false),
+        false,
+        true,
+        "draft_response",
+    );
     json!({
         "draft": draft,
-        "message": format_channel_draft_message(draft),
+        "message": message,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProducerCaller {
+    Start,
+    Answer,
+}
+
+impl ProducerCaller {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Start => "channel_automation_drafts_start",
+            Self::Answer => "channel_automation_drafts_answer",
+        }
+    }
+}
+
+async fn producer_guarded_response(
+    state: &AppState,
+    draft: &mut ChannelAutomationDraftRecord,
+    pending_draft_id: Option<&str>,
+    caller: ProducerCaller,
+    strict_kb_grounding: bool,
+    factual_question: bool,
+    explicit_workflow_intent: bool,
+) -> Option<Value> {
+    let workflow_planner_enabled = draft.workflow_planner_enabled.unwrap_or(true);
+    let block_reason = if !workflow_planner_enabled {
+        Some((
+            "workflow_drafting_disabled",
+            CHANNEL_WORKFLOW_DRAFTING_DISABLED_MESSAGE,
+        ))
+    } else if strict_kb_grounding && factual_question && !explicit_workflow_intent {
+        Some((
+            "strict_kb_factual_question",
+            STRICT_KB_FACTUAL_DRAFT_BLOCKED_MESSAGE,
+        ))
+    } else {
+        None
+    };
+
+    let Some((reason, message)) = block_reason else {
+        log_channel_automation_draft_response_producer(
+            draft,
+            pending_draft_id,
+            Some(workflow_planner_enabled),
+            strict_kb_grounding,
+            factual_question,
+            explicit_workflow_intent,
+            false,
+            false,
+            caller.label(),
+        );
+        return None;
+    };
+
+    draft.status = ChannelAutomationDraftStatus::Cancelled;
+    draft.goal = None;
+    draft.schedule_hint = None;
+    draft.delivery_target = None;
+    draft.missing_fields.clear();
+    draft.question = None;
+    draft.preview = None;
+    draft.updated_at_ms = crate::now_ms();
+    draft.workflow_planner_enabled = Some(workflow_planner_enabled);
+    draft.strict_kb_grounding = Some(strict_kb_grounding);
+    draft.factual_question = Some(factual_question);
+    draft.explicit_workflow_intent = Some(explicit_workflow_intent);
+    store_draft(state, draft.clone()).await;
+    log_channel_automation_draft_response_producer(
+        draft,
+        pending_draft_id,
+        Some(workflow_planner_enabled),
+        strict_kb_grounding,
+        factual_question,
+        explicit_workflow_intent,
+        true,
+        false,
+        reason,
+    );
+    Some(json!({
+        "draft": draft,
+        "message": message,
+        "blocked": true,
+        "block_reason": reason,
+    }))
+}
+
+async fn channel_strict_kb_grounding(state: &AppState, channel: &str) -> bool {
+    let channel = channel.trim().to_ascii_lowercase();
+    if channel.is_empty() {
+        return false;
+    }
+    state
+        .config
+        .get_effective_value()
+        .await
+        .get("channels")
+        .and_then(Value::as_object)
+        .and_then(|channels| channels.get(&channel))
+        .and_then(Value::as_object)
+        .and_then(|cfg| cfg.get("strict_kb_grounding"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn channel_draft_message_is_factual_question(message: &str) -> bool {
+    let text = message.trim().to_ascii_lowercase();
+    if text.is_empty() || text.starts_with('/') || !text.contains('?') {
+        return false;
+    }
+    [
+        "what ", "who ", "where ", "when ", "which ", "can ", "could ", "does ", "do ", "is ",
+        "are ", "how ", "tell me ", "explain ",
+    ]
+    .iter()
+    .any(|starter| text.starts_with(starter))
+}
+
+fn channel_draft_message_has_explicit_workflow_intent(message: &str) -> bool {
+    let text = message.trim().to_ascii_lowercase();
+    if text.is_empty() || text.starts_with('/') {
+        return false;
+    }
+    let contains_explicit_phrase = [
+        "create a workflow",
+        "create workflow",
+        "build a workflow",
+        "build workflow",
+        "set up a workflow",
+        "setup a workflow",
+        "make a workflow",
+        "create an automation",
+        "create automation",
+        "build an automation",
+        "build automation",
+        "schedule a workflow",
+        "schedule a daily report",
+        "schedule a report",
+        "schedule a reminder",
+        "set up a bot",
+        "setup a bot",
+        "make a bot that runs",
+        "create a bot that runs",
+    ]
+    .iter()
+    .any(|phrase| text.contains(phrase));
+    let contains_workflow_target = ["workflow", "automation", "automations", "bot", "reminder"]
+        .iter()
+        .any(|word| text.contains(word));
+    let contains_authoring_verb = [
+        "create", "build", "make", "draft", "schedule", "automate", "set up", "setup",
+    ]
+    .iter()
+    .any(|word| text.contains(word));
+    let monitoring_request = text.starts_with("monitor ")
+        && [
+            " every ",
+            " each ",
+            "daily",
+            "weekly",
+            "hourly",
+            "every morning",
+        ]
+        .iter()
+        .any(|word| text.contains(word));
+    contains_explicit_phrase
+        || (contains_workflow_target && contains_authoring_verb)
+        || monitoring_request
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_channel_automation_draft_response_producer(
+    draft: &ChannelAutomationDraftRecord,
+    pending_draft_id: Option<&str>,
+    workflow_planner_enabled: Option<bool>,
+    strict_kb_grounding: bool,
+    factual_question: bool,
+    explicit_workflow_intent: bool,
+    blocked: bool,
+    emitted: bool,
+    reason: &str,
+) {
+    tracing::warn!(
+        prefix = "CHANNEL_AUTOMATION_DRAFT_RESPONSE_PRODUCER",
+        channel = %draft.channel_context.source_platform,
+        platform = %draft.channel_context.source_platform,
+        session_id = ?draft.channel_context.session_id,
+        scope_id = %draft.channel_context.scope_id,
+        draft_id = %draft.draft_id,
+        pending_draft_id = ?pending_draft_id,
+        workflow_planner_enabled = ?workflow_planner_enabled,
+        strict_kb_grounding,
+        factual_question,
+        explicit_workflow_intent,
+        blocked,
+        emitted,
+        reason,
+        "CHANNEL_AUTOMATION_DRAFT_RESPONSE_PRODUCER"
+    );
 }
 
 fn format_channel_draft_message(draft: &ChannelAutomationDraftRecord) -> String {

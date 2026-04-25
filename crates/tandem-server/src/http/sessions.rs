@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use super::session_kb_grounding::apply_strict_kb_grounding_after_run;
 use super::*;
 use sha2::{Digest, Sha256};
 use tandem_types::{Session, ToolMode};
@@ -156,6 +157,7 @@ async fn derive_session_kb_grounding_policy(
     }
     Some(tandem_core::KnowledgebaseGroundingPolicy {
         required: true,
+        strict: req.strict_kb_grounding.unwrap_or(false),
         server_names,
         tool_patterns,
     })
@@ -942,7 +944,9 @@ pub(super) async fn execute_run(
     _client_id: Option<String>,
     tenant_context: TenantContext,
 ) -> anyhow::Result<()> {
-    if let Some(policy) = derive_session_kb_grounding_policy(&state, &req).await {
+    let kb_grounding_policy = derive_session_kb_grounding_policy(&state, &req).await;
+    let strict_kb_model_override = req.model.clone();
+    if let Some(policy) = kb_grounding_policy.as_ref() {
         let kb_tool_allowlist = tool_allowlist_for_kb_grounding(&policy);
         state
             .engine_loop
@@ -957,6 +961,7 @@ pub(super) async fn execute_run(
             json!({
                 "sessionID": session_id,
                 "runID": run_id,
+                "strict": policy.strict,
                 "serverNames": policy.server_names,
                 "toolPatterns": policy.tool_patterns,
                 "toolAllowlist": kb_tool_allowlist,
@@ -1052,6 +1057,47 @@ pub(super) async fn execute_run(
             }
         }
     };
+
+    if status == "completed" {
+        if let Some(policy) = kb_grounding_policy.as_ref().filter(|policy| policy.strict) {
+            match apply_strict_kb_grounding_after_run(
+                &state,
+                &session_id,
+                policy,
+                strict_kb_model_override,
+            )
+            .await
+            {
+                Ok(Some(outcome)) => {
+                    publish_tenant_event(
+                        &state,
+                        &tenant_context,
+                        "kb.grounding.strict.applied",
+                        json!({
+                            "sessionID": session_id,
+                            "runID": run_id,
+                            "support": outcome.support,
+                            "sources": outcome.sources,
+                            "evidenceCount": outcome.evidence_count,
+                        }),
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    publish_tenant_event(
+                        &state,
+                        &tenant_context,
+                        "kb.grounding.strict.error",
+                        json!({
+                            "sessionID": session_id,
+                            "runID": run_id,
+                            "error": truncate_text(&error.to_string(), 500),
+                        }),
+                    );
+                }
+            }
+        }
+    }
 
     let _ = state
         .run_registry

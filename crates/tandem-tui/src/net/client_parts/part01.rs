@@ -1117,4 +1117,3 @@ pub struct AgentTeamApprovalsResponse {
     #[serde(rename = "toolApprovals", default)]
     pub tool_approvals: Vec<AgentTeamToolApproval>,
 }
-

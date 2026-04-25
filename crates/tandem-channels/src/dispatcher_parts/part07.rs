@@ -638,6 +638,109 @@ mod tests {
     }
 
     #[test]
+    fn strict_kb_routing_prefers_answer_mode_for_factual_questions() {
+        let prefs = ChannelToolPreferences {
+            enabled_mcp_servers: vec!["kb".to_string()],
+            ..Default::default()
+        };
+
+        assert!(!channel_message_has_explicit_workflow_intent(
+            "What time does sponsor booth setup start, and when must it be finished?"
+        ));
+        assert!(strict_kb_prefers_answer_mode(
+            "What time does sponsor booth setup start, and when must it be finished?",
+            true,
+            &prefs,
+        ));
+        assert!(setup_intent_requires_explicit_workflow_authoring(
+            &SetupIntentKind::WorkflowPlannerCreate
+        ));
+        assert!(setup_intent_requires_explicit_workflow_authoring(
+            &SetupIntentKind::AutomationCreate
+        ));
+    }
+
+    #[test]
+    fn strict_kb_routing_prefers_answer_mode_for_policy_questions() {
+        let prefs = ChannelToolPreferences {
+            enabled_mcp_tools: vec!["mcp.kb.search".to_string()],
+            ..Default::default()
+        };
+
+        assert!(strict_kb_prefers_answer_mode(
+            "What is the escalation path for a VIP support issue?",
+            true,
+            &prefs,
+        ));
+    }
+
+    #[test]
+    fn strict_kb_routing_prefers_answer_mode_without_explicit_mcp_preferences() {
+        let prefs = ChannelToolPreferences::default();
+
+        assert!(strict_kb_prefers_answer_mode(
+            "What time does sponsor booth setup start, and when must it be finished?",
+            true,
+            &prefs,
+        ));
+    }
+
+    #[test]
+    fn strict_kb_routing_keeps_explicit_workflow_requests_on_planner_path() {
+        let prefs = ChannelToolPreferences {
+            enabled_tools: vec![WORKFLOW_PLANNER_PSEUDO_TOOL.to_string()],
+            enabled_mcp_servers: vec!["kb".to_string()],
+            ..Default::default()
+        };
+
+        assert!(channel_workflow_planner_enabled(&prefs));
+        assert!(channel_message_has_explicit_workflow_intent(
+            "Create a workflow that sends a sponsor setup reminder every event morning."
+        ));
+        assert!(!strict_kb_prefers_answer_mode(
+            "Create a workflow that sends a sponsor setup reminder every event morning.",
+            true,
+            &prefs,
+        ));
+    }
+
+    #[test]
+    fn explicit_workflow_requests_surface_disabled_planner_message_when_gate_is_off() {
+        let prefs = ChannelToolPreferences {
+            enabled_mcp_servers: vec!["kb".to_string()],
+            ..Default::default()
+        };
+
+        assert!(!channel_workflow_planner_enabled(&prefs));
+        assert!(channel_message_has_explicit_workflow_intent(
+            "Create a workflow that sends a sponsor setup reminder every event morning."
+        ));
+        assert_eq!(
+            workflow_planner_disabled_channel_message(false),
+            "🗓️ Workflow drafting is disabled for this channel. Enable the workflow planner gate in Settings to continue."
+        );
+    }
+
+    #[test]
+    fn factual_kb_questions_do_not_surface_disabled_planner_message() {
+        let prefs = ChannelToolPreferences {
+            enabled_mcp_servers: vec!["kb".to_string()],
+            ..Default::default()
+        };
+        let message = "What time does sponsor booth setup start, and when must it be finished?";
+
+        assert!(!channel_workflow_planner_enabled(&prefs));
+        assert!(channel_message_is_factual_question(message));
+        assert!(!channel_message_has_explicit_workflow_intent(message));
+        assert!(strict_kb_prefers_answer_mode(message, true, &prefs));
+        assert!(!workflow_planner_disabled_channel_message(false)
+            .contains("Sponsor booth setup starts"));
+        assert!(setup_intent_requires_explicit_workflow_authoring(
+            &SetupIntentKind::WorkflowPlannerCreate
+        ));
+    }
+
+    #[test]
     fn workflow_planner_channel_summary_surfaces_questions_in_chat() {
         let payload = serde_json::json!({
             "session": {

@@ -108,6 +108,7 @@ mod routes_task_intake;
 mod routes_workflow_planner;
 mod routes_workflows;
 pub(crate) mod routines_automations;
+mod session_kb_grounding;
 mod sessions;
 mod setup_understanding;
 mod skills_memory;
@@ -272,6 +273,17 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     });
     let app = app_router(state.clone());
     let reaper = tokio::spawn(async move {
+        if !reaper_state.wait_until_ready_or_failed(120, 250).await {
+            let startup = reaper_state.startup_snapshot().await;
+            tracing::warn!(
+                component = "run_reaper",
+                startup_status = ?startup.status,
+                startup_phase = %startup.phase,
+                attempt_id = %startup.attempt_id,
+                "run reaper exiting before runtime access because startup did not become ready"
+            );
+            return;
+        }
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let stale = reaper_state

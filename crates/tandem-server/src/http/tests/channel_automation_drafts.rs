@@ -1,5 +1,14 @@
 use super::*;
 
+fn assert_no_channel_draft_confirmation_text(payload: &Value) {
+    let rendered = serde_json::to_string(payload).expect("payload json");
+    assert!(!rendered.contains("Reply `confirm` to create it"));
+    assert!(!rendered.contains("Reply confirm to create it"));
+    assert!(!rendered.contains("report to `same_chat`"));
+    assert!(!rendered.contains("report to same_chat"));
+    assert!(!rendered.contains("event-driven"));
+}
+
 #[tokio::test]
 async fn channel_automation_draft_collects_previews_and_confirms() {
     let state = test_state().await;
@@ -180,6 +189,149 @@ async fn channel_automation_draft_collects_previews_and_confirms() {
             .and_then(Value::as_array)
             .map(|servers| servers.contains(&Value::String("github".to_string()))),
         Some(true)
+    );
+}
+
+#[tokio::test]
+async fn channel_automation_draft_start_fails_closed_when_workflow_drafts_disabled() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/automations/channel-drafts")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "text": "What time does sponsor booth setup start, and when must it be finished?",
+                "session_id": "session-channel-disabled",
+                "thread_key": "telegram:topic-disabled",
+                "workflow_planner_enabled": false,
+                "strict_kb_grounding": false,
+                "factual_question": true,
+                "explicit_workflow_intent": false,
+                "channel_context": {
+                    "source_platform": "telegram",
+                    "scope_kind": "topic",
+                    "scope_id": "topic-disabled",
+                    "reply_target": "topic-disabled",
+                    "sender": "alice"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let start_resp = app.clone().oneshot(start_req).await.expect("response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let body = to_bytes(start_resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_no_channel_draft_confirmation_text(&payload);
+    assert_eq!(payload.get("blocked").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        payload.get("block_reason").and_then(Value::as_str),
+        Some("workflow_drafting_disabled")
+    );
+    assert_eq!(
+        payload
+            .get("draft")
+            .and_then(|draft| draft.get("status"))
+            .and_then(Value::as_str),
+        Some("cancelled")
+    );
+}
+
+#[tokio::test]
+async fn channel_automation_draft_answer_fails_closed_for_strict_kb_factual_question() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/automations/channel-drafts")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "text": "Create a workflow that sends a sponsor setup reminder every event morning.",
+                "session_id": "session-channel-strict",
+                "thread_key": "telegram:topic-strict",
+                "workflow_planner_enabled": true,
+                "strict_kb_grounding": true,
+                "factual_question": false,
+                "explicit_workflow_intent": true,
+                "channel_context": {
+                    "source_platform": "telegram",
+                    "scope_kind": "topic",
+                    "scope_id": "topic-strict",
+                    "reply_target": "topic-strict",
+                    "sender": "alice"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let start_resp = app.clone().oneshot(start_req).await.expect("response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let body = to_bytes(start_resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let start_payload: Value = serde_json::from_slice(&body).expect("json");
+    let draft_id = start_payload
+        .get("draft")
+        .and_then(|draft| draft.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+
+    let answer_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/channel-drafts/{draft_id}/answer"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "answer": "What time does sponsor booth setup start, and when must it be finished?",
+                "workflow_planner_enabled": true,
+                "strict_kb_grounding": true,
+                "factual_question": true,
+                "explicit_workflow_intent": false
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let answer_resp = app.clone().oneshot(answer_req).await.expect("response");
+    assert_eq!(answer_resp.status(), StatusCode::OK);
+    let body = to_bytes(answer_resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let answer_payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_no_channel_draft_confirmation_text(&answer_payload);
+    assert_eq!(
+        answer_payload.get("block_reason").and_then(Value::as_str),
+        Some("strict_kb_factual_question")
+    );
+    assert_eq!(
+        answer_payload
+            .get("draft")
+            .and_then(|draft| draft.get("status"))
+            .and_then(Value::as_str),
+        Some("cancelled")
+    );
+
+    let pending_req = Request::builder()
+        .method("GET")
+        .uri("/automations/channel-drafts/pending?channel=telegram&scope_id=topic-strict&sender=alice")
+        .body(Body::empty())
+        .expect("request");
+    let pending_resp = app.clone().oneshot(pending_req).await.expect("response");
+    assert_eq!(pending_resp.status(), StatusCode::OK);
+    let body = to_bytes(pending_resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let pending_payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        pending_payload.get("count").and_then(Value::as_u64),
+        Some(0)
     );
 }
 

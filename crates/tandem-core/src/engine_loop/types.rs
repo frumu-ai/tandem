@@ -8,6 +8,7 @@ use crate::EventBus;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KnowledgebaseGroundingPolicy {
     pub required: bool,
+    pub strict: bool,
     pub server_names: Vec<String>,
     pub tool_patterns: Vec<String>,
 }

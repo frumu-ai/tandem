@@ -86,6 +86,28 @@ Knowledgebase MCPs are identified by either:
 
 For those sessions, the runtime injects a compact grounding policy and reshapes the prompt request to `tool_mode: "required"` with a KB-only MCP allowlist. The model must inspect KB evidence before it can produce a final answer. If the KB has no matching evidence, the channel reply should say that the enabled knowledgebase did not contain the answer instead of falling back to model memory.
 
+### Strict KB grounding
+
+For hosted knowledge-bot demos or any channel that must answer only from retrieved KB material, enable the channel-level setting:
+
+```json
+{
+  "strict_kb_grounding": true
+}
+```
+
+You can set it through `PUT /channels/{name}` alongside the rest of the channel config.
+
+When `strict_kb_grounding` is enabled and the channel request explicitly allows a KB MCP such as `["mcp.kb.*"]`, Tandem:
+
+- still forces the KB tool turn first
+- rewrites the final channel answer from retrieved KB excerpts only
+- refuses with `I do not see that in the connected knowledgebase.` when retrieval has no supported answer
+- avoids adding generic platform instructions, inferred owners, or best-practice guidance that are not present in the KB
+- adds a compact `Source:` footer when the KB tool output exposes source paths
+
+This mode is channel-scoped. It does not change ordinary chat behavior for channels that do not enable a KB MCP or leave `strict_kb_grounding` off.
+
 Enable the hosted KB MCP for a channel scope with the normal channel MCP command:
 
 ```text

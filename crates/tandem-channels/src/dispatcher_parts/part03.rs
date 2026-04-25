@@ -212,16 +212,22 @@ async fn run_in_session(
     if let Some(allowlist) = tool_allowlist {
         body["tool_allowlist"] = serde_json::json!(allowlist);
     }
-    let model_spec =
-        match fetch_channel_model_spec(&client, base_url, api_token, channel_name).await {
-            Ok(Some(model)) => Some(model),
-            _ => fetch_default_model_spec(&client, base_url, api_token)
-                .await
-                .ok()
-                .flatten(),
-        };
+    let channel_runtime_config =
+        fetch_channel_runtime_config(&client, base_url, api_token, channel_name)
+            .await
+            .unwrap_or_default();
+    let model_spec = match channel_runtime_config.model.clone() {
+        Some(model) => Some(model),
+        None => fetch_default_model_spec(&client, base_url, api_token)
+            .await
+            .ok()
+            .flatten(),
+    };
     if let Some(model) = model_spec {
         body["model"] = model;
+    }
+    if channel_runtime_config.strict_kb_grounding {
+        body["strict_kb_grounding"] = serde_json::json!(true);
     }
 
     // Request run metadata so we can bind SSE to this specific run.
@@ -454,6 +460,26 @@ async fn run_in_session(
         }
     }
 
+    if channel_runtime_config.strict_kb_grounding {
+        // Fast runs may complete before we attach SSE, and persisted assistant
+        // messages can lag slightly behind run completion. Retry briefly.
+        for _ in 0..20 {
+            if let Ok(Some(fallback)) =
+                fetch_latest_assistant_message(&client, base_url, api_token, session_id).await
+            {
+                return Ok(fallback);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        if let Some(error_message) = last_error {
+            return Ok(format!(
+                "⚠️ Error: {}",
+                truncate_for_channel(&error_message, 320)
+            ));
+        }
+        return Ok("(no response)".to_string());
+    }
+
     if content_buf.is_empty() {
         // Fast runs may complete before we attach SSE, and persisted assistant
         // messages can lag slightly behind run completion. Retry briefly.
@@ -603,26 +629,32 @@ async fn fetch_default_model_spec(
     })))
 }
 
-async fn fetch_channel_model_spec(
+#[derive(Debug, Clone, Default)]
+struct ChannelRuntimeConfig {
+    model: Option<serde_json::Value>,
+    strict_kb_grounding: bool,
+}
+
+async fn fetch_channel_runtime_config(
     client: &reqwest::Client,
     base_url: &str,
     api_token: &str,
     channel_name: &str,
-) -> anyhow::Result<Option<serde_json::Value>> {
+) -> anyhow::Result<ChannelRuntimeConfig> {
     let channel_name = channel_name.trim().to_ascii_lowercase();
     if channel_name.is_empty() {
-        return Ok(None);
+        return Ok(ChannelRuntimeConfig::default());
     }
 
     let url = format!("{base_url}/channels/config");
     let resp = add_auth(client.get(&url), api_token).send().await?;
     if !resp.status().is_success() {
-        return Ok(None);
+        return Ok(ChannelRuntimeConfig::default());
     }
 
     let cfg: serde_json::Value = resp.json().await?;
     let Some(channel_cfg) = cfg.get(&channel_name) else {
-        return Ok(None);
+        return Ok(ChannelRuntimeConfig::default());
     };
 
     let provider_id = channel_cfg
@@ -635,15 +667,21 @@ async fn fetch_channel_model_spec(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
-
-    if provider_id.is_empty() || model_id.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(serde_json::json!({
-        "provider_id": provider_id,
-        "model_id": model_id
-    })))
+    let model = if provider_id.is_empty() || model_id.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "provider_id": provider_id,
+            "model_id": model_id
+        }))
+    };
+    Ok(ChannelRuntimeConfig {
+        model,
+        strict_kb_grounding: channel_cfg
+            .get("strict_kb_grounding")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    })
 }
 
 /// Fallback for channel delivery: if the SSE stream did not emit text deltas,

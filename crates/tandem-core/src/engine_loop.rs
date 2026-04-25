@@ -192,6 +192,7 @@ impl EngineLoop {
             session_id.to_string(),
             KnowledgebaseGroundingPolicy {
                 required: true,
+                strict: policy.strict,
                 server_names,
                 tool_patterns,
             },

@@ -90,6 +90,15 @@ fn normalize_channel_config_obj<'a>(
             _ => false,
         });
     entry.insert("mention_only".to_string(), Value::Bool(mention_only));
+    entry.insert(
+        "strict_kb_grounding".to_string(),
+        Value::Bool(
+            channel
+                .and_then(|cfg| cfg.get("strict_kb_grounding"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
+    );
 
     entry.insert(
         "model_provider_id".to_string(),

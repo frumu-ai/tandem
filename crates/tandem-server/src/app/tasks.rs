@@ -14,6 +14,21 @@ use crate::http::context_types::{ContextRunEventAppendInput, ContextRunStatus};
 use crate::routines::types::{RoutineHistoryEvent, RoutineRunStatus};
 use crate::util::time::now_ms;
 
+async fn wait_for_runtime_ready_or_exit(state: &AppState, component: &str) -> bool {
+    if state.wait_until_ready_or_failed(120, 250).await {
+        return true;
+    }
+    let startup = state.startup_snapshot().await;
+    tracing::warn!(
+        component,
+        startup_status = ?startup.status,
+        startup_phase = %startup.phase,
+        attempt_id = %startup.attempt_id,
+        "background task exiting before runtime access because startup did not become ready"
+    );
+    false
+}
+
 fn extract_event_session_id(properties: &Value) -> Option<String> {
     properties
         .get("sessionID")
@@ -266,6 +281,26 @@ fn session_context_run_event_input(event: &EngineEvent) -> Option<ContextRunEven
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn routine_background_tasks_exit_without_runtime_when_startup_failed() {
+        let state = AppState::new_starting("routine-startup-guard-test".to_string(), true);
+        state.mark_failed("test_failed", "startup failed").await;
+
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            run_routine_scheduler(state.clone()),
+        )
+        .await
+        .expect("scheduler should exit when startup has failed");
+
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            run_routine_executor(state.clone()),
+        )
+        .await
+        .expect("executor should exit when startup has failed");
+    }
 
     #[test]
     fn session_context_run_event_input_maps_tool_effect_events() {
@@ -643,6 +678,9 @@ async fn process_bug_monitor_event(
 }
 
 pub async fn run_routine_scheduler(state: AppState) {
+    if !wait_for_runtime_ready_or_exit(&state, "routine_scheduler").await {
+        return;
+    }
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let now = now_ms();
@@ -770,6 +808,9 @@ pub async fn run_routine_scheduler(state: AppState) {
 }
 
 pub async fn run_routine_executor(state: AppState) {
+    if !wait_for_runtime_ready_or_exit(&state, "routine_executor").await {
+        return;
+    }
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let Some(run) = state.claim_next_queued_routine_run().await else {
@@ -857,6 +898,7 @@ pub async fn run_routine_executor(state: AppState) {
             agent: None,
             tool_mode: None,
             tool_allowlist: None,
+            strict_kb_grounding: None,
             context_mode: None,
             write_required: None,
             prewrite_requirements: None,

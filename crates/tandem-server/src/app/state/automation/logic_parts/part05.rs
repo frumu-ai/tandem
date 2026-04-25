@@ -1112,6 +1112,7 @@ pub(crate) async fn execute_automation_v2_node(
         agent: None,
         tool_mode: Some(ToolMode::Required),
         tool_allowlist: Some(requested_tools.clone()),
+        strict_kb_grounding: None,
         context_mode: None,
         write_required: required_output_path.as_ref().map(|_| true),
         prewrite_requirements: automation_node_prewrite_requirements(node, &requested_tools),

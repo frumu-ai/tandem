@@ -41,6 +41,10 @@ This unreleased build adds chat-native automation drafts for Discord, Telegram, 
 
 - **Internal runbook**: Added `docs/internal/CHAT_WORKFLOW_PLANNER_DEMO.md` with setup, happy-path, missing-details, blocked-capability, and troubleshooting steps.
 - **KB-first channel grounding**: Hosted and external knowledgebase MCPs can now be marked as grounding-required, and channel sessions that enable those KB MCP tools must inspect KB evidence before returning factual answers instead of relying on model memory.
+- **Strict KB answer mode for channel bots**: Channels can now enable `strict_kb_grounding`, which rewrites the final reply from retrieved KB excerpts only, fails closed with `I do not see that in the connected knowledgebase.` when the KB has no supported answer, and adds short source footers when KB search results expose document paths.
+- **Full-document strict KB evidence**: Strict KB mode now follows search hits with full `get_document` retrieval when KB source identifiers are available, so answers are based on complete source documents instead of truncated search snippets.
+- **Safe source receipts**: Channel replies now show display-safe source labels such as `Company Overview`, `Sponsor FAQ`, `Staff Roles And Contacts`, and `Discord Community Rules` instead of local filesystem paths, storage keys, or internal document IDs.
+- **Fail-closed snippet handling**: If a likely KB document is found but full content cannot be fetched, strict mode now refuses to answer from partial snippets rather than filling gaps with general model knowledge.
 - **KB admin fail-closed check**: The control panel now treats the KB upload/browse surface as available only after `/api/knowledgebase/config` verifies that the KB admin backend is reachable, preventing `/collections` and `/documents` 502s from firing when the admin service is down or misconfigured.
 - **Nested KB document deletes**: The control-panel KB proxy now forwards nested document slugs with a single encoded slash, so admin deletes work for documents stored below folders such as `automation/...`.
 

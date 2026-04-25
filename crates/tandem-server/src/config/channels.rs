@@ -8,6 +8,8 @@ pub struct TelegramConfigFile {
     #[serde(default)]
     pub mention_only: bool,
     #[serde(default)]
+    pub strict_kb_grounding: bool,
+    #[serde(default)]
     pub model_provider_id: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
@@ -27,6 +29,8 @@ pub struct DiscordConfigFile {
     #[serde(default = "default_discord_mention_only")]
     pub mention_only: bool,
     #[serde(default)]
+    pub strict_kb_grounding: bool,
+    #[serde(default)]
     pub model_provider_id: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
@@ -42,6 +46,8 @@ pub struct SlackConfigFile {
     pub allowed_users: Vec<String>,
     #[serde(default)]
     pub mention_only: bool,
+    #[serde(default)]
+    pub strict_kb_grounding: bool,
     #[serde(default)]
     pub model_provider_id: Option<String>,
     #[serde(default)]

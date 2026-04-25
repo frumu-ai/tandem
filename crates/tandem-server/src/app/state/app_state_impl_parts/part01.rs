@@ -121,16 +121,16 @@ impl AppState {
 
     pub async fn wait_until_ready_or_failed(&self, attempts: usize, sleep_ms: u64) -> bool {
         for _ in 0..attempts {
-            if self.is_ready() {
+            let startup = self.startup_snapshot().await;
+            if matches!(startup.status, StartupStatus::Ready) {
                 return true;
             }
-            let startup = self.startup_snapshot().await;
             if matches!(startup.status, StartupStatus::Failed) {
                 return false;
             }
             tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
         }
-        self.is_ready()
+        matches!(self.startup_snapshot().await.status, StartupStatus::Ready)
     }
 
     pub fn mode_label(&self) -> &'static str {

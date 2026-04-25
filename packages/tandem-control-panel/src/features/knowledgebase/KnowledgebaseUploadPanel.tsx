@@ -172,6 +172,9 @@ export function KnowledgebaseUploadPanel({
   const panelRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadClearTimersRef = useRef<Map<string, number>>(new Map());
+  const uploadClearOrderRef = useRef<Map<string, number>>(new Map());
+  const uploadClearSequenceRef = useRef(0);
   const [collectionId, setCollectionId] = useState("");
   const [collectionTouched, setCollectionTouched] = useState(false);
   const [documentSearch, setDocumentSearch] = useState("");
@@ -598,6 +601,40 @@ export function KnowledgebaseUploadPanel({
   const completedRows = rows.filter((row) => row.status === "done" || row.status === "error");
 
   useEffect(() => {
+    for (const row of rows) {
+      if (row.status !== "done" && row.status !== "error") continue;
+      if (uploadClearTimersRef.current.has(row.id)) continue;
+      const order = uploadClearOrderRef.current.get(row.id) ?? uploadClearSequenceRef.current++ % 6;
+      uploadClearOrderRef.current.set(row.id, order);
+      const delayMs = 3000 + order * 350;
+      const timeoutId = window.setTimeout(() => {
+        setRows((prev) => prev.filter((entry) => entry.id !== row.id));
+        uploadClearTimersRef.current.delete(row.id);
+        uploadClearOrderRef.current.delete(row.id);
+      }, delayMs);
+      uploadClearTimersRef.current.set(row.id, timeoutId);
+    }
+
+    const activeRowIds = new Set(rows.map((row) => row.id));
+    for (const [rowId, timeoutId] of uploadClearTimersRef.current.entries()) {
+      if (activeRowIds.has(rowId)) continue;
+      window.clearTimeout(timeoutId);
+      uploadClearTimersRef.current.delete(rowId);
+      uploadClearOrderRef.current.delete(rowId);
+    }
+  }, [rows]);
+
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of uploadClearTimersRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      uploadClearTimersRef.current.clear();
+      uploadClearOrderRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
     if (panelRef.current) renderIcons(panelRef.current);
   }, [
     collections.length,
@@ -623,6 +660,13 @@ export function KnowledgebaseUploadPanel({
   ]);
 
   const clearFinishedUploads = () => {
+    for (const row of rows) {
+      if (row.status !== "done" && row.status !== "error") continue;
+      const timeoutId = uploadClearTimersRef.current.get(row.id);
+      if (typeof timeoutId === "number") window.clearTimeout(timeoutId);
+      uploadClearTimersRef.current.delete(row.id);
+      uploadClearOrderRef.current.delete(row.id);
+    }
     setRows((prev) => prev.filter((row) => row.status === "queued" || row.status === "uploading"));
   };
 

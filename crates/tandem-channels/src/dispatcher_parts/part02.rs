@@ -214,6 +214,7 @@ async fn start_channel_automation_draft(
     thread_key: &str,
     prompt: &str,
     tool_prefs: &ChannelToolPreferences,
+    strict_kb_grounding: bool,
     security_profile: ChannelSecurityProfile,
     pending_interactions: &PendingChannelInteractionMap,
 ) -> String {
@@ -236,7 +237,11 @@ async fn start_channel_automation_draft(
         "allowed_tools": allowed_tools,
         "allowed_mcp_servers": tool_prefs.enabled_mcp_servers.clone(),
         "allowed_mcp_tools": tool_prefs.enabled_mcp_tools.clone(),
-        "security_profile": format!("{security_profile:?}")
+        "security_profile": format!("{security_profile:?}"),
+        "workflow_planner_enabled": channel_workflow_planner_enabled(tool_prefs),
+        "strict_kb_grounding": strict_kb_grounding,
+        "factual_question": channel_message_is_factual_question(prompt),
+        "explicit_workflow_intent": channel_message_has_explicit_workflow_intent(prompt)
     });
     match channel_automation_draft_post(
         base_url,
@@ -258,6 +263,8 @@ async fn answer_channel_automation_draft(
     api_token: &str,
     msg: &ChannelMessage,
     draft_id: &str,
+    tool_prefs: &ChannelToolPreferences,
+    strict_kb_grounding: bool,
     pending_interactions: &PendingChannelInteractionMap,
 ) -> String {
     let path = format!(
@@ -268,7 +275,13 @@ async fn answer_channel_automation_draft(
         base_url,
         api_token,
         &path,
-        serde_json::json!({ "answer": msg.content }),
+        serde_json::json!({
+            "answer": msg.content,
+            "workflow_planner_enabled": channel_workflow_planner_enabled(tool_prefs),
+            "strict_kb_grounding": strict_kb_grounding,
+            "factual_question": channel_message_is_factual_question(&msg.content),
+            "explicit_workflow_intent": channel_message_has_explicit_workflow_intent(&msg.content)
+        }),
     )
     .await
     {
@@ -637,6 +650,118 @@ fn channel_workflow_planner_enabled(prefs: &ChannelToolPreferences) -> bool {
             .disabled_tools
             .iter()
             .any(|tool| tool == WORKFLOW_PLANNER_PSEUDO_TOOL)
+}
+
+fn channel_has_enabled_mcp_context(prefs: &ChannelToolPreferences) -> bool {
+    !prefs.enabled_mcp_servers.is_empty() || !prefs.enabled_mcp_tools.is_empty()
+}
+
+fn channel_message_has_explicit_workflow_intent(message: &str) -> bool {
+    let text = message.trim().to_ascii_lowercase();
+    if text.is_empty() || text.starts_with('/') {
+        return false;
+    }
+
+    let contains_workflow_target = contains_any_word(
+        &text,
+        &[
+            "workflow",
+            "automation",
+            "automations",
+            "bot",
+            "reminder",
+            "report",
+        ],
+    );
+    let contains_authoring_verb = contains_any_word(
+        &text,
+        &[
+            "create", "build", "make", "draft", "schedule", "automate", "set up", "setup",
+        ],
+    );
+    let contains_explicit_phrase = contains_any_word(
+        &text,
+        &[
+            "create a workflow",
+            "create workflow",
+            "build a workflow",
+            "build workflow",
+            "set up a workflow",
+            "setup a workflow",
+            "set up workflow",
+            "setup workflow",
+            "make a workflow",
+            "make workflow",
+            "create an automation",
+            "create automation",
+            "build an automation",
+            "build automation",
+            "schedule a workflow",
+            "schedule a daily report",
+            "schedule a report",
+            "schedule a reminder",
+            "set up a bot",
+            "setup a bot",
+            "make a bot that runs",
+            "create a bot that runs",
+        ],
+    );
+    let looks_like_monitoring_request = text.starts_with("monitor ")
+        && contains_any_word(
+            &text,
+            &[
+                " every ",
+                " each ",
+                "daily",
+                "weekly",
+                "hourly",
+                "every morning",
+            ],
+        );
+
+    contains_explicit_phrase
+        || (contains_workflow_target && contains_authoring_verb)
+        || looks_like_monitoring_request
+}
+
+fn channel_message_is_factual_question(message: &str) -> bool {
+    let text = message.trim().to_ascii_lowercase();
+    if text.is_empty() || text.starts_with('/') || !text.contains('?') {
+        return false;
+    }
+
+    [
+        "what ", "who ", "where ", "when ", "which ", "can ", "could ", "does ", "do ", "is ",
+        "are ", "how ", "tell me ", "explain ",
+    ]
+    .iter()
+    .any(|starter| text.starts_with(starter))
+}
+
+fn strict_kb_prefers_answer_mode(
+    message: &str,
+    strict_kb_grounding: bool,
+    prefs: &ChannelToolPreferences,
+) -> bool {
+    let _has_explicit_mcp_context = channel_has_enabled_mcp_context(prefs);
+    strict_kb_grounding
+        && channel_message_is_factual_question(message)
+        && !channel_message_has_explicit_workflow_intent(message)
+}
+
+fn setup_intent_requires_explicit_workflow_authoring(intent: &SetupIntentKind) -> bool {
+    matches!(
+        intent,
+        SetupIntentKind::WorkflowPlannerCreate | SetupIntentKind::AutomationCreate
+    )
+}
+
+fn workflow_planner_disabled_channel_message(has_active_thread: bool) -> &'static str {
+    if has_active_thread {
+        "🗓️ Workflow drafting is disabled for this channel. Enable the workflow planner gate in Settings to continue this thread."
+    } else {
+        "🗓️ Workflow drafting is disabled for this channel. Enable the workflow planner gate in Settings to continue."
+    }
 }
 
 fn channel_tool_preferences_without_planner_gate(

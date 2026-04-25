@@ -1,4 +1,3 @@
-
 async fn run_issue_fix_worker_session(
     state: &AppState,
     record: &CoderRunRecord,
@@ -102,6 +101,7 @@ async fn run_issue_fix_worker_session(
             agent: agent_id.clone().or_else(|| Some(worker_kind.to_string())),
             tool_mode: Some(tandem_types::ToolMode::Auto),
             tool_allowlist: None,
+            strict_kb_grounding: None,
             context_mode: Some(tandem_types::ContextMode::Full),
             write_required: Some(true),
             prewrite_requirements: None,

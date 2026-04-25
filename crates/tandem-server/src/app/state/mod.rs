@@ -687,10 +687,19 @@ fn is_valid_resource_key(key: &str) -> bool {
 impl Deref for AppState {
     type Target = RuntimeState;
 
+    #[track_caller]
     fn deref(&self) -> &Self::Target {
-        self.runtime
-            .get()
-            .expect("runtime accessed before startup completion")
+        if let Some(runtime) = self.runtime.get() {
+            return runtime;
+        }
+        let caller = std::panic::Location::caller();
+        tracing::error!(
+            file = caller.file(),
+            line = caller.line(),
+            column = caller.column(),
+            "runtime accessed before startup completion"
+        );
+        panic!("runtime accessed before startup completion")
     }
 }
 
@@ -998,10 +1007,12 @@ impl ServerPromptContextHook {
         [
             "<knowledgebase_grounding_policy>".to_string(),
             format!("- required: {}", policy.required),
+            format!("- strict: {}", policy.strict),
             format!("- servers: {}", servers),
             format!("- tool_patterns: {}", patterns),
             "- Before answering factual/project/product questions in this channel, inspect the KB MCP evidence first.".to_string(),
-            "- If the KB has no matching evidence, say that the enabled knowledgebase did not contain the answer instead of relying on model memory.".to_string(),
+            "- If the KB has no matching evidence, say `I do not see that in the connected knowledgebase.` instead of relying on model memory.".to_string(),
+            "- When strict grounding is enabled, answer only from retrieved KB evidence and do not add external product instructions, inferred policy, or best-practice guidance.".to_string(),
             "</knowledgebase_grounding_policy>".to_string(),
         ]
         .join("\n")
@@ -1080,6 +1091,7 @@ impl PromptContextHook for ServerPromptContextHook {
                             "sessionID": ctx.session_id,
                             "messageID": ctx.message_id,
                             "iteration": ctx.iteration,
+                            "strict": policy.strict,
                             "serverNames": policy.server_names,
                             "toolPatterns": policy.tool_patterns,
                             "tokenSizeApprox": kb_block.split_whitespace().count(),

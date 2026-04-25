@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Control-panel handoff and audit events**: Workflow drafts now surface a review banner in the control panel, emit structured planning lifecycle events, and include a short preview plus review link in external replies.
 - **Internal demo runbook**: Added `docs/internal/CHAT_WORKFLOW_PLANNER_DEMO.md` for end-to-end manual testing.
 - **KB-first channel grounding**: MCP servers can now be marked as `purpose: "knowledgebase"` / `grounding_required: true`, and channel sessions that explicitly enable those KB MCP tools force a KB discovery/search turn before answering factual questions from chat.
+- **Strict KB-grounded channel answers**: Channel configs now accept `strict_kb_grounding`, which rewrites channel replies from retrieved KB excerpts only, emits `I do not see that in the connected knowledgebase.` when retrieval does not support the answer, and adds compact source receipts when KB search results expose file paths.
+- **Full-document strict KB evidence**: Strict KB mode now follows KB search hits with `get_document` retrieval when source identifiers are available, so channel answers are grounded in full source documents instead of truncated snippets.
 
 ### Changed
 
@@ -29,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Workflow planner replies stay in chat**: Channel workflow-planning responses now surface planner questions, draft summaries, validation state, and blocked capabilities in the chat thread, with the control-panel link kept for review/apply.
 - **External channels stay draft-first**: Telegram, Discord, and Slack continue to return compact review-oriented responses and cannot directly activate workflows.
 - **Planner provenance**: Control-panel initiated requests remain human-owned, and agent-authored drafts retain their source provenance through reloads.
+- **Safe KB source receipts**: Strict KB channel replies now use display-safe document labels such as `Company Overview` or `Sponsor FAQ` instead of exposing local filesystem paths, storage keys, or internal `doc_id` values.
 
 ### Fixed
 
@@ -39,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Planner thread hijacking**: Linked workflow planner sessions no longer capture ordinary informational chat like "what is ..." or "what do I do?", and planner-model setup pauses now explain the admin action instead of asking for an impossible answer.
 - **KB endpoint fail-closed gating**: Control-panel KB upload/browse queries now wait for `/api/knowledgebase/config` to confirm the KB admin service is reachable, avoiding noisy `/collections` and `/documents` 502s when the admin backend is configured but down.
 - **KB nested document deletes**: Control-panel KB admin proxy requests now preserve encoded slashes in document slugs, so documents stored under nested paths can be deleted instead of returning 404.
+- **Strict KB snippet hallucinations**: Strict KB answers now fail closed when a likely document cannot be fetched, preserve exact document facts, and avoid inventing unsupported policies, private-contact details, or external platform instructions from partial search excerpts.
 
 ## [0.4.40] - Released 2026-04-24
 
