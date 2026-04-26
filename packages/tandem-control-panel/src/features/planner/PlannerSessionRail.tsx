@@ -34,7 +34,7 @@ export function PlannerSessionRail({
         <div className="min-w-0">
           <div className="text-xs uppercase tracking-wide text-slate-500">Planner sessions</div>
           <div className="tcp-subtle text-xs">
-            Keep separate plan threads per project and jump back into any of them.
+            Draft threads only. Model work starts when you generate or revise a plan.
           </div>
         </div>
         <button type="button" className="tcp-btn shrink-0" onClick={onCreateSession}>
@@ -112,7 +112,7 @@ export function PlannerSessionRail({
           <div className="rounded-xl border border-dashed border-white/10 bg-black/10 p-3">
             <div className="text-sm text-slate-100">No planner sessions yet.</div>
             <div className="mt-1 text-xs text-slate-500">
-              Start a new plan to create the first conversation thread.
+              Start a new plan when you are ready to create the first draft thread.
             </div>
             <button type="button" className="tcp-btn mt-3" onClick={onCreateSession}>
               <i data-lucide="plus"></i>

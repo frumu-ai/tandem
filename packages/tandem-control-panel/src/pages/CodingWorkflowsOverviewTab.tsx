@@ -73,35 +73,8 @@ export function CodingWorkflowsOverviewTab({
 }) {
   return (
     <>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Metric
-          label="Registered projects"
-          value={projects.length}
-          helper={selectedProjectSlug ? `Focused on ${selectedProjectSlug}` : "No project selected"}
-          tone={projects.length ? "ok" : "warn"}
-        />
-        <Metric
-          label="Visible runs"
-          value={visibleRunsCount}
-          helper={activeRunsCount ? `${activeRunsCount} active` : "Idle"}
-          tone={activeRunsCount ? "warn" : "ok"}
-        />
-        <Metric
-          label="Connected MCP servers"
-          value={connectedMcpServersCount}
-          helper={connectedMcpServersCount ? "GitHub available" : "MCP pending"}
-          tone={connectedMcpServersCount ? "ok" : "warn"}
-        />
-        <Metric
-          label="Registered tools"
-          value={registeredToolsCount}
-          helper="Engine tool surface"
-          tone={registeredToolsCount ? "info" : "ghost"}
-        />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.95fr)]">
-        <PanelCard title="Project selector" subtitle="ACA-backed repository contexts">
+      <div className="grid gap-4">
+        <PanelCard title="Project selector" subtitle="Choose the repository context before intake">
           {projects.length ? (
             <div className="grid gap-3">
               <select
@@ -134,6 +107,35 @@ export function CodingWorkflowsOverviewTab({
             <EmptyState text="Register an ACA project to start using the coding dashboard." />
           )}
         </PanelCard>
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <Metric
+            label="Registered projects"
+            value={projects.length}
+            helper={
+              selectedProjectSlug ? `Focused on ${selectedProjectSlug}` : "No project selected"
+            }
+            tone={projects.length ? "ok" : "warn"}
+          />
+          <Metric
+            label="Visible runs"
+            value={visibleRunsCount}
+            helper={activeRunsCount ? `${activeRunsCount} active` : "Idle"}
+            tone={activeRunsCount ? "warn" : "ok"}
+          />
+          <Metric
+            label="Connected MCP servers"
+            value={connectedMcpServersCount}
+            helper={connectedMcpServersCount ? "GitHub available" : "MCP pending"}
+            tone={connectedMcpServersCount ? "ok" : "warn"}
+          />
+          <Metric
+            label="Registered tools"
+            value={registeredToolsCount}
+            helper="Engine tool surface"
+            tone={registeredToolsCount ? "info" : "ghost"}
+          />
+        </div>
 
         <div className="grid gap-4">
           <PanelCard

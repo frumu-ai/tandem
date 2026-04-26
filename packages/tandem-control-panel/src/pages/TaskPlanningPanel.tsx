@@ -553,8 +553,8 @@ export function TaskPlanningPanel({
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [notes, setNotes] = useState("");
   const [plannerInput, setPlannerInput] = useState("");
-  const [plannerProvider, setPlannerProvider] = useState(providerStatus.defaultProvider || "");
-  const [plannerModel, setPlannerModel] = useState(providerStatus.defaultModel || "");
+  const [plannerProvider, setPlannerProvider] = useState("");
+  const [plannerModel, setPlannerModel] = useState("");
   const [planPreview, setPlanPreview] = useState<any>(null);
   const [planningConversation, setPlanningConversation] = useState<any>(null);
   const [planningChangeSummary, setPlanningChangeSummary] = useState<string[]>([]);
@@ -933,44 +933,8 @@ export function TaskPlanningPanel({
     setLoadingDraft(true);
     (async () => {
       try {
-        let rows = await refreshPlannerSessions();
-        if (!rows.length && client?.workflowPlannerSessions?.create) {
-          const created = await client.workflowPlannerSessions.create({
-            project_slug: selectedProjectSlug,
-            title: plannerSessionTitle({ goal: "", fallbackTime: Date.now() }),
-            workspace_root: resolvedWorkspaceRoot || workspaceRootSeed || "",
-            goal: "",
-            notes: "",
-            planner_provider: providerStatus.defaultProvider || "",
-            planner_model: providerStatus.defaultModel || "",
-            plan_source: "coding_task_planning",
-            allowed_mcp_servers: connectedMcpServers,
-            operator_preferences: plannerOperatorPreferences({
-              plannerProvider,
-              plannerModel,
-              defaultProvider: providerStatus.defaultProvider,
-              defaultModel: providerStatus.defaultModel,
-              selectedProjectSlug,
-              taskSourceType,
-              selectedProject,
-              goal: "",
-              notes: "",
-            }),
-          });
-          const createdSession = created?.session;
-          if (createdSession?.session_id) {
-            rows = [createdSession, ...rows];
-            setPlannerSessions(
-              rows
-                .map(plannerSessionRowFromListItem)
-                .filter((row: PlannerSessionRow) => row.id)
-                .sort(
-                  (left: PlannerSessionRow, right: PlannerSessionRow) =>
-                    right.updatedAtMs - left.updatedAtMs
-                )
-            );
-          }
-        }
+        // Session loading is read-only; blank draft sessions are created only by New plan.
+        const rows = await refreshPlannerSessions();
         const storedSessionId = loadSelectedPlannerSession(selectedProjectSlug);
         const currentSessionId = selectedSessionIdRef.current;
         const rowsHaveCurrent =
@@ -1003,20 +967,7 @@ export function TaskPlanningPanel({
     return () => {
       cancelled = true;
     };
-  }, [
-    client?.workflowPlannerSessions,
-    connectedMcpServers,
-    plannerModel,
-    plannerProvider,
-    providerStatus.defaultModel,
-    providerStatus.defaultProvider,
-    refreshPlannerSessions,
-    resolvedWorkspaceRoot,
-    selectedProject,
-    selectedProjectSlug,
-    taskSourceType,
-    workspaceRootSeed,
-  ]);
+  }, [client?.workflowPlannerSessions, refreshPlannerSessions, selectedProjectSlug]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -1219,6 +1170,7 @@ export function TaskPlanningPanel({
       if (selectedSessionIdRef.current) {
         savePlannerComposerDraft(selectedProjectSlug, selectedSessionIdRef.current, plannerInput);
       }
+      const initialComposerDraft = selectedSessionIdRef.current ? "" : plannerInput;
       const response = await client.workflowPlannerSessions.create({
         project_slug: selectedProjectSlug,
         title: plannerSessionTitle({
@@ -1228,13 +1180,13 @@ export function TaskPlanningPanel({
         workspace_root: resolvedWorkspaceRoot || workspaceRootSeed || workspaceRoot || "",
         goal: "",
         notes: "",
-        planner_provider: providerStatus.defaultProvider || "",
-        planner_model: providerStatus.defaultModel || "",
+        planner_provider: plannerProvider,
+        planner_model: plannerModel,
         plan_source: "coding_task_planning",
         allowed_mcp_servers: connectedMcpServers,
         operator_preferences: plannerOperatorPreferences({
-          plannerProvider: providerStatus.defaultProvider || "",
-          plannerModel: providerStatus.defaultModel || "",
+          plannerProvider,
+          plannerModel,
           defaultProvider: providerStatus.defaultProvider,
           defaultModel: providerStatus.defaultModel,
           selectedProjectSlug,
@@ -1255,7 +1207,9 @@ export function TaskPlanningPanel({
         clearPlannerComposerDraft(selectedProjectSlug, session.session_id);
         activatePlannerSession(session.session_id);
         hydrateDraft(planningDraftFromSession(session));
-        setPlannerInput(loadPlannerComposerDraft(selectedProjectSlug, session.session_id));
+        setPlannerInput(
+          initialComposerDraft || loadPlannerComposerDraft(selectedProjectSlug, session.session_id)
+        );
         toast("ok", "Started a new planner session.");
       }
     } catch (error) {
@@ -1393,7 +1347,11 @@ export function TaskPlanningPanel({
       toast("warn", "Workspace root must be an absolute path.");
       return;
     }
-    if (!client?.workflowPlannerSessions?.start || !selectedSessionId) {
+    if (!selectedSessionId) {
+      toast("warn", "Start a planner session first.");
+      return;
+    }
+    if (!client?.workflowPlannerSessions?.start) {
       toast("err", "This control panel build is missing workflow planner support.");
       return;
     }

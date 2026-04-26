@@ -6,6 +6,11 @@ import { useCapabilities } from "../features/system/queries.ts";
 import { subscribeSse } from "../services/sse.js";
 import { CodingWorkflowsOverviewTab } from "./CodingWorkflowsOverviewTab";
 import { TaskPlanningPanel } from "./TaskPlanningPanel";
+import { ProviderModelSelector } from "../components/ProviderModelSelector";
+import {
+  buildPlannerProviderOptions,
+  type PlannerProviderOption,
+} from "../features/planner/plannerShared";
 import type { AppPageProps } from "./pageTypes";
 
 type CodingTab = "overview" | "board" | "planning" | "manual" | "integrations";
@@ -126,16 +131,6 @@ function normalizeProjects(raw: any) {
 }
 
 function normalizeGithubBoard(raw: any) {
-  const columns = Array.isArray(raw?.columns)
-    ? raw.columns
-        .map((column: any, index: number) => ({
-          id: String(column?.id || column?.key || `column-${index}`).trim(),
-          key: String(column?.key || column?.name || `column-${index}`).trim(),
-          name: String(column?.name || column?.key || `Column ${index + 1}`).trim(),
-          itemCount: Number(column?.item_count || column?.itemCount || 0),
-        }))
-        .filter((column: any) => column.key)
-    : [];
   const items = Array.isArray(raw?.items)
     ? raw.items
         .map((item: any, index: number) => ({
@@ -160,39 +155,12 @@ function normalizeGithubBoard(raw: any) {
         .filter((item: any) => item.id)
     : [];
   return {
-    columns,
     items,
     source: String(raw?.source || "").trim(),
     warning: String(raw?.warning || "").trim(),
     isStale: raw?.is_stale === true,
     lastSyncedAtMs: Number(raw?.last_synced_at_ms || raw?.lastSyncedAtMs || 0),
   };
-}
-
-function githubBoardViewStorageKey(projectSlug: string) {
-  return `tcp.coding.github-board.view.v1:${projectSlug}`;
-}
-
-function loadHiddenGithubColumns(projectSlug: string) {
-  if (!projectSlug || typeof localStorage === "undefined") return [];
-  try {
-    const parsed = JSON.parse(localStorage.getItem(githubBoardViewStorageKey(projectSlug)) || "{}");
-    return Array.isArray(parsed?.hiddenColumns)
-      ? parsed.hiddenColumns.map((value: any) => String(value || "").trim()).filter(Boolean)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveHiddenGithubColumns(projectSlug: string, hiddenColumns: string[]) {
-  if (!projectSlug || typeof localStorage === "undefined") return;
-  localStorage.setItem(
-    githubBoardViewStorageKey(projectSlug),
-    JSON.stringify({
-      hiddenColumns: hiddenColumns.map((value) => String(value || "").trim()).filter(Boolean),
-    })
-  );
 }
 
 function runId(run: any, index: number) {
@@ -294,64 +262,6 @@ function dedupeRuns(runs: any[]) {
   return Array.from(latestByIdentity.values()).sort((a, b) => runUpdatedAt(b) - runUpdatedAt(a));
 }
 
-function groupRuns(runs: any[]) {
-  const lanes: Array<{
-    id: string;
-    label: string;
-    hint: string;
-    statuses: string[];
-    items: any[];
-  }> = [
-    {
-      id: "queue",
-      label: "Queue",
-      hint: "Created or waiting for work to begin",
-      statuses: ["created", "queued", "pending", "idle", "starting"],
-      items: [],
-    },
-    {
-      id: "planning",
-      label: "Planning",
-      hint: "Resolving task source and planning work",
-      statuses: ["bootstrap", "engine_check", "task_resolution", "planning", "triage"],
-      items: [],
-    },
-    {
-      id: "active",
-      label: "Active",
-      hint: "Executing, reviewing, or testing",
-      statuses: ["running", "worker_execution", "review", "test", "handoff", "active"],
-      items: [],
-    },
-    {
-      id: "waiting",
-      label: "Waiting",
-      hint: "Blocked or waiting on intervention",
-      statuses: ["blocked", "paused", "waiting", "needs_info"],
-      items: [],
-    },
-    {
-      id: "done",
-      label: "Done",
-      hint: "Completed, failed, or archived",
-      statuses: ["completed", "done", "failed", "cancelled", "archived"],
-      items: [],
-    },
-    { id: "other", label: "Other", hint: "Unclassified run states", statuses: [], items: [] },
-  ];
-
-  runs.forEach((run) => {
-    const status = runStatus(run);
-    const phase = runPhase(run);
-    const statusBucket = lanes.find((lane) => lane.statuses.includes(status));
-    const phaseBucket = lanes.find((lane) => lane.statuses.includes(phase));
-    const bucket = statusBucket || phaseBucket || lanes[lanes.length - 1];
-    bucket.items.push(run);
-  });
-
-  return lanes;
-}
-
 function buildTaskSourcePayload(
   taskSourceType: TaskSourceType,
   {
@@ -431,8 +341,9 @@ export function CodingWorkflowsPage({
   const [taskSourceRepo, setTaskSourceRepo] = useState("");
   const [taskSourceProject, setTaskSourceProject] = useState("");
   const [runItem, setRunItem] = useState("");
-  const [overrideProvider, setOverrideProvider] = useState(providerStatus.defaultProvider || "");
-  const [overrideModel, setOverrideModel] = useState(providerStatus.defaultModel || "");
+  // Empty run overrides are intentional: ACA should inherit its configured base provider/model.
+  const [overrideProvider, setOverrideProvider] = useState("");
+  const [overrideModel, setOverrideModel] = useState("");
   const [registering, setRegistering] = useState(false);
   const [triggering, setTriggering] = useState(false);
   const [lastGlobalEvent, setLastGlobalEvent] = useState("");
@@ -441,7 +352,6 @@ export function CodingWorkflowsPage({
   const [githubBoardRefreshAt, setGithubBoardRefreshAt] = useState<number | null>(null);
   const [runDetailOpen, setRunDetailOpen] = useState(false);
   const [liveLogsOpen, setLiveLogsOpen] = useState(false);
-  const [hiddenGithubColumns, setHiddenGithubColumns] = useState<string[]>([]);
   const [selectedGithubItemIds, setSelectedGithubItemIds] = useState<string[]>([]);
   const [launchingGithubItemIds, setLaunchingGithubItemIds] = useState<Record<string, number>>({});
   const [batchTriggering, setBatchTriggering] = useState(false);
@@ -451,20 +361,6 @@ export function CodingWorkflowsPage({
   const engineAvailable = caps.data?.engine_healthy === true;
   const hostedManaged = caps.data?.hosted_managed === true;
   const integrationsEnabled = acaAvailable || engineAvailable;
-
-  useEffect(() => {
-    if (!overrideProvider && providerStatus.defaultProvider) {
-      setOverrideProvider(providerStatus.defaultProvider);
-    }
-    if (!overrideModel && providerStatus.defaultModel) {
-      setOverrideModel(providerStatus.defaultModel);
-    }
-  }, [
-    overrideModel,
-    overrideProvider,
-    providerStatus.defaultModel,
-    providerStatus.defaultProvider,
-  ]);
 
   const health = useQuery({
     queryKey: ["coding-workflows", "health"],
@@ -554,6 +450,18 @@ export function CodingWorkflowsPage({
     refetchInterval: integrationsEnabled ? 15000 : false,
     enabled: integrationsEnabled,
   });
+  const providersCatalogQuery = useQuery({
+    queryKey: ["coding-workflows", "providers", "catalog"],
+    queryFn: () => client.providers.catalog().catch(() => ({ all: [] })),
+    refetchInterval: integrationsEnabled ? 30000 : false,
+    enabled: integrationsEnabled,
+  });
+  const providersConfigQuery = useQuery({
+    queryKey: ["coding-workflows", "providers", "config"],
+    queryFn: () => client.providers.config().catch(() => ({})),
+    refetchInterval: integrationsEnabled ? 30000 : false,
+    enabled: integrationsEnabled,
+  });
 
   const mcpServers = useMemo(() => normalizeServers(mcpServersQuery.data), [mcpServersQuery.data]);
   const mcpTools = useMemo(() => normalizeTools(mcpToolsQuery.data), [mcpToolsQuery.data]);
@@ -563,6 +471,19 @@ export function CodingWorkflowsPage({
     () => normalizeGithubBoard(projectBoardQuery.data),
     [projectBoardQuery.data]
   );
+  const providerOptions = useMemo<PlannerProviderOption[]>(() => {
+    return buildPlannerProviderOptions({
+      providerCatalog: providersCatalogQuery.data,
+      providerConfig: providersConfigQuery.data,
+      defaultProvider: providerStatus.defaultProvider,
+      defaultModel: providerStatus.defaultModel,
+    });
+  }, [
+    providerStatus.defaultModel,
+    providerStatus.defaultProvider,
+    providersCatalogQuery.data,
+    providersConfigQuery.data,
+  ]);
 
   useEffect(() => {
     if (!projects.length) return;
@@ -618,7 +539,6 @@ export function CodingWorkflowsPage({
     }
   }, [logRows, selectedLogName]);
 
-  const lanes = useMemo(() => groupRuns(visibleRuns), [visibleRuns]);
   const healthy = !!(health.data?.engine?.ready || health.data?.engine?.healthy);
   const githubConnected = mcpServers.some((server) => server.name.toLowerCase().includes("github"));
   const selectedProject =
@@ -636,13 +556,6 @@ export function CodingWorkflowsPage({
   const connectedMcpServers = mcpServers
     .filter((server) => server.connected)
     .map((server) => server.name);
-  const githubBoardVisibleColumns = useMemo(
-    () =>
-      githubBoard.columns.filter(
-        (column: any) => !hiddenGithubColumns.includes(String(column.key || ""))
-      ),
-    [githubBoard.columns, hiddenGithubColumns]
-  );
   const selectedGithubItems = useMemo(
     () =>
       githubBoard.items.filter((item: any) =>
@@ -657,6 +570,30 @@ export function CodingWorkflowsPage({
   const launchingGithubItemIdSet = useMemo(
     () => new Set(Object.keys(launchingGithubItemIds)),
     [launchingGithubItemIds]
+  );
+  const inheritedAcaModelLabel =
+    providerStatus.defaultProvider && providerStatus.defaultModel
+      ? `ACA default (${providerStatus.defaultProvider} / ${providerStatus.defaultModel})`
+      : "ACA default";
+  const renderAcaModelSelector = (disabled = false) => (
+    <div className="grid gap-2">
+      {/* Keep run launch overrides on the shared selector used by planner/settings screens. */}
+      <ProviderModelSelector
+        providerLabel="ACA provider"
+        modelLabel="ACA model"
+        draft={{ provider: overrideProvider, model: overrideModel }}
+        providers={providerOptions}
+        onChange={({ provider, model }) => {
+          setOverrideProvider(provider);
+          setOverrideModel(model);
+        }}
+        inheritLabel={inheritedAcaModelLabel}
+        disabled={disabled}
+      />
+      <div className="tcp-subtle text-xs">
+        Leave blank to inherit the base ACA provider and model for this run.
+      </div>
+    </div>
   );
   const activeGithubItemIdentities = useMemo(
     () =>
@@ -746,10 +683,6 @@ export function CodingWorkflowsPage({
   }, [projectBoardQuery.data]);
 
   useEffect(() => {
-    setHiddenGithubColumns(loadHiddenGithubColumns(selectedProjectSlug));
-  }, [selectedProjectSlug]);
-
-  useEffect(() => {
     setSelectedGithubItemIds([]);
   }, [selectedProjectSlug]);
 
@@ -795,17 +728,13 @@ export function CodingWorkflowsPage({
   }, [activeGithubItemIdentities, githubBoard.items, launchingGithubItemIds]);
 
   useEffect(() => {
-    saveHiddenGithubColumns(selectedProjectSlug, hiddenGithubColumns);
-  }, [hiddenGithubColumns, selectedProjectSlug]);
-
-  useEffect(() => {
     const validIds = new Set(githubBoard.items.map((item: any) => String(item.id || "")));
     setSelectedGithubItemIds((current) => current.filter((id) => validIds.has(id)));
   }, [githubBoard.items]);
 
   const tabs: Array<{ id: CodingTab; label: string; icon: string }> = [
     { id: "overview", label: "Overview", icon: "layout-dashboard" },
-    { id: "board", label: "Board", icon: "kanban-square" },
+    { id: "board", label: "Intake", icon: "list-checks" },
     { id: "planning", label: "Planning", icon: "clipboard-list" },
     { id: "manual", label: "Manual tasks", icon: "code" },
     { id: "integrations", label: "Integrations", icon: "plug-zap" },
@@ -1043,18 +972,10 @@ export function CodingWorkflowsPage({
         data
       );
       setGithubBoardRefreshAt(Number(data?.last_synced_at_ms || Date.now()));
-      toast("ok", "Refreshed GitHub Project board through Tandem MCP.");
+      toast("ok", "Refreshed GitHub Project items through Tandem MCP.");
     } catch (error) {
       toast("err", error instanceof Error ? error.message : String(error));
     }
-  }
-
-  function toggleGithubColumn(columnKey: string) {
-    setHiddenGithubColumns((current) =>
-      current.includes(columnKey)
-        ? current.filter((value) => value !== columnKey)
-        : [...current, columnKey]
-    );
   }
 
   if (!acaAvailable) {
@@ -1159,7 +1080,7 @@ export function CodingWorkflowsPage({
       {tab === "board" ? (
         <div className="grid gap-4">
           <div className="grid gap-4">
-            <PanelCard title="GitHub Project board" subtitle="Live project columns from GitHub MCP">
+            <PanelCard title="GitHub Project intake" subtitle="GitHub items ACA can launch">
               <div className="mb-4">
                 <select
                   className="tcp-input"
@@ -1178,18 +1099,18 @@ export function CodingWorkflowsPage({
               </div>
               {String(selectedProject?.taskSource?.type || "").trim() === "github_project" ? (
                 projectBoardQuery.isLoading ? (
-                  <div className="tcp-subtle text-sm">Loading GitHub Project board...</div>
+                  <div className="tcp-subtle text-sm">Loading GitHub Project items...</div>
                 ) : projectBoardQuery.isError ? (
                   <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
                     {projectBoardQuery.error instanceof Error
                       ? projectBoardQuery.error.message
-                      : "Could not load the GitHub Project board."}
+                      : "Could not load the GitHub Project items."}
                   </div>
                 ) : (
                   <div className="grid gap-3">
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/20 p-3">
                       <div className="tcp-subtle text-xs">
-                        This board shows exact GitHub Project column and item names.
+                        Items are listed by ACA launchability with direct run controls.
                         {githubBoardRefreshAt
                           ? ` Last synced ${new Date(githubBoardRefreshAt).toLocaleTimeString()}.`
                           : ""}
@@ -1214,6 +1135,9 @@ export function CodingWorkflowsPage({
                       <div className="tcp-subtle text-xs">
                         Select GitHub items here to start ACA runs directly from the board. This
                         creates one ACA run per selected item and starts them immediately.
+                      </div>
+                      <div className="min-w-[320px] flex-1">
+                        {renderAcaModelSelector(batchTriggering)}
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button
@@ -1249,159 +1173,90 @@ export function CodingWorkflowsPage({
                         {githubBoard.warning}
                       </div>
                     ) : null}
-                    {githubBoard.columns.length ? (
-                      <div className="flex flex-wrap gap-2">
-                        {githubBoard.columns.map((column: any) => {
-                          const hidden = hiddenGithubColumns.includes(String(column.key || ""));
+                    {githubBoard.items.length ? (
+                      <div className="grid gap-3">
+                        {githubBoard.items.map((item: any) => {
+                          const itemCanRun = githubBoardItemCanRun(item);
+                          const itemId = String(item.id || "");
+                          const itemIsRunning =
+                            itemCanRun &&
+                            activeGithubItemIdentities.has(githubBoardItemIdentity(item));
+                          const itemIsLaunching = launchingGithubItemIdSet.has(itemId);
+                          const itemIsLaunchLocked =
+                            itemIsRunning || itemIsLaunching || batchTriggering;
                           return (
-                            <button
-                              key={String(column.key || column.id)}
-                              type="button"
-                              className={`rounded-full border px-3 py-1 text-xs transition ${
-                                hidden
-                                  ? "border-white/10 bg-black/20 text-slate-400"
-                                  : "border-cyan-400/40 bg-cyan-500/10 text-cyan-100"
+                            <div
+                              key={itemId}
+                              className={`rounded-2xl border px-4 py-3 transition ${
+                                selectedGithubItemIds.includes(itemId)
+                                  ? "border-cyan-400/60 bg-cyan-500/10"
+                                  : "border-white/10 bg-black/20"
                               }`}
-                              onClick={() => toggleGithubColumn(String(column.key || ""))}
                             >
-                              {hidden ? "Show" : "Hide"} {String(column.name || "")}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                    {githubBoardVisibleColumns.length ? (
-                      <div className="grid items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-                        {githubBoardVisibleColumns.map((column: any) => {
-                          const items = githubBoard.items.filter(
-                            (item: any) => String(item.statusKey || "") === String(column.key || "")
-                          );
-                          return (
-                            <div key={String(column.key || column.id)} className="grid gap-2">
-                              <div className="flex items-center justify-between gap-3">
-                                <div>
-                                  <div className="text-sm font-semibold">
-                                    {String(column.name || "")}
-                                  </div>
-                                  <div className="tcp-subtle text-xs">GitHub Project column</div>
-                                </div>
-                                <Badge
-                                  tone={items.some((item: any) => item.actionable) ? "ok" : "ghost"}
-                                >
-                                  {items.length}
-                                </Badge>
-                              </div>
-                              {items.length ? (
-                                <div className="grid max-h-[38rem] content-start gap-3 overflow-y-auto pr-1">
-                                  {items.map((item: any) => (
-                                    <div
-                                      key={String(item.id || "")}
-                                      className={`rounded-2xl border px-3 py-3 text-left transition ${
-                                        selectedGithubItemIds.includes(String(item.id || ""))
-                                          ? "border-cyan-400/60 bg-cyan-500/10"
-                                          : "border-white/10 bg-black/20 hover:border-white/20"
-                                      }`}
-                                    >
-                                      {(() => {
-                                        const itemCanRun = githubBoardItemCanRun(item);
-                                        const itemId = String(item.id || "");
-                                        const itemIsRunning =
-                                          itemCanRun &&
-                                          activeGithubItemIdentities.has(
-                                            githubBoardItemIdentity(item)
-                                          );
-                                        const itemIsLaunching =
-                                          launchingGithubItemIdSet.has(itemId);
-                                        const itemIsLaunchLocked =
-                                          itemIsRunning || itemIsLaunching || batchTriggering;
-                                        return (
-                                          <div className="grid gap-3">
-                                            <div className="flex items-start gap-3">
-                                              <input
-                                                type="checkbox"
-                                                className="mt-1 h-4 w-4 shrink-0"
-                                                checked={selectedGithubItemIds.includes(itemId)}
-                                                disabled={!itemCanRun || itemIsLaunchLocked}
-                                                onChange={() => toggleGithubItemSelection(itemId)}
-                                              />
-                                              <div className="min-w-0 flex-1">
-                                                <div className="break-words text-sm font-semibold leading-5">
-                                                  {String(item.title || "Untitled item")}
-                                                </div>
-                                                <div className="tcp-subtle mt-1 break-words text-xs leading-5">
-                                                  {item.repoName
-                                                    ? String(item.repoName)
-                                                    : selectedProjectSlug}
-                                                  {item.issueNumber
-                                                    ? ` #${String(item.issueNumber)}`
-                                                    : ""}
-                                                </div>
-                                              </div>
-                                            </div>
-                                            <div className="flex flex-wrap items-center gap-2 pl-7">
-                                              {item.actionable ? (
-                                                <Badge tone="ok">Actionable</Badge>
-                                              ) : null}
-                                              <Badge tone="ghost">
-                                                {String(item.statusName || "Unknown")}
-                                              </Badge>
-                                              {itemIsRunning ? (
-                                                <Badge tone="info">Run active</Badge>
-                                              ) : null}
-                                              {itemIsLaunching && !itemIsRunning ? (
-                                                <Badge tone="warn">Starting</Badge>
-                                              ) : null}
-                                              {!itemCanRun &&
-                                              String(item.statusKey || "").trim() ===
-                                                "in_review" ? (
-                                                <Badge tone="warn">Review locked</Badge>
-                                              ) : null}
-                                              {!itemCanRun &&
-                                              String(item.statusKey || "").trim() === "done" ? (
-                                                <Badge tone="ghost">Done</Badge>
-                                              ) : null}
-                                            </div>
-                                            <div className="flex flex-wrap gap-2 pl-7">
-                                              {item.issueUrl ? (
-                                                <a
-                                                  className="tcp-btn h-8 px-3 text-xs"
-                                                  href={item.issueUrl}
-                                                  target="_blank"
-                                                  rel="noreferrer"
-                                                >
-                                                  Open in GitHub
-                                                </a>
-                                              ) : null}
-                                              <button
-                                                type="button"
-                                                className="tcp-btn h-8 px-3 text-xs"
-                                                onClick={() => triggerGithubItems([item])}
-                                                disabled={!itemCanRun || itemIsLaunchLocked}
-                                              >
-                                                {!itemCanRun
-                                                  ? "Not launchable"
-                                                  : itemIsRunning
-                                                    ? "Already running"
-                                                    : itemIsLaunching
-                                                      ? "Starting..."
-                                                      : "Run task"}
-                                              </button>
-                                            </div>
-                                          </div>
-                                        );
-                                      })()}
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="flex min-w-0 flex-1 items-start gap-3">
+                                  <input
+                                    type="checkbox"
+                                    className="mt-1 h-4 w-4 shrink-0"
+                                    checked={selectedGithubItemIds.includes(itemId)}
+                                    disabled={!itemCanRun || itemIsLaunchLocked}
+                                    onChange={() => toggleGithubItemSelection(itemId)}
+                                  />
+                                  <div className="min-w-0">
+                                    <div className="break-words text-sm font-semibold leading-5">
+                                      {String(item.title || "Untitled item")}
                                     </div>
-                                  ))}
+                                    <div className="tcp-subtle mt-1 break-words text-xs leading-5">
+                                      {item.repoName ? String(item.repoName) : selectedProjectSlug}
+                                      {item.issueNumber ? ` #${String(item.issueNumber)}` : ""}
+                                    </div>
+                                  </div>
                                 </div>
-                              ) : (
-                                <EmptyState text="No items in this GitHub column." />
-                              )}
+                                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                                  {item.actionable ? <Badge tone="ok">Actionable</Badge> : null}
+                                  <Badge tone="ghost">
+                                    {formatStatus(
+                                      String(item.statusName || item.statusKey || "Unknown")
+                                    )}
+                                  </Badge>
+                                  {itemIsRunning ? <Badge tone="info">Run active</Badge> : null}
+                                  {itemIsLaunching && !itemIsRunning ? (
+                                    <Badge tone="warn">Starting</Badge>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-2 pl-7">
+                                {item.issueUrl ? (
+                                  <a
+                                    className="tcp-btn h-8 px-3 text-xs"
+                                    href={item.issueUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Open in GitHub
+                                  </a>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  className="tcp-btn h-8 px-3 text-xs"
+                                  onClick={() => triggerGithubItems([item])}
+                                  disabled={!itemCanRun || itemIsLaunchLocked}
+                                >
+                                  {!itemCanRun
+                                    ? "Not launchable"
+                                    : itemIsRunning
+                                      ? "Already running"
+                                      : itemIsLaunching
+                                        ? "Starting..."
+                                        : "Run task"}
+                                </button>
+                              </div>
                             </div>
                           );
                         })}
                       </div>
                     ) : (
-                      <EmptyState text="All GitHub columns are hidden for this project view." />
+                      <EmptyState text="No GitHub Project items returned for this project." />
                     )}
                   </div>
                 )
@@ -1412,70 +1267,49 @@ export function CodingWorkflowsPage({
 
             <PanelCard
               title="ACA execution history"
-              subtitle="Run history grouped by ACA lifecycle"
+              subtitle="Recent runs for the selected project"
             >
-              <div className="grid gap-4 xl:grid-cols-2">
-                {lanes.map((lane) => (
-                  <div key={lane.id} className="grid gap-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold">{lane.label}</div>
-                        <div className="tcp-subtle text-xs">{lane.hint}</div>
-                      </div>
-                      <Badge
-                        tone={lane.id === "done" ? "ok" : lane.id === "waiting" ? "warn" : "info"}
+              {visibleRuns.length ? (
+                <div className="grid gap-2">
+                  {visibleRuns.map((run: any, index: number) => {
+                    const id = runId(run, index);
+                    const isSelected = id === selectedRunId;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        className={`rounded-2xl border px-3 py-3 text-left transition ${
+                          isSelected
+                            ? "border-cyan-400/60 bg-cyan-500/10"
+                            : "border-white/10 bg-black/20 hover:border-white/20"
+                        }`}
+                        onClick={() => setSelectedRunId(id)}
                       >
-                        {lane.items.length}
-                      </Badge>
-                    </div>
-                    {lane.items.length ? (
-                      lane.items.map((run: any, index: number) => {
-                        const id = runId(run, index);
-                        const isSelected = id === selectedRunId;
-                        return (
-                          <button
-                            key={id}
-                            type="button"
-                            className={`rounded-2xl border px-3 py-3 text-left transition ${
-                              isSelected
-                                ? "border-cyan-400/60 bg-cyan-500/10"
-                                : "border-white/10 bg-black/20 hover:border-white/20"
-                            }`}
-                            onClick={() => setSelectedRunId(id)}
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="truncate text-sm font-semibold">
-                                  {runTitle(run)}
-                                </div>
-                                <div className="tcp-subtle mt-1 text-xs">
-                                  {String(run?.project_slug || "unknown")}
-                                  {run?.branch ? ` · ${String(run.branch)}` : ""}
-                                </div>
-                              </div>
-                              <Badge tone={runIsActive(run) ? "info" : "ok"}>
-                                {formatStatus(runStatus(run))}
-                              </Badge>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold">{runTitle(run)}</div>
+                            <div className="tcp-subtle mt-1 text-xs">
+                              {String(run?.project_slug || "unknown")}
+                              {run?.branch ? ` · ${String(run.branch)}` : ""}
                             </div>
-                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-300">
-                              <span className="rounded-full border border-white/10 px-2 py-1">
-                                {id.slice(0, 12)}
-                              </span>
-                              {runPhase(run) ? (
-                                <span className="rounded-full border border-white/10 px-2 py-1">
-                                  {formatStatus(runPhase(run))}
-                                </span>
-                              ) : null}
-                            </div>
-                          </button>
-                        );
-                      })
-                    ) : (
-                      <EmptyState text="No runs in this lane yet." />
-                    )}
-                  </div>
-                ))}
-              </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge tone={runIsActive(run) ? "info" : "ok"}>
+                              {formatStatus(runStatus(run))}
+                            </Badge>
+                            {runPhase(run) ? (
+                              <Badge tone="ghost">{formatStatus(runPhase(run))}</Badge>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="tcp-subtle mt-2 text-xs">{id}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <EmptyState text="No ACA runs for this project yet." />
+              )}
             </PanelCard>
             <PanelCard
               title="Run detail"
@@ -1789,18 +1623,7 @@ export function CodingWorkflowsPage({
                   value={runItem}
                   onInput={(event) => setRunItem((event.target as HTMLInputElement).value)}
                 />
-                <input
-                  className="tcp-input"
-                  placeholder="Override provider (optional)"
-                  value={overrideProvider}
-                  onInput={(event) => setOverrideProvider((event.target as HTMLInputElement).value)}
-                />
-                <input
-                  className="tcp-input"
-                  placeholder="Override model (optional)"
-                  value={overrideModel}
-                  onInput={(event) => setOverrideModel((event.target as HTMLInputElement).value)}
-                />
+                {renderAcaModelSelector(triggering)}
                 <button
                   type="button"
                   className="tcp-btn-primary"

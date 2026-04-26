@@ -347,8 +347,8 @@ export function TaskPlanningPanelView(props: any) {
                     Start a plan with a short prompt
                   </div>
                   <div className="mt-1 text-xs text-slate-500">
-                    Use one of the prompts below, or click New plan in the rail to branch into a
-                    fresh thread.
+                    Use one of the prompts below, then start a new plan when you are ready to create
+                    a draft thread.
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {[
@@ -387,7 +387,11 @@ export function TaskPlanningPanelView(props: any) {
 
             <ChatInterfacePanel
               messages={plannerChatMessages}
-              emptyText="No plan yet. Use a starter prompt or start a new plan."
+              emptyText={
+                selectedSessionId
+                  ? "No plan yet. Use a starter prompt or describe the work."
+                  : "No planner session selected. Start a new plan to create a draft thread."
+              }
               inputValue={plannerInput}
               inputPlaceholder={plannerInputPlaceholder}
               sendLabel={planPreview ? "Send to planner" : "Generate plan"}
@@ -395,8 +399,8 @@ export function TaskPlanningPanelView(props: any) {
               onSend={() =>
                 void (planPreview ? reviseMutation(plannerInput) : previewMutation(plannerInput))
               }
-              sendDisabled={isPlanning || !String(plannerInput || "").trim()}
-              inputDisabled={isPlanning}
+              sendDisabled={isPlanning || !selectedSessionId || !String(plannerInput || "").trim()}
+              inputDisabled={isPlanning || !selectedSessionId}
               statusTitle={plannerStatusTitle}
               statusDetail={isPlanning ? plannerStatusDetail : ""}
               questionTitle="Planner question"
