@@ -17,6 +17,14 @@ pub(super) fn build_router(state: AppState) -> Router {
         "/channels/slack/interactions",
         axum::routing::post(super::slack_interactions::slack_interactions),
     );
+    router = router.route(
+        "/channels/discord/interactions",
+        axum::routing::post(super::discord_interactions::discord_interactions),
+    );
+    router = router.route(
+        "/channels/telegram/interactions",
+        axum::routing::post(super::telegram_interactions::telegram_interactions),
+    );
     router = super::routes_coder::apply(router);
     router = super::routes_context::apply(router);
     router = super::routes_sessions::apply(router);

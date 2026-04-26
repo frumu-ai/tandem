@@ -17,6 +17,16 @@ pub struct TelegramConfigFile {
     pub style_profile: tandem_channels::config::TelegramStyleProfile,
     #[serde(default)]
     pub security_profile: tandem_channels::config::ChannelSecurityProfile,
+    /// Telegram webhook secret token. When the bot's webhook is registered
+    /// (via `setWebhook`) with a `secret_token` parameter, every callback
+    /// POST from Telegram includes that exact value in the
+    /// `x-telegram-bot-api-secret-token` header. Tandem rejects callback
+    /// POSTs whose header does not match this value, preventing a third
+    /// party from spoofing button clicks at the engine. Required when the
+    /// Telegram interactions endpoint (`POST /channels/telegram/interactions`)
+    /// is enabled.
+    #[serde(default)]
+    pub webhook_secret_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +46,15 @@ pub struct DiscordConfigFile {
     pub model_id: Option<String>,
     #[serde(default)]
     pub security_profile: tandem_channels::config::ChannelSecurityProfile,
+    /// Discord application public key (32-byte hex). Required when the
+    /// Discord interactions endpoint (`POST /channels/discord/interactions`)
+    /// is enabled — every interaction POST from Discord is Ed25519-signed
+    /// using this key. Discord disables the endpoint if even a single
+    /// inbound interaction is unverified, so this is mandatory for any
+    /// channel that wants approval cards. Configurable via
+    /// `channels.discord.public_key` in `config.json`.
+    #[serde(default)]
+    pub public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -154,26 +154,59 @@ pub fn verify_telegram_secret_token(
     }
 }
 
-/// Verify a Discord interaction signature (Ed25519 over `{timestamp}{body}`).
+/// Verify a Discord interaction signature.
 ///
-/// Stub: returns `SigningError::SecretNotConfigured("discord")` until the
-/// `ed25519-dalek` dependency is wired in W4. The function signature is final
-/// so callers can be written against it now and start passing real public keys
-/// once the implementation lands.
+/// Per Discord's spec: every interaction POST carries `x-signature-ed25519`
+/// (hex-encoded 64-byte signature) and `x-signature-timestamp`. The signed
+/// payload is the concatenation of the timestamp ASCII bytes followed by the
+/// raw request body. Ed25519 verification uses the application's public key
+/// (32-byte hex) configured in the Discord developer portal.
+///
+/// Discord disables the interactions endpoint if even a single inbound
+/// interaction is unverified, so callers MUST call this on every request and
+/// reject with HTTP 401 on `Err`. Returning the wrong shape (e.g. 200 on a
+/// failed verification) silently breaks the bot.
 pub fn verify_discord_signature(
-    _body: &[u8],
-    _signature_header: Option<&str>,
-    _timestamp_header: Option<&str>,
+    body: &[u8],
+    signature_header: Option<&str>,
+    timestamp_header: Option<&str>,
     public_key_hex: &str,
 ) -> Result<(), SigningError> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let public_key_hex = public_key_hex.trim();
     if public_key_hex.is_empty() {
         return Err(SigningError::SecretNotConfigured("discord"));
     }
-    // W4: implement Ed25519 verification using ed25519-dalek.
-    // - decode public_key_hex (32 bytes)
-    // - decode signature_header (64 bytes)
-    // - verify_strict(public_key, timestamp_header || body, signature)
-    Err(SigningError::SecretNotConfigured("discord"))
+    let signature_hex = signature_header
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(SigningError::MissingHeader("x-signature-ed25519"))?;
+    let timestamp = timestamp_header
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(SigningError::MissingHeader("x-signature-timestamp"))?;
+
+    let public_key_bytes: [u8; 32] = hex::decode(public_key_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(SigningError::SecretNotConfigured("discord"))?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key_bytes)
+        .map_err(|_| SigningError::SecretNotConfigured("discord"))?;
+
+    let signature_bytes: [u8; 64] = hex::decode(signature_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(SigningError::MalformedHeader("x-signature-ed25519"))?;
+    let signature = Signature::from_bytes(&signature_bytes);
+
+    let mut signed_payload = Vec::with_capacity(timestamp.len() + body.len());
+    signed_payload.extend_from_slice(timestamp.as_bytes());
+    signed_payload.extend_from_slice(body);
+
+    verifying_key
+        .verify(&signed_payload, &signature)
+        .map_err(|_| SigningError::BadSignature)
 }
 
 fn hex_decode(input: &str) -> Option<Vec<u8>> {
@@ -448,19 +481,108 @@ mod tests {
         );
     }
 
+    fn make_discord_test_keypair() -> (ed25519_dalek::SigningKey, String) {
+        // Deterministic test key. The seed is arbitrary but fixed so the
+        // verification path is repeatable across CI runs and local dev.
+        let seed = [42u8; 32];
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
+        (signing_key, public_key_hex)
+    }
+
+    fn sign_discord_payload(
+        signing_key: &ed25519_dalek::SigningKey,
+        timestamp: &str,
+        body: &[u8],
+    ) -> String {
+        use ed25519_dalek::Signer;
+        let mut signed_payload = Vec::with_capacity(timestamp.len() + body.len());
+        signed_payload.extend_from_slice(timestamp.as_bytes());
+        signed_payload.extend_from_slice(body);
+        hex::encode(signing_key.sign(&signed_payload).to_bytes())
+    }
+
     #[test]
-    fn discord_stub_returns_secret_not_configured_when_key_missing() {
+    fn discord_rejects_when_public_key_missing() {
         let result = verify_discord_signature(b"body", Some("sig"), Some("ts"), "");
         assert_eq!(result, Err(SigningError::SecretNotConfigured("discord")));
     }
 
     #[test]
-    fn discord_stub_returns_secret_not_configured_pending_w4() {
-        // Until the W4 ed25519-dalek dependency lands, this verification is a stub.
-        // The contract is fixed: Err(SecretNotConfigured("discord")) means callers
-        // should disable Discord interactions, not silently allow them.
-        let result = verify_discord_signature(b"body", Some("sig"), Some("ts"), "deadbeef");
+    fn discord_rejects_invalid_public_key_hex() {
+        let result = verify_discord_signature(b"body", Some(&"00".repeat(64)), Some("ts"), "zzzz");
         assert_eq!(result, Err(SigningError::SecretNotConfigured("discord")));
+    }
+
+    #[test]
+    fn discord_rejects_missing_signature_header() {
+        let (_key, pk) = make_discord_test_keypair();
+        let result = verify_discord_signature(b"body", None, Some("1700000000"), &pk);
+        assert_eq!(
+            result,
+            Err(SigningError::MissingHeader("x-signature-ed25519"))
+        );
+    }
+
+    #[test]
+    fn discord_rejects_missing_timestamp_header() {
+        let (_key, pk) = make_discord_test_keypair();
+        let result = verify_discord_signature(b"body", Some(&"00".repeat(64)), None, &pk);
+        assert_eq!(
+            result,
+            Err(SigningError::MissingHeader("x-signature-timestamp"))
+        );
+    }
+
+    #[test]
+    fn discord_rejects_malformed_signature_hex() {
+        let (_key, pk) = make_discord_test_keypair();
+        let result = verify_discord_signature(b"body", Some("garbage"), Some("1700000000"), &pk);
+        assert_eq!(
+            result,
+            Err(SigningError::MalformedHeader("x-signature-ed25519"))
+        );
+    }
+
+    #[test]
+    fn discord_accepts_valid_signature() {
+        let (signing_key, pk) = make_discord_test_keypair();
+        let body = br#"{"type":1}"#;
+        let timestamp = "1700000000";
+        let signature = sign_discord_payload(&signing_key, timestamp, body);
+        let result = verify_discord_signature(body, Some(&signature), Some(timestamp), &pk);
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn discord_rejects_signature_with_wrong_body() {
+        let (signing_key, pk) = make_discord_test_keypair();
+        let timestamp = "1700000000";
+        let signature = sign_discord_payload(&signing_key, timestamp, b"original body");
+        let result =
+            verify_discord_signature(b"tampered body", Some(&signature), Some(timestamp), &pk);
+        assert_eq!(result, Err(SigningError::BadSignature));
+    }
+
+    #[test]
+    fn discord_rejects_signature_with_wrong_timestamp() {
+        let (signing_key, pk) = make_discord_test_keypair();
+        let body = b"hello";
+        let signature = sign_discord_payload(&signing_key, "1700000000", body);
+        let result = verify_discord_signature(body, Some(&signature), Some("1700000001"), &pk);
+        assert_eq!(result, Err(SigningError::BadSignature));
+    }
+
+    #[test]
+    fn discord_rejects_signature_from_wrong_key() {
+        let (_real_key, pk) = make_discord_test_keypair();
+        let other_seed = [99u8; 32];
+        let other_key = ed25519_dalek::SigningKey::from_bytes(&other_seed);
+        let body = b"hello";
+        let timestamp = "1700000000";
+        let forged = sign_discord_payload(&other_key, timestamp, body);
+        let result = verify_discord_signature(body, Some(&forged), Some(timestamp), &pk);
+        assert_eq!(result, Err(SigningError::BadSignature));
     }
 
     #[test]

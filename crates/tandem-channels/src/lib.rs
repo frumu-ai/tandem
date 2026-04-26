@@ -20,11 +20,13 @@
 pub mod channel_registry;
 pub mod config;
 pub mod discord;
+pub mod discord_blocks;
 pub mod dispatcher;
 pub mod signing;
 pub mod slack;
 pub mod slack_blocks;
 pub mod telegram;
+pub mod telegram_keyboards;
 pub mod traits;
 
 pub use channel_registry::{
