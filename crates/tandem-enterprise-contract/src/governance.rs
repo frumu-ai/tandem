@@ -329,6 +329,7 @@ impl AgentSpendWindowRecord {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_usage(
         &mut self,
         now_ms: u64,
@@ -390,6 +391,7 @@ impl AgentSpendSummary {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_usage(
         &mut self,
         now_ms: u64,
