@@ -1,3 +1,4 @@
+import { findLast } from "../../lib/utils.js";
 import type {
   Blackboard,
   RunCheckpointSummary,
@@ -91,7 +92,7 @@ function taskTraceLabel(event: RunEventRecord): string | null {
 }
 
 export function extractWhyNextFromEvents(events: RunEventRecord[]): string | null {
-  const lastDecision = [...events].reverse().find((event) => isDecisionEventType(event.type));
+  const lastDecision = findLast(events, (event) => isDecisionEventType(event.type));
   return lastDecision ? eventWhyNextStep(lastDecision) : null;
 }
 

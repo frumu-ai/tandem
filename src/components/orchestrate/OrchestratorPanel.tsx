@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
+import { findLast } from "@/lib/utils";
 import {
   X,
   Play,
@@ -247,9 +248,10 @@ export function OrchestratorPanel({
         const messages = await getSessionMessages(runSessionId);
         if (!isMounted) return;
 
-        const latestAssistant = [...messages]
-          .reverse()
-          .find((m) => m.info.role === "assistant" && !m.info.deleted && !m.info.reverted);
+        const latestAssistant = findLast(
+          messages,
+          (m) => m.info.role === "assistant" && !m.info.deleted && !m.info.reverted
+        );
 
         if (!latestAssistant) {
           setPlannerTranscriptPreview("");

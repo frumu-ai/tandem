@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
+import { findLast } from "@/lib/utils";
 import { Message, type MessageProps } from "./Message";
 import { ChatInput, type FileAttachment } from "./ChatInput";
 import {
@@ -1772,10 +1773,10 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               : -1;
           if (mappedIdx < 0) {
             mappedIdx =
-              assistantIndices
-                .slice()
-                .reverse()
-                .find((idx) => convertedMessages[idx].timestamp.getTime() <= rowTs) ?? -1;
+              findLast(
+                assistantIndices,
+                (idx) => convertedMessages[idx].timestamp.getTime() <= rowTs
+              ) ?? -1;
           }
           if (mappedIdx < 0) {
             mappedIdx = firstAssistantIdx ?? -1;
@@ -2236,13 +2237,12 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               let matchedToolCallId = event.part_id;
               const hasExactMatch = lastMessage.toolCalls.some((tc) => tc.id === event.part_id);
               if (!hasExactMatch) {
-                const fallbackMatch = [...lastMessage.toolCalls]
-                  .reverse()
-                  .find(
-                    (tc) =>
-                      tc.status === "pending" &&
-                      tc.tool.toLowerCase() === (event.tool || "").toLowerCase()
-                  );
+                const fallbackMatch = findLast(
+                  lastMessage.toolCalls,
+                  (tc) =>
+                    tc.status === "pending" &&
+                    tc.tool.toLowerCase() === (event.tool || "").toLowerCase()
+                );
                 if (fallbackMatch) {
                   matchedToolCallId = fallbackMatch.id;
                 }
