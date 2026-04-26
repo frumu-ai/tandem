@@ -536,7 +536,7 @@ pub async fn orchestrator_list_runs(state: State<'_, AppState>) -> Result<Vec<Ru
         }
     }
 
-    summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
     Ok(summaries)
 }
 

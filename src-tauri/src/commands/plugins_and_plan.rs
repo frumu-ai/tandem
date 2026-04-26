@@ -667,7 +667,7 @@ pub fn list_plans(state: State<'_, AppState>) -> Result<Vec<PlanInfo>> {
     scan_plan_root(&legacy_plans_dir)?;
 
     // Sort by last modified (newest first)
-    plans.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    plans.sort_by_key(|b| std::cmp::Reverse(b.last_modified));
 
     tracing::debug!("[list_plans] Found {} plans", plans.len());
     Ok(plans)

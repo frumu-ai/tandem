@@ -437,14 +437,14 @@ pub fn run() {
                 }
             }
 
-            let initial_search_settings = commands::load_saved_search_settings(&app.handle());
+            let initial_search_settings = commands::load_saved_search_settings(app.handle());
             tauri::async_runtime::block_on(commands::sync_search_settings_env(
                 &app_state,
                 &initial_search_settings,
             ));
 
             let initial_scheduler_settings =
-                commands::load_saved_scheduler_settings(&app.handle());
+                commands::load_saved_scheduler_settings(app.handle());
             tauri::async_runtime::block_on(commands::sync_scheduler_settings_env(
                 &app_state,
                 &initial_scheduler_settings,

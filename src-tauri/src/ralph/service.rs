@@ -466,42 +466,34 @@ impl RalphRunHandle {
                     let event = env.payload;
                     match &event {
                         StreamEvent::Content {
-                            session_id, delta, ..
-                        } => {
-                            if session_id == &self.session_id {
-                                if let Some(text) = delta {
-                                    content.push_str(text);
-                                }
-                            }
+                            session_id,
+                            delta: Some(text),
+                            ..
+                        } if session_id == &self.session_id => {
+                            content.push_str(text);
                         }
                         StreamEvent::ToolStart {
                             session_id, tool, ..
-                        } => {
-                            if session_id == &self.session_id {
-                                *tools_used.entry(tool.clone()).or_insert(0) += 1;
-                            }
+                        } if session_id == &self.session_id => {
+                            *tools_used.entry(tool.clone()).or_insert(0) += 1;
                         }
                         StreamEvent::ToolEnd {
-                            session_id, error, ..
-                        } => {
-                            if session_id == &self.session_id {
-                                if let Some(err) = error {
-                                    errors.push(err.clone());
-                                }
-                            }
+                            session_id,
+                            error: Some(err),
+                            ..
+                        } if session_id == &self.session_id => {
+                            errors.push(err.clone());
                         }
-                        StreamEvent::SessionIdle { session_id } => {
-                            if session_id == &self.session_id {
-                                break;
-                            }
+                        StreamEvent::SessionIdle { session_id }
+                            if session_id == &self.session_id =>
+                        {
+                            break;
                         }
                         StreamEvent::SessionError {
                             session_id, error, ..
-                        } => {
-                            if session_id == &self.session_id {
-                                errors.push(error.clone());
-                                break;
-                            }
+                        } if session_id == &self.session_id => {
+                            errors.push(error.clone());
+                            break;
                         }
                         _ => {}
                     }

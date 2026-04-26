@@ -80,7 +80,7 @@ async fn start_sidecar_inner(app: &AppHandle, state: &AppState) -> Result<u16> {
     sync_provider_config_file(&providers)?;
 
     // Configure Ollama endpoint env (local models)
-    sync_ollama_env(&state, &providers).await;
+    sync_ollama_env(state, &providers).await;
 
     // Set/remove API keys based on enabled providers.
     // (Important: remove_env only applies after restart, but we call this before start().)

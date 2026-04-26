@@ -1432,10 +1432,15 @@ impl OrchestratorEngine {
             };
             let mut attempt_index = 1u32;
             let mut current_prompt = prompt.clone();
+            #[allow(unused_assignments)]
             let mut builder_response = String::new();
+            #[allow(unused_assignments)]
             let mut builder_used_tools = false;
+            #[allow(unused_assignments)]
             let mut builder_used_write_tools = false;
+            #[allow(unused_assignments)]
             let mut workspace_changes = WorkspaceChangeSummary::default();
+            #[allow(unused_assignments)]
             let mut session_write_summary = SessionWriteSummary::default();
 
             loop {
@@ -2342,29 +2347,24 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
                             delta,
                             content: full_content,
                             ..
-                        } => {
-                            if sid == &active_session_id {
-                                // Prefer delta if available, otherwise use full content
-                                if let Some(text) = delta {
-                                    content.push_str(text);
-                                    tracing::debug!("Got content delta: {} chars", text.len());
-                                } else if !full_content.is_empty() && content.is_empty() {
-                                    content = full_content.clone();
-                                    tracing::debug!(
-                                        "Got full content: {} chars",
-                                        full_content.len()
-                                    );
-                                }
+                        } if sid == &active_session_id => {
+                            // Prefer delta if available, otherwise use full content
+                            if let Some(text) = delta {
+                                content.push_str(text);
+                                tracing::debug!("Got content delta: {} chars", text.len());
+                            } else if !full_content.is_empty() && content.is_empty() {
+                                content = full_content.clone();
+                                tracing::debug!("Got full content: {} chars", full_content.len());
                             }
                         }
-                        StreamEvent::SessionIdle { session_id: sid } => {
-                            if sid == &active_session_id {
-                                tracing::info!(
-                                    "Session {} is idle, response complete",
-                                    active_session_id
-                                );
-                                break;
-                            }
+                        StreamEvent::SessionIdle { session_id: sid }
+                            if sid == &active_session_id =>
+                        {
+                            tracing::info!(
+                                "Session {} is idle, response complete",
+                                active_session_id
+                            );
+                            break;
                         }
                         StreamEvent::ToolStart {
                             session_id: sid,
@@ -2416,68 +2416,66 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
                             tool,
                             error,
                             ..
-                        } => {
-                            if sid == &active_session_id
-                                && !first_tool_finished
-                                && first_tool_part_id.as_deref() == Some(part_id)
-                            {
-                                first_tool_finished = true;
-                                if let Some(task_id) = task_id {
-                                    let detail = match error.as_ref() {
-                                        Some(e) => Some(format!("{}:{}", tool, e)),
-                                        None => Some(tool.clone()),
-                                    };
-                                    self.emit_task_trace(
-                                        task_id,
-                                        Some(&active_session_id),
-                                        "TOOL_CALL_FINISHED",
-                                        detail,
-                                    );
-                                }
+                        } if sid == &active_session_id
+                            && !first_tool_finished
+                            && first_tool_part_id.as_deref() == Some(part_id) =>
+                        {
+                            first_tool_finished = true;
+                            if let Some(task_id) = task_id {
+                                let detail = match error.as_ref() {
+                                    Some(e) => Some(format!("{}:{}", tool, e)),
+                                    None => Some(tool.clone()),
+                                };
+                                self.emit_task_trace(
+                                    task_id,
+                                    Some(&active_session_id),
+                                    "TOOL_CALL_FINISHED",
+                                    detail,
+                                );
                             }
                         }
+                        StreamEvent::ToolEnd { .. } => {}
                         StreamEvent::SessionError {
                             session_id: sid,
                             error,
                             error_code,
-                        } => {
-                            if sid == &active_session_id {
-                                let lowered = error.to_ascii_lowercase();
-                                let interrupted_like = lowered.contains("interrupted")
-                                    || lowered.contains("cancelled")
-                                    || lowered.contains("canceled")
-                                    || lowered.contains("aborted");
-                                if interrupted_like
-                                    && (first_tool_part_id.is_some() || !content.trim().is_empty())
-                                {
-                                    tracing::warn!(
-                                        "Session {} reported interrupt-like error after tool/content activity; recovering from history instead of hard-failing: {}",
-                                        active_session_id,
-                                        error
-                                    );
-                                    if content.trim().is_empty() {
-                                        if let Some(recovered) = self
-                                            .recover_agent_response_from_history(&active_session_id)
-                                            .await
-                                        {
-                                            content = recovered;
-                                        }
+                        } if sid == &active_session_id => {
+                            let lowered = error.to_ascii_lowercase();
+                            let interrupted_like = lowered.contains("interrupted")
+                                || lowered.contains("cancelled")
+                                || lowered.contains("canceled")
+                                || lowered.contains("aborted");
+                            if interrupted_like
+                                && (first_tool_part_id.is_some() || !content.trim().is_empty())
+                            {
+                                tracing::warn!(
+                                    "Session {} reported interrupt-like error after tool/content activity; recovering from history instead of hard-failing: {}",
+                                    active_session_id,
+                                    error
+                                );
+                                if content.trim().is_empty() {
+                                    if let Some(recovered) = self
+                                        .recover_agent_response_from_history(&active_session_id)
+                                        .await
+                                    {
+                                        content = recovered;
                                     }
-                                    break;
-                                }
-                                tracing::error!("Session {} error: {}", active_session_id, error);
-                                if let Some(code) = error_code {
-                                    if error.starts_with('[') {
-                                        errors.push(error.clone());
-                                    } else {
-                                        errors.push(format!("[{}] {}", code, error));
-                                    }
-                                } else {
-                                    errors.push(error.clone());
                                 }
                                 break;
                             }
+                            tracing::error!("Session {} error: {}", active_session_id, error);
+                            if let Some(code) = error_code {
+                                if error.starts_with('[') {
+                                    errors.push(error.clone());
+                                } else {
+                                    errors.push(format!("[{}] {}", code, error));
+                                }
+                            } else {
+                                errors.push(error.clone());
+                            }
+                            break;
                         }
+                        StreamEvent::SessionError { .. } => {}
                         StreamEvent::Raw { event_type, data } => {
                             tracing::debug!(
                                 "Raw event for orchestrator: {} - {:?}",
@@ -3091,6 +3089,7 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
         Some(StrictWriteRetryFailureClass::NoWorkspaceChange)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_strict_write_retry_prompt(
         &self,
         task: &Task,

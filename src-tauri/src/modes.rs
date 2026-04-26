@@ -425,7 +425,7 @@ fn merge_modes(
     }
 
     let mut values: Vec<ResolvedMode> = merged.into_values().collect();
-    values.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    values.sort_by_key(|a| a.label.to_lowercase());
     values
 }
 

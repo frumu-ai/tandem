@@ -1590,6 +1590,7 @@ pub struct ContextRunStep {
     pub status: ContextStepStatus,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ContextTaskOutputTarget {
     #[serde(default)]

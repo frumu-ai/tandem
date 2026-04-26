@@ -229,7 +229,7 @@ pub async fn get_channel_tool_preferences(
     channel: String,
 ) -> Result<ChannelToolPreferencesView> {
     let normalized = normalize_channel_name(&channel)?;
-    let json = state.sidecar.channel_tool_preferences(&normalized).await?;
+    let json = state.sidecar.channel_tool_preferences(normalized).await?;
     let prefs: ChannelToolPreferencesView = serde_json::from_value(json).unwrap_or_default();
     Ok(prefs)
 }
@@ -253,7 +253,7 @@ pub async fn set_channel_tool_preferences(
         .map_err(|e| TandemError::InvalidConfig(format!("Failed to serialize input: {}", e)))?;
     let json = state
         .sidecar
-        .set_channel_tool_preferences(&normalized, body)
+        .set_channel_tool_preferences(normalized, body)
         .await?;
     let prefs: ChannelToolPreferencesView = serde_json::from_value(json).unwrap_or_default();
     Ok(prefs)
