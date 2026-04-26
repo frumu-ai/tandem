@@ -77,7 +77,7 @@ impl ToolRegistry {
         map.insert("mcp_debug".to_string(), Arc::new(McpDebugTool));
         // `websearch` stays registered and resolves the live managed settings on demand so
         // control-panel changes take effect without restarting tandem-engine.
-        map.insert("websearch".to_string(), Arc::new(WebSearchTool::default()));
+        map.insert("websearch".to_string(), Arc::new(WebSearchTool));
         map.insert("codesearch".to_string(), Arc::new(CodeSearchTool));
         let todo_tool: Arc<dyn Tool> = Arc::new(TodoWriteTool);
         map.insert("todo_write".to_string(), todo_tool.clone());
@@ -491,12 +491,11 @@ fn load_managed_search_env() -> HashMap<String, String> {
             continue;
         }
         let mut value = value.trim().to_string();
-        if (value.starts_with('"') && value.ends_with('"'))
-            || (value.starts_with('\'') && value.ends_with('\''))
+        if ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+            && value.len() >= 2
         {
-            if value.len() >= 2 {
-                value = value[1..value.len() - 1].to_string();
-            }
+            value = value[1..value.len() - 1].to_string();
         }
         env.insert(key.to_string(), value);
     }

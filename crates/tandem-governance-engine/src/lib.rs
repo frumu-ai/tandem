@@ -517,7 +517,7 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
             });
         }
         if limits.health_guardrail_stop_threshold > 0
-            && input.guardrail_stop_count >= limits.health_guardrail_stop_threshold as u64
+            && input.guardrail_stop_count >= limits.health_guardrail_stop_threshold
         {
             findings.push(AutomationLifecycleFinding {
                 finding_id: format!("finding-{}", Uuid::new_v4().simple()),
