@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.42] - Unreleased
+
+### Fixed
+
+- **Hosted Files page now lists KB collections**: The hosted KB MCP container was dropping privileges from root to the `tandem` user before launching uvicorn, but `/run/secrets/kb_admin_api_key` is mode-`600` root-owned, so the dropped-privilege process could not even `stat` the secret. Every `/admin/*` request died with `PermissionError` inside the auth dependency, which the control-panel proxy surfaced as `configured: false`, leaving the Files page empty on provisioned servers even though it worked locally. The KB launcher now reads the admin key into `KB_ADMIN_API_KEY` while still root, and the settings loader guards the file existence check against `PermissionError`, so the env-var fallback is actually reachable.
+- **Hosted task and board endpoints stop returning `name 'logger' is not defined`**: Two ACA modules (`task_sources.py` and `worker.py`) referenced `logger.debug(...)` without ever importing or defining a logger, so every `GET /projects/{slug}/tasks` and `GET /projects/{slug}/board` raised a `NameError` that FastAPI surfaced as a 400 with `{"detail":"name 'logger' is not defined"}`. The control panel could never render project tasks or boards on hosted servers as a result. Both modules now define a module-level logger.
+- **Files navigation visible by default for hosted/ACA-mode installs**: `ACA_CORE_NAV_ROUTE_IDS` now includes `files` so provisioned hosted servers (which always bundle the KB MCP) show the Files surface in the sidebar by default instead of hiding it under Advanced / experimental sections that operators have to toggle on manually.
+
 ## [0.4.41] - Unreleased
 
 ### Added

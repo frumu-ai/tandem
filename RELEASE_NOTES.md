@@ -2,6 +2,24 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.42 (Unreleased)
+
+This release fixes three regressions that were keeping provisioned hosted servers from being usable end-to-end after the 0.4.41 release.
+
+### Hosted Files page now populates the KB collections
+
+The KB MCP container drops privileges from root to the `tandem` user before launching uvicorn so the long-running service is not root. The bundled secret `/run/secrets/kb_admin_api_key` is mode-`600` root-owned, which meant the dropped-privilege uvicorn could not even `stat` the file. Every `/admin/*` request crashed inside the auth dependency with `PermissionError`, which the control-panel proxy translated to `configured: false`, leaving the Files page empty on provisioned servers even though the same flow worked locally.
+
+The KB launcher now reads the admin key into the `KB_ADMIN_API_KEY` env var while still root, and the settings loader guards the file existence check against `PermissionError` as defense-in-depth so the env-var fallback is actually reachable. With both fixes the Files page populates the KB collections the same way it does on local installs.
+
+### Hosted task and board endpoints stop returning `name 'logger' is not defined`
+
+Two ACA modules — `task_sources.py` and `worker.py` — referenced `logger.debug(...)` without ever importing or defining a logger. Every `GET /projects/{slug}/tasks` and `GET /projects/{slug}/board` raised `NameError`, which FastAPI surfaced as a 400 with `{"detail":"name 'logger' is not defined"}`. The control panel could never render project tasks or boards on hosted servers as a result. Both modules now define a module-level logger.
+
+### Files navigation visible by default for hosted installs
+
+`ACA_CORE_NAV_ROUTE_IDS` now includes `files`, so provisioned hosted servers — which always bundle the KB MCP — show the Files surface in the sidebar by default instead of hiding it under the Advanced / experimental sections operators had to toggle on manually before they could use the KB upload UI.
+
 ## v0.4.41 (Unreleased)
 
 This unreleased build adds chat-native automation drafts for Discord, Telegram, Slack, and direct channel conversations, hardens workflow-planning handoff for explicit planner flows, and lays the foundation for **default approval gates and rich channel UX** (see `docs/internal/approval-gates-and-channel-ux/PLAN.md`).

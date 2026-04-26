@@ -8,6 +8,7 @@ export const ACA_CORE_NAV_ROUTE_IDS = new Set<RouteId>([
   "workflows",
   "automations",
   "coding",
+  "files",
   "settings",
 ]);
 
