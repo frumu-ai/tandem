@@ -767,6 +767,107 @@ async fn relay_tool_decision(
     Ok(())
 }
 
+/// Fetch the cross-subsystem pending-approvals list from the engine.
+/// Used by `/pending` to render a chat-friendly summary of outstanding gates.
+async fn fetch_pending_approvals(
+    base_url: &str,
+    api_token: &str,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let url = format!("{base_url}/approvals/pending");
+    let resp = add_auth(client.get(&url), api_token).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        anyhow::bail!("fetch_pending_approvals failed ({status})");
+    }
+    let body: serde_json::Value = resp.json().await?;
+    Ok(body
+        .get("approvals")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Send a gate-decide decision (`approve` / `rework` / `cancel`) for an
+/// `automation_v2` workflow run. Used by `/rework` and (eventually)
+/// contextual `/approve` / `/reject` slash commands.
+///
+/// Path: `POST /automations/v2/runs/{run_id}/gate`. Reuses the same
+/// authoritative subsystem handler the inbox UI and channel cards already
+/// dispatch through, so audit semantics and the W2.6 race UX (winner
+/// identity in 409) come along for free.
+async fn relay_gate_decision(
+    base_url: &str,
+    api_token: &str,
+    run_id: &str,
+    decision: &str,
+    reason: Option<&str>,
+) -> anyhow::Result<reqwest::StatusCode> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let url = format!("{base_url}/automations/v2/runs/{run_id}/gate");
+    let body = match reason {
+        Some(text) => serde_json::json!({ "decision": decision, "reason": text }),
+        None => serde_json::json!({ "decision": decision }),
+    };
+    let resp = add_auth(client.post(&url), api_token)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() && status.as_u16() != 409 {
+        // Surface the error body when the engine rejected the call for a
+        // reason other than the documented race conflict.
+        let detail = resp.text().await.unwrap_or_default();
+        anyhow::bail!("relay_gate_decision failed ({status}): {detail}");
+    }
+    Ok(status)
+}
+
+/// Render `/pending` output: a compact list of outstanding approvals with
+/// just enough info for the user to pick one out (workflow name, run_id,
+/// action_kind, requested-at).
+fn render_pending_text(approvals: &[serde_json::Value]) -> String {
+    if approvals.is_empty() {
+        return "✅ No approvals waiting.".to_string();
+    }
+    let mut lines = vec![format!(
+        "*{} pending approval{}*",
+        approvals.len(),
+        if approvals.len() == 1 { "" } else { "s" }
+    )];
+    for (i, request) in approvals.iter().take(20).enumerate() {
+        let workflow = request
+            .get("workflow_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unnamed)");
+        let run_id = request
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let action = request
+            .get("action_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let action_suffix = if action.is_empty() {
+            String::new()
+        } else {
+            format!(" — {action}")
+        };
+        lines.push(format!("{}. {workflow} `{run_id}`{action_suffix}", i + 1));
+    }
+    if approvals.len() > 20 {
+        lines.push(format!("…and {} more.", approvals.len() - 20));
+    }
+    lines.push(String::new());
+    lines
+        .push("Decide via the buttons on each card, or `/rework <run_id> <feedback>`.".to_string());
+    lines.join("\n")
+}
+
 // ---------------------------------------------------------------------------
 // Slash command handler dispatch
 // ---------------------------------------------------------------------------
@@ -843,6 +944,32 @@ async fn handle_slash_command(
                 }
             }
         }
+        SlashCommand::Pending => {
+            // Note: the engine endpoint already filters by tenant from
+            // request context. Per-channel filtering (e.g. only show this
+            // channel's runs) is a future refinement that needs the surface
+            // user → engine principal resolver wired into the request middleware.
+            match fetch_pending_approvals(base_url, api_token).await {
+                Ok(approvals) => render_pending_text(&approvals),
+                Err(e) => format!("⚠️ Could not fetch pending approvals: {e}"),
+            }
+        }
+        SlashCommand::Rework { run_id, feedback } => {
+            match relay_gate_decision(base_url, api_token, &run_id, "rework", Some(&feedback)).await
+            {
+                Ok(status) if status.is_success() => {
+                    format!("↻ Sent run `{run_id}` back for rework with your feedback.")
+                }
+                Ok(status) if status.as_u16() == 409 => {
+                    // Race: another surface decided this gate first. The
+                    // 409 body carries the winner's identity (W2.6) but we
+                    // do not parse it here for v1 — the toast is enough.
+                    format!("⚠️ Run `{run_id}` was already decided by another operator.")
+                }
+                Ok(status) => format!("⚠️ Rework rejected by engine ({status})."),
+                Err(e) => format!("⚠️ Could not send rework: {e}"),
+            }
+        }
         SlashCommand::Schedule { action } => {
             schedule_command_text(action, msg, base_url, api_token, session_map).await
         }
@@ -909,6 +1036,8 @@ fn slash_command_name(cmd: &SlashCommand) -> &'static str {
         SlashCommand::Help { .. } => "help",
         SlashCommand::Approve { .. } => "approve",
         SlashCommand::Deny { .. } => "deny",
+        SlashCommand::Pending => "pending",
+        SlashCommand::Rework { .. } => "rework",
         SlashCommand::Schedule { .. } => "schedule",
         SlashCommand::Automations { .. } => "automations",
         SlashCommand::Runs { .. } => "runs",

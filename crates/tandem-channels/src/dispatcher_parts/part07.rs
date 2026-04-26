@@ -1241,4 +1241,61 @@ mod tests {
         assert!(!is_channel_automation_confirm_text("/confirm"));
         assert!(!is_channel_automation_cancel_text("/cancel"));
     }
+
+    #[test]
+    fn parse_pending_command() {
+        assert!(matches!(
+            parse_slash_command("/pending"),
+            Some(SlashCommand::Pending)
+        ));
+    }
+
+    #[test]
+    fn parse_rework_command_with_run_id_and_feedback() {
+        let cmd = parse_slash_command("/rework auto-v2-run-abc123 tighten the ICP filter");
+        match cmd {
+            Some(SlashCommand::Rework { run_id, feedback }) => {
+                assert_eq!(run_id, "auto-v2-run-abc123");
+                assert_eq!(feedback, "tighten the ICP filter");
+            }
+            other => panic!("expected Rework, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rework_without_feedback_returns_none() {
+        // /rework <run_id> alone is not actionable — feedback is required.
+        // Returning None falls through to the standard "unknown command" path
+        // which guides the user to /help.
+        assert!(parse_slash_command("/rework auto-v2-run-abc123").is_none());
+        assert!(parse_slash_command("/rework").is_none());
+    }
+
+    #[test]
+    fn rework_help_lists_in_capabilities_registry() {
+        let registry = crate::channel_registry::BUILTIN_CHANNEL_COMMANDS;
+        assert!(
+            registry.iter().any(|c| c.name == "pending"),
+            "/pending must be in BUILTIN_CHANNEL_COMMANDS so registry-driven help shows it"
+        );
+        assert!(
+            registry.iter().any(|c| c.name == "rework"),
+            "/rework must be in BUILTIN_CHANNEL_COMMANDS so registry-driven help shows it"
+        );
+    }
+
+    #[test]
+    fn pending_and_rework_are_disabled_in_public_demo() {
+        let registry = crate::channel_registry::BUILTIN_CHANNEL_COMMANDS;
+        let pending = registry
+            .iter()
+            .find(|c| c.name == "pending")
+            .expect("pending registered");
+        let rework = registry
+            .iter()
+            .find(|c| c.name == "rework")
+            .expect("rework registered");
+        assert!(!pending.enabled_for_public_demo);
+        assert!(!rework.enabled_for_public_demo);
+    }
 }

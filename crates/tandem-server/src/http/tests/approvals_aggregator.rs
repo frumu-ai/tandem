@@ -201,6 +201,155 @@ async fn gate_decide_409_includes_winning_decision_in_body() {
         .is_some());
 }
 
+/// W5.5 — true concurrent race regression.
+///
+/// W2.6 added a single-threaded test that simulated the post-race state by
+/// pre-mutating gate_history. This test fires two HTTP gate-decide requests
+/// in parallel via tokio::spawn, against the *same* run with a real pending
+/// gate, and asserts:
+///
+/// 1. Exactly one wins (200 OK).
+/// 2. The other gets 409 with `winningDecision` populated from the winner's
+///    `gate_history` entry.
+///
+/// Without this test, a regression that swapped per-run mutation
+/// serialization for a non-atomic check-then-write would silently allow
+/// double-decide and the audit trail would record one decision while the
+/// runtime processed two. Mandatory before any rollout per the W5 plan.
+#[tokio::test]
+async fn gate_decide_concurrent_race_yields_exactly_one_winner() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-concurrent-race").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::AwaitingApproval;
+            row.checkpoint.awaiting_gate = Some(crate::AutomationPendingGate {
+                node_id: "approval".to_string(),
+                title: "Concurrent test".to_string(),
+                instructions: None,
+                decisions: vec![
+                    "approve".to_string(),
+                    "rework".to_string(),
+                    "cancel".to_string(),
+                ],
+                rework_targets: vec![],
+                requested_at_ms: crate::now_ms(),
+                upstream_node_ids: vec![],
+            });
+        })
+        .await
+        .expect("updated run");
+
+    // Fire both decisions in parallel against the same run. tokio::spawn
+    // lets them race the per-run mutation lock.
+    let app_a = app.clone();
+    let app_b = app.clone();
+    let run_id_a = run.run_id.clone();
+    let run_id_b = run.run_id.clone();
+
+    let task_a = tokio::spawn(async move {
+        app_a
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/automations/v2/runs/{}/gate", run_id_a))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "decision": "approve",
+                            "reason": "looks good"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request a"),
+            )
+            .await
+            .expect("response a")
+    });
+
+    let task_b = tokio::spawn(async move {
+        app_b
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/automations/v2/runs/{}/gate", run_id_b))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "decision": "cancel",
+                            "reason": "scope drifted"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request b"),
+            )
+            .await
+            .expect("response b")
+    });
+
+    let resp_a = task_a.await.expect("join a");
+    let resp_b = task_b.await.expect("join b");
+
+    let status_a = resp_a.status().as_u16();
+    let status_b = resp_b.status().as_u16();
+    let outcomes = [status_a, status_b];
+
+    // Exactly one 200 + exactly one 409.
+    assert!(
+        outcomes.contains(&200) && outcomes.contains(&409),
+        "concurrent decisions must produce one 200 and one 409, got {outcomes:?}"
+    );
+
+    // Identify which response was the loser and verify it carries
+    // winningDecision.
+    let loser_resp = if status_a == 409 { resp_a } else { resp_b };
+    let body = to_bytes(loser_resp.into_body(), 1_000_000)
+        .await
+        .expect("loser body");
+    let payload: Value = serde_json::from_slice(&body).expect("loser json");
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("AUTOMATION_V2_RUN_NOT_AWAITING_APPROVAL")
+    );
+    let winner = payload
+        .get("winningDecision")
+        .expect("loser response must include winningDecision");
+    let winning_decision = winner
+        .get("decision")
+        .and_then(Value::as_str)
+        .expect("winningDecision.decision present");
+    assert!(
+        winning_decision == "approve" || winning_decision == "cancel",
+        "winningDecision.decision should be one of the two contenders, got {winning_decision}"
+    );
+    assert_eq!(
+        winner.get("node_id").and_then(Value::as_str),
+        Some("approval")
+    );
+    assert!(winner
+        .get("decided_at_ms")
+        .and_then(Value::as_u64)
+        .is_some());
+
+    // Final run state has exactly one gate_history entry — the winner's.
+    let final_run = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("final run");
+    assert_eq!(
+        final_run.checkpoint.gate_history.len(),
+        1,
+        "exactly one decision must have been recorded; concurrent calls must serialize"
+    );
+    assert!(final_run.checkpoint.awaiting_gate.is_none());
+}
+
 #[tokio::test]
 async fn approvals_pending_endpoint_filters_by_source_unknown_returns_empty() {
     let state = test_state().await;

@@ -400,31 +400,77 @@ async fn persist_session_map(map: &HashMap<String, SessionRecord>) {
 
 #[derive(Debug)]
 enum SlashCommand {
-    New { name: Option<String> },
+    New {
+        name: Option<String>,
+    },
     ListSessions,
-    Resume { query: String },
-    Rename { name: String },
+    Resume {
+        query: String,
+    },
+    Rename {
+        name: String,
+    },
     Status,
     Run,
     Cancel,
     Todos,
     Requests,
-    Answer { question_id: String, answer: String },
+    Answer {
+        question_id: String,
+        answer: String,
+    },
     Providers,
-    Models { provider: Option<String> },
-    Model { model_id: String },
-    Help { topic: Option<String> },
-    Approve { tool_call_id: String },
-    Deny { tool_call_id: String },
-    Schedule { action: ScheduleCommand },
-    Automations { action: AutomationsCommand },
-    Runs { action: RunsCommand },
-    Memory { action: MemoryCommand },
-    Workspace { action: WorkspaceCommand },
-    Tools { action: ToolsCommand },
-    Mcp { action: McpCommand },
-    Packs { action: PacksCommand },
-    Config { action: ConfigCommand },
+    Models {
+        provider: Option<String>,
+    },
+    Model {
+        model_id: String,
+    },
+    Help {
+        topic: Option<String>,
+    },
+    Approve {
+        tool_call_id: String,
+    },
+    Deny {
+        tool_call_id: String,
+    },
+    /// `/pending` — list outstanding workflow approval gates.
+    Pending,
+    /// `/rework <run_id> <feedback>` — send a paused workflow gate back for
+    /// rework with the supplied feedback. The runtime will re-execute
+    /// upstream stages per the gate's `rework_targets`.
+    Rework {
+        run_id: String,
+        feedback: String,
+    },
+    Schedule {
+        action: ScheduleCommand,
+    },
+    Automations {
+        action: AutomationsCommand,
+    },
+    Runs {
+        action: RunsCommand,
+    },
+    Memory {
+        action: MemoryCommand,
+    },
+    Workspace {
+        action: WorkspaceCommand,
+    },
+    Tools {
+        action: ToolsCommand,
+    },
+    Mcp {
+        action: McpCommand,
+    },
+    Packs {
+        action: PacksCommand,
+    },
+    Config {
+        action: ConfigCommand,
+    },
 }
 
 #[derive(Debug)]
@@ -668,6 +714,24 @@ fn parse_slash_command(content: &str) -> Option<SlashCommand> {
         return Some(SlashCommand::Deny {
             tool_call_id: id.trim().to_string(),
         });
+    }
+    if trimmed == "/pending" {
+        return Some(SlashCommand::Pending);
+    }
+    if let Some(rest) = trimmed.strip_prefix("/rework ") {
+        // `/rework <run_id> <feedback…>` — feedback may contain spaces.
+        let rest = rest.trim();
+        if let Some((run_id, feedback)) = rest.split_once(char::is_whitespace) {
+            let run_id = run_id.trim().to_string();
+            let feedback = feedback.trim().to_string();
+            if !run_id.is_empty() && !feedback.is_empty() {
+                return Some(SlashCommand::Rework { run_id, feedback });
+            }
+        }
+        // Helpful default: `/rework` with just a run_id is invalid — the
+        // runtime requires feedback. Returning None falls through to the
+        // normal "unknown command" path, which prompts /help.
+        return None;
     }
     if trimmed == "/schedule" {
         return Some(SlashCommand::Schedule {

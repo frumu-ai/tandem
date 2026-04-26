@@ -1764,5 +1764,7 @@ impl AppState {
 pub mod automation;
 pub use automation::*;
 
+pub mod principals;
+
 #[cfg(test)]
 mod tests;
