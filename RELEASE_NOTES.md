@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.4.43 (Unreleased)
+## v0.4.43 (Released 2026-04-27)
 
 This release improves hosted Tandem server usability by making the Files page manage workspace repos directly, and fixes two regressions: a Slack-only duplicate-reply loop after engine restarts, and a planner wrapper that refused structurally valid workflow plans whenever a model emitted an off-label `action` discriminant.
 
@@ -13,6 +13,8 @@ Provisioned hosted installs now treat the container workspace as the primary Fil
 The new workspace file APIs list directories, read previews, download files, upload files or folders, create directories, and delete workspace entries. All workspace paths are resolved under the configured workspace root and reject traversal, null bytes, invalid relative paths, and absolute paths outside the root. The existing managed buckets (`uploads`, `artifacts`, `exports`) remain available as a secondary mode instead of being the hosted default.
 
 The Files UI now includes a minimal explorer with breadcrumbs, root/up navigation, current-directory uploads, folder upload with browser relative paths preserved, create-folder controls, preview/download/delete actions, and a collapsible file panel. The KB upload surface now has a real collection dropdown for existing KB MCP collections plus a new-collection path, and document rows can be clicked again to close their preview. Files and KB tool controls now use registered Lucide icons instead of plain text-only buttons, and the per-page selectors were restyled so the numeric values no longer look clipped or misaligned in the dark control-panel chrome.
+
+The Files page also degrades cleanly during mixed frontend/backend rollouts: it only opens Workspace by default when capabilities explicitly advertise the workspace file API, and it falls back to managed buckets if `/api/workspace/files/list` returns 404.
 
 The Coding dashboard now has an explicit repository sync action for the selected ACA project. Operators can clone or fast-forward a managed checkout before launching a run, and ACA now initializes local non-git folders as local git repositories so local workboards/local files can still flow through the branch, commit, and review pipeline. Dirty git checkouts remain protected: ACA refuses to pull over uncommitted changes.
 

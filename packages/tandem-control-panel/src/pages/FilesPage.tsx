@@ -92,6 +92,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const uploadFolderInputRef = useRef<HTMLInputElement | null>(null);
   const [fileSurface, setFileSurface] = useState<FileSurface>("managed");
+  const [workspaceFilesRejected, setWorkspaceFilesRejected] = useState(false);
   const [filesPanelCollapsed, setFilesPanelCollapsed] = useState(false);
   const [dir, setDir] = useState("");
   const [selectedPath, setSelectedPath] = useState("");
@@ -119,8 +120,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
   }, []);
 
   const workspaceFilesAvailable =
-    capabilities.data?.workspace_files_available === true ||
-    capabilities.data?.hosted_managed === true;
+    capabilities.data?.workspace_files_available === true && !workspaceFilesRejected;
 
   useEffect(() => {
     if (!workspaceFilesAvailable) return;
@@ -134,12 +134,19 @@ export function FilesPage({ api, toast }: AppPageProps) {
   const filesQuery = useQuery({
     queryKey: ["files", fileSurface, dir],
     queryFn: async () =>
-      api(`${filesApiBase}/list?dir=${encodeURIComponent(dir)}`).catch(() => ({
-        dir,
-        parent: null,
-        directories: [],
-        files: [],
-      })),
+      api(`${filesApiBase}/list?dir=${encodeURIComponent(dir)}`).catch((error: any) => {
+        if (isWorkspaceMode && Number(error?.status || 0) === 404) {
+          setWorkspaceFilesRejected(true);
+          setFileSurface("managed");
+          setDir("");
+        }
+        return {
+          dir,
+          parent: null,
+          directories: [],
+          files: [],
+        };
+      }),
     refetchInterval: 15000,
   });
 
