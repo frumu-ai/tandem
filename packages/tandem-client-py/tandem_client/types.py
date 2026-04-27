@@ -408,6 +408,34 @@ class MemoryListResponse(BaseModel):
     count: int = 0
 
 
+MemoryImportFormat = Literal["directory", "openclaw"]
+MemoryImportTier = Literal["global", "project", "session"]
+
+
+class MemoryImportSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["path"] = "path"
+    path: str
+
+
+class MemoryImportResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    ok: bool = False
+    source: Optional[MemoryImportSource] = None
+    format: MemoryImportFormat = "directory"
+    tier: MemoryImportTier = "project"
+    project_id: Optional[str] = None
+    session_id: Optional[str] = None
+    sync_deletes: bool = False
+    discovered_files: int = 0
+    files_processed: int = 0
+    indexed_files: int = 0
+    skipped_files: int = 0
+    deleted_files: int = 0
+    chunks_created: int = 0
+    errors: int = 0
+
+
 class MemoryPromoteResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
     ok: Optional[bool] = None

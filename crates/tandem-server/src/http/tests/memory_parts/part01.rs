@@ -1,6 +1,76 @@
 use super::*;
 
 #[tokio::test]
+async fn memory_import_validates_project_and_session_scope() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let import_root = state.memory_audit_path.parent().unwrap().join("docs");
+    tokio::fs::create_dir_all(&import_root)
+        .await
+        .expect("import root");
+    tokio::fs::write(import_root.join("note.md"), "memory import validation")
+        .await
+        .expect("import file");
+
+    let project_req = Request::builder()
+        .method("POST")
+        .uri("/memory/import")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "source": {"kind": "path", "path": import_root.display().to_string()},
+                "format": "directory",
+                "tier": "project",
+                "sync_deletes": false
+            })
+            .to_string(),
+        ))
+        .expect("project import request");
+    let project_resp = app.clone().oneshot(project_req).await.expect("response");
+    assert_eq!(project_resp.status(), StatusCode::BAD_REQUEST);
+
+    let session_req = Request::builder()
+        .method("POST")
+        .uri("/memory/import")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "source": {"kind": "path", "path": import_root.display().to_string()},
+                "format": "directory",
+                "tier": "session",
+                "sync_deletes": false
+            })
+            .to_string(),
+        ))
+        .expect("session import request");
+    let session_resp = app.oneshot(session_req).await.expect("response");
+    assert_eq!(session_resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn memory_import_rejects_invalid_path_source() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/memory/import")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "source": {"kind": "upload", "path": "/tmp/nope"},
+                "format": "directory",
+                "tier": "global",
+                "sync_deletes": false
+            })
+            .to_string(),
+        ))
+        .expect("import request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn memory_put_enforces_default_write_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());
@@ -1265,4 +1335,3 @@ async fn memory_promote_requires_review_and_emits_blocked_audit() {
             .and_then(Value::as_str)
     );
 }
-

@@ -58,6 +58,64 @@ describe("EngineEventSchema Contracts", () => {
 });
 
 describe("Coder SDK coverage", () => {
+  it("posts memory path imports with canonical server payload", async () => {
+    const client = new TandemClient({
+      baseUrl: "http://localhost:39731",
+      token: "test-token",
+    });
+
+    const originalFetch = globalThis.fetch;
+    let requestedUrl = "";
+    let requestInit: RequestInit | undefined;
+    globalThis.fetch = (async (input, init) => {
+      requestedUrl = String(input);
+      requestInit = init;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          source: { kind: "path", path: "/srv/tandem/imports/company-docs" },
+          format: "directory",
+          tier: "project",
+          project_id: "company-brain-demo",
+          session_id: null,
+          sync_deletes: true,
+          discovered_files: 42,
+          files_processed: 42,
+          indexed_files: 39,
+          skipped_files: 3,
+          deleted_files: 0,
+          chunks_created: 312,
+          errors: 0,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as typeof fetch;
+
+    try {
+      const result = await client.memory.importPath({
+        path: "/srv/tandem/imports/company-docs",
+        format: "directory",
+        tier: "project",
+        projectId: "company-brain-demo",
+        syncDeletes: true,
+      });
+      const body = JSON.parse(String(requestInit?.body || "{}"));
+      expect(requestedUrl).toContain("/memory/import");
+      expect(requestInit?.method).toBe("POST");
+      expect(body).toEqual({
+        source: { kind: "path", path: "/srv/tandem/imports/company-docs" },
+        format: "directory",
+        tier: "project",
+        project_id: "company-brain-demo",
+        sync_deletes: true,
+      });
+      expect(result.indexed_files).toBe(39);
+      expect(result.chunks_created).toBe(312);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("lists coder runs with normalized query parameters", async () => {
     const client = new TandemClient({
       baseUrl: "http://localhost:39731",

@@ -51,6 +51,7 @@ from .types import (
     EngineEvent,
     EngineMessage,
     MemoryAuditResponse,
+    MemoryImportResponse,
     MemoryItem,
     MemoryListResponse,
     MemoryPromoteResponse,
@@ -1026,6 +1027,28 @@ class _Memory:
             from .types import MemorySearchResult
             return MemorySearchResponse(results=[MemorySearchResult.model_validate(r) for r in raw], count=len(raw))
         return MemorySearchResponse.model_validate(raw)
+
+    async def import_path(
+        self,
+        *,
+        path: str,
+        format: str = "directory",
+        tier: str = "project",
+        project_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        sync_deletes: bool = False,
+    ) -> MemoryImportResponse:
+        payload: dict[str, Any] = {
+            "source": {"kind": "path", "path": path},
+            "format": format,
+            "tier": tier,
+            "project_id": project_id,
+            "session_id": session_id,
+            "sync_deletes": sync_deletes,
+        }
+        res = await self._http.post("/memory/import", json=payload)
+        res.raise_for_status()
+        return MemoryImportResponse.model_validate(res.json())
 
     async def list(self, *, q: Optional[str] = None, limit: Optional[int] = None, offset: Optional[int] = None,
                    user_id: Optional[str] = None) -> MemoryListResponse:

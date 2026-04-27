@@ -1,4 +1,3 @@
-
 fn memory_promote_metadata(
     metadata: Option<&Value>,
     request: &MemoryPromoteRequest,
@@ -848,6 +847,200 @@ pub(super) async fn memory_put(
     let response =
         memory_put_impl(&state, &tenant_context, input.request, input.capability).await?;
     Ok(Json(response))
+}
+
+pub(super) async fn memory_import(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Json(input): Json<MemoryImportInput>,
+) -> Result<Json<MemoryImportResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let source_kind = input.source.kind.trim().to_ascii_lowercase();
+    if source_kind != "path" {
+        return Err(skill_error(
+            StatusCode::BAD_REQUEST,
+            "source.kind must be `path`",
+        ));
+    }
+
+    let path = input.source.path.trim().to_string();
+    if path.is_empty() {
+        return Err(skill_error(
+            StatusCode::BAD_REQUEST,
+            "source.path is required for path imports",
+        ));
+    }
+
+    validate_memory_import_path(&path)?;
+
+    let project_id = normalize_optional_memory_import_id(input.project_id);
+    let session_id = normalize_optional_memory_import_id(input.session_id);
+    match input.tier {
+        MemoryTier::Project if project_id.is_none() => {
+            return Err(skill_error(
+                StatusCode::BAD_REQUEST,
+                "tier=project requires project_id",
+            ));
+        }
+        MemoryTier::Session if session_id.is_none() => {
+            return Err(skill_error(
+                StatusCode::BAD_REQUEST,
+                "tier=session requires session_id",
+            ));
+        }
+        _ => {}
+    }
+
+    publish_tenant_event(
+        &state,
+        &tenant_context,
+        "memory.import.started",
+        json!({
+            "source": {"kind": "path", "path": path},
+            "format": input.format,
+            "tier": input.tier,
+            "project_id": project_id.clone(),
+            "session_id": session_id.clone(),
+            "sync_deletes": input.sync_deletes,
+        }),
+    );
+
+    let Some(manager) = open_memory_manager().await else {
+        publish_tenant_event(
+            &state,
+            &tenant_context,
+            "memory.import.failed",
+            json!({
+                "source": {"kind": "path", "path": path},
+                "format": input.format,
+                "tier": input.tier,
+                "error": "failed to open memory manager",
+            }),
+        );
+        return Err(skill_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to open memory manager",
+        ));
+    };
+
+    let request = TandemMemoryImportRequest {
+        root_path: path.clone(),
+        format: input.format,
+        tier: input.tier,
+        session_id: session_id.clone(),
+        project_id: project_id.clone(),
+        sync_deletes: input.sync_deletes,
+    };
+
+    let stats = match import_files(&manager, &request, None::<fn(&MemoryImportProgress)>).await {
+        Ok(stats) => stats,
+        Err(err) => {
+            publish_tenant_event(
+                &state,
+                &tenant_context,
+                "memory.import.failed",
+                json!({
+                    "source": {"kind": "path", "path": path},
+                    "format": input.format,
+                    "tier": input.tier,
+                    "project_id": project_id.clone(),
+                    "session_id": session_id.clone(),
+                    "sync_deletes": input.sync_deletes,
+                    "error": err.to_string(),
+                }),
+            );
+            return Err(skill_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("memory import failed: {err}"),
+            ));
+        }
+    };
+
+    publish_tenant_event(
+        &state,
+        &tenant_context,
+        "memory.import.succeeded",
+        json!({
+            "source": {"kind": "path", "path": path},
+            "format": input.format,
+            "tier": input.tier,
+            "project_id": project_id.clone(),
+            "session_id": session_id.clone(),
+            "sync_deletes": input.sync_deletes,
+            "stats": {
+                "discovered_files": stats.discovered_files,
+                "files_processed": stats.files_processed,
+                "indexed_files": stats.indexed_files,
+                "skipped_files": stats.skipped_files,
+                "deleted_files": stats.deleted_files,
+                "chunks_created": stats.chunks_created,
+                "errors": stats.errors,
+            },
+        }),
+    );
+
+    Ok(Json(memory_import_response(
+        path,
+        input.format,
+        input.tier,
+        project_id,
+        session_id,
+        input.sync_deletes,
+        stats,
+    )))
+}
+
+fn memory_import_response(
+    path: String,
+    format: MemoryImportFormat,
+    tier: MemoryTier,
+    project_id: Option<String>,
+    session_id: Option<String>,
+    sync_deletes: bool,
+    stats: MemoryImportStats,
+) -> MemoryImportResponse {
+    MemoryImportResponse {
+        ok: true,
+        source: MemoryImportPathSourceResponse { kind: "path", path },
+        format,
+        tier,
+        project_id,
+        session_id,
+        sync_deletes,
+        discovered_files: stats.discovered_files,
+        files_processed: stats.files_processed,
+        indexed_files: stats.indexed_files,
+        skipped_files: stats.skipped_files,
+        deleted_files: stats.deleted_files,
+        chunks_created: stats.chunks_created,
+        errors: stats.errors,
+    }
+}
+
+fn normalize_optional_memory_import_id(value: Option<String>) -> Option<String> {
+    value
+        .map(|raw| raw.trim().to_string())
+        .filter(|trimmed| !trimmed.is_empty())
+}
+
+fn validate_memory_import_path(path: &str) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    let metadata = std::fs::metadata(path).map_err(|err| {
+        skill_error(
+            StatusCode::BAD_REQUEST,
+            format!("source.path must exist and be readable: {err}"),
+        )
+    })?;
+
+    let readable = if metadata.is_dir() {
+        std::fs::read_dir(path).map(|_| ())
+    } else {
+        std::fs::File::open(path).map(|_| ())
+    };
+    readable.map_err(|err| {
+        skill_error(
+            StatusCode::BAD_REQUEST,
+            format!("source.path must be readable: {err}"),
+        )
+    })
 }
 
 pub(super) async fn memory_put_impl(

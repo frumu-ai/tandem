@@ -2,6 +2,31 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.44 (Released 2026-04-27)
+
+This release turns strict knowledgebase channels from a slow LLM-driven demo path into a fast, governed KB-answering path, and adds the memory import surface needed to seed larger project/session memories from server-side files.
+
+### Strict KB channels answer quickly without leaving evidence mode
+
+Strict KB channels now take a direct `answer_question` path when a knowledgebase MCP is selected and the user asks a text question. Instead of sending the request through the normal LLM tool loop and waiting for the model to repeatedly call KB tools, the server calls the KB MCP directly, persists the tool evidence into the session, and renders a strict answer from the returned evidence. This keeps Telegram and Discord KB bots responsive enough for hosted demos while preserving the same source receipts and channel history.
+
+The strict renderer now treats `answer_question` payloads as first-class grounding evidence. If the MCP returns `suggested_answer` and `evidence[].content`, Tandem can render a concise answer immediately. If `TANDEM_STRICT_KB_GROUNDED_SYNTHESIS=1` is set on the engine process, Tandem may ask the model for an evidence-only JSON synthesis, then validates the result before returning it. Unsupported model output falls back to deterministic KB rendering; undefined policy, private-contact, and external-action cases remain deterministic and fail-closed.
+
+The direct path also fixes a registry-name bug in full-document fetches. Model-facing MCP tool namespaces normalize names with underscores, for example `mcp.aca_kb_mcp_local.answer_question`, while Settings can store the real server name with hyphens, for example `aca-kb-mcp-local`. Strict grounding previously tried to call `get_document` on the normalized namespace and failed. It now resolves both underscore and hyphen variants so renaming an MCP in Settings does not silently break grounding.
+
+Finally, strict KB rendering no longer lets malformed `suggested_answer` values spill raw document bodies into channel replies. Tandem preserves line boundaries while parsing evidence, strips nested `Suggested answer:` prefixes, and cuts off leaked `Source:`, markdown headings, and frontmatter before rendering. A query like “What should staff do if the stream ingest fails?” should now produce a compact answer and safe source label instead of dumping the top of the runbook.
+
+### Memory imports are available through HTTP, SDKs, and the control panel
+
+The engine now exposes `POST /memory/import` for importing server-side paths into Tandem memory. The first source kind is `path`; supported formats are `directory` and `openclaw`; supported tiers follow the memory system (`project`, `session`, and global-compatible tiers as supported by the importer). The route validates that path imports are non-empty, readable, and correctly scoped: project imports require `project_id`, and session imports require `session_id`.
+
+The response returns import stats (`discovered_files`, `files_processed`, `indexed_files`, `skipped_files`, `deleted_files`, `chunks_created`, `errors`) and emits tenant audit events for started, succeeded, and failed imports. TypeScript and Python clients now include helpers:
+
+- `client.memory.importPath(...)`
+- `client.memory.import_path(...)`
+
+The control panel Memory page includes an import dialog for path-based imports, format/tier selection, optional sync-delete, and a result summary. This lets hosted or local operators seed project memory from prepared folders without shelling out to `tandem-engine` manually.
+
 ## v0.4.43 (Released 2026-04-27)
 
 This release improves hosted Tandem server usability by making the Files page manage workspace repos directly, and fixes two regressions: a Slack-only duplicate-reply loop after engine restarts, and a planner wrapper that refused structurally valid workflow plans whenever a model emitted an off-label `action` discriminant.

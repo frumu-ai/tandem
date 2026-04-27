@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem-panel",
-  "version": "0.4.43",
+  "version": "0.4.44",
   "description": "Full web control center for Tandem Engine (chat, routines, swarm, memory, channels, and ops)",
   "type": "module",
   "bin": {
@@ -46,8 +46,8 @@
     "@fullcalendar/interaction": "6.1.20",
     "@fullcalendar/react": "6.1.20",
     "@fullcalendar/timegrid": "6.1.20",
-    "@frumu/tandem": "^0.4.43",
-    "@frumu/tandem-client": "^0.4.43",
+    "@frumu/tandem": "^0.4.44",
+    "@frumu/tandem-client": "^0.4.44",
     "@tanstack/react-query": "^5.90.21",
     "dompurify": "^3.3.1",
     "lucide": "^0.575.0",

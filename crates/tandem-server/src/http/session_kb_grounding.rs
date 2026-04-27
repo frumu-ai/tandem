@@ -154,6 +154,120 @@ pub(super) async fn apply_strict_kb_grounding_after_run(
     }))
 }
 
+pub(super) async fn render_strict_kb_direct_answer(
+    state: &AppState,
+    question: &str,
+    tool_name: &str,
+    output: &str,
+    policy: &tandem_core::KnowledgebaseGroundingPolicy,
+    model_override: Option<&ModelSpec>,
+) -> Option<(String, StrictKbGroundingOutcome)> {
+    if !tool_matches_kb_policy(tool_name, policy) {
+        return None;
+    }
+    let output = output.trim();
+    let mut sources = extract_kb_source_labels(output);
+    let (support, answer_text, evidence_count) = if output.is_empty()
+        || looks_like_non_evidence_output(output)
+        || structured_output_signals_no_hits(output)
+    {
+        ("unsupported".to_string(), STRICT_KB_FALLBACK.to_string(), 0)
+    } else {
+        let is_answer_question = tool_is_answer_question(tool_name);
+        let excerpts = extract_kb_excerpts(
+            output,
+            if is_answer_question {
+                MAX_FULL_DOCUMENT_CHARS
+            } else {
+                MAX_EVIDENCE_CHARS
+            },
+        );
+        if excerpts.is_empty() {
+            ("unsupported".to_string(), STRICT_KB_FALLBACK.to_string(), 0)
+        } else {
+            let full_document =
+                is_answer_question && answer_question_output_has_grounded_evidence(output);
+            let evidence = excerpts
+                .into_iter()
+                .map(|excerpt| KbEvidenceItem {
+                    excerpt,
+                    sources: sources.clone(),
+                    full_document,
+                })
+                .collect::<Vec<_>>();
+            let evidence_count = evidence.len();
+            if let Some((label, answer)) = deterministic_strict_kb_answer(question, &evidence) {
+                if strict_kb_grounded_synthesis_enabled()
+                    && label == "supported"
+                    && !answer_is_already_sufficiently_rich(&answer)
+                {
+                    match synthesize_strict_kb_answer(state, question, &evidence, model_override)
+                        .await
+                    {
+                        Ok(Some(response)) => {
+                            let response_support =
+                                normalize_support_label(&response.kb_answer_support);
+                            let synthesized =
+                                render_strict_kb_answer(response_support, &response, &sources);
+                            if response_support != "unsupported"
+                                && strict_kb_answer_is_evidence_safe(&synthesized, &evidence)
+                            {
+                                (response_support.to_string(), synthesized, evidence_count)
+                            } else {
+                                (label, answer, evidence_count)
+                            }
+                        }
+                        Ok(None) | Err(_) => (label, answer, evidence_count),
+                    }
+                } else {
+                    (label, answer, evidence_count)
+                }
+            } else if let Some(answer) = extractive_strict_kb_answer(question, &evidence)
+                .filter(|answer| strict_kb_answer_is_evidence_safe(answer, &evidence))
+            {
+                if strict_kb_grounded_synthesis_enabled() {
+                    match synthesize_strict_kb_answer(state, question, &evidence, model_override)
+                        .await
+                    {
+                        Ok(Some(response)) => {
+                            let response_support =
+                                normalize_support_label(&response.kb_answer_support);
+                            let synthesized =
+                                render_strict_kb_answer(response_support, &response, &sources);
+                            if response_support != "unsupported"
+                                && strict_kb_answer_is_evidence_safe(&synthesized, &evidence)
+                            {
+                                (response_support.to_string(), synthesized, evidence_count)
+                            } else {
+                                ("supported".to_string(), answer, evidence_count)
+                            }
+                        }
+                        Ok(None) | Err(_) => ("supported".to_string(), answer, evidence_count),
+                    }
+                } else {
+                    ("supported".to_string(), answer, evidence_count)
+                }
+            } else {
+                (
+                    "unsupported".to_string(),
+                    STRICT_KB_FALLBACK.to_string(),
+                    evidence_count,
+                )
+            }
+        }
+    };
+    sources = merged_sources(sources, Vec::new());
+    let answer_text = append_source_footer(answer_text, &sources);
+    Some((
+        answer_text,
+        StrictKbGroundingOutcome {
+            support,
+            sources,
+            evidence_count,
+        },
+    ))
+}
+
 fn latest_exchange_indexes(session: &tandem_types::Session) -> Option<(usize, usize)> {
     let assistant_idx = session
         .messages
@@ -222,7 +336,17 @@ async fn collect_kb_evidence(
         if output.trim().is_empty() || looks_like_non_evidence_output(&output) {
             continue;
         }
-        let excerpts = extract_kb_excerpts(&output, MAX_EVIDENCE_CHARS);
+        let is_answer_question = tool_is_answer_question(tool);
+        let answer_question_has_full_evidence =
+            is_answer_question && answer_question_output_has_grounded_evidence(&output);
+        let excerpts = extract_kb_excerpts(
+            &output,
+            if is_answer_question {
+                MAX_FULL_DOCUMENT_CHARS
+            } else {
+                MAX_EVIDENCE_CHARS
+            },
+        );
         if excerpts.is_empty() {
             continue;
         }
@@ -231,7 +355,7 @@ async fn collect_kb_evidence(
             bundle.items.push(KbEvidenceItem {
                 excerpt,
                 sources: sources.clone(),
-                full_document: false,
+                full_document: answer_question_has_full_evidence,
             });
             if bundle.items.len() >= MAX_EVIDENCE_EXCERPTS {
                 return bundle;
@@ -277,6 +401,37 @@ fn tool_matches_kb_policy(
         .any(|pattern| tandem_core::tool_name_matches_policy(pattern, &normalized_tool))
 }
 
+fn tool_is_answer_question(tool_name: &str) -> bool {
+    normalize_tool_name(tool_name).ends_with(".answer_question")
+}
+
+fn answer_question_output_has_grounded_evidence(output: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<Value>(output.trim()) else {
+        return false;
+    };
+    let Some(map) = parsed.as_object() else {
+        return false;
+    };
+    let has_suggested_answer = map
+        .get("suggested_answer")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_content_evidence = map
+        .get("evidence")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.as_object().is_some_and(|item_map| {
+                    item_map
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+                })
+            })
+        });
+    has_suggested_answer || has_content_evidence
+}
+
 fn tool_result_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
@@ -306,11 +461,37 @@ async fn fetch_kb_full_document(
     {
         args["collection_id"] = Value::String(collection_id.to_string());
     }
-    let result = state
-        .mcp
-        .call_tool(&document_ref.server_name, "get_document", args)
-        .await
-        .ok()?;
+    let mut last_error = None;
+    let mut result = None;
+    for server_name in mcp_server_name_candidates(&document_ref.server_name) {
+        match state
+            .mcp
+            .call_tool(&server_name, "get_document", args.clone())
+            .await
+        {
+            Ok(value) => {
+                result = Some(value);
+                break;
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
+        }
+    }
+    let result = match result {
+        Some(result) => result,
+        None => {
+            if let Some(error) = last_error {
+                tracing::warn!(
+                    server = %document_ref.server_name,
+                    doc_id = %document_ref.doc_id,
+                    error = %error,
+                    "strict KB grounding full-document fetch failed for all server name candidates"
+                );
+            }
+            return None;
+        }
+    };
     let result_value = result
         .metadata
         .get("result")
@@ -372,6 +553,23 @@ fn collect_kb_document_refs(
         }
     }
     refs
+}
+
+fn mcp_server_name_candidates(server_name: &str) -> Vec<String> {
+    let trimmed = server_name.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = vec![trimmed.to_string()];
+    let hyphenated = trimmed.replace('_', "-");
+    if hyphenated != trimmed {
+        candidates.push(hyphenated);
+    }
+    let underscored = trimmed.replace('-', "_");
+    if underscored != trimmed && !candidates.iter().any(|value| value == &underscored) {
+        candidates.push(underscored);
+    }
+    candidates
 }
 
 fn collect_document_refs_from_value(
@@ -461,6 +659,10 @@ fn extract_kb_excerpts(output: &str, max_chars: usize) -> Vec<String> {
         return Vec::new();
     }
     if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+        let answer_question_excerpts = extract_answer_question_excerpts(&parsed, max_chars);
+        if !answer_question_excerpts.is_empty() {
+            return answer_question_excerpts;
+        }
         let mut excerpts = Vec::new();
         collect_value_excerpts(&parsed, &mut excerpts, max_chars);
         if !excerpts.is_empty() {
@@ -471,6 +673,60 @@ fn extract_kb_excerpts(output: &str, max_chars: usize) -> Vec<String> {
         }
     }
     vec![truncate_inline(trimmed, max_chars)]
+}
+
+fn extract_answer_question_excerpts(value: &Value, max_chars: usize) -> Vec<String> {
+    let Some(map) = value.as_object() else {
+        return Vec::new();
+    };
+    let Some(evidence) = map.get("evidence").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let suggested_answer = map
+        .get("suggested_answer")
+        .and_then(Value::as_str)
+        .and_then(clean_suggested_answer);
+    let mut excerpts = Vec::new();
+    for item in evidence {
+        let Some(item_map) = item.as_object() else {
+            continue;
+        };
+        let source = source_label_from_map(item_map);
+        let content = item_map
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                item_map
+                    .get("snippet")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            });
+        let Some(content) = content else {
+            continue;
+        };
+        let mut body = String::new();
+        if excerpts.is_empty() {
+            if let Some(suggested_answer) = suggested_answer.as_ref() {
+                body.push_str("Suggested answer: ");
+                body.push_str(suggested_answer);
+                body.push('\n');
+            }
+        }
+        if let Some(source) = source {
+            body.push_str("Source: ");
+            body.push_str(&source);
+            body.push('\n');
+        }
+        body.push_str(content);
+        excerpts.push(truncate_text(body.trim(), max_chars));
+        if excerpts.len() >= MAX_EVIDENCE_EXCERPTS {
+            break;
+        }
+    }
+    excerpts
 }
 
 fn collect_value_excerpts(value: &Value, excerpts: &mut Vec<String>, max_chars: usize) {
@@ -559,13 +815,26 @@ fn structured_value_signals_no_hits(value: &Value) -> bool {
     let Some(map) = value.as_object() else {
         return false;
     };
-    ["documents", "results", "hits", "matches", "items"]
-        .iter()
-        .any(|key| {
-            map.get(*key)
-                .and_then(Value::as_array)
-                .is_some_and(|items| items.is_empty())
-        })
+    [
+        "documents",
+        "results",
+        "hits",
+        "matches",
+        "items",
+        "evidence",
+    ]
+    .iter()
+    .any(|key| {
+        map.get(*key)
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.is_empty())
+    })
+}
+
+fn structured_output_signals_no_hits(output: &str) -> bool {
+    serde_json::from_str::<Value>(output.trim())
+        .ok()
+        .is_some_and(|value| structured_value_signals_no_hits(&value))
 }
 
 fn extract_kb_source_labels(output: &str) -> Vec<String> {
@@ -880,6 +1149,12 @@ fn deterministic_strict_kb_answer(
     let evidence_text = evidence_plain_text(evidence);
     let evidence_lower = evidence_text.to_ascii_lowercase();
 
+    if asks_for_definition(&question_lower) {
+        if let Some(answer) = suggested_answer_from_evidence(evidence) {
+            return Some(("supported".to_string(), answer));
+        }
+    }
+
     if question_lower.contains("policy")
         && (evidence_lower.contains("does not define policy")
             || evidence_lower.contains("does not define a policy")
@@ -967,7 +1242,89 @@ fn deterministic_strict_kb_answer(
         ));
     }
 
+    if let Some(answer) = suggested_answer_from_evidence(evidence) {
+        return Some(("supported".to_string(), answer));
+    }
+
     None
+}
+
+fn asks_for_definition(question_lower: &str) -> bool {
+    question_lower.starts_with("what is ")
+        || question_lower.starts_with("what are ")
+        || question_lower.starts_with("who is ")
+        || question_lower.starts_with("who are ")
+}
+
+fn suggested_answer_from_evidence(evidence: &[KbEvidenceItem]) -> Option<String> {
+    evidence
+        .iter()
+        .flat_map(|item| item.excerpt.lines())
+        .map(str::trim)
+        .find_map(|line| {
+            line.strip_prefix("Suggested answer:")
+                .map(str::trim)
+                .and_then(clean_suggested_answer)
+        })
+}
+
+fn clean_suggested_answer(raw: &str) -> Option<String> {
+    let mut value = raw.trim();
+    while let Some(stripped) = value.strip_prefix("Suggested answer:") {
+        value = stripped.trim();
+    }
+    let mut cleaned = value.to_string();
+    for marker in [
+        "\nSource:",
+        "\nSources:",
+        "\n#",
+        "\n---",
+        " Source:",
+        " Sources:",
+        " #",
+        " ---",
+    ] {
+        if let Some(index) = cleaned.find(marker) {
+            cleaned.truncate(index);
+        }
+    }
+    let cleaned = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with('#')
+                && !line.starts_with("---")
+                && !line.starts_with("title:")
+                && !line.starts_with("kb_")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cleaned = cleaned.trim();
+    (!cleaned.is_empty()).then(|| cleaned.to_string())
+}
+
+fn strict_kb_grounded_synthesis_enabled() -> bool {
+    std::env::var("TANDEM_STRICT_KB_GROUNDED_SYNTHESIS")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+fn answer_is_already_sufficiently_rich(answer: &str) -> bool {
+    let trimmed = answer.trim();
+    if trimmed.contains('#')
+        || trimmed.contains("Suggested answer:")
+        || trimmed.contains("Source:")
+        || trimmed.contains("Sources:")
+    {
+        return false;
+    }
+    trimmed.split_whitespace().count() >= 28 || trimmed.matches('.').count() >= 2
 }
 
 fn snippet_evidence_can_safely_answer(question: &str, evidence: &[KbEvidenceItem]) -> bool {
@@ -1406,6 +1763,100 @@ mod tests {
             r#"{"results":[{"doc_id":"northstar-events/company-overview","source_path":"/workspace/kb-data/northstar-events/company-overview.md"}]}"#,
         );
         assert_eq!(labels, vec!["Company Overview".to_string()]);
+    }
+
+    #[test]
+    fn mcp_server_name_candidates_include_hyphenated_registry_name() {
+        assert_eq!(
+            mcp_server_name_candidates("aca_kb_mcp_local"),
+            vec![
+                "aca_kb_mcp_local".to_string(),
+                "aca-kb-mcp-local".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn answer_question_payload_extracts_suggested_answer_and_content() {
+        let excerpts = extract_kb_excerpts(
+            r#"{
+                "suggested_answer": "Northstar Events is a fictional event operations company.",
+                "evidence": [{
+                    "title": "Company Overview",
+                    "doc_id": "northstar-events/company-overview",
+                    "content": "Northstar Events is a fictional event operations company used for the Tandem demo."
+                }]
+            }"#,
+            MAX_FULL_DOCUMENT_CHARS,
+        );
+        assert_eq!(excerpts.len(), 1);
+        assert!(excerpts[0].contains("Suggested answer: Northstar Events"));
+        assert!(excerpts[0].contains("Source: Company Overview"));
+        assert!(excerpts[0].contains("used for the Tandem demo"));
+    }
+
+    #[test]
+    fn suggested_answer_evidence_answers_definition_without_hedging() {
+        let evidence = vec![KbEvidenceItem {
+            excerpt: "Suggested answer: Northstar Events is a fictional event operations company.\nSource: Company Overview\nNorthstar Events is a fictional event operations company used for the Tandem demo.".to_string(),
+            sources: vec!["Company Overview".to_string()],
+            full_document: true,
+        }];
+        let (_, answer) =
+            deterministic_strict_kb_answer("What is Northstar?", &evidence).expect("answer");
+        assert_eq!(
+            answer,
+            "Northstar Events is a fictional event operations company."
+        );
+        assert!(!answer.to_ascii_lowercase().contains("appears"));
+    }
+
+    #[test]
+    fn answer_question_suggested_answer_does_not_swallow_full_document() {
+        let excerpts = extract_kb_excerpts(
+            r##"{
+                "suggested_answer": "Northstar Events is a fictional event operations company that produces mid-sized technology, gaming, and creator-community events across Europe.",
+                "evidence": [{
+                    "title": "Company Overview",
+                    "source_label": "Company Overview",
+                    "content": "# Company Overview\n\n## Company\n\nNorthstar Events is a fictional event operations company that produces mid-sized technology, gaming, and creator-community events across Europe.\n\nThe company specializes in:\n\n- live event operations\n- online broadcast coordination\n- sponsor activation"
+                }]
+            }"##,
+            MAX_FULL_DOCUMENT_CHARS,
+        );
+        let evidence = vec![KbEvidenceItem {
+            excerpt: excerpts[0].clone(),
+            sources: vec!["Company Overview".to_string()],
+            full_document: true,
+        }];
+        let (_, answer) =
+            deterministic_strict_kb_answer("What is Northstar?", &evidence).expect("answer");
+        assert_eq!(
+            answer,
+            "Northstar Events is a fictional event operations company that produces mid-sized technology, gaming, and creator-community events across Europe."
+        );
+        assert!(!answer.contains("# Company Overview"));
+        assert!(!answer.contains("live event operations"));
+    }
+
+    #[test]
+    fn nested_suggested_answer_is_cleaned_before_rendering() {
+        let evidence = vec![KbEvidenceItem {
+            excerpt: "Suggested answer: Suggested answer: If the primary stream ingest fails: Do not restart the encoder immediately. Only the streaming lead should modify ingest settings. # Streaming Troubleshooting  ## Purpose This runbook explains common streaming issues.\nSource: Streaming Troubleshooting\nIf the primary stream ingest fails: Do not restart the encoder immediately. Only the streaming lead should modify ingest settings.".to_string(),
+            sources: vec!["Streaming Troubleshooting".to_string()],
+            full_document: true,
+        }];
+        let (_, answer) = deterministic_strict_kb_answer(
+            "What should staff do if the stream ingest fails?",
+            &evidence,
+        )
+        .expect("answer");
+        assert_eq!(
+            answer,
+            "If the primary stream ingest fails: Do not restart the encoder immediately. Only the streaming lead should modify ingest settings."
+        );
+        assert!(!answer.contains("Suggested answer:"));
+        assert!(!answer.contains("# Streaming"));
     }
 
     #[test]

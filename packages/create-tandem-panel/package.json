@@ -1,6 +1,6 @@
 {
   "name": "create-tandem-panel",
-  "version": "0.4.43",
+  "version": "0.4.44",
   "description": "Scaffold an editable Tandem control panel app",
   "type": "module",
   "bin": {

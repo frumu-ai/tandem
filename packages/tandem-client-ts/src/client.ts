@@ -36,6 +36,8 @@ import type {
   MemoryPutResponse,
   MemorySearchOptions,
   MemorySearchResponse,
+  MemoryImportPathOptions,
+  MemoryImportResponse,
   MemoryListResponse,
   MemoryPromoteOptions,
   MemoryPromoteResponse,
@@ -1366,6 +1368,22 @@ class Memory {
       body: JSON.stringify(options),
     });
     return parseResponse(MemorySearchResponseSchema, raw, "/memory/search", 200);
+  }
+
+  /** Import a local server-side path into Tandem memory. */
+  async importPath(options: MemoryImportPathOptions): Promise<MemoryImportResponse> {
+    const payload = {
+      source: { kind: "path" as const, path: options.path },
+      format: options.format ?? "directory",
+      tier: options.tier ?? "project",
+      project_id: options.projectId,
+      session_id: options.sessionId,
+      sync_deletes: options.syncDeletes ?? false,
+    };
+    return this.req<MemoryImportResponse>("/memory/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   }
 
   /** List stored memory items with optional text filter. */

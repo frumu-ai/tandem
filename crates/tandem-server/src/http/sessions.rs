@@ -1,6 +1,8 @@
 use std::time::Instant;
 
-use super::session_kb_grounding::apply_strict_kb_grounding_after_run;
+use super::session_kb_grounding::{
+    apply_strict_kb_grounding_after_run, render_strict_kb_direct_answer,
+};
 use super::*;
 use sha2::{Digest, Sha256};
 use tandem_types::{Session, ToolMode};
@@ -172,6 +174,28 @@ async fn derive_session_kb_grounding_policy(
         strict: req.strict_kb_grounding.unwrap_or(false),
         server_names,
         tool_patterns,
+    })
+}
+
+fn request_is_text_only(req: &SendMessageRequest) -> bool {
+    req.parts
+        .iter()
+        .all(|part| matches!(part, MessagePartInput::Text { .. }))
+}
+
+fn policy_answer_question_tool(
+    policy: &tandem_core::KnowledgebaseGroundingPolicy,
+) -> Option<String> {
+    policy.tool_patterns.iter().find_map(|pattern| {
+        let normalized = pattern.trim().to_ascii_lowercase();
+        if normalized == "*"
+            || normalized.ends_with(".*")
+            || normalized.ends_with(".answer_question")
+        {
+            Some("answer_question".to_string())
+        } else {
+            None
+        }
     })
 }
 
@@ -958,6 +982,7 @@ pub(super) async fn execute_run(
 ) -> anyhow::Result<()> {
     let kb_grounding_policy = derive_session_kb_grounding_policy(&state, &req).await;
     let strict_kb_model_override = req.model.clone();
+    let mut direct_kb_outcome: Option<super::session_kb_grounding::StrictKbGroundingOutcome> = None;
     if let Some(policy) = kb_grounding_policy.as_ref() {
         let kb_tool_allowlist = tool_allowlist_for_kb_grounding(&policy);
         state
@@ -979,98 +1004,199 @@ pub(super) async fn execute_run(
                 "toolAllowlist": kb_tool_allowlist,
             }),
         );
+        if policy.strict && request_is_text_only(&req) {
+            if let Some(tool_name) = policy_answer_question_tool(policy) {
+                let question = send_message_request_text(&req);
+                let args = json!({
+                    "question": question,
+                    "max_documents": 3,
+                });
+                for server_name in &policy.server_names {
+                    match state
+                        .mcp
+                        .call_tool(server_name, &tool_name, args.clone())
+                        .await
+                    {
+                        Ok(result) => {
+                            let output = result
+                                .metadata
+                                .get("result")
+                                .map(|value| {
+                                    value
+                                        .as_str()
+                                        .map(ToOwned::to_owned)
+                                        .unwrap_or_else(|| value.to_string())
+                                })
+                                .unwrap_or(result.output);
+                            let namespaced_tool = format!(
+                                "mcp.{}.{}",
+                                mcp_namespace_segment_for_grounding(server_name),
+                                tool_name
+                            );
+                            if let Some((answer, outcome)) = render_strict_kb_direct_answer(
+                                &state,
+                                &question,
+                                &namespaced_tool,
+                                &output,
+                                policy,
+                                strict_kb_model_override.as_ref(),
+                            )
+                            .await
+                            {
+                                persist_direct_kb_answer_messages(
+                                    &state,
+                                    &session_id,
+                                    &question,
+                                    &namespaced_tool,
+                                    args.clone(),
+                                    &output,
+                                    &answer,
+                                )
+                                .await?;
+                                direct_kb_outcome = Some(outcome);
+                                tracing::info!(
+                                    prefix = "STRICT_KB_DIRECT_ANSWER",
+                                    session_id = %session_id,
+                                    run_id = %run_id,
+                                    server = %server_name,
+                                    tool = %namespaced_tool,
+                                    "STRICT_KB_DIRECT_ANSWER"
+                                );
+                                publish_tenant_event(
+                                    &state,
+                                    &tenant_context,
+                                    "kb.grounding.strict.direct_answer",
+                                    json!({
+                                        "sessionID": session_id,
+                                        "runID": run_id,
+                                        "serverName": server_name,
+                                        "tool": namespaced_tool,
+                                    }),
+                                );
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                server = %server_name,
+                                tool = %tool_name,
+                                error = %error,
+                                "strict KB direct answer_question call failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     } else {
         state
             .engine_loop
             .clear_session_kb_grounding_policy(&session_id)
             .await;
     }
-    let mut run_fut = Box::pin(state.engine_loop.run_prompt_async_with_context(
-        session_id.clone(),
-        req,
-        correlation_id.clone(),
-    ));
-    let mut timeout = Box::pin(tokio::time::sleep(Duration::from_secs(60 * 10)));
-    let mut ticker = tokio::time::interval(Duration::from_secs(2));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (status, error_msg): (&str, Option<String>) = if direct_kb_outcome.is_some() {
+        ("completed", None)
+    } else {
+        let mut run_fut = Box::pin(state.engine_loop.run_prompt_async_with_context(
+            session_id.clone(),
+            req,
+            correlation_id.clone(),
+        ));
+        let mut timeout = Box::pin(tokio::time::sleep(Duration::from_secs(60 * 10)));
+        let mut ticker = tokio::time::interval(Duration::from_secs(2));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    let (status, error_msg): (&str, Option<String>) = loop {
-        tokio::select! {
-            _ = ticker.tick() => {
-                state.run_registry.touch(&session_id, &run_id).await;
-            }
-            _ = &mut timeout => {
-                let _ = state.cancellations.cancel(&session_id).await;
-                let timeout_text = "ENGINE_ERROR: ENGINE_TIMEOUT: prompt_async timed out";
-                let _ = persist_session_error_message(&state, &session_id, timeout_text).await;
-                publish_tenant_event(
-                    &state,
-                    &tenant_context,
-                    "session.error",
-                    json!({
-                        "sessionID": session_id,
-                        "error": {
-                            "code": "ENGINE_TIMEOUT",
-                            "message": "prompt_async timed out",
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    state.run_registry.touch(&session_id, &run_id).await;
+                }
+                _ = &mut timeout => {
+                    let _ = state.cancellations.cancel(&session_id).await;
+                    let timeout_text = "ENGINE_ERROR: ENGINE_TIMEOUT: prompt_async timed out";
+                    let _ = persist_session_error_message(&state, &session_id, timeout_text).await;
+                    publish_tenant_event(
+                        &state,
+                        &tenant_context,
+                        "session.error",
+                        json!({
+                            "sessionID": session_id,
+                            "error": {
+                                "code": "ENGINE_TIMEOUT",
+                                "message": "prompt_async timed out",
+                            }
+                        }),
+                    );
+                    publish_tenant_event(
+                        &state,
+                        &tenant_context,
+                        "session.status",
+                        json!({"sessionID": session_id, "status":"error"}),
+                    );
+                    publish_tenant_event(
+                        &state,
+                        &tenant_context,
+                        "session.updated",
+                        json!({"sessionID": session_id, "status":"error"}),
+                    );
+                    break ("timeout", Some("prompt_async timed out".to_string()));
+                }
+                result = &mut run_fut => {
+                    match result {
+                        Ok(()) => break ("completed", None),
+                        Err(err) => {
+                            let error_message = err.to_string();
+                            let error_code = dispatch_error_code(&error_message);
+                            let session_error_text =
+                                format!("ENGINE_ERROR: {error_code}: {}", truncate_text(&error_message, 500));
+                            let _ = persist_session_error_message(&state, &session_id, &session_error_text).await;
+                            publish_tenant_event(
+                                &state,
+                                &tenant_context,
+                                "session.error",
+                                json!({
+                                    "sessionID": session_id,
+                                    "error": {
+                                        "code": error_code,
+                                        "message": truncate_text(&error_message, 500),
+                                    }
+                                }),
+                            );
+                            publish_tenant_event(
+                                &state,
+                                &tenant_context,
+                                "session.status",
+                                json!({"sessionID": session_id, "status":"error"}),
+                            );
+                            publish_tenant_event(
+                                &state,
+                                &tenant_context,
+                                "session.updated",
+                                json!({"sessionID": session_id, "status":"error"}),
+                            );
+                            let _ = state.cancellations.cancel(&session_id).await;
+                            break ("error", Some(truncate_text(&error_message, 500)));
                         }
-                    }),
-                );
-                publish_tenant_event(
-                    &state,
-                    &tenant_context,
-                    "session.status",
-                    json!({"sessionID": session_id, "status":"error"}),
-                );
-                publish_tenant_event(
-                    &state,
-                    &tenant_context,
-                    "session.updated",
-                    json!({"sessionID": session_id, "status":"error"}),
-                );
-                break ("timeout", Some("prompt_async timed out".to_string()));
-            }
-            result = &mut run_fut => {
-                match result {
-                    Ok(()) => break ("completed", None),
-                    Err(err) => {
-                        let error_message = err.to_string();
-                        let error_code = dispatch_error_code(&error_message);
-                        let session_error_text =
-                            format!("ENGINE_ERROR: {error_code}: {}", truncate_text(&error_message, 500));
-                        let _ = persist_session_error_message(&state, &session_id, &session_error_text).await;
-                        publish_tenant_event(
-                            &state,
-                            &tenant_context,
-                            "session.error",
-                            json!({
-                                "sessionID": session_id,
-                                "error": {
-                                    "code": error_code,
-                                    "message": truncate_text(&error_message, 500),
-                                }
-                            }),
-                        );
-                        publish_tenant_event(
-                            &state,
-                            &tenant_context,
-                            "session.status",
-                            json!({"sessionID": session_id, "status":"error"}),
-                        );
-                        publish_tenant_event(
-                            &state,
-                            &tenant_context,
-                            "session.updated",
-                            json!({"sessionID": session_id, "status":"error"}),
-                        );
-                        let _ = state.cancellations.cancel(&session_id).await;
-                        break ("error", Some(truncate_text(&error_message, 500)));
                     }
                 }
             }
         }
     };
 
-    if status == "completed" || strict_kb_should_repair_error(error_msg.as_deref()) {
+    if let Some(outcome) = direct_kb_outcome {
+        publish_tenant_event(
+            &state,
+            &tenant_context,
+            "kb.grounding.strict.applied",
+            json!({
+                "sessionID": session_id,
+                "runID": run_id,
+                "support": outcome.support,
+                "sources": outcome.sources,
+                "evidenceCount": outcome.evidence_count,
+            }),
+        );
+    } else if status == "completed" || strict_kb_should_repair_error(error_msg.as_deref()) {
         if let Some(policy) = kb_grounding_policy.as_ref().filter(|policy| policy.strict) {
             match apply_strict_kb_grounding_after_run(
                 &state,
@@ -1154,6 +1280,48 @@ async fn persist_session_error_message(
         }],
     );
     state.storage.append_message(session_id, msg).await
+}
+
+async fn persist_direct_kb_answer_messages(
+    state: &AppState,
+    session_id: &str,
+    question: &str,
+    tool_name: &str,
+    tool_args: Value,
+    tool_output: &str,
+    answer: &str,
+) -> anyhow::Result<()> {
+    if question.trim().is_empty() || answer.trim().is_empty() {
+        return Ok(());
+    }
+    let user_message = Message::new(
+        MessageRole::User,
+        vec![
+            MessagePart::Text {
+                text: question.trim().to_string(),
+            },
+            MessagePart::ToolInvocation {
+                tool: tool_name.to_string(),
+                args: tool_args,
+                result: Some(Value::String(tool_output.to_string())),
+                error: None,
+            },
+        ],
+    );
+    state
+        .storage
+        .append_message(session_id, user_message)
+        .await?;
+    let assistant_message = Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::Text {
+            text: answer.trim().to_string(),
+        }],
+    );
+    state
+        .storage
+        .append_message(session_id, assistant_message)
+        .await
 }
 
 pub(super) fn sse_run_stream(

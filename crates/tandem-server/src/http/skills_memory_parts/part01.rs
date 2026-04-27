@@ -121,6 +121,57 @@ pub(super) struct MemorySearchInput {
     capability: Option<MemoryCapabilityToken>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct MemoryImportPathSourceInput {
+    kind: String,
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct MemoryImportInput {
+    source: MemoryImportPathSourceInput,
+    #[serde(default = "default_memory_import_format")]
+    format: MemoryImportFormat,
+    #[serde(default = "default_memory_import_tier")]
+    tier: MemoryTier,
+    project_id: Option<String>,
+    session_id: Option<String>,
+    #[serde(default)]
+    sync_deletes: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MemoryImportPathSourceResponse {
+    kind: &'static str,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MemoryImportResponse {
+    ok: bool,
+    source: MemoryImportPathSourceResponse,
+    format: MemoryImportFormat,
+    tier: MemoryTier,
+    project_id: Option<String>,
+    session_id: Option<String>,
+    sync_deletes: bool,
+    discovered_files: usize,
+    files_processed: usize,
+    indexed_files: usize,
+    skipped_files: usize,
+    deleted_files: usize,
+    chunks_created: usize,
+    errors: usize,
+}
+
+fn default_memory_import_format() -> MemoryImportFormat {
+    MemoryImportFormat::Directory
+}
+
+fn default_memory_import_tier() -> MemoryTier {
+    MemoryTier::Project
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct MemoryAuditQuery {
     run_id: Option<String>,

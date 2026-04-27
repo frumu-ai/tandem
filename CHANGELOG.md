@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.44] - Released 2026-04-27
+
+### Added
+
+- **Memory path import API and SDK support**: Added `POST /memory/import` for server-side path imports into Tandem memory, including project/session tier validation, import stats, tenant audit events, and TypeScript/Python SDK helpers (`memory.importPath` / `memory.import_path`). The control panel Memory page now includes an import dialog for directory/OpenClaw-style imports, sync-delete control, and import result summaries.
+- **Strict KB grounded synthesis toggle**: Added `TANDEM_STRICT_KB_GROUNDED_SYNTHESIS=1` to optionally polish strict-KB answers with an evidence-only synthesis pass. The runtime still validates the result and falls back to deterministic KB rendering when the model introduces unsupported claims.
+
+### Changed
+
+- **Strict KB channel answers now use a fast direct KB path**: Strict-KB text questions call the configured KB MCP `answer_question` tool directly before entering the general LLM tool loop, dramatically reducing Telegram/Discord demo latency while preserving source receipts and strict grounding.
+- **KB `answer_question` payloads are first-class evidence**: Tandem now treats KB MCP `suggested_answer` and `evidence[].content` as full grounding evidence, so the runtime no longer discards good KB answers just because a follow-up `get_document` call fails.
+
+### Fixed
+
+- **Strict KB source fetches tolerate MCP display-name normalization**: Full-document retrieval now handles model-facing MCP namespaces such as `aca_kb_mcp_local` and registry names such as `aca-kb-mcp-local`, so changing the MCP name in Settings no longer breaks strict grounding fetches.
+- **Strict KB answers no longer leak raw document bodies through `suggested_answer`**: The strict renderer preserves line boundaries, sanitizes nested `Suggested answer:` prefixes, and cuts off leaked sources, markdown headings, and frontmatter before rendering channel replies.
+- **Strict KB demo answers stay evidence-only without becoming raw search snippets**: Definition and operational KB questions can now render concise grounded answers with safe source labels, while undefined policies, missing private contact info, and unsupported external actions continue to fail closed.
+
 ## [0.4.43] - Released 2026-04-27
 
 ### Fixed

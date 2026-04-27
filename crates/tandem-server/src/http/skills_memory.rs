@@ -4,6 +4,11 @@ use crate::http::{SkillLocation, SkillsConflictPolicy};
 use crate::{
     WorkflowLearningCandidate, WorkflowLearningCandidateKind, WorkflowLearningCandidateStatus,
 };
+use tandem_memory::import_files;
+use tandem_memory::types::{
+    MemoryImportFormat, MemoryImportProgress, MemoryImportRequest as TandemMemoryImportRequest,
+    MemoryImportStats, MemoryTier,
+};
 
 include!("skills_memory_parts/part01.rs");
 include!("skills_memory_parts/part02.rs");

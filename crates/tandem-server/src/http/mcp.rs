@@ -93,9 +93,19 @@ pub(super) async fn bootstrap_mcp_servers(state: &AppState) {
     enabled_servers.sort();
 
     for name in enabled_servers {
-        let connected = state.mcp.connect(&name).await;
+        // Retry the initial connect with bounded backoff. Co-located MCP
+        // services on hosted Tandem (notably tandem-kb-mcp) can pass their
+        // /health check a beat before their JSON-RPC /mcp endpoint accepts
+        // requests, so a single startup connect attempt races with the
+        // sidecar's readiness and shows up in the control panel as
+        // "Disconnected — error sending request". Refreshing the UI used
+        // to be the workaround. The retry below removes the manual step.
+        let connected = connect_with_backoff(state, &name).await;
         if !connected {
-            tracing::warn!("mcp bootstrap: failed to connect server '{}'", name);
+            tracing::warn!(
+                "mcp bootstrap: gave up connecting server '{}' after retries",
+                name
+            );
             continue;
         }
         let count = sync_mcp_tools_for_server(state, &name).await;
@@ -121,6 +131,38 @@ pub(super) async fn bootstrap_mcp_servers(state: &AppState) {
             count
         );
     }
+}
+
+/// Connect to an MCP server during startup with bounded exponential
+/// backoff. Retries a handful of times across roughly ~30 seconds before
+/// giving up, so an upstream that's a beat behind on readiness gets a
+/// chance to come online without requiring the operator to hit Refresh
+/// in the control panel.
+async fn connect_with_backoff(state: &AppState, name: &str) -> bool {
+    // Backoff schedule (seconds): 0, 2, 4, 6, 8, 10. Total ≈ 30s.
+    const DELAYS_SECS: &[u64] = &[0, 2, 4, 6, 8, 10];
+    for (attempt, delay) in DELAYS_SECS.iter().enumerate() {
+        if *delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(*delay)).await;
+        }
+        if state.mcp.connect(name).await {
+            if attempt > 0 {
+                tracing::info!(
+                    "mcp bootstrap: connected '{}' after {} retr{}",
+                    name,
+                    attempt,
+                    if attempt == 1 { "y" } else { "ies" }
+                );
+            }
+            return true;
+        }
+        tracing::debug!(
+            "mcp bootstrap: connect to '{}' attempt {} failed; will retry",
+            name,
+            attempt + 1
+        );
+    }
+    false
 }
 
 fn builtin_tandem_docs_mcp_transport_url() -> String {

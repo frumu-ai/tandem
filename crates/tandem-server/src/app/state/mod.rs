@@ -1004,18 +1004,64 @@ impl ServerPromptContextHook {
         } else {
             policy.tool_patterns.join(", ")
         };
+        let preferred_tools = Self::kb_grounding_preferred_tools(policy);
         [
             "<knowledgebase_grounding_policy>".to_string(),
             format!("- required: {}", policy.required),
             format!("- strict: {}", policy.strict),
             format!("- servers: {}", servers),
             format!("- tool_patterns: {}", patterns),
-            "- Before answering factual/project/product questions in this channel, inspect the KB MCP evidence first.".to_string(),
+            format!("- preferred_question_tools: {}", preferred_tools.join(", ")),
+            "- For factual/project/product/channel questions, answer from the enabled KB MCP for this channel before using model knowledge, memory, or general chat.".to_string(),
+            "- First choice: call the KB MCP `answer_question` tool with the user's question when that tool is available.".to_string(),
+            "- Fallback: call the KB MCP search tool, then fetch the full matching document with `get_document` before answering.".to_string(),
+            "- Do not answer from search result snippets alone when a full document tool is available.".to_string(),
+            "- Use only the KB MCP tools listed by this policy for KB evidence; do not switch to unrelated MCPs or built-in docs search for this channel's KB questions.".to_string(),
             "- If the KB has no matching evidence, say `I do not see that in the connected knowledgebase.` instead of relying on model memory.".to_string(),
             "- When strict grounding is enabled, answer only from retrieved KB evidence and do not add external product instructions, inferred policy, or best-practice guidance.".to_string(),
             "</knowledgebase_grounding_policy>".to_string(),
         ]
         .join("\n")
+    }
+
+    fn kb_grounding_preferred_tools(
+        policy: &tandem_core::KnowledgebaseGroundingPolicy,
+    ) -> Vec<String> {
+        let mut tools = Vec::new();
+        if !policy.server_names.is_empty() {
+            for server in &policy.server_names {
+                let namespace = Self::mcp_namespace_segment_for_prompt(server);
+                tools.push(format!("mcp.{namespace}.answer_question"));
+                tools.push(format!("mcp.{namespace}.search_docs"));
+                tools.push(format!("mcp.{namespace}.get_document"));
+            }
+        }
+        if tools.is_empty() {
+            tools.push("mcp.<knowledgebase>.answer_question".to_string());
+            tools.push("mcp.<knowledgebase>.search_docs".to_string());
+            tools.push("mcp.<knowledgebase>.get_document".to_string());
+        }
+        tools
+    }
+
+    fn mcp_namespace_segment_for_prompt(name: &str) -> String {
+        let mut out = String::new();
+        let mut previous_underscore = false;
+        for ch in name.trim().chars() {
+            if ch.is_ascii_alphanumeric() {
+                out.push(ch.to_ascii_lowercase());
+                previous_underscore = false;
+            } else if !previous_underscore {
+                out.push('_');
+                previous_underscore = true;
+            }
+        }
+        let cleaned = out.trim_matches('_');
+        if cleaned.is_empty() {
+            "server".to_string()
+        } else {
+            cleaned.to_string()
+        }
     }
 }
 

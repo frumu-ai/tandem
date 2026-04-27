@@ -24,6 +24,7 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         )
         .route("/skills/{name}", get(skills_get).delete(skills_delete))
         .route("/memory/put", post(memory_put))
+        .route("/memory/import", post(memory_import))
         .route("/memory/promote", post(memory_promote))
         .route("/memory/demote", post(memory_demote))
         .route("/memory/search", post(memory_search))

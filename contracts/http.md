@@ -40,6 +40,13 @@ This document establishes the expected payloads and canonical behavior for the c
 - **Wire Response:** `{"results":[{"id":"m_1","content":"Use sqlite WAL mode","sourceType":"assistant_final","runId":"r_120","score":0.92}],"count":1}`
 - **SDK Normalized Response:** Canonical memory records (`content` primary; `text` alias accepted) plus source/run aliases.
 
+- **Method:** `POST /memory/import`
+- **Input:** `{"source":{"kind":"path","path":"/srv/tandem/imports/company-docs"},"format":"directory","tier":"project","project_id":"company-brain-demo","session_id":null,"sync_deletes":true}`
+- **Wire Response:** `{"ok":true,"source":{"kind":"path","path":"/srv/tandem/imports/company-docs"},"format":"directory","tier":"project","project_id":"company-brain-demo","session_id":null,"sync_deletes":true,"discovered_files":42,"files_processed":42,"indexed_files":39,"skipped_files":3,"deleted_files":0,"chunks_created":312,"errors":0}`
+- **Validation:** `source.kind` supports `path` only. `source.path` must be non-empty, exist, and be readable. `tier=project` requires `project_id`; `tier=session` requires `session_id`. Invalid requests return `400`; importer/runtime failures return `500`.
+- **Formats:** `directory` imports markdown/text files from a path. `openclaw` imports OpenClaw-style memory roots such as `MEMORY.md` and `memory/**/*.md`. This route reuses the engine memory importer and does not shell out to `tandem-engine`.
+- **SDK Normalized Response:** `MemoryImportResponse`; TypeScript exposes `client.memory.importPath(...)`, Python exposes `client.memory.import_path(...)`.
+
 - **Method:** `GET /memory?user_id=u_123&query=sqlite&limit=20&offset=0`
 - **Wire Response:** `{"items":[{"id":"m_1","content":"Use sqlite WAL mode","user_id":"u_123","visibility":"private"}],"count":1}`
 - **SDK Normalized Response:** `MemoryListResponse` with global-user filtering.

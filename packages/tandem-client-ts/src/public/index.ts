@@ -429,6 +429,38 @@ export interface MemorySearchOptions {
   capability?: string;
 }
 
+export type MemoryImportFormat = "directory" | "openclaw";
+export type MemoryImportTier = "global" | "project" | "session";
+
+export interface MemoryImportPathOptions {
+  path: string;
+  format?: MemoryImportFormat;
+  tier?: MemoryImportTier;
+  projectId?: string;
+  sessionId?: string;
+  syncDeletes?: boolean;
+}
+
+export interface MemoryImportResponse {
+  ok: boolean;
+  source?: {
+    kind: "path";
+    path: string;
+  };
+  format: MemoryImportFormat;
+  tier: MemoryImportTier;
+  project_id?: string | null;
+  session_id?: string | null;
+  sync_deletes: boolean;
+  discovered_files: number;
+  files_processed: number;
+  indexed_files: number;
+  skipped_files: number;
+  deleted_files: number;
+  chunks_created: number;
+  errors: number;
+}
+
 export interface MemorySearchResult {
   id: string;
   text?: string;

@@ -212,6 +212,15 @@ async fn strict_kb_test_state(kb_output: &str, steps: Vec<StrictKbProviderStep>)
         )
         .await;
     state
+        .tools
+        .register_tool(
+            "mcp.kb.answer_question".to_string(),
+            Arc::new(StaticKbTool {
+                output: kb_output.to_string(),
+            }),
+        )
+        .await;
+    state
         .mcp
         .add("kb".to_string(), "memory://kb".to_string())
         .await;

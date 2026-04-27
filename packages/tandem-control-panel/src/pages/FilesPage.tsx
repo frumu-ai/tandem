@@ -6,6 +6,7 @@ import { renderMarkdownSafe } from "../lib/markdown";
 import { useCapabilities } from "../features/system/queries.ts";
 import { KnowledgebaseUploadPanel } from "../features/knowledgebase/KnowledgebaseUploadPanel";
 import { ConfirmDialog, PromptDialog } from "../components/ControlPanelDialogs";
+import { MemoryImportDialog } from "../components/MemoryImportDialog";
 import { AnimatedPage, PanelCard, Toolbar, Badge } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
@@ -70,6 +71,15 @@ function normalizeWorkspaceExplorerPath(raw: string, allowEmpty = true) {
   return parts.join("/");
 }
 
+function containingFolderPath(path: string) {
+  const cleaned = String(path || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/g, "");
+  if (!cleaned || !cleaned.includes("/")) return "";
+  return cleaned.split("/").slice(0, -1).join("/");
+}
+
 function clampPage(page: number, totalPages: number) {
   if (!Number.isFinite(page) || page < 1) return 1;
   if (!Number.isFinite(totalPages) || totalPages < 1) return 1;
@@ -85,7 +95,7 @@ function formatPageWindow(page: number, pageSize: number, total: number) {
   return `${start}-${end} of ${total}`;
 }
 
-export function FilesPage({ api, toast }: AppPageProps) {
+export function FilesPage({ api, client, toast }: AppPageProps) {
   const queryClient = useQueryClient();
   const capabilities = useCapabilities();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -108,6 +118,10 @@ export function FilesPage({ api, toast }: AppPageProps) {
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
   const [deleteFilesConfirm, setDeleteFilesConfirm] = useState<{
     files: Array<{ path: string; name: string }>;
+  } | null>(null);
+  const [memoryImportDialog, setMemoryImportDialog] = useState<{
+    path: string;
+    note: string;
   } | null>(null);
 
   useEffect(() => {
@@ -439,6 +453,27 @@ export function FilesPage({ api, toast }: AppPageProps) {
     });
   };
 
+  const openMemoryImport = () => {
+    let path = "";
+    let note = "";
+
+    if (selectedDirectory && selectedPath) {
+      path = selectedPath;
+    } else if (selectedFileCount) {
+      path = containingFolderPath(selectedFiles[0]?.path || "");
+      note = "Import the containing folder for now.";
+    } else if (selectedFile) {
+      path = containingFolderPath(selectedFile.path || selectedPath);
+      note = "Import the containing folder for now.";
+    } else if (rootDir) {
+      path = rootDir;
+    } else if (isWorkspaceMode) {
+      path = ".";
+    }
+
+    setMemoryImportDialog({ path, note });
+  };
+
   const confirmDeleteSelectedFiles = async () => {
     const targets = deleteFilesConfirm?.files || [];
     if (!targets.length) {
@@ -501,6 +536,8 @@ export function FilesPage({ api, toast }: AppPageProps) {
   const defaultKnowledgebaseCollectionId = String(
     capabilities.data?.hosted_deployment_slug || capabilities.data?.hosted_hostname || ""
   ).trim();
+  const defaultImportProjectId = defaultKnowledgebaseCollectionId;
+  const defaultImportTier = defaultImportProjectId ? "project" : "global";
 
   return (
     <AnimatedPage className="grid h-full min-h-0 gap-4">
@@ -554,6 +591,15 @@ export function FilesPage({ api, toast }: AppPageProps) {
               aria-label="Create folder"
             >
               <i data-lucide="folder-plus"></i>
+            </button>
+            <button
+              type="button"
+              className="tcp-icon-btn"
+              title="Import to Memory"
+              aria-label="Import to Memory"
+              onClick={openMemoryImport}
+            >
+              <i data-lucide="database-zap"></i>
             </button>
             <button
               type="button"
@@ -790,6 +836,16 @@ export function FilesPage({ api, toast }: AppPageProps) {
                           </Badge>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            className="tcp-icon-btn h-8 w-8"
+                            title="Import selected file folder to memory"
+                            aria-label="Import selected file folder to memory"
+                            onClick={openMemoryImport}
+                            disabled={!selectedFileCount}
+                          >
+                            <i data-lucide="database-zap"></i>
+                          </button>
                           <button
                             type="button"
                             className="tcp-icon-btn h-8 w-8"
@@ -1069,6 +1125,14 @@ export function FilesPage({ api, toast }: AppPageProps) {
                     <div className="tcp-subtle">Folder path</div>
                     <div className="mt-1 break-all">{selectedPath}</div>
                   </div>
+                  <button
+                    type="button"
+                    className="tcp-btn-primary justify-center"
+                    onClick={openMemoryImport}
+                  >
+                    <i data-lucide="database-zap"></i>
+                    Import to Memory
+                  </button>
                 </div>
               ) : (
                 <EmptyState
@@ -1164,6 +1228,20 @@ export function FilesPage({ api, toast }: AppPageProps) {
           </div>
         ) : null}
       </ConfirmDialog>
+
+      <MemoryImportDialog
+        open={!!memoryImportDialog}
+        client={client}
+        initialPath={memoryImportDialog?.path || ""}
+        initialTier={defaultImportTier}
+        initialProjectId={defaultImportProjectId}
+        note={memoryImportDialog?.note || ""}
+        toast={toast}
+        onCancel={() => setMemoryImportDialog(null)}
+        onSuccess={async () => {
+          await queryClient.invalidateQueries({ queryKey: ["memory"] });
+        }}
+      />
     </AnimatedPage>
   );
 }

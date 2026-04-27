@@ -372,6 +372,25 @@ pub(crate) fn tmp_routines_file(name: &str) -> PathBuf {
     ))
 }
 
+#[test]
+fn kb_grounding_block_directs_factual_questions_to_enabled_kb_mcp() {
+    let policy = tandem_core::KnowledgebaseGroundingPolicy {
+        required: true,
+        strict: true,
+        server_names: vec!["Customer KB".to_string()],
+        tool_patterns: vec!["mcp.customer_kb.*".to_string()],
+    };
+
+    let block = ServerPromptContextHook::build_kb_grounding_block(&policy);
+
+    assert!(block.contains("preferred_question_tools: mcp.customer_kb.answer_question"));
+    assert!(block.contains("First choice: call the KB MCP `answer_question` tool"));
+    assert!(block.contains("Fallback: call the KB MCP search tool"));
+    assert!(block.contains("fetch the full matching document with `get_document`"));
+    assert!(block.contains("Do not answer from search result snippets alone"));
+    assert!(block.contains("before using model knowledge, memory, or general chat"));
+}
+
 mod automations;
 mod handoff;
 mod routines;
