@@ -350,6 +350,8 @@ export function CodingWorkflowsPage({
   const [lastRunEvent, setLastRunEvent] = useState("");
   const [taskPreviewRefreshAt, setTaskPreviewRefreshAt] = useState<number | null>(null);
   const [githubBoardRefreshAt, setGithubBoardRefreshAt] = useState<number | null>(null);
+  const [repoSyncing, setRepoSyncing] = useState(false);
+  const [repoSyncResult, setRepoSyncResult] = useState<any>(null);
   const [runDetailOpen, setRunDetailOpen] = useState(false);
   const [liveLogsOpen, setLiveLogsOpen] = useState(false);
   const [selectedGithubItemIds, setSelectedGithubItemIds] = useState<string[]>([]);
@@ -543,6 +545,7 @@ export function CodingWorkflowsPage({
   const githubConnected = mcpServers.some((server) => server.name.toLowerCase().includes("github"));
   const selectedProject =
     projects.find((project: any) => project.slug === selectedProjectSlug) || null;
+  const selectedProjectRepo = selectedProject?.repo || {};
   const selectedProjectTaskSourceType = String(selectedProject?.taskSource?.type || "").trim();
   const planningWorkspaceRootSeed = String(
     (health.data as any)?.workspaceRoot ||
@@ -978,6 +981,34 @@ export function CodingWorkflowsPage({
     }
   }
 
+  async function syncSelectedRepo() {
+    if (!selectedProjectSlug) {
+      toast("warn", "Select a project before syncing its repository.");
+      return;
+    }
+    setRepoSyncing(true);
+    setRepoSyncResult(null);
+    try {
+      const data = await api(
+        `/api/aca/projects/${encodeURIComponent(selectedProjectSlug)}/repo/sync`,
+        { method: "POST" }
+      );
+      setRepoSyncResult(data);
+      await queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-projects"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["coding-workflows", "aca-workspace-guide"],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["coding-workflows", "aca-project-tasks", selectedProjectSlug],
+      });
+      toast("ok", `Repository ready at ${String(data?.repo?.path || "managed checkout")}.`);
+    } catch (error) {
+      toast("err", error instanceof Error ? error.message : String(error));
+    } finally {
+      setRepoSyncing(false);
+    }
+  }
+
   if (!acaAvailable) {
     return (
       <AnimatedPage className="grid gap-4">
@@ -1040,6 +1071,47 @@ export function CodingWorkflowsPage({
               />
               {lastGlobalEvent ? (
                 <Badge tone="ghost">Live {formatStatus(lastGlobalEvent)}</Badge>
+              ) : null}
+            </div>
+          </div>
+          <div className="grid gap-3 rounded-2xl border border-white/10 bg-black/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-slate-100">Repository</div>
+                <div className="tcp-subtle mt-1 truncate text-xs">
+                  {selectedProjectSlug
+                    ? String(
+                        selectedProjectRepo?.path ||
+                          selectedProjectRepo?.clone_url ||
+                          selectedProject?.repo_url ||
+                          selectedProjectSlug
+                      )
+                    : "Select a project to sync its checkout."}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="tcp-btn h-8 px-3 text-xs"
+                onClick={syncSelectedRepo}
+                disabled={!selectedProjectSlug || repoSyncing}
+              >
+                <i data-lucide={repoSyncing ? "loader-circle" : "refresh-cw"}></i>
+                {repoSyncing ? "Syncing" : "Sync repo"}
+              </button>
+            </div>
+            <div className="grid gap-2 text-xs">
+              <div className="flex flex-wrap gap-2">
+                <Badge tone={selectedProjectRepo?.clone_url ? "ok" : "ghost"}>
+                  {selectedProjectRepo?.clone_url ? "remote git" : "local git"}
+                </Badge>
+                <Badge tone="ghost">{String(selectedProjectRepo?.default_branch || "main")}</Badge>
+                {repoSyncResult?.repo?.dirty ? <Badge tone="warn">dirty</Badge> : null}
+              </div>
+              {repoSyncResult?.repo?.commit ? (
+                <div className="tcp-subtle truncate">
+                  Ready at {String(repoSyncResult.repo.path)} ·{" "}
+                  {String(repoSyncResult.repo.commit).slice(0, 7)}
+                </div>
               ) : null}
             </div>
           </div>
