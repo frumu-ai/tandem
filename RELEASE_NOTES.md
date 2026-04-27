@@ -27,7 +27,7 @@ The fix has two halves:
 
 Three new `planner_build::tests` unit tests cover unknown-action-with-plan, unknown-action-with-clarifier, and canonical-action pass-through.
 
-## v0.4.42 (Unreleased)
+## v0.4.42 (Released 2026-04-26)
 
 This release fixes three regressions that were keeping provisioned hosted servers from being usable end-to-end after the 0.4.41 release.
 
