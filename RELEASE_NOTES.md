@@ -31,6 +31,12 @@ Files is also promoted into the primary navigation before Memory, because it is 
 
 The Memory page now defaults to a governed Knowledge view instead of showing every runtime record as one flat feed. Conversation-derived records such as `user_message`, `assistant_final`, and channel message memories are still available under Runtime/All filters, but they no longer make the default knowledge surface look like a channel transcript.
 
+### npm upgrades now replace stale engine binaries
+
+The `@frumu/tandem` npm postinstall script no longer skips native binary installation just because `bin/native/tandem-engine` already exists. That old existence check caused package/binary mismatches during global npm upgrades: for example, upgrading the npm package to `0.4.39` could leave a previous `0.4.19` `tandem-engine` binary in place, so every start continued to report an available update.
+
+The installer now runs the existing binary with `--version`, compares it to the package version, and downloads/replaces the release asset when the binary is missing, too small, unreadable, or version-mismatched. Matching binaries still skip the download path.
+
 ## v0.4.43 (Released 2026-04-27)
 
 This release improves hosted Tandem server usability by making the Files page manage workspace repos directly, and fixes two regressions: a Slack-only duplicate-reply loop after engine restarts, and a planner wrapper that refused structurally valid workflow plans whenever a model emitted an off-label `action` discriminant.

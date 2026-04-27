@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **npm upgrades replace stale native engine binaries**: Fixed issue [#19](https://github.com/frumu-ai/tandem/issues/19) where `@frumu/tandem` postinstall skipped the `tandem-engine` download whenever `bin/native/tandem-engine` already existed, leaving older binaries such as `0.4.19` in place after upgrading the npm package. The installer now checks the existing binary's reported version and downloads/replaces it when it does not match the package version.
 - **Strict KB source fetches tolerate MCP display-name normalization**: Full-document retrieval now handles model-facing MCP namespaces such as `aca_kb_mcp_local` and registry names such as `aca-kb-mcp-local`, so changing the MCP name in Settings no longer breaks strict grounding fetches.
 - **Strict KB answers no longer leak raw document bodies through `suggested_answer`**: The strict renderer preserves line boundaries, sanitizes nested `Suggested answer:` prefixes, and cuts off leaked sources, markdown headings, and frontmatter before rendering channel replies.
 - **Strict KB demo answers stay evidence-only without becoming raw search snippets**: Definition and operational KB questions can now render concise grounded answers with safe source labels, while undefined policies, missing private contact info, and unsupported external actions continue to fail closed.

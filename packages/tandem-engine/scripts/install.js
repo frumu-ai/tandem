@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const { execSync } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 
 // Configuration
 const REPO = "frumu-ai/tandem";
@@ -70,9 +70,47 @@ if (!fs.existsSync(binDir)) {
     fs.mkdirSync(binDir, { recursive: true });
 }
 
-if (fs.existsSync(destPath)) {
-    console.log("Binary already present.");
-    process.exit(0);
+function parseVersion(raw) {
+    const match = String(raw || '').match(/\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
+    return match ? match[1] : "";
+}
+
+function installedBinaryVersion(binaryPath, execFile = execFileSync) {
+    if (!fs.existsSync(binaryPath)) return "";
+    try {
+        const output = execFile(binaryPath, ['--version'], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: 5000,
+        });
+        return parseVersion(output);
+    } catch {
+        return "";
+    }
+}
+
+function shouldDownloadBinary(binaryPath, packageVersion, readVersion = installedBinaryVersion) {
+    if (!fs.existsSync(binaryPath)) {
+        return { download: true, reason: "missing" };
+    }
+
+    const stats = fs.statSync(binaryPath);
+    if (stats.size < MIN_SIZE) {
+        return { download: true, reason: `too small (${stats.size} bytes)` };
+    }
+
+    const installedVersion = readVersion(binaryPath);
+    if (!installedVersion) {
+        return { download: true, reason: "version check failed" };
+    }
+    if (installedVersion !== packageVersion) {
+        return {
+            download: true,
+            reason: `version mismatch (${installedVersion} != ${packageVersion})`,
+        };
+    }
+
+    return { download: false, reason: `version ${installedVersion} already installed` };
 }
 
 // Helper to fetch JSON from GitHub API
@@ -190,4 +228,26 @@ async function extract(archivePath) {
     }
 }
 
-download().then(extract).catch(warnAndExit);
+async function main() {
+    const packageVersion = require('../package.json').version;
+    const decision = shouldDownloadBinary(destPath, packageVersion);
+    if (!decision.download) {
+        console.log(`Binary already present (${decision.reason}).`);
+        return;
+    }
+    if (decision.reason !== "missing") {
+        console.log(`Existing binary will be replaced: ${decision.reason}.`);
+    }
+    const archivePath = await download();
+    await extract(archivePath);
+}
+
+if (require.main === module) {
+    main().catch(warnAndExit);
+}
+
+module.exports = {
+    installedBinaryVersion,
+    parseVersion,
+    shouldDownloadBinary,
+};

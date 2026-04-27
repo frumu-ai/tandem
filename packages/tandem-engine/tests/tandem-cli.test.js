@@ -2,6 +2,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  parseVersion,
+  shouldDownloadBinary,
+} = require("../scripts/install.js");
+
+const {
   buildEngineServiceDefinition,
   detectPackageManager,
   findCommandOnPath,
@@ -49,4 +54,27 @@ test("buildEngineServiceDefinition emits platform-specific artifacts", () => {
 
 test("findCommandOnPath ignores missing commands", () => {
   assert.equal(findCommandOnPath("definitely-not-a-real-command"), "");
+});
+
+test("installer parses tandem-engine version output", () => {
+  assert.equal(parseVersion("tandem-engine 0.4.44\n"), "0.4.44");
+  assert.equal(parseVersion("0.4.44"), "0.4.44");
+  assert.equal(parseVersion("tandem-engine 0.4.44-beta.1"), "0.4.44-beta.1");
+});
+
+test("installer replaces existing binary when version mismatches package", () => {
+  const temp = require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "tandem-install-"));
+  const binary = require("node:path").join(temp, "tandem-engine");
+  require("node:fs").writeFileSync(binary, Buffer.alloc(1024 * 1024 + 1));
+
+  assert.deepEqual(shouldDownloadBinary(binary, "0.4.44", () => "0.4.39"), {
+    download: true,
+    reason: "version mismatch (0.4.39 != 0.4.44)",
+  });
+  assert.deepEqual(shouldDownloadBinary(binary, "0.4.44", () => "0.4.44"), {
+    download: false,
+    reason: "version 0.4.44 already installed",
+  });
+
+  require("node:fs").rmSync(temp, { recursive: true, force: true });
 });
