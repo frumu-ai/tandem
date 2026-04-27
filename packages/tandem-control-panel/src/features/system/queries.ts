@@ -51,6 +51,8 @@ export interface Capabilities {
   hosted_release_version?: string;
   hosted_release_channel?: string;
   hosted_update_policy?: string;
+  workspace_files_root?: string;
+  workspace_files_available?: boolean;
 }
 
 export function useCapabilities(enabled = true) {

@@ -4,7 +4,15 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.4.43 (Unreleased)
 
-This release fixes two regressions that were degrading hosted Tandem servers: a Slack-only duplicate-reply loop after engine restarts, and a planner wrapper that refused structurally valid workflow plans whenever a model emitted an off-label `action` discriminant.
+This release improves hosted Tandem server usability by making the Files page manage workspace repos directly, and fixes two regressions: a Slack-only duplicate-reply loop after engine restarts, and a planner wrapper that refused structurally valid workflow plans whenever a model emitted an off-label `action` discriminant.
+
+### Hosted Files page can manage workspace repos directly
+
+Provisioned hosted installs now treat the container workspace as the primary Files destination. The control panel exposes a Workspace explorer rooted at `/workspace/repos`, resolved from `TANDEM_CONTROL_PANEL_WORKSPACE_ROOT`, and the hosted compose renderer mounts `HOSTED_REPOS_ROOT` there read-write for `tandem-control-panel`. The generated control-panel config also defaults `repository.worktree_root` to `/workspace/repos` while leaving `repository.path` empty until a specific repo is selected.
+
+The new workspace file APIs list directories, read previews, download files, upload files or folders, create directories, and delete workspace entries. All workspace paths are resolved under the configured workspace root and reject traversal, null bytes, invalid relative paths, and absolute paths outside the root. The existing managed buckets (`uploads`, `artifacts`, `exports`) remain available as a secondary mode instead of being the hosted default.
+
+The Files UI now includes a minimal explorer with breadcrumbs, root/up navigation, current-directory uploads, folder upload with browser relative paths preserved, create-folder controls, preview/download/delete actions, and a collapsible file panel. The KB upload surface now has a collection dropdown for existing KB MCP collections plus a new-collection path, and document rows can be clicked again to close their preview. The per-page selectors were restyled so the numeric values no longer look clipped or misaligned in the dark control-panel chrome.
 
 ### Slack channel adapter no longer replays recent messages on engine restart
 

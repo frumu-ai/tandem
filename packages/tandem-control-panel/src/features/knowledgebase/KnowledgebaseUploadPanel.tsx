@@ -177,6 +177,7 @@ export function KnowledgebaseUploadPanel({
   const uploadClearSequenceRef = useRef(0);
   const [collectionId, setCollectionId] = useState("");
   const [collectionTouched, setCollectionTouched] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [documentSearch, setDocumentSearch] = useState("");
   const [selectedDocumentKey, setSelectedDocumentKey] = useState("");
   const [previewExpanded, setPreviewExpanded] = useState(false);
@@ -319,6 +320,33 @@ export function KnowledgebaseUploadPanel({
       ),
     [queryCollections]
   );
+  const collectionOptions = useMemo(() => {
+    const byId = new Map<string, KnowledgebaseCollection>();
+    const addCollection = (collection: KnowledgebaseCollection | string | undefined) => {
+      const collectionId =
+        typeof collection === "string"
+          ? collection.trim()
+          : String(collection?.collection_id || "").trim();
+      if (!collectionId || byId.has(collectionId)) return;
+      byId.set(
+        collectionId,
+        typeof collection === "string"
+          ? { collection_id: collectionId }
+          : { ...collection, collection_id: collectionId }
+      );
+    };
+    addCollection(defaultCollectionId);
+    for (const collection of collections) addCollection(collection);
+    addCollection(currentCollection);
+    return Array.from(byId.values()).sort((a, b) =>
+      String(a.collection_id).localeCompare(String(b.collection_id))
+    );
+  }, [collections, currentCollection, defaultCollectionId]);
+  const collectionSelectValue = collectionOptions.some(
+    (collection) => String(collection.collection_id || "").trim() === currentCollection
+  )
+    ? currentCollection
+    : "__custom__";
   const selectedDocumentSet = useMemo(
     () => new Set(selectedDocumentRecords.map((record) => record.key)),
     [selectedDocumentRecords]
@@ -638,6 +666,7 @@ export function KnowledgebaseUploadPanel({
     if (panelRef.current) renderIcons(panelRef.current);
   }, [
     collections.length,
+    collectionOptions.length,
     rows.length,
     documentPage,
     documentPageSize,
@@ -657,6 +686,7 @@ export function KnowledgebaseUploadPanel({
     selectedDocumentQuery.isFetching,
     previewExpanded,
     editMode,
+    panelCollapsed,
   ]);
 
   const clearFinishedUploads = () => {
@@ -1098,31 +1128,72 @@ export function KnowledgebaseUploadPanel({
             <i data-lucide="sparkles"></i>
             Reindex
           </button>
+          <button
+            type="button"
+            className="tcp-btn"
+            onClick={() => setPanelCollapsed((current) => !current)}
+          >
+            <i data-lucide={panelCollapsed ? "chevron-down" : "chevron-up"}></i>
+            {panelCollapsed ? "Expand" : "Collapse"}
+          </button>
         </Toolbar>
       }
     >
-      <div ref={panelRef} className="grid gap-4 p-4">
+      <div ref={panelRef} className={panelCollapsed ? "hidden" : "grid gap-4 p-4"}>
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
           <div className="grid gap-2">
             <label
               className="tcp-subtle text-xs uppercase tracking-wide"
-              htmlFor="kb-collection-id"
+              htmlFor="kb-collection-select"
             >
-              Collection ID
+              Collection
             </label>
-            <input
-              id="kb-collection-id"
-              className="tcp-input"
-              value={collectionId}
-              onChange={(event) => {
-                setCollectionTouched(true);
-                setCollectionId(event.target.value);
-              }}
-              placeholder="customer-slug"
-              spellCheck={false}
-            />
+            <div className="grid gap-2 md:grid-cols-[minmax(180px,0.7fr)_minmax(220px,1fr)]">
+              <select
+                id="kb-collection-select"
+                className="tcp-input"
+                value={collectionSelectValue}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setCollectionTouched(true);
+                  if (next === "__custom__") {
+                    setCollectionId("");
+                    return;
+                  }
+                  setCollectionId(next);
+                }}
+              >
+                {collectionOptions.length ? (
+                  collectionOptions.map((collection) => {
+                    const name = String(collection.collection_id || "").trim();
+                    return (
+                      <option key={name} value={name}>
+                        {name}
+                        {typeof collection.document_count === "number"
+                          ? ` (${collection.document_count})`
+                          : ""}
+                      </option>
+                    );
+                  })
+                ) : (
+                  <option value="">No collections yet</option>
+                )}
+                <option value="__custom__">New collection...</option>
+              </select>
+              <input
+                id="kb-collection-id"
+                className="tcp-input"
+                value={collectionId}
+                onChange={(event) => {
+                  setCollectionTouched(true);
+                  setCollectionId(event.target.value);
+                }}
+                placeholder="new-customer-collection"
+                spellCheck={false}
+              />
+            </div>
             <div className="tcp-subtle text-xs">
-              This collection groups the docs the KB MCP searches. It is not a raw filesystem path.
+              Pick an existing KB MCP collection, or type a new collection ID before uploading.
             </div>
           </div>
           <div className="flex items-end gap-2">
@@ -1349,7 +1420,7 @@ export function KnowledgebaseUploadPanel({
                       <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
                         <span>Per page</span>
                         <select
-                          className="tcp-input h-8 w-20 text-xs"
+                          className="tcp-select h-8 min-w-[5.5rem] px-3 text-center text-sm font-semibold tabular-nums text-slate-100 [text-align-last:center]"
                           value={documentPageSize}
                           onChange={(event) => {
                             setDocumentPageSize(
@@ -1438,6 +1509,14 @@ export function KnowledgebaseUploadPanel({
                                 }`.trim()}
                                 onClick={() => {
                                   const selection = toDocumentSelection(document);
+                                  if (active) {
+                                    setSelectedDocumentKey("");
+                                    setSelectedDocumentRef(null);
+                                    setPreviewExpanded(false);
+                                    setEditMode(false);
+                                    setEditError("");
+                                    return;
+                                  }
                                   setSelectedDocumentKey(identity);
                                   if (selection) setSelectedDocumentRef(selection);
                                   setPreviewExpanded(true);

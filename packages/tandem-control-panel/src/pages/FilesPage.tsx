@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { renderIcons } from "../app/icons.js";
 import { renderMarkdownSafe } from "../lib/markdown";
@@ -18,6 +19,7 @@ const EXPLORER_BUCKETS = ["uploads", "artifacts", "exports"];
 const TEXT_PREVIEW_KINDS = new Set(["text", "markdown", "json", "yaml"]);
 const FILE_PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_FILE_PAGE_SIZE = 25;
+type FileSurface = "workspace" | "managed";
 
 type FileRow = {
   name: string;
@@ -54,6 +56,20 @@ function pathDepth(path: string) {
   return clean.split("/").filter(Boolean).length;
 }
 
+function normalizeWorkspaceExplorerPath(raw: string, allowEmpty = true) {
+  const text = String(raw || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+  if (!text) return allowEmpty ? "" : null;
+  if (text.includes("\0")) return null;
+  const parts = text.split("/").filter(Boolean);
+  if (!parts.length) return allowEmpty ? "" : null;
+  if (parts.some((part) => part === "." || part === "..")) return null;
+  return parts.join("/");
+}
+
 function clampPage(page: number, totalPages: number) {
   if (!Number.isFinite(page) || page < 1) return 1;
   if (!Number.isFinite(totalPages) || totalPages < 1) return 1;
@@ -74,6 +90,9 @@ export function FilesPage({ api, toast }: AppPageProps) {
   const capabilities = useCapabilities();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadFolderInputRef = useRef<HTMLInputElement | null>(null);
+  const [fileSurface, setFileSurface] = useState<FileSurface>("managed");
+  const [filesPanelCollapsed, setFilesPanelCollapsed] = useState(false);
   const [dir, setDir] = useState("");
   const [selectedPath, setSelectedPath] = useState("");
   const [createDirectoryDialog, setCreateDirectoryDialog] = useState<{
@@ -93,15 +112,29 @@ export function FilesPage({ api, toast }: AppPageProps) {
   useEffect(() => {
     const handoff = consumeFilesExplorerHandoff();
     if (!handoff) return;
+    setFileSurface("managed");
     if (handoff.dir) setDir(handoff.dir);
     else if (handoff.path) setDir(parentManagedFilesExplorerDir(handoff.path));
     setSelectedPath(handoff.path || handoff.dir || "");
   }, []);
 
+  const workspaceFilesAvailable =
+    capabilities.data?.workspace_files_available === true ||
+    capabilities.data?.hosted_managed === true;
+
+  useEffect(() => {
+    if (!workspaceFilesAvailable) return;
+    if (fileSurface !== "managed" || dir || selectedPath) return;
+    setFileSurface("workspace");
+  }, [workspaceFilesAvailable, fileSurface, dir, selectedPath]);
+
+  const isWorkspaceMode = fileSurface === "workspace";
+  const filesApiBase = isWorkspaceMode ? "/api/workspace/files" : "/api/files";
+
   const filesQuery = useQuery({
-    queryKey: ["files", dir],
+    queryKey: ["files", fileSurface, dir],
     queryFn: async () =>
-      api(`/api/files/list?dir=${encodeURIComponent(dir)}`).catch(() => ({
+      api(`${filesApiBase}/list?dir=${encodeURIComponent(dir)}`).catch(() => ({
         dir,
         parent: null,
         directories: [],
@@ -158,12 +191,13 @@ export function FilesPage({ api, toast }: AppPageProps) {
   const selectedMime = String(selectedFile?.mime || "").trim();
   const selectedPreviewKind = String(selectedFile?.previewKind || "").trim();
   const selectedDownloadUrl =
-    selectedFile?.downloadUrl || `/api/files/download?path=${encodeURIComponent(selectedPath)}`;
+    selectedFile?.downloadUrl ||
+    `${filesApiBase}/download?path=${encodeURIComponent(selectedPath)}`;
   const selectedTextPreview = useQuery({
-    queryKey: ["files", "read", selectedPath],
+    queryKey: ["files", fileSurface, "read", selectedPath],
     enabled: !!selectedFile && TEXT_PREVIEW_KINDS.has(selectedPreviewKind),
     queryFn: async () =>
-      api(`/api/files/read?path=${encodeURIComponent(selectedPath)}`).catch((error) => ({
+      api(`${filesApiBase}/read?path=${encodeURIComponent(selectedPath)}`).catch((error) => ({
         ok: false,
         previewable: false,
         reason: "unavailable",
@@ -193,20 +227,37 @@ export function FilesPage({ api, toast }: AppPageProps) {
     selectedDirectory,
     uploadRows.length,
     rootDir,
+    fileSurface,
+    filesPanelCollapsed,
     selectedTextPreview.data?.previewable,
   ]);
 
   const uploadOne = useMutation({
-    mutationFn: ({ file, targetDir }: { file: File; targetDir: string }) =>
+    mutationFn: ({
+      file,
+      targetDir,
+      surface,
+      relativePath,
+    }: {
+      file: File;
+      targetDir: string;
+      surface: FileSurface;
+      relativePath?: string;
+    }) =>
       new Promise<any>((resolve, reject) => {
         const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         setUploadRows((prev) => [...prev, { id, name: file.name, progress: 0, error: "" }]);
 
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", `/api/files/upload?dir=${encodeURIComponent(targetDir)}`);
+        const endpoint =
+          surface === "workspace" ? "/api/workspace/files/upload" : "/api/files/upload";
+        xhr.open("POST", `${endpoint}?dir=${encodeURIComponent(targetDir)}`);
         xhr.withCredentials = true;
         xhr.responseType = "json";
         xhr.setRequestHeader("x-file-name", encodeURIComponent(file.name));
+        if (surface === "workspace" && relativePath) {
+          xhr.setRequestHeader("x-relative-path", encodeURIComponent(relativePath));
+        }
 
         xhr.upload.onprogress = (event) => {
           if (!event.lengthComputable) return;
@@ -251,13 +302,15 @@ export function FilesPage({ api, toast }: AppPageProps) {
       if (nextPath) {
         const nextDir =
           String(vars.targetDir || "").trim() || parentManagedFilesExplorerDir(nextPath);
-        if (!dir && nextDir === "uploads") setDir("uploads");
+        if (vars.surface === "managed" && !dir && nextDir === "uploads") setDir("uploads");
         setSelectedPath(nextPath);
       }
       await queryClient.invalidateQueries({ queryKey: ["files"] });
       toast(
         "ok",
-        `Uploaded ${String(vars.file?.name || "file")} into ${vars.targetDir || "uploads"}.`
+        `Uploaded ${String(vars.file?.name || "file")} into ${
+          vars.targetDir || (vars.surface === "workspace" ? "Workspace" : "uploads")
+        }.`
       );
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
@@ -265,7 +318,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
 
   const createDirectory = useMutation({
     mutationFn: async (path: string) =>
-      api("/api/files/mkdir", {
+      api(`${filesApiBase}/mkdir`, {
         method: "POST",
         body: JSON.stringify({ path }),
       }),
@@ -284,22 +337,27 @@ export function FilesPage({ api, toast }: AppPageProps) {
   const uploadFiles = async (fileList: FileList | null) => {
     const filesToUpload = [...(fileList || [])];
     if (!filesToUpload.length) return;
-    const targetDir = dir || "uploads";
+    const targetDir = isWorkspaceMode ? dir : dir || "uploads";
     for (const file of filesToUpload) {
-      await uploadOne.mutateAsync({ file, targetDir }).catch(() => undefined);
+      const relativePath = isWorkspaceMode
+        ? String((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)
+        : undefined;
+      await uploadOne
+        .mutateAsync({ file, targetDir, surface: fileSurface, relativePath })
+        .catch(() => undefined);
     }
-    if (!dir) setDir("uploads");
+    if (!isWorkspaceMode && !dir) setDir("uploads");
   };
 
   const handleCreateDirectory = () => {
     const baseDir = String(dir || "").trim();
-    if (!baseDir) {
+    if (!isWorkspaceMode && !baseDir) {
       toast("warn", "Choose a bucket before creating folders.");
       return;
     }
     setCreateDirectoryDialog({
       baseDir,
-      value: "knowledgebooks/new-collection",
+      value: isWorkspaceMode ? "new-folder" : "knowledgebooks/new-collection",
     });
   };
 
@@ -315,11 +373,13 @@ export function FilesPage({ api, toast }: AppPageProps) {
       return;
     }
     setCreateDirectoryDialog(null);
-    await createDirectory.mutateAsync(`${dialog.baseDir}/${cleaned}`);
+    await createDirectory.mutateAsync(dialog.baseDir ? `${dialog.baseDir}/${cleaned}` : cleaned);
   };
 
   const openDirectory = (path: string) => {
-    const next = normalizeManagedFilesExplorerPath(path);
+    const next = isWorkspaceMode
+      ? normalizeWorkspaceExplorerPath(path, true)
+      : normalizeManagedFilesExplorerPath(path);
     if (!next) return;
     setDir(next);
     setSelectedPath(next);
@@ -385,7 +445,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
 
     for (const target of targets) {
       try {
-        await api("/api/files/delete", {
+        await api(`${filesApiBase}/delete`, {
           method: "POST",
           body: JSON.stringify({ path: target.path }),
         });
@@ -412,7 +472,22 @@ export function FilesPage({ api, toast }: AppPageProps) {
     }
   };
 
-  const currentLabel = !rootDir ? "Root" : rootDir;
+  const switchFileSurface = (surface: FileSurface) => {
+    if (surface === fileSurface) return;
+    setFileSurface(surface);
+    setDir("");
+    setSelectedPath("");
+    setSelectedFilePaths([]);
+    setFilePage(1);
+  };
+
+  const currentLabel = isWorkspaceMode
+    ? !rootDir
+      ? "Workspace"
+      : rootDir
+    : !rootDir
+      ? "Root"
+      : rootDir;
   const currentPreviewReason = String(selectedTextPreview.data?.reason || "").trim();
   const selectedPreviewText = String(selectedTextPreview.data?.text || "").trim();
   const bucketCount = EXPLORER_BUCKETS.length;
@@ -430,7 +505,11 @@ export function FilesPage({ api, toast }: AppPageProps) {
       <PanelCard
         fullHeight
         title="Files"
-        subtitle="Browse managed uploads, published artifacts, and exports."
+        subtitle={
+          isWorkspaceMode
+            ? "Browse and edit the hosted workspace."
+            : "Browse managed uploads, published artifacts, and exports."
+        }
         actions={
           <Toolbar className="justify-start">
             <button
@@ -442,12 +521,27 @@ export function FilesPage({ api, toast }: AppPageProps) {
               <i data-lucide="upload"></i>
               Upload
             </button>
+            {isWorkspaceMode ? (
+              <button
+                type="button"
+                className="tcp-btn"
+                onClick={() => uploadFolderInputRef.current?.click()}
+                disabled={uploadOne.isPending}
+              >
+                <i data-lucide="folder-up"></i>
+                Upload folder
+              </button>
+            ) : null}
             <button
               type="button"
               className="tcp-btn"
               onClick={handleCreateDirectory}
-              disabled={createDirectory.isPending || !dir}
-              title={!dir ? "Choose a bucket first" : "Create a folder inside the current path"}
+              disabled={createDirectory.isPending || (!isWorkspaceMode && !dir)}
+              title={
+                !isWorkspaceMode && !dir
+                  ? "Choose a bucket first"
+                  : "Create a folder inside the current path"
+              }
             >
               <i data-lucide="folder-plus"></i>
               New folder
@@ -460,18 +554,62 @@ export function FilesPage({ api, toast }: AppPageProps) {
               <i data-lucide="corner-up-left"></i>
               Up
             </button>
+            <button
+              type="button"
+              className="tcp-btn"
+              onClick={() => setFilesPanelCollapsed((current) => !current)}
+            >
+              <i data-lucide={filesPanelCollapsed ? "chevron-down" : "chevron-up"}></i>
+              {filesPanelCollapsed ? "Expand" : "Collapse"}
+            </button>
           </Toolbar>
         }
       >
-        <div ref={rootRef} className="grid min-h-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)_360px]">
+        <div
+          ref={rootRef}
+          className={
+            filesPanelCollapsed
+              ? "hidden"
+              : "grid min-h-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)_360px]"
+          }
+        >
           <PanelCard
             fullHeight
             className="overflow-hidden"
-            title="Buckets"
-            subtitle="Top-level customer-visible folders."
-            actions={<Badge tone="ghost">{bucketCount}</Badge>}
+            title="Locations"
+            subtitle={isWorkspaceMode ? "Hosted workspace root." : "Managed file buckets."}
+            actions={<Badge tone="ghost">{isWorkspaceMode ? "workspace" : bucketCount}</Badge>}
           >
             <div className="grid min-h-0 gap-3 p-4">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  className={`tcp-btn h-9 justify-center px-2 text-xs ${
+                    isWorkspaceMode ? "border-sky-500/40 bg-sky-950/20" : ""
+                  }`.trim()}
+                  onClick={() => switchFileSurface("workspace")}
+                  disabled={!workspaceFilesAvailable}
+                  title={
+                    workspaceFilesAvailable
+                      ? "Browse the workspace"
+                      : "Workspace root is not configured"
+                  }
+                >
+                  <i data-lucide="folder-code"></i>
+                  Workspace
+                </button>
+                <button
+                  type="button"
+                  className={`tcp-btn h-9 justify-center px-2 text-xs ${
+                    !isWorkspaceMode ? "border-sky-500/40 bg-sky-950/20" : ""
+                  }`.trim()}
+                  onClick={() => switchFileSurface("managed")}
+                >
+                  <i data-lucide="archive"></i>
+                  Managed
+                </button>
+              </div>
+
               <div className="grid gap-1">
                 <button
                   type="button"
@@ -479,34 +617,36 @@ export function FilesPage({ api, toast }: AppPageProps) {
                   onClick={openRoot}
                 >
                   <i data-lucide="hard-drive"></i>
-                  Root
+                  {isWorkspaceMode ? "Workspace root" : "Root"}
                 </button>
-                {EXPLORER_BUCKETS.map((bucket) => {
-                  const active = rootDir === bucket;
-                  return (
-                    <button
-                      key={bucket}
-                      type="button"
-                      className={`tcp-list-item w-full text-left ${active ? "border-sky-500/40 bg-sky-950/20" : ""}`}
-                      onClick={() => openDirectory(bucket)}
-                    >
-                      <i data-lucide="folder-open"></i>
-                      <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                        <span className="truncate">{bucket}</span>
-                        <span className="tcp-subtle text-[11px]">
-                          {bucket === "uploads" ? "managed" : bucket}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
+                {!isWorkspaceMode
+                  ? EXPLORER_BUCKETS.map((bucket) => {
+                      const active = rootDir === bucket;
+                      return (
+                        <button
+                          key={bucket}
+                          type="button"
+                          className={`tcp-list-item w-full text-left ${active ? "border-sky-500/40 bg-sky-950/20" : ""}`}
+                          onClick={() => openDirectory(bucket)}
+                        >
+                          <i data-lucide="folder-open"></i>
+                          <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                            <span className="truncate">{bucket}</span>
+                            <span className="tcp-subtle text-[11px]">
+                              {bucket === "uploads" ? "managed" : bucket}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })
+                  : null}
               </div>
 
               <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                 <div className="tcp-subtle text-xs uppercase tracking-wide">Path</div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button type="button" className="tcp-btn h-7 px-2 text-xs" onClick={openRoot}>
-                    Root
+                    {isWorkspaceMode ? "Workspace" : "Root"}
                   </button>
                   {rootDir
                     .split("/")
@@ -562,7 +702,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
             className="overflow-hidden"
             title={currentLabel}
             subtitle={
-              currentDepth === 0
+              !isWorkspaceMode && currentDepth === 0
                 ? "Select a bucket to browse its files."
                 : `${directories.length} folder${directories.length === 1 ? "" : "s"} and ${files.length} file${files.length === 1 ? "" : "s"}`
             }
@@ -588,7 +728,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
               </div>
 
               <div className="grid min-h-0 gap-2 overflow-auto pr-1">
-                {currentDepth === 0 ? (
+                {!isWorkspaceMode && currentDepth === 0 ? (
                   <EmptyState
                     text="Pick a bucket on the left, or upload a file to start browsing."
                     title="No folder selected"
@@ -657,7 +797,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
                           <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
                             <span>Per page</span>
                             <select
-                              className="tcp-input h-8 w-20 text-xs"
+                              className="tcp-select h-8 min-w-[5.5rem] px-3 text-center text-sm font-semibold tabular-nums text-slate-100 [text-align-last:center]"
                               value={filePageSize}
                               onChange={(event) => {
                                 setFilePageSize(
@@ -725,7 +865,9 @@ export function FilesPage({ api, toast }: AppPageProps) {
                                   className={`tcp-list-item min-w-0 flex-1 text-left ${
                                     active ? "border-sky-500/40 bg-sky-950/20" : ""
                                   }`}
-                                  onClick={() => setSelectedPath(path)}
+                                  onClick={() =>
+                                    setSelectedPath((current) => (current === path ? "" : path))
+                                  }
                                 >
                                   <i data-lucide="file-text"></i>
                                   <div className="min-w-0 flex-1">
@@ -917,6 +1059,17 @@ export function FilesPage({ api, toast }: AppPageProps) {
           (event.target as HTMLInputElement).value = "";
         }}
       />
+      <input
+        ref={uploadFolderInputRef}
+        type="file"
+        className="hidden"
+        multiple
+        {...({ webkitdirectory: "", directory: "" } as any)}
+        onChange={(event) => {
+          void uploadFiles((event.target as HTMLInputElement).files);
+          (event.target as HTMLInputElement).value = "";
+        }}
+      />
 
       <PromptDialog
         open={!!createDirectoryDialog}
@@ -924,12 +1077,15 @@ export function FilesPage({ api, toast }: AppPageProps) {
         message={
           <span>
             Create a new folder inside{" "}
-            <strong>{createDirectoryDialog?.baseDir || "current path"}</strong>.
+            <strong>
+              {createDirectoryDialog?.baseDir || (isWorkspaceMode ? "Workspace" : "current path")}
+            </strong>
+            .
           </span>
         }
         label="Folder path"
         value={createDirectoryDialog?.value || ""}
-        placeholder="knowledgebooks/new-collection"
+        placeholder={isWorkspaceMode ? "new-folder" : "knowledgebooks/new-collection"}
         confirmLabel="Create folder"
         confirmIcon="folder-plus"
         confirmDisabled={!String(createDirectoryDialog?.value || "").trim()}

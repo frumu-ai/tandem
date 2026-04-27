@@ -262,6 +262,7 @@ const SESSION_TTL_MS =
 const FILES_ROOT = resolve(
   process.env.TANDEM_CONTROL_PANEL_FILES_ROOT || resolveDefaultChannelUploadsRoot()
 );
+const WORKSPACE_FILES_ROOT_ENV = String(process.env.TANDEM_CONTROL_PANEL_WORKSPACE_ROOT || "").trim();
 const MAX_UPLOAD_BYTES = Math.max(
   1,
   Number.parseInt(
@@ -1346,6 +1347,7 @@ async function getInstallProfile({ acaAvailable = false, acaReason = "" } = {}) 
     acaAvailable,
   });
   const summary = summarizeControlPanelConfig(config);
+  const workspaceFilesRoot = resolveWorkspaceFilesRoot();
   return {
     control_panel_mode: mode.mode,
     control_panel_mode_source: mode.source,
@@ -1364,6 +1366,8 @@ async function getInstallProfile({ acaAvailable = false, acaReason = "" } = {}) 
     hosted_release_version: String(summary.hosted?.release_version || "").trim(),
     hosted_release_channel: String(summary.hosted?.release_channel || "").trim(),
     hosted_update_policy: String(summary.hosted?.update_policy || "").trim(),
+    workspace_files_root: workspaceFilesRoot || "",
+    workspace_files_available: !!workspaceFilesRoot,
     aca_integration: !!acaAvailable,
     aca_reason: acaReason || "",
   };
@@ -1671,6 +1675,46 @@ function toSafeRelPath(raw, allowEmpty = true) {
   return visible;
 }
 
+function resolveWorkspaceFilesRoot() {
+  const candidate = WORKSPACE_FILES_ROOT_ENV || (isHostedManagedControlPanel() ? "/workspace/repos" : "");
+  if (!candidate) return null;
+  return resolve(candidate);
+}
+
+function normalizeWorkspaceFilesPath(raw, allowEmpty = true) {
+  const root = resolveWorkspaceFilesRoot();
+  if (!root) return null;
+  const input = String(raw || "")
+    .trim()
+    .replace(/\\/g, "/");
+  if (!input) return allowEmpty ? "" : null;
+  if (input.includes("\0")) return null;
+  const parts = input.split("/").filter(Boolean);
+  if (!parts.length) return allowEmpty ? "" : null;
+  if (parts.some((part) => part === "." || part === "..")) return null;
+  const full = input.startsWith("/") ? resolve(input) : resolve(root, input);
+  if (full !== root && !full.startsWith(`${root}/`)) return null;
+  const rel = relative(root, full).replace(/\\/g, "/");
+  if (!rel) return allowEmpty ? "" : null;
+  return rel;
+}
+
+function workspaceRelToFullPath(relPath) {
+  const root = resolveWorkspaceFilesRoot();
+  if (!root) return null;
+  const full = resolve(root, String(relPath || ""));
+  if (full !== root && !full.startsWith(`${root}/`)) return null;
+  return full;
+}
+
+function parentWorkspacePath(raw) {
+  const normalized = normalizeWorkspaceFilesPath(raw, true);
+  if (!normalized) return null;
+  const idx = normalized.lastIndexOf("/");
+  if (idx < 0) return "";
+  return normalized.slice(0, idx);
+}
+
 function toSafeRelFileName(rawName) {
   const cleaned = basename(String(rawName || "").trim()).replace(/[\0]/g, "");
   if (!cleaned || cleaned === "." || cleaned === "..") return null;
@@ -1721,6 +1765,60 @@ async function ensureUniqueVisibleRelPath(visiblePath) {
       return physicalFilesPathToVisiblePath(candidate);
     }
   }
+}
+
+async function ensureUniqueWorkspaceRelPath(workspacePath) {
+  const ext = extname(workspacePath);
+  const stem = ext ? workspacePath.slice(0, -ext.length) : workspacePath;
+  let candidate = workspacePath;
+  let counter = 1;
+  while (true) {
+    const full = workspaceRelToFullPath(candidate);
+    if (!full) throw new Error("Invalid workspace path.");
+    try {
+      await stat(full);
+      counter += 1;
+      candidate = `${stem}-${counter}${ext}`;
+    } catch {
+      return candidate;
+    }
+  }
+}
+
+function decodeHeaderValue(value) {
+  const raw = Array.isArray(value) ? String(value[0] || "") : String(value || "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+async function workspaceFileEntry(relPath, info = null) {
+  const full = workspaceRelToFullPath(relPath);
+  if (!full) return null;
+  const details = info || (await stat(full).catch(() => null));
+  if (!details) return null;
+  const name = basename(full);
+  if (details.isDirectory()) {
+    return {
+      name,
+      path: relPath,
+      updatedAt: Number(details.mtimeMs || 0),
+      previewKind: "directory",
+    };
+  }
+  if (!details.isFile()) return null;
+  const mime = inferFileMime(relPath || name);
+  return {
+    name,
+    path: relPath,
+    size: Number(details.size || 0),
+    updatedAt: Number(details.mtimeMs || 0),
+    mime,
+    previewKind: inferFilePreviewKind(relPath || name, mime),
+    downloadUrl: `/api/workspace/files/download?path=${encodeURIComponent(relPath)}`,
+  };
 }
 
 async function handleFilesApi(req, res, _session) {
@@ -2013,6 +2111,255 @@ async function handleFilesApi(req, res, _session) {
       }
       await rm(resolve(FILES_ROOT, visibleFilesPathToPhysicalPath(rel)), { force: true });
       sendJson(res, 200, { ok: true, path: rel });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  return false;
+}
+
+async function handleWorkspaceFilesApi(req, res, _session) {
+  const url = new URL(req.url, `http://127.0.0.1:${PORTAL_PORT}`);
+  const pathname = url.pathname;
+  const workspaceRoot = resolveWorkspaceFilesRoot();
+  if (!workspaceRoot) {
+    sendJson(res, 503, {
+      ok: false,
+      error: "Workspace files root is not configured.",
+    });
+    return true;
+  }
+
+  if (pathname === "/api/workspace/files/list" && req.method === "GET") {
+    const dirRel = normalizeWorkspaceFilesPath(url.searchParams.get("dir") || "", true);
+    if (dirRel === null) {
+      sendJson(res, 400, { ok: false, error: "Invalid workspace directory path." });
+      return true;
+    }
+    try {
+      await mkdir(workspaceRoot, { recursive: true });
+      const dirFull = workspaceRelToFullPath(dirRel);
+      if (!dirFull) throw new Error("Invalid workspace directory path.");
+      const info = await stat(dirFull);
+      if (!info.isDirectory()) throw new Error("Workspace path is not a directory.");
+      const entries = await readdir(dirFull, { withFileTypes: true });
+      const directories = [];
+      const files = [];
+      for (const entry of entries) {
+        const rel = dirRel ? `${dirRel}/${entry.name}` : entry.name;
+        const childFull = workspaceRelToFullPath(rel);
+        if (!childFull) continue;
+        const childInfo = await stat(childFull).catch(() => null);
+        if (!childInfo) continue;
+        const row = await workspaceFileEntry(rel, childInfo);
+        if (!row) continue;
+        if (entry.isDirectory()) directories.push(row);
+        else if (entry.isFile()) files.push(row);
+      }
+      directories.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      files.sort(
+        (a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0) || String(a.name).localeCompare(String(b.name))
+      );
+      sendJson(res, 200, {
+        ok: true,
+        root: workspaceRoot,
+        dir: dirRel,
+        parent: parentWorkspacePath(dirRel),
+        directories,
+        files,
+      });
+    } catch (e) {
+      sendJson(res, 404, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/workspace/files/upload" && req.method === "POST") {
+    const rawName = decodeHeaderValue(req.headers["x-file-name"]);
+    const rawRelativePath = decodeHeaderValue(req.headers["x-relative-path"]);
+    const uploadPathRaw = String(rawRelativePath || rawName || "").trim();
+    if (!uploadPathRaw || uploadPathRaw.startsWith("/") || uploadPathRaw.includes("\0")) {
+      sendJson(res, 400, { ok: false, error: "Missing or invalid upload path." });
+      return true;
+    }
+    const uploadRel = normalizeWorkspaceFilesPath(uploadPathRaw, false);
+    const dirRel = normalizeWorkspaceFilesPath(url.searchParams.get("dir") || "", true);
+    if (uploadRel === null || dirRel === null) {
+      sendJson(res, 400, { ok: false, error: "Invalid upload path." });
+      return true;
+    }
+    const relRaw = dirRel ? `${dirRel}/${uploadRel}` : uploadRel;
+    let relPath = normalizeWorkspaceFilesPath(relRaw, false);
+    if (!relPath) {
+      sendJson(res, 400, { ok: false, error: "Invalid upload path." });
+      return true;
+    }
+    try {
+      await mkdir(workspaceRoot, { recursive: true });
+      relPath = await ensureUniqueWorkspaceRelPath(relPath);
+      const fullPath = workspaceRelToFullPath(relPath);
+      if (!fullPath) throw new Error("Invalid upload path.");
+      await mkdir(dirname(fullPath), { recursive: true });
+      let bytes = 0;
+      const guard = new Transform({
+        transform(chunk, _enc, cb) {
+          bytes += chunk.length;
+          if (bytes > MAX_UPLOAD_BYTES) {
+            cb(new Error(`Upload exceeds limit of ${MAX_UPLOAD_BYTES} bytes.`));
+            return;
+          }
+          cb(null, chunk);
+        },
+      });
+      await pipeline(req, guard, createWriteStream(fullPath, { flags: "wx" }));
+      const meta = await stat(fullPath);
+      const mime = inferFileMime(relPath);
+      sendJson(res, 200, {
+        ok: true,
+        root: workspaceRoot,
+        name: basename(fullPath),
+        path: relPath,
+        absPath: fullPath,
+        size: meta.size,
+        mime,
+        previewKind: inferFilePreviewKind(relPath, mime),
+        downloadUrl: `/api/workspace/files/download?path=${encodeURIComponent(relPath)}`,
+      });
+    } catch (e) {
+      if (e && typeof e === "object" && "code" in e && e.code === "EEXIST") {
+        sendJson(res, 409, { ok: false, error: "File already exists." });
+      } else {
+        sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return true;
+  }
+
+  if (pathname === "/api/workspace/files/read" && req.method === "GET") {
+    const rel = normalizeWorkspaceFilesPath(url.searchParams.get("path") || "", false);
+    if (!rel) {
+      sendJson(res, 400, { ok: false, error: "Missing or invalid workspace file path." });
+      return true;
+    }
+    const full = workspaceRelToFullPath(rel);
+    if (!full) {
+      sendJson(res, 400, { ok: false, error: "Invalid workspace file path." });
+      return true;
+    }
+    try {
+      const info = await stat(full);
+      if (!info.isFile()) throw new Error("Not a file");
+      const mime = inferFileMime(rel);
+      const previewKind = inferFilePreviewKind(rel, mime);
+      const previewable = ["text", "markdown", "json", "yaml"].includes(previewKind);
+      if (!previewable || info.size > MAX_PREVIEW_BYTES) {
+        sendJson(res, 200, {
+          ok: true,
+          root: workspaceRoot,
+          path: rel,
+          absPath: full,
+          name: basename(full),
+          size: info.size,
+          mime,
+          previewKind,
+          previewable: false,
+          reason: !previewable ? "not_previewable" : "too_large",
+          downloadUrl: `/api/workspace/files/download?path=${encodeURIComponent(rel)}`,
+        });
+        return true;
+      }
+      const text = await readFile(full, "utf8");
+      sendJson(res, 200, {
+        ok: true,
+        root: workspaceRoot,
+        path: rel,
+        absPath: full,
+        name: basename(full),
+        size: info.size,
+        mime,
+        previewKind,
+        previewable: true,
+        downloadUrl: `/api/workspace/files/download?path=${encodeURIComponent(rel)}`,
+        text,
+      });
+    } catch {
+      sendJson(res, 404, { ok: false, error: "File not found." });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/workspace/files/mkdir" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const rel = normalizeWorkspaceFilesPath(body?.path || "", false);
+      if (!rel) {
+        sendJson(res, 400, { ok: false, error: "Missing or invalid workspace directory path." });
+        return true;
+      }
+      const full = workspaceRelToFullPath(rel);
+      if (!full) throw new Error("Invalid workspace directory path.");
+      await mkdir(full, { recursive: true });
+      const info = await stat(full);
+      sendJson(res, 200, {
+        ok: true,
+        root: workspaceRoot,
+        path: rel,
+        absPath: full,
+        updatedAt: info.mtimeMs,
+        previewKind: "directory",
+      });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/workspace/files/download" && req.method === "GET") {
+    const rel = normalizeWorkspaceFilesPath(url.searchParams.get("path") || "", false);
+    if (!rel) {
+      sendJson(res, 400, { ok: false, error: "Missing or invalid workspace file path." });
+      return true;
+    }
+    const full = workspaceRelToFullPath(rel);
+    if (!full) {
+      sendJson(res, 400, { ok: false, error: "Invalid workspace file path." });
+      return true;
+    }
+    try {
+      const info = await stat(full);
+      if (!info.isFile()) throw new Error("Not a file");
+      const mime = inferFileMime(rel);
+      res.writeHead(200, {
+        "content-type": mime,
+        "content-length": String(info.size),
+        "content-disposition": `attachment; filename="${basename(full).replace(/"/g, "")}"`,
+      });
+      createReadStream(full).pipe(res);
+    } catch {
+      sendJson(res, 404, { ok: false, error: "File not found." });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/workspace/files/delete" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const rel = normalizeWorkspaceFilesPath(body?.path || "", false);
+      if (!rel) {
+        sendJson(res, 400, { ok: false, error: "Missing or invalid workspace file path." });
+        return true;
+      }
+      const full = workspaceRelToFullPath(rel);
+      if (!full) throw new Error("Invalid workspace file path.");
+      const info = await stat(full);
+      if (!info.isFile()) {
+        sendJson(res, 400, { ok: false, error: "Only files can be deleted from this view." });
+        return true;
+      }
+      await rm(full, { force: true });
+      sendJson(res, 200, { ok: true, root: workspaceRoot, path: rel });
     } catch (e) {
       sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
@@ -5392,6 +5739,12 @@ async function handleApi(req, res) {
     return handleFilesApi(req, res, session);
   }
 
+  if (pathname.startsWith("/api/workspace/files")) {
+    const session = requireSession(req, res);
+    if (!session) return true;
+    return handleWorkspaceFilesApi(req, res, session);
+  }
+
   if (pathname.startsWith("/api/engine")) {
     const session = requireSession(req, res);
     if (!session) return true;
@@ -5499,6 +5852,7 @@ async function main() {
     log(`Engine mode:   ${isLocalEngineUrl(ENGINE_URL) ? "local" : "remote"}`);
     log(`Files root:    ${FILES_ROOT}`);
     log(`Files buckets: uploads, artifacts, exports`);
+    log(`Workspace root:${resolveWorkspaceFilesRoot() || "not configured"}`);
     log(`Build:         ${CONTROL_PANEL_BUILD_FINGERPRINT}`);
     log("=========================================");
   });

@@ -176,6 +176,8 @@ export function createCapabilitiesHandler(deps) {
       hosted_release_version: installProfile?.hosted_release_version || "",
       hosted_release_channel: installProfile?.hosted_release_channel || "",
       hosted_update_policy: installProfile?.hosted_update_policy || "",
+      workspace_files_root: installProfile?.workspace_files_root || "",
+      workspace_files_available: !!installProfile?.workspace_files_available,
       _internal: {
         capability_detect_duration_ms: durationMs,
       },
