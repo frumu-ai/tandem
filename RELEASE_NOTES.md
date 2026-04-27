@@ -4,7 +4,7 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.4.43 (Unreleased)
 
-This release fixes a Slack-only duplicate-reply bug on hosted Tandem servers that restart through the day.
+This release fixes two regressions that were degrading hosted Tandem servers: a Slack-only duplicate-reply loop after engine restarts, and a planner wrapper that refused structurally valid workflow plans whenever a model emitted an off-label `action` discriminant.
 
 ### Slack channel adapter no longer replays recent messages on engine restart
 
@@ -13,6 +13,19 @@ The Slack channel adapter polls `conversations.history` every three seconds and 
 Discord and Telegram never had this problem: Discord streams events from the gateway, and Telegram long-polls with `getUpdates` offsets the server treats as acks, so neither replays history when the adapter reconnects. Slack's polling adapter has no equivalent server-side ack, which is why the empty-string cursor was visible only on Slack.
 
 The Slack listener now seeds `last_ts` to the listener's startup wallclock formatted as a Slack `seconds.microseconds` timestamp, before the first poll, so only messages posted after the engine starts are picked up. The trade-off is that messages sent during the brief restart window are dropped instead of replayed; for hosted operator chat surfaces that is strongly preferable to spamming the same answer multiple times. A future change can persist `last_ts` per channel under the engine state directory if zero-loss semantics across restarts become important.
+
+### Wizard no longer falls back to a generic plan when the planner LLM hallucinates the wrapper action
+
+The Simple Wizard, Mission Builder, and chat-native automation drafts all share `try_llm_build_workflow_plan` in `tandem-plan-compiler`. The planner LLM is told to return one of two top-level shapes — `{"action":"build", ..., "plan":{...}}` or `{"action":"clarify", ..., "clarifier":{...}}` — and the wrapper deserialised `action` straight into a strict two-variant enum.
+
+After 0.4.41 the planner system prompt grew significantly: the approval-gate policy section, the phased-DAG decomposition guidance, and the teaching library now teach the planner step-level vocabulary like the `discover` / `synthesize` / `validate` / `deliver` phase ids and step ids such as `synthesize_analysis_outline`. Some planner models — most visibly `gpt-5.4-mini` selected via the wizard's planner model override — started writing those step-level labels into the wrapper `action` field, e.g. `{"action":"synthesize_analysis_outline", "plan":{...valid plan...}}`. `serde_json` rejected the wrapper with `unknown variant 'synthesize_analysis_outline', expected 'build' or 'clarify'`, the planner reported `invalid_json`, the wizard hid the structurally valid plan behind the "Planner returned a fallback draft" banner, and operators could not create new automations from the wizard at all.
+
+The fix has two halves:
+
+- The wrapper enum now has a `#[serde(other)]` `Unknown` variant so off-label discriminants no longer fail deserialisation. `PlannerBuildPayload::resolved_action` infers the canonical action from the payload shape: a `plan` field implies Build, a `clarifier` field implies Clarify, and the empty case falls through to Build so the existing empty-plan branch can produce a fallback draft with the assistant's text instead of erroring on the wrapper. The plan body still has to validate against the same `WorkflowPlan` schema as before, so this does not loosen any guardrail beyond the action-name string match.
+- The planner prompt now states explicitly that `action` MUST be the literal string `build` or `clarify` and never a step id or phase name, and that step-level concepts (`discover`, `synthesize`, `validate`, `deliver`, etc.) belong inside `plan.steps`, never in the wrapper.
+
+Three new `planner_build::tests` unit tests cover unknown-action-with-plan, unknown-action-with-clarifier, and canonical-action pass-through.
 
 ## v0.4.42 (Unreleased)
 

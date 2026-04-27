@@ -105,10 +105,17 @@ where
 enum PlannerBuildAction {
     Build,
     Clarify,
+    // Some planner models emit step-level vocabulary (e.g.
+    // `synthesize_analysis_outline`) for the wrapper action when the prompt
+    // teaches phase names alongside the wrapper schema. We catch unknown
+    // labels here and infer the real action from the payload shape below.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
 struct PlannerBuildPayload {
+    #[serde(default = "planner_build_action_default")]
     action: PlannerBuildAction,
     #[serde(default)]
     assistant_text: Option<String>,
@@ -117,6 +124,33 @@ struct PlannerBuildPayload {
     #[serde(default)]
     #[serde(alias = "workflow_plan")]
     plan: Option<Value>,
+}
+
+fn planner_build_action_default() -> PlannerBuildAction {
+    PlannerBuildAction::Unknown
+}
+
+impl PlannerBuildPayload {
+    /// Resolve the canonical action. If the planner emitted an unknown action
+    /// label, infer from the payload shape: a `plan` field implies Build, a
+    /// `clarifier` field implies Clarify. If neither is present, fall through
+    /// to Build so the empty-plan branch can produce a fallback workflow with
+    /// the assistant's text instead of erroring on the wrapper.
+    fn resolved_action(&self) -> PlannerBuildAction {
+        match self.action {
+            PlannerBuildAction::Build => PlannerBuildAction::Build,
+            PlannerBuildAction::Clarify => PlannerBuildAction::Clarify,
+            PlannerBuildAction::Unknown => {
+                if self.plan.is_some() {
+                    PlannerBuildAction::Build
+                } else if self.clarifier.is_some() {
+                    PlannerBuildAction::Clarify
+                } else {
+                    PlannerBuildAction::Build
+                }
+            }
+        }
+    }
 }
 
 pub async fn build_workflow_plan_with_planner<M, I, O, H>(
@@ -294,7 +328,10 @@ where
     )
     .await
     {
-        Ok(payload) => match payload.action {
+        Ok(payload) => match payload.resolved_action() {
+            PlannerBuildAction::Unknown => unreachable!(
+                "resolved_action() never returns Unknown; it always normalises to Build or Clarify"
+            ),
             PlannerBuildAction::Build => {
                 let Some(candidate) = payload.plan.and_then(|plan| {
                     decode_build_plan_candidate(
@@ -902,9 +939,10 @@ fn build_llm_workflow_creation_prompt<M: serde::Serialize>(
             "- plan email delivery only when the capability summary shows email_send or email_draft\n",
             "- default email delivery to inline body content\n",
             "- only plan an attachment when a workflow step is expected to produce a concrete attachment artifact such as an upload result or valid s3key\n",
-            "Return one of:\n",
+            "Return EXACTLY one of these two top-level shapes. The `action` field MUST be the literal string \"build\" or \"clarify\" — never a step id, phase name, or any other label:\n",
             "{{\"action\":\"build\",\"assistant_text\":\"...\",\"plan\":{{...full WorkflowPlan...}}}}\n",
             "{{\"action\":\"clarify\",\"assistant_text\":\"...\",\"clarifier\":{{\"field\":\"general\",\"question\":\"...\"}}}}\n",
+            "Step-level concepts like phase ids (`discover`, `synthesize`, `validate`, `deliver`) and step ids belong INSIDE plan.steps, NOT in the wrapper `action`.\n",
             "Original prompt:\n{}\n\n",
             "Normalized prompt:\n{}\n"
         ),
@@ -927,6 +965,56 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tandem_workflows::plan_package::AutomationV2ScheduleType;
+
+    #[test]
+    fn planner_payload_unknown_action_with_plan_resolves_to_build() {
+        let payload: PlannerBuildPayload = serde_json::from_value(json!({
+            "action": "synthesize_analysis_outline",
+            "assistant_text": "ok",
+            "plan": {"title": "Demo", "steps": []}
+        }))
+        .expect("payload with unknown action and a plan should still deserialize");
+        assert!(matches!(payload.action, PlannerBuildAction::Unknown));
+        assert!(matches!(
+            payload.resolved_action(),
+            PlannerBuildAction::Build
+        ));
+    }
+
+    #[test]
+    fn planner_payload_unknown_action_with_clarifier_resolves_to_clarify() {
+        let payload: PlannerBuildPayload = serde_json::from_value(json!({
+            "action": "ask_for_more_info",
+            "assistant_text": "need details",
+            "clarifier": {"field": "general", "question": "Which repo?"}
+        }))
+        .expect("payload with unknown action and a clarifier should still deserialize");
+        assert!(matches!(payload.action, PlannerBuildAction::Unknown));
+        assert!(matches!(
+            payload.resolved_action(),
+            PlannerBuildAction::Clarify
+        ));
+    }
+
+    #[test]
+    fn planner_payload_canonical_actions_pass_through() {
+        let build: PlannerBuildPayload = serde_json::from_value(json!({
+            "action": "build",
+            "plan": {"title": "Demo", "steps": []}
+        }))
+        .expect("canonical build action deserializes");
+        assert!(matches!(build.resolved_action(), PlannerBuildAction::Build));
+
+        let clarify: PlannerBuildPayload = serde_json::from_value(json!({
+            "action": "clarify",
+            "clarifier": {"field": "general", "question": "?"}
+        }))
+        .expect("canonical clarify action deserializes");
+        assert!(matches!(
+            clarify.resolved_action(),
+            PlannerBuildAction::Clarify
+        ));
+    }
 
     #[test]
     fn prepare_build_request_normalizes_and_defaults_fields() {
