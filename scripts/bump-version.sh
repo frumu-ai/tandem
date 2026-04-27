@@ -65,42 +65,51 @@ const pyprojectFiles = [
 const updatedFiles = [];
 
 const updateJson = (relativePath) => {
+  // Edit JSON files via targeted regex rather than JSON.parse + JSON.stringify
+  // so we preserve prettier's existing array/object formatting (single-line
+  // arrays, indentation, trailing newline). Round-tripping through
+  // JSON.stringify would reformat e.g. tauri.conf.json arrays from compact
+  // to multi-line on every run, generating spurious diffs.
   const filePath = path.join(rootDir, relativePath);
-  const content = fs.readFileSync(filePath, "utf8");
-  const data = JSON.parse(content);
-  data.version = version;
+  const original = fs.readFileSync(filePath, "utf8");
+  let content = original;
+
   const internalDeps = [
     ["@frumu/tandem", `^${version}`],
     ["@frumu/tandem-client", `^${version}`],
     ["@frumu/tandem-tui", `^${version}`],
     ["@frumu/tandem-panel", `^${version}`],
   ];
+
+  // Top-level "version" only — match a "version": "..." pair preceded by
+  // either the opening `{` or another field, before any nested objects'
+  // version fields. JSON files in this list put `version` near the top.
+  content = content.replace(
+    /^(\s*)"version"(\s*):(\s*)"[^"]*"/m,
+    `$1"version"$2:$3"${version}"`
+  );
+
   for (const [name, nextVersion] of internalDeps) {
-    if (data.dependencies && typeof data.dependencies[name] === "string") {
-      data.dependencies[name] = nextVersion;
-    }
-    if (data.devDependencies && typeof data.devDependencies[name] === "string") {
-      data.devDependencies[name] = nextVersion;
-    }
-    if (data.optionalDependencies && typeof data.optionalDependencies[name] === "string") {
-      data.optionalDependencies[name] = nextVersion;
-    }
-    if (data.peerDependencies && typeof data.peerDependencies[name] === "string") {
-      data.peerDependencies[name] = nextVersion;
-    }
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`("${escapedName}"\\s*:\\s*)"[^"]*"`, "g");
+    content = content.replace(re, `$1"${nextVersion}"`);
   }
-  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+
+  if (content !== original) {
+    fs.writeFileSync(filePath, content);
+  }
   updatedFiles.push(relativePath);
 };
 
 const updateCargo = (relativePath) => {
   const filePath = path.join(rootDir, relativePath);
   const content = fs.readFileSync(filePath, "utf8");
+  // Preserve the existing trailing-newline state so re-runs of the script
+  // are idempotent. cargo writes Cargo.lock without a trailing newline,
+  // while Cargo.toml files end with one — we mirror whichever the file has.
+  const trailingNewline = content.endsWith("\n") ? "\n" : "";
   const lines = content.split(/\r?\n/);
-  // Drop the trailing empty element produced by splitting a file that already
-  // ends with a newline, so the final `${next.join("\n")}\n` write does not
-  // append an extra blank line on every run.
-  if (lines.length > 0 && lines[lines.length - 1] === "") {
+  if (trailingNewline === "\n" && lines.length > 0 && lines[lines.length - 1] === "") {
     lines.pop();
   }
   const isLockfile = path.basename(relativePath) === "Cargo.lock";
@@ -148,15 +157,16 @@ const updateCargo = (relativePath) => {
     }
     return line;
   });
-  fs.writeFileSync(filePath, `${next.join("\n")}\n`);
+  fs.writeFileSync(filePath, `${next.join("\n")}${trailingNewline}`);
   updatedFiles.push(relativePath);
 };
 
 const updatePyproject = (relativePath) => {
   const filePath = path.join(rootDir, relativePath);
   const content = fs.readFileSync(filePath, "utf8");
+  const trailingNewline = content.endsWith("\n") ? "\n" : "";
   const lines = content.split(/\r?\n/);
-  if (lines.length > 0 && lines[lines.length - 1] === "") {
+  if (trailingNewline === "\n" && lines.length > 0 && lines[lines.length - 1] === "") {
     lines.pop();
   }
   let inProject = false;
@@ -172,7 +182,7 @@ const updatePyproject = (relativePath) => {
     }
     return line;
   });
-  fs.writeFileSync(filePath, `${next.join("\n")}\n`);
+  fs.writeFileSync(filePath, `${next.join("\n")}${trailingNewline}`);
   updatedFiles.push(relativePath);
 };
 
