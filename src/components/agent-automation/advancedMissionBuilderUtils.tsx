@@ -1,15 +1,15 @@
 import {
   AutomationV2Spec,
-  BuilderModelDraft,
   MissionBlueprint,
   MissionBuilderReviewStage,
   MissionBuilderWorkstream,
   ProviderInfo,
   UserProject,
-} from "@/components/orchestrate/types";
-
+} from "@/lib/tauri";
 import React, { useState, useMemo } from "react";
 import { Button } from "@/components/ui/Button";
+
+export type BuilderModelDraft = { provider: string; model: string };
 
 export function toModelDraft(policy: unknown): BuilderModelDraft {
   const row = (policy as Record<string, unknown> | null) || null;

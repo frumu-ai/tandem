@@ -18,7 +18,7 @@ import {
   type UserProject,
 } from "@/lib/tauri";
 
-type BuilderModelDraft = { provider: string; model: string };
+import { BuilderModelDraft } from "./advancedMissionBuilderUtils";
 
 interface AdvancedMissionBuilderProps {
   activeProject: UserProject | null;
