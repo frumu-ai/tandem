@@ -347,6 +347,7 @@ export function KnowledgebaseUploadPanel({
   )
     ? currentCollection
     : "__custom__";
+  const customCollectionSelected = collectionSelectValue === "__custom__";
   const selectedDocumentSet = useMemo(
     () => new Set(selectedDocumentRecords.map((record) => record.key)),
     [selectedDocumentRecords]
@@ -1104,37 +1105,50 @@ export function KnowledgebaseUploadPanel({
         <Toolbar className="justify-start">
           <button
             type="button"
-            className="tcp-btn"
+            className="tcp-icon-btn"
+            title="Upload documents"
+            aria-label="Upload documents"
             onClick={() => uploadInputRef.current?.click()}
             disabled={isUploading}
           >
             <i data-lucide="upload"></i>
-            Upload docs
           </button>
           <button
             type="button"
-            className="tcp-btn"
+            className="tcp-icon-btn"
+            title="Upload folder"
+            aria-label="Upload folder"
             onClick={() => folderInputRef.current?.click()}
             disabled={isUploading}
           >
-            <i data-lucide="folder-open"></i>
-            Upload folder
-          </button>
-          <button type="button" className="tcp-btn" onClick={() => void collectionsQuery.refetch()}>
-            <i data-lucide="refresh-cw"></i>
-            Refresh
-          </button>
-          <button type="button" className="tcp-btn" onClick={reindex}>
-            <i data-lucide="sparkles"></i>
-            Reindex
+            <i data-lucide="folder-up"></i>
           </button>
           <button
             type="button"
-            className="tcp-btn"
+            className="tcp-icon-btn"
+            title="Refresh collections"
+            aria-label="Refresh collections"
+            onClick={() => void collectionsQuery.refetch()}
+          >
+            <i data-lucide="refresh-cw"></i>
+          </button>
+          <button
+            type="button"
+            className="tcp-icon-btn"
+            title="Reindex knowledgebase"
+            aria-label="Reindex knowledgebase"
+            onClick={reindex}
+          >
+            <i data-lucide="sparkles"></i>
+          </button>
+          <button
+            type="button"
+            className="tcp-icon-btn"
+            title={panelCollapsed ? "Expand knowledgebase" : "Collapse knowledgebase"}
+            aria-label={panelCollapsed ? "Expand knowledgebase" : "Collapse knowledgebase"}
             onClick={() => setPanelCollapsed((current) => !current)}
           >
             <i data-lucide={panelCollapsed ? "chevron-down" : "chevron-up"}></i>
-            {panelCollapsed ? "Expand" : "Collapse"}
           </button>
         </Toolbar>
       }
@@ -1148,49 +1162,76 @@ export function KnowledgebaseUploadPanel({
             >
               Collection
             </label>
-            <div className="grid gap-2 md:grid-cols-[minmax(180px,0.7fr)_minmax(220px,1fr)]">
-              <select
-                id="kb-collection-select"
-                className="tcp-input"
-                value={collectionSelectValue}
-                onChange={(event) => {
-                  const next = event.target.value;
-                  setCollectionTouched(true);
-                  if (next === "__custom__") {
+            <div
+              className={
+                customCollectionSelected
+                  ? "grid gap-2 md:grid-cols-[minmax(220px,0.7fr)_minmax(220px,1fr)]"
+                  : "grid gap-2 md:grid-cols-[minmax(220px,0.7fr)_auto]"
+              }
+            >
+              <div className="relative">
+                <select
+                  id="kb-collection-select"
+                  className="tcp-select h-10 w-full appearance-none pr-10 font-semibold text-slate-100"
+                  value={collectionSelectValue}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setCollectionTouched(true);
+                    if (next === "__custom__") {
+                      setCollectionId("");
+                      return;
+                    }
+                    setCollectionId(next);
+                  }}
+                >
+                  {collectionOptions.length ? (
+                    collectionOptions.map((collection) => {
+                      const name = String(collection.collection_id || "").trim();
+                      return (
+                        <option key={name} value={name}>
+                          {name}
+                          {typeof collection.document_count === "number"
+                            ? ` (${collection.document_count})`
+                            : ""}
+                        </option>
+                      );
+                    })
+                  ) : (
+                    <option value="">No collections yet</option>
+                  )}
+                  <option value="__custom__">Create new collection...</option>
+                </select>
+                <i
+                  data-lucide="chevron-down"
+                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+                ></i>
+              </div>
+              {customCollectionSelected ? (
+                <input
+                  id="kb-collection-id"
+                  className="tcp-input h-10"
+                  value={collectionId}
+                  onChange={(event) => {
+                    setCollectionTouched(true);
+                    setCollectionId(event.target.value);
+                  }}
+                  placeholder="new-customer-collection"
+                  spellCheck={false}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="tcp-icon-btn h-10 w-10"
+                  title="Create a new collection"
+                  aria-label="Create a new collection"
+                  onClick={() => {
+                    setCollectionTouched(true);
                     setCollectionId("");
-                    return;
-                  }
-                  setCollectionId(next);
-                }}
-              >
-                {collectionOptions.length ? (
-                  collectionOptions.map((collection) => {
-                    const name = String(collection.collection_id || "").trim();
-                    return (
-                      <option key={name} value={name}>
-                        {name}
-                        {typeof collection.document_count === "number"
-                          ? ` (${collection.document_count})`
-                          : ""}
-                      </option>
-                    );
-                  })
-                ) : (
-                  <option value="">No collections yet</option>
-                )}
-                <option value="__custom__">New collection...</option>
-              </select>
-              <input
-                id="kb-collection-id"
-                className="tcp-input"
-                value={collectionId}
-                onChange={(event) => {
-                  setCollectionTouched(true);
-                  setCollectionId(event.target.value);
-                }}
-                placeholder="new-customer-collection"
-                spellCheck={false}
-              />
+                  }}
+                >
+                  <i data-lucide="plus"></i>
+                </button>
+              )}
             </div>
             <div className="tcp-subtle text-xs">
               Pick an existing KB MCP collection, or type a new collection ID before uploading.
@@ -1221,22 +1262,23 @@ export function KnowledgebaseUploadPanel({
             />
             <button
               type="button"
-              className="tcp-btn h-10"
+              className="tcp-icon-btn h-10 w-10"
+              title="Select files"
+              aria-label="Select files"
               onClick={() => uploadInputRef.current?.click()}
               disabled={!currentCollection || isUploading}
             >
               <i data-lucide="files"></i>
-              Select files
             </button>
             <button
               type="button"
-              className="tcp-btn h-10"
+              className="tcp-icon-btn h-10 w-10"
               onClick={() => folderInputRef.current?.click()}
               disabled={!currentCollection || isUploading}
               title="Select a local folder and upload all matching docs inside it"
+              aria-label="Select a local folder"
             >
               <i data-lucide="folder-open"></i>
-              Select folder
             </button>
           </div>
         </div>
@@ -1289,10 +1331,12 @@ export function KnowledgebaseUploadPanel({
               {completedRows.length ? (
                 <button
                   type="button"
-                  className="tcp-btn h-7 px-2 text-xs"
+                  className="tcp-icon-btn h-7 w-7"
+                  title="Clear finished uploads"
+                  aria-label="Clear finished uploads"
                   onClick={clearFinishedUploads}
                 >
-                  Clear finished
+                  <i data-lucide="x"></i>
                 </button>
               ) : null}
             </div>
@@ -1355,12 +1399,13 @@ export function KnowledgebaseUploadPanel({
               </Badge>
               <button
                 type="button"
-                className="tcp-btn h-8 px-3 text-xs"
+                className="tcp-icon-btn h-8 w-8"
+                title="Refresh documents"
+                aria-label="Refresh documents"
                 onClick={() => void documentsQuery.refetch()}
                 disabled={!currentCollection}
               >
                 <i data-lucide="refresh-cw"></i>
-                Refresh docs
               </button>
             </div>
           </div>
@@ -1392,28 +1437,33 @@ export function KnowledgebaseUploadPanel({
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        className="tcp-btn h-8 px-3 text-xs"
+                        className="tcp-icon-btn h-8 w-8"
+                        title="Select all visible documents"
+                        aria-label="Select all visible documents"
                         onClick={selectVisibleDocuments}
                         disabled={!documents.length}
                       >
-                        Select all
+                        <i data-lucide="square-check-big"></i>
                       </button>
                       <button
                         type="button"
-                        className="tcp-btn h-8 px-3 text-xs"
+                        className="tcp-icon-btn h-8 w-8"
+                        title="Clear selected documents"
+                        aria-label="Clear selected documents"
                         onClick={clearSelectedDocuments}
                         disabled={!selectedDocumentCount}
                       >
-                        Clear selection
+                        <i data-lucide="x"></i>
                       </button>
                       <button
                         type="button"
-                        className="tcp-btn h-8 px-3 text-xs border-rose-500/30 text-rose-100 hover:bg-rose-950/20 disabled:opacity-50"
+                        className="tcp-icon-btn h-8 w-8 border-rose-500/30 text-rose-100 hover:bg-rose-950/20 disabled:opacity-50"
+                        title="Delete selected documents"
+                        aria-label="Delete selected documents"
                         onClick={openBulkDeleteDialog}
                         disabled={!selectedDocumentCount}
                       >
                         <i data-lucide="trash-2"></i>
-                        Delete selected
                       </button>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -1438,23 +1488,27 @@ export function KnowledgebaseUploadPanel({
                       </label>
                       <button
                         type="button"
-                        className="tcp-btn h-8 px-3 text-xs"
+                        className="tcp-icon-btn h-8 w-8"
+                        title="Previous page"
+                        aria-label="Previous page"
                         onClick={() =>
                           setDocumentPage((page) => clampPage(page - 1, visibleDocumentPageCount))
                         }
                         disabled={safeDocumentPage <= 1}
                       >
-                        Prev
+                        <i data-lucide="chevron-left"></i>
                       </button>
                       <button
                         type="button"
-                        className="tcp-btn h-8 px-3 text-xs"
+                        className="tcp-icon-btn h-8 w-8"
+                        title="Next page"
+                        aria-label="Next page"
                         onClick={() =>
                           setDocumentPage((page) => clampPage(page + 1, visibleDocumentPageCount))
                         }
                         disabled={safeDocumentPage >= visibleDocumentPageCount}
                       >
-                        Next
+                        <i data-lucide="chevron-right"></i>
                       </button>
                     </div>
                   </div>

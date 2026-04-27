@@ -514,27 +514,29 @@ export function FilesPage({ api, toast }: AppPageProps) {
           <Toolbar className="justify-start">
             <button
               type="button"
-              className="tcp-btn"
+              className="tcp-icon-btn"
+              title="Upload files"
+              aria-label="Upload files"
               onClick={() => uploadInputRef.current?.click()}
               disabled={uploadOne.isPending}
             >
               <i data-lucide="upload"></i>
-              Upload
             </button>
             {isWorkspaceMode ? (
               <button
                 type="button"
-                className="tcp-btn"
+                className="tcp-icon-btn"
+                title="Upload folder"
+                aria-label="Upload folder"
                 onClick={() => uploadFolderInputRef.current?.click()}
                 disabled={uploadOne.isPending}
               >
                 <i data-lucide="folder-up"></i>
-                Upload folder
               </button>
             ) : null}
             <button
               type="button"
-              className="tcp-btn"
+              className="tcp-icon-btn"
               onClick={handleCreateDirectory}
               disabled={createDirectory.isPending || (!isWorkspaceMode && !dir)}
               title={
@@ -542,25 +544,37 @@ export function FilesPage({ api, toast }: AppPageProps) {
                   ? "Choose a bucket first"
                   : "Create a folder inside the current path"
               }
+              aria-label="Create folder"
             >
               <i data-lucide="folder-plus"></i>
-              New folder
-            </button>
-            <button type="button" className="tcp-btn" onClick={() => void filesQuery.refetch()}>
-              <i data-lucide="refresh-cw"></i>
-              Refresh
-            </button>
-            <button type="button" className="tcp-btn" onClick={openParent} disabled={!rootDir}>
-              <i data-lucide="corner-up-left"></i>
-              Up
             </button>
             <button
               type="button"
-              className="tcp-btn"
+              className="tcp-icon-btn"
+              title="Refresh files"
+              aria-label="Refresh files"
+              onClick={() => void filesQuery.refetch()}
+            >
+              <i data-lucide="refresh-cw"></i>
+            </button>
+            <button
+              type="button"
+              className="tcp-icon-btn"
+              title="Go up one folder"
+              aria-label="Go up one folder"
+              onClick={openParent}
+              disabled={!rootDir}
+            >
+              <i data-lucide="corner-up-left"></i>
+            </button>
+            <button
+              type="button"
+              className="tcp-icon-btn"
+              title={filesPanelCollapsed ? "Expand files" : "Collapse files"}
+              aria-label={filesPanelCollapsed ? "Expand files" : "Collapse files"}
               onClick={() => setFilesPanelCollapsed((current) => !current)}
             >
               <i data-lucide={filesPanelCollapsed ? "chevron-down" : "chevron-up"}></i>
-              {filesPanelCollapsed ? "Expand" : "Collapse"}
             </button>
           </Toolbar>
         }
@@ -771,28 +785,33 @@ export function FilesPage({ api, toast }: AppPageProps) {
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
-                            className="tcp-btn h-8 px-3 text-xs"
+                            className="tcp-icon-btn h-8 w-8"
+                            title="Select all visible files"
+                            aria-label="Select all visible files"
                             onClick={selectAllFiles}
                             disabled={!files.length}
                           >
-                            Select all
+                            <i data-lucide="square-check-big"></i>
                           </button>
                           <button
                             type="button"
-                            className="tcp-btn h-8 px-3 text-xs"
+                            className="tcp-icon-btn h-8 w-8"
+                            title="Clear selected files"
+                            aria-label="Clear selected files"
                             onClick={clearSelectedFiles}
                             disabled={!selectedFileCount}
                           >
-                            Clear selection
+                            <i data-lucide="x"></i>
                           </button>
                           <button
                             type="button"
-                            className="tcp-btn h-8 px-3 text-xs border-rose-500/30 text-rose-100 hover:bg-rose-950/20 disabled:opacity-50"
+                            className="tcp-icon-btn h-8 w-8 border-rose-500/30 text-rose-100 hover:bg-rose-950/20 disabled:opacity-50"
+                            title="Delete selected files"
+                            aria-label="Delete selected files"
                             onClick={openDeleteSelectedFiles}
                             disabled={!selectedFileCount}
                           >
                             <i data-lucide="trash-2"></i>
-                            Delete selected
                           </button>
                           <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
                             <span>Per page</span>
@@ -815,23 +834,27 @@ export function FilesPage({ api, toast }: AppPageProps) {
                           </label>
                           <button
                             type="button"
-                            className="tcp-btn h-8 px-3 text-xs"
+                            className="tcp-icon-btn h-8 w-8"
+                            title="Previous page"
+                            aria-label="Previous page"
                             onClick={() =>
                               setFilePage((page) => clampPage(page - 1, filePageCount))
                             }
                             disabled={safeFilePage <= 1}
                           >
-                            Prev
+                            <i data-lucide="chevron-left"></i>
                           </button>
                           <button
                             type="button"
-                            className="tcp-btn h-8 px-3 text-xs"
+                            className="tcp-icon-btn h-8 w-8"
+                            title="Next page"
+                            aria-label="Next page"
                             onClick={() =>
                               setFilePage((page) => clampPage(page + 1, filePageCount))
                             }
                             disabled={safeFilePage >= filePageCount}
                           >
-                            Next
+                            <i data-lucide="chevron-right"></i>
                           </button>
                         </div>
                       </div>
@@ -906,22 +929,24 @@ export function FilesPage({ api, toast }: AppPageProps) {
             actions={
               selectedFile ? (
                 <a
-                  className="tcp-btn h-8 px-3 text-xs"
+                  className="tcp-icon-btn h-8 w-8"
                   href={selectedDownloadUrl}
                   target="_blank"
                   rel="noreferrer"
+                  title="Download file"
+                  aria-label="Download file"
                 >
                   <i data-lucide="download"></i>
-                  Download
                 </a>
               ) : selectedDirectory ? (
                 <button
                   type="button"
-                  className="tcp-btn h-8 px-3 text-xs"
+                  className="tcp-icon-btn h-8 w-8"
+                  title="Open folder"
+                  aria-label="Open folder"
                   onClick={() => openDirectory(selectedPath)}
                 >
                   <i data-lucide="folder-open"></i>
-                  Open
                 </button>
               ) : null
             }

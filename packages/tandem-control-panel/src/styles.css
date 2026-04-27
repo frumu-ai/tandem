@@ -217,6 +217,12 @@
     border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
   }
 
+  .tcp-icon-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+    transform: none;
+  }
+
   .tcp-context-rail {
     display: flex;
     flex-direction: column;
