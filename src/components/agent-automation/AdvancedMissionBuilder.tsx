@@ -902,11 +902,20 @@ export function AdvancedMissionBuilder({
   }, [preview, effectiveBlueprint.phases]);
   const previewGraphSummary = useMemo(() => {
     if (!preview) return null;
+
+    // Bolt Optimization: Calculate fanOut map in O(N) instead of O(N^2)
+    const fanOutMap = new Map<string, number>();
+    for (const node of preview.node_previews) {
+      for (const upstreamId of node.depends_on) {
+        fanOutMap.set(upstreamId, (fanOutMap.get(upstreamId) || 0) + 1);
+      }
+    }
+
     const rootCount = preview.node_previews.filter((node) => node.depends_on.length === 0).length;
     const terminalCount = preview.node_previews.filter(
-      (node) =>
-        !preview.node_previews.some((candidate) => candidate.depends_on.includes(node.node_id))
+      (node) => (fanOutMap.get(node.node_id) || 0) === 0
     ).length;
+
     let crossLaneEdges = 0;
     let crossPhaseEdges = 0;
     const nodeLookup = new Map(preview.node_previews.map((node) => [node.node_id, node]));
@@ -921,9 +930,7 @@ export function AdvancedMissionBuilder({
     }
     const highFanIn = preview.node_previews.filter((node) => node.depends_on.length >= 3).length;
     const highFanOut = preview.node_previews.filter(
-      (node) =>
-        preview.node_previews.filter((candidate) => candidate.depends_on.includes(node.node_id))
-          .length >= 3
+      (node) => (fanOutMap.get(node.node_id) || 0) >= 3
     ).length;
     return { rootCount, terminalCount, crossLaneEdges, crossPhaseEdges, highFanIn, highFanOut };
   }, [preview]);
