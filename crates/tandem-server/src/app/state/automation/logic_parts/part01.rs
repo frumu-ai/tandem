@@ -652,7 +652,7 @@ async fn sync_automation_allowed_mcp_servers(
         let exists = server_record.is_some();
         let enabled = server_record.is_some_and(|server| server.enabled);
         let connected = if enabled {
-            state.mcp.connect(server_name).await
+            automation_connect_mcp_server_with_retry(state, server_name).await
         } else {
             false
         };
@@ -765,6 +765,26 @@ async fn sync_automation_allowed_mcp_servers(
         "remote_email_like_tools": all_remote_email_like_names,
         "registered_email_like_tools": all_registered_email_like_names,
     })
+}
+
+async fn automation_connect_mcp_server_with_retry(state: &AppState, server_name: &str) -> bool {
+    const DELAYS_MS: &[u64] = &[0, 750, 1_500];
+    for (attempt, delay_ms) in DELAYS_MS.iter().enumerate() {
+        if *delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+        }
+        if state.mcp.connect(server_name).await {
+            if attempt > 0 {
+                tracing::info!(
+                    server = %server_name,
+                    retries = attempt,
+                    "automation mcp preflight connected selected server after retry"
+                );
+            }
+            return true;
+        }
+    }
+    false
 }
 
 pub(crate) fn automation_policy_mcp_preflight_blocker(diagnostics: &Value) -> Option<String> {

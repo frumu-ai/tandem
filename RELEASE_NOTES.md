@@ -69,6 +69,8 @@ Duplicate failure-pattern context is also preserved through triage replay, reche
 
 Automation V2 connector setup now fails fast when a policy-selected MCP server cannot actually be used. Before launching the agent, Tandem connects required MCP servers, syncs their tools, and verifies that each policy-selected server registered at least one tool. If a required connector such as GitHub is disconnected or syncs zero tools, the node returns `tool_resolution_failed` with MCP diagnostics instead of running a long session that cannot satisfy its tool requirements.
 
+Bug Monitor and Automation V2 now also self-heal common post-restart MCP state. Bug Monitor status recompute attempts to reconnect the selected MCP server before declaring it disconnected, and Automation V2 preflight retries selected MCP connections briefly before failing closed. This removes the manual refresh step for connectors that are configured correctly but whose runtime connection cache starts cold after a restart.
+
 Automation artifact nodes now run with an engine-enforced write policy. Non-code workflow nodes can only write declared output targets and approved must-write files, while explicit code workflows keep repo-edit access. This prevents artifact-producing agents from accidentally overwriting source files when they meant to write `.tandem/runs/.../artifacts/...`.
 
 Provider and tool failures during prompt execution now mark the session failed and clear cancellation state when they return early. This avoids stuck "in progress" sessions after provider stream connect, idle, chunk, or tool execution errors.

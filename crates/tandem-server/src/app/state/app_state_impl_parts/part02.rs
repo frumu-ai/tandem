@@ -364,12 +364,24 @@ impl AppState {
             .as_ref()
             .map(|repo| is_valid_owner_repo_slug(repo))
             .unwrap_or(false);
-        let servers = self.mcp.list().await;
-        let selected_server = config
+        let mut servers = self.mcp.list().await;
+        let mut selected_server = config
             .mcp_server
             .as_ref()
             .and_then(|name| servers.get(name))
             .cloned();
+        if config.enabled {
+            if let Some(server_name) = config.mcp_server.as_deref() {
+                if selected_server
+                    .as_ref()
+                    .is_some_and(|server| server.enabled && !server.connected)
+                    && self.mcp.connect(server_name).await
+                {
+                    servers = self.mcp.list().await;
+                    selected_server = servers.get(server_name).cloned();
+                }
+            }
+        }
         let provider_catalog = self.providers.list().await;
         let selected_model = config
             .model_policy
