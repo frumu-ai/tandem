@@ -645,9 +645,25 @@ pub(crate) fn revert_read_only_source_snapshot_files(
     workspace_root: &str,
     snapshot: &std::collections::BTreeMap<String, Vec<u8>>,
 ) -> Vec<Value> {
+    let mutations = read_only_source_snapshot_mutations(workspace_root, snapshot);
+    revert_read_only_source_snapshot_mutations(workspace_root, snapshot, &mutations)
+}
+
+pub(crate) fn revert_read_only_source_snapshot_mutations(
+    workspace_root: &str,
+    snapshot: &std::collections::BTreeMap<String, Vec<u8>>,
+    mutations: &[Value],
+) -> Vec<Value> {
     let workspace_root_path = PathBuf::from(workspace_root);
     let mut restored_events = Vec::new();
-    for (path, before) in snapshot {
+    let mutated_paths = mutations
+        .iter()
+        .filter_map(|value| value.get("path").and_then(Value::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
+    for path in mutated_paths {
+        let Some(before) = snapshot.get(path) else {
+            continue;
+        };
         let resolved = workspace_root_path.join(path);
         let was_missing = !resolved.exists();
         if let Some(parent) = resolved.parent() {

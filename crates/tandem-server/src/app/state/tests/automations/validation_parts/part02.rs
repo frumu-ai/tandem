@@ -1630,6 +1630,7 @@ fn automation_output_enforcement_prefers_contract_over_legacy_builder_metadata()
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: None,
                 required_tools: vec!["read".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: vec!["files_reviewed".to_string()],
                 prewrite_gates: vec!["workspace_inspection".to_string()],
@@ -1742,6 +1743,7 @@ fn upstream_evidence_can_satisfy_exact_required_source_read_paths() {
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("artifact_only".to_string()),
                 required_tools: vec!["read".to_string(), "write".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
                 prewrite_gates: Vec::new(),

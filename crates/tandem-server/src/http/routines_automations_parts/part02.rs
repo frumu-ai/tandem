@@ -1805,7 +1805,10 @@ pub(super) async fn automations_v2_run_recover(
                 ),
             ));
         };
-        let roots = std::iter::once(failure_node_id).collect::<std::collections::HashSet<_>>();
+        let mut roots = blocked_node_ids
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        roots.insert(failure_node_id);
         crate::collect_automation_descendants(&automation, &roots)
     } else if blocked_run_is_recoverable {
         if blocked_node_ids.is_empty() {
@@ -1853,6 +1856,9 @@ pub(super) async fn automations_v2_run_recover(
                     run.checkpoint.node_outputs.remove(node_id);
                     run.checkpoint.node_attempts.remove(node_id);
                 }
+                run.checkpoint
+                    .blocked_nodes
+                    .retain(|node_id| !reset_nodes.contains(node_id));
                 run.checkpoint
                     .completed_nodes
                     .retain(|node_id| !reset_nodes.contains(node_id));
@@ -2060,6 +2066,9 @@ pub(super) async fn automations_v2_run_repair(
                 run.checkpoint.node_attempts.remove(reset_node_id);
             }
             run.checkpoint
+                .blocked_nodes
+                .retain(|blocked_id| !reset_nodes.contains(blocked_id));
+            run.checkpoint
                 .completed_nodes
                 .retain(|completed_id| !reset_nodes.contains(completed_id));
             let mut pending = run.checkpoint.pending_nodes.clone();
@@ -2215,6 +2224,9 @@ async fn automation_v2_reset_task_subtree(
                 run.checkpoint.node_outputs.remove(reset_node_id);
                 run.checkpoint.node_attempts.remove(reset_node_id);
             }
+            run.checkpoint
+                .blocked_nodes
+                .retain(|blocked_id| !reset_nodes.contains(blocked_id));
             run.checkpoint
                 .completed_nodes
                 .retain(|completed_id| !reset_nodes.contains(completed_id));

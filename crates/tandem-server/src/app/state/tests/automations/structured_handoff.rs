@@ -20,6 +20,7 @@ fn structured_handoff_nodes_fail_when_only_fallback_tool_summary_is_returned() {
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
                 prewrite_gates: vec![
@@ -228,6 +229,7 @@ fn structured_handoff_nodes_require_concrete_reads_without_output_path() {
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
                 prewrite_gates: vec!["concrete_reads".to_string()],
@@ -324,6 +326,7 @@ fn structured_handoff_blocks_when_exact_named_source_read_fails_but_copy_is_disc
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["glob".to_string(), "read".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
                 prewrite_gates: vec!["concrete_reads".to_string()],

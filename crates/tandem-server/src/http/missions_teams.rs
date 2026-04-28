@@ -306,6 +306,7 @@ fn standup_participant_enforcement() -> crate::AutomationOutputEnforcement {
             "grep".to_string(),
             "memory_search".to_string(),
         ],
+        required_tool_calls: Vec::new(),
         required_evidence: vec!["local_source_reads".to_string()],
         required_sections: Vec::new(),
         prewrite_gates: Vec::new(), // populated by enforcement.rs for standup_update

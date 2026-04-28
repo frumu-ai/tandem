@@ -638,6 +638,7 @@ fn runnable_write_scope_filter_allows_non_code_nodes_to_run_in_parallel() {
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("research_synthesis".to_string()),
                 required_tools: Vec::new(),
+                required_tool_calls: Vec::new(),
                 required_evidence: vec![
                     "local_source_reads".to_string(),
                     "external_sources".to_string(),
@@ -743,6 +744,7 @@ fn research_finalize_prewrite_requirements_skip_same_node_reads_and_websearch() 
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("research_synthesis".to_string()),
                 required_tools: Vec::new(),
+                required_tool_calls: Vec::new(),
                 required_evidence: vec![
                     "local_source_reads".to_string(),
                     "external_sources".to_string(),
@@ -1184,6 +1186,7 @@ fn first_attempt_required_tools_prompt_without_output_path_requires_handoff() {
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: Vec::new(),
                 required_sections: Vec::new(),
                 prewrite_gates: vec![

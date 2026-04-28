@@ -1,4 +1,3 @@
-
 #[tokio::test]
 async fn automation_v2_backlog_task_claim_and_requeue_routes_work() {
     let state = test_state().await;
@@ -1740,6 +1739,105 @@ async fn automations_v2_run_recover_on_failed_branch_preserves_completed_sibling
         recover_event.reason.as_deref(),
         Some("retry only the failed draft branch")
     );
+}
+
+#[tokio::test]
+async fn automations_v2_run_recover_clears_stale_blocked_nodes_on_failed_run() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation =
+        create_branched_test_automation_v2(&state, "auto-v2-stale-blocked-recover").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Failed;
+            row.checkpoint.completed_nodes = vec![
+                "research".to_string(),
+                "analysis".to_string(),
+                "draft".to_string(),
+            ];
+            row.checkpoint.pending_nodes = vec!["publish".to_string()];
+            row.checkpoint
+                .node_outputs
+                .insert("research".to_string(), json!({"summary":"research"}));
+            row.checkpoint.node_outputs.insert(
+                "analysis".to_string(),
+                json!({"status":"blocked","summary":"stale blocked analysis"}),
+            );
+            row.checkpoint
+                .node_outputs
+                .insert("draft".to_string(), json!({"summary":"draft"}));
+            row.checkpoint.blocked_nodes = vec!["analysis".to_string()];
+            row.checkpoint
+                .node_attempts
+                .insert("analysis".to_string(), 3);
+            row.checkpoint.node_attempts.insert("draft".to_string(), 2);
+            row.checkpoint.last_failure = Some(crate::AutomationFailureRecord {
+                node_id: "draft".to_string(),
+                reason: "bad draft".to_string(),
+                failed_at_ms: crate::now_ms(),
+            });
+        })
+        .await
+        .expect("updated run");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/recover", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "reason": "recover failed run with stale blocked nodes" }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let recovered = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after recover");
+    assert_eq!(recovered.status, crate::AutomationRunStatus::Queued);
+    assert!(recovered
+        .checkpoint
+        .completed_nodes
+        .contains(&"research".to_string()));
+    assert!(!recovered
+        .checkpoint
+        .completed_nodes
+        .contains(&"analysis".to_string()));
+    assert!(!recovered
+        .checkpoint
+        .completed_nodes
+        .contains(&"draft".to_string()));
+    assert!(recovered.checkpoint.node_outputs.contains_key("research"));
+    assert!(!recovered.checkpoint.node_outputs.contains_key("analysis"));
+    assert!(!recovered.checkpoint.node_outputs.contains_key("draft"));
+    assert!(recovered
+        .checkpoint
+        .pending_nodes
+        .contains(&"analysis".to_string()));
+    assert!(recovered
+        .checkpoint
+        .pending_nodes
+        .contains(&"draft".to_string()));
+    assert!(recovered
+        .checkpoint
+        .pending_nodes
+        .contains(&"publish".to_string()));
+    assert!(!recovered
+        .checkpoint
+        .blocked_nodes
+        .contains(&"analysis".to_string()));
+    assert!(recovered.checkpoint.node_attempts.get("analysis").is_none());
+    assert!(recovered.checkpoint.node_attempts.get("draft").is_none());
+    assert!(recovered.checkpoint.last_failure.is_none());
 }
 
 #[tokio::test]

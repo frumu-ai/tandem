@@ -1014,6 +1014,7 @@ pub(crate) fn migrate_bundled_studio_research_split_automation(
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
                 prewrite_gates: vec![
@@ -1069,6 +1070,7 @@ pub(crate) fn migrate_bundled_studio_research_split_automation(
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("local_research".to_string()),
                 required_tools: vec!["read".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: Vec::new(),
                 prewrite_gates: vec!["concrete_reads".to_string()],
@@ -1128,6 +1130,7 @@ pub(crate) fn migrate_bundled_studio_research_split_automation(
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("external_research".to_string()),
                 required_tools: vec!["websearch".to_string()],
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["external_sources".to_string()],
                 required_sections: Vec::new(),
                 prewrite_gates: vec!["successful_web_research".to_string()],
@@ -1199,6 +1202,7 @@ pub(crate) fn migrate_bundled_studio_research_split_automation(
         enforcement: Some(crate::AutomationOutputEnforcement {
             validation_profile: Some("research_synthesis".to_string()),
             required_tools: Vec::new(),
+            required_tool_calls: Vec::new(),
             required_evidence: vec![
                 "local_source_reads".to_string(),
                 "external_sources".to_string(),

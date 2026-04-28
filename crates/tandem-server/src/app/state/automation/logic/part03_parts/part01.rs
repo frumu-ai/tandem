@@ -171,6 +171,16 @@ fn revert_read_only_source_snapshot_files(
     let mut restored_events = Vec::new();
     for (path, before) in snapshot {
         let resolved = workspace_root_path.join(path);
+        let changed = if !resolved.is_file() {
+            true
+        } else {
+            std::fs::read(&resolved)
+                .map(|after| after != *before)
+                .unwrap_or(true)
+        };
+        if !changed {
+            continue;
+        }
         let was_missing = !resolved.exists();
         if let Some(parent) = resolved.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {

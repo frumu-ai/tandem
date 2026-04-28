@@ -259,6 +259,7 @@ fn research_finalize_validation_accepts_upstream_read_evidence() {
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("research_synthesis".to_string()),
                 required_tools: Vec::new(),
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: vec![
                     "files_reviewed".to_string(),
@@ -1160,4 +1161,3 @@ fn report_markdown_rejects_generic_synthesis_without_evidence_anchors_when_upstr
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
-

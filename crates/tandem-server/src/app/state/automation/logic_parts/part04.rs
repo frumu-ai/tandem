@@ -61,7 +61,11 @@ pub(crate) fn validate_automation_artifact_output_with_context(
     if let Some(snapshot) = read_only_source_snapshot {
         read_only_source_mutations = read_only_source_snapshot_mutations(workspace_root, snapshot);
         if !read_only_source_mutations.is_empty() {
-            let _ = revert_read_only_source_snapshot_files(workspace_root, snapshot);
+            let _ = revert_read_only_source_snapshot_mutations(
+                workspace_root,
+                snapshot,
+                &read_only_source_mutations,
+            );
             let mutation_paths = read_only_source_mutations
                 .iter()
                 .filter_map(|value| value.get("path").and_then(Value::as_str))
@@ -339,7 +343,15 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         {
             unmet_requirements.push("mcp_connector_action_missing".to_string());
         }
-        let required_concrete_mcp_tools = automation_node_required_concrete_mcp_tools(node);
+        let mut required_concrete_mcp_tools = automation_node_required_concrete_mcp_tools(node);
+        required_concrete_mcp_tools.extend(
+            automation_node_required_tool_calls(node)
+                .into_iter()
+                .map(|call| call.tool)
+                .filter(|tool| tool.starts_with("mcp.") && !tool.ends_with(".*")),
+        );
+        required_concrete_mcp_tools.sort();
+        required_concrete_mcp_tools.dedup();
         let missing_required_concrete_mcp_tool =
             required_concrete_mcp_tools.iter().any(|required| {
                 !tool_telemetry

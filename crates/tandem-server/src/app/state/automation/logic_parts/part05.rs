@@ -269,6 +269,237 @@ pub(crate) fn automation_external_action_target(
     None
 }
 
+pub(crate) async fn try_execute_connector_preflight_node(
+    state: &AppState,
+    run_id: &str,
+    automation: &AutomationV2Spec,
+    node: &AutomationFlowNode,
+    session_id: &str,
+    workspace_root: &str,
+    required_output_path: Option<&str>,
+    requested_tools: &[String],
+    effective_offered_tools: &[String],
+    capability_resolution: &Value,
+    mcp_tool_diagnostics: &Value,
+) -> anyhow::Result<Option<Value>> {
+    if !automation_node_is_connector_preflight(node) {
+        return Ok(None);
+    }
+    let required_calls = automation_node_required_tool_calls(node);
+    if required_calls.is_empty() {
+        return Ok(None);
+    }
+    let Some(output_path) = required_output_path else {
+        return Ok(None);
+    };
+    let unavailable = required_calls
+        .iter()
+        .filter(|call| {
+            !effective_offered_tools
+                .iter()
+                .any(|offered| offered == &call.tool)
+        })
+        .map(|call| call.tool.clone())
+        .collect::<Vec<_>>();
+    if !unavailable.is_empty() {
+        return Ok(Some(build_connector_preflight_blocked_output(
+            node,
+            requested_tools,
+            capability_resolution,
+            mcp_tool_diagnostics,
+            &format!(
+                "required connector preflight tool(s) are unavailable: {}",
+                unavailable.join(", ")
+            ),
+            json!({
+                "required_tool_calls": required_calls,
+                "unavailable_tools": unavailable,
+            }),
+        )));
+    }
+
+    let resolved_output =
+        resolve_automation_output_path_for_run(workspace_root, run_id, output_path)?;
+    if let Some(parent) = resolved_output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut session = state
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap_or_else(|| {
+            Session::new(
+                Some(format!(
+                    "Automation {} / {}",
+                    automation.automation_id, node.node_id
+                )),
+                Some(workspace_root.to_string()),
+            )
+        });
+    session.project_id = Some(automation_workspace_project_id(workspace_root));
+    session.workspace_root = Some(workspace_root.to_string());
+
+    let mut invocation_parts = Vec::new();
+    let mut call_rows = Vec::new();
+    let mut failed_required = Vec::new();
+    for (index, call) in required_calls.iter().enumerate() {
+        let args = call.args.clone().unwrap_or_else(|| json!({}));
+        let result = state.tools.execute(&call.tool, args.clone()).await;
+        match result {
+            Ok(result) => {
+                let result_value = json!({
+                    "output": result.output,
+                    "metadata": result.metadata,
+                });
+                invocation_parts.push(MessagePart::ToolInvocation {
+                    tool: call.tool.clone(),
+                    args: args.clone(),
+                    result: Some(result_value.clone()),
+                    error: None,
+                });
+                call_rows.push(json!({
+                    "index": index,
+                    "tool": call.tool,
+                    "args": args,
+                    "status": "completed",
+                    "required_success": call.required_success,
+                    "evidence_key": call.evidence_key,
+                    "result_excerpt": truncate_text(&result_value.to_string(), 1200),
+                }));
+            }
+            Err(error) => {
+                let error_text = error.to_string();
+                invocation_parts.push(MessagePart::ToolInvocation {
+                    tool: call.tool.clone(),
+                    args: args.clone(),
+                    result: None,
+                    error: Some(error_text.clone()),
+                });
+                call_rows.push(json!({
+                    "index": index,
+                    "tool": call.tool,
+                    "args": args,
+                    "status": "failed",
+                    "required_success": call.required_success,
+                    "evidence_key": call.evidence_key,
+                    "error": error_text,
+                }));
+                if call.required_success {
+                    failed_required.push(call.tool.clone());
+                }
+            }
+        }
+    }
+
+    let preflight_status = if failed_required.is_empty() {
+        "completed"
+    } else {
+        "blocked"
+    };
+    let blocked_reason = if failed_required.is_empty() {
+        Value::Null
+    } else {
+        json!(format!(
+            "required connector preflight call(s) failed: {}",
+            failed_required.join(", ")
+        ))
+    };
+    let artifact = json!({
+        "status": preflight_status,
+        "node_id": node.node_id,
+        "run_id": run_id,
+        "automation_id": automation.automation_id,
+        "checked_at_ms": now_ms(),
+        "required_tool_calls": call_rows,
+        "blocked_reason": blocked_reason,
+        "capability_resolution": capability_resolution,
+        "mcp_tool_diagnostics": mcp_tool_diagnostics,
+    });
+    let artifact_text = serde_json::to_string_pretty(&artifact)?;
+    std::fs::write(&resolved_output, &artifact_text)?;
+
+    let display_path = resolved_output
+        .strip_prefix(workspace_root)
+        .ok()
+        .and_then(|value| value.to_str().map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| output_path.to_string());
+    invocation_parts.push(MessagePart::Text {
+        text: format!(
+            "Connector preflight {} for `{}` and wrote `{}`.\n\n{}",
+            preflight_status, node.node_id, display_path, artifact_text
+        ),
+    });
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        invocation_parts,
+    ));
+    state.storage.save_session(session.clone()).await?;
+
+    let artifact_validation = if failed_required.is_empty() {
+        json!({
+            "accepted_candidate_source": "deterministic_connector_preflight",
+            "validation_outcome": "accepted",
+            "unmet_requirements": [],
+        })
+    } else {
+        json!({
+            "accepted_candidate_source": "deterministic_connector_preflight",
+            "validation_outcome": "blocked",
+            "semantic_block_reason": blocked_reason,
+            "unmet_requirements": ["mcp_required_tool_failed"],
+        })
+    };
+    Ok(Some(
+        node_output::wrap_automation_node_output_with_automation(
+            automation,
+            node,
+            &session,
+            requested_tools,
+            session_id,
+            Some(run_id),
+            &format!("{{\"status\":\"{}\"}}", preflight_status),
+            Some((display_path, artifact_text)),
+            Some(artifact_validation),
+        ),
+    ))
+}
+
+fn build_connector_preflight_blocked_output(
+    node: &AutomationFlowNode,
+    requested_tools: &[String],
+    capability_resolution: &Value,
+    mcp_tool_diagnostics: &Value,
+    detail: &str,
+    extra: Value,
+) -> Value {
+    let mut output =
+        crate::automation_v2::executor::build_node_execution_error_output_with_category(
+            node,
+            detail,
+            false,
+            "tool_resolution_failed",
+        );
+    if let Some(object) = output.as_object_mut() {
+        object.insert(
+            "tool_telemetry".to_string(),
+            automation_initialized_attempt_tool_telemetry(requested_tools, capability_resolution),
+        );
+        object.insert(
+            "capability_resolution".to_string(),
+            capability_resolution.clone(),
+        );
+        object.insert(
+            "mcp_tool_diagnostics".to_string(),
+            mcp_tool_diagnostics.clone(),
+        );
+        object.insert("connector_preflight".to_string(), extra);
+    }
+    automation_mark_tool_resolution_output_blocked(&mut output, detail);
+    output
+}
+
 pub(crate) fn automation_node_max_attempts(node: &AutomationFlowNode) -> u32 {
     let explicit = node
         .retry_policy
@@ -878,7 +1109,15 @@ pub(crate) async fn execute_automation_v2_node(
         node,
         &selected_mcp_wildcard_server_names,
     ));
-    let required_concrete_mcp_tools = automation_node_required_concrete_mcp_tools(node);
+    let mut required_concrete_mcp_tools = automation_node_required_concrete_mcp_tools(node);
+    required_concrete_mcp_tools.extend(
+        automation_node_required_tool_calls(node)
+            .into_iter()
+            .map(|call| call.tool)
+            .filter(|tool| tool.starts_with("mcp.") && !tool.ends_with(".*")),
+    );
+    required_concrete_mcp_tools.sort();
+    required_concrete_mcp_tools.dedup();
     requested_tools.extend(required_concrete_mcp_tools.clone());
     if automation_node_uses_broad_read_only_source_guard(node)
         && !matches!(execution_mode, "git_patch" | "filesystem_patch")
@@ -1058,6 +1297,24 @@ pub(crate) async fn execute_automation_v2_node(
                 capability_resolution.clone(),
             );
         }
+        return Ok(output);
+    }
+    if let Some(output) = try_execute_connector_preflight_node(
+        state,
+        run_id,
+        automation,
+        node,
+        &session_id,
+        &workspace_root,
+        required_output_path.as_deref(),
+        &requested_tools,
+        &effective_offered_tools,
+        &capability_resolution,
+        &mcp_tool_diagnostics,
+    )
+    .await?
+    {
+        state.clear_automation_v2_session(run_id, &session_id).await;
         return Ok(output);
     }
     let runtime_values = automation_prompt_runtime_values(run.started_at_ms);
@@ -1338,8 +1595,11 @@ pub(crate) async fn execute_automation_v2_node(
     let read_only_source_mutations =
         read_only_source_snapshot_mutations(&workspace_root, &read_only_source_snapshot);
     if !read_only_source_mutations.is_empty() {
-        let restored =
-            revert_read_only_source_snapshot_files(&workspace_root, &read_only_source_snapshot);
+        let restored = revert_read_only_source_snapshot_mutations(
+            &workspace_root,
+            &read_only_source_snapshot,
+            &read_only_source_mutations,
+        );
         let mutation_paths = read_only_source_mutations
             .iter()
             .filter_map(|value| value.get("path").and_then(Value::as_str))

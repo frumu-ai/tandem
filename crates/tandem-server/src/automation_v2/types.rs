@@ -529,11 +529,28 @@ impl From<tandem_plan_compiler::api::OutputContractSeed> for AutomationFlowOutpu
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct AutomationRequiredToolCall {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_key: Option<String>,
+    #[serde(default = "default_required_tool_call_success")]
+    pub required_success: bool,
+}
+
+fn default_required_tool_call_success() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct AutomationOutputEnforcement {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_profile: Option<String>,
     #[serde(default)]
     pub required_tools: Vec<String>,
+    #[serde(default)]
+    pub required_tool_calls: Vec<AutomationRequiredToolCall>,
     #[serde(default)]
     pub required_evidence: Vec<String>,
     #[serde(default)]

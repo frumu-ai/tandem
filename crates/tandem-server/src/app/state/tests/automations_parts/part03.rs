@@ -1,4 +1,3 @@
-
 #[test]
 fn marketing_template_automation_migrates_to_split_research_flow() {
     let mut automation = AutomationV2Spec {
@@ -260,6 +259,7 @@ fn research_finalize_validation_accepts_upstream_read_evidence() {
             enforcement: Some(crate::AutomationOutputEnforcement {
                 validation_profile: Some("research_synthesis".to_string()),
                 required_tools: Vec::new(),
+                required_tool_calls: Vec::new(),
                 required_evidence: vec!["local_source_reads".to_string()],
                 required_sections: vec![
                     "files_reviewed".to_string(),
@@ -1735,4 +1735,153 @@ fn research_brief_full_pipeline_overrides_llm_blocked_to_needs_repair_without_so
     assert!(!automation_output_repair_exhausted(&output));
 
     let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+#[tokio::test]
+async fn connector_preflight_executes_declared_required_tool_calls_generically() {
+    use async_trait::async_trait;
+    use tandem_tools::Tool;
+    use tandem_types::{ToolResult, ToolSchema};
+
+    struct StaticTool(&'static str);
+
+    #[async_trait]
+    impl Tool for StaticTool {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema {
+                name: self.0.to_string(),
+                description: "test connector preflight tool".to_string(),
+                input_schema: json!({"type": "object"}),
+                capabilities: Default::default(),
+            }
+        }
+
+        async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult {
+                output: format!("{} ok {}", self.0, args),
+                metadata: json!({"ok": true, "args": args}),
+            })
+        }
+    }
+
+    let state = ready_test_state().await;
+    state
+        .tools
+        .register_tool(
+            "mcp.fake.get_me".to_string(),
+            std::sync::Arc::new(StaticTool("mcp.fake.get_me")),
+        )
+        .await;
+    state
+        .tools
+        .register_tool(
+            "mcp.fake.search_items".to_string(),
+            std::sync::Arc::new(StaticTool("mcp.fake.search_items")),
+        )
+        .await;
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-connector-preflight-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let run_id = "run-connector-preflight";
+    let mut automation = AutomationSpecBuilder::new("automation-connector-preflight")
+        .workspace_root(workspace_root.to_str().expect("workspace").to_string())
+        .build();
+    automation.agents = vec![AutomationAgentProfile {
+        agent_id: "agent-a".to_string(),
+        template_id: None,
+        display_name: "Agent".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: AutomationAgentToolPolicy {
+            allowlist: vec![
+                "mcp.fake.get_me".to_string(),
+                "mcp.fake.search_items".to_string(),
+            ],
+            denylist: Vec::new(),
+        },
+        mcp_policy: AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: Some(vec![
+                "mcp.fake.get_me".to_string(),
+                "mcp.fake.search_items".to_string(),
+            ]),
+        },
+        approval_policy: None,
+    }];
+    let node = AutomationNodeBuilder::new("connector_preflight")
+        .output_contract(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        })
+        .metadata(json!({
+            "allowed_tools": ["mcp.fake.get_me", "mcp.fake.search_items"],
+            "required_tool_calls": [
+                {"tool": "mcp.fake.get_me", "args": {}},
+                {"tool": "mcp.fake.search_items", "args": {"query": "frumu-ai/tandem"}}
+            ],
+            "builder": {
+                "task_class": "connector_preflight",
+                "output_path": ".tandem/artifacts/connector-preflight.json"
+            }
+        }))
+        .build();
+    let mut session = Session::new(
+        Some("connector preflight".to_string()),
+        Some(workspace_root.to_string_lossy().to_string()),
+    );
+    let session_id = session.id.clone();
+    session.workspace_root = Some(workspace_root.to_string_lossy().to_string());
+    state
+        .storage
+        .save_session(session)
+        .await
+        .expect("save session");
+
+    let output = try_execute_connector_preflight_node(
+        &state,
+        run_id,
+        &automation,
+        &node,
+        &session_id,
+        workspace_root.to_str().expect("workspace"),
+        Some(".tandem/artifacts/connector-preflight.json"),
+        &[
+            "mcp.fake.get_me".to_string(),
+            "mcp.fake.search_items".to_string(),
+        ],
+        &[
+            "mcp.fake.get_me".to_string(),
+            "mcp.fake.search_items".to_string(),
+        ],
+        &json!({}),
+        &json!({}),
+    )
+    .await
+    .expect("preflight")
+    .expect("preflight output");
+
+    assert_eq!(output["status"], "completed");
+    let artifact_path = workspace_root
+        .join(".tandem/runs")
+        .join(run_id)
+        .join("artifacts/connector-preflight.json");
+    let artifact: Value =
+        serde_json::from_str(&std::fs::read_to_string(&artifact_path).expect("artifact text"))
+            .expect("artifact json");
+    assert_eq!(artifact["status"], "completed");
+    assert_eq!(
+        artifact["required_tool_calls"]
+            .as_array()
+            .expect("calls")
+            .len(),
+        2
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
 }

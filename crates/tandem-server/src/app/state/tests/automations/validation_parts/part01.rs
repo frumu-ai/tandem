@@ -1571,6 +1571,7 @@ fn node_with_bootstrap_intent_adds_workspace_inspection_prewrite_gate() {
         enforcement: Some(crate::AutomationOutputEnforcement {
             validation_profile: Some("artifact_only".to_string()),
             required_tools: Vec::new(),
+            required_tool_calls: Vec::new(),
             required_evidence: Vec::new(),
             required_sections: Vec::new(),
             prewrite_gates: Vec::new(),

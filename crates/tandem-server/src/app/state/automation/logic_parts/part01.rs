@@ -609,23 +609,7 @@ pub(crate) fn automation_requested_server_scoped_mcp_tools(
 pub(crate) fn automation_node_required_concrete_mcp_tools(
     node: &AutomationFlowNode,
 ) -> Vec<String> {
-    let requires_exact_connector_probe = node
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("builder"))
-        .and_then(Value::as_object)
-        .is_some_and(|builder| {
-            ["task_class", "task_kind", "retry_class"]
-                .iter()
-                .filter_map(|key| builder.get(*key).and_then(Value::as_str))
-                .any(|value| {
-                    matches!(
-                        value.trim().to_ascii_lowercase().as_str(),
-                        "connector_preflight" | "connector"
-                    )
-                })
-        });
-    if !requires_exact_connector_probe {
+    if !automation_node_is_connector_preflight(node) {
         return Vec::new();
     }
     let mut tools = node
@@ -646,6 +630,84 @@ pub(crate) fn automation_node_required_concrete_mcp_tools(
     tools.sort();
     tools.dedup();
     tools
+}
+
+pub(crate) fn automation_node_is_connector_preflight(node: &AutomationFlowNode) -> bool {
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(Value::as_object)
+        .is_some_and(|builder| {
+            ["task_class", "task_kind", "retry_class"]
+                .iter()
+                .filter_map(|key| builder.get(*key).and_then(Value::as_str))
+                .any(|value| {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "connector_preflight" | "connector"
+                    )
+                })
+        })
+}
+
+pub(crate) fn automation_node_required_tool_calls(
+    node: &AutomationFlowNode,
+) -> Vec<crate::AutomationRequiredToolCall> {
+    let mut calls = Vec::new();
+    if let Some(enforcement_calls) = node
+        .output_contract
+        .as_ref()
+        .and_then(|contract| contract.enforcement.as_ref())
+        .map(|enforcement| enforcement.required_tool_calls.clone())
+    {
+        calls.extend(enforcement_calls);
+    }
+    for source in [
+        node.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("required_tool_calls")),
+        node.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("builder"))
+            .and_then(|builder| builder.get("required_tool_calls")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(parsed) =
+            serde_json::from_value::<Vec<crate::AutomationRequiredToolCall>>(source.clone())
+        {
+            calls.extend(parsed);
+        }
+    }
+    if calls.is_empty() {
+        calls.extend(
+            automation_node_required_concrete_mcp_tools(node)
+                .into_iter()
+                .map(|tool| crate::AutomationRequiredToolCall {
+                    tool,
+                    args: None,
+                    evidence_key: None,
+                    required_success: true,
+                }),
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    calls
+        .into_iter()
+        .filter_map(|mut call| {
+            call.tool = call.tool.trim().to_string();
+            if call.tool.is_empty() {
+                return None;
+            }
+            let dedupe_key = format!(
+                "{}\n{}",
+                call.tool,
+                call.args.as_ref().map(Value::to_string).unwrap_or_default()
+            );
+            seen.insert(dedupe_key).then_some(call)
+        })
+        .collect()
 }
 
 async fn sync_automation_allowed_mcp_servers(
