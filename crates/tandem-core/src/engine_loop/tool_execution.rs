@@ -189,9 +189,9 @@ impl EngineLoop {
             return None;
         }
 
-        let targets = extract_session_write_target_paths(tool, args);
+        let targets = super::write_targets::paths(tool, args);
         if targets.is_empty() {
-            if tool_requires_concrete_write_target(tool, args) {
+            if super::write_targets::requires_concrete(tool, args) {
                 return Some(format!(
                     "Write policy blocked `{tool}` because this session only allows declared output targets."
                 ));
@@ -414,42 +414,12 @@ fn normalize_path_lexical(path: &Path) -> PathBuf {
     normalized
 }
 
-pub(crate) fn extract_session_write_target_paths(tool: &str, args: &Value) -> Vec<String> {
-    let tool = normalize_tool_name(tool);
-    let mut paths = match tool.as_str() {
-        "write" | "edit" | "delete" | "delete_file" => string_fields(
-            args,
-            &[
-                "path",
-                "file_path",
-                "filePath",
-                "filepath",
-                "target_path",
-                "output_path",
-                "file",
-            ],
-        ),
-        "apply_patch" => args
-            .get("patchText")
-            .or_else(|| args.get("patch"))
-            .and_then(Value::as_str)
-            .map(extract_apply_patch_write_paths)
-            .unwrap_or_default(),
-        "bash" | "shell" => extract_bash_write_targets(
-            &args
-                .get("command")
-                .or_else(|| args.get("cmd"))
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        ),
-        _ => Vec::new(),
-    };
-    paths.sort();
-    paths.dedup();
-    paths
-}
+// Write-target derivation lives in `super::write_targets` (Invariant 1 of
+// `docs/SPINE.md`). `string_field`/`string_fields` remain here because
+// they are also used by `session_write_policy_violation` above; the
+// write_targets module imports them via `pub(super)`.
 
-fn string_field(args: &Value, key: &str) -> Option<String> {
+pub(super) fn string_field(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
@@ -457,92 +427,20 @@ fn string_field(args: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn string_fields(args: &Value, keys: &[&str]) -> Vec<String> {
+pub(super) fn string_fields(args: &Value, keys: &[&str]) -> Vec<String> {
     keys.iter()
         .filter_map(|key| string_field(args, key))
         .collect::<Vec<_>>()
-}
-
-fn extract_apply_patch_write_paths(patch: &str) -> Vec<String> {
-    let mut paths = HashSet::new();
-    for line in patch.lines() {
-        let trimmed = line.trim();
-        let marker = trimmed
-            .strip_prefix("*** Add File: ")
-            .or_else(|| trimmed.strip_prefix("*** Update File: "))
-            .or_else(|| trimmed.strip_prefix("*** Delete File: "));
-        if let Some(path) = marker.map(str::trim).filter(|value| !value.is_empty()) {
-            paths.insert(path.to_string());
-        }
-    }
-    let mut paths = paths.into_iter().collect::<Vec<_>>();
-    paths.sort();
-    paths
-}
-
-fn extract_bash_write_targets(command: &str) -> Vec<String> {
-    let mut targets = Vec::new();
-    for part in command.split(">>").flat_map(|value| value.split('>')) {
-        let candidate = part.trim().split_whitespace().next().unwrap_or("").trim();
-        if candidate.starts_with('/')
-            || candidate.starts_with("./")
-            || candidate.starts_with("../")
-            || candidate.starts_with("~/")
-            || candidate.starts_with(".tandem/")
-        {
-            targets.push(candidate.to_string());
-        }
-    }
-    targets.sort();
-    targets.dedup();
-    targets
-}
-
-fn tool_requires_concrete_write_target(tool: &str, args: &Value) -> bool {
-    let tool = normalize_tool_name(tool);
-    match tool.as_str() {
-        "write" | "edit" | "delete" | "delete_file" | "apply_patch" => true,
-        "bash" | "shell" => args
-            .get("command")
-            .or_else(|| args.get("cmd"))
-            .and_then(Value::as_str)
-            .is_some_and(shell_command_appears_mutating),
-        _ => false,
-    }
-}
-
-fn shell_command_appears_mutating(command: &str) -> bool {
-    let lowered = command.to_ascii_lowercase();
-    lowered.contains(" >")
-        || lowered.contains(">>")
-        || lowered.contains(" tee ")
-        || lowered.starts_with("tee ")
-        || lowered.contains(" sed -i")
-        || lowered.starts_with("sed -i")
-        || lowered.contains(" perl -pi")
-        || lowered.starts_with("perl -pi")
-        || lowered.contains(" rm ")
-        || lowered.starts_with("rm ")
-        || lowered.contains(" mv ")
-        || lowered.starts_with("mv ")
-        || lowered.contains(" cp ")
-        || lowered.starts_with("cp ")
 }
 
 #[cfg(test)]
 mod session_write_policy_tests {
     use super::*;
 
-    #[test]
-    fn write_policy_extracts_apply_patch_targets() {
-        let args = json!({
-            "patchText": "*** Begin Patch\n*** Update File: packages/app/src/main.ts\n@@\n old\n*** End Patch\n"
-        });
-        assert_eq!(
-            extract_session_write_target_paths("apply_patch", &args),
-            vec!["packages/app/src/main.ts".to_string()]
-        );
-    }
+    // Write-target and shell-mutation tests moved with their functions to
+    // `super::write_targets` (Invariant 1, `docs/SPINE.md`). Path
+    // normalization stays here because `resolve_policy_path` lives in this
+    // module.
 
     #[test]
     fn write_policy_normalizes_equivalent_paths() {
@@ -556,17 +454,5 @@ mod session_write_policy_tests {
             resolved,
             PathBuf::from("/workspace/project/.tandem/runs/run-1/artifacts/out.md")
         );
-    }
-
-    #[test]
-    fn write_policy_blocks_opaque_mutating_shell_commands() {
-        assert!(tool_requires_concrete_write_target(
-            "bash",
-            &json!({"command": "cat <<'EOF' > packages/app/src/main.ts\nbroken\nEOF"})
-        ));
-        assert!(!tool_requires_concrete_write_target(
-            "bash",
-            &json!({"command": "rg \"needle\" packages/app/src"})
-        ));
     }
 }
