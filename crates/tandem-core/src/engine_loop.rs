@@ -28,6 +28,7 @@ mod tool_execution;
 mod tool_output;
 mod tool_parsing;
 mod types;
+mod write_targets;
 
 use loop_guards::{
     duplicate_signature_limit_for, tool_budget_for, websearch_duplicate_signature_limit,

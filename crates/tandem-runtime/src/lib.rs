@@ -2,6 +2,7 @@
 
 pub mod lsp;
 pub mod mcp;
+pub mod mcp_ready;
 pub mod pty;
 pub mod workspace_index;
 

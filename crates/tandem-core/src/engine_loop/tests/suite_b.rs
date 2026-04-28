@@ -289,21 +289,21 @@ fn concrete_mcp_preflight_blocks_workspace_write_until_attempted() {
 #[test]
 fn session_write_targets_ignore_workspace_read_tools() {
     assert!(
-        crate::engine_loop::tool_execution::extract_session_write_target_paths(
+        crate::engine_loop::write_targets::paths(
             "read",
             &json!({"path":"engine/src/main.rs"})
         )
         .is_empty()
     );
     assert!(
-        crate::engine_loop::tool_execution::extract_session_write_target_paths(
+        crate::engine_loop::write_targets::paths(
             "glob",
             &json!({"pattern":"packages/tandem-control-panel/src/**/*.tsx"})
         )
         .is_empty()
     );
     assert!(
-        crate::engine_loop::tool_execution::extract_session_write_target_paths(
+        crate::engine_loop::write_targets::paths(
             "grep",
             &json!({"path":"crates"})
         )
@@ -311,7 +311,7 @@ fn session_write_targets_ignore_workspace_read_tools() {
     );
 
     assert_eq!(
-        crate::engine_loop::tool_execution::extract_session_write_target_paths(
+        crate::engine_loop::write_targets::paths(
             "write",
             &json!({"path":"artifacts/report.md"})
         ),
