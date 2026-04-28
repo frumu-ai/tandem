@@ -11,6 +11,8 @@ use tandem_types::{LocalImplicitTenant, SecretRef, TenantContext, ToolResult};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::mcp_ready::{EnsureReadyPolicy, McpReadyError};
+
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_CLIENT_NAME: &str = "tandem";
 const MCP_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -757,38 +759,26 @@ impl McpRegistry {
         tool_name: &str,
         args: Value,
     ) -> Result<ToolResult, String> {
-        let server = {
-            let servers = self.servers.read().await;
-            let Some(server) = servers.get(server_name) else {
+        // Single readiness gate (Invariant 2 of `docs/SPINE.md`): one
+        // attempt, no backoff — same shape as the previous inline check.
+        let server = match self
+            .ensure_ready(server_name, EnsureReadyPolicy::default())
+            .await
+        {
+            Ok(server) => server,
+            Err(McpReadyError::NotFound) => {
                 return Err(format!("MCP server '{server_name}' not found"));
-            };
-            server.clone()
-        };
-
-        if !server.enabled {
-            return Err(format!("MCP server '{server_name}' is disabled"));
-        }
-        if !server.connected {
-            if !self.connect(server_name).await {
-                let detail = self
-                    .list()
-                    .await
-                    .get(server_name)
-                    .and_then(|server| server.last_error.clone())
-                    .filter(|error| !error.trim().is_empty())
-                    .unwrap_or_else(|| "reconnect attempt failed".to_string());
+            }
+            Err(McpReadyError::Disabled) => {
+                return Err(format!("MCP server '{server_name}' is disabled"));
+            }
+            Err(McpReadyError::PermanentlyFailed { last_error }) => {
+                let detail =
+                    last_error.unwrap_or_else(|| "reconnect attempt failed".to_string());
                 return Err(format!(
                     "MCP server '{server_name}' is not connected: {detail}"
                 ));
             }
-        }
-
-        let server = {
-            let servers = self.servers.read().await;
-            let Some(server) = servers.get(server_name) else {
-                return Err(format!("MCP server '{server_name}' not found"));
-            };
-            server.clone()
         };
 
         let endpoint = parse_remote_endpoint(&server.transport).ok_or_else(|| {

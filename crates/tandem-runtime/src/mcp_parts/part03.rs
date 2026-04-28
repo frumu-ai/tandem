@@ -121,6 +121,87 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn ensure_ready_rejects_unknown_server_with_typed_error() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        let err = registry
+            .ensure_ready("nope", EnsureReadyPolicy::default())
+            .await
+            .expect_err("missing server should error");
+        assert_eq!(err, McpReadyError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_rejects_disabled_server_with_typed_error() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        registry
+            .add("example".to_string(), "sse:https://example.com".to_string())
+            .await;
+        registry.set_enabled("example", false).await;
+        let err = registry
+            .ensure_ready("example", EnsureReadyPolicy::default())
+            .await
+            .expect_err("disabled server should error");
+        assert_eq!(err, McpReadyError::Disabled);
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_returns_already_connected_server_without_reconnecting() {
+        let (endpoint, server) = spawn_fake_http_mcp_server().await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        registry
+            .add("githubcopilot".to_string(), endpoint.to_string())
+            .await;
+        assert!(registry.connect("githubcopilot").await);
+
+        let ready = registry
+            .ensure_ready("githubcopilot", EnsureReadyPolicy::default())
+            .await
+            .expect("connected server should be ready");
+        assert!(ready.connected);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_reconnects_when_disconnected() {
+        let (endpoint, server) = spawn_fake_http_mcp_server().await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        registry
+            .add("githubcopilot".to_string(), endpoint.to_string())
+            .await;
+        assert!(registry.connect("githubcopilot").await);
+        assert!(registry.disconnect("githubcopilot").await);
+
+        let ready = registry
+            .ensure_ready("githubcopilot", EnsureReadyPolicy::default())
+            .await
+            .expect("ensure_ready should reconnect");
+        assert!(ready.connected);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_returns_permanently_failed_when_endpoint_unreachable() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        registry
+            .add(
+                "broken".to_string(),
+                "https://127.0.0.1:1/unreachable".to_string(),
+            )
+            .await;
+
+        let err = registry
+            .ensure_ready("broken", EnsureReadyPolicy::default())
+            .await
+            .expect_err("unreachable endpoint should permanently fail");
+        assert!(matches!(err, McpReadyError::PermanentlyFailed { .. }));
+    }
+
     #[test]
     fn parse_remote_endpoint_supports_http_prefixes() {
         assert_eq!(

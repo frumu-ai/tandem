@@ -41,13 +41,27 @@ that every `ToolKind` variant marked read-only returns `∅` for any args.
 reconnect logic at multiple call sites. Each site must independently get
 this right; one missed site is a stuck or panicking run.
 
-**Enforcement:** A single `ensure_mcp_ready(tool) -> Result<Conn,
-McpReadyError>` gate. The raw connection type becomes private to the
-runtime crate; only the gate hands one out. Callers cannot acquire a
-connection without going through the readiness check, so the compiler
-rejects any new caller that tries.
+**Enforcement:** `McpRegistry::ensure_ready(server, EnsureReadyPolicy)
+-> Result<McpServer, McpReadyError>`, defined in `mcp_ready.rs`. The
+typed error replaces ad-hoc `bool` and stringly-formatted returns;
+`EnsureReadyPolicy::with_retries` consolidates the per-site retry
+shapes. The bedrock site (`McpRegistry::call_tool`) and the most
+recently reinvented helper
+(`automation_connect_mcp_server_with_retry`) are migrated.
 
-**Filled by:** Phase 2.
+Compile-time enforcement is **not yet** in place: `McpRegistry::connect`
+is still `pub`. The four remaining external callers
+(`bug_monitor_github`, `automation/capability_impl`,
+`automation/logic_parts/part01.rs:880`,
+`automation/logic/part01_parts/part01.rs:608`,
+`app_state_impl_parts/part02.rs:378`) migrate in the follow-up; once
+those are gone, `connect` drops to `pub(crate)` and the gate is
+compiler-enforced. HTTP `/connect` endpoints continue calling `connect`
+directly — they are user-initiated single-attempt actions, not
+"about to use" sites.
+
+**Filled by:** Phase 2 (partial — gate landed and bedrock migrated;
+remaining migrations + privacy tightening as a follow-up).
 
 ## Invariant 3 — Run/task mutability is a single derived predicate
 
