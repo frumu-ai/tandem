@@ -2,6 +2,73 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.4.45 (Released 2026-04-28)
+
+This release makes Bug Monitor usable as an operator-facing issue reporter and upgrades workflow failure triage so Tandem can turn terminal automation failures into actionable, GitHub-ready reports instead of generic crash notes.
+
+### Bug Monitor is now a real control-panel surface
+
+The control panel now includes a dedicated `#/bug-monitor` page. It shows Bug Monitor readiness and runtime state, including whether monitoring is enabled, active, paused, ingest-ready, publish-ready, and whether pending incidents exist. Operators can refresh status, recompute readiness, pause or resume monitoring, and run the debug endpoint directly from the page.
+
+The same page lists incidents, issue drafts, and published posts using the existing Bug Monitor API and TypeScript SDK namespace. Incident cards expose replay and triage-run actions. Draft cards expose view, approve, deny, triage run, triage summary, issue draft, publish, and recheck actions. A manual report form lets operators submit a flexible Bug Monitor report with title, body, severity, source, labels, related workflow/run IDs, affected path, reproduction notes, expected behavior, and actual behavior.
+
+Incident, draft, and post cards now expose the signal lifecycle directly: signal, draft, triage run, proposal state, coder-ready state, approval state, published output, artifacts, and memory references are shown when the backend provides them. The page also labels locally inferred quality checks as heuristic so operators can tell the difference between backend gate reports and UI fallback inspection.
+
+The `bug-monitor` route is now wired through the hash router instead of falling back to Dashboard, and ACA-mode navigation exposes it by default. Existing Bug Monitor status pills continue to open the Bug Monitor page.
+
+### Workflow failures now produce richer Bug Monitor incidents
+
+Terminal automation and workflow failures now emit Bug Monitor candidate events with enough context to debug the failure: workflow/run/task/stage IDs, automation/routine/session IDs, agent role, retry exhaustion, attempt counts, status, reason, error kind, expected and actual output, tool name, artifact refs, files touched, validation errors, and suggested next action.
+
+The event-to-submission builder now extracts those fields defensively from both snake_case and camelCase payloads. Incident titles are more specific, for example `Workflow feature-archaeology failed at publish_issues: GitHub create issue failed with 422`, and details are structured into sections for event type, repo/workspace, identifiers, component/agent, attempts, error kind, reason, expected/actual output, tool context, artifacts, files, suggested next action, and a redacted payload excerpt. Secret-looking keys are redacted before payload details land in Bug Monitor output.
+
+Bug Monitor candidate detection also covers additional terminal/actionable event names such as automation, context-run, validation, blocked-task, and coder failures while continuing to ignore progress/retry noise.
+
+### Signal quality gates reduce noise before work is created
+
+Bug Monitor now records signal-quality metadata on incidents, drafts, and posts: confidence, risk level, expected destination, evidence refs, and the backend quality-gate report. Manual reports can submit those fields directly, and runtime failure submissions receive conservative defaults when the event payload is terminal and actionable.
+
+The intake path now evaluates whether a signal has a known source, classified type, recorded confidence, fingerprint/dedupe check, evidence or artifact refs, clear destination, known risk level, and is not routine progress or a minor retry. Signals that fail this intake gate are not turned into issue drafts. They are persisted as `quality_gate_blocked` incidents with the gate report attached, so operators can still see what was observed and why it did not advance.
+
+The TypeScript SDK public and wire types now expose the same metadata for Bug Monitor records, which lets the control panel and downstream tools render quality state without depending on raw JSON.
+
+### Triage now researches before drafting issues
+
+Bug Monitor triage runs now seed four tasks instead of two:
+
+- Inspect failure report and affected area
+- Research likely root cause and related failures
+- Validate or reproduce failure scope
+- Propose fix and verification plan
+
+The research task is explicitly asked to search the local repo, failure-pattern memory, existing GitHub issues when available, duplicate matches, artifacts/logs, and external sources when the failure appears to involve a dependency, framework, provider, or API. The validation task classifies the failure type and gathers evidence without destructive actions. The fix-proposal task produces suspected root cause, likely files to edit, recommended fix, acceptance criteria, smoke tests, coder-readiness, labels, and risk level.
+
+Triage runs now write these artifacts into the context run:
+
+- `artifacts/bug_monitor.inspection.json`
+- `artifacts/bug_monitor.research.json`
+- `artifacts/bug_monitor.validation.json`
+- `artifacts/bug_monitor.fix_proposal.json`
+- `artifacts/bug_monitor.triage_summary.json`
+
+Completed triage summaries also feed governed memory. Bug Monitor writes failure-pattern memory and regression-signal memory with artifact refs, recurrence counts, linked issue numbers, and duplicate context so future failures can be deduped or researched against prior evidence.
+
+### Proposals and coder handoffs are gated
+
+Bug Monitor no longer treats the initial placeholder triage summary as a GitHub-ready proposal. Issue draft generation now runs a draft-to-proposal quality gate that requires durable triage artifacts, research where needed, validation scope, explicit uncertainty, a bounded recommended action, acceptance criteria, and verification steps. If the gate fails, Tandem writes a `bug_monitor_proposal_quality_gate` artifact, marks the draft `proposal_blocked`, and returns the gate report instead of generating a weak issue.
+
+Coder-ready handoff is gated separately. A triage summary can request `coder_ready`, but Tandem only grants it when root-cause confidence is high or medium, likely files or components are identified, acceptance criteria and verification steps are clear, risk is low or medium, the issue is not a duplicate, and required permissions/tool scopes are available. Missing tool scopes or `permissions_available: false` block coder-ready status and suppress the hidden autonomous-coder handoff block.
+
+### GitHub issue drafts carry coder handoff metadata
+
+Bug Monitor issue drafts now include sections for what happened, expected behavior, steps to reproduce, environment, logs/artifacts, suspected root cause, recommended fix, files likely involved, acceptance criteria, and verification steps. When triage confidence is high or medium, likely files are identified, acceptance criteria and verification steps are clear, and the fix is not broad/high-risk product judgment, the rendered issue includes a hidden Tandem coder handoff block with repo, triage run, workflow run, incident, draft, failure type, likely files, acceptance criteria, verification steps, risk level, and `coder_ready`.
+
+Duplicate failure-pattern context is also preserved through triage replay, recheck, publish-failure responses, and generated issue drafts, so recurring failures point back to prior evidence rather than losing the duplicate match after the first triage run.
+
+### Engine build entrypoint restored
+
+The `tandem-engine` binary entrypoint has been restored so `cargo build -p tandem-ai --profile fast-release` can compile the engine package again.
+
 ## v0.4.44 (Released 2026-04-27)
 
 This release turns strict knowledgebase channels from a slow LLM-driven demo path into a fast, governed KB-answering path, and adds the memory import surface needed to seed larger project/session memories from server-side files.

@@ -164,6 +164,54 @@ async fn spawn_fake_bug_monitor_github_mcp_server() -> (String, tokio::task::Joi
     spawn_fake_bug_monitor_github_mcp_server_with_issues(Vec::new()).await
 }
 
+async fn write_ready_bug_monitor_triage_summary(app: axum::Router, draft_id: &str) -> Value {
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-summary"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "suggested_title": "Build failure in CI",
+                "what_happened": "The CI build failed while running the Tandem engine workflow.",
+                "why_it_likely_happened": "The orchestrator path is returning an error after repository inspection.",
+                "root_cause_confidence": "medium",
+                "failure_type": "code_defect",
+                "affected_components": ["orchestrator"],
+                "likely_files_to_edit": ["crates/tandem-server/src/app/tasks.rs"],
+                "expected_behavior": "The orchestrator run should complete without a build failure.",
+                "steps_to_reproduce": ["Run the affected Tandem workflow.", "Observe the CI build failure."],
+                "environment": ["Repo: acme/platform", "Process: tandem-engine"],
+                "logs": ["boom", "stack trace"],
+                "related_existing_issues": [],
+                "related_failure_patterns": [],
+                "research_sources": [{"kind": "repo", "summary": "Inspected orchestrator failure handling."}],
+                "recommended_fix": "Handle the orchestrator failure path and preserve the error evidence.",
+                "acceptance_criteria": ["The failing workflow reports a useful Bug Monitor incident."],
+                "verification_steps": ["Run the Bug Monitor regression tests."],
+                "coder_ready": true,
+                "risk_level": "medium",
+                "required_tool_scopes": [],
+                "missing_tool_scopes": [],
+                "permissions_available": true,
+                "notes": "Research and validation completed in the triage run.",
+            })
+            .to_string(),
+        ))
+        .expect("triage summary request");
+    let summary_resp = app
+        .oneshot(summary_req)
+        .await
+        .expect("triage summary response");
+    let summary_status = summary_resp.status();
+    let summary_body = to_bytes(summary_resp.into_body(), usize::MAX)
+        .await
+        .expect("triage summary body");
+    if summary_status != StatusCode::OK {
+        panic!("{}", String::from_utf8_lossy(&summary_body));
+    }
+    serde_json::from_slice(&summary_body).expect("triage summary json")
+}
+
 #[tokio::test]
 async fn bug_monitor_runtime_creates_incident_and_draft_from_failure_event() {
     let state = test_state().await;
@@ -214,6 +262,10 @@ async fn bug_monitor_runtime_creates_incident_and_draft_from_failure_event() {
     assert_eq!(incident.repo, "acme/platform");
     assert_eq!(incident.workspace_root, "/tmp/acme");
     assert!(incident.draft_id.is_some());
+    assert!(incident
+        .quality_gate
+        .as_ref()
+        .is_some_and(|gate| gate.passed));
 
     let drafts = state.list_bug_monitor_drafts(10).await;
     assert_eq!(drafts.len(), 1);
@@ -221,6 +273,10 @@ async fn bug_monitor_runtime_creates_incident_and_draft_from_failure_event() {
         drafts[0].draft_id,
         incident.draft_id.clone().unwrap_or_default()
     );
+    assert!(drafts[0]
+        .quality_gate
+        .as_ref()
+        .is_some_and(|gate| gate.passed));
 
     task.abort();
 }
@@ -315,12 +371,75 @@ async fn bug_monitor_runtime_detects_real_context_task_failures() {
         "unexpected incident title: {}",
         incident.title
     );
+    let drafts = state.list_bug_monitor_drafts(10).await;
     assert!(
-        incident.draft_id.is_some() || incident.last_error.is_some(),
-        "expected either a draft or a recorded reporter error"
+        incident.draft_id.is_some() || incident.last_error.is_some() || !drafts.is_empty(),
+        "expected either a linked draft, a draft row, or a recorded reporter error"
     );
 
     task.abort();
+}
+
+#[tokio::test]
+async fn bug_monitor_submission_extracts_rich_workflow_failure_metadata_and_redacts_secrets() {
+    let state = test_state().await;
+    let config = crate::BugMonitorConfig {
+        enabled: true,
+        repo: Some("acme/platform".to_string()),
+        workspace_root: Some("/tmp/acme".to_string()),
+        ..Default::default()
+    };
+    let event = EngineEvent::new(
+        "workflow.run.failed",
+        json!({
+            "workflow_id": "feature-archaeology",
+            "workflowID": "feature-archaeology",
+            "workflow_name": "Feature archaeology",
+            "run_id": "test-run-1",
+            "runID": "test-run-1",
+            "task_id": "github-publish",
+            "taskID": "github-publish",
+            "stage_id": "publish_issues",
+            "agent_role": "issue_publisher",
+            "attempt": 3,
+            "max_attempts": 3,
+            "retry_exhausted": true,
+            "error_kind": "tool_error",
+            "reason": "GitHub create issue failed with 422",
+            "error": "Validation failed: label does not exist",
+            "expected_output": "Create or update GitHub issue",
+            "actual_output": "GitHub rejected issue creation",
+            "tool_name": "github.create_issue",
+            "tool_args_summary": {"repo": "acme/platform", "token": "ghp_secret"},
+            "artifact_refs": ["artifacts/feature_archaeology.issue_candidates.json"],
+            "files_touched": ["crates/tandem-server/src/workflows.rs"],
+            "validation_errors": ["label does not exist"],
+            "suggested_next_action": "Check labels before creating issues or create missing labels first",
+            "api_key": "secret-api-key"
+        }),
+    );
+
+    let submission = crate::bug_monitor::service::build_bug_monitor_submission_from_event(
+        &state, &config, &event,
+    )
+    .await
+    .expect("submission");
+    let title = submission.title.expect("title");
+    let detail = submission.detail.expect("detail");
+
+    assert!(title.contains("Workflow feature-archaeology failed at publish_issues"));
+    assert!(detail.contains("workflow_id: feature-archaeology"));
+    assert!(detail.contains("run_id: test-run-1"));
+    assert!(detail.contains("task_id: github-publish"));
+    assert!(detail.contains("error_kind: tool_error"));
+    assert!(detail.contains("artifact_refs:"));
+    assert!(detail.contains("artifacts/feature_archaeology.issue_candidates.json"));
+    assert!(detail.contains("files_touched:"));
+    assert!(detail.contains("crates/tandem-server/src/workflows.rs"));
+    assert!(detail.contains("Check labels before creating issues"));
+    assert!(!detail.contains("ghp_secret"));
+    assert!(!detail.contains("secret-api-key"));
+    assert!(detail.contains("[redacted]"));
 }
 
 #[tokio::test]
@@ -342,6 +461,10 @@ async fn bug_monitor_report_creates_and_dedupes_draft() {
             "source": "desktop_logs",
             "event": "orchestrator.run_failed",
             "run_id": "run-123",
+            "confidence": "medium",
+            "risk_level": "medium",
+            "expected_destination": "bug_monitor_issue_draft",
+            "evidence_refs": ["artifact://runs/run-123/logs"],
             "excerpt": ["boom", "stack trace"],
         }
     });
@@ -370,6 +493,42 @@ async fn bug_monitor_report_creates_and_dedupes_draft() {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .contains("orchestrator.run_failed"));
+    let detail = draft
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(detail.contains("confidence: medium"));
+    assert!(detail.contains("risk_level: medium"));
+    assert!(detail.contains("expected_destination: bug_monitor_issue_draft"));
+    assert!(detail.contains("evidence_refs:"));
+    assert!(detail.contains("artifact://runs/run-123/logs"));
+    assert_eq!(
+        draft.get("confidence").and_then(Value::as_str),
+        Some("medium")
+    );
+    assert_eq!(
+        draft.get("risk_level").and_then(Value::as_str),
+        Some("medium")
+    );
+    assert_eq!(
+        draft.get("expected_destination").and_then(Value::as_str),
+        Some("bug_monitor_issue_draft")
+    );
+    assert_eq!(
+        draft
+            .get("evidence_refs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Value::as_str),
+        Some("artifact://runs/run-123/logs")
+    );
+    assert_eq!(
+        draft
+            .get("quality_gate")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("passed")
+    );
 
     let req = Request::builder()
         .method("POST")
@@ -395,6 +554,73 @@ async fn bug_monitor_report_creates_and_dedupes_draft() {
 
     let drafts = state.list_bug_monitor_drafts(10).await;
     assert_eq!(drafts.len(), 1);
+}
+
+#[tokio::test]
+async fn bug_monitor_report_blocks_noisy_or_unevidenced_signals() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "event": "workflow.run.progress",
+                    "title": "Still running"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let payload: Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.expect("body"))
+            .expect("json");
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("BUG_MONITOR_REPORT_INVALID")
+    );
+    assert!(payload
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("quality gate"));
+    assert_eq!(
+        payload
+            .get("quality_gate")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(
+        payload
+            .get("incident")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("quality_gate_blocked")
+    );
+    assert!(state.list_bug_monitor_drafts(10).await.is_empty());
+    let incidents = state.list_bug_monitor_incidents(10).await;
+    assert_eq!(incidents.len(), 1);
+    assert_eq!(incidents[0].status, "quality_gate_blocked");
+    assert!(incidents[0].draft_id.is_none());
+    assert!(incidents[0]
+        .quality_gate
+        .as_ref()
+        .is_some_and(|gate| !gate.passed));
 }
 
 #[tokio::test]
@@ -912,7 +1138,7 @@ async fn bug_monitor_draft_can_be_approved_and_denied() {
             .get("draft")
             .and_then(|row| row.get("status"))
             .and_then(Value::as_str),
-        Some("draft_ready")
+        Some("triage_queued")
     );
     assert_eq!(
         approve_payload
@@ -949,9 +1175,7 @@ async fn bug_monitor_draft_can_be_approved_and_denied() {
         }));
     assert!(approve_payload
         .get("issue_draft")
-        .and_then(|row| row.get("rendered_body"))
-        .and_then(Value::as_str)
-        .is_some_and(|body| body.contains("boom")));
+        .is_some_and(Value::is_null));
     assert_eq!(
         approve_payload
             .get("duplicate_summary")
@@ -966,18 +1190,16 @@ async fn bug_monitor_draft_can_be_approved_and_denied() {
             .map(|rows| rows.len()),
         Some(0)
     );
-    assert!(
-        approve_payload.get("triage_summary_artifact").is_none()
-            || approve_payload
-                .get("triage_summary_artifact")
-                .is_some_and(Value::is_null)
+    assert_eq!(
+        approve_payload
+            .get("triage_summary_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_triage_summary")
     );
-    assert!(
-        approve_payload.get("issue_draft_artifact").is_none()
-            || approve_payload
-                .get("issue_draft_artifact")
-                .is_some_and(Value::is_null)
-    );
+    assert!(approve_payload
+        .get("issue_draft_artifact")
+        .is_some_and(Value::is_null));
 
     let duplicate_req = Request::builder()
         .method("POST")
@@ -1085,6 +1307,109 @@ async fn bug_monitor_draft_can_be_approved_and_denied() {
 }
 
 #[tokio::test]
+async fn bug_monitor_issue_draft_blocks_weak_proposal_without_completed_triage() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "title": "Build failure in CI",
+                    "detail": "event: orchestrator.run_failed\nprocess: tandem-engine\ncomponent: orchestrator",
+                    "excerpt": ["boom", "stack trace"],
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+    let triage_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-run"))
+        .body(Body::empty())
+        .expect("triage request");
+    let triage_resp = app
+        .clone()
+        .oneshot(triage_req)
+        .await
+        .expect("triage response");
+    assert_eq!(triage_resp.status(), StatusCode::OK);
+
+    let draft_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/issue-draft"))
+        .body(Body::empty())
+        .expect("issue draft request");
+    let draft_resp = app
+        .clone()
+        .oneshot(draft_req)
+        .await
+        .expect("issue draft response");
+    assert_eq!(draft_resp.status(), StatusCode::BAD_REQUEST);
+    let issue_draft_payload: Value = serde_json::from_slice(
+        &to_bytes(draft_resp.into_body(), usize::MAX)
+            .await
+            .expect("issue draft body"),
+    )
+    .expect("issue draft json");
+    let proposal_gate = issue_draft_payload
+        .get("proposal_quality_gate")
+        .expect("proposal quality gate");
+    assert_eq!(
+        proposal_gate.get("status").and_then(Value::as_str),
+        Some("blocked")
+    );
+    let missing = proposal_gate
+        .get("missing")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(missing
+        .iter()
+        .any(|row| row.as_str() == Some("research_performed")));
+    assert!(missing
+        .iter()
+        .any(|row| row.as_str() == Some("bounded_action")));
+    assert!(missing
+        .iter()
+        .any(|row| row.as_str() == Some("verification_steps")));
+    assert_eq!(
+        issue_draft_payload
+            .get("draft")
+            .and_then(|row| row.get("github_status"))
+            .and_then(Value::as_str),
+        Some("proposal_blocked")
+    );
+}
+
+#[tokio::test]
 async fn bug_monitor_issue_draft_renders_repo_template() {
     let state = test_state().await;
     state
@@ -1139,6 +1464,7 @@ async fn bug_monitor_issue_draft_renders_repo_template() {
         .await
         .expect("triage response");
     assert_eq!(triage_resp.status(), StatusCode::OK);
+    write_ready_bug_monitor_triage_summary(app.clone(), &draft_id).await;
     let draft_req = Request::builder()
         .method("POST")
         .uri(format!("/bug-monitor/drafts/{draft_id}/issue-draft"))
@@ -1173,7 +1499,7 @@ async fn bug_monitor_issue_draft_renders_repo_template() {
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        Some("Bug Monitor issue")
+        Some("Build failure in CI")
     );
     assert_eq!(
         issue_draft_payload
@@ -1263,6 +1589,7 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
         .await
         .expect("triage response");
     assert_eq!(triage_resp.status(), StatusCode::OK);
+    write_ready_bug_monitor_triage_summary(app.clone(), &draft_id).await;
 
     let publish_req = Request::builder()
         .method("POST")
@@ -1296,13 +1623,13 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
         .get("issue_draft")
         .and_then(|row| row.get("rendered_body"))
         .and_then(Value::as_str)
-        .is_some_and(|body| body.contains("Build failure in CI")));
+        .is_some_and(|body| body.contains("CI build failed")));
     assert!(matches!(
         publish_payload
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        None | Some("Bug Monitor issue")
+        None | Some("Build failure in CI")
     ));
     assert!(matches!(
         publish_payload
@@ -1351,13 +1678,13 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
         .get("issue_draft")
         .and_then(|row| row.get("rendered_body"))
         .and_then(Value::as_str)
-        .is_some_and(|body| body.contains("Build failure in CI")));
+        .is_some_and(|body| body.contains("CI build failed")));
     assert!(matches!(
         recheck_payload
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        None | Some("Bug Monitor issue")
+        None | Some("Build failure in CI")
     ));
     assert!(matches!(
         recheck_payload
@@ -1449,6 +1776,7 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
         .await
         .expect("triage response");
     assert_eq!(triage_resp.status(), StatusCode::OK);
+    write_ready_bug_monitor_triage_summary(app.clone(), &draft_id).await;
 
     let publish_req = Request::builder()
         .method("POST")
@@ -1502,7 +1830,7 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        None | Some("Bug Monitor issue")
+        None | Some("Build failure in CI")
     ));
     assert!(matches!(
         publish_payload
@@ -1515,7 +1843,7 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
         .get("issue_draft")
         .and_then(|row| row.get("rendered_body"))
         .and_then(Value::as_str)
-        .is_some_and(|body| body.contains("Build failure in CI")));
+        .is_some_and(|body| body.contains("CI build failed")));
     assert_eq!(
         publish_payload
             .get("issue_draft_artifact")
@@ -1563,7 +1891,7 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
             .get("triage_summary")
             .and_then(|row| row.get("suggested_title"))
             .and_then(Value::as_str),
-        None | Some("Bug Monitor issue")
+        None | Some("Build failure in CI")
     ));
     assert!(matches!(
         recheck_payload
@@ -1576,7 +1904,7 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
         .get("issue_draft")
         .and_then(|row| row.get("rendered_body"))
         .and_then(Value::as_str)
-        .is_some_and(|body| body.contains("Build failure in CI")));
+        .is_some_and(|body| body.contains("CI build failed")));
     assert_eq!(
         recheck_payload
             .get("issue_draft_artifact")
@@ -1678,6 +2006,7 @@ async fn bug_monitor_publish_comments_on_matched_open_issue_and_lists_post() {
         .await
         .expect("triage response");
     assert_eq!(triage_resp.status(), StatusCode::OK);
+    write_ready_bug_monitor_triage_summary(app.clone(), &draft_id).await;
 
     let publish_req = Request::builder()
         .method("POST")

@@ -1,9 +1,12 @@
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::app::state::{sha256_hex, truncate_text, AppState};
 use crate::bug_monitor::types::BugMonitorIncidentRecord;
-use crate::bug_monitor::types::{BugMonitorConfig, BugMonitorSubmission};
+use crate::bug_monitor::types::{
+    BugMonitorConfig, BugMonitorQualityGateReport, BugMonitorQualityGateResult,
+    BugMonitorSubmission,
+};
 use crate::EngineEvent;
 
 pub async fn collect_bug_monitor_excerpt(state: &AppState, properties: &Value) -> Vec<String> {
@@ -24,6 +27,143 @@ pub async fn collect_bug_monitor_excerpt(state: &AppState, properties: &Value) -
     }
     excerpt.truncate(8);
     excerpt
+}
+
+fn is_non_empty(value: &Option<String>) -> bool {
+    value
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+}
+
+fn event_is_routine_noise(event: Option<&str>) -> bool {
+    let normalized = event.unwrap_or_default().trim().to_ascii_lowercase();
+    !normalized.is_empty()
+        && [
+            "progress",
+            "heartbeat",
+            "started",
+            "queued",
+            "retrying",
+            "attempt.started",
+            "minor_retry",
+        ]
+        .iter()
+        .any(|term| normalized.contains(term))
+}
+
+pub fn evaluate_bug_monitor_submission_quality(
+    submission: &BugMonitorSubmission,
+) -> BugMonitorQualityGateReport {
+    let source_known = is_non_empty(&submission.source)
+        || is_non_empty(&submission.component)
+        || is_non_empty(&submission.process)
+        || is_non_empty(&submission.event);
+    let type_classified = is_non_empty(&submission.event) || is_non_empty(&submission.level);
+    let confidence_recorded = is_non_empty(&submission.confidence);
+    let dedupe_checked = is_non_empty(&submission.fingerprint);
+    let evidence_exists = !submission.evidence_refs.is_empty()
+        || !submission.excerpt.is_empty()
+        || is_non_empty(&submission.detail)
+        || is_non_empty(&submission.file_name);
+    let destination_clear = is_non_empty(&submission.expected_destination);
+    let risk_known = is_non_empty(&submission.risk_level);
+    let not_routine_noise = !event_is_routine_noise(submission.event.as_deref());
+
+    let gate_specs = [
+        (
+            "source_known",
+            "Source known",
+            source_known,
+            submission
+                .source
+                .clone()
+                .or_else(|| submission.component.clone())
+                .or_else(|| submission.process.clone())
+                .or_else(|| submission.event.clone()),
+        ),
+        (
+            "type_classified",
+            "Signal type classified",
+            type_classified,
+            submission
+                .event
+                .clone()
+                .or_else(|| submission.level.clone()),
+        ),
+        (
+            "confidence_recorded",
+            "Confidence recorded",
+            confidence_recorded,
+            submission.confidence.clone(),
+        ),
+        (
+            "dedupe_checked",
+            "Dedupe/fingerprint checked",
+            dedupe_checked,
+            submission.fingerprint.clone(),
+        ),
+        (
+            "evidence_present",
+            "Evidence or artifact refs present",
+            evidence_exists,
+            submission
+                .evidence_refs
+                .first()
+                .cloned()
+                .or_else(|| submission.excerpt.first().cloned())
+                .or_else(|| submission.file_name.clone()),
+        ),
+        (
+            "destination_clear",
+            "Expected destination clear",
+            destination_clear,
+            submission.expected_destination.clone(),
+        ),
+        (
+            "risk_known",
+            "Risk level known",
+            risk_known,
+            submission.risk_level.clone(),
+        ),
+        (
+            "not_routine_noise",
+            "Not routine progress or minor retry",
+            not_routine_noise,
+            submission.event.clone(),
+        ),
+    ];
+
+    let gates = gate_specs
+        .into_iter()
+        .map(|(key, label, passed, detail)| BugMonitorQualityGateResult {
+            key: key.to_string(),
+            label: label.to_string(),
+            passed,
+            detail,
+        })
+        .collect::<Vec<_>>();
+    let passed_count = gates.iter().filter(|gate| gate.passed).count();
+    let missing = gates
+        .iter()
+        .filter(|gate| !gate.passed)
+        .map(|gate| gate.key.clone())
+        .collect::<Vec<_>>();
+    let passed = passed_count == gates.len();
+    BugMonitorQualityGateReport {
+        stage: "intake_to_draft".to_string(),
+        status: if passed { "passed" } else { "blocked" }.to_string(),
+        passed,
+        passed_count,
+        total_count: gates.len(),
+        blocked_reason: if passed {
+            None
+        } else {
+            Some(format!("missing quality gates: {}", missing.join(", ")))
+        },
+        gates,
+        missing,
+    }
 }
 
 pub async fn process_event(
@@ -52,6 +192,7 @@ pub async fn process_event(
         .clone()
         .unwrap_or(default_workspace_root);
     let now = crate::util::time::now_ms();
+    let quality_gate = evaluate_bug_monitor_submission_quality(&submission);
 
     let existing = state
         .bug_monitor_incidents
@@ -67,6 +208,25 @@ pub async fn process_event(
         row.last_seen_at_ms = Some(now);
         if row.excerpt.is_empty() {
             row.excerpt = submission.excerpt.clone();
+        }
+        if row.confidence.is_none() {
+            row.confidence = submission.confidence.clone();
+        }
+        if row.risk_level.is_none() {
+            row.risk_level = submission.risk_level.clone();
+        }
+        if row.expected_destination.is_none() {
+            row.expected_destination = submission.expected_destination.clone();
+        }
+        row.quality_gate = Some(quality_gate.clone());
+        for evidence_ref in &submission.evidence_refs {
+            if !row
+                .evidence_refs
+                .iter()
+                .any(|existing| existing == evidence_ref)
+            {
+                row.evidence_refs.push(evidence_ref.clone());
+            }
         }
         row
     } else {
@@ -96,6 +256,11 @@ pub async fn process_event(
             draft_id: None,
             triage_run_id: None,
             last_error: None,
+            confidence: submission.confidence.clone(),
+            risk_level: submission.risk_level.clone(),
+            expected_destination: submission.expected_destination.clone(),
+            evidence_refs: submission.evidence_refs.clone(),
+            quality_gate: Some(quality_gate.clone()),
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: Some(event.properties.clone()),
@@ -237,6 +402,125 @@ pub fn first_string(properties: &Value, keys: &[&str]) -> Option<String> {
     None
 }
 
+fn get_path_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    if key.contains('.') {
+        let mut current = value;
+        for part in key.split('.') {
+            current = current.get(part)?;
+        }
+        Some(current)
+    } else {
+        value.get(key)
+    }
+}
+
+fn first_value<'a>(properties: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    keys.iter().find_map(|key| get_path_value(properties, key))
+}
+
+fn first_string_deep(properties: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = get_path_value(properties, key) {
+            if let Some(text) = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return Some(text.to_string());
+            }
+            if value.is_number() || value.is_boolean() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn first_u64(properties: &Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(value) = get_path_value(properties, key) {
+            if let Some(number) = value.as_u64() {
+                return Some(number);
+            }
+            if let Some(text) = value.as_str() {
+                if let Ok(number) = text.trim().parse::<u64>() {
+                    return Some(number);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn strings_from_value(value: Option<&Value>, max_items: usize) -> Vec<String> {
+    let mut rows = match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| {
+                item.as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| {
+                        if item.is_object() || item.is_array() {
+                            Some(truncate_text(&sanitize_json_value(item).to_string(), 300))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .collect::<Vec<_>>(),
+        Some(Value::String(text)) => text
+            .lines()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        Some(value) if value.is_object() => {
+            vec![truncate_text(&sanitize_json_value(value).to_string(), 300)]
+        }
+        _ => Vec::new(),
+    };
+    rows.truncate(max_items);
+    rows
+}
+
+fn redacted_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    normalized.contains("token")
+        || normalized.contains("secret")
+        || normalized.contains("password")
+        || normalized.contains("credential")
+        || normalized.contains("authorization")
+        || normalized == "api_key"
+        || normalized.ends_with("_key")
+}
+
+fn sanitize_json_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    if redacted_key(key) {
+                        (key.clone(), Value::String("[redacted]".to_string()))
+                    } else {
+                        (key.clone(), sanitize_json_value(value))
+                    }
+                })
+                .collect::<Map<String, Value>>(),
+        ),
+        Value::Array(items) => {
+            Value::Array(items.iter().take(40).map(sanitize_json_value).collect())
+        }
+        Value::String(text) => Value::String(truncate_text(text, 1_000)),
+        _ => value.clone(),
+    }
+}
+
+fn field_line(label: &str, value: Option<String>) -> String {
+    format!("{label}: {}", value.unwrap_or_default())
+}
+
 pub async fn build_bug_monitor_submission_from_event(
     state: &AppState,
     config: &BugMonitorConfig,
@@ -251,90 +535,282 @@ pub async fn build_bug_monitor_submission_from_event(
         .workspace_root
         .clone()
         .unwrap_or(default_workspace_root);
-    let reason = first_string(
+    let reason = first_string_deep(
         &event.properties,
-        &["reason", "error", "detail", "message", "summary"],
+        &[
+            "reason",
+            "error",
+            "detail",
+            "message",
+            "summary",
+            "task.last_error",
+            "task.payload.reason",
+            "task.payload.error",
+        ],
     );
-    let run_id = first_string(&event.properties, &["runID", "run_id"]);
-    let session_id = first_string(&event.properties, &["sessionID", "session_id"]);
-    let correlation_id = first_string(
+    let workflow_id = first_string_deep(&event.properties, &["workflow_id", "workflowID"]);
+    let workflow_name = first_string_deep(&event.properties, &["workflow_name", "workflowName"]);
+    let run_id = first_string_deep(&event.properties, &["run_id", "runID"]);
+    let session_id = first_string_deep(&event.properties, &["session_id", "sessionID"]);
+    let task_id = first_string_deep(&event.properties, &["task_id", "taskID", "task.id"]);
+    let stage_id = first_string_deep(&event.properties, &["stage_id", "stageID", "actionID"]);
+    let node_id = first_string_deep(&event.properties, &["node_id", "nodeID"]);
+    let automation_id = first_string_deep(&event.properties, &["automation_id", "automationID"]);
+    let routine_id = first_string_deep(&event.properties, &["routine_id", "routineID"]);
+    let agent_role = first_string_deep(&event.properties, &["agent_role", "agentRole"]);
+    let error_kind = first_string_deep(
         &event.properties,
-        &["correlationID", "correlation_id", "commandID", "command_id"],
+        &["error_kind", "errorKind", "failure_kind", "failureKind"],
     );
-    let component = first_string(
+    let tool_name = first_string_deep(&event.properties, &["tool_name", "toolName", "tool"]);
+    let suggested_next_action = first_string_deep(
+        &event.properties,
+        &["suggested_next_action", "suggestedNextAction"],
+    );
+    let expected_output =
+        first_string_deep(&event.properties, &["expected_output", "expectedOutput"]).or_else(
+            || {
+                first_value(&event.properties, &["output_contract", "outputContract"])
+                    .map(|value| truncate_text(&sanitize_json_value(value).to_string(), 800))
+            },
+        );
+    let actual_output = first_string_deep(&event.properties, &["actual_output", "actualOutput"]);
+    let tool_args_summary =
+        first_value(&event.properties, &["tool_args_summary", "toolArgsSummary"])
+            .map(|value| truncate_text(&sanitize_json_value(value).to_string(), 800));
+    let tool_result_excerpt = first_string_deep(
+        &event.properties,
+        &["tool_result_excerpt", "toolResultExcerpt"],
+    );
+    let attempt = first_u64(&event.properties, &["attempt", "task.attempt"]);
+    let max_attempts = first_u64(
+        &event.properties,
+        &["max_attempts", "maxAttempts", "task.max_attempts"],
+    );
+    let retry_exhausted = first_value(&event.properties, &["retry_exhausted", "retryExhausted"])
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            attempt
+                .zip(max_attempts)
+                .map(|(attempt, max)| max > 0 && attempt >= max)
+                .unwrap_or(false)
+        });
+    let files_touched = strings_from_value(
+        first_value(
+            &event.properties,
+            &["files_touched", "filesTouched", "changed_files"],
+        ),
+        20,
+    );
+    let artifact_refs = strings_from_value(
+        first_value(
+            &event.properties,
+            &["artifact_refs", "artifactRefs", "artifacts"],
+        ),
+        20,
+    );
+    let mut evidence_refs = artifact_refs.clone();
+    for evidence_ref in strings_from_value(
+        first_value(&event.properties, &["evidence_refs", "evidenceRefs"]),
+        20,
+    ) {
+        if !evidence_refs
+            .iter()
+            .any(|existing| existing == &evidence_ref)
+        {
+            evidence_refs.push(evidence_ref);
+        }
+    }
+    let validation_errors = strings_from_value(
+        first_value(
+            &event.properties,
+            &["validation_errors", "validationErrors"],
+        ),
+        12,
+    );
+    let correlation_id = first_string_deep(
+        &event.properties,
+        &[
+            "correlationID",
+            "correlation_id",
+            "commandID",
+            "command_id",
+            "eventID",
+        ],
+    );
+    let component = first_string_deep(
         &event.properties,
         &[
             "component",
-            "routineID",
             "routine_id",
-            "workflowID",
+            "routineID",
             "workflow_id",
+            "workflowID",
+            "automation_id",
+            "automationID",
+            "node_id",
+            "nodeID",
+            "stage_id",
             "task",
             "title",
         ],
     );
+    let confidence = first_string_deep(
+        &event.properties,
+        &["confidence", "signal_confidence", "signalConfidence"],
+    )
+    .map(|value| truncate_text(&value, 80))
+    .or_else(|| Some("high".to_string()));
+    let risk_level = first_string_deep(&event.properties, &["risk_level", "riskLevel", "risk"])
+        .map(|value| truncate_text(&value, 80))
+        .or_else(|| Some("medium".to_string()));
+    let expected_destination = first_string_deep(
+        &event.properties,
+        &["expected_destination", "expectedDestination"],
+    )
+    .map(|value| truncate_text(&value, 120))
+    .or_else(|| Some("bug_monitor_issue_draft".to_string()));
     let mut excerpt = collect_bug_monitor_excerpt(state, &event.properties).await;
     if excerpt.is_empty() {
         if let Some(reason) = reason.as_ref() {
             excerpt.push(reason.clone());
         }
     }
-    let serialized = serde_json::to_string(&event.properties).unwrap_or_default();
+    let sanitized_properties = sanitize_json_value(&event.properties);
+    let serialized = serde_json::to_string(&sanitized_properties).unwrap_or_default();
     let fingerprint = sha256_hex(&[
         repo.as_str(),
         workspace_root.as_str(),
         event.event_type.as_str(),
         reason.as_deref().unwrap_or(""),
+        workflow_id.as_deref().unwrap_or(""),
+        task_id.as_deref().unwrap_or(""),
+        stage_id.as_deref().unwrap_or(""),
+        node_id.as_deref().unwrap_or(""),
         run_id.as_deref().unwrap_or(""),
         session_id.as_deref().unwrap_or(""),
         correlation_id.as_deref().unwrap_or(""),
         component.as_deref().unwrap_or(""),
-        serialized.as_str(),
     ]);
-    let title = if let Some(component) = component.as_ref() {
-        format!("{} failure in {}", event.event_type, component)
+    let failure_place = stage_id
+        .as_ref()
+        .or(node_id.as_ref())
+        .or(task_id.as_ref())
+        .or(component.as_ref());
+    let title_reason = reason
+        .as_deref()
+        .map(|row| truncate_text(row, 120))
+        .unwrap_or_else(|| event.event_type.clone());
+    let title = if let Some(workflow_id) = workflow_id.as_ref().or(automation_id.as_ref()) {
+        if let Some(place) = failure_place {
+            format!("Workflow {workflow_id} failed at {place}: {title_reason}")
+        } else {
+            format!("Workflow {workflow_id} failed: {title_reason}")
+        }
+    } else if let Some(routine_id) = routine_id.as_ref() {
+        format!("Routine {routine_id} failed: {title_reason}")
+    } else if let Some(component) = component.as_ref() {
+        format!(
+            "{} failure in {}: {}",
+            event.event_type, component, title_reason
+        )
     } else {
-        format!("{} detected", event.event_type)
+        format!("{}: {}", event.event_type, title_reason)
     };
     let mut detail_lines = vec![
         format!("event_type: {}", event.event_type),
+        format!("repo: {}", repo),
         format!("workspace_root: {}", workspace_root),
+        field_line("workflow_id", workflow_id.clone().or(automation_id.clone())),
+        field_line("workflow_name", workflow_name.clone()),
+        field_line("run_id", run_id.clone()),
+        field_line("session_id", session_id.clone()),
+        field_line("task_id", task_id.clone()),
+        field_line("stage_id", stage_id.clone()),
+        field_line("node_id", node_id.clone()),
+        field_line("component", component.clone()),
+        field_line("agent_role", agent_role.clone()),
+        field_line("attempt", attempt.map(|value| value.to_string())),
+        field_line("max_attempts", max_attempts.map(|value| value.to_string())),
+        format!("retry_exhausted: {retry_exhausted}"),
+        field_line("confidence", confidence.clone()),
+        field_line("risk_level", risk_level.clone()),
+        field_line("expected_destination", expected_destination.clone()),
+        field_line("error_kind", error_kind.clone()),
+        field_line("reason", reason.clone()),
+        String::new(),
+        "expected_output:".to_string(),
+        expected_output.unwrap_or_default(),
+        String::new(),
+        "actual_output:".to_string(),
+        actual_output.unwrap_or_default(),
+        String::new(),
+        field_line("tool", tool_name.clone()),
+        "tool_args_summary:".to_string(),
+        tool_args_summary.unwrap_or_default(),
+        "tool_result_excerpt:".to_string(),
+        tool_result_excerpt.unwrap_or_default(),
+        String::new(),
+        "artifact_refs:".to_string(),
+        if artifact_refs.is_empty() {
+            String::new()
+        } else {
+            artifact_refs.join("\n")
+        },
+        "files_touched:".to_string(),
+        if files_touched.is_empty() {
+            String::new()
+        } else {
+            files_touched.join("\n")
+        },
+        "validation_errors:".to_string(),
+        if validation_errors.is_empty() {
+            String::new()
+        } else {
+            validation_errors.join("\n")
+        },
+        String::new(),
+        "suggested_next_action:".to_string(),
+        suggested_next_action.unwrap_or_default(),
     ];
-    if let Some(reason) = reason.as_ref() {
-        detail_lines.push(format!("reason: {reason}"));
-    }
-    if let Some(run_id) = run_id.as_ref() {
-        detail_lines.push(format!("run_id: {run_id}"));
-    }
-    if let Some(session_id) = session_id.as_ref() {
-        detail_lines.push(format!("session_id: {session_id}"));
-    }
-    if let Some(correlation_id) = correlation_id.as_ref() {
-        detail_lines.push(format!("correlation_id: {correlation_id}"));
-    }
-    if let Some(component) = component.as_ref() {
-        detail_lines.push(format!("component: {component}"));
-    }
     if !serialized.trim().is_empty() {
         detail_lines.push(String::new());
         detail_lines.push("payload:".to_string());
-        detail_lines.push(truncate_text(&serialized, 2_000));
+        detail_lines.push(truncate_text(&serialized, 4_000));
     }
 
     Ok(BugMonitorSubmission {
         repo: Some(repo),
         title: Some(title),
         detail: Some(detail_lines.join("\n")),
-        source: Some("tandem_events".to_string()),
+        source: Some(
+            first_string_deep(&event.properties, &["source"]).unwrap_or_else(|| {
+                match event.event_type.as_str() {
+                    "automation_v2.run.failed" | "automation.run.failed" => "automation_v2",
+                    "workflow.run.failed" | "workflow.validation.failed" => "autonomous_workflow",
+                    "routine.run.failed" => "routine",
+                    "context.task.failed" | "context.task.blocked" | "context.run.failed" => {
+                        "context_run"
+                    }
+                    "coder.run.failed" => "coder",
+                    _ => "tandem_events",
+                }
+                .to_string()
+            }),
+        ),
         run_id,
         session_id,
         correlation_id,
-        file_name: None,
+        file_name: files_touched.first().cloned(),
         process: Some("tandem-engine".to_string()),
         component,
         event: Some(event.event_type.clone()),
         level: Some("error".to_string()),
         excerpt,
         fingerprint: Some(fingerprint),
+        confidence,
+        risk_level,
+        expected_destination,
+        evidence_refs,
     })
 }

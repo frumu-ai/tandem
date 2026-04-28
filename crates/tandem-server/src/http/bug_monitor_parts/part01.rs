@@ -40,6 +40,14 @@ pub(super) struct BugMonitorPostsQuery {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct BugMonitorBulkDeleteInput {
+    #[serde(default)]
+    pub ids: Vec<String>,
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct BugMonitorSubmissionInput {
     #[serde(default)]
     pub report: Option<BugMonitorSubmission>,
@@ -58,6 +66,16 @@ pub(super) struct BugMonitorTriageSummaryInput {
     #[serde(default)]
     pub what_happened: Option<String>,
     #[serde(default)]
+    pub why_it_likely_happened: Option<String>,
+    #[serde(default)]
+    pub root_cause_confidence: Option<String>,
+    #[serde(default)]
+    pub failure_type: Option<String>,
+    #[serde(default)]
+    pub affected_components: Vec<String>,
+    #[serde(default)]
+    pub likely_files_to_edit: Vec<String>,
+    #[serde(default)]
     pub expected_behavior: Option<String>,
     #[serde(default)]
     pub steps_to_reproduce: Vec<String>,
@@ -65,6 +83,28 @@ pub(super) struct BugMonitorTriageSummaryInput {
     pub environment: Vec<String>,
     #[serde(default)]
     pub logs: Vec<String>,
+    #[serde(default)]
+    pub related_existing_issues: Vec<Value>,
+    #[serde(default)]
+    pub related_failure_patterns: Vec<Value>,
+    #[serde(default)]
+    pub research_sources: Vec<Value>,
+    #[serde(default)]
+    pub recommended_fix: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub verification_steps: Vec<String>,
+    #[serde(default)]
+    pub coder_ready: Option<bool>,
+    #[serde(default)]
+    pub risk_level: Option<String>,
+    #[serde(default)]
+    pub required_tool_scopes: Vec<String>,
+    #[serde(default)]
+    pub missing_tool_scopes: Vec<String>,
+    #[serde(default)]
+    pub permissions_available: Option<bool>,
     #[serde(default)]
     pub notes: Option<String>,
 }
@@ -106,6 +146,403 @@ fn split_template_frontmatter(template: &str) -> (&str, &str) {
 fn normalize_issue_draft_line(value: impl AsRef<str>) -> Option<String> {
     let line = value.as_ref().trim();
     (!line.is_empty()).then(|| line.to_string())
+}
+
+fn bug_monitor_coder_ready_gate(
+    requested_coder_ready: Option<bool>,
+    root_cause_confidence: &str,
+    likely_files_to_edit: &[String],
+    affected_components: &[String],
+    acceptance_criteria: &[String],
+    verification_steps: &[String],
+    risk_level: &str,
+    duplicate_known: bool,
+    required_tool_scopes: &[String],
+    missing_tool_scopes: &[String],
+    permissions_available: Option<bool>,
+) -> (bool, Value) {
+    let confidence_ok = matches!(root_cause_confidence, "high" | "medium");
+    let scope_identified = !likely_files_to_edit.is_empty() || !affected_components.is_empty();
+    let acceptance_clear = !acceptance_criteria.is_empty();
+    let verification_clear = !verification_steps.is_empty();
+    let risk_ok = matches!(risk_level, "low" | "medium");
+    let duplicate_clear = !duplicate_known;
+    let tool_scope_available =
+        missing_tool_scopes.is_empty() && permissions_available != Some(false);
+    let gates = vec![
+        json!({
+            "key": "confidence",
+            "label": "Root cause confidence is high or medium",
+            "passed": confidence_ok,
+            "detail": root_cause_confidence,
+        }),
+        json!({
+            "key": "scope_identified",
+            "label": "Likely files or components are identified",
+            "passed": scope_identified,
+            "detail": {
+                "likely_files_to_edit": likely_files_to_edit,
+                "affected_components": affected_components,
+            },
+        }),
+        json!({
+            "key": "acceptance_criteria",
+            "label": "Acceptance criteria are clear",
+            "passed": acceptance_clear,
+            "detail": acceptance_criteria,
+        }),
+        json!({
+            "key": "verification_steps",
+            "label": "Verification steps are clear",
+            "passed": verification_clear,
+            "detail": verification_steps,
+        }),
+        json!({
+            "key": "risk_level",
+            "label": "Risk is low or medium",
+            "passed": risk_ok,
+            "detail": risk_level,
+        }),
+        json!({
+            "key": "duplicate_clear",
+            "label": "Issue is not marked as duplicate",
+            "passed": duplicate_clear,
+        }),
+        json!({
+            "key": "tool_scope_available",
+            "label": "Required permissions and tool scopes are available or not required",
+            "passed": tool_scope_available,
+            "detail": {
+                "required_tool_scopes": required_tool_scopes,
+                "missing_tool_scopes": missing_tool_scopes,
+                "permissions_available": permissions_available,
+            },
+        }),
+    ];
+    let missing = gates
+        .iter()
+        .filter(|gate| !gate.get("passed").and_then(Value::as_bool).unwrap_or(false))
+        .filter_map(|gate| gate.get("key").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>();
+    let eligible = missing.is_empty();
+    let requested = requested_coder_ready.unwrap_or(eligible);
+    let coder_ready = requested && eligible;
+    let passed_count = gates.len().saturating_sub(missing.len());
+    (
+        coder_ready,
+        json!({
+            "stage": "proposal_to_coder_ready",
+            "status": if coder_ready { "passed" } else { "blocked" },
+            "passed": coder_ready,
+            "requested_coder_ready": requested_coder_ready,
+            "passed_count": passed_count,
+            "total_count": gates.len(),
+            "missing": missing,
+            "gates": gates,
+            "blocked_reason": if coder_ready {
+                Value::Null
+            } else if requested_coder_ready == Some(false) {
+                json!("triage summary explicitly marked coder_ready=false")
+            } else {
+                json!("coder-ready requirements were not satisfied")
+            },
+        }),
+    )
+}
+
+fn bug_monitor_value_array(value: Option<&Value>) -> Vec<Value> {
+    value.and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+fn bug_monitor_summary_string_array(summary: Option<&Value>, key: &str) -> Vec<String> {
+    bug_monitor_value_array(summary.and_then(|row| row.get(key)))
+        .into_iter()
+        .filter_map(|row| {
+            row.as_str()
+                .and_then(normalize_issue_draft_line)
+                .or_else(|| {
+                    (!row.is_null())
+                        .then(|| row.to_string())
+                        .and_then(normalize_issue_draft_line)
+                })
+        })
+        .collect()
+}
+
+fn bug_monitor_summary_text(summary: Option<&Value>, key: &str) -> Option<String> {
+    summary
+        .and_then(|row| row.get(key))
+        .and_then(Value::as_str)
+        .and_then(normalize_issue_draft_line)
+}
+
+fn bug_monitor_proposal_quality_gate(
+    state: &AppState,
+    triage_run_id: &str,
+    triage_summary: Option<&Value>,
+) -> (bool, Value) {
+    let has_summary = triage_summary.is_some();
+    let inspection_artifact =
+        latest_bug_monitor_artifact(state, triage_run_id, "bug_monitor_inspection").is_some();
+    let research_artifact =
+        latest_bug_monitor_artifact(state, triage_run_id, "bug_monitor_research").is_some();
+    let validation_artifact =
+        latest_bug_monitor_artifact(state, triage_run_id, "bug_monitor_validation").is_some();
+    let fix_artifact =
+        latest_bug_monitor_artifact(state, triage_run_id, "bug_monitor_fix_proposal").is_some();
+    let durable_artifacts =
+        inspection_artifact && research_artifact && validation_artifact && fix_artifact;
+
+    let research_sources =
+        bug_monitor_value_array(triage_summary.and_then(|row| row.get("research_sources")));
+    let related_existing_issues =
+        bug_monitor_value_array(triage_summary.and_then(|row| row.get("related_existing_issues")));
+    let related_failure_patterns =
+        bug_monitor_value_array(triage_summary.and_then(|row| row.get("related_failure_patterns")));
+    let why_it_likely_happened =
+        bug_monitor_summary_text(triage_summary, "why_it_likely_happened").unwrap_or_default();
+    let research_performed = !research_sources.is_empty()
+        || !related_existing_issues.is_empty()
+        || !related_failure_patterns.is_empty()
+        || (!why_it_likely_happened.is_empty()
+            && !why_it_likely_happened
+                .to_ascii_lowercase()
+                .contains("pending"));
+
+    let steps_to_reproduce = bug_monitor_summary_string_array(triage_summary, "steps_to_reproduce");
+    let logs = bug_monitor_summary_string_array(triage_summary, "logs");
+    let validation_confirmed = !steps_to_reproduce.is_empty() || !logs.is_empty();
+
+    let root_cause_confidence =
+        bug_monitor_summary_text(triage_summary, "root_cause_confidence").unwrap_or_default();
+    let notes = bug_monitor_summary_text(triage_summary, "notes").unwrap_or_default();
+    let uncertainty_explicit =
+        matches!(root_cause_confidence.as_str(), "high" | "medium" | "low") || !notes.is_empty();
+
+    let recommended_fix =
+        bug_monitor_summary_text(triage_summary, "recommended_fix").unwrap_or_default();
+    let acceptance_criteria =
+        bug_monitor_summary_string_array(triage_summary, "acceptance_criteria");
+    let bounded_action = !recommended_fix.is_empty()
+        && !recommended_fix
+            .to_ascii_lowercase()
+            .contains("complete the bug monitor research")
+        && !acceptance_criteria.is_empty();
+
+    let verification_steps = bug_monitor_summary_string_array(triage_summary, "verification_steps");
+    let verification_known = !verification_steps.is_empty();
+
+    let gates = vec![
+        json!({
+            "key": "triage_summary",
+            "label": "Triage summary artifact exists",
+            "passed": has_summary,
+        }),
+        json!({
+            "key": "durable_artifacts",
+            "label": "Inspection, research, validation, and fix proposal artifacts exist",
+            "passed": durable_artifacts,
+            "detail": {
+                "inspection": inspection_artifact,
+                "research": research_artifact,
+                "validation": validation_artifact,
+                "fix_proposal": fix_artifact,
+            },
+        }),
+        json!({
+            "key": "research_performed",
+            "label": "Research or related failure lookup has been performed",
+            "passed": research_performed,
+            "detail": {
+                "research_sources": research_sources,
+                "related_existing_issues": related_existing_issues,
+                "related_failure_patterns": related_failure_patterns,
+                "why_it_likely_happened": why_it_likely_happened,
+            },
+        }),
+        json!({
+            "key": "validation_scope",
+            "label": "Validation has confirmed the failure scope",
+            "passed": validation_confirmed,
+            "detail": {
+                "steps_to_reproduce": steps_to_reproduce,
+                "logs": logs,
+            },
+        }),
+        json!({
+            "key": "uncertainty_explicit",
+            "label": "Assumptions and uncertainty are explicit",
+            "passed": uncertainty_explicit,
+            "detail": {
+                "root_cause_confidence": root_cause_confidence,
+                "notes": notes,
+            },
+        }),
+        json!({
+            "key": "bounded_action",
+            "label": "Proposed action is bounded and has acceptance criteria",
+            "passed": bounded_action,
+            "detail": {
+                "recommended_fix": recommended_fix,
+                "acceptance_criteria": acceptance_criteria,
+            },
+        }),
+        json!({
+            "key": "verification_steps",
+            "label": "Verification steps are known",
+            "passed": verification_known,
+            "detail": verification_steps,
+        }),
+    ];
+    let missing = gates
+        .iter()
+        .filter(|gate| !gate.get("passed").and_then(Value::as_bool).unwrap_or(false))
+        .filter_map(|gate| gate.get("key").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>();
+    let passed = missing.is_empty();
+    (
+        passed,
+        json!({
+            "stage": "draft_to_proposal",
+            "status": if passed { "passed" } else { "blocked" },
+            "passed": passed,
+            "passed_count": gates.len().saturating_sub(missing.len()),
+            "total_count": gates.len(),
+            "missing": missing,
+            "gates": gates,
+            "blocked_reason": if passed {
+                Value::Null
+            } else {
+                json!("draft-to-proposal requirements were not satisfied")
+            },
+        }),
+    )
+}
+
+async fn persist_blocked_bug_monitor_report_observation(
+    state: &AppState,
+    report: &BugMonitorSubmission,
+    repo: &str,
+    detail: &str,
+) -> Option<crate::BugMonitorIncidentRecord> {
+    let repo = repo.trim();
+    if repo.is_empty() {
+        return None;
+    }
+    let config = state.bug_monitor_config().await;
+    let workspace_root = match config.workspace_root.clone() {
+        Some(root) => root,
+        None => state.workspace_index.snapshot().await.root,
+    };
+    let mut submission = report.clone();
+    submission.repo = Some(repo.to_string());
+    if submission
+        .source
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        submission.source = Some("manual".to_string());
+    }
+    if submission
+        .event
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        submission.event = Some("manual.report".to_string());
+    }
+    if submission
+        .confidence
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        submission.confidence = Some("medium".to_string());
+    }
+    if submission
+        .risk_level
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        submission.risk_level = Some("medium".to_string());
+    }
+    if submission
+        .expected_destination
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        submission.expected_destination = Some("bug_monitor_issue_draft".to_string());
+    }
+    submission.excerpt = submission
+        .excerpt
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .take(50)
+        .collect();
+    submission.evidence_refs = submission
+        .evidence_refs
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .take(50)
+        .collect();
+    let title = submission
+        .title
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Blocked Bug Monitor signal".to_string());
+    let fingerprint = submission.fingerprint.clone().unwrap_or_else(|| {
+        crate::sha256_hex(&[
+            repo,
+            title.as_str(),
+            submission.detail.as_deref().unwrap_or(""),
+            submission.source.as_deref().unwrap_or(""),
+            submission.run_id.as_deref().unwrap_or(""),
+            submission.session_id.as_deref().unwrap_or(""),
+            submission.correlation_id.as_deref().unwrap_or(""),
+        ])
+    });
+    submission.fingerprint = Some(fingerprint.clone());
+    let quality_gate =
+        crate::bug_monitor::service::evaluate_bug_monitor_submission_quality(&submission);
+    let now = crate::now_ms();
+    let incident = crate::BugMonitorIncidentRecord {
+        incident_id: format!("failure-incident-{}", Uuid::new_v4().simple()),
+        fingerprint,
+        event_type: submission
+            .event
+            .clone()
+            .unwrap_or_else(|| "manual.report".to_string()),
+        status: "quality_gate_blocked".to_string(),
+        repo: repo.to_string(),
+        workspace_root,
+        title,
+        detail: Some(format!(
+            "Bug Monitor signal quality gate blocked draft creation.\n\nerror: {detail}"
+        )),
+        excerpt: submission.excerpt.clone(),
+        source: submission.source.clone(),
+        run_id: submission.run_id.clone(),
+        session_id: submission.session_id.clone(),
+        correlation_id: submission.correlation_id.clone(),
+        component: submission.component.clone(),
+        level: submission.level.clone(),
+        occurrence_count: 1,
+        created_at_ms: now,
+        updated_at_ms: now,
+        last_seen_at_ms: Some(now),
+        draft_id: None,
+        triage_run_id: None,
+        last_error: Some(crate::truncate_text(detail, 500)),
+        confidence: submission.confidence.clone(),
+        risk_level: submission.risk_level.clone(),
+        expected_destination: submission.expected_destination.clone(),
+        evidence_refs: submission.evidence_refs.clone(),
+        quality_gate: Some(quality_gate),
+        duplicate_summary: None,
+        duplicate_matches: None,
+        event_payload: None,
+    };
+    state.put_bug_monitor_incident(incident).await.ok()
 }
 
 fn parse_existing_list(detail: Option<&str>, prefix: &str) -> Vec<String> {
@@ -274,6 +711,7 @@ fn render_bug_monitor_template(
     steps_to_reproduce: &[String],
     environment_lines: &[String],
     log_lines: &[String],
+    extra_sections: &[(String, String)],
     hidden_markers: &[String],
 ) -> String {
     let (frontmatter, _) = split_template_frontmatter(template);
@@ -306,6 +744,17 @@ fn render_bug_monitor_template(
             body.push('\n');
         }
         body.push_str("```\n");
+    }
+    for (title, content) in extra_sections {
+        let content = content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        body.push_str("\n## ");
+        body.push_str(title.trim());
+        body.push_str("\n\n");
+        body.push_str(content);
+        body.push('\n');
     }
     if !hidden_markers.is_empty() {
         body.push('\n');
@@ -840,7 +1289,7 @@ pub(crate) async fn bug_monitor_failure_pattern_matches(
     excerpt: &[String],
     limit: usize,
 ) -> Vec<Value> {
-    super::coder::query_failure_pattern_matches(
+    let mut rows = super::coder::query_failure_pattern_matches(
         state,
         repo_slug,
         fingerprint,
@@ -850,14 +1299,38 @@ pub(crate) async fn bug_monitor_failure_pattern_matches(
         limit,
     )
     .await
-    .unwrap_or_default()
+    .unwrap_or_default();
+    for row in rows.iter_mut() {
+        let source_missing = row.get("source").and_then(Value::as_str).is_none();
+        let is_memory_candidate = row
+            .get("candidate_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.starts_with("memcand-"));
+        if source_missing && is_memory_candidate {
+            if let Some(object) = row.as_object_mut() {
+                object.insert(
+                    "source".to_string(),
+                    Value::String("coder_candidate".to_string()),
+                );
+            }
+        }
+    }
+    rows
 }
 
 pub(crate) fn build_bug_monitor_duplicate_summary(matches: &[Value]) -> Value {
     let normalized_matches = matches
         .iter()
         .map(|row| {
+            let candidate_id = row.get("candidate_id").cloned().unwrap_or(Value::Null);
+            let source = row.get("source").cloned().or_else(|| {
+                candidate_id
+                    .as_str()
+                    .filter(|value| value.starts_with("memcand-"))
+                    .map(|_| Value::String("coder_candidate".to_string()))
+            });
             json!({
+                "source": source.unwrap_or(Value::Null),
                 "fingerprint": row.get("fingerprint").cloned().unwrap_or(Value::Null),
                 "summary": row.get("summary").cloned().unwrap_or(Value::Null),
                 "match_reason": row
@@ -876,7 +1349,7 @@ pub(crate) fn build_bug_monitor_duplicate_summary(matches: &[Value]) -> Value {
                 "memory_id": row.get("memory_id").cloned().unwrap_or(Value::Null),
                 "artifact_refs": row.get("artifact_refs").cloned().unwrap_or_else(|| json!([])),
                 "artifact_path": row.get("artifact_path").cloned().unwrap_or(Value::Null),
-                "candidate_id": row.get("candidate_id").cloned().unwrap_or(Value::Null),
+                "candidate_id": candidate_id,
                 "linked_context_run_id": row
                     .get("linked_context_run_id")
                     .cloned()
@@ -917,6 +1390,15 @@ pub(crate) async fn load_bug_monitor_issue_draft_artifact(
     triage_run_id: &str,
 ) -> Option<Value> {
     load_bug_monitor_artifact_payload(state, triage_run_id, "bug_monitor_issue_draft")
+        .await
+        .map(|(_, payload)| payload)
+}
+
+pub(crate) async fn load_bug_monitor_proposal_quality_gate_artifact(
+    state: &AppState,
+    triage_run_id: &str,
+) -> Option<Value> {
+    load_bug_monitor_artifact_payload(state, triage_run_id, "bug_monitor_proposal_quality_gate")
         .await
         .map(|(_, payload)| payload)
 }
@@ -962,12 +1444,53 @@ async fn bug_monitor_duplicate_match_context(
                     .cloned()
                     .map(Value::Array)
             });
-    let duplicate_summary = duplicate_matches
+    let duplicate_rows = duplicate_matches
         .as_ref()
         .and_then(Value::as_array)
-        .filter(|rows| !rows.is_empty())
-        .map(|rows| build_bug_monitor_duplicate_summary(rows));
-    (duplicate_summary, duplicate_matches)
+        .cloned()
+        .unwrap_or_default();
+    let duplicate_summary = Some(build_bug_monitor_duplicate_summary(&duplicate_rows));
+    (duplicate_summary, Some(Value::Array(duplicate_rows)))
+}
+
+async fn refresh_bug_monitor_duplicate_matches_artifact(
+    state: &AppState,
+    draft: &BugMonitorDraftRecord,
+    triage_run_id: &str,
+) -> Option<Vec<Value>> {
+    if latest_bug_monitor_artifact(state, triage_run_id, "failure_duplicate_matches").is_some() {
+        return None;
+    }
+    let duplicate_matches = bug_monitor_failure_pattern_matches(
+        state,
+        &draft.repo,
+        &draft.fingerprint,
+        draft.title.as_deref(),
+        draft.detail.as_deref(),
+        &[],
+        3,
+    )
+    .await;
+    if duplicate_matches.is_empty() {
+        return None;
+    }
+    write_bug_monitor_artifact(
+        state,
+        triage_run_id,
+        "failure-duplicate-matches",
+        "failure_duplicate_matches",
+        "artifacts/failure_duplicate_matches.json",
+        &json!({
+            "draft_id": draft.draft_id,
+            "repo": draft.repo,
+            "fingerprint": draft.fingerprint,
+            "matches": duplicate_matches,
+            "created_at_ms": crate::now_ms(),
+        }),
+    )
+    .await
+    .ok()?;
+    Some(duplicate_matches)
 }
 
 pub(crate) async fn ensure_bug_monitor_issue_draft(
@@ -983,6 +1506,29 @@ pub(crate) async fn ensure_bug_monitor_issue_draft(
     let triage_run_id = draft.triage_run_id.clone().ok_or_else(|| {
         anyhow::anyhow!("Bug Monitor draft needs a triage run before issue drafting")
     })?;
+    let triage_summary = load_bug_monitor_triage_summary_artifact(&state, &triage_run_id).await;
+    let (proposal_gate_passed, proposal_quality_gate) =
+        bug_monitor_proposal_quality_gate(&state, &triage_run_id, triage_summary.as_ref());
+    if !proposal_gate_passed {
+        let _ = write_bug_monitor_artifact(
+            &state,
+            &triage_run_id,
+            "bug-monitor-proposal-quality-gate",
+            "bug_monitor_proposal_quality_gate",
+            "artifacts/bug_monitor.proposal_quality_gate.json",
+            &proposal_quality_gate,
+        )
+        .await;
+        draft.github_status = Some("proposal_blocked".to_string());
+        draft.last_post_error = Some(
+            "Bug Monitor draft-to-proposal quality gate blocked issue draft generation".to_string(),
+        );
+        let _ = state.put_bug_monitor_draft(draft).await;
+        anyhow::bail!(
+            "Bug Monitor draft-to-proposal quality gate blocked issue draft generation: {}",
+            proposal_quality_gate
+        );
+    }
     if !force {
         let existing_issue_draft =
             load_bug_monitor_artifact_payload(&state, &triage_run_id, "bug_monitor_issue_draft")
@@ -1002,7 +1548,6 @@ pub(crate) async fn ensure_bug_monitor_issue_draft(
     }
 
     let incident = latest_bug_monitor_incident_for_draft(&state, draft_id).await;
-    let triage_summary = load_bug_monitor_triage_summary_artifact(&state, &triage_run_id).await;
     let (template, template_source) = load_bug_monitor_issue_template(&config).await;
     let what_happened = triage_summary
         .as_ref()
@@ -1064,10 +1609,205 @@ pub(crate) async fn ensure_bug_monitor_issue_draft(
         })
         .filter(|rows| !rows.is_empty())
         .unwrap_or_else(|| derive_log_lines(&draft, incident.as_ref()));
-    let hidden_markers = vec![
+    let string_array = |key: &str| -> Vec<String> {
+        triage_summary
+            .as_ref()
+            .and_then(|row| row.get(key))
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(normalize_issue_draft_line)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let likely_files_to_edit = string_array("likely_files_to_edit");
+    let affected_components = string_array("affected_components");
+    let acceptance_criteria = string_array("acceptance_criteria");
+    let verification_steps = string_array("verification_steps");
+    let research_sources = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("research_sources"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let related_existing_issues = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("related_existing_issues"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let duplicate_failure_patterns =
+        load_bug_monitor_artifact_payload(&state, &triage_run_id, "failure_duplicate_matches")
+            .await
+            .and_then(|(_, payload)| payload.get("matches").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+    let related_failure_patterns = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("related_failure_patterns"))
+        .and_then(Value::as_array)
+        .cloned()
+        .filter(|rows| !rows.is_empty())
+        .or_else(|| {
+            if duplicate_failure_patterns.is_empty() {
+                None
+            } else {
+                Some(duplicate_failure_patterns)
+            }
+        })
+        .unwrap_or_default();
+    let why_it_likely_happened = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("why_it_likely_happened"))
+        .and_then(Value::as_str)
+        .and_then(normalize_issue_draft_line)
+        .unwrap_or_default();
+    let recommended_fix = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("recommended_fix"))
+        .and_then(Value::as_str)
+        .and_then(normalize_issue_draft_line)
+        .unwrap_or_default();
+    let failure_type = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("failure_type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown")
+        .to_string();
+    let root_cause_confidence = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("root_cause_confidence"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("low")
+        .to_string();
+    let risk_level = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("risk_level"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("medium")
+        .to_string();
+    let required_tool_scopes = string_array("required_tool_scopes");
+    let missing_tool_scopes = string_array("missing_tool_scopes");
+    let permissions_available = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("permissions_available"))
+        .and_then(Value::as_bool);
+    let requested_coder_ready = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("coder_ready"))
+        .and_then(Value::as_bool);
+    let duplicate_known = triage_summary
+        .as_ref()
+        .and_then(|row| row.get("duplicate"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let (coder_ready, coder_ready_gate) = bug_monitor_coder_ready_gate(
+        requested_coder_ready,
+        &root_cause_confidence,
+        &likely_files_to_edit,
+        &affected_components,
+        &acceptance_criteria,
+        &verification_steps,
+        &risk_level,
+        duplicate_known,
+        &required_tool_scopes,
+        &missing_tool_scopes,
+        permissions_available,
+    );
+    let list_section = |items: &[String]| -> String {
+        items
+            .iter()
+            .map(|item| format!("- {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let json_list_section = |items: &[Value]| -> String {
+        items
+            .iter()
+            .map(|item| {
+                let text = item
+                    .as_str()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| item.to_string());
+                format!("- {text}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let extra_sections = vec![
+        (
+            "Suspected root cause".to_string(),
+            why_it_likely_happened.clone(),
+        ),
+        ("Recommended fix".to_string(), recommended_fix.clone()),
+        (
+            "Files likely involved".to_string(),
+            list_section(&likely_files_to_edit),
+        ),
+        (
+            "Affected components".to_string(),
+            list_section(&affected_components),
+        ),
+        (
+            "Acceptance criteria".to_string(),
+            list_section(&acceptance_criteria),
+        ),
+        (
+            "Verification steps".to_string(),
+            list_section(&verification_steps),
+        ),
+        (
+            "Related issues and failure patterns".to_string(),
+            [
+                json_list_section(&related_existing_issues),
+                json_list_section(&related_failure_patterns),
+            ]
+            .into_iter()
+            .filter(|row| !row.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        ),
+        (
+            "Research sources".to_string(),
+            json_list_section(&research_sources),
+        ),
+    ];
+    let handoff = json!({
+        "handoff_type": "tandem_autonomous_coder_issue",
+        "source": "bug_monitor",
+        "repo": draft.repo.clone(),
+        "triage_run_id": triage_run_id.clone(),
+        "workflow_run_id": incident.as_ref().and_then(|row| row.run_id.clone()),
+        "incident_id": incident.as_ref().map(|row| row.incident_id.clone()),
+        "draft_id": draft.draft_id.clone(),
+        "failure_type": failure_type.clone(),
+        "likely_files_to_edit": likely_files_to_edit.clone(),
+        "acceptance_criteria": acceptance_criteria.clone(),
+        "verification_steps": verification_steps.clone(),
+        "risk_level": risk_level.clone(),
+        "coder_ready": coder_ready,
+        "coder_ready_gate": coder_ready_gate.clone(),
+        "required_tool_scopes": required_tool_scopes.clone(),
+        "missing_tool_scopes": missing_tool_scopes.clone(),
+        "permissions_available": permissions_available,
+    });
+    let mut hidden_markers = vec![
         format!("<!-- tandem:fingerprint:v1:{} -->", draft.fingerprint),
         format!("<!-- tandem:triage_run_id:v1:{} -->", triage_run_id),
     ];
+    if coder_ready {
+        hidden_markers.push(format!(
+            "<!-- tandem:coder_handoff:v1\n{}\n-->",
+            serde_json::to_string_pretty(&handoff).unwrap_or_else(|_| "{}".to_string())
+        ));
+    }
     let rendered_body = render_bug_monitor_template(
         &template,
         &what_happened,
@@ -1075,6 +1815,7 @@ pub(crate) async fn ensure_bug_monitor_issue_draft(
         &steps_to_reproduce,
         &environment_lines,
         &log_lines,
+        &extra_sections,
         &hidden_markers,
     );
     let payload = json!({
@@ -1094,6 +1835,25 @@ pub(crate) async fn ensure_bug_monitor_issue_draft(
         "steps_to_reproduce": steps_to_reproduce,
         "environment": environment_lines,
         "logs": log_lines,
+        "why_it_likely_happened": why_it_likely_happened,
+        "root_cause_confidence": root_cause_confidence,
+        "failure_type": failure_type,
+        "affected_components": affected_components,
+        "likely_files_to_edit": likely_files_to_edit,
+        "related_existing_issues": related_existing_issues,
+        "related_failure_patterns": related_failure_patterns,
+        "research_sources": research_sources,
+        "recommended_fix": recommended_fix,
+        "acceptance_criteria": acceptance_criteria,
+        "verification_steps": verification_steps,
+        "coder_ready": coder_ready,
+        "coder_ready_gate": coder_ready_gate,
+        "proposal_quality_gate": proposal_quality_gate,
+        "risk_level": risk_level,
+        "required_tool_scopes": required_tool_scopes,
+        "missing_tool_scopes": missing_tool_scopes,
+        "permissions_available": permissions_available,
+        "coder_handoff": handoff,
         "triage_summary": triage_summary,
         "rendered_body": rendered_body,
         "created_at_ms": crate::now_ms(),
@@ -1177,16 +1937,116 @@ pub(super) async fn create_bug_monitor_triage_summary(
         .filter_map(normalize_issue_draft_line)
         .take(20)
         .collect::<Vec<_>>();
+    let affected_components = input
+        .affected_components
+        .into_iter()
+        .filter_map(normalize_issue_draft_line)
+        .take(20)
+        .collect::<Vec<_>>();
+    let likely_files_to_edit = input
+        .likely_files_to_edit
+        .into_iter()
+        .filter_map(normalize_issue_draft_line)
+        .take(30)
+        .collect::<Vec<_>>();
+    let acceptance_criteria = input
+        .acceptance_criteria
+        .into_iter()
+        .filter_map(normalize_issue_draft_line)
+        .take(20)
+        .collect::<Vec<_>>();
+    let verification_steps = input
+        .verification_steps
+        .into_iter()
+        .filter_map(normalize_issue_draft_line)
+        .take(20)
+        .collect::<Vec<_>>();
+    let required_tool_scopes = input
+        .required_tool_scopes
+        .into_iter()
+        .filter_map(normalize_issue_draft_line)
+        .take(20)
+        .collect::<Vec<_>>();
+    let missing_tool_scopes = input
+        .missing_tool_scopes
+        .into_iter()
+        .filter_map(normalize_issue_draft_line)
+        .take(20)
+        .collect::<Vec<_>>();
+    let confidence = input
+        .root_cause_confidence
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .filter(|value| matches!(value.as_str(), "high" | "medium" | "low"))
+        .unwrap_or_else(|| "low".to_string());
+    let failure_type = input
+        .failure_type
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                "code_defect"
+                    | "missing_config"
+                    | "missing_capability"
+                    | "model_error"
+                    | "tool_error"
+                    | "validation_error"
+                    | "timeout"
+                    | "external_dependency"
+                    | "unknown"
+            )
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let risk_level = input
+        .risk_level
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .filter(|value| matches!(value.as_str(), "low" | "medium" | "high"))
+        .unwrap_or_else(|| "medium".to_string());
+    let (coder_ready, coder_ready_gate) = bug_monitor_coder_ready_gate(
+        input.coder_ready,
+        &confidence,
+        &likely_files_to_edit,
+        &affected_components,
+        &acceptance_criteria,
+        &verification_steps,
+        &risk_level,
+        false,
+        &required_tool_scopes,
+        &missing_tool_scopes,
+        input.permissions_available,
+    );
     let payload = json!({
         "draft_id": draft.draft_id,
         "repo": draft.repo,
         "triage_run_id": triage_run_id,
         "suggested_title": input.suggested_title.as_deref().and_then(normalize_issue_draft_line),
         "what_happened": what_happened,
+        "why_it_likely_happened": input.why_it_likely_happened.as_deref().and_then(normalize_issue_draft_line),
+        "root_cause_confidence": confidence,
+        "failure_type": failure_type,
+        "affected_components": affected_components,
+        "likely_files_to_edit": likely_files_to_edit,
         "expected_behavior": expected_behavior,
         "steps_to_reproduce": steps_to_reproduce,
         "environment": environment,
         "logs": logs,
+        "related_existing_issues": input.related_existing_issues,
+        "related_failure_patterns": input.related_failure_patterns,
+        "research_sources": input.research_sources,
+        "recommended_fix": input.recommended_fix.as_deref().and_then(normalize_issue_draft_line),
+        "acceptance_criteria": acceptance_criteria,
+        "verification_steps": verification_steps,
+        "coder_ready": coder_ready,
+        "coder_ready_gate": coder_ready_gate,
+        "risk_level": risk_level,
+        "required_tool_scopes": required_tool_scopes,
+        "missing_tool_scopes": missing_tool_scopes,
+        "permissions_available": input.permissions_available,
         "notes": input.notes.as_deref().and_then(normalize_issue_draft_line),
         "created_at_ms": crate::now_ms(),
     });
@@ -1305,34 +2165,49 @@ pub(super) async fn create_bug_monitor_triage_summary(
                 .into_response();
         }
     };
-    let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
+    let (triage_summary_artifact, _issue_draft_artifact, duplicate_matches_artifact) =
         bug_monitor_triage_artifacts(&state, Some(&triage_run_id));
     match ensure_bug_monitor_issue_draft(state.clone(), &id, true).await {
-        Ok(issue_draft) => Json(json!({
-            "ok": true,
-            "draft": draft,
-            "triage_summary": payload,
-            "triage_summary_artifact": triage_summary_artifact,
-            "failure_pattern_memory": failure_pattern_memory,
-            "regression_signal_memory": regression_signal_memory,
-            "issue_draft": issue_draft,
-            "issue_draft_artifact": issue_draft_artifact,
-            "duplicate_matches_artifact": duplicate_matches_artifact,
-        }))
-        .into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
+        Ok(issue_draft) => {
+            let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
+                bug_monitor_triage_artifacts(&state, Some(&triage_run_id));
             Json(json!({
-                "error": "Bug Monitor triage summary was written, but issue draft regeneration failed",
-                "code": "BUG_MONITOR_TRIAGE_SUMMARY_ISSUE_DRAFT_FAILED",
+                "ok": true,
                 "draft": draft,
                 "triage_summary": payload,
                 "triage_summary_artifact": triage_summary_artifact,
                 "failure_pattern_memory": failure_pattern_memory,
                 "regression_signal_memory": regression_signal_memory,
+                "issue_draft": issue_draft,
+                "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_matches_artifact": duplicate_matches_artifact,
-                "detail": error.to_string(),
-            })),
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            {
+                let proposal_quality_gate =
+                    load_bug_monitor_proposal_quality_gate_artifact(&state, &triage_run_id).await;
+                let proposal_quality_gate_artifact = latest_bug_monitor_artifact(
+                    &state,
+                    &triage_run_id,
+                    "bug_monitor_proposal_quality_gate",
+                );
+                Json(json!({
+                    "error": "Bug Monitor triage summary was written, but issue draft regeneration failed",
+                    "code": "BUG_MONITOR_TRIAGE_SUMMARY_ISSUE_DRAFT_FAILED",
+                    "draft": draft,
+                    "triage_summary": payload,
+                    "triage_summary_artifact": triage_summary_artifact,
+                    "failure_pattern_memory": failure_pattern_memory,
+                    "regression_signal_memory": regression_signal_memory,
+                    "duplicate_matches_artifact": duplicate_matches_artifact,
+                    "proposal_quality_gate": proposal_quality_gate,
+                    "proposal_quality_gate_artifact": proposal_quality_gate_artifact,
+                    "detail": error.to_string(),
+                }))
+            },
         )
             .into_response(),
     }
@@ -1477,6 +2352,156 @@ pub(super) async fn list_bug_monitor_posts(
     }))
 }
 
+pub(super) async fn delete_bug_monitor_incident(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.delete_bug_monitor_incidents(&[id.clone()]).await {
+        Ok(0) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Bug monitor incident not found",
+                "code": "BUG_MONITOR_INCIDENT_NOT_FOUND",
+                "incident_id": id,
+            })),
+        )
+            .into_response(),
+        Ok(_) => Json(json!({ "ok": true, "deleted": 1 })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to delete Bug Monitor incident",
+                "code": "BUG_MONITOR_INCIDENT_DELETE_FAILED",
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn bulk_delete_bug_monitor_incidents(
+    State(state): State<AppState>,
+    Json(input): Json<BugMonitorBulkDeleteInput>,
+) -> Response {
+    let result = if input.all {
+        state.clear_bug_monitor_incidents().await
+    } else {
+        state.delete_bug_monitor_incidents(&input.ids).await
+    };
+    match result {
+        Ok(deleted) => Json(json!({ "ok": true, "deleted": deleted })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to delete Bug Monitor incidents",
+                "code": "BUG_MONITOR_INCIDENTS_DELETE_FAILED",
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn delete_bug_monitor_draft(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.delete_bug_monitor_drafts(&[id.clone()]).await {
+        Ok(0) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Bug monitor draft not found",
+                "code": "BUG_MONITOR_DRAFT_NOT_FOUND",
+                "draft_id": id,
+            })),
+        )
+            .into_response(),
+        Ok(_) => Json(json!({ "ok": true, "deleted": 1 })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to delete Bug Monitor draft",
+                "code": "BUG_MONITOR_DRAFT_DELETE_FAILED",
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn bulk_delete_bug_monitor_drafts(
+    State(state): State<AppState>,
+    Json(input): Json<BugMonitorBulkDeleteInput>,
+) -> Response {
+    let result = if input.all {
+        state.clear_bug_monitor_drafts().await
+    } else {
+        state.delete_bug_monitor_drafts(&input.ids).await
+    };
+    match result {
+        Ok(deleted) => Json(json!({ "ok": true, "deleted": deleted })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to delete Bug Monitor drafts",
+                "code": "BUG_MONITOR_DRAFTS_DELETE_FAILED",
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn delete_bug_monitor_post(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.delete_bug_monitor_posts(&[id.clone()]).await {
+        Ok(0) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Bug monitor post not found",
+                "code": "BUG_MONITOR_POST_NOT_FOUND",
+                "post_id": id,
+            })),
+        )
+            .into_response(),
+        Ok(_) => Json(json!({ "ok": true, "deleted": 1 })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to delete Bug Monitor post",
+                "code": "BUG_MONITOR_POST_DELETE_FAILED",
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn bulk_delete_bug_monitor_posts(
+    State(state): State<AppState>,
+    Json(input): Json<BugMonitorBulkDeleteInput>,
+) -> Response {
+    let result = if input.all {
+        state.clear_bug_monitor_posts().await
+    } else {
+        state.delete_bug_monitor_posts(&input.ids).await
+    };
+    match result {
+        Ok(deleted) => Json(json!({ "ok": true, "deleted": deleted })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to delete Bug Monitor posts",
+                "code": "BUG_MONITOR_POSTS_DELETE_FAILED",
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
 pub(super) async fn pause_bug_monitor(State(state): State<AppState>) -> Response {
     let mut config = state.bug_monitor_config().await;
     config.paused = true;
@@ -1540,6 +2565,7 @@ pub(super) async fn replay_bug_monitor_incident(
     match ensure_bug_monitor_triage_run(state.clone(), draft_id, true).await {
         Ok((draft, run, deduped)) => {
             let triage_run_id = draft.triage_run_id.as_deref().unwrap_or(run.as_str());
+            refresh_bug_monitor_duplicate_matches_artifact(&state, &draft, triage_run_id).await;
             let run = load_context_run_state(&state, triage_run_id).await.ok();
             let triage_summary =
                 load_bug_monitor_triage_summary_artifact(&state, triage_run_id).await;
@@ -1676,7 +2702,7 @@ pub(super) async fn report_bug_monitor_issue(
         .into_response();
     }
     let report_excerpt = report.excerpt.clone();
-    match state.submit_bug_monitor_draft(report).await {
+    match state.submit_bug_monitor_draft(report.clone()).await {
         Ok(draft) => {
             let duplicate_matches = bug_monitor_failure_pattern_matches(
                 &state,
@@ -1695,15 +2721,34 @@ pub(super) async fn report_bug_monitor_issue(
             }))
             .into_response()
         }
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "Failed to create Bug Monitor draft",
-                "code": "BUG_MONITOR_REPORT_INVALID",
-                "detail": error.to_string(),
-            })),
-        )
-            .into_response(),
+        Err(error) => {
+            let detail = error.to_string();
+            let blocked_incident = if detail.contains("signal quality gate") {
+                persist_blocked_bug_monitor_report_observation(
+                    &state,
+                    &report,
+                    effective_repo,
+                    &detail,
+                )
+                .await
+            } else {
+                None
+            };
+            let quality_gate = blocked_incident
+                .as_ref()
+                .and_then(|incident| incident.quality_gate.clone());
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Failed to create Bug Monitor draft",
+                    "code": "BUG_MONITOR_REPORT_INVALID",
+                    "detail": detail,
+                    "incident": blocked_incident,
+                    "quality_gate": quality_gate,
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -1717,24 +2762,36 @@ pub(super) async fn approve_bug_monitor_draft(
         .await
     {
         Ok(draft) => {
-            let approved_draft = draft.clone();
-            let approval_failure_pattern_memory = if approved_draft.triage_run_id.is_none() {
+            let had_triage_run = draft.triage_run_id.is_some();
+            let approved_draft = if draft.triage_run_id.is_none() {
+                ensure_bug_monitor_triage_run(state.clone(), &draft.draft_id, true)
+                    .await
+                    .map(|(draft, _, _)| draft)
+                    .unwrap_or(draft)
+            } else {
+                draft
+            };
+            let approval_failure_pattern_memory = if !had_triage_run {
                 persist_bug_monitor_failure_pattern_from_approved_draft(&state, &approved_draft)
                     .await
                     .ok()
             } else {
                 None
             };
-            let issue_draft = ensure_bug_monitor_issue_draft(state.clone(), &draft.draft_id, true)
-                .await
-                .ok();
-            let (duplicate_summary, duplicate_matches) =
-                bug_monitor_duplicate_match_context(&state, draft.triage_run_id.as_deref()).await;
+            let issue_draft =
+                ensure_bug_monitor_issue_draft(state.clone(), &approved_draft.draft_id, true)
+                    .await
+                    .ok();
+            let (duplicate_summary, duplicate_matches) = bug_monitor_duplicate_match_context(
+                &state,
+                approved_draft.triage_run_id.as_deref(),
+            )
+            .await;
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
-                bug_monitor_triage_artifacts(&state, draft.triage_run_id.as_deref());
+                bug_monitor_triage_artifacts(&state, approved_draft.triage_run_id.as_deref());
             match bug_monitor_github::publish_draft(
                 &state,
-                &draft.draft_id,
+                &approved_draft.draft_id,
                 None,
                 bug_monitor_github::PublishMode::Auto,
             )
@@ -1828,15 +2885,28 @@ pub(super) async fn draft_bug_monitor_issue(
             }))
             .into_response()
         }
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
+        Err(error) => (StatusCode::BAD_REQUEST, {
+            let draft = state.get_bug_monitor_draft(&id).await;
+            let triage_run_id = draft.as_ref().and_then(|row| row.triage_run_id.clone());
+            let proposal_quality_gate = match triage_run_id.as_deref() {
+                Some(run_id) => {
+                    load_bug_monitor_proposal_quality_gate_artifact(&state, run_id).await
+                }
+                None => None,
+            };
+            let proposal_quality_gate_artifact = triage_run_id.as_deref().and_then(|run_id| {
+                latest_bug_monitor_artifact(&state, run_id, "bug_monitor_proposal_quality_gate")
+            });
             Json(json!({
                 "error": "Failed to generate Bug Monitor issue draft",
                 "code": "BUG_MONITOR_ISSUE_DRAFT_FAILED",
                 "draft_id": id,
+                "draft": draft,
+                "proposal_quality_gate": proposal_quality_gate,
+                "proposal_quality_gate_artifact": proposal_quality_gate_artifact,
                 "detail": error.to_string(),
-            })),
-        )
+            }))
+        })
             .into_response(),
     }
 }

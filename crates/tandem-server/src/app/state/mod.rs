@@ -1509,6 +1509,8 @@ pub async fn process_bug_monitor_event(
         .clone()
         .unwrap_or(default_workspace_root);
     let now = now_ms();
+    let quality_gate =
+        crate::bug_monitor::service::evaluate_bug_monitor_submission_quality(&submission);
 
     let existing = state
         .bug_monitor_incidents
@@ -1524,6 +1526,25 @@ pub async fn process_bug_monitor_event(
         row.last_seen_at_ms = Some(now);
         if row.excerpt.is_empty() {
             row.excerpt = submission.excerpt.clone();
+        }
+        if row.confidence.is_none() {
+            row.confidence = submission.confidence.clone();
+        }
+        if row.risk_level.is_none() {
+            row.risk_level = submission.risk_level.clone();
+        }
+        if row.expected_destination.is_none() {
+            row.expected_destination = submission.expected_destination.clone();
+        }
+        row.quality_gate = Some(quality_gate.clone());
+        for evidence_ref in &submission.evidence_refs {
+            if !row
+                .evidence_refs
+                .iter()
+                .any(|existing| existing == evidence_ref)
+            {
+                row.evidence_refs.push(evidence_ref.clone());
+            }
         }
         row
     } else {
@@ -1553,6 +1574,11 @@ pub async fn process_bug_monitor_event(
             draft_id: None,
             triage_run_id: None,
             last_error: None,
+            confidence: submission.confidence.clone(),
+            risk_level: submission.risk_level.clone(),
+            expected_destination: submission.expected_destination.clone(),
+            evidence_refs: submission.evidence_refs.clone(),
+            quality_gate: Some(quality_gate.clone()),
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: Some(event.properties.clone()),
@@ -1585,8 +1611,13 @@ pub async fn process_bug_monitor_event(
     let draft = match state.submit_bug_monitor_draft(submission).await {
         Ok(draft) => draft,
         Err(error) => {
-            incident.status = "draft_failed".to_string();
-            incident.last_error = Some(truncate_text(&error.to_string(), 500));
+            let error_text = error.to_string();
+            incident.status = if error_text.contains("signal quality gate") {
+                "quality_gate_blocked".to_string()
+            } else {
+                "draft_failed".to_string()
+            };
+            incident.last_error = Some(truncate_text(&error_text, 500));
             incident.updated_at_ms = now_ms();
             state.put_bug_monitor_incident(incident.clone()).await?;
             state.event_bus.publish(EngineEvent::new(

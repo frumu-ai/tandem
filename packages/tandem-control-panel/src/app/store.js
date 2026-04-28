@@ -39,6 +39,7 @@ const NAV_ROUTE_ORDER = [
   "coding",
   "agents",
   "orchestrator",
+  "bug-monitor",
   "files",
   "memory",
   "runs",

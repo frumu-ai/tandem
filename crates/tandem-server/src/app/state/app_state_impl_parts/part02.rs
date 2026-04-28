@@ -32,6 +32,9 @@ impl AppState {
         submission.event = normalize_optional(submission.event);
         submission.level = normalize_optional(submission.level);
         submission.fingerprint = normalize_optional(submission.fingerprint);
+        submission.confidence = normalize_optional(submission.confidence);
+        submission.risk_level = normalize_optional(submission.risk_level);
+        submission.expected_destination = normalize_optional(submission.expected_destination);
         submission.excerpt = submission
             .excerpt
             .into_iter()
@@ -39,6 +42,28 @@ impl AppState {
             .filter(|line| !line.is_empty())
             .take(50)
             .collect();
+        submission.evidence_refs = submission
+            .evidence_refs
+            .into_iter()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .take(50)
+            .collect();
+        if submission.source.is_none() {
+            submission.source = Some("manual".to_string());
+        }
+        if submission.event.is_none() {
+            submission.event = Some("manual.report".to_string());
+        }
+        if submission.confidence.is_none() {
+            submission.confidence = Some("medium".to_string());
+        }
+        if submission.risk_level.is_none() {
+            submission.risk_level = Some("medium".to_string());
+        }
+        if submission.expected_destination.is_none() {
+            submission.expected_destination = Some("bug_monitor_issue_draft".to_string());
+        }
 
         let config = self.bug_monitor_config().await;
         let repo = submission
@@ -83,6 +108,15 @@ impl AppState {
         if let Some(event) = submission.event.as_ref() {
             detail_lines.push(format!("event: {event}"));
         }
+        if let Some(confidence) = submission.confidence.as_ref() {
+            detail_lines.push(format!("confidence: {confidence}"));
+        }
+        if let Some(risk_level) = submission.risk_level.as_ref() {
+            detail_lines.push(format!("risk_level: {risk_level}"));
+        }
+        if let Some(expected_destination) = submission.expected_destination.as_ref() {
+            detail_lines.push(format!("expected_destination: {expected_destination}"));
+        }
         if let Some(run_id) = submission.run_id.as_ref() {
             detail_lines.push(format!("run_id: {run_id}"));
         }
@@ -103,6 +137,18 @@ impl AppState {
             detail_lines.push("excerpt:".to_string());
             detail_lines.extend(submission.excerpt.iter().map(|line| format!("  {line}")));
         }
+        if !submission.evidence_refs.is_empty() {
+            if !detail_lines.is_empty() {
+                detail_lines.push(String::new());
+            }
+            detail_lines.push("evidence_refs:".to_string());
+            detail_lines.extend(
+                submission
+                    .evidence_refs
+                    .iter()
+                    .map(|line| format!("  {line}")),
+            );
+        }
         let detail = if detail_lines.is_empty() {
             None
         } else {
@@ -120,13 +166,55 @@ impl AppState {
                 submission.correlation_id.as_deref().unwrap_or(""),
             ])
         });
+        submission.fingerprint = Some(fingerprint.clone());
+        let quality_gate =
+            crate::bug_monitor::service::evaluate_bug_monitor_submission_quality(&submission);
+        if !quality_gate.passed {
+            anyhow::bail!(
+                "Bug Monitor signal quality gate blocked draft creation: {}",
+                quality_gate
+                    .blocked_reason
+                    .clone()
+                    .unwrap_or_else(|| "signal did not pass quality gates".to_string())
+            );
+        }
 
         let mut drafts = self.bug_monitor_drafts.write().await;
-        if let Some(existing) = drafts
+        if let Some(existing_id) = drafts
             .values()
             .find(|row| row.repo == repo && row.fingerprint == fingerprint)
-            .cloned()
+            .map(|row| row.draft_id.clone())
         {
+            let Some(existing) = drafts.get_mut(&existing_id) else {
+                anyhow::bail!("Bug Monitor draft index changed while deduping");
+            };
+            let mut changed = false;
+            if existing.confidence.is_none() && submission.confidence.is_some() {
+                existing.confidence = submission.confidence.clone();
+                changed = true;
+            }
+            if existing.risk_level.is_none() && submission.risk_level.is_some() {
+                existing.risk_level = submission.risk_level.clone();
+                changed = true;
+            }
+            if existing.expected_destination.is_none() && submission.expected_destination.is_some()
+            {
+                existing.expected_destination = submission.expected_destination.clone();
+                changed = true;
+            }
+            existing.quality_gate = Some(quality_gate.clone());
+            changed = true;
+            for evidence_ref in &submission.evidence_refs {
+                if !existing.evidence_refs.iter().any(|row| row == evidence_ref) {
+                    existing.evidence_refs.push(evidence_ref.clone());
+                    changed = true;
+                }
+            }
+            let existing = existing.clone();
+            drop(drafts);
+            if changed {
+                self.persist_bug_monitor_drafts().await?;
+            }
             return Ok(existing);
         }
 
@@ -151,6 +239,11 @@ impl AppState {
             matched_issue_number: None,
             matched_issue_state: None,
             evidence_digest: None,
+            confidence: submission.confidence.clone(),
+            risk_level: submission.risk_level.clone(),
+            expected_destination: submission.expected_destination.clone(),
+            evidence_refs: submission.evidence_refs.clone(),
+            quality_gate: Some(quality_gate),
             last_post_error: None,
         };
         drafts.insert(draft.draft_id.clone(), draft.clone());

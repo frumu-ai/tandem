@@ -89,6 +89,122 @@ fn run_output_allows_additional_repair_attempt(
         .is_some_and(output_allows_additional_repair_attempt)
 }
 
+fn publish_automation_v2_failure_event(
+    state: &AppState,
+    automation: &crate::AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) {
+    let actionable = matches!(
+        run.status,
+        AutomationRunStatus::Failed | AutomationRunStatus::Blocked
+    );
+    if !actionable {
+        return;
+    }
+
+    let failure = run.checkpoint.last_failure.as_ref();
+    let node_id = failure
+        .map(|row| row.node_id.as_str())
+        .or_else(|| run.checkpoint.blocked_nodes.first().map(String::as_str));
+    let node = node_id.and_then(|id| automation.flow.nodes.iter().find(|row| row.node_id == id));
+    let output = node_id.and_then(|id| run.checkpoint.node_outputs.get(id));
+    let reason = failure
+        .map(|row| row.reason.clone())
+        .or_else(|| run.detail.clone())
+        .or_else(|| {
+            output
+                .and_then(|row| {
+                    row.get("blocked_reason")
+                        .or_else(|| row.get("summary"))
+                        .and_then(Value::as_str)
+                })
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("automation run ended with status {:?}", run.status));
+    let attempts = node_id
+        .and_then(|id| run.checkpoint.node_attempts.get(id).copied())
+        .unwrap_or(0);
+    let max_attempts = node
+        .map(crate::app::state::automation_node_max_attempts)
+        .unwrap_or(1);
+    let failure_kind = output
+        .and_then(|row| row.get("failure_kind"))
+        .and_then(Value::as_str);
+    let status = output
+        .and_then(|row| row.get("status"))
+        .and_then(Value::as_str);
+    let validation_errors = output
+        .and_then(|row| row.pointer("/validator_summary/unmet_requirements"))
+        .or_else(|| output.and_then(|row| row.pointer("/artifact_validation/unmet_requirements")))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let artifact_refs = output
+        .and_then(|row| row.get("artifact_refs"))
+        .cloned()
+        .unwrap_or_else(|| {
+            output
+                .and_then(|row| row.get("output_path"))
+                .cloned()
+                .map(|path| json!([path]))
+                .unwrap_or_else(|| json!([]))
+        });
+    let has_validation_errors = validation_errors
+        .as_array()
+        .map(|rows| !rows.is_empty())
+        .unwrap_or(false);
+    let error_kind = if failure_kind == Some("verification_failed")
+        || status == Some("verify_failed")
+        || has_validation_errors
+    {
+        "validation_error"
+    } else if matches!(run.status, AutomationRunStatus::Blocked) {
+        "missing_config"
+    } else {
+        "unknown"
+    };
+
+    state.event_bus.publish(tandem_types::EngineEvent::new(
+        "automation_v2.run.failed",
+        json!({
+            "automation_id": run.automation_id,
+            "automationID": run.automation_id,
+            "workflow_id": run.automation_id,
+            "workflowID": run.automation_id,
+            "workflow_name": automation.name,
+            "run_id": run.run_id,
+            "runID": run.run_id,
+            "session_id": run.latest_session_id,
+            "sessionID": run.latest_session_id,
+            "task_id": node_id,
+            "taskID": node_id,
+            "stage_id": node_id,
+            "stage_name": node.map(|row| row.objective.as_str()),
+            "node_id": node_id,
+            "agent_id": node.map(|row| row.agent_id.as_str()),
+            "agent_role": node.map(|row| row.agent_id.as_str()),
+            "component": "automation_v2",
+            "attempt": attempts,
+            "max_attempts": max_attempts,
+            "retry_exhausted": attempts >= max_attempts,
+            "status": match run.status {
+                AutomationRunStatus::Blocked => "blocked",
+                _ => "failed",
+            },
+            "reason": reason,
+            "error": failure.map(|row| row.reason.as_str()).or(run.detail.as_deref()),
+            "error_kind": error_kind,
+            "expected_output": node.and_then(|row| row.output_contract.as_ref()).map(|row| serde_json::to_value(row).unwrap_or(Value::Null)),
+            "actual_output": output.and_then(|row| row.get("summary")).and_then(Value::as_str),
+            "artifact_refs": artifact_refs,
+            "input_refs": node.map(|row| serde_json::to_value(&row.input_refs).unwrap_or(Value::Null)).unwrap_or(Value::Null),
+            "output_contract": node.and_then(|row| row.output_contract.as_ref()).map(|row| serde_json::to_value(row).unwrap_or(Value::Null)),
+            "validation_errors": validation_errors,
+            "suggested_next_action": "Inspect the failing automation node output, fix the validation/config/tool failure, then rerun the automation.",
+            "tenantContext": serde_json::to_value(&run.tenant_context).unwrap_or(Value::Null),
+        }),
+    ));
+}
+
 fn promote_materialized_output(
     output: &mut Value,
     node: &crate::automation_v2::types::AutomationFlowNode,
@@ -1567,6 +1683,7 @@ pub async fn run_automation_v2_run(
             estimated_cost_usd = run.estimated_cost_usd,
             "automation run finished"
         );
+        publish_automation_v2_failure_event(&state, &automation, &run);
     }
 }
 

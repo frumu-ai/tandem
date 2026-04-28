@@ -810,12 +810,27 @@ export interface BugMonitorIncidentRecord {
   title?: string;
   detail?: string | null;
   excerpt?: string[];
+  source?: string | null;
+  run_id?: string | null;
+  session_id?: string | null;
+  correlation_id?: string | null;
+  component?: string | null;
+  level?: string | null;
   occurrence_count?: number;
   created_at_ms?: number;
   updated_at_ms?: number;
+  last_seen_at_ms?: number | null;
   draft_id?: string | null;
   triage_run_id?: string | null;
   last_error?: string | null;
+  duplicate_summary?: JsonObject | null;
+  duplicate_matches?: JsonValue[] | null;
+  event_payload?: JsonValue | null;
+  confidence?: string | null;
+  risk_level?: string | null;
+  expected_destination?: string | null;
+  evidence_refs?: string[];
+  quality_gate?: JsonObject | null;
   [key: string]: unknown;
 }
 
@@ -841,6 +856,11 @@ export interface BugMonitorDraftRecord {
   matched_issue_number?: number | null;
   matched_issue_state?: string | null;
   evidence_digest?: string | null;
+  confidence?: string | null;
+  risk_level?: string | null;
+  expected_destination?: string | null;
+  evidence_refs?: string[];
+  quality_gate?: JsonObject | null;
   last_post_error?: string | null;
   [key: string]: unknown;
 }
@@ -853,13 +873,25 @@ export interface BugMonitorDraftListResponse {
 export interface BugMonitorPostRecord {
   post_id: string;
   draft_id?: string;
+  incident_id?: string | null;
+  fingerprint?: string;
   repo?: string;
   operation?: string;
   status?: string;
   issue_number?: number | null;
   issue_url?: string | null;
+  comment_id?: string | null;
   comment_url?: string | null;
+  evidence_digest?: string | null;
+  confidence?: string | null;
+  risk_level?: string | null;
+  expected_destination?: string | null;
+  evidence_refs?: string[];
+  quality_gate?: JsonObject | null;
+  idempotency_key?: string;
+  response_excerpt?: string | null;
   error?: string | null;
+  created_at_ms?: number | null;
   updated_at_ms?: number | null;
   [key: string]: unknown;
 }

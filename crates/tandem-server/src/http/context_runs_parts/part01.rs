@@ -50,6 +50,7 @@ fn parse_context_task_kind(value: Option<&str>) -> Option<ContextTaskKind> {
         "inspection" => Some(ContextTaskKind::Inspection),
         "research" => Some(ContextTaskKind::Research),
         "validation" => Some(ContextTaskKind::Validation),
+        "fix_proposal" | "fix-proposal" => Some(ContextTaskKind::FixProposal),
         _ => None,
     }
 }
@@ -60,6 +61,7 @@ fn context_task_kind_str(kind: &ContextTaskKind) -> &'static str {
         ContextTaskKind::Inspection => "inspection",
         ContextTaskKind::Research => "research",
         ContextTaskKind::Validation => "validation",
+        ContextTaskKind::FixProposal => "fix_proposal",
     }
 }
 
@@ -147,9 +149,10 @@ fn normalize_context_task_payload(
     };
     let execution_mode = match task_kind {
         ContextTaskKind::Implementation => ContextTaskExecutionMode::StrictWrite,
-        ContextTaskKind::Inspection | ContextTaskKind::Research | ContextTaskKind::Validation => {
-            ContextTaskExecutionMode::StrictNonwriting
-        }
+        ContextTaskKind::Inspection
+        | ContextTaskKind::Research
+        | ContextTaskKind::Validation
+        | ContextTaskKind::FixProposal => ContextTaskExecutionMode::StrictNonwriting,
     };
     let normalized_task_type = context_task_kind_str(&task_kind).to_string();
     map.insert("task_kind".to_string(), json!(normalized_task_type));
@@ -176,7 +179,10 @@ fn normalize_context_task_payload(
                 })?,
             );
         }
-        ContextTaskKind::Inspection | ContextTaskKind::Research | ContextTaskKind::Validation => {
+        ContextTaskKind::Inspection
+        | ContextTaskKind::Research
+        | ContextTaskKind::Validation
+        | ContextTaskKind::FixProposal => {
             map.remove("write_required");
         }
     }

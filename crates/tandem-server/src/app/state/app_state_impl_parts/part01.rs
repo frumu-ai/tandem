@@ -1708,6 +1708,35 @@ impl AppState {
         Ok(incident)
     }
 
+    pub async fn delete_bug_monitor_incidents(&self, ids: &[String]) -> anyhow::Result<usize> {
+        let mut removed = 0usize;
+        {
+            let mut guard = self.bug_monitor_incidents.write().await;
+            for id in ids {
+                if guard.remove(id).is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        if removed > 0 {
+            self.persist_bug_monitor_incidents().await?;
+        }
+        Ok(removed)
+    }
+
+    pub async fn clear_bug_monitor_incidents(&self) -> anyhow::Result<usize> {
+        let removed = {
+            let mut guard = self.bug_monitor_incidents.write().await;
+            let count = guard.len();
+            guard.clear();
+            count
+        };
+        if removed > 0 {
+            self.persist_bug_monitor_incidents().await?;
+        }
+        Ok(removed)
+    }
+
     pub async fn list_bug_monitor_posts(&self, limit: usize) -> Vec<BugMonitorPostRecord> {
         let mut rows = self
             .bug_monitor_posts
@@ -1735,6 +1764,35 @@ impl AppState {
             .insert(post.post_id.clone(), post.clone());
         self.persist_bug_monitor_posts().await?;
         Ok(post)
+    }
+
+    pub async fn delete_bug_monitor_posts(&self, ids: &[String]) -> anyhow::Result<usize> {
+        let mut removed = 0usize;
+        {
+            let mut guard = self.bug_monitor_posts.write().await;
+            for id in ids {
+                if guard.remove(id).is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        if removed > 0 {
+            self.persist_bug_monitor_posts().await?;
+        }
+        Ok(removed)
+    }
+
+    pub async fn clear_bug_monitor_posts(&self) -> anyhow::Result<usize> {
+        let removed = {
+            let mut guard = self.bug_monitor_posts.write().await;
+            let count = guard.len();
+            guard.clear();
+            count
+        };
+        if removed > 0 {
+            self.persist_bug_monitor_posts().await?;
+        }
+        Ok(removed)
     }
 
     pub async fn list_external_actions(&self, limit: usize) -> Vec<ExternalActionRecord> {
@@ -1909,5 +1967,34 @@ impl AppState {
             .insert(draft.draft_id.clone(), draft.clone());
         self.persist_bug_monitor_drafts().await?;
         Ok(draft)
+    }
+
+    pub async fn delete_bug_monitor_drafts(&self, ids: &[String]) -> anyhow::Result<usize> {
+        let mut removed = 0usize;
+        {
+            let mut guard = self.bug_monitor_drafts.write().await;
+            for id in ids {
+                if guard.remove(id).is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        if removed > 0 {
+            self.persist_bug_monitor_drafts().await?;
+        }
+        Ok(removed)
+    }
+
+    pub async fn clear_bug_monitor_drafts(&self) -> anyhow::Result<usize> {
+        let removed = {
+            let mut guard = self.bug_monitor_drafts.write().await;
+            let count = guard.len();
+            guard.clear();
+            count
+        };
+        if removed > 0 {
+            self.persist_bug_monitor_drafts().await?;
+        }
+        Ok(removed)
     }
 }

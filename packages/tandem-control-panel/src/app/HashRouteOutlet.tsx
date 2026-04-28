@@ -14,6 +14,7 @@ import { FilesPage } from "../pages/FilesPage";
 import { MemoryPage } from "../pages/MemoryPage";
 import { RunsPage } from "../pages/RunsPage";
 import { ApprovalsInboxPage } from "../pages/ApprovalsInboxPage";
+import { BugMonitorPage } from "../pages/BugMonitorPage";
 import { TeamsPage } from "../pages/TeamsPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { ensureRouteId } from "./routes";
@@ -50,6 +51,8 @@ export function HashRouteOutlet({ routeId, pageProps }: { routeId: string; pageP
       return <PacksPage {...pageProps} />;
     case "orchestrator":
       return <OrchestratorPage {...pageProps} />;
+    case "bug-monitor":
+      return <BugMonitorPage {...pageProps} />;
     case "files":
       return <FilesPage {...pageProps} />;
     case "memory":

@@ -1,4 +1,3 @@
-
 #[tokio::test]
 async fn bug_monitor_publish_reuses_existing_post_on_duplicate_submit() {
     let (endpoint, server) = spawn_fake_bug_monitor_github_mcp_server().await;
@@ -73,6 +72,7 @@ async fn bug_monitor_publish_reuses_existing_post_on_duplicate_submit() {
         .await
         .expect("triage response");
     assert_eq!(triage_resp.status(), StatusCode::OK);
+    write_ready_bug_monitor_triage_summary(app.clone(), &draft_id).await;
 
     let publish_req = Request::builder()
         .method("POST")
@@ -284,6 +284,7 @@ async fn bug_monitor_publish_skips_comment_when_matched_open_commenting_disabled
         .await
         .expect("triage response");
     assert_eq!(triage_resp.status(), StatusCode::OK);
+    write_ready_bug_monitor_triage_summary(app.clone(), &draft_id).await;
 
     let publish_req = Request::builder()
         .method("POST")
@@ -435,6 +436,11 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
             draft_id: Some(draft_id.clone()),
             triage_run_id: enriched_draft.triage_run_id.clone(),
             last_error: None,
+            confidence: enriched_draft.confidence.clone(),
+            risk_level: enriched_draft.risk_level.clone(),
+            expected_destination: enriched_draft.expected_destination.clone(),
+            evidence_refs: enriched_draft.evidence_refs.clone(),
+            quality_gate: enriched_draft.quality_gate.clone(),
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: None,
@@ -463,7 +469,17 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
                 "logs": [
                     "structured log line",
                     "second structured line"
-                ]
+                ],
+                "why_it_likely_happened": "A GitHub label preflight is missing.",
+                "root_cause_confidence": "medium",
+                "failure_type": "tool_error",
+                "affected_components": ["github publisher"],
+                "likely_files_to_edit": ["crates/tandem-server/src/workflows.rs"],
+                "recommended_fix": "Check or create labels before creating issues.",
+                "acceptance_criteria": ["Missing labels are detected before publish"],
+                "verification_steps": ["Run the GitHub publish smoke test"],
+                "coder_ready": true,
+                "risk_level": "medium"
             })
             .to_string(),
         ))
@@ -513,7 +529,23 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
     assert!(rendered_body.contains("The run should complete successfully."));
     assert!(rendered_body.contains("1. Open the repo"));
     assert!(rendered_body.contains("structured log line"));
+    assert!(rendered_body.contains("A GitHub label preflight is missing."));
+    assert!(rendered_body.contains("Check or create labels before creating issues."));
+    assert!(rendered_body.contains("crates/tandem-server/src/workflows.rs"));
+    assert!(rendered_body.contains("Missing labels are detected before publish"));
+    assert!(rendered_body.contains("tandem_autonomous_coder_issue"));
     assert!(!rendered_body.contains("raw detail should not win"));
+    assert_eq!(
+        issue_draft.get("coder_ready").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        issue_draft
+            .get("coder_ready_gate")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("passed")
+    );
     assert_eq!(
         issue_draft.get("suggested_title").and_then(Value::as_str),
         Some("Structured triage title")
@@ -632,6 +664,256 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
 }
 
 #[tokio::test]
+async fn bug_monitor_issue_draft_blocks_coder_ready_without_required_evidence() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "title": "Ambiguous workflow failure",
+                    "detail": "event: workflow.run.failed",
+                    "excerpt": ["workflow failed without enough triage evidence"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+
+    let triage_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-run"))
+        .body(Body::empty())
+        .expect("triage request");
+    let triage_resp = app
+        .clone()
+        .oneshot(triage_req)
+        .await
+        .expect("triage response");
+    assert_eq!(triage_resp.status(), StatusCode::OK);
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-summary"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "suggested_title": "Ambiguous workflow failure",
+                "what_happened": "The workflow failed, but triage has not identified an edit scope.",
+                "why_it_likely_happened": "Repo research found the failure is real, but not which component owns it.",
+                "root_cause_confidence": "medium",
+                "failure_type": "unknown",
+                "recommended_fix": "Investigate further before editing code.",
+                "steps_to_reproduce": ["Run the affected workflow"],
+                "logs": ["workflow failed without enough triage evidence"],
+                "research_sources": [{"kind":"repo","summary":"Inspected workflow failure reports"}],
+                "acceptance_criteria": ["A scoped owner is identified before coding"],
+                "verification_steps": ["Run the workflow failure smoke test"],
+                "coder_ready": true,
+                "risk_level": "medium"
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+    let summary_payload: Value = serde_json::from_slice(
+        &to_bytes(summary_resp.into_body(), usize::MAX)
+            .await
+            .expect("summary body"),
+    )
+    .expect("summary json");
+    assert_eq!(
+        summary_payload
+            .get("triage_summary")
+            .and_then(|row| row.get("coder_ready"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    let issue_draft = summary_payload.get("issue_draft").expect("issue draft");
+    assert_eq!(
+        issue_draft.get("coder_ready").and_then(Value::as_bool),
+        Some(false)
+    );
+    let missing = issue_draft
+        .get("coder_ready_gate")
+        .and_then(|row| row.get("missing"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(missing
+        .iter()
+        .any(|row| row.as_str() == Some("scope_identified")));
+    assert!(!missing
+        .iter()
+        .any(|row| row.as_str() == Some("acceptance_criteria")));
+    assert!(!missing
+        .iter()
+        .any(|row| row.as_str() == Some("verification_steps")));
+    let rendered_body = issue_draft
+        .get("rendered_body")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(!rendered_body.contains("tandem_autonomous_coder_issue"));
+}
+
+#[tokio::test]
+async fn bug_monitor_issue_draft_blocks_coder_ready_when_tool_scope_missing() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "title": "Workflow failure needs repo edit",
+                    "detail": "event: workflow.run.failed",
+                    "excerpt": ["workflow failed with a clear code fix"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+
+    let triage_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-run"))
+        .body(Body::empty())
+        .expect("triage request");
+    let triage_resp = app
+        .clone()
+        .oneshot(triage_req)
+        .await
+        .expect("triage response");
+    assert_eq!(triage_resp.status(), StatusCode::OK);
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-summary"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "suggested_title": "Workflow failure needs repo edit",
+                "what_happened": "A workflow failure has a scoped code fix.",
+                "why_it_likely_happened": "Repo research points to workflow failure handling.",
+                "root_cause_confidence": "medium",
+                "failure_type": "code_defect",
+                "affected_components": ["workflow executor"],
+                "likely_files_to_edit": ["crates/tandem-server/src/workflows.rs"],
+                "recommended_fix": "Patch the workflow failure handling.",
+                "steps_to_reproduce": ["Run the affected workflow"],
+                "logs": ["workflow failed with a clear code fix"],
+                "research_sources": [{"kind":"repo","summary":"Inspected workflow executor code"}],
+                "acceptance_criteria": ["Terminal failure is reported once"],
+                "verification_steps": ["Run bug_monitor_ tests"],
+                "coder_ready": true,
+                "risk_level": "medium",
+                "required_tool_scopes": ["repo:write"],
+                "missing_tool_scopes": ["repo:write"],
+                "permissions_available": false
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+    let summary_payload: Value = serde_json::from_slice(
+        &to_bytes(summary_resp.into_body(), usize::MAX)
+            .await
+            .expect("summary body"),
+    )
+    .expect("summary json");
+    let issue_draft = summary_payload.get("issue_draft").expect("issue draft");
+    assert_eq!(
+        issue_draft.get("coder_ready").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        issue_draft
+            .get("permissions_available")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    let missing = issue_draft
+        .get("coder_ready_gate")
+        .and_then(|row| row.get("missing"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(missing
+        .iter()
+        .any(|row| row.as_str() == Some("tool_scope_available")));
+    let rendered_body = issue_draft
+        .get("rendered_body")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(!rendered_body.contains("tandem_autonomous_coder_issue"));
+}
+
+#[tokio::test]
 async fn bug_monitor_triage_run_created_from_approved_draft() {
     let state = test_state().await;
     state
@@ -747,21 +1029,10 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
     );
     assert!(triage_payload
         .get("issue_draft")
-        .and_then(|row| row.get("rendered_body"))
-        .and_then(Value::as_str)
-        .is_some_and(|body| body.contains("Build failure in CI")));
-    assert_eq!(
-        triage_payload
-            .get("issue_draft_artifact")
-            .and_then(|row| row.get("artifact_type"))
-            .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
-    );
+        .is_some_and(Value::is_null));
     assert!(triage_payload
         .get("issue_draft_artifact")
-        .and_then(|row| row.get("path"))
-        .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/bug_monitor.issue_draft.json")));
+        .is_some_and(Value::is_null));
 
     let get_run_req = Request::builder()
         .method("GET")
@@ -793,7 +1064,63 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
             .and_then(|row| row.get("tasks"))
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
-        Some(2)
+        Some(4)
+    );
+    let tasks = get_run_payload
+        .get("run")
+        .and_then(|row| row.get("tasks"))
+        .and_then(Value::as_array)
+        .expect("triage tasks");
+    let task_by_kind = |kind: &str| {
+        tasks.iter().find(|task| {
+            task.get("payload")
+                .and_then(|payload| payload.get("task_kind"))
+                .and_then(Value::as_str)
+                == Some(kind)
+        })
+    };
+    let inspect = task_by_kind("inspection").expect("inspection task");
+    let research = task_by_kind("research").expect("research task");
+    let validate = task_by_kind("validation").expect("validation task");
+    let fix = task_by_kind("fix_proposal").expect("fix proposal task");
+    let task_id = |task: &Value| {
+        task.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(
+        research
+            .get("depends_on_task_ids")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        Some(task_id(inspect))
+    );
+    assert_eq!(
+        validate
+            .get("depends_on_task_ids")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        Some(task_id(research))
+    );
+    assert_eq!(
+        fix.get("depends_on_task_ids")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        Some(task_id(validate))
+    );
+    assert_eq!(
+        research
+            .get("payload")
+            .and_then(|payload| payload.get("expected_artifact"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_research_report")
     );
     let duplicate_artifact_present = get_run_payload
         .get("run")
@@ -836,13 +1163,9 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
         second_payload.get("deduped").and_then(Value::as_bool),
         Some(true)
     );
-    assert_eq!(
-        second_payload
-            .get("issue_draft_artifact")
-            .and_then(|row| row.get("artifact_type"))
-            .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
-    );
+    assert!(second_payload
+        .get("issue_draft_artifact")
+        .is_some_and(Value::is_null));
     assert!(
         second_payload.get("duplicate_matches_artifact").is_none()
             || second_payload
@@ -879,6 +1202,11 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
             draft_id: Some(draft_id.clone()),
             triage_run_id: Some(run_id.clone()),
             last_error: None,
+            confidence: None,
+            risk_level: None,
+            expected_destination: None,
+            evidence_refs: Vec::new(),
+            quality_gate: None,
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: None,
@@ -916,16 +1244,10 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
     );
     assert!(replay_payload
         .get("issue_draft")
-        .and_then(|row| row.get("rendered_body"))
-        .and_then(Value::as_str)
-        .is_some_and(|body| body.contains("Build failure in CI")));
-    assert_eq!(
-        replay_payload
-            .get("issue_draft_artifact")
-            .and_then(|row| row.get("artifact_type"))
-            .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
-    );
+        .is_some_and(Value::is_null));
+    assert!(replay_payload
+        .get("issue_draft_artifact")
+        .is_some_and(Value::is_null));
     assert_eq!(
         replay_payload
             .get("triage_summary")
@@ -945,14 +1267,14 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
             .get("duplicate_summary")
             .and_then(|row| row.get("match_count"))
             .and_then(Value::as_u64),
-        Some(1)
+        Some(0)
     );
     assert_eq!(
         replay_payload
             .get("duplicate_matches")
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
-        Some(1)
+        Some(0)
     );
 }
 
@@ -1142,6 +1464,7 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
         .is_some_and(|path| path.ends_with("/artifacts/failure_duplicate_matches.json")));
+    write_ready_bug_monitor_triage_summary(app.clone(), &draft_id).await;
 
     let issue_draft_req = Request::builder()
         .method("POST")
@@ -1273,7 +1596,7 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         .get("issue_draft")
         .and_then(|row| row.get("rendered_body"))
         .and_then(Value::as_str)
-        .is_some_and(|body| body.contains("Historical duplicate")));
+        .is_some_and(|body| body.contains("Repeated orchestrator failure")));
     assert!(recheck_payload
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))

@@ -1,6 +1,6 @@
 use super::bug_monitor::*;
 use crate::http::AppState;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
@@ -34,10 +34,21 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             "/failure-reporter/incidents",
             get(list_bug_monitor_incidents),
         )
-        .route("/bug-monitor/incidents/{id}", get(get_bug_monitor_incident))
+        .route(
+            "/bug-monitor/incidents/bulk-delete",
+            post(bulk_delete_bug_monitor_incidents),
+        )
+        .route(
+            "/failure-reporter/incidents/bulk-delete",
+            post(bulk_delete_bug_monitor_incidents),
+        )
+        .route(
+            "/bug-monitor/incidents/{id}",
+            get(get_bug_monitor_incident).delete(delete_bug_monitor_incident),
+        )
         .route(
             "/failure-reporter/incidents/{id}",
-            get(get_bug_monitor_incident),
+            get(get_bug_monitor_incident).delete(delete_bug_monitor_incident),
         )
         .route(
             "/bug-monitor/incidents/{id}/replay",
@@ -49,10 +60,37 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         )
         .route("/bug-monitor/drafts", get(list_bug_monitor_drafts))
         .route("/failure-reporter/drafts", get(list_bug_monitor_drafts))
+        .route(
+            "/bug-monitor/drafts/bulk-delete",
+            post(bulk_delete_bug_monitor_drafts),
+        )
+        .route(
+            "/failure-reporter/drafts/bulk-delete",
+            post(bulk_delete_bug_monitor_drafts),
+        )
         .route("/bug-monitor/posts", get(list_bug_monitor_posts))
         .route("/failure-reporter/posts", get(list_bug_monitor_posts))
-        .route("/bug-monitor/drafts/{id}", get(get_bug_monitor_draft))
-        .route("/failure-reporter/drafts/{id}", get(get_bug_monitor_draft))
+        .route(
+            "/bug-monitor/posts/bulk-delete",
+            post(bulk_delete_bug_monitor_posts),
+        )
+        .route(
+            "/failure-reporter/posts/bulk-delete",
+            post(bulk_delete_bug_monitor_posts),
+        )
+        .route("/bug-monitor/posts/{id}", delete(delete_bug_monitor_post))
+        .route(
+            "/failure-reporter/posts/{id}",
+            delete(delete_bug_monitor_post),
+        )
+        .route(
+            "/bug-monitor/drafts/{id}",
+            get(get_bug_monitor_draft).delete(delete_bug_monitor_draft),
+        )
+        .route(
+            "/failure-reporter/drafts/{id}",
+            get(get_bug_monitor_draft).delete(delete_bug_monitor_draft),
+        )
         .route(
             "/bug-monitor/drafts/{id}/approve",
             post(approve_bug_monitor_draft),

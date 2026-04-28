@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.45] - Released 2026-04-28
+
+### Added
+
+- **Bug Monitor control-panel surface**: Added a real `#/bug-monitor` page for runtime failure triage. Operators can inspect readiness/status, refresh or recompute monitor state, pause/resume/debug the monitor, browse incidents/drafts/posts, replay incidents, create triage runs, approve/deny/recheck/publish drafts, and submit manual issue reports from one surface. The Bug Monitor route is now wired into hash routing and visible by default in ACA mode.
+- **Research-backed Bug Monitor triage**: Bug Monitor triage runs now seed a four-step graph: inspect the failure report, research likely causes and related prior failures, validate or reproduce the failure scope, and propose a fix plus verification plan. Triage runs write inspection, research, validation, fix-proposal, and summary artifacts for downstream issue drafting and autonomous coder handoff.
+- **Richer autonomous workflow failure reports**: Terminal automation and workflow failures now produce more specific Bug Monitor submissions with workflow/run/task/stage identifiers, retry exhaustion details, error kind, tool context, artifact refs, files touched, validation errors, expected vs actual output, and suggested next actions.
+- **Signal quality metadata and gates**: Bug Monitor incidents, drafts, posts, and TypeScript SDK types now carry confidence, risk level, expected destination, evidence refs, and quality-gate reports. Manual reports can provide the same fields, and noisy or unevidenced intake is persisted as blocked incidents instead of becoming issue drafts.
+
+### Changed
+
+- **GitHub issue drafts are coder-ready when triage supports it**: Bug Monitor issue drafts now include what happened, expected behavior, reproduction steps, environment, logs/artifacts, suspected root cause, recommended fix, likely files, acceptance criteria, verification steps, and hidden Tandem coder handoff metadata when the triage summary is sufficiently confident.
+- **Draft-to-proposal and coder-ready gates are enforced server-side**: Issue draft generation now blocks incomplete triage summaries that lack research, validation scope, bounded action, or verification steps. Coder-ready handoff is blocked unless scope, confidence, risk, acceptance criteria, verification, duplicate state, permissions, and tool scopes are acceptable.
+- **Bug Monitor cards show the signal lifecycle**: Incidents, drafts, and posts in the control panel now expose signal, draft, triage, proposal, coder-ready, approval, publication, artifact, and memory references when available, with heuristic UI gate checks labelled separately from backend gate reports.
+- **Bug Monitor duplicate context is preserved through replay and publish flows**: Duplicate failure-pattern matches are normalized and surfaced in triage artifacts, replay responses, and issue drafts so repeated failures point back to prior evidence instead of generating blank or generic reports.
+- **Failure-pattern and regression memory are written from triage**: Completed Bug Monitor triage summaries now feed governed memory with failure patterns and regression signals so recurring failures can dedupe and accelerate future triage.
+
+### Fixed
+
+- **Engine binary entrypoint restored**: Restored the `tandem-engine` binary entrypoint so `cargo build -p tandem-ai --profile fast-release` succeeds again.
+
 ## [0.4.44] - Released 2026-04-27
 
 ### Added

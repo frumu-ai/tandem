@@ -46,6 +46,11 @@ pub async fn record_post_failure(
         comment_id: None,
         comment_url: draft.github_comment_url.clone(),
         evidence_digest: evidence_digest.map(|value| value.to_string()),
+        confidence: draft.confidence.clone(),
+        risk_level: draft.risk_level.clone(),
+        expected_destination: draft.expected_destination.clone(),
+        evidence_refs: draft.evidence_refs.clone(),
+        quality_gate: draft.quality_gate.clone(),
         idempotency_key: build_idempotency_key(
             &draft.repo,
             &draft.fingerprint,
@@ -104,6 +109,11 @@ async fn mirror_bug_monitor_post_as_external_action(
             "repo": post.repo,
             "fingerprint": post.fingerprint,
             "evidence_digest": post.evidence_digest,
+            "confidence": post.confidence,
+            "risk_level": post.risk_level,
+            "expected_destination": post.expected_destination,
+            "evidence_refs": post.evidence_refs,
+            "quality_gate": post.quality_gate,
             "bug_monitor_operation": post.operation,
         })),
         created_at_ms: post.created_at_ms,
@@ -262,7 +272,7 @@ pub async fn publish_draft(
                     post: None,
                 });
             }
-            if !config.auto_comment_on_matched_open_issues && mode == PublishMode::Auto {
+            if !config.auto_comment_on_matched_open_issues {
                 draft.github_status = Some("draft_ready".to_string());
                 let draft = state.put_bug_monitor_draft(draft).await?;
                 return Ok(PublishOutcome {
@@ -315,6 +325,11 @@ pub async fn publish_draft(
                 comment_id: result.id.clone(),
                 comment_url: result.html_url.clone(),
                 evidence_digest: Some(evidence_digest.clone()),
+                confidence: draft.confidence.clone(),
+                risk_level: draft.risk_level.clone(),
+                expected_destination: draft.expected_destination.clone(),
+                evidence_refs: draft.evidence_refs.clone(),
+                quality_gate: draft.quality_gate.clone(),
                 idempotency_key,
                 response_excerpt: Some(truncate_text(&body, 400)),
                 error: None,
@@ -477,6 +492,11 @@ async fn create_issue_from_draft(
         comment_id: None,
         comment_url: None,
         evidence_digest: Some(evidence_digest.to_string()),
+        confidence: draft.confidence.clone(),
+        risk_level: draft.risk_level.clone(),
+        expected_destination: draft.expected_destination.clone(),
+        evidence_refs: draft.evidence_refs.clone(),
+        quality_gate: draft.quality_gate.clone(),
         idempotency_key,
         response_excerpt: Some(truncate_text(&body, 400)),
         error: None,

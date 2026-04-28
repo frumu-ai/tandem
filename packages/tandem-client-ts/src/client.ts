@@ -633,9 +633,13 @@ class BugMonitor {
   }
 
   async patchConfig(config: JsonObject): Promise<BugMonitorConfigResponse> {
+    const body =
+      config && typeof config === "object" && "bug_monitor" in config
+        ? config
+        : { bug_monitor: config };
     return this.req<BugMonitorConfigResponse>("/config/bug-monitor", {
       method: "PATCH",
-      body: JSON.stringify(config),
+      body: JSON.stringify(body),
     });
   }
 
@@ -680,6 +684,57 @@ class BugMonitor {
     });
   }
 
+  async deleteIncident(id: string): Promise<{ ok?: boolean; deleted?: number }> {
+    return this.req<{ ok?: boolean; deleted?: number }>(
+      `/bug-monitor/incidents/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async bulkDeleteIncidents(payload: {
+    ids?: string[];
+    all?: boolean;
+  }): Promise<{ ok?: boolean; deleted?: number }> {
+    return this.req<{ ok?: boolean; deleted?: number }>("/bug-monitor/incidents/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteDraft(id: string): Promise<{ ok?: boolean; deleted?: number }> {
+    return this.req<{ ok?: boolean; deleted?: number }>(
+      `/bug-monitor/drafts/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async bulkDeleteDrafts(payload: {
+    ids?: string[];
+    all?: boolean;
+  }): Promise<{ ok?: boolean; deleted?: number }> {
+    return this.req<{ ok?: boolean; deleted?: number }>("/bug-monitor/drafts/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deletePost(id: string): Promise<{ ok?: boolean; deleted?: number }> {
+    return this.req<{ ok?: boolean; deleted?: number }>(
+      `/bug-monitor/posts/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async bulkDeletePosts(payload: {
+    ids?: string[];
+    all?: boolean;
+  }): Promise<{ ok?: boolean; deleted?: number }> {
+    return this.req<{ ok?: boolean; deleted?: number }>("/bug-monitor/posts/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
   async listDrafts(options?: { limit?: number }): Promise<BugMonitorDraftListResponse> {
     const qs = options?.limit !== undefined ? `?limit=${options.limit}` : "";
     return this.req<BugMonitorDraftListResponse>(`/bug-monitor/drafts${qs}`);
@@ -712,9 +767,11 @@ class BugMonitor {
   }
 
   async report(payload: JsonObject): Promise<JsonObject> {
+    const body =
+      payload && typeof payload === "object" && "report" in payload ? payload : { report: payload };
     return this.req<JsonObject>("/bug-monitor/report", {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
     });
   }
 

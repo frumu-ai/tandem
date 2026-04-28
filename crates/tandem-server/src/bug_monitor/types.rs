@@ -106,6 +106,16 @@ pub struct BugMonitorDraftRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_destination: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_gate: Option<BugMonitorQualityGateReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_post_error: Option<String>,
 }
 
@@ -129,6 +139,16 @@ pub struct BugMonitorPostRecord {
     pub comment_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_destination: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_gate: Option<BugMonitorQualityGateReport>,
     pub idempotency_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_excerpt: Option<String>,
@@ -176,11 +196,45 @@ pub struct BugMonitorIncidentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_destination: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_gate: Option<BugMonitorQualityGateReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_summary: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_matches: Option<Vec<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BugMonitorQualityGateResult {
+    pub key: String,
+    pub label: String,
+    pub passed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BugMonitorQualityGateReport {
+    pub stage: String,
+    pub status: String,
+    pub passed: bool,
+    pub passed_count: usize,
+    pub total_count: usize,
+    #[serde(default)]
+    pub gates: Vec<BugMonitorQualityGateResult>,
+    #[serde(default)]
+    pub missing: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -235,6 +289,14 @@ pub struct BugMonitorSubmission {
     pub excerpt: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_destination: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

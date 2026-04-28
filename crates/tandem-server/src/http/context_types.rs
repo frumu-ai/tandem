@@ -206,6 +206,7 @@ pub(super) enum ContextTaskKind {
     Inspection,
     Research,
     Validation,
+    FixProposal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

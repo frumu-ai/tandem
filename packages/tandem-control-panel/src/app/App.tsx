@@ -644,7 +644,8 @@ function AppBody() {
   const providerText = providerQuery.data?.ready
     ? `${providerQuery.data?.defaultProvider || "none"}/${providerQuery.data?.defaultModel || "none"}`
     : "provider setup required";
-  const bugMonitorStatus = (bugMonitorQuery.data as any) || null;
+  const bugMonitorStatusPayload = (bugMonitorQuery.data as any) || null;
+  const bugMonitorStatus = bugMonitorStatusPayload?.status || bugMonitorStatusPayload || null;
   const bugMonitorEnabled = !!bugMonitorStatus?.config?.enabled;
   const bugMonitorPendingIncidents = Number(bugMonitorStatus?.runtime?.pending_incidents || 0);
   const bugMonitorMonitoringActive = !!bugMonitorStatus?.runtime?.monitoring_active;

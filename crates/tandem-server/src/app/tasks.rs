@@ -511,7 +511,16 @@ fn is_bug_monitor_candidate_event(event: &EngineEvent) -> bool {
     }
     matches!(
         event.event_type.as_str(),
-        "context.task.failed" | "workflow.run.failed" | "routine.run.failed" | "session.error"
+        "context.task.failed"
+            | "context.task.blocked"
+            | "context.run.failed"
+            | "workflow.run.failed"
+            | "workflow.validation.failed"
+            | "routine.run.failed"
+            | "session.error"
+            | "automation.run.failed"
+            | "automation_v2.run.failed"
+            | "coder.run.failed"
     )
 }
 
@@ -1105,6 +1114,55 @@ pub async fn run_optimization_scheduler(state: AppState) {
         }
         if let Err(error) = state.reconcile_optimization_campaigns().await {
             tracing::warn!("optimization scheduler reconciliation failed: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod bug_monitor_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn bug_monitor_candidate_detection_includes_terminal_failures() {
+        for event_type in [
+            "context.task.failed",
+            "context.task.blocked",
+            "context.run.failed",
+            "workflow.run.failed",
+            "workflow.validation.failed",
+            "routine.run.failed",
+            "session.error",
+            "automation.run.failed",
+            "automation_v2.run.failed",
+            "coder.run.failed",
+        ] {
+            assert!(
+                is_bug_monitor_candidate_event(&EngineEvent::new(
+                    event_type,
+                    serde_json::json!({})
+                )),
+                "{event_type} should be monitored"
+            );
+        }
+    }
+
+    #[test]
+    fn bug_monitor_candidate_detection_ignores_progress_and_monitor_events() {
+        for event_type in [
+            "context.task.started",
+            "context.task.requeued",
+            "workflow.action.completed",
+            "automation_v2.run.started",
+            "routine.run.completed",
+            "bug_monitor.incident.detected",
+        ] {
+            assert!(
+                !is_bug_monitor_candidate_event(&EngineEvent::new(
+                    event_type,
+                    serde_json::json!({})
+                )),
+                "{event_type} should not be monitored"
+            );
         }
     }
 }
