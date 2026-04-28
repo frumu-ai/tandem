@@ -127,6 +127,37 @@ pub(super) fn mcp_server_from_tool_name(tool_name: &str) -> Option<&str> {
     parts.next().filter(|server| !server.is_empty())
 }
 
+pub(super) fn concrete_mcp_tools_required_before_write(
+    tool_allowlist: &HashSet<String>,
+) -> Vec<String> {
+    let mut tools = tool_allowlist
+        .iter()
+        .filter_map(|tool| {
+            let normalized = normalize_tool_name(tool);
+            if normalized == "mcp_list"
+                || !normalized.starts_with("mcp.")
+                || normalized.contains('*')
+                || normalized.split('.').count() < 3
+            {
+                return None;
+            }
+            Some(normalized)
+        })
+        .collect::<Vec<_>>();
+    tools.sort();
+    tools.dedup();
+    tools
+}
+
+pub(super) fn has_unattempted_required_mcp_tool(
+    required_tools: &[String],
+    tool_call_counts: &HashMap<String, usize>,
+) -> bool {
+    required_tools
+        .iter()
+        .any(|tool| tool_call_counts.get(tool).copied().unwrap_or(0) == 0)
+}
+
 pub(super) fn requires_web_research_prompt(input: &str) -> bool {
     let lower = input.to_ascii_lowercase();
     [

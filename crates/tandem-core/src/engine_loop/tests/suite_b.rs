@@ -260,6 +260,33 @@ fn workspace_write_tool_detection_is_limited_to_mutations() {
 }
 
 #[test]
+fn concrete_mcp_preflight_blocks_workspace_write_until_attempted() {
+    let allowlist = HashSet::from([
+        "write".to_string(),
+        "edit".to_string(),
+        "mcp_list".to_string(),
+        "mcp.githubcopilot.get_me".to_string(),
+        "mcp.githubcopilot.search_repositories".to_string(),
+        "mcp.githubcopilot.*".to_string(),
+    ]);
+    let required = concrete_mcp_tools_required_before_write(&allowlist);
+    assert_eq!(
+        required,
+        vec![
+            "mcp.githubcopilot.get_me".to_string(),
+            "mcp.githubcopilot.search_repositories".to_string()
+        ]
+    );
+
+    let mut counts = HashMap::new();
+    assert!(has_unattempted_required_mcp_tool(&required, &counts));
+    counts.insert("mcp.githubcopilot.get_me".to_string(), 1);
+    assert!(has_unattempted_required_mcp_tool(&required, &counts));
+    counts.insert("mcp.githubcopilot.search_repositories".to_string(), 1);
+    assert!(!has_unattempted_required_mcp_tool(&required, &counts));
+}
+
+#[test]
 fn session_write_targets_ignore_workspace_read_tools() {
     assert!(
         crate::engine_loop::tool_execution::extract_session_write_target_paths(

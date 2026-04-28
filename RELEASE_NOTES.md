@@ -91,6 +91,8 @@ Run-start cleanup has also been narrowed. Tandem now clears only run-scoped node
 
 Artifact validation now rejects placeholder markdown such as "initial artifact created", "required workspace output path exists", and "will be updated in-place" as incomplete output. Connector preflight validation also requires declared concrete MCP tools to actually run; for example, a GitHub preflight that names `mcp.githubcopilot.get_me` and `mcp.githubcopilot.search_repositories` cannot pass by writing a JSON artifact that says those calls were not attempted.
 
+Prompt execution now also prevents those preflight nodes from writing artifacts too early. When a request-scoped tool allowlist includes concrete MCP tools, workspace write tools stay hidden until those exact MCP tools have been attempted. This closes the newer loop where a GitHub connector check could call `mcp_list`, discover a cold/disconnected server, write a blocked status artifact, and then churn through repair attempts for minutes without ever attempting the required `get_me` or repository search calls.
+
 Provider and tool failures during prompt execution now mark the session failed and clear cancellation state when they return early. This avoids stuck "in progress" sessions after provider stream connect, idle, chunk, or tool execution errors.
 
 Bug Monitor also dedupes Automation V2 failure fanout more aggressively. Automation V2 context blackboard mirror failures now carry workflow/run metadata, and Bug Monitor candidate detection ignores those mirrored `context.task.failed`, `context.task.blocked`, and `context.run.failed` events so the primary `automation_v2.run.failed` incident remains the canonical report instead of generating one draft per downstream node.

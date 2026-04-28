@@ -57,6 +57,8 @@ impl EngineLoop {
             .map(|tool| normalize_tool_name(&tool))
             .filter(|tool| !tool.trim().is_empty())
             .collect::<HashSet<_>>();
+        let required_mcp_tools_before_write =
+            concrete_mcp_tools_required_before_write(&request_tool_allowlist);
         // Propagate per-request tool allowlist to session-level enforcement so
         // that execution-time checks (and mcp_list scoping) also respect it.
         if !request_tool_allowlist.is_empty() {
@@ -413,6 +415,10 @@ impl EngineLoop {
                 let prewrite_gate_write = prewrite_gate.gate_write;
                 let force_write_only_retry = prewrite_gate.force_write_only_retry;
                 let allow_repair_tools = prewrite_gate.allow_repair_tools;
+                let required_mcp_tool_pending = has_unattempted_required_mcp_tool(
+                    &required_mcp_tools_before_write,
+                    &tool_call_counts,
+                );
                 if prewrite_gate_write {
                     tool_schemas.retain(|schema| !is_workspace_write_tool(&schema.name));
                 }
@@ -438,7 +444,7 @@ impl EngineLoop {
                         tool_schemas = repair_tools;
                     }
                 }
-                if force_write_only_retry && !allow_repair_tools {
+                if force_write_only_retry && !allow_repair_tools && !required_mcp_tool_pending {
                     tool_schemas.retain(|schema| is_workspace_write_tool(&schema.name));
                 }
                 if active_agent.tools.is_some() {
@@ -465,6 +471,9 @@ impl EngineLoop {
                             any_policy_matches(&allowed_tools, &normalized)
                         });
                     }
+                }
+                if required_mcp_tool_pending {
+                    tool_schemas.retain(|schema| !is_workspace_write_tool(&schema.name));
                 }
                 if let Err(validation_err) = validate_tool_schemas(&tool_schemas) {
                     let detail = validation_err.to_string();
