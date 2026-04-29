@@ -872,17 +872,19 @@ fn spawn_triage_deadline_task(
         let Some(mut draft) = state.get_bug_monitor_draft(&draft_id).await else {
             return;
         };
-        if draft.triage_timed_out_at_ms.is_some() {
+        let already_marked = draft
+            .github_status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("triage_timed_out"));
+        if already_marked {
             return;
         }
         if draft.github_issue_url.is_some() {
             return;
         }
-        draft.triage_timed_out_at_ms = Some(now);
         draft.github_status = Some("triage_timed_out".to_string());
         let last_post_error = format!(
-            "triage run {} did not reach a terminal status within {}ms",
-            triage_run_id, timeout_ms
+            "triage run {triage_run_id} did not reach a terminal status within {timeout_ms}ms"
         );
         draft.last_post_error = Some(last_post_error.clone());
         if let Err(error) = state.put_bug_monitor_draft(draft.clone()).await {

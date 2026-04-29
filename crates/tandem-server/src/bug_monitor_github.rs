@@ -246,9 +246,13 @@ pub async fn publish_draft(
         )
         .await
     };
+    let triage_marked_timed_out = draft
+        .github_status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("triage_timed_out"));
     if issue_draft.is_none()
         && draft.triage_run_id.is_some()
-        && draft.triage_timed_out_at_ms.is_none()
+        && !triage_marked_timed_out
         && mode == PublishMode::Auto
     {
         draft.github_status = Some("triage_pending".to_string());

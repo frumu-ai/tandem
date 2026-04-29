@@ -10,3 +10,4 @@ use axum::{
 
 include!("bug_monitor_parts/part01.rs");
 include!("bug_monitor_parts/part02.rs");
+include!("bug_monitor_parts/part03.rs");

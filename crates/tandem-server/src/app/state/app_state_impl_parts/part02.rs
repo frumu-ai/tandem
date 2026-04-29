@@ -245,7 +245,6 @@ impl AppState {
             evidence_refs: submission.evidence_refs.clone(),
             quality_gate: Some(quality_gate),
             last_post_error: None,
-            triage_timed_out_at_ms: None,
         };
         drafts.insert(draft.draft_id.clone(), draft.clone());
         drop(drafts);

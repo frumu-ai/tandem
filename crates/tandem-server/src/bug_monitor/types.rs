@@ -131,12 +131,6 @@ pub struct BugMonitorDraftRecord {
     pub quality_gate: Option<BugMonitorQualityGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_post_error: Option<String>,
-    /// Set when the deadline check fires before the triage run reaches a
-    /// terminal status. `publish_draft` reads this to decide whether it
-    /// should keep waiting for a triage artifact or fall through to the
-    /// basic issue body.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub triage_timed_out_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
