@@ -57,7 +57,10 @@ pub struct BugMonitorConfig {
     /// before marking the draft as timed out and falling back to a basic
     /// (non-LLM) issue body. `None` disables the deadline; `Some(0)` is
     /// treated as "no wait — fall back immediately if no artifact yet".
-    #[serde(default = "default_triage_timeout_ms", skip_serializing_if = "Option::is_none")]
+    /// Always serialized (even when `None`) so an explicit `None` set by
+    /// the operator survives a save/load cycle instead of being replaced
+    /// by `default_triage_timeout_ms` on the next deserialize.
+    #[serde(default = "default_triage_timeout_ms")]
     pub triage_timeout_ms: Option<u64>,
     #[serde(default)]
     pub updated_at_ms: u64,
