@@ -361,8 +361,17 @@ pub async fn process_event(
                 failed_draft.github_status = Some("github_post_failed".to_string());
                 failed_draft.last_post_error = Some(detail.clone());
                 let evidence_digest = failed_draft.evidence_digest.clone();
-                let _ = state.put_bug_monitor_draft(failed_draft.clone()).await;
-                let _ = crate::bug_monitor_github::record_post_failure(
+                if let Err(persist_err) =
+                    state.put_bug_monitor_draft(failed_draft.clone()).await
+                {
+                    tracing::warn!(
+                        incident_id = %incident.incident_id,
+                        draft_id = %failed_draft.draft_id,
+                        error = %persist_err,
+                        "failed to persist bug monitor draft after auto-post failure",
+                    );
+                }
+                if let Err(record_err) = crate::bug_monitor_github::record_post_failure(
                     state,
                     &failed_draft,
                     Some(&incident.incident_id),
@@ -370,7 +379,27 @@ pub async fn process_event(
                     evidence_digest.as_deref(),
                     &detail,
                 )
-                .await;
+                .await
+                {
+                    tracing::warn!(
+                        incident_id = %incident.incident_id,
+                        draft_id = %failed_draft.draft_id,
+                        error = %record_err,
+                        "failed to record bug monitor post failure",
+                    );
+                }
+            }
+        }
+
+        if let Some(triage_run_id) = incident.triage_run_id.clone() {
+            if let Some(timeout_ms) = config.triage_timeout_ms {
+                spawn_triage_deadline_task(
+                    state.clone(),
+                    incident.incident_id.clone(),
+                    draft_id.clone(),
+                    triage_run_id,
+                    timeout_ms,
+                );
             }
         }
     }
@@ -814,4 +843,96 @@ pub async fn build_bug_monitor_submission_from_event(
         expected_destination,
         evidence_refs,
     })
+}
+
+/// Spawns a deadline task that fires after `timeout_ms`. If the triage
+/// run has not reached a terminal status (`Failed` / `Completed` /
+/// `Cancelled`) by the deadline, the task marks the draft's
+/// `triage_timed_out_at_ms`, persists it, then re-runs `publish_draft`
+/// in `Auto` mode. With `triage_timed_out_at_ms` set, `publish_draft`
+/// no longer bails out as `triage_pending` and instead falls through to
+/// the basic (non-LLM) issue body. The triage_run_id is preserved on
+/// the draft so the UI can still link to the abandoned run.
+fn spawn_triage_deadline_task(
+    state: AppState,
+    incident_id: String,
+    draft_id: String,
+    triage_run_id: String,
+    timeout_ms: u64,
+) {
+    tokio::spawn(async move {
+        if timeout_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
+        }
+        if crate::http::bug_monitor::bug_monitor_triage_run_is_terminal(&state, &triage_run_id)
+            .await
+        {
+            return;
+        }
+        let now = crate::util::time::now_ms();
+        let Some(mut draft) = state.get_bug_monitor_draft(&draft_id).await else {
+            return;
+        };
+        let already_marked = draft
+            .github_status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("triage_timed_out"));
+        if already_marked {
+            return;
+        }
+        if draft.github_issue_url.is_some() {
+            return;
+        }
+        draft.github_status = Some("triage_timed_out".to_string());
+        let last_post_error = format!(
+            "triage run {triage_run_id} did not reach a terminal status within {timeout_ms}ms"
+        );
+        draft.last_post_error = Some(last_post_error.clone());
+        if let Err(error) = state.put_bug_monitor_draft(draft.clone()).await {
+            tracing::warn!(
+                incident_id = %incident_id,
+                draft_id = %draft_id,
+                error = %error,
+                "failed to persist bug monitor draft after triage deadline",
+            );
+            return;
+        }
+        if let Some(mut incident) = state.get_bug_monitor_incident(&incident_id).await {
+            incident.status = "triage_timed_out".to_string();
+            incident.last_error = Some(last_post_error.clone());
+            incident.updated_at_ms = now;
+            if let Err(error) = state.put_bug_monitor_incident(incident.clone()).await {
+                tracing::warn!(
+                    incident_id = %incident_id,
+                    error = %error,
+                    "failed to persist bug monitor incident after triage deadline",
+                );
+            }
+            state.event_bus.publish(EngineEvent::new(
+                "bug_monitor.incident.triage_timed_out",
+                serde_json::json!({
+                    "incident_id": incident_id,
+                    "draft_id": draft_id,
+                    "triage_run_id": triage_run_id,
+                    "timeout_ms": timeout_ms,
+                }),
+            ));
+        }
+        if let Err(error) = crate::bug_monitor_github::publish_draft(
+            &state,
+            &draft_id,
+            Some(&incident_id),
+            crate::bug_monitor_github::PublishMode::Auto,
+        )
+        .await
+        {
+            tracing::warn!(
+                incident_id = %incident_id,
+                draft_id = %draft_id,
+                triage_run_id = %triage_run_id,
+                error = %error,
+                "fallback publish after triage deadline failed",
+            );
+        }
+    });
 }

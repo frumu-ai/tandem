@@ -133,6 +133,14 @@ pub(crate) fn resolve_bug_monitor_env_config() -> BugMonitorConfig {
             true,
         ),
         label_mode: BugMonitorLabelMode::ReporterOnly,
+        triage_timeout_ms: env_value(
+            "TANDEM_BUG_MONITOR_TRIAGE_TIMEOUT_MS",
+            "TANDEM_FAILURE_REPORTER_TRIAGE_TIMEOUT_MS",
+        )
+        .as_deref()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(Some)
+        .unwrap_or(Some(300_000)),
         updated_at_ms: 0,
     }
 }

@@ -53,8 +53,21 @@ pub struct BugMonitorConfig {
     pub auto_comment_on_matched_open_issues: bool,
     #[serde(default)]
     pub label_mode: BugMonitorLabelMode,
+    /// How long to wait for a queued triage run to reach a terminal state
+    /// before marking the draft as timed out and falling back to a basic
+    /// (non-LLM) issue body. `None` disables the deadline; `Some(0)` is
+    /// treated as "no wait — fall back immediately if no artifact yet".
+    /// Always serialized (even when `None`) so an explicit `None` set by
+    /// the operator survives a save/load cycle instead of being replaced
+    /// by `default_triage_timeout_ms` on the next deserialize.
+    #[serde(default = "default_triage_timeout_ms")]
+    pub triage_timeout_ms: Option<u64>,
     #[serde(default)]
     pub updated_at_ms: u64,
+}
+
+fn default_triage_timeout_ms() -> Option<u64> {
+    Some(300_000)
 }
 
 impl Default for BugMonitorConfig {
@@ -71,6 +84,7 @@ impl Default for BugMonitorConfig {
             require_approval_for_new_issues: false,
             auto_comment_on_matched_open_issues: true,
             label_mode: BugMonitorLabelMode::ReporterOnly,
+            triage_timeout_ms: default_triage_timeout_ms(),
             updated_at_ms: 0,
         }
     }
