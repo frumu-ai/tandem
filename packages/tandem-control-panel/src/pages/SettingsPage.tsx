@@ -1060,7 +1060,7 @@ export function SettingsPage({
   const [schedulerMaxConcurrent, setSchedulerMaxConcurrent] = useState("");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [githubMcpGuideOpen, setGithubMcpGuideOpen] = useState(false);
-  const [providerDefaultsOpen, setProviderDefaultsOpen] = useState(false);
+  const [providerDefaultsOpen, setProviderDefaultsOpen] = useState(true);
   const [customProviderFormOpen, setCustomProviderFormOpen] = useState(false);
   const [oauthSessionByProvider, setOauthSessionByProvider] = useState<Record<string, string>>(() =>
     loadPendingProviderOauthSessions()
@@ -1208,8 +1208,21 @@ export function SettingsPage({
     installProfileQuery.data?.control_panel_config_ready,
   ]);
 
+  useEffect(() => {
+    if (activeSection === "providers") {
+      setProviderDefaultsOpen(true);
+    }
+  }, [activeSection]);
+
+  const providerCatalogEnabled =
+    activeSection === "providers" ||
+    activeSection === "channels" ||
+    activeSection === "bug_monitor";
+
   const providersCatalog = useQuery({
     queryKey: ["settings", "providers", "catalog"],
+    enabled: providerCatalogEnabled,
+    staleTime: 5 * 60 * 1000,
     queryFn: () => client.providers.catalog().catch(() => ({ all: [], connected: [] })),
   });
 
@@ -2488,6 +2501,9 @@ export function SettingsPage({
   };
 
   const providers = Array.isArray(providersCatalog.data?.all) ? providersCatalog.data.all : [];
+  const connectedProviderCount = Array.isArray(providerStatus?.connected)
+    ? providerStatus.connected.length
+    : 0;
 
   useEffect(() => {
     const preferred =
@@ -3253,9 +3269,7 @@ export function SettingsPage({
                       >
                         Default: {String(providersConfig.data?.default || "none")}
                       </Badge>
-                      <Badge tone="info">
-                        {String(providersCatalog.data?.connected?.length || 0)} connected
-                      </Badge>
+                      <Badge tone="info">{connectedProviderCount} connected</Badge>
                       <button
                         className="tcp-btn"
                         onClick={() =>
@@ -3294,9 +3308,7 @@ export function SettingsPage({
                             change models and API keys.
                           </div>
                         </div>
-                        <Badge tone="info">
-                          {String(providersCatalog.data?.connected?.length || 0)} connected
-                        </Badge>
+                        <Badge tone="info">{connectedProviderCount} connected</Badge>
                       </div>
                     </button>
 
@@ -3495,7 +3507,14 @@ export function SettingsPage({
                             ) : null}
                           </div>
 
-                          {providers.length ? (
+                          {providersCatalog.isPending ? (
+                            <div className="tcp-list-item grid gap-2">
+                              <div className="font-medium">Loading provider catalog</div>
+                              <div className="tcp-subtle text-xs">
+                                Tandem is checking live provider models and auth state now.
+                              </div>
+                            </div>
+                          ) : providers.length ? (
                             providers.map((provider: any) => {
                               const providerId = String(provider?.id || "");
                               const models = Object.keys(provider?.models || {});
@@ -4012,7 +4031,7 @@ export function SettingsPage({
                               );
                             })
                           ) : (
-                            <EmptyState text="No providers were detected from the engine catalog." />
+                            <EmptyState text="No provider catalog is available yet. You can still enter a model ID manually for custom providers." />
                           )}
                         </motion.div>
                       ) : null}

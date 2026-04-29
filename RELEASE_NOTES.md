@@ -26,6 +26,8 @@ Browser tool registration no longer blocks the engine-ready path. Tandem does no
 
 Startup paths also prefer canonical storage files and avoid treating stale legacy root JSON as the primary source of truth. This reduces the boot-time cost from old automation, workflow, and Bug Monitor state while preserving fallback reads for migration.
 
+The control panel's provider settings now load more lazily too: the Providers section opens expanded by default, and live model discovery only runs when a section needs it and the provider actually has usable credentials. Providers that need an API key are skipped until a key is present, so Settings no longer waits on discovery calls that cannot succeed yet.
+
 ### Operator workflow updates
 
 `docs/ENGINE_TESTING.md` now documents the safer local deploy sequence with `sudo systemctl stop tandem-engine` before building and installing. Its cleanup examples use the installed service binary explicitly for developer machines where another `tandem-engine` shim appears earlier on `PATH`; normal users can continue to run `tandem-engine storage ...`.

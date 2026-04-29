@@ -77,14 +77,35 @@ export function deriveProviderState(config: any, catalog: any, authStatus: any):
       config?.selected_model?.model_id ||
       ""
   ).trim();
-  const connectedProviders = Array.isArray(catalog?.connected) ? catalog.connected : [];
-  const connected = new Set<string>(
-    connectedProviders.map((id: any) =>
-      String(id || "")
+  const connected = new Set<string>();
+  const addConnectedIds = (source: any) => {
+    if (!source || typeof source !== "object") return;
+    const rows =
+      source.providers && typeof source.providers === "object" ? source.providers : source;
+    if (!rows || typeof rows !== "object") return;
+    for (const [providerId, value] of Object.entries(rows)) {
+      if (!value || typeof value !== "object") continue;
+      const normalizedId = String(providerId || "")
         .trim()
-        .toLowerCase()
-    )
-  );
+        .toLowerCase();
+      if (!normalizedId) continue;
+      const status = String((value as any).status || (value as any).statusText || "")
+        .trim()
+        .toLowerCase();
+      if ((value as any).connected === true || status === "connected" || status === "configured") {
+        connected.add(normalizedId);
+      }
+    }
+  };
+  if (Array.isArray(catalog?.connected)) {
+    for (const id of catalog.connected) {
+      const normalizedId = String(id || "")
+        .trim()
+        .toLowerCase();
+      if (normalizedId) connected.add(normalizedId);
+    }
+  }
+  addConnectedIds(authStatus);
   const authEntry = readProviderAuthEntry(authStatus, defaultProvider);
   const hasStoredKey = providerHasStoredKey(authStatus, defaultProvider);
   const ready =

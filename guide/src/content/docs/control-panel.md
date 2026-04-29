@@ -284,6 +284,14 @@ You can use it to:
 
 This panel is for browser host diagnostics. Actual browser automation still runs through the engine tool system using tools such as `browser_open`, `browser_click`, and `browser_screenshot`.
 
+## Provider Settings in Settings
+
+The **Providers** section in Settings opens expanded by default so provider setup is visible immediately when you land there.
+
+The control panel only asks the engine for live provider catalog data when a section actually needs it. Providers that require an API key are skipped if no key is configured, which keeps the Settings page from waiting on discovery work that cannot succeed yet.
+
+OpenAI Codex still shows its starter catalog even before live discovery is available, so you can set defaults and connect the account without waiting for a remote model scan.
+
 ## Verify Engine + Panel
 
 ```bash

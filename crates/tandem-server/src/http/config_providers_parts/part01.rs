@@ -1,4 +1,5 @@
 use base64::Engine;
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
@@ -270,34 +271,73 @@ pub(super) async fn list_providers(State(state): State<AppState>) -> Json<Value>
     wire.all.retain(|entry| entry.id != "local");
     ensure_known_provider_entries(&mut wire);
 
+    // Remote model discovery can be slow, so overlap the provider requests.
+    let provider_catalog_results = join_all(wire.all.iter().map(|entry| {
+        let provider_id = entry.id.clone();
+        let effective_cfg = &effective_cfg;
+        let runtime_auth = &runtime_auth;
+        let persisted_auth = &persisted_auth;
+        async move {
+            let has_discovery_key =
+                provider_config_api_key(effective_cfg, &provider_id, runtime_auth, persisted_auth)
+                    .is_some();
+            let result = if provider_requires_api_key(&provider_id) && !has_discovery_key {
+                if canonical_provider_id(&provider_id) == OPENAI_CODEX_PROVIDER_ID {
+                    ProviderCatalogFetchResult::Static {
+                        models: codex_starter_models(),
+                    }
+                } else {
+                    ProviderCatalogFetchResult::Unavailable {
+                        message: format!(
+                            "{} requires an API key before live model discovery is available.",
+                            known_provider_name(&provider_id).unwrap_or(provider_id.as_str())
+                        ),
+                    }
+                }
+            } else {
+                fetch_remote_provider_models(
+                    &provider_id,
+                    &effective_cfg,
+                    &runtime_auth,
+                    &persisted_auth,
+                )
+                .await
+            };
+            (provider_id, result)
+        }
+    }))
+    .await
+    .into_iter()
+    .collect::<HashMap<_, _>>();
+
     for entry in &mut wire.all {
-        match fetch_remote_provider_models(
-            &entry.id,
-            &effective_cfg,
-            &runtime_auth,
-            &persisted_auth,
-        )
-        .await
-        {
-            ProviderCatalogFetchResult::Remote { models } => {
-                entry.models = models;
+        match provider_catalog_results.get(&entry.id) {
+            Some(ProviderCatalogFetchResult::Remote { models }) => {
+                entry.models = models.clone();
                 entry.catalog_source = Some("remote".to_string());
                 entry.catalog_status = Some("ok".to_string());
             }
-            ProviderCatalogFetchResult::Static { models } => {
-                entry.models = models;
+            Some(ProviderCatalogFetchResult::Static { models }) => {
+                entry.models = models.clone();
                 entry.catalog_source = Some("static".to_string());
                 entry.catalog_status = Some("ok".to_string());
             }
-            ProviderCatalogFetchResult::Unavailable { message } => {
+            Some(ProviderCatalogFetchResult::Unavailable { message }) => {
                 entry.catalog_source = Some("empty".to_string());
                 entry.catalog_status = Some("unavailable".to_string());
-                entry.catalog_message = Some(message);
+                entry.catalog_message = Some(message.clone());
             }
-            ProviderCatalogFetchResult::Error { message } => {
+            Some(ProviderCatalogFetchResult::Error { message }) => {
                 entry.catalog_source = Some("empty".to_string());
                 entry.catalog_status = Some("error".to_string());
-                entry.catalog_message = Some(message);
+                entry.catalog_message = Some(message.clone());
+            }
+            None => {
+                entry.catalog_source = Some("empty".to_string());
+                entry.catalog_status = Some("unavailable".to_string());
+                entry.catalog_message = Some(
+                    "Live model discovery is unavailable. Enter a model ID manually.".to_string(),
+                );
             }
         }
     }
