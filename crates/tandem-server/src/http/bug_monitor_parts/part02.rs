@@ -40,6 +40,26 @@ pub(super) async fn publish_bug_monitor_draft(
                 Some(post) => state.get_external_action(&post.post_id).await,
                 None => None,
             };
+            let post_id = outcome.post.as_ref().map(|post| post.post_id.clone());
+            let issue_number = outcome
+                .post
+                .as_ref()
+                .and_then(|post| post.issue_number)
+                .or(outcome.draft.issue_number)
+                .or(outcome.draft.matched_issue_number);
+            let issue_url = outcome
+                .post
+                .as_ref()
+                .and_then(|post| post.issue_url.clone())
+                .or_else(|| outcome.draft.github_issue_url.clone());
+            let comment_id = outcome
+                .post
+                .as_ref()
+                .and_then(|post| post.comment_id.clone());
+            let comment_url = outcome
+                .post
+                .as_ref()
+                .and_then(|post| post.comment_url.clone());
             Json(json!({
                 "ok": true,
                 "draft": outcome.draft,
@@ -51,6 +71,11 @@ pub(super) async fn publish_bug_monitor_draft(
                 "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_matches_artifact": duplicate_matches_artifact,
+                "post_id": post_id,
+                "issue_number": issue_number,
+                "issue_url": issue_url,
+                "comment_id": comment_id,
+                "comment_url": comment_url,
                 "post": outcome.post,
                 "external_action": external_action,
             }))
@@ -146,6 +171,26 @@ pub(super) async fn recheck_bug_monitor_draft_match(
                 Some(loader) => loader.await,
                 None => None,
             };
+            let post_id = outcome.post.as_ref().map(|post| post.post_id.clone());
+            let issue_number = outcome
+                .post
+                .as_ref()
+                .and_then(|post| post.issue_number)
+                .or(outcome.draft.issue_number)
+                .or(outcome.draft.matched_issue_number);
+            let issue_url = outcome
+                .post
+                .as_ref()
+                .and_then(|post| post.issue_url.clone())
+                .or_else(|| outcome.draft.github_issue_url.clone());
+            let comment_id = outcome
+                .post
+                .as_ref()
+                .and_then(|post| post.comment_id.clone());
+            let comment_url = outcome
+                .post
+                .as_ref()
+                .and_then(|post| post.comment_url.clone());
             Json(json!({
                 "ok": true,
                 "draft": outcome.draft,
@@ -157,6 +202,11 @@ pub(super) async fn recheck_bug_monitor_draft_match(
                 "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_matches_artifact": duplicate_matches_artifact,
+                "post_id": post_id,
+                "issue_number": issue_number,
+                "issue_url": issue_url,
+                "comment_id": comment_id,
+                "comment_url": comment_url,
                 "post": outcome.post,
             }))
             .into_response()
