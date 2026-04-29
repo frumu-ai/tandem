@@ -105,8 +105,6 @@ jobs:
           update_json(root / "src-tauri" / "tauri.conf.json")
           PY
 
-          node scripts/generate-engine-knowledge-bundle.mjs
-
           if git diff --quiet; then
             echo "tag_updated=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -120,8 +118,6 @@ jobs:
             src-tauri/Cargo.toml \
             src-tauri/tauri.conf.json \
             package.json \
-            engine/resources/default_knowledge_bundle.json \
-            engine/resources/default_knowledge_manifest.json \
             packages/tandem-engine/package.json \
             packages/tandem-tui/package.json \
             packages/tandem-ai/package.json \

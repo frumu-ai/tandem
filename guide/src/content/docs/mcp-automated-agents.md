@@ -4,6 +4,10 @@ title: MCP Automated Agents
 
 Set up scheduled agents that can use MCP connector tools with explicit per-agent tool allowlists.
 
+Tandem-specific documentation is exposed through the built-in `tandem-mcp`
+docs server, so agents should ask that MCP for platform guidance instead of
+relying on embedded startup knowledge.
+
 If you are building a governed recursive agent that has to inspect Tandem, discover a gap, request approval, author an automation, and publish a report, start with [Self-Operator Playbook](./self-operator-playbook/).
 
 If another LLM or agent is generating the workflow or mission definition itself, use [Prompting Workflows And Missions](./prompting-workflows-and-missions/) to keep stage prompts, handoffs, and recurring mission structure strong.

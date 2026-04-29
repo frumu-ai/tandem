@@ -72,13 +72,6 @@ jobs:
           set -euo pipefail
           pnpm -C packages/tandem-client-ts install --frozen-lockfile
 
-      - name: Verify embedded knowledge bundle is in sync
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/generate-engine-knowledge-bundle.mjs
-          git diff --exit-code -- engine/resources/default_knowledge_bundle.json engine/resources/default_knowledge_manifest.json
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 

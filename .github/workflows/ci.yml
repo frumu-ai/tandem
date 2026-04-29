@@ -18,24 +18,6 @@ permissions:
   id-token: write
 
 jobs:
-  verify-knowledge-bundle:
-    name: Verify Knowledge Bundle Sync
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Verify embedded knowledge bundle is in sync
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/generate-engine-knowledge-bundle.mjs
-          git diff --exit-code -- engine/resources/default_knowledge_bundle.json engine/resources/default_knowledge_manifest.json
-
   lint-frontend:
     name: Lint Frontend
     runs-on: ubuntu-latest

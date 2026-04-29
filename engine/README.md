@@ -53,22 +53,16 @@ runtime files under that one root. The engine will then use:
 separate memory DB path from the main Tandem state root is no longer the
 recommended setup.
 
-On startup, the engine bootstraps default documentation knowledge from an
-embedded bundle compiled into the binary (`engine/resources/default_knowledge_*`).
-It re-ingests only when the embedded corpus hash changes.
-Use `TANDEM_DISABLE_DEFAULT_KNOWLEDGE=1` to disable this behavior.
+The engine no longer bootstraps docs knowledge into memory on startup. Tandem
+specific guidance should come from the built-in `tandem-mcp` docs server or the
+published docs site.
 
-Canonical docs URLs attached to seeded chunks use:
-`https://docs.tandem.ac/`
-
-Regenerate the embedded bundle after docs changes:
+If you're cleaning an older install that still has the legacy `guide_docs:`
+rows in memory, run:
 
 ```bash
-pnpm engine:knowledge:bundle
+tandem-engine storage cleanup --default-knowledge --quarantine --json
 ```
-
-CI and release workflows enforce that the committed bundle stays in sync with
-`guide/src/content/docs`.
 
 Run a one-off prompt:
 

@@ -1,5 +1,3 @@
-mod default_knowledge_bundle;
-
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,7 +11,6 @@ use flate2::{write::GzEncoder, Compression};
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tandem_core::{
     build_mode_permission_rules, load_or_create_engine_api_token, load_provider_auth,
     resolve_shared_paths, AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus,
@@ -21,8 +18,9 @@ use tandem_core::{
     DEFAULT_ENGINE_PORT,
 };
 use tandem_memory::{
+    db::MemoryDatabase,
     import_files,
-    types::{MemoryImportFormat, MemoryImportRequest, MemoryTier, StoreMessageRequest},
+    types::{MemoryImportFormat, MemoryImportRequest, MemoryTier},
     MemoryManager,
 };
 use tandem_observability::{
@@ -120,6 +118,7 @@ const BROWSER_EXAMPLES: &str = r#"Examples:
 const STORAGE_EXAMPLES: &str = r#"Examples:
   tandem-engine storage doctor
   tandem-engine storage doctor --json
+  tandem-engine storage cleanup --dry-run --context-runs --default-knowledge --json
   tandem-engine storage cleanup --quarantine --json
 "#;
 
@@ -130,8 +129,6 @@ const MEMORY_EXAMPLES: &str = r#"Examples:
 "#;
 
 const DEFAULT_KNOWLEDGE_SOURCE_PREFIX: &str = "guide_docs:";
-const DEFAULT_KNOWLEDGE_STATE_FILE: &str = "default_knowledge_state.json";
-const DEFAULT_KNOWLEDGE_DOCS_SITE_BASE_URL: &str = "https://docs.tandem.ac/";
 
 #[derive(Parser, Debug)]
 #[command(name = "tandem-engine")]
@@ -374,6 +371,12 @@ enum StorageCommand {
             help = "Archive stale context run directories."
         )]
         context_runs: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Remove legacy embedded docs seed data from memory and state files."
+        )]
+        default_knowledge: bool,
         #[arg(
             long,
             default_value_t = 7,
@@ -848,6 +851,7 @@ async fn main() -> anyhow::Result<()> {
                 dry_run,
                 root_json,
                 context_runs,
+                default_knowledge,
                 retention_days,
                 json,
             } => {
@@ -858,8 +862,10 @@ async fn main() -> anyhow::Result<()> {
                     dry_run,
                     root_json,
                     context_runs,
+                    default_knowledge,
                     retention_days,
-                )?;
+                )
+                .await?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
@@ -1034,6 +1040,8 @@ struct StorageCleanupReport {
     context_runs_archived: usize,
     context_runs_stale_closed: usize,
     context_run_bytes_archived: u64,
+    default_knowledge_rows_cleared: u64,
+    default_knowledge_state_files_matched: usize,
     files_quarantined: Vec<String>,
     candidate_bytes: u64,
 }
@@ -1078,6 +1086,14 @@ fn storage_doctor_report(state_dir: &Path) -> anyhow::Result<StorageDoctorReport
         "legacy_monolithic_archive",
         "migrate to data/automation-runs/YYYY/MM/*.json then quarantine",
     )?;
+    for path in default_knowledge_state_paths(&root) {
+        push_storage_file_report(
+            &mut files,
+            &path,
+            "legacy_default_knowledge_state",
+            "remove with `tandem-engine storage cleanup --default-knowledge`",
+        )?;
+    }
     for path in storage_tmp_files(&data_dir)? {
         push_storage_file_report(&mut files, &path, "orphan_temp_file", "quarantine")?;
     }
@@ -1095,6 +1111,15 @@ fn storage_doctor_report(state_dir: &Path) -> anyhow::Result<StorageDoctorReport
         "run `tandem-engine storage cleanup --quarantine` to shard automation history and move legacy files aside"
             .to_string(),
     ];
+    if files
+        .iter()
+        .any(|file| file.kind == "legacy_default_knowledge_state")
+    {
+        recommendations.push(
+            "run `tandem-engine storage cleanup --default-knowledge --quarantine` to purge the old embedded docs seed"
+                .to_string(),
+        );
+    }
     if files
         .iter()
         .any(|file| file.kind == "hot_automation_run_index" && file.bytes > 10_000_000)
@@ -1135,12 +1160,13 @@ fn push_storage_file_report(
     Ok(())
 }
 
-fn storage_cleanup(
+async fn storage_cleanup(
     state_dir: &Path,
     quarantine: bool,
     dry_run: bool,
     root_json: bool,
     context_runs: bool,
+    default_knowledge: bool,
     retention_days: u64,
 ) -> anyhow::Result<StorageCleanupReport> {
     let root = resolve_storage_root(state_dir);
@@ -1223,6 +1249,19 @@ fn storage_cleanup(
     } else {
         ContextRunCleanupReport::default()
     };
+    let default_knowledge_report = if default_knowledge {
+        let db_path = resolve_memory_db_path(&root);
+        cleanup_default_knowledge_storage(
+            &root,
+            Some(db_path.as_path()),
+            quarantine_dir.as_deref(),
+            quarantine,
+            dry_run,
+        )
+        .await?
+    } else {
+        DefaultKnowledgeCleanupReport::default()
+    };
 
     Ok(StorageCleanupReport {
         root: root.display().to_string(),
@@ -1237,7 +1276,12 @@ fn storage_cleanup(
         context_runs_archived: context_report.archived,
         context_runs_stale_closed: context_report.stale_closed,
         context_run_bytes_archived: context_report.bytes_archived,
-        files_quarantined,
+        default_knowledge_rows_cleared: default_knowledge_report.rows_cleared,
+        default_knowledge_state_files_matched: default_knowledge_report.state_files_matched,
+        files_quarantined: {
+            files_quarantined.extend(default_knowledge_report.files_quarantined);
+            files_quarantined
+        },
         candidate_bytes,
     })
 }
@@ -1248,6 +1292,65 @@ struct ContextRunCleanupReport {
     archived: usize,
     stale_closed: usize,
     bytes_archived: u64,
+}
+
+#[derive(Debug, Default)]
+struct DefaultKnowledgeCleanupReport {
+    rows_cleared: u64,
+    state_files_matched: usize,
+    files_quarantined: Vec<String>,
+}
+
+fn default_knowledge_state_paths(root: &Path) -> [PathBuf; 2] {
+    [
+        root.join("default_knowledge_state.json"),
+        root.join("data")
+            .join("knowledge")
+            .join("default_knowledge_state.json"),
+    ]
+}
+
+async fn cleanup_default_knowledge_storage(
+    root: &Path,
+    db_path: Option<&Path>,
+    quarantine_dir: Option<&Path>,
+    quarantine: bool,
+    dry_run: bool,
+) -> anyhow::Result<DefaultKnowledgeCleanupReport> {
+    let mut report = DefaultKnowledgeCleanupReport::default();
+
+    for path in default_knowledge_state_paths(root) {
+        if !path.exists() {
+            continue;
+        }
+        report.state_files_matched = report.state_files_matched.saturating_add(1);
+        if quarantine {
+            if let Some(dir) = quarantine_dir {
+                if !dry_run {
+                    quarantine_file(root, dir, &path)?;
+                }
+                report.files_quarantined.push(path.display().to_string());
+            }
+        } else if !dry_run {
+            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+        }
+    }
+
+    if dry_run {
+        return Ok(report);
+    }
+
+    let Some(db_path) = db_path else {
+        return Ok(report);
+    };
+    if db_path.exists() {
+        let db = MemoryDatabase::new(db_path).await?;
+        report.rows_cleared = db
+            .clear_global_memory_by_source_prefix(DEFAULT_KNOWLEDGE_SOURCE_PREFIX)
+            .await?;
+    }
+
+    Ok(report)
 }
 
 fn migrate_root_feature_storage(
@@ -1299,10 +1402,6 @@ fn migrate_root_feature_storage(
         (
             "channel_tool_preferences.json",
             "data/channels/tool_preferences.json",
-        ),
-        (
-            "default_knowledge_state.json",
-            "data/knowledge/default_knowledge_state.json",
         ),
     ];
     let mut migrated = 0usize;
@@ -1810,6 +1909,14 @@ fn print_storage_cleanup_report(report: &StorageCleanupReport) {
         "Context run bytes archived: {}",
         report.context_run_bytes_archived
     );
+    println!(
+        "Default knowledge rows cleared: {}",
+        report.default_knowledge_rows_cleared
+    );
+    println!(
+        "Default knowledge state files matched: {}",
+        report.default_knowledge_state_files_matched
+    );
     println!("Candidate bytes: {}", report.candidate_bytes);
     if let Some(dir) = &report.quarantine_dir {
         println!("Quarantine dir: {dir}");
@@ -1890,17 +1997,6 @@ struct ParallelTaskResult {
     status: String,
     output: Option<String>,
     error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DefaultKnowledgeState {
-    corpus_hash: String,
-    source_dir: String,
-    docs_site_base_url: String,
-    bundle_schema_version: u32,
-    file_count: usize,
-    total_chunks: usize,
-    updated_at: String,
 }
 
 fn parse_parallel_tasks(
@@ -2069,18 +2165,6 @@ async fn build_runtime(
     }
     info!(
         "engine.startup.phase config_init elapsed_ms={}",
-        phase_start.elapsed().as_millis()
-    );
-    if let Some(state) = startup_state {
-        state.set_phase("default_knowledge_bootstrap").await;
-        emit_startup_phase_event(state, "default_knowledge_bootstrap").await;
-    }
-    let phase_start = Instant::now();
-    if let Err(err) = bootstrap_default_knowledge(state_dir).await {
-        tracing::warn!("default knowledge bootstrap skipped: {}", err);
-    }
-    info!(
-        "engine.startup.phase default_knowledge_bootstrap elapsed_ms={}",
         phase_start.elapsed().as_millis()
     );
     if let Some(state) = startup_state {
@@ -2290,238 +2374,6 @@ async fn emit_startup_phase_event(state: &AppState, phase: &str) {
     );
 }
 
-async fn bootstrap_default_knowledge(state_dir: &Path) -> anyhow::Result<()> {
-    if env_truthy("TANDEM_DISABLE_DEFAULT_KNOWLEDGE") {
-        info!("default knowledge bootstrap disabled by TANDEM_DISABLE_DEFAULT_KNOWLEDGE");
-        return Ok(());
-    }
-
-    let (bundle, manifest, source_mode) =
-        if let Some((override_bundle, override_manifest, override_source)) =
-            load_default_knowledge_override_from_env()?
-        {
-            (override_bundle, override_manifest, override_source)
-        } else {
-            let (embedded_bundle, embedded_manifest) =
-                default_knowledge_bundle::load_embedded_default_knowledge()?;
-            (
-                embedded_bundle,
-                embedded_manifest,
-                "embedded_bundle".to_string(),
-            )
-        };
-    if bundle.docs.is_empty() {
-        info!("default knowledge bootstrap skipped: embedded bundle has no docs");
-        return Ok(());
-    }
-
-    let state_path = state_dir.join(DEFAULT_KNOWLEDGE_STATE_FILE);
-    if let Some(existing) = load_default_knowledge_state(&state_path) {
-        if existing.corpus_hash == manifest.corpus_hash {
-            info!(
-                "default knowledge bootstrap skip embedded_corpus_hash={} file_count={} seed_action=skip",
-                manifest.corpus_hash,
-                existing.file_count
-            );
-            return Ok(());
-        }
-    }
-
-    let db_path = resolve_memory_db_path(state_dir);
-    let manager = MemoryManager::new(&db_path).await?;
-    let embedding_health = manager.embedding_health().await;
-    if embedding_health.status != "ok" {
-        tracing::warn!(
-            "default knowledge bootstrap skipped: embeddings unavailable status={} reason={:?}",
-            embedding_health.status,
-            embedding_health.reason
-        );
-        return Ok(());
-    }
-
-    let deleted = manager
-        .db()
-        .clear_global_memory_by_source_prefix(DEFAULT_KNOWLEDGE_SOURCE_PREFIX)
-        .await?;
-
-    let mut total_chunks = 0usize;
-    for doc in &bundle.docs {
-        let source = format!("{}{}", DEFAULT_KNOWLEDGE_SOURCE_PREFIX, doc.relative_path);
-        let enriched = format!(
-            "Document path: {}\nSource URL: {}\n\n{}",
-            doc.relative_path, doc.source_url, doc.content
-        );
-        let request = StoreMessageRequest {
-            content: enriched,
-            tier: tandem_memory::types::MemoryTier::Global,
-            session_id: None,
-            project_id: None,
-            source,
-            source_path: None,
-            source_mtime: None,
-            source_size: None,
-            source_hash: None,
-            metadata: Some(serde_json::json!({
-                "kind": "official_documentation",
-                "source_of_truth": bundle.source_root,
-                "relative_path": doc.relative_path,
-                "source_url": doc.source_url,
-                "content_hash": doc.content_hash,
-                "bundle_schema_version": bundle.schema_version,
-                "bundle_generated_at": bundle.generated_at
-            })),
-        };
-        total_chunks += manager.store_message(request).await?.len();
-    }
-
-    let snapshot = DefaultKnowledgeState {
-        corpus_hash: manifest.corpus_hash.clone(),
-        source_dir: source_mode.clone(),
-        docs_site_base_url: bundle.docs_site_base_url.clone(),
-        bundle_schema_version: bundle.schema_version,
-        file_count: bundle.docs.len(),
-        total_chunks,
-        updated_at: chrono::Utc::now().to_rfc3339(),
-    };
-    save_default_knowledge_state(&state_path, &snapshot)?;
-    info!(
-        "default knowledge bootstrap complete embedded_corpus_hash={} file_count={} total_bytes={} seeded_chunk_count={} deleted_old_chunks={} seed_action=reseed source_mode={} docs_site_base_url={} db_path={} bundle_schema_version={} generator_version={} manifest_schema_version={}",
-        manifest.corpus_hash,
-        snapshot.file_count,
-        manifest.total_bytes,
-        snapshot.total_chunks,
-        deleted,
-        source_mode,
-        snapshot.docs_site_base_url,
-        db_path.display(),
-        snapshot.bundle_schema_version,
-        manifest.generator_version,
-        manifest.schema_version
-    );
-    Ok(())
-}
-
-fn load_default_knowledge_override_from_env() -> anyhow::Result<
-    Option<(
-        default_knowledge_bundle::EmbeddedKnowledgeBundle,
-        default_knowledge_bundle::EmbeddedKnowledgeManifest,
-        String,
-    )>,
-> {
-    let override_dir = match std::env::var("TANDEM_DOCS_SOURCE_DIR") {
-        Ok(raw) if !raw.trim().is_empty() => PathBuf::from(raw.trim()),
-        _ => return Ok(None),
-    };
-    if !override_dir.is_dir() {
-        tracing::warn!(
-            "TANDEM_DOCS_SOURCE_DIR set but not a directory: {}",
-            override_dir.display()
-        );
-        return Ok(None);
-    }
-
-    let mut docs = Vec::new();
-    for entry in ignore::WalkBuilder::new(&override_dir).build().flatten() {
-        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let path = entry.into_path();
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .unwrap_or_default();
-        if ext != "md" && ext != "mdx" {
-            continue;
-        }
-
-        let content =
-            normalize_default_knowledge_content(&fs::read_to_string(&path).with_context(|| {
-                format!("failed to read docs override file {}", path.display())
-            })?);
-        if content.trim().is_empty() {
-            continue;
-        }
-        let relative_path = path
-            .strip_prefix(&override_dir)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let source_url = docs_url_for_relative_path(&relative_path);
-        docs.push(default_knowledge_bundle::EmbeddedKnowledgeDoc {
-            relative_path,
-            source_url,
-            content_hash: sha256_hex(content.as_bytes()),
-            content,
-        });
-    }
-    docs.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    if docs.is_empty() {
-        tracing::warn!(
-            "TANDEM_DOCS_SOURCE_DIR set but no markdown docs found in {}",
-            override_dir.display()
-        );
-        return Ok(None);
-    }
-
-    let total_bytes = docs.iter().map(|doc| doc.content.len()).sum::<usize>();
-    let corpus_hash = default_knowledge_bundle::compute_corpus_hash(&docs);
-    let bundle = default_knowledge_bundle::EmbeddedKnowledgeBundle {
-        schema_version: 1,
-        source_root: "guide/src/content/docs".to_string(),
-        docs_site_base_url: DEFAULT_KNOWLEDGE_DOCS_SITE_BASE_URL.to_string(),
-        generated_at: default_knowledge_bundle::deterministic_generated_at(&corpus_hash),
-        docs,
-    };
-    let manifest = default_knowledge_bundle::EmbeddedKnowledgeManifest {
-        schema_version: 1,
-        generator_version: "dev-override".to_string(),
-        corpus_hash,
-        file_count: bundle.docs.len(),
-        total_bytes,
-    };
-    Ok(Some((
-        bundle,
-        manifest,
-        format!("env_override:{}", override_dir.to_string_lossy()),
-    )))
-}
-
-fn docs_url_for_relative_path(relative_path: &str) -> String {
-    let base = DEFAULT_KNOWLEDGE_DOCS_SITE_BASE_URL;
-    let mut slug = relative_path.replace('\\', "/");
-    if let Some(stripped) = slug.strip_suffix(".md") {
-        slug = stripped.to_string();
-    } else if let Some(stripped) = slug.strip_suffix(".mdx") {
-        slug = stripped.to_string();
-    }
-    if slug == "index" {
-        return base.to_string();
-    }
-    if let Some(stripped) = slug.strip_suffix("/index") {
-        slug = stripped.to_string();
-    }
-    format!("{}{}", base, slug)
-}
-
-fn normalize_default_knowledge_content(content: &str) -> String {
-    content.replace("\r\n", "\n").replace('\r', "\n")
-}
-
-fn load_default_knowledge_state(path: &Path) -> Option<DefaultKnowledgeState> {
-    let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str::<DefaultKnowledgeState>(&raw).ok()
-}
-
-fn save_default_knowledge_state(path: &Path, state: &DefaultKnowledgeState) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let raw = serde_json::to_string_pretty(state)?;
-    fs::write(path, format!("{raw}\n"))?;
-    Ok(())
-}
-
 fn resolve_memory_db_path(state_dir: &Path) -> PathBuf {
     if let Ok(raw) = std::env::var("TANDEM_MEMORY_DB_PATH") {
         let trimmed = raw.trim();
@@ -2532,27 +2384,6 @@ fn resolve_memory_db_path(state_dir: &Path) -> PathBuf {
     resolve_shared_paths()
         .map(|p| p.memory_db_path)
         .unwrap_or_else(|_| state_dir.join("memory.sqlite"))
-}
-
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| {
-            let normalized = v.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false)
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
 }
 
 #[cfg(test)]
@@ -2637,26 +2468,68 @@ mod tests {
         );
     }
 
-    #[test]
-    fn normalize_default_knowledge_content_canonicalizes_line_endings() {
-        assert_eq!(
-            normalize_default_knowledge_content("alpha\r\nbeta\r\ngamma\r"),
-            "alpha\nbeta\ngamma\n"
-        );
-        assert_eq!(
-            normalize_default_knowledge_content("alpha\nbeta\ngamma\n"),
-            "alpha\nbeta\ngamma\n"
-        );
-    }
+    #[tokio::test]
+    async fn cleanup_default_knowledge_storage_removes_seed_rows_and_state_files() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-default-knowledge-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("data").join("knowledge")).expect("create temp root");
 
-    #[test]
-    fn normalized_default_knowledge_hashes_are_stable() {
-        let lf = normalize_default_knowledge_content("alpha\nbeta\n");
-        let crlf = normalize_default_knowledge_content("alpha\r\nbeta\r\n");
+        let db_path = root.join("memory.sqlite");
+        let db = MemoryDatabase::new(&db_path).await.expect("open memory db");
+        let chunk = tandem_memory::types::MemoryChunk {
+            id: "guide-doc-1".to_string(),
+            content: "Guide docs seed content".to_string(),
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            source: "guide_docs:seed.md".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: Some("seed-hash".to_string()),
+            created_at: Utc::now(),
+            token_count: 4,
+            metadata: None,
+        };
+        let embedding = vec![0.0f32; tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION];
+        db.store_chunk(&chunk, &embedding)
+            .await
+            .expect("store chunk");
 
-        assert_eq!(lf, crlf);
-        assert_eq!(sha256_hex(lf.as_bytes()), sha256_hex(crlf.as_bytes()));
-        assert_eq!(lf.as_bytes().len(), crlf.as_bytes().len());
+        fs::write(root.join("default_knowledge_state.json"), "{ }\n")
+            .expect("write root state file");
+        fs::write(
+            root.join("data")
+                .join("knowledge")
+                .join("default_knowledge_state.json"),
+            "{ }\n",
+        )
+        .expect("write canonical state file");
+
+        let report =
+            cleanup_default_knowledge_storage(&root, Some(db_path.as_path()), None, false, false)
+                .await
+                .expect("cleanup");
+
+        assert_eq!(report.state_files_matched, 2);
+        assert_eq!(report.rows_cleared, 1);
+        assert!(!root.join("default_knowledge_state.json").exists());
+        assert!(!root
+            .join("data")
+            .join("knowledge")
+            .join("default_knowledge_state.json")
+            .exists());
+
+        let reopened = MemoryDatabase::new(&db_path)
+            .await
+            .expect("reopen memory db");
+        let cleared = reopened
+            .clear_global_memory_by_source_prefix(DEFAULT_KNOWLEDGE_SOURCE_PREFIX)
+            .await
+            .expect("verify cleared rows");
+        assert_eq!(cleared, 0);
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

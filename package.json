@@ -11,11 +11,8 @@
     "tauri:dev:clean": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-Process | Where-Object { $_.ProcessName -in @('tandem','tandem-engine','node') } | Stop-Process -Force -ErrorAction SilentlyContinue; pnpm tauri dev\"",
     "engine:stop:windows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-Process | Where-Object { $_.ProcessName -in @('tandem-engine','tandem','tandem-tui') } | Stop-Process -Force -ErrorAction SilentlyContinue\"",
     "engine:build": "cargo build -p tandem-ai",
-    "engine:knowledge:bundle": "node scripts/generate-engine-knowledge-bundle.mjs",
     "agents:catalog:refresh": "node scripts/generate-agent-catalog.mjs",
     "agents:catalog:test": "node --test scripts/agent-catalog.test.mjs",
-    "engine:knowledge:test": "node --test scripts/engine-knowledge-bundle.test.mjs",
-    "engine:knowledge:verify": "node scripts/verify-engine-knowledge-bundle.mjs",
     "engine:start": "cargo run -p tandem-ai --bin tandem-engine -- serve --host 127.0.0.1 --port 39731",
     "engine:test": "cargo test -p tandem-server -p tandem-core -p tandem-ai",
     "test:blackboard": "rm -rf .tmp/ts-tests && tsc -p tsconfig.tests.json && node --test .tmp/ts-tests/*.test.js",
@@ -83,10 +80,6 @@
     "vite": "^8.0.1"
   },
   "lint-staged": {
-    "guide/src/content/docs/**/*.{md,mdx}": [
-      "node scripts/generate-engine-knowledge-bundle.mjs",
-      "git add engine/resources/default_knowledge_bundle.json engine/resources/default_knowledge_manifest.json"
-    ],
     "*.{ts,tsx}": [
       "eslint --fix",
       "prettier --write",

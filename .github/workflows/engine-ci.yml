@@ -5,8 +5,6 @@ on:
     paths:
       - "engine/**"
       - "crates/**"
-      - "guide/src/content/docs/**"
-      - "scripts/generate-engine-knowledge-bundle.mjs"
       - "Cargo.toml"
       - ".github/workflows/engine-ci.yml"
   push:
@@ -14,8 +12,6 @@ on:
     paths:
       - "engine/**"
       - "crates/**"
-      - "guide/src/content/docs/**"
-      - "scripts/generate-engine-knowledge-bundle.mjs"
       - "Cargo.toml"
       - ".github/workflows/engine-ci.yml"
 
@@ -36,14 +32,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Verify embedded knowledge bundle is in sync
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/generate-engine-knowledge-bundle.mjs
-          git diff --exit-code -- engine/resources/default_knowledge_bundle.json engine/resources/default_knowledge_manifest.json
 
       - name: Cargo check
         run: cargo check -p tandem-ai

@@ -23,6 +23,7 @@ Important directories:
 | `data/actions/`                      | External action history                          |
 | `data/pack-builder/`                 | Pack-builder workflows, plans, and zip artifacts |
 | `data/system/`                       | Shared resources and other system-level state    |
+| `data/knowledge/`                    | Legacy embedded-doc bootstrap markers            |
 | `data/workflow-planner/`             | Workflow-planner sessions                        |
 
 Hot indexes should stay small. Large node outputs, blackboards, runtime context, and terminal run details belong in per-run files, JSONL shards, or artifact files referenced by path.
@@ -34,13 +35,14 @@ Most agents and operators should use the normal command:
 ```bash
 tandem-engine storage cleanup --dry-run --context-runs --json
 tandem-engine storage cleanup --dry-run --root-json --json
+tandem-engine storage cleanup --dry-run --default-knowledge --json
 ```
 
 For an actual local cleanup:
 
 ```bash
 sudo systemctl stop tandem-engine
-tandem-engine storage cleanup --context-runs --root-json --quarantine --json
+tandem-engine storage cleanup --context-runs --root-json --default-knowledge --quarantine --json
 sudo systemctl restart tandem-engine
 ```
 
@@ -67,6 +69,11 @@ These SDK methods do not run archive cleanup. Cleanup changes local files and ma
 ## Agent guidance
 
 Before fixing workflow or Bug Monitor bugs on a machine with slow startup, inspect storage first. A root directory full of large JSON maps or thousands of legacy `context_runs` entries can make unrelated bugs look worse.
+
+The old embedded docs path used `guide_docs:` memory rows plus a legacy
+`default_knowledge_state.json` marker. If those still exist on a machine, purge
+them with `--default-knowledge` once and then keep using the docs MCP server for
+Tandem-specific guidance.
 
 Prefer this order:
 

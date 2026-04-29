@@ -161,17 +161,19 @@ tandem-engine storage doctor --json
 
 ### `storage cleanup`
 
-Move root-level feature JSON into canonical `data/<feature>/` paths and archive old context runs.
+Move root-level feature JSON into canonical `data/<feature>/` paths, archive old context runs, and optionally purge the legacy embedded-doc seed.
 
 ```bash
 tandem-engine storage cleanup --dry-run --context-runs --json
 tandem-engine storage cleanup --dry-run --root-json --json
+tandem-engine storage cleanup --dry-run --default-knowledge --json
 ```
 
 Common options:
 
 - `--root-json`: Migrate/quarantine legacy root JSON files into canonical `data/` directories.
 - `--context-runs`: Archive terminal or stale old context runs from hot storage.
+- `--default-knowledge`: Remove the legacy embedded-doc bootstrap marker and `guide_docs:` rows from memory.
 - `--retention-days <DAYS>`: Keep recent context runs hot for this many days.
 - `--dry-run`: Report planned actions without changing files.
 - `--quarantine`: Move migrated root JSON to a backup quarantine instead of deleting it.
