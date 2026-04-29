@@ -1,5 +1,7 @@
 use anyhow::Context;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
+use std::time::Duration;
 use tandem_runtime::mcp_ready::{EnsureReadyPolicy, McpReadyError};
 use tandem_runtime::McpRemoteTool;
 use tandem_types::EngineEvent;
@@ -650,12 +652,24 @@ async fn resolve_github_tool_set(
         .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.list_issues"))
     })?;
     let get_issue = tool_name("github.get_issue").or_else(|_| {
-        direct_tool_name_fallback(&["get_issue", "mcp.github.get_issue"])
-            .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.get_issue"))
+        direct_tool_name_fallback(&[
+            "get_issue",
+            "issue_read",
+            "mcp.github.get_issue",
+            "mcp.github.issue_read",
+            "mcp.githubcopilot.issue_read",
+        ])
+        .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.get_issue"))
     })?;
     let create_issue = tool_name("github.create_issue").or_else(|_| {
-        direct_tool_name_fallback(&["mcp.github.create_issue", "create_issue"])
-            .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.create_issue"))
+        direct_tool_name_fallback(&[
+            "create_issue",
+            "issue_write",
+            "mcp.github.create_issue",
+            "mcp.github.issue_write",
+            "mcp.githubcopilot.issue_write",
+        ])
+        .ok_or_else(|| anyhow::anyhow!("missing resolved tool for github.create_issue"))
     })?;
     let comment_on_issue = tool_name("github.comment_on_issue").or_else(|_| {
         direct_tool_name_fallback(&[
@@ -790,7 +804,7 @@ fn build_issue_body(
 ) -> String {
     let mut lines = Vec::new();
     if let Some(detail) = draft.detail.as_deref() {
-        lines.push(detail.to_string());
+        lines.push(truncate_text(detail, 4_000));
     }
     if let Some(run_id) = draft.triage_run_id.as_deref() {
         if !lines.is_empty() {
@@ -813,10 +827,170 @@ fn build_issue_body(
             lines.push(format!("local_directory: {}", incident.workspace_root));
         }
     }
+    if let Some(logs) = fallback_issue_logs(draft, incident) {
+        lines.push(String::new());
+        lines.push("### Logs".to_string());
+        lines.push("```".to_string());
+        lines.push(logs);
+        lines.push("```".to_string());
+    }
+    let evidence_refs = fallback_issue_evidence_refs(draft, incident);
+    if !evidence_refs.is_empty() {
+        lines.push(String::new());
+        lines.push("### Evidence".to_string());
+        for evidence_ref in evidence_refs {
+            lines.push(format!("- {evidence_ref}"));
+        }
+    }
+    if let Some(incident) = incident {
+        let mut metadata = Vec::new();
+        if let Some(run_id) = incident.run_id.as_deref() {
+            metadata.push(format!("run_id: {run_id}"));
+        }
+        if let Some(session_id) = incident.session_id.as_deref() {
+            metadata.push(format!("session_id: {session_id}"));
+        }
+        if let Some(correlation_id) = incident.correlation_id.as_deref() {
+            metadata.push(format!("correlation_id: {correlation_id}"));
+        }
+        if let Some(component) = incident.component.as_deref() {
+            metadata.push(format!("component: {component}"));
+        }
+        if let Some(level) = incident.level.as_deref() {
+            metadata.push(format!("level: {level}"));
+        }
+        if incident.occurrence_count > 1 {
+            let occurrence_count = incident.occurrence_count;
+            metadata.push(format!("occurrence_count: {occurrence_count}"));
+        }
+        if let Some(last_seen_at_ms) = incident.last_seen_at_ms {
+            metadata.push(format!(
+                "last_seen_at_ms: {}",
+                format_bug_monitor_ms(last_seen_at_ms)
+            ));
+        }
+        if !metadata.is_empty() {
+            lines.push(String::new());
+            lines.push("### Diagnostic metadata".to_string());
+            lines.extend(metadata);
+        }
+    }
+    let mut triage_signal = Vec::new();
+    if let Some(confidence) = draft.confidence.as_deref() {
+        triage_signal.push(format!("confidence: {confidence}"));
+    }
+    if let Some(risk_level) = draft.risk_level.as_deref() {
+        triage_signal.push(format!("risk_level: {risk_level}"));
+    }
+    if let Some(expected_destination) = draft.expected_destination.as_deref() {
+        triage_signal.push(format!("expected_destination: {expected_destination}"));
+    }
+    if let Some(gate) = draft.quality_gate.as_ref() {
+        if !gate.passed {
+            triage_signal.push("quality_gate_status: blocked".to_string());
+            if !gate.missing.is_empty() {
+                triage_signal.push("quality_gate_missing:".to_string());
+                for missing in gate.missing.iter().take(20) {
+                    triage_signal.push(format!("- {missing}"));
+                }
+            }
+            if let Some(reason) = gate.blocked_reason.as_deref() {
+                triage_signal.push(format!(
+                    "quality_gate_reason: {}",
+                    truncate_text(reason, 500)
+                ));
+            }
+        }
+    }
+    if !triage_signal.is_empty() {
+        lines.push(String::new());
+        lines.push("### Triage signal".to_string());
+        lines.extend(triage_signal);
+    }
+    if let Some(status) = fallback_issue_triage_status(draft.github_status.as_deref()) {
+        lines.push(String::new());
+        lines.push("### Triage status".to_string());
+        lines.push(format!("triage_status: {status}"));
+    }
     lines.push(String::new());
-    lines.push(fingerprint_marker(&draft.fingerprint));
-    lines.push(evidence_marker(evidence_digest));
-    lines.join("\n")
+    let markers = [
+        fingerprint_marker(&draft.fingerprint),
+        evidence_marker(evidence_digest),
+    ];
+    let marker_text = markers.join("\n");
+    let body_budget = 12_000usize
+        .saturating_sub(marker_text.len())
+        .saturating_sub(2);
+    let body = truncate_text(&lines.join("\n"), body_budget);
+    format!("{body}\n{marker_text}")
+}
+
+fn fallback_issue_logs(
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> Option<String> {
+    let rows = incident
+        .map(|row| {
+            row.excerpt
+                .iter()
+                .filter_map(|line| normalize_issue_body_line(line))
+                .take(30)
+                .collect::<Vec<_>>()
+        })
+        .filter(|rows| !rows.is_empty())
+        .unwrap_or_else(|| {
+            draft
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .filter_map(normalize_issue_body_line)
+                .take(12)
+                .collect::<Vec<_>>()
+        });
+    if rows.is_empty() {
+        None
+    } else {
+        Some(truncate_text(&rows.join("\n"), 4_000))
+    }
+}
+
+fn fallback_issue_evidence_refs(
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> Vec<String> {
+    let mut refs = BTreeSet::new();
+    for evidence_ref in draft.evidence_refs.iter() {
+        if let Some(row) = normalize_issue_body_line(evidence_ref) {
+            refs.insert(row);
+        }
+    }
+    if let Some(incident) = incident {
+        for evidence_ref in incident.evidence_refs.iter() {
+            if let Some(row) = normalize_issue_body_line(evidence_ref) {
+                refs.insert(row);
+            }
+        }
+    }
+    refs.into_iter().take(15).collect()
+}
+
+fn normalize_issue_body_line(value: impl AsRef<str>) -> Option<String> {
+    let value = value.as_ref().trim();
+    (!value.is_empty()).then(|| truncate_text(value, 1_500))
+}
+
+fn format_bug_monitor_ms(ms: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64)
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_else(|| ms.to_string())
+}
+
+fn fallback_issue_triage_status(status: Option<&str>) -> Option<&str> {
+    match status {
+        Some("triage_timed_out" | "triage_pending" | "github_post_failed") => status,
+        _ => None,
+    }
 }
 
 fn build_comment_body(
@@ -974,10 +1148,47 @@ async fn call_create_issue(
             .await
             .map_err(anyhow::Error::msg)?,
     };
-    extract_issues_from_tool_result(&result)
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("GitHub issue creation returned no issue payload"))
+    if let Some(issue) = extract_issues_from_tool_result(&result).into_iter().next() {
+        return Ok(issue);
+    }
+    let fingerprint_marker = body
+        .lines()
+        .find(|line| line.contains("<!-- tandem:fingerprint:v1:"));
+    find_created_issue_after_create(state, tools, &(owner, repo), title, fingerprint_marker).await
+}
+
+async fn find_created_issue_after_create(
+    state: &AppState,
+    tools: &GithubToolSet,
+    owner_repo: &(&str, &str),
+    title: &str,
+    fingerprint_marker: Option<&str>,
+) -> anyhow::Result<GithubIssue> {
+    let mut last_error = None;
+    for delay_ms in [0_u64, 250, 750, 1500] {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        match call_list_issues(state, tools, owner_repo).await {
+            Ok(issues) => {
+                if let Some(issue) = issues.into_iter().find(|issue| {
+                    issue.title.trim() == title.trim()
+                        || fingerprint_marker.is_some_and(|marker| issue.body.contains(marker))
+                }) {
+                    return Ok(issue);
+                }
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
+        }
+    }
+    if let Some(error) = last_error {
+        return Err(error).context("GitHub issue creation returned no issue payload");
+    }
+    Err(anyhow::anyhow!(
+        "GitHub issue creation returned no issue payload"
+    ))
 }
 
 async fn call_add_issue_comment(
@@ -1162,6 +1373,173 @@ mod tests {
         assert!(body.contains("<!-- tandem:fingerprint:v1:abc123 -->"));
         assert!(body.contains("<!-- tandem:evidence:v1:digest-1 -->"));
         assert!(body.contains("triage_run_id: triage-1"));
+    }
+
+    #[test]
+    fn build_issue_body_renders_incident_excerpt_as_fenced_logs() {
+        let draft = BugMonitorDraftRecord {
+            draft_id: "draft-logs".to_string(),
+            fingerprint: "log-fingerprint".to_string(),
+            repo: "acme/platform".to_string(),
+            status: "draft_ready".to_string(),
+            created_at_ms: 1,
+            detail: Some("fallback detail".to_string()),
+            ..BugMonitorDraftRecord::default()
+        };
+        let incident = crate::BugMonitorIncidentRecord {
+            incident_id: "incident-logs".to_string(),
+            fingerprint: draft.fingerprint.clone(),
+            event_type: "workflow.run.failed".to_string(),
+            status: "triage_queued".to_string(),
+            repo: draft.repo.clone(),
+            workspace_root: "/tmp/acme".to_string(),
+            title: "Workflow failed".to_string(),
+            excerpt: vec![
+                "first failure line".to_string(),
+                "second failure line".to_string(),
+            ],
+            ..crate::BugMonitorIncidentRecord::default()
+        };
+        let body = build_issue_body(&draft, Some(&incident), None, "digest-logs");
+        assert!(body.contains("### Logs\n```\nfirst failure line\nsecond failure line\n```"));
+        assert!(body.contains("incident_id: incident-logs"));
+        assert!(body.contains("event_type: workflow.run.failed"));
+    }
+
+    #[test]
+    fn build_issue_body_renders_deduped_evidence_refs() {
+        let draft = BugMonitorDraftRecord {
+            draft_id: "draft-evidence".to_string(),
+            fingerprint: "evidence-fingerprint".to_string(),
+            repo: "acme/platform".to_string(),
+            status: "draft_ready".to_string(),
+            created_at_ms: 1,
+            evidence_refs: vec![
+                "artifacts/shared.json".to_string(),
+                "artifacts/draft-only.log".to_string(),
+            ],
+            ..BugMonitorDraftRecord::default()
+        };
+        let incident = crate::BugMonitorIncidentRecord {
+            incident_id: "incident-evidence".to_string(),
+            fingerprint: draft.fingerprint.clone(),
+            event_type: "workflow.run.failed".to_string(),
+            status: "triage_queued".to_string(),
+            repo: draft.repo.clone(),
+            workspace_root: "/tmp/acme".to_string(),
+            title: "Workflow failed".to_string(),
+            evidence_refs: vec![
+                "artifacts/shared.json".to_string(),
+                "artifacts/incident-only.log".to_string(),
+            ],
+            ..crate::BugMonitorIncidentRecord::default()
+        };
+        let body = build_issue_body(&draft, Some(&incident), None, "digest-evidence");
+        assert!(body.contains("### Evidence"));
+        assert_eq!(body.matches("- artifacts/shared.json").count(), 1);
+        assert!(body.contains("- artifacts/draft-only.log"));
+        assert!(body.contains("- artifacts/incident-only.log"));
+    }
+
+    #[test]
+    fn build_issue_body_renders_only_present_diagnostic_metadata() {
+        let draft = BugMonitorDraftRecord {
+            draft_id: "draft-metadata".to_string(),
+            fingerprint: "metadata-fingerprint".to_string(),
+            repo: "acme/platform".to_string(),
+            status: "draft_ready".to_string(),
+            created_at_ms: 1,
+            ..BugMonitorDraftRecord::default()
+        };
+        let incident = crate::BugMonitorIncidentRecord {
+            incident_id: "incident-metadata".to_string(),
+            fingerprint: draft.fingerprint.clone(),
+            event_type: "workflow.run.failed".to_string(),
+            status: "triage_queued".to_string(),
+            repo: draft.repo.clone(),
+            workspace_root: "/tmp/acme".to_string(),
+            title: "Workflow failed".to_string(),
+            run_id: Some("run-1".to_string()),
+            component: Some("automation_v2".to_string()),
+            occurrence_count: 3,
+            last_seen_at_ms: Some(1_777_485_515_668),
+            ..crate::BugMonitorIncidentRecord::default()
+        };
+        let body = build_issue_body(&draft, Some(&incident), None, "digest-metadata");
+        assert!(body.contains("### Diagnostic metadata"));
+        assert!(body.contains("run_id: run-1"));
+        assert!(body.contains("component: automation_v2"));
+        assert!(body.contains("occurrence_count: 3"));
+        assert!(body.contains("last_seen_at_ms: 2026-04-29T"));
+        assert!(!body.contains("session_id:"));
+        assert!(!body.contains("correlation_id:"));
+        assert!(!body.contains("level:"));
+    }
+
+    #[test]
+    fn build_issue_body_renders_fallback_triage_status_for_known_states() {
+        let mut draft = BugMonitorDraftRecord {
+            draft_id: "draft-status".to_string(),
+            fingerprint: "status-fingerprint".to_string(),
+            repo: "acme/platform".to_string(),
+            status: "draft_ready".to_string(),
+            created_at_ms: 1,
+            github_status: Some("triage_timed_out".to_string()),
+            confidence: Some("medium".to_string()),
+            risk_level: Some("medium".to_string()),
+            expected_destination: Some("bug_monitor_issue_draft".to_string()),
+            quality_gate: Some(crate::BugMonitorQualityGateReport {
+                stage: "draft_to_proposal".to_string(),
+                status: "blocked".to_string(),
+                passed: false,
+                passed_count: 2,
+                total_count: 4,
+                gates: Vec::new(),
+                missing: vec!["research_performed".to_string()],
+                blocked_reason: Some("triage timed out".to_string()),
+            }),
+            ..BugMonitorDraftRecord::default()
+        };
+        let body = build_issue_body(&draft, None, None, "digest-status");
+        assert!(body.contains("### Triage signal"));
+        assert!(body.contains("confidence: medium"));
+        assert!(body.contains("quality_gate_status: blocked"));
+        assert!(body.contains("- research_performed"));
+        assert!(body.contains("quality_gate_reason: triage timed out"));
+        assert!(body.contains("triage_status: triage_timed_out"));
+
+        draft.github_status = Some("issue_draft_ready".to_string());
+        let body = build_issue_body(&draft, None, None, "digest-status");
+        assert!(!body.contains("triage_status:"));
+        draft.github_status = None;
+        let body = build_issue_body(&draft, None, None, "digest-status");
+        assert!(!body.contains("triage_status:"));
+    }
+
+    #[test]
+    fn build_issue_body_truncates_long_excerpt() {
+        let draft = BugMonitorDraftRecord {
+            draft_id: "draft-long".to_string(),
+            fingerprint: "long-fingerprint".to_string(),
+            repo: "acme/platform".to_string(),
+            status: "draft_ready".to_string(),
+            created_at_ms: 1,
+            ..BugMonitorDraftRecord::default()
+        };
+        let incident = crate::BugMonitorIncidentRecord {
+            incident_id: "incident-long".to_string(),
+            fingerprint: draft.fingerprint.clone(),
+            event_type: "workflow.run.failed".to_string(),
+            status: "triage_queued".to_string(),
+            repo: draft.repo.clone(),
+            workspace_root: "/tmp/acme".to_string(),
+            title: "Workflow failed".to_string(),
+            excerpt: vec!["x".repeat(8_000)],
+            ..crate::BugMonitorIncidentRecord::default()
+        };
+        let body = build_issue_body(&draft, Some(&incident), None, "digest-long");
+        assert!(body.len() < 12_500);
+        assert!(body.contains("<!-- tandem:evidence:v1:digest-long -->"));
     }
 
     #[test]
