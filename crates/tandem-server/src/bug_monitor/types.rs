@@ -53,8 +53,18 @@ pub struct BugMonitorConfig {
     pub auto_comment_on_matched_open_issues: bool,
     #[serde(default)]
     pub label_mode: BugMonitorLabelMode,
+    /// How long to wait for a queued triage run to reach a terminal state
+    /// before marking the draft as timed out and falling back to a basic
+    /// (non-LLM) issue body. `None` disables the deadline; `Some(0)` is
+    /// treated as "no wait — fall back immediately if no artifact yet".
+    #[serde(default = "default_triage_timeout_ms", skip_serializing_if = "Option::is_none")]
+    pub triage_timeout_ms: Option<u64>,
     #[serde(default)]
     pub updated_at_ms: u64,
+}
+
+fn default_triage_timeout_ms() -> Option<u64> {
+    Some(300_000)
 }
 
 impl Default for BugMonitorConfig {
@@ -71,6 +81,7 @@ impl Default for BugMonitorConfig {
             require_approval_for_new_issues: false,
             auto_comment_on_matched_open_issues: true,
             label_mode: BugMonitorLabelMode::ReporterOnly,
+            triage_timeout_ms: default_triage_timeout_ms(),
             updated_at_ms: 0,
         }
     }
@@ -117,6 +128,12 @@ pub struct BugMonitorDraftRecord {
     pub quality_gate: Option<BugMonitorQualityGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_post_error: Option<String>,
+    /// Set when the deadline check fires before the triage run reaches a
+    /// terminal status. `publish_draft` reads this to decide whether it
+    /// should keep waiting for a triage artifact or fall through to the
+    /// basic issue body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_timed_out_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

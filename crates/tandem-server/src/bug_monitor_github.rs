@@ -246,7 +246,11 @@ pub async fn publish_draft(
         )
         .await
     };
-    if issue_draft.is_none() && draft.triage_run_id.is_some() && mode == PublishMode::Auto {
+    if issue_draft.is_none()
+        && draft.triage_run_id.is_some()
+        && draft.triage_timed_out_at_ms.is_none()
+        && mode == PublishMode::Auto
+    {
         draft.github_status = Some("triage_pending".to_string());
         let draft = state.put_bug_monitor_draft(draft).await?;
         return Ok(PublishOutcome {
