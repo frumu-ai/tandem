@@ -16,6 +16,37 @@ fn bug_monitor_triage_timeout_deadline_ms(created_at_ms: u64, timeout_ms: u64) -
     created_at_ms.saturating_add(timeout_ms)
 }
 
+/// Build a multi-line `last_post_error` describing why the triage run
+/// missed its deadline. The first line is the original short message
+/// (preserving backwards compat for any consumer that reads the first
+/// line). Subsequent lines are the structured diagnostics, suitable
+/// for embedding in the GitHub issue body's "Triage timeout details"
+/// section. When diagnostics could not be loaded (run state missing
+/// or corrupt), the message degrades gracefully to the single-line
+/// pre-diagnostics format.
+fn compose_triage_timeout_last_post_error(
+    triage_run_id: &str,
+    timeout_ms: u64,
+    diagnostics: Option<&serde_json::Value>,
+) -> String {
+    let head = format!(
+        "triage run {triage_run_id} did not reach a terminal status within {timeout_ms}ms"
+    );
+    match diagnostics {
+        Some(value) => {
+            let detail = crate::http::context_runs::format_bug_monitor_triage_timeout_diagnostics(
+                value,
+            );
+            if detail.trim().is_empty() {
+                head
+            } else {
+                format!("{head}\n{detail}")
+            }
+        }
+        None => head,
+    }
+}
+
 async fn bug_monitor_incident_for_draft(
     state: &AppState,
     draft_id: &str,
@@ -87,8 +118,16 @@ pub async fn recover_overdue_bug_monitor_triage_runs(
         }
 
         current_draft.github_status = Some("triage_timed_out".to_string());
-        let last_post_error = format!(
-            "triage run {triage_run_id} did not reach a terminal status within {timeout_ms}ms"
+        let diagnostics_value = crate::http::context_runs::bug_monitor_triage_timeout_diagnostics(
+            state,
+            &triage_run_id,
+            timeout_ms,
+        )
+        .await;
+        let last_post_error = compose_triage_timeout_last_post_error(
+            &triage_run_id,
+            timeout_ms,
+            diagnostics_value.as_ref(),
         );
         current_draft.last_post_error = Some(last_post_error.clone());
         state.put_bug_monitor_draft(current_draft.clone()).await?;
@@ -101,14 +140,20 @@ pub async fn recover_overdue_bug_monitor_triage_runs(
                 incident.last_error = Some(last_post_error.clone());
                 incident.updated_at_ms = now;
                 state.put_bug_monitor_incident(incident.clone()).await?;
+                let mut event_payload = serde_json::json!({
+                    "incident_id": incident.incident_id,
+                    "draft_id": current_draft.draft_id,
+                    "triage_run_id": triage_run_id,
+                    "timeout_ms": timeout_ms,
+                });
+                if let Some(diagnostics) = diagnostics_value.as_ref() {
+                    if let Some(obj) = event_payload.as_object_mut() {
+                        obj.insert("diagnostics".to_string(), diagnostics.clone());
+                    }
+                }
                 state.event_bus.publish(EngineEvent::new(
                     "bug_monitor.incident.triage_timed_out",
-                    serde_json::json!({
-                        "incident_id": incident.incident_id,
-                        "draft_id": current_draft.draft_id,
-                        "triage_run_id": triage_run_id,
-                        "timeout_ms": timeout_ms,
-                    }),
+                    event_payload,
                 ));
             }
         }
@@ -990,8 +1035,16 @@ fn spawn_triage_deadline_task(
             return;
         }
         draft.github_status = Some("triage_timed_out".to_string());
-        let last_post_error = format!(
-            "triage run {triage_run_id} did not reach a terminal status within {timeout_ms}ms"
+        let diagnostics_value = crate::http::context_runs::bug_monitor_triage_timeout_diagnostics(
+            &state,
+            &triage_run_id,
+            timeout_ms,
+        )
+        .await;
+        let last_post_error = compose_triage_timeout_last_post_error(
+            &triage_run_id,
+            timeout_ms,
+            diagnostics_value.as_ref(),
         );
         draft.last_post_error = Some(last_post_error.clone());
         if let Err(error) = state.put_bug_monitor_draft(draft.clone()).await {
@@ -1014,14 +1067,20 @@ fn spawn_triage_deadline_task(
                     "failed to persist bug monitor incident after triage deadline",
                 );
             }
+            let mut event_payload = serde_json::json!({
+                "incident_id": incident_id,
+                "draft_id": draft_id,
+                "triage_run_id": triage_run_id,
+                "timeout_ms": timeout_ms,
+            });
+            if let Some(diagnostics) = diagnostics_value.as_ref() {
+                if let Some(obj) = event_payload.as_object_mut() {
+                    obj.insert("diagnostics".to_string(), diagnostics.clone());
+                }
+            }
             state.event_bus.publish(EngineEvent::new(
                 "bug_monitor.incident.triage_timed_out",
-                serde_json::json!({
-                    "incident_id": incident_id,
-                    "draft_id": draft_id,
-                    "triage_run_id": triage_run_id,
-                    "timeout_ms": timeout_ms,
-                }),
+                event_payload,
             ));
         }
         if let Err(error) = crate::bug_monitor_github::publish_draft(
