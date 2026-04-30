@@ -658,25 +658,29 @@ pub(crate) async fn ensure_bug_monitor_triage_run(
 /// Run the deterministic error-string → workspace grep at triage
 /// kickoff and shape the result for the LLM agents. Returns a JSON
 /// object with `error_message`, `hints` (array of {path, line,
-/// snippet}), and an instructional `note`. When workspace_root is
-/// missing, doesn't exist, or no error message can be picked, returns
-/// JSON null so payload consumers can `is_null()` cheaply.
+/// snippet}), and an instructional `note`. Prefers
+/// `config.workspace_root` and falls back to `incident.workspace_root`
+/// (which the submission builder populates from the workspace index
+/// when no explicit config root is set). When neither is accessible
+/// or no error message can be picked, returns JSON null so payload
+/// consumers can `is_null()` cheaply.
 async fn compute_error_provenance_payload(
-    workspace_root: Option<&str>,
+    config_workspace_root: Option<&str>,
     draft: &BugMonitorDraftRecord,
     incident: Option<&crate::BugMonitorIncidentRecord>,
 ) -> serde_json::Value {
     let Some(error_message) = pick_error_message_for_triage(draft, incident) else {
         return serde_json::Value::Null;
     };
-    let Some(workspace_root) = workspace_root.map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(workspace_root) = pick_workspace_root_for_triage(config_workspace_root, incident)
+    else {
         return serde_json::json!({
             "error_message": error_message,
             "hints": [],
             "note": "workspace_root not configured; LLM should grep the workspace itself for `error_message`."
         });
     };
-    let path = std::path::Path::new(workspace_root);
+    let path = std::path::Path::new(&workspace_root);
     if !path.is_absolute() || !path.exists() {
         return serde_json::json!({
             "error_message": error_message,
@@ -706,6 +710,21 @@ async fn compute_error_provenance_payload(
         "hints": hints,
         "note": note,
     })
+}
+
+fn pick_workspace_root_for_triage(
+    config_workspace_root: Option<&str>,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> Option<String> {
+    let candidates = [
+        config_workspace_root.map(str::to_string),
+        incident.map(|row| row.workspace_root.clone()),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
 }
 
 fn pick_error_message_for_triage(

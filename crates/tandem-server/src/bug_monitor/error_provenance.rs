@@ -254,11 +254,7 @@ fn parse_git_grep_output(stdout: &str) -> Vec<ProvenanceHit> {
         let Some((path, line_no, body)) = split_grep_line(raw) else {
             continue;
         };
-        let snippet = if body.len() > MATCH_LINE_TRUNCATE {
-            format!("{}…", &body[..MATCH_LINE_TRUNCATE])
-        } else {
-            body.to_string()
-        };
+        let snippet = truncate_on_char_boundary(body, MATCH_LINE_TRUNCATE);
         hits.push(ProvenanceHit {
             path: path.to_string(),
             line: line_no,
@@ -328,12 +324,37 @@ pub fn render_provenance_section(hits: &[ProvenanceHit]) -> Option<String> {
 fn indent_snippet(snippet: &str) -> String {
     snippet
         .lines()
-        .map(|line| {
-            let trimmed = if line.len() > 200 { &line[..200] } else { line };
-            format!("  {trimmed}")
-        })
+        .map(|line| format!("  {}", truncate_on_char_boundary_no_ellipsis(line, 200)))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Truncate `s` to at most `max_bytes` bytes on a UTF-8 character
+/// boundary, appending `…` when truncation occurred. Indexing
+/// `&s[..n]` directly is unsafe for arbitrary `n` because Rust panics
+/// when `n` falls inside a multi-byte character; this helper steps
+/// back to the previous boundary so any source line containing
+/// multibyte characters survives the snippet step.
+fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
+fn truncate_on_char_boundary_no_ellipsis(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
 }
 
 #[cfg(test)]
@@ -482,6 +503,37 @@ crates/foo/bar.rs:42:fn x() {}
         assert_eq!(hits.len(), 1);
         assert!(hits[0].snippet.len() <= MATCH_LINE_TRUNCATE + 4);
         assert!(hits[0].snippet.ends_with('…'));
+    }
+
+    #[test]
+    fn parse_git_grep_output_does_not_panic_on_multibyte_boundary() {
+        // Construct a body that is just over MATCH_LINE_TRUNCATE bytes
+        // and contains a 3-byte char straddling the boundary so naive
+        // byte-slicing would panic.
+        let mut body = "x".repeat(MATCH_LINE_TRUNCATE - 1);
+        body.push_str("漢字漢字漢字");
+        let stdout = format!("file.rs:1:{body}\n");
+        let hits = parse_git_grep_output(&stdout);
+        assert_eq!(hits.len(), 1);
+        // Snippet must stay valid UTF-8 and contain at most one
+        // truncation marker.
+        let _ = hits[0].snippet.chars().count();
+        assert!(hits[0].snippet.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_passes_through_short_input() {
+        assert_eq!(truncate_on_char_boundary("hello", 240), "hello");
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_steps_back_for_multibyte() {
+        let s = format!("{}漢", "x".repeat(238));
+        // 238 bytes of 'x' + 3 bytes of '漢' = 241 bytes, > 240.
+        // Naive slice at byte 240 would split the 3-byte char.
+        let out = truncate_on_char_boundary(&s, 240);
+        assert!(out.ends_with('…'));
+        assert!(out.is_char_boundary(out.len() - '…'.len_utf8()));
     }
 
     #[test]
