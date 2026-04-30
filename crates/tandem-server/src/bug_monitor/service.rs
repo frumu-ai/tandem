@@ -118,13 +118,16 @@ pub async fn recover_overdue_bug_monitor_triage_runs(
         // Atomic CAS: only the caller that actually flips github_status
         // to triage_timed_out continues into the publish path. A second
         // concurrent recover_overdue invocation reading the same
-        // not-yet-timed-out draft will see `None` here and skip the
+        // not-yet-timed-out draft will see `Ok(None)` here and skip the
         // publish — closing the race that produced duplicate GitHub
         // issues (#45 / #46) when two status pollers fire near
-        // simultaneously.
+        // simultaneously. A persistence failure surfaces as `Err` and
+        // is propagated via `?` so we don't publish without a durable
+        // marker (which would re-publish on restart and create a
+        // duplicate).
         let Some(current_draft) = state
             .try_mark_triage_timed_out(&draft.draft_id, last_post_error.clone())
-            .await
+            .await?
         else {
             continue;
         };

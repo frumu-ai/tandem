@@ -334,8 +334,12 @@ impl AppState {
     /// Atomically transition a Bug Monitor draft to `triage_timed_out`,
     /// returning the updated draft only if WE set the marker. If
     /// another concurrent caller got there first, or the draft already
-    /// has an issue posted, returns `None` and the caller MUST skip
-    /// the publish step.
+    /// has an issue posted, returns `Ok(None)` and the caller MUST
+    /// skip the publish step. If the marker was set in memory but
+    /// persistence failed, returns `Err`; the caller MUST also skip
+    /// publish in that case so a marker that didn't survive a restart
+    /// can't produce a duplicate GitHub issue when recovery runs
+    /// again post-restart.
     ///
     /// The check + mutation happens entirely under one write lock so
     /// it cannot race with another invocation. Without this, two
@@ -350,31 +354,34 @@ impl AppState {
         &self,
         draft_id: &str,
         last_post_error: String,
-    ) -> Option<BugMonitorDraftRecord> {
+    ) -> anyhow::Result<Option<BugMonitorDraftRecord>> {
         let updated = {
             let mut guard = self.bug_monitor_drafts.write().await;
-            let draft = guard.get_mut(draft_id)?;
+            let Some(draft) = guard.get_mut(draft_id) else {
+                return Ok(None);
+            };
             if draft.issue_number.is_some() || draft.github_issue_url.is_some() {
-                return None;
+                return Ok(None);
             }
             if draft
                 .github_status
                 .as_deref()
                 .is_some_and(|status| status.eq_ignore_ascii_case("triage_timed_out"))
             {
-                return None;
+                return Ok(None);
             }
             draft.github_status = Some("triage_timed_out".to_string());
             draft.last_post_error = Some(last_post_error);
             draft.clone()
         };
-        if let Err(error) = self.persist_bug_monitor_drafts().await {
-            tracing::warn!(
-                draft_id = %draft_id,
-                error = %error,
-                "failed to persist drafts after marking triage_timed_out",
-            );
-        }
-        Some(updated)
+        // Match the durability semantics of the previous
+        // put_bug_monitor_draft path: if persistence fails, propagate
+        // the error so the caller does NOT proceed into publish.
+        // Otherwise a transient I/O failure could result in a publish
+        // (creating a GitHub issue) without the timed_out marker on
+        // disk — and after a restart, recovery would mark + publish
+        // again, producing a duplicate.
+        self.persist_bug_monitor_drafts().await?;
+        Ok(Some(updated))
     }
 }
