@@ -67,7 +67,15 @@ pub struct BugMonitorConfig {
 }
 
 fn default_triage_timeout_ms() -> Option<u64> {
-    Some(300_000)
+    // Aligned with `bug_monitor_triage_spec.execution.max_total_runtime_ms`
+    // (1_800_000 ms / 30 minutes). The previous 5-minute default
+    // guaranteed timeouts because individual nodes have per-node
+    // timeout_ms of up to 600_000 ms (research) plus 240_000 ms
+    // (inspect/validate) plus 360_000 ms (fix proposal). Even a
+    // single slow node could exceed the external deadline. The new
+    // value lets nodes use their full budget; the per-node and
+    // per-run timeouts inside the spec remain the real ceiling.
+    Some(1_800_000)
 }
 
 impl Default for BugMonitorConfig {
