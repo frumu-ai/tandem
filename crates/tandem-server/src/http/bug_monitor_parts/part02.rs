@@ -411,6 +411,19 @@ pub(crate) async fn ensure_bug_monitor_triage_run(
     let research_task_id = format!("triage-research-{}", Uuid::new_v4().simple());
     let validate_task_id = format!("triage-validate-{}", Uuid::new_v4().simple());
     let fix_task_id = format!("triage-fix-proposal-{}", Uuid::new_v4().simple());
+
+    // Pre-compute deterministic error-string → workspace-source hits
+    // and pass them to the triage agents. This grounds the LLM in
+    // real code locations and gives it a starting point for the
+    // recommended-fix step instead of letting it hallucinate file
+    // references from a fuzzy match on the workflow name.
+    let error_provenance_payload = compute_error_provenance_payload(
+        config.workspace_root.as_deref(),
+        &draft,
+        incident.as_ref(),
+    )
+    .await;
+
     let inspection_payload = json!({
         "task_kind": "inspection",
         "title": "Inspect failure report and affected area",
@@ -424,6 +437,7 @@ pub(crate) async fn ensure_bug_monitor_triage_run(
         "artifact_refs": artifact_refs,
         "files_touched": files_touched,
         "workflow_run_task_ids": workflow_run_task_ids,
+        "error_provenance": error_provenance_payload,
         "expected_artifact": "bug_monitor_inspection",
     });
     let research_payload = json!({
@@ -437,11 +451,13 @@ pub(crate) async fn ensure_bug_monitor_triage_run(
             "search_failure_memory": true,
             "search_github_issues": true,
             "inspect_artifacts": true,
-            "web_research_when_external_error": true
+            "web_research_when_external_error": true,
+            "first_step": "Before any other research, treat the literal error string in `error_provenance.error_message` as the primary anchor. If `error_provenance.hints` is non-empty, read those files at the indicated lines first; they are the deterministic emission sites for this exact failure message. Only after reading those files should you grep more broadly for related code paths. Do not list files in `Files likely involved` unless you have read them and confirmed they reference the failure path."
         },
         "duplicate_matches": duplicate_matches,
         "artifact_refs": artifact_refs,
         "files_touched": files_touched,
+        "error_provenance": error_provenance_payload,
         "expected_artifact": "bug_monitor_research_report",
     });
     let validation_payload = json!({
@@ -637,4 +653,94 @@ pub(crate) async fn ensure_bug_monitor_triage_run(
     ));
 
     Ok((updated_draft, run.run_id, false))
+}
+
+/// Run the deterministic error-string → workspace grep at triage
+/// kickoff and shape the result for the LLM agents. Returns a JSON
+/// object with `error_message`, `hints` (array of {path, line,
+/// snippet}), and an instructional `note`. Prefers
+/// `config.workspace_root` and falls back to `incident.workspace_root`
+/// (which the submission builder populates from the workspace index
+/// when no explicit config root is set). When neither is accessible
+/// or no error message can be picked, returns JSON null so payload
+/// consumers can `is_null()` cheaply.
+async fn compute_error_provenance_payload(
+    config_workspace_root: Option<&str>,
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> serde_json::Value {
+    let Some(error_message) = pick_error_message_for_triage(draft, incident) else {
+        return serde_json::Value::Null;
+    };
+    let Some(workspace_root) = pick_workspace_root_for_triage(config_workspace_root, incident)
+    else {
+        return serde_json::json!({
+            "error_message": error_message,
+            "hints": [],
+            "note": "workspace_root not configured; LLM should grep the workspace itself for `error_message`."
+        });
+    };
+    let path = std::path::Path::new(&workspace_root);
+    if !path.is_absolute() || !path.exists() {
+        return serde_json::json!({
+            "error_message": error_message,
+            "hints": [],
+            "note": "workspace_root not accessible; LLM should grep the workspace itself for `error_message`."
+        });
+    }
+    let hits = crate::bug_monitor::error_provenance::locate_error_provenance(path, &error_message)
+        .await;
+    let hints = hits
+        .into_iter()
+        .map(|hit| {
+            json!({
+                "path": hit.path,
+                "line": hit.line,
+                "snippet": hit.snippet,
+            })
+        })
+        .collect::<Vec<_>>();
+    let note = if hints.is_empty() {
+        "No exact match for `error_message` in tracked source files. The LLM should grep more broadly (e.g. for fragments of the message) before listing any files in `Files likely involved`.".to_string()
+    } else {
+        "`hints` are deterministic, server-side grep results for the literal `error_message`. Read these files at the indicated lines first; they are the emission sites for this exact failure. Use them as the anchor for `Files likely involved` rather than fuzzy-matching on the workflow name.".to_string()
+    };
+    json!({
+        "error_message": error_message,
+        "hints": hints,
+        "note": note,
+    })
+}
+
+fn pick_workspace_root_for_triage(
+    config_workspace_root: Option<&str>,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> Option<String> {
+    let candidates = [
+        config_workspace_root.map(str::to_string),
+        incident.map(|row| row.workspace_root.clone()),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn pick_error_message_for_triage(
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> Option<String> {
+    let candidates = [
+        incident.and_then(|row| row.last_error.clone()),
+        incident.and_then(|row| row.detail.clone()),
+        draft.detail.clone(),
+        incident.map(|row| row.title.clone()),
+        draft.title.clone(),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
 }

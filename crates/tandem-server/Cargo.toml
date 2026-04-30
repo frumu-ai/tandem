@@ -57,6 +57,7 @@ tandem-observability = { path = "../tandem-observability", version = "0.5.0" }
 tandem-plan-compiler = { path = "../tandem-plan-compiler", version = "0.5.0" }
 
 [dev-dependencies]
+tempfile = "3"
 tower = "0.5"
 
 

@@ -6,10 +6,14 @@ use tandem_runtime::mcp_ready::{EnsureReadyPolicy, McpReadyError};
 use tandem_runtime::McpRemoteTool;
 use tandem_types::EngineEvent;
 
+use crate::bug_monitor::error_provenance::{
+    locate_error_provenance, render_provenance_section,
+};
 use crate::{
     now_ms, sha256_hex, truncate_text, AppState, BugMonitorConfig, BugMonitorDraftRecord,
-    BugMonitorPostRecord, ExternalActionRecord,
+    BugMonitorIncidentRecord, BugMonitorPostRecord, ExternalActionRecord,
 };
+use std::path::Path;
 
 const BUG_MONITOR_LABEL: &str = "bug-monitor";
 
@@ -321,6 +325,7 @@ pub async fn publish_draft(
                 &evidence_digest,
                 issue_draft.as_ref(),
             );
+            let body = append_error_provenance_section(body, &draft, incident.as_ref()).await;
             let result = call_add_issue_comment(state, &tools, &owner_repo, issue.number, &body)
                 .await
                 .context("post Bug Monitor comment to GitHub")?;
@@ -488,6 +493,7 @@ async fn create_issue_from_draft(
         .unwrap_or_else(|| {
             build_issue_body(&draft, incident, matched_closed_issue, evidence_digest)
         });
+    let body = append_error_provenance_section(body, &draft, incident).await;
     let created = call_create_issue(state, tools, &owner_repo, title, &body)
         .await
         .context("create Bug Monitor issue on GitHub")?;
@@ -912,6 +918,21 @@ fn build_issue_body(
         lines.push(String::new());
         lines.push("### Triage status".to_string());
         lines.push(format!("triage_status: {status}"));
+        if status == "triage_timed_out" {
+            if let Some(diagnostics) = draft
+                .last_post_error
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .filter(|s| s.contains('\n'))
+            {
+                lines.push(String::new());
+                lines.push("### Triage timeout details".to_string());
+                for line in diagnostics.lines().take(20) {
+                    lines.push(line.to_string());
+                }
+            }
+        }
     }
     lines.push(String::new());
     let markers = [
@@ -1349,6 +1370,70 @@ fn dedupe_comments(rows: Vec<GithubComment>) -> Vec<GithubComment> {
         }
     }
     out
+}
+
+/// Run the deterministic error-string → workspace-source grep and
+/// append a markdown "Error provenance" section to the issue body.
+/// Best-effort: any failure to locate provenance just leaves the body
+/// unchanged. The added section is bounded; see `error_provenance`.
+async fn append_error_provenance_section(
+    body: String,
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&BugMonitorIncidentRecord>,
+) -> String {
+    let Some(error_message) = pick_error_message_for_provenance(draft, incident) else {
+        return body;
+    };
+    let workspace_root = pick_workspace_root_for_provenance(incident);
+    let Some(workspace_root) = workspace_root else {
+        return body;
+    };
+    let hits = locate_error_provenance(&workspace_root, &error_message).await;
+    let Some(section) = render_provenance_section(&hits) else {
+        return body;
+    };
+    let mut combined = body;
+    if !combined.ends_with('\n') {
+        combined.push('\n');
+    }
+    combined.push('\n');
+    combined.push_str(&section);
+    combined
+}
+
+fn pick_error_message_for_provenance(
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&BugMonitorIncidentRecord>,
+) -> Option<String> {
+    let candidates = [
+        incident.and_then(|row| row.last_error.clone()),
+        incident.and_then(|row| row.detail.clone()),
+        draft.detail.clone(),
+        incident.map(|row| row.title.clone()),
+        draft.title.clone(),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn pick_workspace_root_for_provenance(
+    incident: Option<&BugMonitorIncidentRecord>,
+) -> Option<std::path::PathBuf> {
+    let raw = incident.map(|row| row.workspace_root.trim()).unwrap_or("");
+    if raw.is_empty() {
+        return None;
+    }
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return None;
+    }
+    if !path.exists() {
+        return None;
+    }
+    Some(path.to_path_buf())
 }
 
 #[cfg(test)]
