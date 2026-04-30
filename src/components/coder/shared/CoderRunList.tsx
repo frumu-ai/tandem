@@ -1,4 +1,12 @@
-import { formatTimestamp, extractSessionIdsFromRun, runSortTimestamp, runStatusLabel, runSummary, shortText, type DerivedCoderRun } from "./coderRunUtils";
+import {
+  formatTimestamp,
+  extractSessionIdsFromRun,
+  runSortTimestamp,
+  runStatusLabel,
+  runSummary,
+  shortText,
+  type DerivedCoderRun,
+} from "./coderRunUtils";
 
 type CoderRunListProps = {
   runs: DerivedCoderRun[];
@@ -40,7 +48,9 @@ export function CoderRunList({
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-text">{automation.name || run.run_id}</div>
+                <div className="text-sm font-semibold text-text">
+                  {automation.name || run.run_id}
+                </div>
                 <div className="mt-1 text-xs uppercase tracking-wide text-text-subtle">
                   {coderMetadata.workflow_kind.replace(/_/g, " ")}
                 </div>
@@ -53,7 +63,9 @@ export function CoderRunList({
               Workspace: {automation.workspace_root || "Not set"}
             </div>
             {summary ? (
-              <div className="mt-2 text-xs leading-5 text-text-muted">{shortText(summary, 180)}</div>
+              <div className="mt-2 text-xs leading-5 text-text-muted">
+                {shortText(summary, 180)}
+              </div>
             ) : null}
             <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-text-subtle">
               <span className="rounded-full border border-border px-2 py-1">Run {run.run_id}</span>

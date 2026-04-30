@@ -22,3 +22,21 @@ export function findLast<T>(
   }
   return undefined;
 }
+
+/**
+ * Returns up to `count` elements from the end of the array, optionally filtered by `predicate`,
+ * in reversed order (newest first). This avoids the O(n) overhead of `[...arr].filter().slice(-count).reverse()`.
+ */
+export function takeLastReversed<T>(
+  array: T[],
+  count: number,
+  predicate?: (value: T, index: number, obj: T[]) => boolean
+): T[] {
+  const result: T[] = [];
+  for (let i = array.length - 1; i >= 0 && result.length < count; i--) {
+    if (!predicate || predicate(array[i], i, array)) {
+      result.push(array[i]);
+    }
+  }
+  return result;
+}

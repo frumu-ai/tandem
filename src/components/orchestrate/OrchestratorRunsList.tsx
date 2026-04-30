@@ -44,7 +44,9 @@ export function OrchestratorRunsList({ onRunSelect, currentRunId }: Orchestrator
       (r) =>
         ["completed", "failed", "cancelled"].includes(r.status) ||
         // Include any other statuses as recently completed if not active
-        !["queued", "planning", "awaiting_approval", "running", "paused", "blocked"].includes(r.status)
+        !["queued", "planning", "awaiting_approval", "running", "paused", "blocked"].includes(
+          r.status
+        )
     )
     .slice(0, 5); // Limit to 5 most recent
 

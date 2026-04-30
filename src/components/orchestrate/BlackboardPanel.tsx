@@ -9,7 +9,7 @@ import {
   Search,
 } from "lucide-react";
 import { Button } from "@/components/ui";
-import { cn } from "@/lib/utils";
+import { cn, takeLastReversed } from "@/lib/utils";
 import {
   deriveIndicators,
   extractWhyNextFromEvents,
@@ -136,17 +136,10 @@ export function BlackboardPanel({
     [tasks]
   );
 
-  const recentEvents = useMemo(
-    () => [...events].filter(isRecentRelevantEvent).slice(-5).reverse(),
-    [events]
-  );
+  const recentEvents = useMemo(() => takeLastReversed(events, 5, isRecentRelevantEvent), [events]);
 
   const lineage = useMemo(
-    () =>
-      events
-        .filter((event) => isDecisionEventType(event.type))
-        .slice(-20)
-        .reverse(),
+    () => takeLastReversed(events, 20, (event) => isDecisionEventType(event.type)),
     [events]
   );
 

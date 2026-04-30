@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { X, Pause, Play, Square, FileText } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui";
+import { takeLastReversed } from "@/lib/utils";
 import type { RalphStateSnapshot, IterationRecord } from "./types";
 
 interface RalphPanelProps {
@@ -216,35 +217,32 @@ export function RalphPanel({ runId, onClose }: RalphPanelProps) {
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {[...history]
-                      .reverse()
-                      .slice(0, 5)
-                      .map((record) => (
-                        <div
-                          key={record.iteration}
-                          className="rounded-lg border border-border bg-surface-elevated p-3 text-sm"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium text-text">
-                              Iteration {record.iteration}
-                            </span>
-                            <span className="text-xs text-text-subtle">
-                              {formatDuration(record.duration_ms)}
-                            </span>
-                          </div>
-                          <div className="mt-1 text-xs text-text-subtle">
-                            {record.files_modified.length} files modified
-                            {record.completion_detected && (
-                              <span className="ml-2 text-emerald-400">(completion detected)</span>
-                            )}
-                          </div>
-                          {record.errors.length > 0 && (
-                            <div className="mt-1 text-xs text-red-400">
-                              {record.errors.length} error(s)
-                            </div>
+                    {takeLastReversed(history, 5).map((record) => (
+                      <div
+                        key={record.iteration}
+                        className="rounded-lg border border-border bg-surface-elevated p-3 text-sm"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-text">
+                            Iteration {record.iteration}
+                          </span>
+                          <span className="text-xs text-text-subtle">
+                            {formatDuration(record.duration_ms)}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-text-subtle">
+                          {record.files_modified.length} files modified
+                          {record.completion_detected && (
+                            <span className="ml-2 text-emerald-400">(completion detected)</span>
                           )}
                         </div>
-                      ))}
+                        {record.errors.length > 0 && (
+                          <div className="mt-1 text-xs text-red-400">
+                            {record.errors.length} error(s)
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

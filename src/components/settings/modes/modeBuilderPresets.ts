@@ -9,15 +9,7 @@ export const MODE_BUILDER_PRESETS: ModeBuilderPreset[] = [
     default_icon: "shield",
     default_system_prompt_append:
       "Prioritize clarity and safety. Explain intent before proposing any file edits.",
-    default_allowed_tools: [
-      "read",
-      "search",
-      "glob",
-      "list",
-      "websearch",
-      "webfetch",
-      "todowrite",
-    ],
+    default_allowed_tools: ["read", "search", "glob", "list", "websearch", "webfetch", "todowrite"],
     default_edit_boundary: "none",
   },
   {
@@ -50,15 +42,7 @@ export const MODE_BUILDER_PRESETS: ModeBuilderPreset[] = [
     default_icon: "search",
     default_system_prompt_append:
       "Research deeply, summarize findings, and avoid file changes unless explicitly reconfigured.",
-    default_allowed_tools: [
-      "read",
-      "search",
-      "glob",
-      "list",
-      "websearch",
-      "webfetch",
-      "todowrite",
-    ],
+    default_allowed_tools: ["read", "search", "glob", "list", "websearch", "webfetch", "todowrite"],
     default_edit_boundary: "none",
   },
   {
@@ -93,15 +77,7 @@ export const MODE_BUILDER_PRESETS: ModeBuilderPreset[] = [
     default_icon: "clipboard-list",
     default_system_prompt_append:
       "Review code quality, risks, and maintainability. Prefer recommendations over broad rewrites.",
-    default_allowed_tools: [
-      "read",
-      "search",
-      "glob",
-      "list",
-      "websearch",
-      "webfetch",
-      "todowrite",
-    ],
+    default_allowed_tools: ["read", "search", "glob", "list", "websearch", "webfetch", "todowrite"],
     default_edit_boundary: "none",
   },
   {
@@ -135,15 +111,7 @@ export const MODE_BUILDER_PRESETS: ModeBuilderPreset[] = [
     default_icon: "list-checks",
     default_system_prompt_append:
       "Produce structured, decision-complete plans with explicit assumptions and verification steps.",
-    default_allowed_tools: [
-      "read",
-      "search",
-      "glob",
-      "list",
-      "websearch",
-      "webfetch",
-      "todowrite",
-    ],
+    default_allowed_tools: ["read", "search", "glob", "list", "websearch", "webfetch", "todowrite"],
     default_edit_boundary: "none",
   },
   {
@@ -266,5 +234,3 @@ export const MODE_BUILDER_PRESETS: ModeBuilderPreset[] = [
 export function getModeBuilderPreset(presetId: string): ModeBuilderPreset {
   return MODE_BUILDER_PRESETS.find((preset) => preset.id === presetId) ?? MODE_BUILDER_PRESETS[0];
 }
-
-
