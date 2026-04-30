@@ -184,15 +184,25 @@ pub async fn locate_error_provenance(
 ) -> Vec<ProvenanceHit> {
     let substrings = distinctive_substrings(error_message);
     if substrings.is_empty() {
+        let preview = error_message.chars().take(160).collect::<String>();
+        tracing::info!(
+            error_message_preview = %preview,
+            workspace_root = %workspace_root.display(),
+            "error provenance: distinctive_substrings produced no usable needles for this error",
+        );
         return Vec::new();
     }
     let workspace_root = workspace_root.to_path_buf();
     let mut hits: Vec<ProvenanceHit> = Vec::new();
-    for needle in substrings {
+    let mut tried = 0usize;
+    let mut timeouts = 0usize;
+    let mut grep_errors = 0usize;
+    for needle in &substrings {
         if hits.len() >= MAX_HITS {
             break;
         }
-        match timeout(GREP_TIMEOUT, git_grep(&workspace_root, &needle)).await {
+        tried += 1;
+        match timeout(GREP_TIMEOUT, git_grep(&workspace_root, needle)).await {
             Ok(Ok(found)) => {
                 for hit in found {
                     if hits.len() >= MAX_HITS {
@@ -207,8 +217,35 @@ pub async fn locate_error_provenance(
                     hits.push(hit);
                 }
             }
-            _ => continue,
+            Ok(Err(error)) => {
+                grep_errors += 1;
+                tracing::info!(
+                    needle = %needle,
+                    workspace_root = %workspace_root.display(),
+                    error = %error,
+                    "error provenance: git grep returned an io error for this needle",
+                );
+            }
+            Err(_) => {
+                timeouts += 1;
+                tracing::info!(
+                    needle = %needle,
+                    workspace_root = %workspace_root.display(),
+                    timeout_ms = GREP_TIMEOUT.as_millis() as u64,
+                    "error provenance: git grep timed out for this needle",
+                );
+            }
         }
+    }
+    if hits.is_empty() {
+        tracing::info!(
+            workspace_root = %workspace_root.display(),
+            substring_count = substrings.len(),
+            tried,
+            timeouts,
+            grep_errors,
+            "error provenance: every needle came back empty (no source matches found)",
+        );
     }
     hits
 }
@@ -228,7 +265,24 @@ async fn git_grep(workspace_root: &Path, needle: &str) -> std::io::Result<Vec<Pr
         ])
         .output()
         .await?;
+    let exit_code = output.status.code();
+    // git grep exits 1 when there are no matches (normal, expected) and
+    // exits 128 when the directory isn't a git repo (the "I can't even
+    // try" failure mode that silently disables provenance for every
+    // issue). Distinguish the two so the log surfaces the real
+    // configuration problem.
     if !output.status.success() {
+        if exit_code != Some(1) {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr_preview: String = stderr.chars().take(240).collect();
+            tracing::info!(
+                needle = %needle,
+                workspace_root = %workspace_root.display(),
+                exit_code = ?exit_code,
+                stderr_preview = %stderr_preview,
+                "error provenance: git grep exited non-zero (likely not a git repo or grep config error)",
+            );
+        }
         return Ok(Vec::new());
     }
     Ok(parse_git_grep_output(&String::from_utf8_lossy(
