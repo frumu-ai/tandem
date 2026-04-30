@@ -1406,12 +1406,20 @@ fn dedupe_comments(rows: Vec<GithubComment>) -> Vec<GithubComment> {
 /// append a markdown "Error provenance" section to the issue body.
 /// Best-effort: any failure to locate provenance just leaves the body
 /// unchanged. The added section is bounded; see `error_provenance`.
+///
+/// Each silent-skip path emits a `tracing::info!` so operators can tell
+/// from logs *why* an issue body shipped without an Error provenance
+/// section — currently a recurring symptom and the only signal that
+/// distinguishes "no error message picked", "workspace path not
+/// accessible to this process", and "grep returned zero hits".
 async fn append_error_provenance_section(
     state: &AppState,
     body: String,
     draft: &BugMonitorDraftRecord,
     incident: Option<&BugMonitorIncidentRecord>,
 ) -> String {
+    let incident_id = incident.map(|row| row.incident_id.as_str()).unwrap_or("");
+    let draft_id = draft.draft_id.as_str();
     let mut combined = body;
     let section = fallback_tool_evidence_section(state, incident, draft.triage_run_id.as_deref());
     if !section.trim().is_empty() {
@@ -1422,16 +1430,52 @@ async fn append_error_provenance_section(
         combined.push_str(&section);
     }
     let Some(error_message) = pick_error_message_for_provenance(draft, incident) else {
+        tracing::info!(
+            incident_id = %incident_id,
+            draft_id = %draft_id,
+            reason = "no_error_message",
+            "skipping error provenance: no usable error message on draft/incident",
+        );
         return combined;
     };
+    let raw_workspace_root = incident
+        .map(|row| row.workspace_root.as_str())
+        .unwrap_or("");
     let workspace_root = pick_workspace_root_for_provenance(incident);
     let Some(workspace_root) = workspace_root else {
+        tracing::info!(
+            incident_id = %incident_id,
+            draft_id = %draft_id,
+            reason = "workspace_root_inaccessible",
+            workspace_root = %raw_workspace_root,
+            "skipping error provenance: workspace_root missing, not absolute, or not present on this process's filesystem",
+        );
         return combined;
     };
     let hits = locate_error_provenance(&workspace_root, &error_message).await;
     let Some(section) = render_provenance_section(&hits) else {
+        let preview = error_message
+            .chars()
+            .take(160)
+            .collect::<String>();
+        tracing::info!(
+            incident_id = %incident_id,
+            draft_id = %draft_id,
+            reason = "no_grep_hits",
+            workspace_root = %workspace_root.display(),
+            error_message_preview = %preview,
+            hit_count = hits.len(),
+            "skipping error provenance: git grep returned no usable hits in the workspace for the error message",
+        );
         return combined;
     };
+    tracing::info!(
+        incident_id = %incident_id,
+        draft_id = %draft_id,
+        workspace_root = %workspace_root.display(),
+        hit_count = hits.len(),
+        "appended error provenance section to issue body",
+    );
     if !combined.ends_with('\n') {
         combined.push('\n');
     }
