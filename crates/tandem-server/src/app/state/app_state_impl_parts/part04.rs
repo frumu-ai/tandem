@@ -330,4 +330,51 @@ impl AppState {
         );
         Ok(Some(archived))
     }
+
+    /// Atomically transition a Bug Monitor draft to `triage_timed_out`,
+    /// returning the updated draft only if WE set the marker. If
+    /// another concurrent caller got there first, or the draft already
+    /// has an issue posted, returns `None` and the caller MUST skip
+    /// the publish step.
+    ///
+    /// The check + mutation happens entirely under one write lock so
+    /// it cannot race with another invocation. Without this, two
+    /// near-simultaneous status pollers (UI heartbeat or anything else
+    /// hitting `bug_monitor_status`) each fire their own
+    /// `recover_overdue_bug_monitor_triage_runs`, both see the draft
+    /// as not-yet-timed-out at read time, both mark it, and both call
+    /// `publish_draft` — producing duplicate GitHub issues for the
+    /// same incident (see issues #45 and #46, 3s apart, same
+    /// triage_run_id).
+    pub async fn try_mark_triage_timed_out(
+        &self,
+        draft_id: &str,
+        last_post_error: String,
+    ) -> Option<BugMonitorDraftRecord> {
+        let updated = {
+            let mut guard = self.bug_monitor_drafts.write().await;
+            let draft = guard.get_mut(draft_id)?;
+            if draft.issue_number.is_some() || draft.github_issue_url.is_some() {
+                return None;
+            }
+            if draft
+                .github_status
+                .as_deref()
+                .is_some_and(|status| status.eq_ignore_ascii_case("triage_timed_out"))
+            {
+                return None;
+            }
+            draft.github_status = Some("triage_timed_out".to_string());
+            draft.last_post_error = Some(last_post_error);
+            draft.clone()
+        };
+        if let Err(error) = self.persist_bug_monitor_drafts().await {
+            tracing::warn!(
+                draft_id = %draft_id,
+                error = %error,
+                "failed to persist drafts after marking triage_timed_out",
+            );
+        }
+        Some(updated)
+    }
 }

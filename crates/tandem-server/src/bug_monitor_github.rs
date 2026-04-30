@@ -801,6 +801,17 @@ fn compute_evidence_digest(
     draft: &BugMonitorDraftRecord,
     incident: Option<&crate::BugMonitorIncidentRecord>,
 ) -> String {
+    // Hashes the IDENTITY of the failure (repo + fingerprint + run/session
+    // ids + content) — not the count of times we've seen it.
+    // `incident.occurrence_count` was previously included here, but that
+    // field is incremented by `process_event` on every event for an
+    // existing fingerprint. The mutation made the digest different on
+    // each pass, which silently bypassed `successful_post_for_draft` and
+    // `successful_post_by_idempotency` (both key on evidence_digest) and
+    // caused duplicate GitHub issues for the same incident — observed
+    // most clearly on issues #45 and #46 (same triage_run_id, posted 3s
+    // apart). Keep occurrence_count out of evidence so dedup actually
+    // dedups.
     sha256_hex(&[
         draft.repo.as_str(),
         draft.fingerprint.as_str(),
@@ -811,10 +822,6 @@ fn compute_evidence_digest(
             .and_then(|row| row.session_id.as_deref())
             .unwrap_or(""),
         incident.and_then(|row| row.run_id.as_deref()).unwrap_or(""),
-        incident
-            .map(|row| row.occurrence_count.to_string())
-            .unwrap_or_default()
-            .as_str(),
     ])
 }
 
@@ -1938,6 +1945,36 @@ mod tests {
         assert_eq!(
             extract_error_after_colon(title).as_deref(),
             Some("real error message goes here")
+        );
+    }
+
+    /// Regression for #45/#46 — `compute_evidence_digest` must NOT
+    /// include `occurrence_count`, or the digest mutates on every
+    /// event for the same fingerprint and dedup is bypassed.
+    #[test]
+    fn compute_evidence_digest_is_stable_across_occurrence_count_changes() {
+        let draft = BugMonitorDraftRecord {
+            triage_run_id: Some("triage-digest".to_string()),
+            ..Default::default()
+        };
+        let mut a = crate::BugMonitorIncidentRecord {
+            run_id: Some("r".to_string()),
+            session_id: Some("s".to_string()),
+            occurrence_count: 1,
+            ..Default::default()
+        };
+        let mut b = a.clone();
+        b.occurrence_count = 7;
+        assert_eq!(
+            compute_evidence_digest(&draft, Some(&a)),
+            compute_evidence_digest(&draft, Some(&b)),
+        );
+        // Sanity: digest still moves on real identity changes.
+        a.run_id = Some("r-a".to_string());
+        b.run_id = Some("r-b".to_string());
+        assert_ne!(
+            compute_evidence_digest(&draft, Some(&a)),
+            compute_evidence_digest(&draft, Some(&b)),
         );
     }
 }

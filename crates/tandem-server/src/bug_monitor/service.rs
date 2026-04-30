@@ -104,21 +104,6 @@ pub async fn recover_overdue_bug_monitor_triage_runs(
             continue;
         }
 
-        let Some(mut current_draft) = state.get_bug_monitor_draft(&draft.draft_id).await else {
-            continue;
-        };
-        if current_draft.issue_number.is_some() || current_draft.github_issue_url.is_some() {
-            continue;
-        }
-        if current_draft
-            .github_status
-            .as_deref()
-            .is_some_and(|status| status.eq_ignore_ascii_case("triage_timed_out"))
-        {
-            continue;
-        }
-
-        current_draft.github_status = Some("triage_timed_out".to_string());
         let diagnostics_value = crate::http::bug_monitor::bug_monitor_triage_timeout_diagnostics(
             state,
             &triage_run_id,
@@ -130,8 +115,19 @@ pub async fn recover_overdue_bug_monitor_triage_runs(
             timeout_ms,
             diagnostics_value.as_ref(),
         );
-        current_draft.last_post_error = Some(last_post_error.clone());
-        state.put_bug_monitor_draft(current_draft.clone()).await?;
+        // Atomic CAS: only the caller that actually flips github_status
+        // to triage_timed_out continues into the publish path. A second
+        // concurrent recover_overdue invocation reading the same
+        // not-yet-timed-out draft will see `None` here and skip the
+        // publish — closing the race that produced duplicate GitHub
+        // issues (#45 / #46) when two status pollers fire near
+        // simultaneously.
+        let Some(current_draft) = state
+            .try_mark_triage_timed_out(&draft.draft_id, last_post_error.clone())
+            .await
+        else {
+            continue;
+        };
 
         if let Some(incident_id) =
             bug_monitor_incident_for_draft(state, &current_draft.draft_id, &triage_run_id).await
