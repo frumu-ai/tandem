@@ -22,24 +22,31 @@ const BUG_MONITOR_TRIAGE_AGENT_ROLE: &str = "bug_monitor_triage_agent";
 /// Returns a human-readable reason if this event was emitted by the
 /// bug monitor's own triage workflow. Used to short-circuit
 /// `process_event` so a triage failure doesn't recursively trigger
-/// another triage. Detection is deliberately layered: the
-/// `automation-v2-bug-monitor-triage-` automation_id prefix is the
-/// canonical signal (set in `bug_monitor_triage_spec`), and
-/// `agent_role == "bug_monitor_triage_agent"` is a backstop in case
-/// the automation_id is missing from the event payload.
+/// another triage.
+///
+/// The canonical signal is the `automation-v2-bug-monitor-triage-`
+/// `automation_id` prefix set by `bug_monitor_triage_spec`. The
+/// `agent_role == "bug_monitor_triage_agent"` check is a backstop
+/// for events that arrive without any automation/workflow id at all
+/// — without that gate, a user's custom automation that happens to
+/// use the same agent_id string would be silently excluded from
+/// bug monitoring (caught by Codex on PR #53).
 fn recursive_triage_skip_reason(event: &EngineEvent) -> Option<String> {
     let automation_id = first_string_deep(
         &event.properties,
         &["automation_id", "automationID", "workflow_id", "workflowID"],
     );
-    if automation_id
-        .as_deref()
-        .is_some_and(|id| id.starts_with(BUG_MONITOR_TRIAGE_AUTOMATION_PREFIX))
-    {
-        return Some(format!(
-            "automation_id={} originates from bug monitor triage",
-            automation_id.unwrap_or_default()
-        ));
+    if let Some(id) = automation_id.as_deref() {
+        if id.starts_with(BUG_MONITOR_TRIAGE_AUTOMATION_PREFIX) {
+            return Some(format!(
+                "automation_id={id} originates from bug monitor triage"
+            ));
+        }
+        // automation_id is present but doesn't have the triage prefix
+        // — this is a normal user workflow failure even if the agent
+        // role string happens to match. Don't fall through to the
+        // agent_role backstop.
+        return None;
     }
     let agent_role = first_string_deep(&event.properties, &["agent_role", "agentRole"]);
     if agent_role
@@ -1196,6 +1203,21 @@ mod tests {
         let event = event_with(json!({
             "automation_id": "automation-v2-9ee33834-bf6d-4f86-acb3-3cd41d9cef19",
             "agent_role": "agent_reddit_query_researcher",
+        }));
+        assert!(recursive_triage_skip_reason(&event).is_none());
+    }
+
+    /// Regression for the P2 Codex review on PR #53. If a user's
+    /// custom automation happens to use `bug_monitor_triage_agent`
+    /// as its agent_id string, the agent_role backstop must NOT
+    /// silently filter out its failures — the automation_id is
+    /// present and doesn't have the triage prefix, so this is a
+    /// real workflow failure and should be triaged normally.
+    #[test]
+    fn recursive_triage_skip_reason_does_not_fire_when_automation_id_is_real() {
+        let event = event_with(json!({
+            "automation_id": "automation-v2-9ee33834-bf6d-4f86-acb3-3cd41d9cef19",
+            "agent_role": "bug_monitor_triage_agent",
         }));
         assert!(recursive_triage_skip_reason(&event).is_none());
     }
