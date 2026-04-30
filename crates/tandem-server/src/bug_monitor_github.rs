@@ -1405,10 +1405,24 @@ fn pick_error_message_for_provenance(
     draft: &BugMonitorDraftRecord,
     incident: Option<&BugMonitorIncidentRecord>,
 ) -> Option<String> {
+    // Prefer fields written at incident/draft creation time. Avoid
+    // `last_error` and `last_post_error` because the triage deadline
+    // task rewrites those with the multi-line timeout diagnostics
+    // ("triage run X did not reach a terminal status within …\n
+    // timeout_ms: …"). Grepping the codebase for that diagnostic
+    // text always returns no hits, so the Error provenance section
+    // would silently disappear on every triage timeout — exactly
+    // the issues we most need provenance for.
     let candidates = [
-        incident.and_then(|row| row.last_error.clone()),
-        incident.and_then(|row| row.detail.clone()),
+        incident.and_then(|row| {
+            row.excerpt
+                .iter()
+                .find(|line| !line.trim().is_empty())
+                .cloned()
+        }),
         draft.detail.clone(),
+        incident.and_then(|row| row.detail.clone()),
+        incident.and_then(|row| extract_error_after_colon(&row.title)),
         incident.map(|row| row.title.clone()),
         draft.title.clone(),
     ];
@@ -1417,6 +1431,22 @@ fn pick_error_message_for_provenance(
         .flatten()
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
+}
+
+/// Pull the trailing-colon portion out of a bug-monitor incident
+/// title so that "Workflow X failed at Y: real error here" yields
+/// "real error here". Uses leftmost split so titles whose error
+/// itself contains colons survive intact. The full title still
+/// serves as a fallback when the suffix is too short to be useful.
+fn extract_error_after_colon(title: &str) -> Option<String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let suffix = trimmed.split_once(':').map(|(_, suffix)| suffix.trim());
+    suffix
+        .filter(|s| !s.is_empty() && s.split_whitespace().count() >= 3)
+        .map(str::to_string)
 }
 
 fn pick_workspace_root_for_provenance(
@@ -1651,5 +1681,71 @@ mod tests {
         assert_eq!(issues[0].number, 42);
         assert_eq!(issues[0].state, "open");
         assert!(issues[0].body.contains("deadbeef"));
+    }
+
+    fn make_incident_with_excerpt_and_last_error(
+        excerpt: Vec<String>,
+        last_error: Option<String>,
+    ) -> crate::BugMonitorIncidentRecord {
+        crate::BugMonitorIncidentRecord {
+            incident_id: "incident-pick".to_string(),
+            fingerprint: "fp".to_string(),
+            event_type: "automation_v2.run.failed".to_string(),
+            status: "queued".to_string(),
+            repo: "acme/platform".to_string(),
+            workspace_root: "/tmp/example".to_string(),
+            title: "Workflow X failed at Y: automation run blocked by upstream node outcome"
+                .to_string(),
+            excerpt,
+            last_error,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pick_error_message_for_provenance_prefers_excerpt_over_last_error_after_timeout() {
+        // Mirror the post-timeout state: last_error is the multi-line
+        // diagnostic; the original failure literal lives on incident.excerpt.
+        let incident = make_incident_with_excerpt_and_last_error(
+            vec!["automation run blocked by upstream node outcome".to_string()],
+            Some(
+                "triage run X did not reach a terminal status within 300000ms\nelapsed_ms: 301053\n"
+                    .to_string(),
+            ),
+        );
+        let draft = BugMonitorDraftRecord::default();
+        let picked = pick_error_message_for_provenance(&draft, Some(&incident));
+        assert_eq!(
+            picked.as_deref(),
+            Some("automation run blocked by upstream node outcome")
+        );
+    }
+
+    #[test]
+    fn pick_error_message_for_provenance_falls_back_to_title_suffix() {
+        let incident = make_incident_with_excerpt_and_last_error(Vec::new(), None);
+        let draft = BugMonitorDraftRecord::default();
+        let picked = pick_error_message_for_provenance(&draft, Some(&incident));
+        assert_eq!(
+            picked.as_deref(),
+            Some("automation run blocked by upstream node outcome")
+        );
+    }
+
+    #[test]
+    fn extract_error_after_colon_keeps_short_titles_intact() {
+        // Too short to be a useful suffix → return None so caller falls
+        // back to the full title.
+        assert!(extract_error_after_colon("Something: short").is_none());
+        assert!(extract_error_after_colon("Just one part with no colon").is_none());
+    }
+
+    #[test]
+    fn extract_error_after_colon_uses_rightmost_split() {
+        let title = "Workflow auto-v2-foo failed at bar: real error message goes here";
+        assert_eq!(
+            extract_error_after_colon(title).as_deref(),
+            Some("real error message goes here")
+        );
     }
 }

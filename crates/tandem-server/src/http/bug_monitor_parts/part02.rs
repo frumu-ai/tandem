@@ -731,10 +731,26 @@ fn pick_error_message_for_triage(
     draft: &BugMonitorDraftRecord,
     incident: Option<&crate::BugMonitorIncidentRecord>,
 ) -> Option<String> {
+    // Mirror pick_error_message_for_provenance in bug_monitor_github:
+    // prefer fields populated at incident/draft creation. Avoid
+    // last_error because the triage deadline path rewrites it with
+    // the multi-line diagnostics, which would poison any future
+    // provenance lookup (and prompt grounding) on that draft.
     let candidates = [
-        incident.and_then(|row| row.last_error.clone()),
-        incident.and_then(|row| row.detail.clone()),
+        incident.and_then(|row| {
+            row.excerpt
+                .iter()
+                .find(|line| !line.trim().is_empty())
+                .cloned()
+        }),
         draft.detail.clone(),
+        incident.and_then(|row| row.detail.clone()),
+        incident.and_then(|row| {
+            row.title
+                .split_once(':')
+                .map(|(_, suffix)| suffix.trim().to_string())
+                .filter(|s| !s.is_empty() && s.split_whitespace().count() >= 3)
+        }),
         incident.map(|row| row.title.clone()),
         draft.title.clone(),
     ];
