@@ -1069,9 +1069,18 @@ fn build_comment_body(
     {
         lines.push(String::new());
         lines.push(truncate_text(summary, 1_500));
-    } else if let Some(detail) = draft.detail.as_deref() {
+    } else {
+        // No LLM-produced narrative for this occurrence (triage timed
+        // out, hasn't run yet, or didn't produce a `what_happened`).
+        // Don't dump the verbose event payload from `draft.detail` —
+        // it just repeats the original issue body and adds noise.
+        // Emit a focused recurrence summary instead.
         lines.push(String::new());
-        lines.push(truncate_text(detail, 1_500));
+        lines.push(
+            crate::bug_monitor::comment_summary::build_comment_recurrence_summary(
+                draft, incident,
+            ),
+        );
     }
     if let Some(logs) = issue_draft
         .and_then(|row| row.get("logs"))
