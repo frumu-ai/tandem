@@ -797,31 +797,21 @@ async fn successful_post_for_draft(
     })
 }
 
+/// Hashes the IDENTITY of the failure being reported — not the
+/// execution metadata of how we triaged it on a particular pass.
+/// Excluded: `triage_run_id` (recreated for stale/blocked triages,
+/// drove the #69-#194 spam), `incident.run_id` / `session_id`
+/// (redundant with fingerprint), `occurrence_count` (removed in #48).
 fn compute_evidence_digest(
     draft: &BugMonitorDraftRecord,
     incident: Option<&crate::BugMonitorIncidentRecord>,
 ) -> String {
-    // Hashes the IDENTITY of the failure (repo + fingerprint + run/session
-    // ids + content) — not the count of times we've seen it.
-    // `incident.occurrence_count` was previously included here, but that
-    // field is incremented by `process_event` on every event for an
-    // existing fingerprint. The mutation made the digest different on
-    // each pass, which silently bypassed `successful_post_for_draft` and
-    // `successful_post_by_idempotency` (both key on evidence_digest) and
-    // caused duplicate GitHub issues for the same incident — observed
-    // most clearly on issues #45 and #46 (same triage_run_id, posted 3s
-    // apart). Keep occurrence_count out of evidence so dedup actually
-    // dedups.
+    let _ = incident;
     sha256_hex(&[
         draft.repo.as_str(),
         draft.fingerprint.as_str(),
         draft.title.as_deref().unwrap_or(""),
         draft.detail.as_deref().unwrap_or(""),
-        draft.triage_run_id.as_deref().unwrap_or(""),
-        incident
-            .and_then(|row| row.session_id.as_deref())
-            .unwrap_or(""),
-        incident.and_then(|row| row.run_id.as_deref()).unwrap_or(""),
     ])
 }
 
@@ -1952,33 +1942,36 @@ mod tests {
         );
     }
 
-    /// Regression for #45/#46 — `compute_evidence_digest` must NOT
-    /// include `occurrence_count`, or the digest mutates on every
-    /// event for the same fingerprint and dedup is bypassed.
+    /// Stability regressions: digest must not move on
+    /// `occurrence_count` (#45/#46), `triage_run_id` (#69-#194 spam,
+    /// recreated for stale/blocked triages), or `incident.run_id` /
+    /// `session_id` (redundant with fingerprint). Sanity: still moves
+    /// on a real fingerprint change.
     #[test]
-    fn compute_evidence_digest_is_stable_across_occurrence_count_changes() {
-        let draft = BugMonitorDraftRecord {
-            triage_run_id: Some("triage-digest".to_string()),
+    fn compute_evidence_digest_stability_contract() {
+        let base = BugMonitorDraftRecord {
+            repo: "frumu-ai/tandem".to_string(),
+            fingerprint: "abc123".to_string(),
+            title: Some("Failure".to_string()),
+            detail: Some("reason: foo".to_string()),
+            triage_run_id: Some("triage-1".to_string()),
             ..Default::default()
         };
-        let mut a = crate::BugMonitorIncidentRecord {
-            run_id: Some("r".to_string()),
-            session_id: Some("s".to_string()),
-            occurrence_count: 1,
+        let baseline = compute_evidence_digest(&base, None);
+        let mk_inc = |run, sess, count| crate::BugMonitorIncidentRecord {
+            run_id: Some(String::from(run)),
+            session_id: Some(String::from(sess)),
+            occurrence_count: count,
             ..Default::default()
         };
-        let mut b = a.clone();
-        b.occurrence_count = 7;
-        assert_eq!(
-            compute_evidence_digest(&draft, Some(&a)),
-            compute_evidence_digest(&draft, Some(&b)),
-        );
-        // Sanity: digest still moves on real identity changes.
-        a.run_id = Some("r-a".to_string());
-        b.run_id = Some("r-b".to_string());
-        assert_ne!(
-            compute_evidence_digest(&draft, Some(&a)),
-            compute_evidence_digest(&draft, Some(&b)),
-        );
+        assert_eq!(baseline, compute_evidence_digest(&base, Some(&mk_inc("r", "s", 1))));
+        assert_eq!(baseline, compute_evidence_digest(&base, Some(&mk_inc("r", "s", 99))));
+        assert_eq!(baseline, compute_evidence_digest(&base, Some(&mk_inc("r2", "s2", 1))));
+        let mut recreated = base.clone();
+        recreated.triage_run_id = Some("triage-2".to_string());
+        assert_eq!(baseline, compute_evidence_digest(&recreated, None));
+        let mut other_fp = base.clone();
+        other_fp.fingerprint = "fingerprint-B".to_string();
+        assert_ne!(baseline, compute_evidence_digest(&other_fp, None));
     }
 }
