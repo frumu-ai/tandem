@@ -154,13 +154,16 @@ pub fn format_bug_monitor_triage_timeout_diagnostics(value: &serde_json::Value) 
         .filter(|nodes| !nodes.is_empty())
     {
         // Per-step activity. Surfaces tool-call counts and the
-        // wall-clock span we observed activity in for each node so an
-        // operator can read "step X had 0 tool calls but ran 240s
-        // before timing out" (model latency dominated) versus "step Y
-        // had 18 tool calls in 240s" (tool round-trips dominated).
-        // Per-LLM-call timing isn't here yet — that requires
-        // persisting `provider.call.iteration.*` events to receipts,
-        // which is a separate change in tandem-core.
+        // tool-call counts and lifecycle status per node so an
+        // operator can read "step X is in_flight_no_receipts" (the
+        // step that timed out without ever finalizing) versus
+        // "step Y completed with 18 tool calls" (where round-trips
+        // probably dominated). True per-step wall-clock duration is
+        // NOT here: receipt ts_ms is set at append time (after attempt
+        // finalization) so it doesn't reflect actual execution time.
+        // Per-LLM-call timing requires persisting
+        // `provider.call.iteration.*` events to receipts (a tandem-core
+        // change) and is the natural follow-up.
         lines.push(String::new());
         lines.push("per_step_activity:".to_string());
         for node in node_attempts.iter().take(8) {
@@ -180,14 +183,12 @@ pub fn format_bug_monitor_triage_timeout_diagnostics(value: &serde_json::Value) 
                 .get("tool_failed")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
-            let activity_span = node
-                .get("activity_span_ms")
-                .and_then(serde_json::Value::as_u64);
-            let span = activity_span
-                .map(|ms| format!("{ms}ms"))
-                .unwrap_or_else(|| "?ms".to_string());
+            let lifecycle = node
+                .get("lifecycle_status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
             lines.push(format!(
-                "  - {node_id}: attempt={attempts} tool_calls={tool_invocations} tool_failed={tool_failed} activity_span={span}"
+                "  - {node_id}: lifecycle={lifecycle} attempt={attempts} tool_calls={tool_invocations} tool_failed={tool_failed}"
             ));
         }
     }

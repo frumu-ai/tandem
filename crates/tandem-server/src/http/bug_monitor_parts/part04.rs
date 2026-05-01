@@ -498,15 +498,44 @@ async fn collect_triage_per_node_attempt_stats(
         }
     }
     let mut out = Vec::new();
+    let completed: std::collections::HashSet<&str> = run
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let blocked: std::collections::HashSet<&str> = run
+        .checkpoint
+        .blocked_nodes
+        .iter()
+        .map(String::as_str)
+        .collect();
     for node_id in node_ids {
         let path = receipts::automation_attempt_receipts_path(&receipts_root, &run.run_id, &node_id);
         let records = receipts::read_automation_attempt_receipt_records(&path)
             .await
             .unwrap_or_default();
-        if records.is_empty() {
-            continue;
+        // Always emit a row per known node — including in-flight nodes
+        // whose receipts file is empty (P1 fix: receipts are written at
+        // attempt finalization, so the very step that timed out often
+        // has zero records yet, and dropping it would hide the most
+        // important diagnostic).
+        let lifecycle_status = if completed.contains(node_id.as_str()) {
+            "completed"
+        } else if blocked.contains(node_id.as_str()) {
+            "blocked"
+        } else if records.is_empty() {
+            "in_flight_no_receipts"
+        } else {
+            "in_flight"
+        };
+        let mut stats = aggregate_per_node_records(&node_id, &records);
+        if let Some(obj) = stats.as_object_mut() {
+            obj.insert(
+                "lifecycle_status".to_string(),
+                Value::String(lifecycle_status.to_string()),
+            );
         }
-        let stats = aggregate_per_node_records(&node_id, &records);
         out.push(stats);
     }
     out
@@ -521,13 +550,7 @@ fn aggregate_per_node_records(
     let mut tool_failed: u64 = 0;
     let mut attempt_summary_count: u64 = 0;
     let mut max_attempt: u32 = 0;
-    let mut first_ts_ms: Option<u64> = None;
-    let mut last_ts_ms: Option<u64> = None;
     for record in records {
-        if first_ts_ms.is_none() {
-            first_ts_ms = Some(record.ts_ms);
-        }
-        last_ts_ms = Some(record.ts_ms);
         if record.attempt > max_attempt {
             max_attempt = record.attempt;
         }
@@ -539,10 +562,13 @@ fn aggregate_per_node_records(
             _ => {}
         }
     }
-    let activity_span_ms = match (first_ts_ms, last_ts_ms) {
-        (Some(first), Some(last)) => Some(last.saturating_sub(first)),
-        _ => None,
-    };
+    // Deliberately not surfacing wall-clock spans here: the receipt
+    // ts_ms is the time the JSONL line was *appended* (after attempt
+    // finalization), not when the LLM/tool work actually ran. A
+    // 4-minute attempt could show as ~milliseconds. True per-step
+    // execution timing requires persisting `provider.call.iteration.*`
+    // events to receipts (a tandem-core change) and is the natural
+    // follow-up.
     json!({
         "node_id": node_id,
         "max_attempt": max_attempt,
@@ -550,9 +576,6 @@ fn aggregate_per_node_records(
         "tool_invocations": tool_invocations,
         "tool_succeeded": tool_succeeded,
         "tool_failed": tool_failed,
-        "first_event_ts_ms": first_ts_ms,
-        "last_event_ts_ms": last_ts_ms,
-        "activity_span_ms": activity_span_ms,
     })
 }
 
@@ -663,7 +686,22 @@ mod bug_monitor_triage_spec_tests {
         assert_eq!(stats["tool_invocations"], 3);
         assert_eq!(stats["tool_succeeded"], 2);
         assert_eq!(stats["tool_failed"], 1);
-        assert_eq!(stats["activity_span_ms"], 600); // 700 - 100
+    }
+
+    /// Receipt timestamps reflect JSONL append time, not real
+    /// execution time, so we deliberately do NOT publish a span.
+    /// This guards against regressing back to a misleading wall-clock
+    /// derived from `record.ts_ms`.
+    #[test]
+    fn aggregate_per_node_records_does_not_publish_misleading_span() {
+        let records = vec![
+            record(1, 1, 1, "tool_invoked"),
+            record(2, 2, 1, "tool_succeeded"),
+        ];
+        let stats = aggregate_per_node_records("inspect", &records);
+        assert!(stats.get("activity_span_ms").is_none());
+        assert!(stats.get("first_event_ts_ms").is_none());
+        assert!(stats.get("last_event_ts_ms").is_none());
     }
 
     #[test]
@@ -671,6 +709,5 @@ mod bug_monitor_triage_spec_tests {
         let stats = aggregate_per_node_records("research", &[]);
         assert_eq!(stats["max_attempt"], 0);
         assert_eq!(stats["tool_invocations"], 0);
-        assert!(stats["activity_span_ms"].is_null());
     }
 }
