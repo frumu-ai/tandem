@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use flate2::{write::GzEncoder, Compression};
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tandem_core::{
     build_mode_permission_rules, load_or_create_engine_api_token, load_provider_auth,
     resolve_shared_paths, AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus,
@@ -1588,11 +1588,11 @@ fn archive_context_run(
     }
     let index_line = json!({
         "run_id": run_id,
-        "status": state.get("status").cloned().unwrap_or_else(|| json!(null)),
-        "run_type": state.get("run_type").cloned().unwrap_or_else(|| json!(null)),
-        "workspace": state.get("workspace").cloned().unwrap_or_else(|| json!(null)),
-        "created_at_ms": state.get("created_at_ms").cloned().unwrap_or_else(|| json!(null)),
-        "updated_at_ms": state.get("updated_at_ms").cloned().unwrap_or_else(|| json!(null)),
+        "status": state.get("status").cloned().unwrap_or(Value::Null),
+        "run_type": state.get("run_type").cloned().unwrap_or(Value::Null),
+        "workspace": state.get("workspace").cloned().unwrap_or(Value::Null),
+        "created_at_ms": state.get("created_at_ms").cloned().unwrap_or(Value::Null),
+        "updated_at_ms": state.get("updated_at_ms").cloned().unwrap_or(Value::Null),
         "archive_path": archive_path.to_string_lossy(),
     });
     append_jsonl_sync(&month_dir.join("index.jsonl"), &index_line)?;
@@ -1618,11 +1618,11 @@ fn write_context_hot_index(hot_root: &Path) -> anyhow::Result<()> {
             };
             rows.push(json!({
                 "run_id": state.get("run_id").cloned().unwrap_or_else(|| json!(entry.file_name().to_string_lossy())),
-                "status": state.get("status").cloned().unwrap_or_else(|| json!(null)),
-                "run_type": state.get("run_type").cloned().unwrap_or_else(|| json!(null)),
-                "workspace": state.get("workspace").cloned().unwrap_or_else(|| json!(null)),
-                "created_at_ms": state.get("created_at_ms").cloned().unwrap_or_else(|| json!(null)),
-                "updated_at_ms": state.get("updated_at_ms").cloned().unwrap_or_else(|| json!(null)),
+                "status": state.get("status").cloned().unwrap_or(Value::Null),
+                "run_type": state.get("run_type").cloned().unwrap_or(Value::Null),
+                "workspace": state.get("workspace").cloned().unwrap_or(Value::Null),
+                "created_at_ms": state.get("created_at_ms").cloned().unwrap_or(Value::Null),
+                "updated_at_ms": state.get("updated_at_ms").cloned().unwrap_or(Value::Null),
             }));
         }
     }
