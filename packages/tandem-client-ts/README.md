@@ -201,6 +201,7 @@ The TypeScript SDK already includes the newer engine surfaces that have landed a
 - `client.skills` for list/get/import plus validation, routing, evals, compile, and generate flows
 - `client.packs` and `client.capabilities` for pack lifecycle and capability resolution
 - `client.automationsV2`, `client.bugMonitor`, `client.coder`, `client.agentTeams`, and `client.missions` for newer orchestration APIs
+- For the Bug Monitor flow, see [Bug Monitor And Issue Reporter](https://docs.tandem.ac/reference/bug-monitor/)
 
 ```typescript
 const browser = await client.browser.status();

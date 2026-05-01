@@ -364,6 +364,27 @@ catalog = await client.skills.templates()
 
 For actual browser automation, use `client.execute_tool(...)` with tools like `browser_open`, `browser_click`, `browser_type`, `browser_extract`, and `browser_screenshot`, or run a session with those tools in the allowlist. The `client.browser` namespace does not wrap those actions directly.
 
+### `client.bug_monitor`
+
+Use `client.bug_monitor` when a failure, manual report, or recurring runtime issue should become a governed draft instead of a direct GitHub mutation.
+
+```python
+status = await client.bug_monitor.get_status()
+incidents = await client.bug_monitor.list_incidents(limit=10)
+drafts = await client.bug_monitor.list_drafts(limit=10)
+
+if drafts.drafts:
+    await client.bug_monitor.create_triage_run(drafts.drafts[0].draft_id)
+```
+
+Key helpers:
+
+- `get_status()` and `recompute_status()`
+- `list_incidents()`, `get_incident()`, and `replay_incident()`
+- `list_drafts()`, `get_draft()`, `approve_draft()`, and `deny_draft()`
+- `create_triage_run()`, `create_triage_summary()`, `create_issue_draft()`, `publish_draft()`, and `recheck_match()`
+- `list_posts()`, plus `report()` for manual intake
+
 ### `client.coder`
 
 The coder namespace now includes project-scoped GitHub Project intake helpers in addition to run APIs.

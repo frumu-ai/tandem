@@ -44,6 +44,11 @@ tandem-engine serve --api-token $(tandem-engine token generate)
     description="Copy-ready workflow examples for wizard, TypeScript, and Python agent builders."
   />
   <LinkCard
+    title="Bug Monitor And Issue Reporter"
+    href="../reference/bug-monitor/"
+    description="Inspect failures, triage drafts, and publish governed issue reports."
+  />
+  <LinkCard
     title="Engine Authentication For Agents"
     href="../engine-authentication-for-agents/"
     description="Get an engine token and authenticate SDK or HTTP calls safely."

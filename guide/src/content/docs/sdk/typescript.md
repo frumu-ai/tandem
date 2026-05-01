@@ -351,6 +351,28 @@ const catalog = await client.skills.catalog();
 
 For actual browser automation, use the standard engine tool execution path with tools like `browser_open`, `browser_click`, `browser_type`, `browser_extract`, and `browser_screenshot`, or run a session with those tools in the allowlist. The `client.browser` namespace is intentionally limited to diagnostics and install flows.
 
+### `client.bugMonitor`
+
+Use `client.bugMonitor` when a failure, manual report, or recurring runtime issue should become a governed draft instead of a direct GitHub mutation.
+
+```typescript
+const status = await client.bugMonitor.getStatus();
+const incidents = await client.bugMonitor.listIncidents({ limit: 10 });
+const drafts = await client.bugMonitor.listDrafts({ limit: 10 });
+
+if (drafts.drafts[0]) {
+  await client.bugMonitor.createTriageRun(drafts.drafts[0].draft_id);
+}
+```
+
+Key helpers:
+
+- `getStatus()` and `recomputeStatus()`
+- `listIncidents()`, `getIncident()`, and `replayIncident()`
+- `listDrafts()`, `getDraft()`, `approveDraft()`, and `denyDraft()`
+- `createTriageRun()`, `createTriageSummary()`, `createIssueDraft()`, `publishDraft()`, and `recheckMatch()`
+- `listPosts()`, plus `report()` for manual intake
+
 ### `client.coder`
 
 The coder namespace now includes project-scoped GitHub Project intake helpers in addition to run APIs.
