@@ -19,6 +19,44 @@ fn bug_monitor_triage_timeout_deadline_ms(created_at_ms: u64, timeout_ms: u64) -
 const BUG_MONITOR_TRIAGE_AUTOMATION_PREFIX: &str = "automation-v2-bug-monitor-triage-";
 const BUG_MONITOR_TRIAGE_AGENT_ROLE: &str = "bug_monitor_triage_agent";
 
+/// Strip per-run identifiers from a failure reason before fingerprinting
+/// so that recurrences of the same logical failure dedup correctly.
+///
+/// Some node failures embed the run ID in the reason text — e.g.
+/// `required output ` `` `.tandem/runs/automation-v2-run-<uuid>/artifacts/foo.json` ``
+/// `was not created` — and excluding `run_id` from the hash inputs is
+/// not enough on its own because the same UUID leaks back in via the
+/// reason string. Replace any `automation-v2-run-<uuid>` and any bare
+/// UUID with a stable placeholder. Numeric values (timeouts, attempt
+/// counts, byte sizes) are intentionally left alone: `timed out after
+/// 180000 ms` and `timed out after 600000 ms` are genuinely different
+/// failure shapes and should not collapse to one incident.
+fn normalize_reason_for_fingerprint(reason: &str) -> String {
+    let after_run_ids =
+        automation_run_id_regex().replace_all(reason, "automation-v2-run-RUNID");
+    uuid_regex()
+        .replace_all(after_run_ids.as_ref(), "UUID")
+        .into_owned()
+}
+
+fn automation_run_id_regex() -> &'static regex::Regex {
+    static REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    REGEX.get_or_init(|| {
+        regex::Regex::new(
+            r"automation-v2-run-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        )
+        .expect("automation run id regex")
+    })
+}
+
+fn uuid_regex() -> &'static regex::Regex {
+    static REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    REGEX.get_or_init(|| {
+        regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+            .expect("uuid regex")
+    })
+}
+
 /// Returns a human-readable reason if this event was emitted by the
 /// bug monitor's own triage workflow. Used to short-circuit
 /// `process_event` so a triage failure doesn't recursively trigger
@@ -1078,18 +1116,26 @@ pub async fn build_bug_monitor_submission_from_event(
     }
     let sanitized_properties = sanitize_json_value(&event.properties);
     let serialized = serde_json::to_string(&sanitized_properties).unwrap_or_default();
+    let normalized_reason =
+        normalize_reason_for_fingerprint(reason.as_deref().unwrap_or(""));
     let fingerprint = sha256_hex(&[
         repo.as_str(),
         workspace_root.as_str(),
         event.event_type.as_str(),
-        reason.as_deref().unwrap_or(""),
+        normalized_reason.as_str(),
         workflow_id.as_deref().unwrap_or(""),
         task_id.as_deref().unwrap_or(""),
         stage_id.as_deref().unwrap_or(""),
         node_id.as_deref().unwrap_or(""),
-        run_id.as_deref().unwrap_or(""),
-        session_id.as_deref().unwrap_or(""),
-        correlation_id.as_deref().unwrap_or(""),
+        // Excluded: `run_id`, `session_id`, `correlation_id`. Those
+        // vary per workflow run, so including them in the hash made
+        // every recurrence look like a brand-new incident — dedup
+        // never matched, occurrence_count stayed at 1, and 13
+        // recurrences of the same node failure produced 13 separate
+        // GitHub issues in a single afternoon. The remaining inputs
+        // (repo, workspace_root, event_type, reason, workflow_id,
+        // task_id, stage_id, node_id, component) keep the fingerprint
+        // structurally specific without the per-run noise.
         component.as_deref().unwrap_or(""),
     ]);
     let failure_place = stage_id
@@ -1411,5 +1457,62 @@ mod tests {
     fn recursive_triage_skip_reason_handles_empty_properties() {
         let event = event_with(json!({}));
         assert!(recursive_triage_skip_reason(&event).is_none());
+    }
+
+    #[test]
+    fn normalize_reason_replaces_automation_run_id_in_artifact_path() {
+        let reason = "required output `.tandem/runs/automation-v2-run-593051dc-78bf-4927-b7db-b831b81d8bdd/artifacts/collect-recent-files.json` was not created for node `collect_recent_files`";
+        let normalized = normalize_reason_for_fingerprint(reason);
+        assert!(
+            normalized.contains("automation-v2-run-RUNID"),
+            "expected RUNID placeholder, got: {normalized}"
+        );
+        assert!(
+            !normalized.contains("593051dc"),
+            "leftover run uuid: {normalized}"
+        );
+    }
+
+    #[test]
+    fn normalize_reason_collapses_recurrences_to_same_fingerprint() {
+        // Two reason strings from successive runs of the same node
+        // failure — only the embedded run UUID differs.
+        let r1 = "required output `.tandem/runs/automation-v2-run-593051dc-78bf-4927-b7db-b831b81d8bdd/artifacts/collect-recent-files.json` was not created for node `collect_recent_files`";
+        let r2 = "required output `.tandem/runs/automation-v2-run-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/artifacts/collect-recent-files.json` was not created for node `collect_recent_files`";
+        assert_eq!(
+            normalize_reason_for_fingerprint(r1),
+            normalize_reason_for_fingerprint(r2),
+        );
+    }
+
+    #[test]
+    fn normalize_reason_preserves_numeric_values() {
+        // 180000 vs 600000 are genuinely different failure shapes —
+        // do not collapse them.
+        let r1 = "automation node `prepare_search_manifest` timed out after 180000 ms";
+        let r2 = "automation node `prepare_search_manifest` timed out after 600000 ms";
+        assert_ne!(
+            normalize_reason_for_fingerprint(r1),
+            normalize_reason_for_fingerprint(r2),
+        );
+    }
+
+    #[test]
+    fn normalize_reason_replaces_bare_uuids() {
+        let reason = "session 0251b4cc-14f3-48d1-8d81-a11c780c7d7c failed validation";
+        let normalized = normalize_reason_for_fingerprint(reason);
+        assert!(normalized.contains("UUID"), "got: {normalized}");
+        assert!(
+            !normalized.contains("0251b4cc"),
+            "leftover uuid: {normalized}"
+        );
+    }
+
+    #[test]
+    fn normalize_reason_is_idempotent_for_already_clean_text() {
+        // Reasons without any UUID-shaped tokens should pass through
+        // unchanged.
+        let reason = "failed to reach provider `openai-codex` at https://chatgpt.com/backend-api/codex (request error)";
+        assert_eq!(normalize_reason_for_fingerprint(reason), reason);
     }
 }
