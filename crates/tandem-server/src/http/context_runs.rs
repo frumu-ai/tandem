@@ -148,5 +148,48 @@ pub fn format_bug_monitor_triage_timeout_diagnostics(value: &serde_json::Value) 
             }
         }
     }
+    if let Some(node_attempts) = value
+        .get("node_attempts")
+        .and_then(serde_json::Value::as_array)
+        .filter(|nodes| !nodes.is_empty())
+    {
+        // Per-step activity. Surfaces tool-call counts and the
+        // wall-clock span we observed activity in for each node so an
+        // operator can read "step X had 0 tool calls but ran 240s
+        // before timing out" (model latency dominated) versus "step Y
+        // had 18 tool calls in 240s" (tool round-trips dominated).
+        // Per-LLM-call timing isn't here yet — that requires
+        // persisting `provider.call.iteration.*` events to receipts,
+        // which is a separate change in tandem-core.
+        lines.push(String::new());
+        lines.push("per_step_activity:".to_string());
+        for node in node_attempts.iter().take(8) {
+            let node_id = node
+                .get("node_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            let attempts = node
+                .get("max_attempt")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let tool_invocations = node
+                .get("tool_invocations")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let tool_failed = node
+                .get("tool_failed")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let activity_span = node
+                .get("activity_span_ms")
+                .and_then(serde_json::Value::as_u64);
+            let span = activity_span
+                .map(|ms| format!("{ms}ms"))
+                .unwrap_or_else(|| "?ms".to_string());
+            lines.push(format!(
+                "  - {node_id}: attempt={attempts} tool_calls={tool_invocations} tool_failed={tool_failed} activity_span={span}"
+            ));
+        }
+    }
     lines.join("\n")
 }

@@ -444,6 +444,7 @@ async fn bug_monitor_automation_triage_timeout_diagnostics(
                 },
             })
         });
+    let node_attempts = collect_triage_per_node_attempt_stats(&run).await;
     Some(json!({
         "run_id": run.run_id,
         "context_run_id": bug_monitor_triage_context_run_id(&run.run_id),
@@ -457,7 +458,102 @@ async fn bug_monitor_automation_triage_timeout_diagnostics(
         "failed_steps": failed_steps,
         "active_step": active_step,
         "last_failure": run.checkpoint.last_failure,
+        "node_attempts": node_attempts,
     }))
+}
+
+/// Aggregate per-step receipt records for a triage run so the
+/// timeout diagnostics can answer "where did the time go" without
+/// needing per-LLM-call receipts (those don't exist yet — see
+/// `provider.call.iteration.*` events on the bus that aren't yet
+/// persisted). Today's receipts have `tool_invoked`,
+/// `tool_succeeded`, `tool_failed`, and `attempt_summary` records,
+/// which is enough to distinguish "model is thinking" from "tool
+/// round-trips dominate." For each node we surface tool counts,
+/// attempt count, and the wall-clock span we observed activity in.
+async fn collect_triage_per_node_attempt_stats(
+    run: &crate::AutomationV2RunRecord,
+) -> Vec<Value> {
+    use crate::app::state::automation::receipts;
+    let receipts_root = receipts::automation_attempt_receipts_root();
+    let mut node_ids: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut push_unique = |node_id: &str, into: &mut Vec<String>| {
+        if seen.insert(node_id.to_string()) {
+            into.push(node_id.to_string());
+        }
+    };
+    for node_id in &run.checkpoint.completed_nodes {
+        push_unique(node_id, &mut node_ids);
+    }
+    for node_id in &run.checkpoint.pending_nodes {
+        push_unique(node_id, &mut node_ids);
+    }
+    for node_id in &run.checkpoint.blocked_nodes {
+        push_unique(node_id, &mut node_ids);
+    }
+    if let Some(automation) = run.automation_snapshot.as_ref() {
+        for node in &automation.flow.nodes {
+            push_unique(&node.node_id, &mut node_ids);
+        }
+    }
+    let mut out = Vec::new();
+    for node_id in node_ids {
+        let path = receipts::automation_attempt_receipts_path(&receipts_root, &run.run_id, &node_id);
+        let records = receipts::read_automation_attempt_receipt_records(&path)
+            .await
+            .unwrap_or_default();
+        if records.is_empty() {
+            continue;
+        }
+        let stats = aggregate_per_node_records(&node_id, &records);
+        out.push(stats);
+    }
+    out
+}
+
+fn aggregate_per_node_records(
+    node_id: &str,
+    records: &[crate::app::state::automation::receipts::AutomationAttemptReceiptRecord],
+) -> Value {
+    let mut tool_invocations: u64 = 0;
+    let mut tool_succeeded: u64 = 0;
+    let mut tool_failed: u64 = 0;
+    let mut attempt_summary_count: u64 = 0;
+    let mut max_attempt: u32 = 0;
+    let mut first_ts_ms: Option<u64> = None;
+    let mut last_ts_ms: Option<u64> = None;
+    for record in records {
+        if first_ts_ms.is_none() {
+            first_ts_ms = Some(record.ts_ms);
+        }
+        last_ts_ms = Some(record.ts_ms);
+        if record.attempt > max_attempt {
+            max_attempt = record.attempt;
+        }
+        match record.event_type.as_str() {
+            "tool_invoked" => tool_invocations += 1,
+            "tool_succeeded" => tool_succeeded += 1,
+            "tool_failed" => tool_failed += 1,
+            "attempt_summary" => attempt_summary_count += 1,
+            _ => {}
+        }
+    }
+    let activity_span_ms = match (first_ts_ms, last_ts_ms) {
+        (Some(first), Some(last)) => Some(last.saturating_sub(first)),
+        _ => None,
+    };
+    json!({
+        "node_id": node_id,
+        "max_attempt": max_attempt,
+        "attempt_summary_count": attempt_summary_count,
+        "tool_invocations": tool_invocations,
+        "tool_succeeded": tool_succeeded,
+        "tool_failed": tool_failed,
+        "first_event_ts_ms": first_ts_ms,
+        "last_event_ts_ms": last_ts_ms,
+        "activity_span_ms": activity_span_ms,
+    })
 }
 
 #[cfg(test)]
@@ -532,5 +628,49 @@ mod bug_monitor_triage_spec_tests {
             .is_some_and(|guidance| guidance.contains("search_queries_used")
                 && guidance.contains("file_references")
                 && guidance.contains("likely_files_to_edit"))));
+    }
+
+    fn record(seq: u64, ts_ms: u64, attempt: u32, event_type: &str) -> crate::app::state::automation::receipts::AutomationAttemptReceiptRecord {
+        crate::app::state::automation::receipts::AutomationAttemptReceiptRecord {
+            version: 1,
+            run_id: "run-x".to_string(),
+            node_id: "n".to_string(),
+            attempt,
+            session_id: "s".to_string(),
+            seq,
+            ts_ms,
+            event_type: event_type.to_string(),
+            payload: json!({}),
+        }
+    }
+
+    #[test]
+    fn aggregate_per_node_records_counts_tool_calls_and_attempts() {
+        let records = vec![
+            record(1, 100, 1, "tool_invoked"),
+            record(2, 110, 1, "tool_succeeded"),
+            record(3, 200, 1, "tool_invoked"),
+            record(4, 250, 1, "tool_failed"),
+            record(5, 400, 1, "attempt_summary"),
+            record(6, 500, 2, "tool_invoked"),
+            record(7, 600, 2, "tool_succeeded"),
+            record(8, 700, 2, "attempt_summary"),
+        ];
+        let stats = aggregate_per_node_records("inspect", &records);
+        assert_eq!(stats["node_id"], "inspect");
+        assert_eq!(stats["max_attempt"], 2);
+        assert_eq!(stats["attempt_summary_count"], 2);
+        assert_eq!(stats["tool_invocations"], 3);
+        assert_eq!(stats["tool_succeeded"], 2);
+        assert_eq!(stats["tool_failed"], 1);
+        assert_eq!(stats["activity_span_ms"], 600); // 700 - 100
+    }
+
+    #[test]
+    fn aggregate_per_node_records_handles_empty_input() {
+        let stats = aggregate_per_node_records("research", &[]);
+        assert_eq!(stats["max_attempt"], 0);
+        assert_eq!(stats["tool_invocations"], 0);
+        assert!(stats["activity_span_ms"].is_null());
     }
 }
