@@ -271,6 +271,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let agent_team_supervisor_state = state.clone();
     let global_memory_ingestor_state = state.clone();
     let bug_monitor_state = state.clone();
+    let bug_monitor_recovery_sweep_state = state.clone();
     let governance_health_state = state.clone();
     let mcp_bootstrap_state = state.clone();
     tokio::spawn(async move {
@@ -337,6 +338,9 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         agent_team_supervisor_state,
     ));
     let bug_monitor = tokio::spawn(crate::run_bug_monitor(bug_monitor_state));
+    let bug_monitor_recovery_sweep = tokio::spawn(crate::run_bug_monitor_recovery_sweep(
+        bug_monitor_recovery_sweep_state,
+    ));
     let global_memory_ingestor =
         tokio::spawn(run_global_memory_ingestor(global_memory_ingestor_state));
     let shutdown_state = state.clone();
@@ -498,6 +502,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     workflow_dispatcher.abort();
     agent_team_supervisor.abort();
     bug_monitor.abort();
+    bug_monitor_recovery_sweep.abort();
     global_memory_ingestor.abort();
     hygiene_task.abort();
     automation_governance_health_checker.abort();

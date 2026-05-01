@@ -658,6 +658,62 @@ pub async fn run_bug_monitor(state: AppState) {
     }
 }
 
+/// Periodic deadline sweep for Bug Monitor triage runs. Without this
+/// loop, `recover_overdue_bug_monitor_triage_runs` only fires when
+/// something polls `bug_monitor_status` (the status panel, the
+/// dashboard, an API caller). On a quiet engine — UI closed, no
+/// outside pollers — an overdue triage just sits there: issue #60
+/// ran 3.95 hours past its 30-minute deadline before anything noticed.
+/// A 30-second tick guarantees the timeout fires within ~30s of the
+/// deadline regardless of UI state.
+///
+/// Concurrency note: `try_mark_triage_timed_out` (called inside
+/// `recover_overdue_bug_monitor_triage_runs`) is an atomic CAS, so
+/// running this loop alongside an on-demand `bug_monitor_status` call
+/// can't double-publish — only one caller wins the status flip per
+/// draft.
+pub async fn run_bug_monitor_recovery_sweep(state: AppState) {
+    if !wait_for_runtime_ready_or_exit(&state, "run_bug_monitor_recovery_sweep").await {
+        return;
+    }
+    loop {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let status = state.bug_monitor_status_snapshot().await;
+        if !status.config.enabled || status.config.paused {
+            continue;
+        }
+        let recovered =
+            match crate::bug_monitor::service::recover_overdue_bug_monitor_triage_runs(&state)
+                .await
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "bug monitor recovery sweep: recover_overdue failed"
+                    );
+                    continue;
+                }
+            };
+        for (draft_id, incident_id) in recovered {
+            if let Err(error) = crate::bug_monitor_github::publish_draft(
+                &state,
+                &draft_id,
+                incident_id.as_deref(),
+                crate::bug_monitor_github::PublishMode::Recovery,
+            )
+            .await
+            {
+                tracing::warn!(
+                    draft_id = %draft_id,
+                    error = %error,
+                    "bug monitor recovery sweep: publish_draft failed"
+                );
+            }
+        }
+    }
+}
+
 pub async fn run_usage_aggregator(state: AppState) {
     if !state.wait_until_ready_or_failed(120, 250).await {
         tracing::warn!("usage aggregator: skipped because runtime did not become ready");

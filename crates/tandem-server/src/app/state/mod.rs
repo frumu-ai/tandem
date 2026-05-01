@@ -1621,6 +1621,10 @@ pub async fn run_bug_monitor(state: AppState) {
     crate::app::tasks::run_bug_monitor(state).await
 }
 
+pub async fn run_bug_monitor_recovery_sweep(state: AppState) {
+    crate::app::tasks::run_bug_monitor_recovery_sweep(state).await
+}
+
 pub async fn run_usage_aggregator(state: AppState) {
     crate::app::tasks::run_usage_aggregator(state).await
 }
