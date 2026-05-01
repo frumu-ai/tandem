@@ -476,27 +476,22 @@ export function LogsDrawer({
     search,
   ]);
 
-  const processOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(lines.map((l) => l.parsed.process).filter((v): v is string => !!v))
-      ).sort(),
-    [lines]
-  );
-
-  const componentOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(lines.map((l) => l.parsed.component).filter((v): v is string => !!v))
-      ).sort(),
-    [lines]
-  );
-
-  const eventOptions = useMemo(
-    () =>
-      Array.from(new Set(lines.map((l) => l.parsed.event).filter((v): v is string => !!v))).sort(),
-    [lines]
-  );
+  const { processOptions, componentOptions, eventOptions } = useMemo(() => {
+    const pSet = new Set<string>();
+    const cSet = new Set<string>();
+    const eSet = new Set<string>();
+    for (let i = 0; i < lines.length; i++) {
+      const p = lines[i].parsed;
+      if (p.process) pSet.add(p.process);
+      if (p.component) cSet.add(p.component);
+      if (p.event) eSet.add(p.event);
+    }
+    return {
+      processOptions: Array.from(pSet).sort(),
+      componentOptions: Array.from(cSet).sort(),
+      eventOptions: Array.from(eSet).sort(),
+    };
+  }, [lines]);
 
   // Keep the view pinned to the bottom when follow is enabled.
   useEffect(() => {
