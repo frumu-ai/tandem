@@ -791,22 +791,42 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
   const [isExpanded, setIsExpanded] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => new Date().getTime());
 
-  const runningCount = useMemo(
-    () => toolCalls.filter((t) => t.status === "running").length,
-    [toolCalls]
-  );
-  const completedCount = useMemo(
-    () => toolCalls.filter((t) => t.status === "completed").length,
-    [toolCalls]
-  );
-  const pendingCount = useMemo(
-    () => toolCalls.filter((t) => t.status === "pending").length,
-    [toolCalls]
-  );
-  const failedCount = useMemo(
-    () => toolCalls.filter((t) => t.status === "failed").length,
-    [toolCalls]
-  );
+  const { runningCount, completedCount, pendingCount, failedCount, summary } = useMemo(() => {
+    let running = 0;
+    let completed = 0;
+    let pending = 0;
+    let failed = 0;
+    const toolGroups: Record<string, number> = {};
+
+    for (let i = 0; i < toolCalls.length; i++) {
+      const tool = toolCalls[i];
+
+      // Count statuses
+      if (tool.status === "running") running++;
+      else if (tool.status === "completed") completed++;
+      else if (tool.status === "pending") pending++;
+      else if (tool.status === "failed") failed++;
+
+      // Accumulate tool types for summary
+      const name = tool.tool.replace(/^(read_file|write_file|read|write)$/, (m) =>
+        m.includes("read") ? "read" : "write"
+      );
+      toolGroups[name] = (toolGroups[name] || 0) + 1;
+    }
+
+    const summaryStr = Object.entries(toolGroups)
+      .map(([name, count]) => `${count} ${name}`)
+      .join(", ");
+
+    return {
+      runningCount: running,
+      completedCount: completed,
+      pendingCount: pending,
+      failedCount: failed,
+      summary: summaryStr,
+    };
+  }, [toolCalls]);
+
   const isTerminal = runningCount === 0 && pendingCount === 0 && toolCalls.length > 0;
 
   useEffect(() => {
@@ -818,24 +838,6 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
   }, [isTerminal]);
 
   const durationSec = Math.max(1, Math.round((nowMs - messageTimestamp.getTime()) / 1000));
-
-  // Group by tool type for summary
-  const summary = useMemo(() => {
-    const toolGroups = toolCalls.reduce(
-      (acc, tool) => {
-        const name = tool.tool.replace(/^(read_file|write_file|read|write)$/, (m) =>
-          m.includes("read") ? "read" : "write"
-        );
-        acc[name] = (acc[name] || 0) + 1;
-        return acc;
-      },
-      {} as Record<string, number>
-    );
-
-    return Object.entries(toolGroups)
-      .map(([name, count]) => `${count} ${name}`)
-      .join(", ");
-  }, [toolCalls]);
 
   return (
     <motion.div
