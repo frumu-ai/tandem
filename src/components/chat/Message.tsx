@@ -791,22 +791,24 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
   const [isExpanded, setIsExpanded] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => new Date().getTime());
 
-  const runningCount = useMemo(
-    () => toolCalls.filter((t) => t.status === "running").length,
-    [toolCalls]
-  );
-  const completedCount = useMemo(
-    () => toolCalls.filter((t) => t.status === "completed").length,
-    [toolCalls]
-  );
-  const pendingCount = useMemo(
-    () => toolCalls.filter((t) => t.status === "pending").length,
-    [toolCalls]
-  );
-  const failedCount = useMemo(
-    () => toolCalls.filter((t) => t.status === "failed").length,
-    [toolCalls]
-  );
+  // ⚡ Bolt: Consolidated four separate array filters into a single useMemo loop
+  // Impact: Reduces O(N) array traversals from 4x to 1x and eliminates 4 intermediate
+  // array allocations per render when toolCalls updates frequently.
+  const { runningCount, completedCount, pendingCount, failedCount } = useMemo(() => {
+    let runningCount = 0;
+    let completedCount = 0;
+    let pendingCount = 0;
+    let failedCount = 0;
+
+    for (const t of toolCalls) {
+      if (t.status === "running") runningCount++;
+      else if (t.status === "completed") completedCount++;
+      else if (t.status === "pending") pendingCount++;
+      else if (t.status === "failed") failedCount++;
+    }
+
+    return { runningCount, completedCount, pendingCount, failedCount };
+  }, [toolCalls]);
   const isTerminal = runningCount === 0 && pendingCount === 0 && toolCalls.length > 0;
 
   useEffect(() => {
