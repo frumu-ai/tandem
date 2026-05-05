@@ -1,6 +1,6 @@
 [package]
 name = "tandem-tui"
-version = "publish-v0.5.4"
+version = "0.5.4"
 description = "Terminal user interface for the Tandem engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -32,10 +32,10 @@ zeroize = "1.7"
 byteorder = "1.5"
 
 # Tandem crates
-tandem-types = { path = "../tandem-types", version = "publish-v0.5.4" }
-tandem-wire = { path = "../tandem-wire", version = "publish-v0.5.4" }
-tandem-core = { path = "../tandem-core", version = "publish-v0.5.4" }
-tandem-observability = { path = "../tandem-observability", version = "publish-v0.5.4" }
+tandem-types = { path = "../tandem-types", version = "0.5.4" }
+tandem-wire = { path = "../tandem-wire", version = "0.5.4" }
+tandem-core = { path = "../tandem-core", version = "0.5.4" }
+tandem-observability = { path = "../tandem-observability", version = "0.5.4" }
 
 # Utils
 anyhow = "1.0"

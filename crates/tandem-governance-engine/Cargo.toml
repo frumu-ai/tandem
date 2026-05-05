@@ -1,6 +1,6 @@
 [package]
 name = "tandem-governance-engine"
-version = "publish-v0.5.4"
+version = "0.5.4"
 description = "Premium governance and recursive-authoring policy engine for Tandem"
 license = "BUSL-1.1"
 repository = "https://github.com/frumu-ai/tandem"
@@ -9,6 +9,6 @@ edition = "2021"
 [dependencies]
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
-tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "publish-v0.5.4" }
+tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.5.4" }
 
 

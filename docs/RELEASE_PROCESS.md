@@ -24,6 +24,9 @@ Use the separate workflow `.github/workflows/publish-registries.yml` to publish 
 
 - Manual: **Actions -> Publish Registries -> Run workflow**
 - Tag-based: push a dedicated tag `publish-v<version>` (for example `publish-v0.3.3`)
+  to trigger the workflow. The workflow publishes from the canonical release tag
+  `v<version>`, so the `publish-v<version>` tag must not be used to carry release
+  manifest changes.
 
 ### Manual workflow inputs
 

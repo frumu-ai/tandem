@@ -45,15 +45,65 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       resolved_version: ${{ steps.resolve.outputs.resolved_version }}
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
       crates_enabled: ${{ steps.resolve.outputs.crates_enabled }}
       npm_enabled: ${{ steps.resolve.outputs.npm_enabled }}
       pypi_enabled: ${{ steps.resolve.outputs.pypi_enabled }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
     steps:
-      - name: Checkout
+      - name: Resolve inputs / tag contract
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          event_name="${{ github.event_name }}"
+          if [[ "$event_name" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+            checkout_ref="${GITHUB_REF}"
+            crates_enabled="${{ inputs.publish_crates }}"
+            npm_enabled="${{ inputs.publish_npm }}"
+            pypi_enabled="${{ inputs.publish_pypi }}"
+            dry_run="${{ inputs.dry_run }}"
+          else
+            ref="${GITHUB_REF_NAME}"
+            if [[ "$ref" =~ ^publish-v(.+)$ ]]; then
+              version="${BASH_REMATCH[1]}"
+            else
+              echo "Invalid publish tag format: $ref"
+              exit 1
+            fi
+            checkout_ref="refs/tags/v${version}"
+            crates_enabled="true"
+            npm_enabled="true"
+            pypi_enabled="true"
+            dry_run="false"
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Version is not valid semver-like: $version"
+            exit 1
+          fi
+
+          echo "resolved_version=$version" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+          echo "crates_enabled=$crates_enabled" >> "$GITHUB_OUTPUT"
+          echo "npm_enabled=$npm_enabled" >> "$GITHUB_OUTPUT"
+          echo "pypi_enabled=$pypi_enabled" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+
+          echo "Resolved version: $version"
+          echo "Checkout ref: $checkout_ref"
+          echo "Publish crates: $crates_enabled"
+          echo "Publish npm: $npm_enabled"
+          echo "Publish pypi: $pypi_enabled"
+          echo "Dry run: $dry_run"
+
+      - name: Checkout release contents
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ steps.resolve.outputs.checkout_ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -74,50 +124,6 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Resolve inputs / tag contract
-        id: resolve
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          event_name="${{ github.event_name }}"
-          if [[ "$event_name" == "workflow_dispatch" ]]; then
-            version="${{ inputs.version }}"
-            crates_enabled="${{ inputs.publish_crates }}"
-            npm_enabled="${{ inputs.publish_npm }}"
-            pypi_enabled="${{ inputs.publish_pypi }}"
-            dry_run="${{ inputs.dry_run }}"
-          else
-            ref="${GITHUB_REF_NAME}"
-            if [[ "$ref" =~ ^publish-v(.+)$ ]]; then
-              version="${BASH_REMATCH[1]}"
-            else
-              echo "Invalid publish tag format: $ref"
-              exit 1
-            fi
-            crates_enabled="true"
-            npm_enabled="true"
-            pypi_enabled="true"
-            dry_run="false"
-          fi
-
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Version is not valid semver-like: $version"
-            exit 1
-          fi
-
-          echo "resolved_version=$version" >> "$GITHUB_OUTPUT"
-          echo "crates_enabled=$crates_enabled" >> "$GITHUB_OUTPUT"
-          echo "npm_enabled=$npm_enabled" >> "$GITHUB_OUTPUT"
-          echo "pypi_enabled=$pypi_enabled" >> "$GITHUB_OUTPUT"
-          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
-
-          echo "Resolved version: $version"
-          echo "Publish crates: $crates_enabled"
-          echo "Publish npm: $npm_enabled"
-          echo "Publish pypi: $pypi_enabled"
-          echo "Dry run: $dry_run"
 
       - name: Validate manifest versions
         shell: bash
@@ -276,6 +282,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -324,6 +332,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -414,6 +424,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
 
       - name: Setup Python
         uses: actions/setup-python@v5

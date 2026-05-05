@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem-client",
-  "version": "publish-v0.5.4",
+  "version": "0.5.4",
   "description": "TypeScript client for the Tandem autonomous agent engine HTTP + SSE API",
   "type": "module",
   "main": "./dist/index.cjs",

@@ -1,6 +1,6 @@
 [package]
 name = "tandem-browser"
-version = "publish-v0.5.4"
+version = "0.5.4"
 description = "Chromium browser sidecar and diagnostics for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -24,7 +24,7 @@ html2md = "0.2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tandem-core = { path = "../tandem-core", version = "publish-v0.5.4" }
+tandem-core = { path = "../tandem-core", version = "0.5.4" }
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 

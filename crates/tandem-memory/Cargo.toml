@@ -1,6 +1,6 @@
 [package]
 name = "tandem-memory"
-version = "publish-v0.5.4"
+version = "0.5.4"
 description = "Memory storage and embedding utilities for Tandem"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -28,8 +28,8 @@ ignore = "0.4"
 sha2 = "0.10"
 dirs = "5.0"
 once_cell = "1.20"
-tandem-providers = { path = "../tandem-providers", version = "publish-v0.5.4" }
-tandem-orchestrator = { path = "../tandem-orchestrator", version = "publish-v0.5.4" }
+tandem-providers = { path = "../tandem-providers", version = "0.5.4" }
+tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.5.4" }
 
 [dev-dependencies]
 tempfile = "3"
