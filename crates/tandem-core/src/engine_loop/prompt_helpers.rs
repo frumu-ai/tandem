@@ -163,6 +163,7 @@ pub(super) fn concrete_mcp_tools_required_before_write(
                 || !normalized.starts_with("mcp.")
                 || normalized.contains('*')
                 || normalized.split('.').count() < 3
+                || is_mcp_source_evidence_tool(&normalized)
             {
                 return None;
             }
@@ -190,9 +191,40 @@ pub(super) fn mcp_source_wildcards_required_before_write(
             Some(normalized)
         })
         .collect::<Vec<_>>();
+    patterns.extend(tool_allowlist.iter().filter_map(|tool| {
+        let normalized = normalize_tool_name(tool);
+        if !is_mcp_source_evidence_tool(&normalized) {
+            return None;
+        }
+        let server = mcp_server_from_tool_name(&normalized)?;
+        Some(format!("mcp.{server}.*"))
+    }));
     patterns.sort();
     patterns.dedup();
     patterns
+}
+
+fn is_mcp_source_evidence_tool(tool_name: &str) -> bool {
+    let normalized = normalize_tool_name(tool_name);
+    if normalized == "mcp_list"
+        || !normalized.starts_with("mcp.")
+        || normalized.contains('*')
+        || normalized.split('.').count() < 3
+    {
+        return false;
+    }
+    let action = normalized.rsplit('.').next().unwrap_or_default();
+    let source_markers = [
+        "fetch", "find", "get", "list", "read", "retrieve", "search", "top",
+    ];
+    let mutation_markers = [
+        "add", "create", "delete", "edit", "merge", "move", "push", "reply", "request", "run",
+        "update", "write",
+    ];
+    source_markers.iter().any(|marker| action.contains(marker))
+        && !mutation_markers
+            .iter()
+            .any(|marker| action.contains(marker))
 }
 
 pub(super) fn has_attempted_concrete_mcp_for_wildcard(
@@ -281,6 +313,48 @@ pub(super) fn requires_web_research_prompt(input: &str) -> bool {
     ]
     .iter()
     .any(|needle| lower.contains(needle))
+}
+
+pub(super) fn requires_structured_handoff_final_response_prompt(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    lower.contains("structured handoff expectation")
+        || (lower.contains("output contract kind: structured_json")
+            && lower.contains("structured handoff"))
+        || (lower.contains("required structured handoff json") && lower.contains("final response"))
+}
+
+pub(super) fn structured_handoff_loop_guard_final_retry_context(outputs: &[String]) -> String {
+    let mut context = "A tool loop guard just prevented another repeated tool call. Stop calling tools now and return the required structured JSON handoff in the final response body, followed by the compact JSON status object. Use JSON only, with no headings, markdown fences, prose, or follow-up questions. Preserve any evidence already gathered in this session; if evidence is incomplete, record the limitation inside the JSON and set the top-level status to completed unless the task is semantically impossible.".to_string();
+    let summary = summarize_tool_outputs(outputs);
+    if !summary.trim().is_empty() {
+        context.push_str("\n\nLoop-guard note:\n");
+        context.push_str(&summary);
+    }
+    context
+}
+
+pub(super) fn provider_usage_token_counts(
+    provider_usage: Option<&TokenUsage>,
+    estimated_prompt_chars: usize,
+    completion_chars: usize,
+) -> (u64, u64, u64, &'static str) {
+    if let Some(usage) = provider_usage {
+        return (
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens,
+            "provider",
+        );
+    }
+
+    let prompt_tokens = (estimated_prompt_chars / 4) as u64;
+    let completion_tokens = (completion_chars / 4) as u64;
+    (
+        prompt_tokens,
+        completion_tokens,
+        prompt_tokens.saturating_add(completion_tokens),
+        "estimated",
+    )
 }
 
 pub(super) fn requires_email_delivery_prompt(input: &str) -> bool {

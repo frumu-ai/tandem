@@ -800,6 +800,8 @@ pub struct AutomationNodeOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_verdict: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_context: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocker_category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_timeline: Option<Value>,

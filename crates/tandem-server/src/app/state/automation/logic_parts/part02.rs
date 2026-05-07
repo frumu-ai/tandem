@@ -40,9 +40,53 @@ fn repair_brief_review_section(rows: &[String], fallback: &str) -> String {
     }
 }
 
+fn repair_brief_context_section(repair_context: Option<&Value>) -> String {
+    let Some(context) = repair_context else {
+        return String::new();
+    };
+    let failure_identity = context
+        .get("failure_identity")
+        .and_then(Value::as_str)
+        .unwrap_or("not recorded");
+    let lifecycle_status = context
+        .get("lifecycle_status")
+        .and_then(Value::as_str)
+        .unwrap_or("not recorded");
+    let preserve = repair_brief_strings(context.get("preserve"));
+    let missing_evidence = repair_brief_strings(context.get("missing_evidence"));
+    let smallest_repair = context
+        .get("smallest_repair")
+        .and_then(Value::as_str)
+        .unwrap_or("Repair the smallest unmet contract item, then let validation prove success.");
+    let success_condition = context
+        .get("success_condition")
+        .and_then(Value::as_str)
+        .unwrap_or("Validation passes.");
+    let reward_signal = repair_brief_value(context.get("reward_signal"));
+    format!(
+        "\n\nEvidence-backed Repair Context:\n- Failure identity: `{}`.\n- Lifecycle status: `{}`.\n- Preserve: {}.\n- Missing evidence: {}.\n- Smallest valid repair: {}.\n- Success condition: {}.\n- Positive progress signal after validation: {}.",
+        failure_identity,
+        lifecycle_status,
+        if preserve.is_empty() {
+            "none recorded".to_string()
+        } else {
+            preserve.join(" | ")
+        },
+        if missing_evidence.is_empty() {
+            "none recorded".to_string()
+        } else {
+            missing_evidence.join(" | ")
+        },
+        smallest_repair,
+        success_condition,
+        reward_signal,
+    )
+}
+
 fn render_automation_repair_brief_from_verdict(
     node: &AutomationFlowNode,
     verdict: &Value,
+    repair_context: Option<&Value>,
     attempt: u32,
     max_attempts: u32,
     run_id: Option<&str>,
@@ -81,6 +125,7 @@ fn render_automation_repair_brief_from_verdict(
     let still_needed = repair_brief_review_strings(verdict, "still_needed");
     let why_it_matters = repair_brief_review_strings(verdict, "why_it_matters");
     let next_moves = repair_brief_review_strings(verdict, "next_moves");
+    let context_section = repair_brief_context_section(repair_context);
     format!(
         "Repair Brief:\n- Node `{}` is being retried because the prior attempt did not yet satisfy governance validation.\n- Failure class: `{}`.\n- Reason: {}.\n\nAttempt Review:\n- Progress: {} ({}/100)\n\nWhat went well:\n{}\n\nStill needed:\n{}\n\nWhy this matters:\n{}\n\nNext move:\n{}\n\nExpected:\n{}\n\nObserved:\n{}\n\nRepair:\n- Satisfy the expected contract before finalizing the artifact.\n- Do not stop after discovery, summaries, or partial tool output.\n- If a connector/tool is unavailable or returns no usable data, record the exact limitation in the artifact and still write the required output when the contract allows it.{}\n\nUnmet requirements:\n{}\n\nRequired next actions:\n{}",
         node.node_id,
@@ -117,7 +162,7 @@ fn render_automation_repair_brief_from_verdict(
         } else {
             actions.join("\n")
         },
-    )
+    ) + &context_section
 }
 
 pub(crate) fn render_automation_repair_brief(
@@ -171,6 +216,7 @@ pub(crate) fn render_automation_repair_brief(
         return Some(render_automation_repair_brief_from_verdict(
             node,
             verdict,
+            prior_output.get("repair_context"),
             attempt,
             max_attempts,
             run_id,
@@ -538,6 +584,60 @@ pub(crate) fn render_automation_repair_brief(
         nonterminal_status_corrective_line,
         concrete_mcp_corrective_line,
     ))
+}
+
+pub(crate) fn automation_concrete_mcp_repair_tool_allowlist(
+    node: &AutomationFlowNode,
+    prior_output: Option<&Value>,
+) -> Vec<String> {
+    let Some(prior_output) = prior_output else {
+        return Vec::new();
+    };
+    if !automation_output_needs_repair(prior_output) {
+        return Vec::new();
+    }
+    let has_connector_source_miss = prior_output
+        .get("repair_context")
+        .and_then(|value| value.get("unmet_requirements"))
+        .or_else(|| prior_output.pointer("/attempt_verdict/unmet_requirements"))
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter().filter_map(Value::as_str).any(|value| {
+                matches!(
+                    value,
+                    "mcp_connector_source_missing"
+                        | "mcp_connector_source_artifact_missing"
+                        | "mcp_required_tool_missing"
+                )
+            })
+        });
+    if !has_connector_source_miss {
+        return Vec::new();
+    }
+    let mut tools = prior_output
+        .pointer("/repair_context/expected_contract/concrete_mcp_tools")
+        .or_else(|| prior_output.pointer("/attempt_verdict/expected/concrete_mcp_tools"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|tool| {
+                    tool.starts_with("mcp.") && !tool.ends_with(".*") && *tool != "mcp_list"
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if tools.is_empty() {
+        tools = super::prompting_impl::automation_node_concrete_mcp_tool_allowlist(node);
+    }
+    if !tools.is_empty() && automation_node_required_output_path(node).is_some() {
+        tools.push("write".to_string());
+    }
+    tools.sort();
+    tools.dedup();
+    tools
 }
 
 pub(crate) fn is_agent_standup_automation(automation: &AutomationV2Spec) -> bool {
@@ -992,7 +1092,12 @@ pub(crate) fn normalize_automation_requested_tools(
     let connector_source_node = !automation_node_is_code_workflow(node)
         && (connector_hint_mentions || normalized.iter().any(|tool| tool.starts_with("mcp.")));
     if connector_source_node {
-        normalized.retain(|tool| !matches!(tool.as_str(), "edit" | "apply_patch" | "bash"));
+        normalized.retain(|tool| {
+            !matches!(
+                tool.as_str(),
+                "codesearch" | "edit" | "apply_patch" | "glob" | "grep" | "bash"
+            )
+        });
     }
     if !explicit_connector_tool_allowlist && !node.input_refs.is_empty() {
         normalized.push("read".to_string());
@@ -1056,6 +1161,15 @@ pub(crate) fn automation_requested_tools_for_node(
     available_tool_names: &HashSet<String>,
 ) -> Vec<String> {
     let execution_mode = automation_node_execution_mode(node, workspace_root);
+    let connector_hint_mentions =
+        tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
+            &automation_connector_hint_text(node),
+        );
+    let connector_source_node = !automation_node_is_code_workflow(node)
+        && (connector_hint_mentions
+            || node_runtime_impl::automation_node_metadata_tool_allowlist(node)
+                .iter()
+                .any(|tool| tool.starts_with("mcp.")));
     let mut requested_tools = filter_requested_tools_to_available(
         normalize_automation_requested_tools(node, workspace_root, raw),
         available_tool_names,
@@ -1065,6 +1179,13 @@ pub(crate) fn automation_requested_tools_for_node(
             &capability_id,
             available_tool_names,
         ));
+    }
+    if connector_source_node {
+        requested_tools.retain(|tool| {
+            tool == "write"
+                || tool == "mcp_list"
+                || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
+        });
     }
     requested_tools.sort();
     requested_tools.dedup();
@@ -1093,6 +1214,8 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
         .validation_profile
         .as_deref()
         .unwrap_or("artifact_only");
+    let connector_source_node = !automation_node_is_code_workflow(node)
+        && !super::prompting_impl::automation_node_concrete_mcp_tool_allowlist(node).is_empty();
     let workspace_inspection_required = requested_tools
         .iter()
         .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list" | "read"));
@@ -1130,6 +1253,7 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
         && requested_tools.iter().any(|tool| tool == "websearch");
     Some(PrewriteRequirements {
         workspace_inspection_required: workspace_inspection_required
+            && !connector_source_node
             && !research_finalize
             && explicit_input_files.is_empty(),
         web_research_required: web_research_required && !research_finalize,

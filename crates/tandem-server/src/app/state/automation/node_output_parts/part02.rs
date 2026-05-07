@@ -1416,6 +1416,14 @@ pub(crate) fn wrap_automation_node_output_with_automation(
         final_attempt_evidence.as_ref(),
         session_id,
     );
+    let repair_context = if matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "blocked" | "needs_repair" | "verify_failed"
+    ) {
+        Some(build_automation_repair_context(node, &attempt_verdict))
+    } else {
+        None
+    };
     let preflight = tool_telemetry.get("preflight").cloned();
     let capability_resolution = tool_telemetry.get("capability_resolution").cloned();
     let content = match contract_kind.as_str() {
@@ -1480,6 +1488,7 @@ pub(crate) fn wrap_automation_node_output_with_automation(
         capability_resolution,
         attempt_evidence: final_attempt_evidence,
         attempt_verdict: Some(attempt_verdict),
+        repair_context,
         blocker_category,
         receipt_timeline: None,
         quality_mode: Some(quality_mode_resolution.effective.stable_key().to_string()),

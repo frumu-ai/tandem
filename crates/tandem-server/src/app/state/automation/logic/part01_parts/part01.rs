@@ -553,6 +553,10 @@ fn automation_requested_server_scoped_mcp_tools(
     ) {
         return Vec::new();
     }
+    let concrete_tools = super::prompting_impl::automation_node_concrete_mcp_tool_allowlist(node);
+    if !concrete_tools.is_empty() {
+        return concrete_tools;
+    }
     let mut requested = selected_server_names
         .iter()
         .filter(|server_name| {
@@ -990,4 +994,3 @@ fn automation_prompt_canonicalize_artifact_hrefs(text: &str, run_id: &str) -> St
         )
         .replace(".tandem/artifacts/", &canonical_prefix)
 }
-

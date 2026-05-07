@@ -1941,6 +1941,11 @@ pub(crate) async fn execute_automation_v2_node(
     )
     .await;
 
+    // Provider usage is emitted asynchronously through the event bus. Yield once
+    // before clearing the session/run mapping so short blocked attempts still
+    // have a chance to attribute token usage to this automation run.
+    tokio::task::yield_now().await;
+
     state
         .engine_loop
         .clear_session_allowed_tools(&session_id)

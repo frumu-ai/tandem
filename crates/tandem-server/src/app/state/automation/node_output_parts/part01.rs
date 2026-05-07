@@ -1,6 +1,7 @@
 use super::*;
 use crate::util::time::now_ms;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tandem_types::MessagePart;
 
 /// Returns true when all user-visible standup fields consist entirely of known
@@ -1075,6 +1076,161 @@ fn attempt_review_for_unmet_requirement(requirement: &str, expected: &Value) -> 
     }
 }
 
+fn stable_repair_failure_identity(node_id: &str, failure_class: &str, verdict: &Value) -> String {
+    let mut unmet = strings_from_json_array(verdict.get("unmet_requirements"));
+    unmet.sort();
+    unmet.dedup();
+    let contract_kind = verdict
+        .pointer("/expected/output_contract/kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown_contract");
+    let failure_kind = verdict
+        .pointer("/observed/failure_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown_failure_kind");
+    let observed_status = verdict
+        .pointer("/observed/status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown_status");
+    let basis = format!(
+        "node={node_id}|class={failure_class}|kind={failure_kind}|status={observed_status}|contract={contract_kind}|unmet={}",
+        unmet.join(",")
+    );
+    let digest = Sha256::digest(basis.as_bytes());
+    format!("repair-{:x}", digest)[..23].to_string()
+}
+
+fn repair_context_smallest_repair(verdict: &Value, expected: &Value) -> String {
+    let unmet = strings_from_json_array(verdict.get("unmet_requirements"));
+    let next_moves = strings_from_json_array(verdict.pointer("/attempt_review/next_moves"));
+    if unmet.iter().any(|value| {
+        matches!(
+            value.as_str(),
+            "mcp_connector_source_missing"
+                | "mcp_connector_source_artifact_missing"
+                | "mcp_required_tool_missing"
+        )
+    }) {
+        let concrete_tools = strings_from_json_array(expected.get("concrete_mcp_tools"));
+        if concrete_tools.is_empty() {
+            return "Call one concrete `mcp.*` source/action tool before writing the artifact; `mcp_list` alone is discovery, not evidence.".to_string();
+        }
+        return format!(
+            "Call one concrete connector source tool before writing the artifact; do not stop after `mcp_list`. Preferred tools: {}.",
+            attempt_review_tick_list(&concrete_tools)
+        );
+    }
+    if unmet
+        .iter()
+        .any(|value| value == "required_workspace_files_missing")
+    {
+        let files = attempt_review_required_workspace_files(expected);
+        if !files.is_empty() {
+            return format!(
+                "Write the required workspace file(s) {} first, then write/finish the run artifact.",
+                attempt_review_tick_list(&files)
+            );
+        }
+    }
+    if unmet
+        .iter()
+        .any(|value| value == "current_attempt_output_missing")
+    {
+        if let Some(path) = expected
+            .get("required_output_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+        {
+            return format!("Write the required output artifact to `{path}` before ending.");
+        }
+    }
+    next_moves.first().cloned().unwrap_or_else(|| {
+        "Repair the smallest unmet contract item, then let validation prove success.".to_string()
+    })
+}
+
+fn repair_context_preserve(verdict: &Value) -> Vec<String> {
+    let mut preserve =
+        strings_from_json_array(verdict.pointer("/attempt_review/completed_correctly"));
+    if preserve.is_empty() {
+        preserve.push(
+            "No verified prior progress was recorded; avoid reusing unsupported claims."
+                .to_string(),
+        );
+    }
+    attempt_review_cap(&mut preserve, 5);
+    preserve
+}
+
+fn repair_context_missing_evidence(verdict: &Value) -> Vec<String> {
+    let observed = verdict.get("observed").unwrap_or(&Value::Null);
+    let expected = verdict.get("expected").unwrap_or(&Value::Null);
+    let mut missing = Vec::new();
+    if strings_from_json_array(observed.get("executed_tools")).is_empty() {
+        missing.push("executed tool receipts".to_string());
+    }
+    if observed
+        .get("artifact")
+        .is_none_or(|artifact| artifact.as_object().is_none_or(|object| object.is_empty()))
+    {
+        missing.push("artifact evidence".to_string());
+    }
+    if expected.get("output_contract").is_none_or(Value::is_null) {
+        missing.push("explicit output contract".to_string());
+    }
+    missing
+}
+
+pub(crate) fn build_automation_repair_context(node: &AutomationFlowNode, verdict: &Value) -> Value {
+    let failure_class = verdict
+        .get("failure_class")
+        .and_then(Value::as_str)
+        .unwrap_or("contract_miss");
+    let expected = verdict
+        .get("expected")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let observed = verdict
+        .get("observed")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let what_worked =
+        strings_from_json_array(verdict.pointer("/attempt_review/completed_correctly"));
+    let what_failed = strings_from_json_array(verdict.pointer("/attempt_review/still_needed"));
+    let unmet_requirements = strings_from_json_array(verdict.get("unmet_requirements"));
+    let lifecycle_status = observed
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            verdict
+                .get("outcome")
+                .and_then(Value::as_str)
+                .unwrap_or("blocked")
+        });
+    json!({
+        "version": 1,
+        "failure_identity": stable_repair_failure_identity(&node.node_id, failure_class, verdict),
+        "failed_node": node.node_id,
+        "lifecycle_status": lifecycle_status,
+        "failure_class": failure_class,
+        "what_worked": what_worked,
+        "what_failed": what_failed,
+        "expected_contract": expected,
+        "observed_evidence": observed,
+        "unmet_requirements": unmet_requirements,
+        "missing_evidence": repair_context_missing_evidence(verdict),
+        "preserve": repair_context_preserve(verdict),
+        "smallest_repair": repair_context_smallest_repair(verdict, verdict.get("expected").unwrap_or(&Value::Null)),
+        "success_condition": "Validation passes: the required artifact/workspace contract is satisfied and unmet requirements are cleared.",
+        "reward_signal": {
+            "on_success": "contract_satisfied",
+            "progress_credit": "node_repaired",
+            "next_stage_unlocked": true,
+            "validated_only": true
+        }
+    })
+}
+
 fn attempt_review_why_requirement_matters(requirement: &str) -> &'static str {
     match requirement {
         "current_attempt_output_missing" | "required_workspace_files_missing" => {
@@ -1143,7 +1299,7 @@ fn build_automation_attempt_review(
     }
     if executed_tools
         .iter()
-        .any(|tool| tool.starts_with("mcp.") || tool.starts_with("mcp_"))
+        .any(|tool| tool != "mcp_list" && (tool.starts_with("mcp.") || tool.starts_with("mcp_")))
     {
         progress_score += 25;
         attempt_review_push_unique(

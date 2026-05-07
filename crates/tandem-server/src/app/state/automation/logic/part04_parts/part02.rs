@@ -404,8 +404,19 @@ pub(crate) async fn execute_automation_v2_node(
     requested_tools.dedup();
     let has_selected_mcp_servers_policy =
         !selected_mcp_server_names.is_empty() && selected_mcp_source == "policy";
-    let requested_tools =
+    let mut requested_tools =
         automation_add_mcp_list_when_scoped(requested_tools, has_selected_mcp_servers_policy);
+    let concrete_mcp_repair_tools = if attempt > 1 {
+        automation_concrete_mcp_repair_tool_allowlist(
+            node,
+            run.checkpoint.node_outputs.get(&node.node_id),
+        )
+    } else {
+        Vec::new()
+    };
+    if !concrete_mcp_repair_tools.is_empty() {
+        requested_tools = concrete_mcp_repair_tools;
+    }
     let effective_offered_tools =
         automation_expand_effective_offered_tools(&requested_tools, &available_tool_names);
     let execution_mode = automation_node_execution_mode(node, &workspace_root);
@@ -739,6 +750,11 @@ pub(crate) async fn execute_automation_v2_node(
         ),
     )
     .await;
+
+    // Provider usage is emitted asynchronously through the event bus. Yield once
+    // before clearing the session/run mapping so short blocked attempts still
+    // have a chance to attribute token usage to this automation run.
+    tokio::task::yield_now().await;
 
     state
         .engine_loop

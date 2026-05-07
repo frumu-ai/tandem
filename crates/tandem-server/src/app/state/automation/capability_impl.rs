@@ -89,14 +89,24 @@ pub(crate) fn automation_tool_capability_ids(
 ) -> Vec<String> {
     let mut capabilities = Vec::new();
     let required_tools = automation_node_required_tools(node);
+    let connector_hint_mentions =
+        tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
+            &automation_connector_hint_text(node),
+        );
+    let connector_source_node = !automation_node_is_code_workflow(node)
+        && (connector_hint_mentions
+            || node_runtime_impl::automation_node_metadata_tool_allowlist(node)
+                .iter()
+                .any(|tool| tool.starts_with("mcp.")));
     let requires_workspace_read =
         !node.input_refs.is_empty() || required_tools.iter().any(|tool| tool == "read");
-    let requires_workspace_discover = automation_node_required_output_path(node).is_some()
-        || automation_output_validator_kind(node)
-            == crate::AutomationOutputValidatorKind::ResearchBrief
-        || required_tools
-            .iter()
-            .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list"));
+    let requires_workspace_discover = !connector_source_node
+        && (automation_node_required_output_path(node).is_some()
+            || automation_output_validator_kind(node)
+                == crate::AutomationOutputValidatorKind::ResearchBrief
+            || required_tools
+                .iter()
+                .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list")));
     let requires_artifact_write = automation_node_required_output_path(node).is_some()
         || required_tools
             .iter()

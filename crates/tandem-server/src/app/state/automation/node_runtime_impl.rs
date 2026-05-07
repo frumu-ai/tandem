@@ -376,7 +376,12 @@ pub(crate) fn normalize_automation_requested_tools(
     let connector_source_node = !automation_node_is_code_workflow(node)
         && (connector_hint_mentions || normalized.iter().any(|tool| tool.starts_with("mcp.")));
     if connector_source_node {
-        normalized.retain(|tool| !matches!(tool.as_str(), "edit" | "apply_patch" | "bash"));
+        normalized.retain(|tool| {
+            !matches!(
+                tool.as_str(),
+                "codesearch" | "edit" | "apply_patch" | "glob" | "grep" | "bash"
+            )
+        });
     }
     if !explicit_connector_tool_allowlist && !node.input_refs.is_empty() {
         normalized.push("read".to_string());
@@ -588,6 +593,15 @@ pub(crate) fn automation_requested_tools_for_node(
     available_tool_names: &HashSet<String>,
 ) -> Vec<String> {
     let execution_mode = automation_node_execution_mode(node, workspace_root);
+    let connector_hint_mentions =
+        tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
+            &automation_connector_hint_text(node),
+        );
+    let connector_source_node = !automation_node_is_code_workflow(node)
+        && (connector_hint_mentions
+            || automation_node_metadata_tool_allowlist(node)
+                .iter()
+                .any(|tool| tool.starts_with("mcp.")));
     let mut requested_tools = filter_requested_tools_to_available(
         normalize_automation_requested_tools(node, workspace_root, raw),
         available_tool_names,
@@ -597,6 +611,13 @@ pub(crate) fn automation_requested_tools_for_node(
             &capability_id,
             available_tool_names,
         ));
+    }
+    if connector_source_node {
+        requested_tools.retain(|tool| {
+            tool == "write"
+                || tool == "mcp_list"
+                || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
+        });
     }
     requested_tools.sort();
     requested_tools.dedup();

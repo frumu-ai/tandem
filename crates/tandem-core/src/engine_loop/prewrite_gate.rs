@@ -53,7 +53,9 @@ pub(super) fn evaluate_prewrite_gate(
         && progress.required_write_retry_count > 0
         && (progress.productive_write_tool_calls_total == 0 || prewrite_satisfied)
         && !gate_write
-        && (!requirements.repair_on_unmet_requirements || progress.prewrite_gate_waived);
+        && (prewrite_satisfied
+            || !requirements.repair_on_unmet_requirements
+            || progress.prewrite_gate_waived);
 
     PrewriteGateDecision {
         prewrite_satisfied,

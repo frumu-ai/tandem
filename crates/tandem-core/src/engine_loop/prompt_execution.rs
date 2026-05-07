@@ -186,6 +186,8 @@ impl EngineLoop {
             let mut required_write_retry_count = 0usize;
             let mut unmet_prewrite_repair_retry_count = 0usize;
             let mut empty_completion_retry_count = 0usize;
+            let mut force_structured_handoff_final_response = false;
+            let mut structured_handoff_loop_guard_retry_attempted = false;
             let mut prewrite_gate_waived = false;
             let mut invalid_tool_args_retry_count = 0usize;
             let strict_write_retry_max_attempts = strict_write_retry_max_attempts();
@@ -194,6 +196,8 @@ impl EngineLoop {
             let email_delivery_requested = requires_email_delivery_prompt(&text);
             let web_research_requested = requires_web_research_prompt(&text);
             let code_workflow_requested = infer_code_workflow_from_text(&text);
+            let structured_handoff_final_response_requested =
+                requires_structured_handoff_final_response_prompt(&text);
             let mut email_action_executed = false;
             let mut latest_email_action_note: Option<String> = None;
             let mut email_tools_ever_offered = false;
@@ -438,6 +442,11 @@ impl EngineLoop {
                 if prewrite_gate_write || required_mcp_source_pending {
                     tool_schemas.retain(|schema| !is_workspace_write_tool(&schema.name));
                 }
+                if required_mcp_source_pending
+                    && tool_call_counts.get("mcp_list").copied().unwrap_or(0) > 0
+                {
+                    tool_schemas.retain(|schema| normalize_tool_name(&schema.name) != "mcp_list");
+                }
                 if requested_prewrite_requirements.repair_on_unmet_requirements
                     && productive_write_tool_calls_total >= 3
                 {
@@ -495,16 +504,23 @@ impl EngineLoop {
                         });
                     }
                 }
+                if force_structured_handoff_final_response {
+                    tool_schemas.clear();
+                }
+                let mcp_list_already_attempted =
+                    tool_call_counts.get("mcp_list").copied().unwrap_or(0) > 0;
                 if required_mcp_tool_pending {
                     tool_schemas.retain(|schema| {
                         let normalized = normalize_tool_name(&schema.name);
                         pending_required_mcp_tools.contains(&normalized)
-                            || (!is_workspace_write_tool(&schema.name) && normalized == "mcp_list")
+                            || (!mcp_list_already_attempted
+                                && !is_workspace_write_tool(&schema.name)
+                                && normalized == "mcp_list")
                     });
                 } else if required_mcp_source_pending {
                     tool_schemas.retain(|schema| {
                         let normalized = normalize_tool_name(&schema.name);
-                        normalized == "mcp_list"
+                        (!mcp_list_already_attempted && normalized == "mcp_list")
                             || concrete_mcp_tool_matches_wildcard(
                                 &normalized,
                                 &required_mcp_source_wildcards_before_write,
@@ -887,6 +903,36 @@ impl EngineLoop {
                         }
                     }
                 }
+
+                let (prompt_tokens, completion_tokens, total_tokens, usage_source) =
+                    provider_usage_token_counts(
+                        provider_usage.as_ref(),
+                        estimated_prompt_chars,
+                        completion.len(),
+                    );
+                if usage_source == "estimated" {
+                    tracing::debug!(
+                        session_id = %session_id,
+                        provider_id = %provider_id,
+                        "provider.usage missing from stream; using char-count estimate \
+                         (prompt_chars={estimated_prompt_chars} completion_chars={})",
+                        completion.len()
+                    );
+                }
+                self.event_bus.publish(EngineEvent::new(
+                    "provider.usage",
+                    json!({
+                        "sessionID": session_id,
+                        "correlationID": correlation_ref,
+                        "messageID": user_message_id,
+                        "providerID": provider_id,
+                        "modelID": model_id_value,
+                        "promptTokens": prompt_tokens,
+                        "completionTokens": completion_tokens,
+                        "totalTokens": total_tokens,
+                        "usageSource": usage_source,
+                    }),
+                ));
 
                 let streamed_tool_call_count = streamed_tool_calls.len();
                 let streamed_tool_call_parse_failed = streamed_tool_calls
@@ -1601,6 +1647,27 @@ impl EngineLoop {
                         }
                         let guard_budget_hit =
                             outputs.iter().any(|o| is_guard_budget_tool_output(o));
+                        if (guard_budget_hit || duplicate_signature_hit_in_cycle)
+                            && structured_handoff_final_response_requested
+                            && !structured_handoff_loop_guard_retry_attempted
+                        {
+                            structured_handoff_loop_guard_retry_attempted = true;
+                            force_structured_handoff_final_response = true;
+                            followup_context =
+                                Some(structured_handoff_loop_guard_final_retry_context(&outputs));
+                            self.event_bus.publish(EngineEvent::new(
+                                "provider.call.iteration.finish",
+                                json!({
+                                    "sessionID": session_id,
+                                    "messageID": user_message_id,
+                                    "iteration": iteration,
+                                    "finishReason": "structured_handoff_loop_guard_final_retry",
+                                    "acceptedToolCalls": accepted_tool_calls_in_cycle,
+                                    "rejectedToolCalls": 0,
+                                }),
+                            ));
+                            continue;
+                        }
                         if executed_productive_tool {
                             let prewrite_gate = evaluate_prewrite_gate(
                                 requested_write_required,
@@ -1754,51 +1821,6 @@ impl EngineLoop {
                             rejected_tool_call_in_cycle,
                         );
                     }
-                }
-
-                {
-                    let (prompt_tokens, completion_tokens, total_tokens, usage_source) =
-                        if let Some(usage) = provider_usage {
-                            (
-                                usage.prompt_tokens,
-                                usage.completion_tokens,
-                                usage.total_tokens,
-                                "provider",
-                            )
-                        } else {
-                            // Provider did not return usage (e.g. streaming without
-                            // include_usage, or a backend that omits it). Estimate from
-                            // accumulated char counts using the ~4 chars-per-token heuristic.
-                            let est_prompt = (estimated_prompt_chars / 4) as u64;
-                            let est_completion = (completion.len() / 4) as u64;
-                            tracing::debug!(
-                                session_id = %session_id,
-                                provider_id = %provider_id,
-                                "provider.usage missing from stream; using char-count estimate \
-                                 (prompt_chars={estimated_prompt_chars} completion_chars={})",
-                                completion.len()
-                            );
-                            (
-                                est_prompt,
-                                est_completion,
-                                est_prompt.saturating_add(est_completion),
-                                "estimated",
-                            )
-                        };
-                    self.event_bus.publish(EngineEvent::new(
-                        "provider.usage",
-                        json!({
-                            "sessionID": session_id,
-                            "correlationID": correlation_ref,
-                            "messageID": user_message_id,
-                            "providerID": provider_id,
-                            "modelID": model_id_value,
-                            "promptTokens": prompt_tokens,
-                            "completionTokens": completion_tokens,
-                            "totalTokens": total_tokens,
-                            "usageSource": usage_source,
-                        }),
-                    ));
                 }
 
                 if matches!(requested_tool_mode, ToolMode::Required)

@@ -135,6 +135,12 @@ fn attempt_verdict_records_expected_observed_contract_miss() {
             .as_str()
             .is_some_and(|text| text.contains("Discovered available MCP")))));
     assert!(verdict
+        .pointer("/attempt_review/completed_correctly")
+        .and_then(Value::as_array)
+        .is_none_or(|rows| !rows.iter().any(|row| row
+            .as_str()
+            .is_some_and(|text| text.contains("Called a concrete MCP")))));
+    assert!(verdict
         .pointer("/attempt_review/still_needed")
         .and_then(Value::as_array)
         .is_some_and(|rows| rows.iter().any(|row| row
@@ -151,6 +157,33 @@ fn attempt_verdict_records_expected_observed_contract_miss() {
             .pointer("/attempt_review/next_moves/0")
             .and_then(Value::as_str),
         Some("Call `mcp.example.search_posts` before writing the artifact.")
+    );
+
+    let repair_context = build_automation_repair_context(&node, &verdict);
+    assert_eq!(
+        repair_context
+            .pointer("/failed_node")
+            .and_then(Value::as_str),
+        Some("n1")
+    );
+    assert_eq!(
+        repair_context
+            .pointer("/reward_signal/validated_only")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(repair_context
+        .pointer("/smallest_repair")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.contains("Call one concrete connector source tool")));
+    let identity = repair_context
+        .pointer("/failure_identity")
+        .and_then(Value::as_str)
+        .expect("failure identity");
+    assert!(identity.starts_with("repair-"));
+    assert!(
+        !identity.contains("session-1"),
+        "stable failure identity must not include volatile session ids"
     );
 }
 
@@ -185,6 +218,21 @@ fn repair_brief_uses_attempt_verdict_expected_observed_sections() {
             },
             "unmet_requirements": ["mcp_connector_source_missing"],
             "required_next_actions": ["Call `mcp.example.search_posts` before writing the artifact."]
+        },
+        "repair_context": {
+            "failure_identity": "repair-stable-contract",
+            "failed_node": "n1",
+            "lifecycle_status": "needs_repair",
+            "preserve": ["Discovered available MCP connector inventory."],
+            "missing_evidence": ["concrete connector source result"],
+            "smallest_repair": "Call one concrete connector source tool before writing the artifact; do not stop after `mcp_list`.",
+            "success_condition": "Validation passes: the required artifact/workspace contract is satisfied and unmet requirements are cleared.",
+            "reward_signal": {
+                "on_success": "contract_satisfied",
+                "progress_credit": "node_repaired",
+                "next_stage_unlocked": true,
+                "validated_only": true
+            }
         }
     });
 
@@ -198,9 +246,97 @@ fn repair_brief_uses_attempt_verdict_expected_observed_sections() {
     assert!(brief.contains("Next move:"));
     assert!(brief.contains("Expected:"));
     assert!(brief.contains("Observed:"));
+    assert!(brief.contains("Evidence-backed Repair Context:"));
+    assert!(brief.contains("Smallest valid repair:"));
+    assert!(brief.contains("Positive progress signal after validation:"));
     assert!(brief.contains("mcp.example.search_posts"));
     assert!(!brief.contains("mcp.reddit_gmail"));
     assert!(!brief.to_ascii_lowercase().contains("you failed"));
+}
+
+#[test]
+fn concrete_mcp_repair_tool_allowlist_removes_discovery_tools() {
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "text_summary".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "tool_allowlist": [
+            "mcp.example.search_posts",
+            "mcp.example.get_top",
+            "mcp.example.*"
+        ],
+        "artifacts": ["assess.json"]
+    }));
+    let prior_output = json!({
+        "status": "needs_repair",
+        "repair_context": {
+            "unmet_requirements": ["mcp_connector_source_missing"],
+            "expected_contract": {
+                "concrete_mcp_tools": [
+                    "mcp.example.search_posts",
+                    "mcp.example.get_top"
+                ]
+            }
+        }
+    });
+
+    let tools = automation_concrete_mcp_repair_tool_allowlist(&node, Some(&prior_output));
+
+    assert!(tools.contains(&"mcp.example.search_posts".to_string()));
+    assert!(tools.contains(&"mcp.example.get_top".to_string()));
+    assert!(tools.contains(&"write".to_string()));
+    assert!(!tools.contains(&"mcp_list".to_string()));
+    assert!(!tools.contains(&"glob".to_string()));
+    assert!(!tools.contains(&"grep".to_string()));
+}
+
+#[test]
+fn connector_source_prewrite_does_not_require_workspace_inspection() {
+    let mut node = bare_node();
+    node.objective =
+        "Use Reddit MCP to cheaply check for fresh relevant Reddit discussions.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: Some(
+            "Return {\"has_work\": boolean, \"summary\": string, \"items\": array}.".to_string(),
+        ),
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "task_kind": "research",
+            "output_path": ".tandem/artifacts/assess-reddit-activity.json"
+        },
+        "tool_allowlist": [
+            "mcp.reddit_gmail.reddit_get_r_top",
+            "mcp.reddit_gmail.reddit_get_subreddits_search",
+            "mcp.reddit_gmail.reddit_search_across_subreddits"
+        ]
+    }));
+
+    let requirements = automation_node_prewrite_requirements(
+        &node,
+        &[
+            "glob".to_string(),
+            "read".to_string(),
+            "mcp_list".to_string(),
+            "mcp.reddit_gmail.reddit_get_r_top".to_string(),
+            "write".to_string(),
+        ],
+    )
+    .expect("connector source node with output path should have prewrite requirements");
+
+    assert!(
+        !requirements.workspace_inspection_required,
+        "connector-backed source nodes should not burn repair attempts on irrelevant workspace inspection"
+    );
 }
 
 fn code_workflow_node() -> AutomationFlowNode {
@@ -899,6 +1035,9 @@ fn connector_source_nodes_do_not_offer_source_mutation_tools() {
     assert!(requested.contains(&"mcp_list".to_string()));
     assert!(requested.contains(&"mcp.reddit_gmail.reddit_search_across_subreddits".to_string()));
     assert!(requested.contains(&"write".to_string()));
+    assert!(!requested.contains(&"codesearch".to_string()));
+    assert!(!requested.contains(&"glob".to_string()));
+    assert!(!requested.contains(&"grep".to_string()));
     assert!(!requested.contains(&"edit".to_string()));
     assert!(!requested.contains(&"apply_patch".to_string()));
     assert!(!requested.contains(&"bash".to_string()));
@@ -944,6 +1083,67 @@ fn connector_source_metadata_tool_allowlist_is_hard_scoped() {
     assert!(!requested.contains(&"edit".to_string()));
     assert!(!requested.contains(&"apply_patch".to_string()));
     assert!(!requested.contains(&"bash".to_string()));
+}
+
+#[test]
+fn connector_source_effective_tools_exclude_artifact_patch_tools() {
+    let mut node = bare_node();
+    node.objective =
+        "Use Reddit MCP to cheaply check fresh AI productivity discussions.".to_string();
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/assess-reddit-activity.json"
+        },
+        "tool_allowlist": [
+            "mcp.reddit_gmail.reddit_search_across_subreddits",
+            "mcp.reddit_gmail.reddit_get_r_top"
+        ]
+    }));
+    let available = std::collections::HashSet::from([
+        "apply_patch".to_string(),
+        "edit".to_string(),
+        "mcp_list".to_string(),
+        "mcp.reddit_gmail.reddit_search_across_subreddits".to_string(),
+        "mcp.reddit_gmail.reddit_get_r_top".to_string(),
+        "write".to_string(),
+    ]);
+
+    let requested = automation_requested_tools_for_node(
+        &node,
+        "/tmp/tandem-connector-source",
+        vec![],
+        &available,
+    );
+
+    assert!(requested.contains(&"mcp_list".to_string()));
+    assert!(requested.contains(&"mcp.reddit_gmail.reddit_search_across_subreddits".to_string()));
+    assert!(requested.contains(&"mcp.reddit_gmail.reddit_get_r_top".to_string()));
+    assert!(requested.contains(&"write".to_string()));
+    assert!(!requested.contains(&"apply_patch".to_string()));
+    assert!(!requested.contains(&"edit".to_string()));
+}
+
+#[test]
+fn connector_server_scope_prefers_concrete_mcp_allowlist() {
+    let mut node = bare_node();
+    node.objective =
+        "Use Reddit MCP to cheaply check fresh AI productivity discussions.".to_string();
+    node.metadata = Some(json!({
+        "builder": {
+            "preferred_mcp_servers": ["reddit-gmail"]
+        },
+        "tool_allowlist": [
+            "mcp.reddit_gmail.reddit_search_across_subreddits",
+            "mcp.reddit_gmail.reddit_get_r_top"
+        ]
+    }));
+
+    let requested =
+        automation_requested_server_scoped_mcp_tools(&node, &["reddit-gmail".to_string()]);
+
+    assert!(requested.contains(&"mcp.reddit_gmail.reddit_search_across_subreddits".to_string()));
+    assert!(requested.contains(&"mcp.reddit_gmail.reddit_get_r_top".to_string()));
+    assert!(!requested.contains(&"mcp.reddit_gmail.*".to_string()));
 }
 
 #[test]

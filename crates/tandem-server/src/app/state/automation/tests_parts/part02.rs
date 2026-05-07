@@ -568,6 +568,28 @@ fn capability_ids_node_with_input_ref_includes_workspace_read() {
 }
 
 #[test]
+fn capability_ids_connector_source_output_excludes_workspace_discover() {
+    let mut node = bare_node();
+    node.objective = "Use Reddit MCP to check for fresh AI productivity discussions.".to_string();
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/assess-reddit-activity.json"
+        },
+        "tool_allowlist": [
+            "mcp.reddit_gmail.reddit_search_across_subreddits"
+        ]
+    }));
+
+    let caps = automation_tool_capability_ids(&node, "artifact_write");
+
+    assert!(caps.contains(&"artifact_write".to_string()));
+    assert!(
+        !caps.contains(&"workspace_discover".to_string()),
+        "connector-source artifact writes should not advertise workspace discovery"
+    );
+}
+
+#[test]
 fn capability_ids_code_workflow_git_patch_includes_verify_command() {
     let caps = automation_tool_capability_ids(&code_workflow_node(), "git_patch");
     assert!(

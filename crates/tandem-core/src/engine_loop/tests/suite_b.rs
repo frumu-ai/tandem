@@ -148,6 +148,54 @@ fn summarize_duplicate_signature_outputs_returns_run_scoped_message() {
 }
 
 #[test]
+fn structured_handoff_prompt_detector_matches_automation_contracts() {
+    assert!(requires_structured_handoff_final_response_prompt(
+        "Output contract kind: structured_json\nStructured Handoff Expectation:\nReturn JSON only."
+    ));
+    assert!(requires_structured_handoff_final_response_prompt(
+        "Include the required structured handoff JSON in the final response."
+    ));
+    assert!(!requires_structured_handoff_final_response_prompt(
+        "Please inspect the repo and summarize what you found."
+    ));
+}
+
+#[test]
+fn structured_handoff_loop_guard_retry_context_forces_json_final() {
+    let context = structured_handoff_loop_guard_final_retry_context(&[
+        "Tool `mcp_list` call skipped: duplicate call signature retry limit reached (3)."
+            .to_string(),
+    ]);
+
+    assert!(context.contains("Stop calling tools now"));
+    assert!(context.contains("structured JSON handoff"));
+    assert!(context.contains("JSON only"));
+    assert!(context.contains("duplicate call signature"));
+}
+
+#[test]
+fn provider_usage_token_counts_prefers_provider_usage() {
+    let usage = TokenUsage {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        total_tokens: 18,
+    };
+
+    assert_eq!(
+        provider_usage_token_counts(Some(&usage), 10_000, 10_000),
+        (11, 7, 18, "provider")
+    );
+}
+
+#[test]
+fn provider_usage_token_counts_estimates_when_provider_omits_usage() {
+    assert_eq!(
+        provider_usage_token_counts(None, 4_000, 800),
+        (1_000, 200, 1_200, "estimated")
+    );
+}
+
+#[test]
 fn required_tool_mode_unsatisfied_completion_includes_marker() {
     let message =
         required_tool_mode_unsatisfied_completion(RequiredToolFailureKind::NoToolCallEmitted);
@@ -265,37 +313,47 @@ fn concrete_mcp_preflight_blocks_workspace_write_until_attempted() {
         "write".to_string(),
         "edit".to_string(),
         "mcp_list".to_string(),
-        "mcp.githubcopilot.get_me".to_string(),
-        "mcp.githubcopilot.search_repositories".to_string(),
-        "mcp.githubcopilot.*".to_string(),
+        "mcp.notion.notion_fetch".to_string(),
+        "mcp.notion.notion_create_pages".to_string(),
     ]);
     let required = concrete_mcp_tools_required_before_write(&allowlist);
-    assert_eq!(
-        required,
-        vec![
-            "mcp.githubcopilot.get_me".to_string(),
-            "mcp.githubcopilot.search_repositories".to_string()
-        ]
-    );
+    assert_eq!(required, vec!["mcp.notion.notion_create_pages".to_string()]);
 
     let mut counts = HashMap::new();
     assert!(has_unattempted_required_mcp_tool(&required, &counts));
     assert_eq!(
         unattempted_required_mcp_tools(&required, &counts),
-        HashSet::from([
-            "mcp.githubcopilot.get_me".to_string(),
-            "mcp.githubcopilot.search_repositories".to_string()
-        ])
+        HashSet::from(["mcp.notion.notion_create_pages".to_string()])
     );
-    counts.insert("mcp.githubcopilot.get_me".to_string(), 1);
-    assert!(has_unattempted_required_mcp_tool(&required, &counts));
-    assert_eq!(
-        unattempted_required_mcp_tools(&required, &counts),
-        HashSet::from(["mcp.githubcopilot.search_repositories".to_string()])
-    );
-    counts.insert("mcp.githubcopilot.search_repositories".to_string(), 1);
+    counts.insert("mcp.notion.notion_create_pages".to_string(), 1);
     assert!(!has_unattempted_required_mcp_tool(&required, &counts));
     assert!(unattempted_required_mcp_tools(&required, &counts).is_empty());
+}
+
+#[test]
+fn concrete_mcp_source_tools_are_alternatives_before_write() {
+    let allowlist = HashSet::from([
+        "write".to_string(),
+        "mcp_list".to_string(),
+        "mcp.reddit_gmail.reddit_get_r_top".to_string(),
+        "mcp.reddit_gmail.reddit_get_subreddits_search".to_string(),
+        "mcp.reddit_gmail.reddit_search_across_subreddits".to_string(),
+    ]);
+
+    assert!(concrete_mcp_tools_required_before_write(&allowlist).is_empty());
+    let wildcards = mcp_source_wildcards_required_before_write(&allowlist);
+    assert_eq!(wildcards, vec!["mcp.reddit_gmail.*".to_string()]);
+
+    let mut counts = HashMap::new();
+    counts.insert("mcp_list".to_string(), 1);
+    assert!(!has_attempted_concrete_mcp_for_wildcard(
+        &wildcards, &counts
+    ));
+    counts.insert(
+        "mcp.reddit_gmail.reddit_search_across_subreddits".to_string(),
+        1,
+    );
+    assert!(has_attempted_concrete_mcp_for_wildcard(&wildcards, &counts));
 }
 
 #[test]
@@ -485,21 +543,63 @@ fn write_tool_removed_after_third_productive_write() {
 }
 
 #[test]
-fn force_write_only_retry_disabled_for_prewrite_repair_nodes() {
-    let requested_write_required = true;
-    let required_write_retry_count = 1usize;
-    let productive_write_tool_calls_total = 0usize;
-    let prewrite_satisfied = true;
-    let prewrite_gate_write = false;
-    let repair_on_unmet_requirements = true;
+fn force_write_only_retry_enabled_after_prewrite_satisfied() {
+    let decision = evaluate_prewrite_gate(
+        true,
+        &PrewriteRequirements {
+            workspace_inspection_required: false,
+            web_research_required: false,
+            concrete_read_required: false,
+            successful_web_research_required: false,
+            repair_on_unmet_requirements: true,
+            repair_budget: Some(2),
+            repair_exhaustion_behavior: None,
+            coverage_mode: PrewriteCoverageMode::None,
+        },
+        PrewriteProgress {
+            productive_write_tool_calls_total: 0,
+            productive_workspace_inspection_total: 0,
+            productive_concrete_read_total: 0,
+            productive_web_research_total: 0,
+            successful_web_research_total: 0,
+            required_write_retry_count: 1,
+            unmet_prewrite_repair_retry_count: 0,
+            prewrite_gate_waived: false,
+        },
+    );
 
-    let force_write_only_retry = requested_write_required
-        && required_write_retry_count > 0
-        && (productive_write_tool_calls_total == 0 || prewrite_satisfied)
-        && !prewrite_gate_write
-        && !repair_on_unmet_requirements;
+    assert!(decision.prewrite_satisfied);
+    assert!(decision.force_write_only_retry);
+}
 
-    assert!(!force_write_only_retry);
+#[test]
+fn force_write_only_retry_waits_for_unmet_prewrite_repair() {
+    let decision = evaluate_prewrite_gate(
+        true,
+        &PrewriteRequirements {
+            workspace_inspection_required: false,
+            web_research_required: false,
+            concrete_read_required: true,
+            successful_web_research_required: false,
+            repair_on_unmet_requirements: true,
+            repair_budget: Some(2),
+            repair_exhaustion_behavior: None,
+            coverage_mode: PrewriteCoverageMode::None,
+        },
+        PrewriteProgress {
+            productive_write_tool_calls_total: 0,
+            productive_workspace_inspection_total: 0,
+            productive_concrete_read_total: 0,
+            productive_web_research_total: 0,
+            successful_web_research_total: 0,
+            required_write_retry_count: 1,
+            unmet_prewrite_repair_retry_count: 0,
+            prewrite_gate_waived: false,
+        },
+    );
+
+    assert!(!decision.prewrite_satisfied);
+    assert!(!decision.force_write_only_retry);
 }
 
 #[test]
