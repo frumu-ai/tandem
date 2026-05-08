@@ -103,6 +103,9 @@ pub fn workflow_plan_draft_record<Plan: Clone>(
 }
 
 pub fn workflow_step_expects_web_research(step_id: &str, kind: &str, objective: &str) -> bool {
+    if workflow_step_allows_optional_web_research(objective) {
+        return false;
+    }
     let lowered_step_id = step_id.trim().to_ascii_lowercase();
     let lowered_kind = kind.trim().to_ascii_lowercase();
     let lowered_objective = objective.trim().to_ascii_lowercase();
@@ -112,6 +115,34 @@ pub fn workflow_step_expects_web_research(step_id: &str, kind: &str, objective: 
         || lowered_objective.contains("online")
         || lowered_objective.contains("current")
         || lowered_objective.contains("latest")
+}
+
+pub fn workflow_step_allows_optional_web_research(text: &str) -> bool {
+    let lowered = text.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return false;
+    }
+    let mentions_web = lowered.contains("web research")
+        || lowered.contains("web_research")
+        || lowered.contains("websearch")
+        || lowered.contains("web fetch")
+        || lowered.contains("web_fetch")
+        || lowered.contains("web context")
+        || lowered.contains("external context");
+    let has_optional_language = lowered.contains("only when useful")
+        || lowered.contains("when useful")
+        || lowered.contains("if useful")
+        || lowered.contains("if needed")
+        || lowered.contains("if no web context is needed")
+        || lowered.contains("if no web context needed")
+        || lowered.contains("no web context is needed")
+        || lowered.contains("no web context needed")
+        || lowered.contains("empty citations list")
+        || lowered.contains("empty citations")
+        || lowered.contains("do not replace reddit")
+        || lowered.contains("do not replace the primary evidence");
+
+    mentions_web && has_optional_language
 }
 
 pub fn workflow_step_metadata_defaults(

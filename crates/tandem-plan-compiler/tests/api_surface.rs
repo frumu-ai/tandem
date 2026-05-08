@@ -411,7 +411,7 @@ fn curated_api_hardens_mission_coder_launch_contract() {
             model_override: None,
             tool_allowlist_override: vec!["read".to_string(), "write".to_string()],
             mcp_servers_override: vec!["github".to_string()],
-            depends_on: vec!["approval_1".to_string()],
+            depends_on: Vec::new(),
             input_refs: Vec::new(),
             output_contract: OutputContractBlueprint {
                 kind: "report_markdown".to_string(),
@@ -445,7 +445,11 @@ fn curated_api_hardens_mission_coder_launch_contract() {
             mcp_servers_override: Vec::new(),
             gate: Some(HumanApprovalGate {
                 required: true,
-                decisions: vec![ApprovalDecision::Approve, ApprovalDecision::Rework],
+                decisions: vec![
+                    ApprovalDecision::Approve,
+                    ApprovalDecision::Rework,
+                    ApprovalDecision::Cancel,
+                ],
                 rework_targets: vec!["workstream_1".to_string()],
                 instructions: Some("Approve the launch contract.".to_string()),
             }),
@@ -474,7 +478,7 @@ fn curated_api_hardens_mission_coder_launch_contract() {
     assert_eq!(handoff.lane.as_deref(), Some("coding"));
     assert_eq!(handoff.milestone.as_deref(), Some("milestone_alpha"));
     assert_eq!(handoff.template_id.as_deref(), Some("template_worker"));
-    assert_eq!(handoff.depends_on, vec!["approval_1".to_string()]);
+    assert!(handoff.depends_on.is_empty());
     assert_eq!(
         handoff.tool_allowlist,
         vec!["read".to_string(), "write".to_string()]

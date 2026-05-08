@@ -369,14 +369,25 @@ fn step_artifacts(step: &WorkflowPlanStep<Value, Value>) -> Vec<String> {
 fn step_connector_requirements(step: &WorkflowPlanStep<Value, Value>) -> Vec<ConnectorRequirement> {
     let mut requirements = Vec::new();
 
-    if step
+    let builder_prompt = step
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("builder"))
+        .and_then(|value| value.get("prompt"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let optional_web_context = format!("{}\n{}", step.objective, builder_prompt);
+    let optional_web_research =
+        crate::workflow_plan::workflow_step_allows_optional_web_research(&optional_web_context);
+    let web_research_expected = step
         .metadata
         .as_ref()
         .and_then(|value| value.get("builder"))
         .and_then(|value| value.get("web_research_expected"))
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+
+    if web_research_expected && !optional_web_research {
         requirements.push(ConnectorRequirement {
             capability: "websearch".to_string(),
             required: true,
@@ -392,7 +403,13 @@ fn step_connector_requirements(step: &WorkflowPlanStep<Value, Value>) -> Vec<Con
     {
         for tool in required_tools.iter().filter_map(Value::as_str) {
             let capability = tool.trim();
+            let normalized_capability = capability.to_ascii_lowercase();
+            let optional_web_tool = matches!(
+                normalized_capability.as_str(),
+                "websearch" | "webfetch" | "web_fetch" | "web_research"
+            );
             if capability.is_empty()
+                || (optional_web_research && optional_web_tool)
                 || requirements
                     .iter()
                     .any(|existing| existing.capability == capability)
@@ -662,4 +679,3 @@ pub fn compile_workflow_plan_preview_package(
     package.validation_state = Some(validation.validation_state);
     package
 }
-

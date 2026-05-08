@@ -76,6 +76,50 @@ mod tests {
     }
 
     #[test]
+    fn optional_web_context_does_not_expect_required_web_research() {
+        let objective = "Use web research and web_fetch only when useful to add supporting context for tools, market references, or claims that emerged from collect_reddit_signals. Do not replace Reddit as the primary evidence source. Return concise citations with URLs; if no web context is needed, return an empty citations list with rationale.";
+
+        assert!(workflow_step_allows_optional_web_research(objective));
+        assert!(
+            !workflow_step_expects_web_research(
+                "gather_supporting_context",
+                "research",
+                objective,
+            ),
+            "optional web context must not become a required web-research step"
+        );
+
+        let metadata = workflow_step_metadata_defaults(
+            "gather_supporting_context",
+            "research",
+            objective,
+            true,
+        )
+        .expect("metadata");
+        assert_eq!(
+            metadata
+                .pointer("/builder/web_research_expected")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let enforcement = workflow_step_enforcement_defaults(
+            "gather_supporting_context",
+            "research",
+            objective,
+            true,
+        )
+        .expect("enforcement");
+        assert!(
+            !enforcement
+                .get("required_tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| tools.iter().any(|tool| tool.as_str() == Some("websearch"))),
+            "optional web context must not install required websearch enforcement"
+        );
+    }
+
+    #[test]
     fn extract_json_value_from_text_handles_wrapped_json() {
         let text = r#"
 Here is the planner response:

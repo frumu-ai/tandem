@@ -457,6 +457,65 @@ mod tests {
     }
 
     #[test]
+    fn optional_web_context_does_not_project_required_websearch_connector() {
+        let optional_objective = "Use web research and web_fetch only when useful to add supporting context for tools, market references, or claims that emerged from collect_reddit_signals. Do not replace Reddit as the primary evidence source. Return concise citations with URLs; if no web context is needed, return an empty citations list with rationale.";
+        let plan = crate::contracts::WorkflowPlanJson {
+            plan_id: "plan_optional_web".to_string(),
+            planner_version: "v1".to_string(),
+            plan_source: "test".to_string(),
+            original_prompt: "Add optional supporting context to Reddit findings.".to_string(),
+            normalized_prompt: "add optional supporting context to reddit findings".to_string(),
+            confidence: "medium".to_string(),
+            title: "Optional Web Context".to_string(),
+            description: Some("Preview plan".to_string()),
+            schedule: crate::contracts::default_fallback_schedule_json(),
+            execution_target: "automation_v2".to_string(),
+            workspace_root: "/repo".to_string(),
+            steps: vec![WorkflowPlanStep {
+                step_id: "gather_supporting_context".to_string(),
+                kind: "research".to_string(),
+                objective: optional_objective.to_string(),
+                depends_on: vec!["collect_reddit_signals".to_string()],
+                agent_role: "context_researcher".to_string(),
+                input_refs: vec![json!({
+                    "from_step_id": "collect_reddit_signals",
+                    "alias": "reddit_findings"
+                })],
+                output_contract: Some(json!({
+                    "kind": "citations",
+                    "validator": "generic_artifact",
+                    "enforcement": {
+                        "required_tools": ["websearch", "web_fetch", "webfetch"]
+                    }
+                })),
+                metadata: Some(json!({
+                    "builder": {
+                        "web_research_expected": true
+                    }
+                })),
+            }],
+            requires_integrations: Vec::new(),
+            allowed_mcp_servers: vec!["reddit-gmail".to_string()],
+            operator_preferences: None,
+            save_options: json!({"can_export_pack": true}),
+        };
+
+        let package = compile_workflow_plan_preview_package(&plan, Some("user"));
+
+        assert!(
+            package.routine_graph[0].steps[0]
+                .connector_requirements
+                .iter()
+                .all(|requirement| !matches!(
+                    requirement.capability.as_str(),
+                    "websearch" | "web_fetch" | "webfetch"
+                )),
+            "optional web context should not project required web connectors: {:#?}",
+            package.routine_graph[0].steps[0].connector_requirements
+        );
+    }
+
+    #[test]
     fn with_manual_trigger_record_captures_plan_snapshots() {
         let plan = compile_workflow_plan_preview_package(
             &crate::contracts::WorkflowPlanJson {

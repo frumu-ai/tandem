@@ -107,7 +107,8 @@ pub use crate::workflow_plan::{
     planner_model_spec, resolve_workspace_root_candidate, schedule_from_value,
     validate_workflow_plan, workflow_plan_decomposition_observation_with_task_budget,
     workflow_plan_generated_task_budget_exceeded, workflow_plan_mentions_connector_backed_sources,
-    workflow_plan_should_surface_mcp_discovery, workflow_task_budget_report_for_plan,
-    workflow_task_budget_report_value, PackBuilderExportOptions, PlannerMcpServerToolSet,
-    WorkflowInputRefLike, GENERATED_WORKFLOW_MAX_STEPS,
+    workflow_plan_should_surface_mcp_discovery, workflow_step_allows_optional_web_research,
+    workflow_task_budget_report_for_plan, workflow_task_budget_report_value,
+    PackBuilderExportOptions, PlannerMcpServerToolSet, WorkflowInputRefLike,
+    GENERATED_WORKFLOW_MAX_STEPS,
 };

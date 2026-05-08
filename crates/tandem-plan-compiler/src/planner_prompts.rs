@@ -28,6 +28,8 @@ pub(crate) fn workflow_plan_common_sections() -> String {
             "- when a step mainly produces a markdown, json, or text artifact such as a recap, report, ledger, or merged daily summary, use `report_markdown`, `structured_json`, or `text_summary` instead of `code_patch` even if the step compiles earlier findings into one file\n",
             "- when a plan is complex, prefer metadata.builder.phase_id, task_class, retry_class, and parent_step_id so the runtime can keep retries narrow and phase-aware\n",
             "- when a research brief step needs current web coverage, set metadata.builder.web_research_expected to true; set it to false when local/file research is enough\n",
+            "- if a step says web research/web_fetch is optional, only when useful, if needed, or may return empty citations, do not mark web_research_expected true and do not create required websearch connector requirements\n",
+            "- do not leave tactical tool choice ambiguous in contracts: required tools must be required; optional tools must stay optional and must not gate the run\n",
             "- when the request names connector-backed sources or `allowed_mcp_servers` is non-empty, plan MCP-backed steps instead of inventing hidden capabilities or defaulting to generic web search\n",
             "- when a prompt names a file as read-only or source of truth, never infer it as a write target; treat it as input-only unless the contract explicitly declares it as output\n",
             "- when a prompt names concrete source files or output files, carry those exact names into the relevant step objectives instead of replacing them with generic workspace language\n",

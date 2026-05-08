@@ -177,14 +177,17 @@ pub fn research_output_contract_policy_seed(
     expects_web_research: bool,
     repair_budget: u32,
 ) -> OutputContractPolicySeed {
-    let validation_profile =
-        if normalized_kind == "citations" || (expects_web_research && normalized_kind != "brief") {
-            "external_research"
-        } else if normalized_kind == "brief" {
-            "research_synthesis"
-        } else {
-            "local_research"
-        };
+    let validation_profile = if (normalized_kind == "citations" && expects_web_research)
+        || (expects_web_research && normalized_kind != "brief")
+    {
+        "external_research"
+    } else if normalized_kind == "citations" {
+        "artifact_only"
+    } else if normalized_kind == "brief" {
+        "research_synthesis"
+    } else {
+        "local_research"
+    };
 
     OutputContractPolicySeed {
         validation_profile: validation_profile.to_string(),
@@ -331,6 +334,21 @@ mod tests {
         assert!(seed
             .retry_on_missing
             .contains(&"successful_web_research".to_string()));
+    }
+
+    #[test]
+    fn citations_contract_without_required_web_uses_artifact_only_defaults() {
+        let seed = research_output_contract_policy_seed("citations", false, 3);
+        assert_eq!(seed.validation_profile, "artifact_only");
+        assert!(!seed.required_tools.iter().any(|tool| tool == "websearch"));
+        assert!(!seed
+            .prewrite_gates
+            .iter()
+            .any(|gate| gate == "successful_web_research"));
+        assert!(!seed
+            .required_evidence
+            .iter()
+            .any(|evidence| evidence == "external_sources"));
     }
 
     #[test]

@@ -213,6 +213,10 @@ pub fn mission_workstream_enforcement_defaults(workstream: &WorkstreamBlueprint)
 }
 
 pub fn workstream_expects_web_research(workstream: &WorkstreamBlueprint) -> bool {
+    let text = format!("{}\n{}", workstream.objective, workstream.prompt);
+    if crate::workflow_plan::workflow_step_allows_optional_web_research(&text) {
+        return false;
+    }
     workstream
         .workstream_id
         .to_ascii_lowercase()

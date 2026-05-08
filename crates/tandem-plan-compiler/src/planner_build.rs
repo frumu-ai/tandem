@@ -179,7 +179,9 @@ where
         request.explicit_schedule.is_some(),
     );
     let build_profile_fallback_plan =
-        |description: Option<String>, fallback_step: WorkflowPlanStep<I, O>| {
+        |workspace_root: &str,
+         description: Option<String>,
+         fallback_step: WorkflowPlanStep<I, O>| {
             if decomposition_profile.requires_phased_dag {
                 build_decomposition_fallback_plan(
                     &request.plan_id,
@@ -188,10 +190,7 @@ where
                     &request.prompt,
                     &request.normalized_prompt,
                     request.title.clone(),
-                    request
-                        .requested_workspace_root
-                        .clone()
-                        .unwrap_or_else(|| "/".to_string()),
+                    workspace_root.to_string(),
                     request.fallback_schedule.clone(),
                     request.allowed_mcp_servers.clone(),
                     request.operator_preferences.clone(),
@@ -208,10 +207,7 @@ where
                     &request.prompt,
                     &request.normalized_prompt,
                     request.title.clone(),
-                    request
-                        .requested_workspace_root
-                        .clone()
-                        .unwrap_or_else(|| "/".to_string()),
+                    workspace_root.to_string(),
                     request.fallback_schedule.clone(),
                     request.allowed_mcp_servers.clone(),
                     request.operator_preferences.clone(),
@@ -226,8 +222,11 @@ where
     {
         Ok(root) => root,
         Err(error) => {
+            let fallback_workspace_root =
+                request.requested_workspace_root.as_deref().unwrap_or("/");
             return PlannerBuildResult {
                 plan: build_profile_fallback_plan(
+                    fallback_workspace_root,
                     Some(format!(
                         "Planner fallback draft. Invalid workspace root: {}",
                         truncate_text(&error, 200)
@@ -268,6 +267,7 @@ where
     let Some(model) = planner_model_spec(request.operator_preferences.as_ref()) else {
         return PlannerBuildResult {
             plan: build_profile_fallback_plan(
+                resolved_workspace_root.as_str(),
                 Some(
                     "Planner fallback draft. Configure a planner model for richer workflow planning. Reason: no_planner_model."
                         .to_string(),
@@ -291,6 +291,7 @@ where
         let question = planner_llm_provider_unconfigured_hint(&model.provider_id);
         return PlannerBuildResult {
             plan: build_profile_fallback_plan(
+                resolved_workspace_root.as_str(),
                 Some(
                     "Planner fallback draft. Configure the planner provider for richer workflow generation. Reason: provider_unconfigured."
                         .to_string(),
@@ -343,6 +344,7 @@ where
                 }) else {
                     return PlannerBuildResult {
                         plan: build_profile_fallback_plan(
+                            resolved_workspace_root.as_str(),
                             Some(
                                 "Planner fallback draft. The planner returned an invalid JSON plan. Reason: invalid_json."
                                     .to_string(),
@@ -388,6 +390,7 @@ where
                                     ));
                                     return PlannerBuildResult {
                                         plan: build_profile_fallback_plan(
+                                            resolved_workspace_root.as_str(),
                                             Some("Planner fallback draft. The planner returned an oversized workflow and Tandem could not validate the compacted version. Reason: task_budget_compaction_validation_rejected.".to_string()),
                                             fallback_step.clone(),
                                         ),
@@ -444,6 +447,7 @@ where
                             ));
                         PlannerBuildResult {
                             plan: build_profile_fallback_plan(
+                                resolved_workspace_root.as_str(),
                                 Some(
                                     "Planner fallback draft. The planner returned a workflow that was too flat for the requested decomposition profile. Reason: decomposition_profile_too_flat."
                                         .to_string(),
@@ -478,6 +482,7 @@ where
                             ));
                             PlannerBuildResult {
                                 plan: build_profile_fallback_plan(
+                                    resolved_workspace_root.as_str(),
                                     Some(
                                         "Planner fallback draft. The planner returned a workflow that exceeded the requested decomposition budget. Reason: decomposition_profile_too_large."
                                             .to_string(),
@@ -523,6 +528,7 @@ where
                         ));
                         PlannerBuildResult {
                             plan: build_profile_fallback_plan(
+                                resolved_workspace_root.as_str(),
                                 Some("Planner fallback draft. The planner returned a workflow that Tandem could not validate. Reason: validation_rejected.".to_string()),
                                 fallback_step.clone(),
                             ),
@@ -557,6 +563,7 @@ where
                     .unwrap_or("general");
                 PlannerBuildResult {
                     plan: build_profile_fallback_plan(
+                        resolved_workspace_root.as_str(),
                         Some("Planner fallback draft. Clarification is needed before Tandem can generate a richer workflow. Reason: clarification_needed.".to_string()),
                         fallback_step.clone(),
                     ),
@@ -579,6 +586,7 @@ where
         },
         Err(failure) => PlannerBuildResult {
             plan: build_profile_fallback_plan(
+                resolved_workspace_root.as_str(),
                 Some(format!(
                     "Planner fallback draft. Tandem could not complete a provider-safe planning call for this model. Reason: {}.",
                     failure.reason
