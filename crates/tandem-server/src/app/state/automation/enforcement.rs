@@ -198,6 +198,27 @@ fn automation_node_legacy_required_tools(node: &AutomationFlowNode) -> Vec<Strin
         .unwrap_or_default()
 }
 
+fn automation_node_has_concrete_mcp_source_tools(
+    node: &AutomationFlowNode,
+    legacy_required_tools: &[String],
+) -> bool {
+    if automation_node_is_code_workflow(node) {
+        return false;
+    }
+
+    let has_concrete_mcp_tool = |tool: &str| {
+        let tool = tool.trim();
+        tool.starts_with("mcp.") && tool != "mcp_list" && !tool.ends_with(".*")
+    };
+
+    legacy_required_tools
+        .iter()
+        .any(|tool| has_concrete_mcp_tool(tool))
+        || super::prompting_impl::automation_node_concrete_mcp_tool_allowlist(node)
+            .iter()
+            .any(|tool| has_concrete_mcp_tool(tool))
+}
+
 fn automation_node_workspace_intent_text(node: &AutomationFlowNode) -> String {
     [
         node.objective.as_str(),
@@ -765,7 +786,10 @@ pub(crate) fn automation_node_output_enforcement(
         .unwrap_or_default();
     let validator_kind = automation_output_validator_kind(node);
     let legacy_required_tools = automation_node_legacy_required_tools(node);
-    let legacy_web_research_expected = automation_node_legacy_web_research_expected(node);
+    let concrete_mcp_source_tools =
+        automation_node_has_concrete_mcp_source_tools(node, &legacy_required_tools);
+    let legacy_web_research_expected =
+        !concrete_mcp_source_tools && automation_node_legacy_web_research_expected(node);
     let prefers_mcp_servers = automation_node_prefers_mcp_servers(node);
     let optional_workspace_reads = automation_node_allows_optional_workspace_reads(node);
     let is_research_contract =
@@ -855,6 +879,7 @@ pub(crate) fn automation_node_output_enforcement(
     }
 
     if !code_patch_contract
+        && !concrete_mcp_source_tools
         && enforcement
             .required_tools
             .iter()
@@ -980,6 +1005,7 @@ pub(crate) fn automation_node_output_enforcement(
     .any(|needle| combined_intent_lowered.contains(needle));
 
     let is_bootstrap = !optional_workspace_reads
+        && !concrete_mcp_source_tools
         && !is_standup_update
         && !is_local_research
         && !is_external_research
@@ -1117,6 +1143,33 @@ pub(crate) fn automation_node_output_enforcement(
             .terminal_on
             .retain(|item| item != "no_concrete_reads" && item != "local_source_reads");
         enforcement.session_text_recovery = Some("allow".to_string());
+    }
+
+    if concrete_mcp_source_tools
+        && enforcement.validation_profile.as_deref() == Some("artifact_only")
+    {
+        enforcement
+            .required_tools
+            .retain(|tool| !matches!(tool.as_str(), "glob" | "read"));
+        enforcement
+            .required_evidence
+            .retain(|item| item != "local_source_reads");
+        enforcement
+            .prewrite_gates
+            .retain(|gate| !matches!(gate.as_str(), "workspace_inspection" | "concrete_reads"));
+        enforcement.retry_on_missing.retain(|item| {
+            !matches!(
+                item.as_str(),
+                "workspace_inspection"
+                    | "concrete_reads"
+                    | "workspace_inspection_required"
+                    | "no_concrete_reads"
+                    | "local_source_reads"
+            )
+        });
+        if enforcement.prewrite_gates.is_empty() {
+            enforcement.session_text_recovery = Some("allow".to_string());
+        }
     }
 
     if is_bug_monitor_triage_artifact {

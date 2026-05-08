@@ -836,6 +836,65 @@ fn mcp_citations_contract_defaults_to_artifact_only_without_local_read_gates() {
 }
 
 #[test]
+fn concrete_mcp_row_inspection_does_not_infer_workspace_inspection_gate() {
+    let mut node = bare_node();
+    node.node_id = "inspect_notion_row".to_string();
+    node.objective = "Fetch and inspect only the existing Notion database row at https://www.notion.so/f3975ce71d8d45318bea2812c65f209b inside Operational Workflow Results collection://892d3e9b-2bf8-4b3e-a541-dc725f77295d, confirming the target page/row identity and current editable fields. Do not create a database, top-level page, workspace page, or new database row.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/inspect-notion-row.json",
+            "required_tools": ["mcp.notion.notion_fetch"],
+            "optional_tools": ["mcp.notion.notion_search"],
+            "task_class": "connector_read",
+            "retry_class": "notion_read"
+        }
+    }));
+
+    let enforcement = automation_node_output_enforcement(&node);
+
+    assert_eq!(
+        enforcement.validation_profile.as_deref(),
+        Some("artifact_only")
+    );
+    assert!(
+        enforcement
+            .required_tools
+            .iter()
+            .any(|tool| tool == "mcp.notion.notion_fetch"),
+        "the concrete MCP source tool should remain required"
+    );
+    assert!(
+        !enforcement
+            .required_tools
+            .iter()
+            .any(|tool| matches!(tool.as_str(), "glob" | "read" | "write")),
+        "Notion connector row inspection must not infer local workspace file tools: {enforcement:#?}"
+    );
+    assert!(
+        !enforcement
+            .required_evidence
+            .iter()
+            .any(|evidence| evidence == "local_source_reads"),
+        "connector evidence should not be treated as local filesystem evidence"
+    );
+    assert!(
+        !enforcement
+            .prewrite_gates
+            .iter()
+            .any(|gate| matches!(gate.as_str(), "workspace_inspection" | "concrete_reads")),
+        "Notion connector row inspection must not require local workspace inspection: {enforcement:#?}"
+    );
+    assert_eq!(enforcement.session_text_recovery.as_deref(), Some("allow"));
+}
+
+#[test]
 fn tandem_mcp_reference_node_does_not_require_web_research() {
     let mut node = bare_node();
     node.node_id = "gather_tandem_reference".to_string();
