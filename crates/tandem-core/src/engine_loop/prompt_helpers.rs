@@ -593,6 +593,19 @@ pub(super) fn summarize_tool_outputs(outputs: &[String]) -> String {
         .join("\n\n")
 }
 
+pub(super) fn append_recent_tool_results_context(prompt: String, outputs: &[String]) -> String {
+    if outputs.is_empty() {
+        return prompt;
+    }
+    let summary = summarize_tool_outputs(outputs);
+    if summary.trim().is_empty() {
+        return prompt;
+    }
+    format!(
+        "{prompt}\n\nRecent tool results from this run:\n{summary}\n\nUse these tool results as the evidence for the next step. Do not claim a tool or source was unavailable if the recent tool results show that it succeeded."
+    )
+}
+
 pub(super) fn summarize_user_visible_tool_outputs(outputs: &[String]) -> String {
     let filtered = outputs
         .iter()

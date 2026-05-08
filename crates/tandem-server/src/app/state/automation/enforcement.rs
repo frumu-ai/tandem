@@ -85,11 +85,40 @@ fn automation_node_legacy_web_research_expected(node: &AutomationFlowNode) -> bo
     if node.node_id == "collect_inputs" {
         return false;
     }
+    if automation_node_allows_optional_web_research(node) {
+        return false;
+    }
     let intent = automation_node_workspace_intent_text(node).to_ascii_lowercase();
     intent.contains("web")
         || intent.contains("online")
         || intent.contains("current")
         || intent.contains("latest")
+}
+
+pub(crate) fn automation_node_allows_optional_web_research(node: &AutomationFlowNode) -> bool {
+    let intent = automation_node_workspace_intent_text(node).to_ascii_lowercase();
+    let mentions_web = intent.contains("web research")
+        || intent.contains("web_research")
+        || intent.contains("websearch")
+        || intent.contains("web fetch")
+        || intent.contains("web_fetch")
+        || intent.contains("web context")
+        || intent.contains("external context")
+        || intent.contains("citations");
+    let has_optional_language = intent.contains("only when useful")
+        || intent.contains("when useful")
+        || intent.contains("if useful")
+        || intent.contains("if needed")
+        || intent.contains("if no web context is needed")
+        || intent.contains("if no web context needed")
+        || intent.contains("no web context is needed")
+        || intent.contains("no web context needed")
+        || intent.contains("empty citations list")
+        || intent.contains("empty citations")
+        || intent.contains("do not replace reddit")
+        || intent.contains("do not replace the primary evidence");
+
+    mentions_web && has_optional_language
 }
 
 pub(crate) fn automation_node_prefers_mcp_servers(node: &AutomationFlowNode) -> bool {

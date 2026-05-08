@@ -393,8 +393,11 @@ pub(crate) fn normalize_automation_requested_tools(
     if has_read && !has_workspace_probe {
         normalized.push("glob".to_string());
     }
-    if automation_node_web_research_expected(node) {
+    if automation_node_web_research_expected(node)
+        || enforcement::automation_node_allows_optional_web_research(node)
+    {
         normalized.push("websearch".to_string());
+        normalized.push("webfetch".to_string());
     }
     normalized.sort();
     normalized.dedup();
@@ -677,6 +680,11 @@ fn semantic_block_reason_for_requirements(unmet_requirements: &[String]) -> Opti
         )
     } else if has_unmet("missing_successful_web_research") {
         Some("research completed without required current web research".to_string())
+    } else if has_unmet("web_research_artifact_contradicts_tool_receipts") {
+        Some(
+            "artifact claims web research was unavailable even though web research succeeded in this run"
+                .to_string(),
+        )
     } else if has_unmet("mcp_connector_source_missing") {
         Some(
             "connector-backed source research completed without using a concrete connector tool"

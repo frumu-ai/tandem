@@ -193,7 +193,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         || !enforcement.required_sections.is_empty()
         || !enforcement.prewrite_gates.is_empty();
     let parsed_status = parse_status_json(session_text);
-    let structured_handoff =
+    let mut structured_handoff =
         if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson {
             extract_structured_handoff_json(session_text)
         } else {
@@ -329,17 +329,24 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .unwrap_or_default();
         let connector_action_patterns =
             automation_requested_server_scoped_mcp_tools(node, &selected_mcp_server_names);
-        let executed_concrete_mcp_tool = tool_telemetry
+        let executed_concrete_mcp_tools = tool_telemetry
             .get("executed_tools")
             .and_then(Value::as_array)
-            .is_some_and(|tools| {
-                tools.iter().filter_map(Value::as_str).any(|tool_name| {
-                    tool_name != "mcp_list"
-                        && connector_action_patterns.iter().any(|pattern| {
-                            tandem_core::tool_name_matches_policy(pattern, tool_name)
-                        })
-                })
-            });
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|tool_name| {
+                        *tool_name != "mcp_list"
+                            && connector_action_patterns.iter().any(|pattern| {
+                                tandem_core::tool_name_matches_policy(pattern, tool_name)
+                            })
+                    })
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let executed_concrete_mcp_tool = !executed_concrete_mcp_tools.is_empty();
         let workspace_inspection_satisfied = tool_telemetry
             .get("workspace_inspection_used")
             .and_then(Value::as_bool)
@@ -654,6 +661,11 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         let selected_text = selected_assessment
             .map(|assessment| assessment.text.as_str())
             .unwrap_or(text.as_str());
+        if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson
+            && structured_handoff.is_none()
+        {
+            structured_handoff = extract_structured_handoff_json(selected_text);
+        }
         if artifact_text_contains_required_tool_mode_failure(selected_text) {
             unmet_requirements.push("provider_required_tool_mode_unsatisfied".to_string());
             accepted_output = None;
@@ -671,7 +683,12 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             && !connector_action_patterns.is_empty()
             && executed_concrete_mcp_tool
             && (artifact_text_is_mcp_inventory_only(selected_text)
-                || !artifact_text_has_connector_source_evidence_or_limitation(selected_text));
+                || !artifact_text_has_receipt_backed_connector_source_evidence(
+                    selected_text,
+                    selected_assessment,
+                    &executed_concrete_mcp_tools,
+                    &selected_mcp_server_names,
+                ));
         if connector_source_artifact_missing {
             unmet_requirements.push("mcp_connector_source_artifact_missing".to_string());
             accepted_output = None;
@@ -878,6 +895,20 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 });
             }
         }
+        let web_research_artifact_contradicts_tool_receipts = web_research_succeeded
+            && accepted_output.as_ref().is_some_and(|(_, artifact_text)| {
+                artifact_text_contradicts_successful_web_research(artifact_text)
+            });
+        if web_research_artifact_contradicts_tool_receipts {
+            unmet_requirements.push("web_research_artifact_contradicts_tool_receipts".to_string());
+            semantic_block_reason = Some(
+                "artifact claims web research was unavailable even though web research succeeded in this run"
+                    .to_string(),
+            );
+            if rejected_reason.is_none() {
+                rejected_reason = semantic_block_reason.clone();
+            }
+        }
         let strict_quality_mode = enforcement::automation_node_is_strict_quality(node);
         if strict_quality_mode
             && validator_kind == crate::AutomationOutputValidatorKind::GenericArtifact
@@ -1045,11 +1076,24 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             let had_read_only_source_mutation = unmet_requirements
                 .iter()
                 .any(|value| value == "read_only_source_mutations");
+            let had_web_research_artifact_contradiction = unmet_requirements
+                .iter()
+                .any(|value| value == "web_research_artifact_contradicts_tool_receipts");
             unmet_requirements.clear();
             if had_read_only_source_mutation {
                 unmet_requirements.push("read_only_source_mutations".to_string());
             }
-            repair_succeeded = true;
+            if had_web_research_artifact_contradiction {
+                unmet_requirements
+                    .push("web_research_artifact_contradicts_tool_receipts".to_string());
+                semantic_block_reason = Some(
+                    "artifact claims web research was unavailable even though web research succeeded in this run"
+                        .to_string(),
+                );
+                rejected_reason = semantic_block_reason.clone();
+            } else {
+                repair_succeeded = true;
+            }
             if let Some(object) = validation_basis.as_object_mut() {
                 object.insert(
                     "repair_promoted_after_write".to_string(),
@@ -1301,6 +1345,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 | "mcp_required_tool_missing"
                 | "mcp_connector_source_missing"
                 | "mcp_connector_source_artifact_missing"
+                | "web_research_artifact_contradicts_tool_receipts"
         )
     }) {
         accepted_output = None;

@@ -462,8 +462,11 @@ pub(crate) fn normalize_automation_requested_tools(
     if has_read && !has_workspace_probe {
         normalized.push("glob".to_string());
     }
-    if automation_node_web_research_expected(node) {
+    if automation_node_web_research_expected(node)
+        || enforcement::automation_node_allows_optional_web_research(node)
+    {
         normalized.push("websearch".to_string());
+        normalized.push("webfetch".to_string());
     }
     if handoff_only_structured_json {
         normalized.retain(|tool| !matches!(tool.as_str(), "write" | "edit" | "apply_patch"));
@@ -575,6 +578,7 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
     let web_research_required =
         web_research_expected && requested_tools.iter().any(|tool| tool == "websearch");
     let brief_research_node = validation_profile == "local_research";
+    let external_research_node = validation_profile == "external_research";
     let research_finalize = validation_profile == "research_synthesis";
     let optional_workspace_reads =
         enforcement::automation_node_allows_optional_workspace_reads(node);
@@ -606,6 +610,7 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
         && requested_tools.iter().any(|tool| tool == "websearch");
     Some(PrewriteRequirements {
         workspace_inspection_required: workspace_inspection_required
+            && !external_research_node
             && !connector_source_node
             && !research_finalize
             && explicit_input_files.is_empty(),
@@ -672,6 +677,11 @@ fn semantic_block_reason_for_requirements(unmet_requirements: &[String]) -> Opti
         Some("connector-backed work completed without discovering available MCP tools".to_string())
     } else if has_unmet("missing_successful_web_research") {
         Some("research completed without required current web research".to_string())
+    } else if has_unmet("web_research_artifact_contradicts_tool_receipts") {
+        Some(
+            "artifact claims web research was unavailable even though web research succeeded in this run"
+                .to_string(),
+        )
     } else if has_unmet("required_source_paths_not_read") {
         Some("research completed without reading the exact required source files".to_string())
     } else if has_unmet("no_concrete_reads") || has_unmet("concrete_read_required") {

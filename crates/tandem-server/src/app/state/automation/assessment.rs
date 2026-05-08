@@ -126,6 +126,29 @@ pub(crate) fn evidence_anchor_count(
     matched.len()
 }
 
+pub(crate) fn artifact_text_contradicts_successful_web_research(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    [
+        "unavailable_in_current_tooling",
+        "no websearch/webfetch tools were available",
+        "no websearch or webfetch tools were available",
+        "no websearch tools were available",
+        "no web research tools were available",
+        "no external urls could be fetched",
+        "external web research could not be performed",
+        "web research could not be performed",
+        "websearch unavailable",
+        "web research unavailable",
+        "current external web research could not be performed",
+        "no dated market or technical sources were captured",
+        "no external sources were captured",
+        "no web sources were captured",
+        "web research returned no usable output",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
 pub(crate) fn assess_artifact_candidate(
     node: &AutomationFlowNode,
     workspace_root: &str,
@@ -286,7 +309,6 @@ pub(crate) fn artifact_text_has_connector_source_evidence_or_limitation(text: &s
             "tool_evidence",
             "tool_results",
             "search_queries_used",
-            "reddit_findings",
             "result_excerpt",
         ];
         const LIMITATION_KEYS: &[&str] = &[
@@ -309,11 +331,45 @@ pub(crate) fn artifact_text_has_connector_source_evidence_or_limitation(text: &s
         "connector limitation",
         "source limitation",
         "tool limitation",
-        "reddit signal",
-        "subreddit",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
+}
+
+pub(crate) fn artifact_text_has_receipt_backed_connector_source_evidence(
+    text: &str,
+    assessment: Option<&ArtifactCandidateAssessment>,
+    executed_concrete_mcp_tools: &[String],
+    selected_mcp_server_names: &[String],
+) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if artifact_text_has_connector_source_evidence_or_limitation(trimmed) {
+        return true;
+    }
+    let Some(assessment) = assessment else {
+        return false;
+    };
+
+    let lowered = trimmed.to_ascii_lowercase();
+    let has_receipt_anchor = executed_concrete_mcp_tools
+        .iter()
+        .chain(selected_mcp_server_names.iter())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .any(|value| lowered.contains(&value));
+    let has_structural_substance = assessment.substantive
+        || assessment.length >= 120
+        || assessment.heading_count > 0
+        || assessment.list_count >= 2
+        || assessment.paragraph_count >= 2;
+
+    if has_receipt_anchor && (has_structural_substance || assessment.length >= 80) {
+        return true;
+    }
+    !assessment.placeholder_like && has_structural_substance
 }
 
 pub(crate) fn artifact_text_is_mcp_inventory_only(text: &str) -> bool {

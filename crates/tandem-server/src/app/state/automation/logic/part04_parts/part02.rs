@@ -101,6 +101,17 @@ where
     }
 }
 
+pub(crate) fn automation_node_prompt_timeout_error(
+    error: &anyhow::Error,
+    node: &AutomationFlowNode,
+) -> bool {
+    let message = error.to_string();
+    message.contains(&format!(
+        "automation node `{}` timed out after",
+        node.node_id
+    ))
+}
+
 pub(crate) fn effective_automation_node_timeout_ms(node: &AutomationFlowNode) -> u64 {
     node.timeout_ms
         .filter(|value| *value > 0)
@@ -769,8 +780,19 @@ pub(crate) async fn execute_automation_v2_node(
         .await;
     state.clear_automation_v2_session(run_id, &session_id).await;
 
+    let mut recovered_after_prompt_timeout = false;
     if let Err(error) = result {
-        return Err(error);
+        if required_output_path.is_some() && automation_node_prompt_timeout_error(&error, node) {
+            recovered_after_prompt_timeout = true;
+            tracing::warn!(
+                run_id = %run_id,
+                node_id = %node.node_id,
+                error = %error,
+                "automation node prompt timed out after artifact-write attempt; reconciling required output before failing node"
+            );
+        } else {
+            return Err(error);
+        }
     }
     let expect_tool_activity = !requested_tools.is_empty();
     let session = load_automation_session_after_run(state, &session_id, expect_tool_activity)
@@ -854,6 +876,10 @@ pub(crate) async fn execute_automation_v2_node(
                 .as_ref()
                 .map(|resolution| resolution.materialized_by_current_attempt)
                 .unwrap_or(false)),
+        );
+        object.insert(
+            "recovered_after_prompt_timeout".to_string(),
+            json!(recovered_after_prompt_timeout),
         );
         object.insert(
             "attempt_evidence".to_string(),

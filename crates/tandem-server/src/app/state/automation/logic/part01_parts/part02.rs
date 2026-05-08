@@ -948,9 +948,17 @@ pub(crate) fn render_automation_repair_brief(
     } else {
         String::new()
     };
+    let web_research_receipt_corrective_line = if unmet_requirements
+        .iter()
+        .any(|value| value == "web_research_artifact_contradicts_tool_receipts")
+    {
+        "\n\nCORRECTIVE — web research receipts override artifact prose:\n- The previous attempt successfully executed web research, but the artifact claimed web research was unavailable.\n- For this retry, do not write `web_research.status: unavailable`, `unavailable_in_current_tooling`, or similar no-tool/no-source language.\n- Use the URLs and result summaries from the prior websearch/webfetch tool output, or call websearch again if you need fresher details, then write a citation-backed completed artifact.".to_string()
+    } else {
+        String::new()
+    };
 
     Some(format!(
-        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Upstream read paths available for synthesis: {}.\n- Required source read paths: {}.\n- Missing required source read paths: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.{}",
+        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Upstream read paths available for synthesis: {}.\n- Required source read paths: {}.\n- Missing required source read paths: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.{}{}",
         node.node_id,
         reason,
         validation_basis_line,
@@ -967,5 +975,6 @@ pub(crate) fn render_automation_repair_brief(
         repair_attempts_remaining.saturating_sub(1),
         code_workflow_line,
         final_attempt_line,
+        web_research_receipt_corrective_line,
     ))
 }

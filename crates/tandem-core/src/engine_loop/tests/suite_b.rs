@@ -256,6 +256,27 @@ fn summarize_user_visible_tool_outputs_hides_internal_skipped_and_error_lines() 
 }
 
 #[test]
+fn recent_tool_results_context_preserves_successful_source_evidence() {
+    let prompt = append_recent_tool_results_context(
+        "Write the required artifact now.".to_string(),
+        &[String::from(
+            "Tool `websearch` result:\n{\"partial\":false,\"results\":[{\"title\":\"Reliable agents\",\"url\":\"https://example.com/agents\"}]}",
+        )],
+    );
+    assert!(prompt.contains("Recent tool results from this run"));
+    assert!(prompt.contains("Tool `websearch` result"));
+    assert!(prompt.contains("Do not claim a tool or source was unavailable"));
+}
+
+#[test]
+fn batch_wrapper_tool_name_includes_generic_tool_aliases() {
+    assert!(is_batch_wrapper_tool_name("tool"));
+    assert!(is_batch_wrapper_tool_name("tools"));
+    assert!(is_batch_wrapper_tool_name("default_api"));
+    assert!(!is_batch_wrapper_tool_name("websearch"));
+}
+
+#[test]
 fn required_tool_retry_context_mentions_offered_tools() {
     let prompt = build_required_tool_retry_context(
         "read, write, apply_patch",

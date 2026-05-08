@@ -98,8 +98,8 @@ pub(crate) fn automation_tool_capability_ids(
             || node_runtime_impl::automation_node_metadata_tool_allowlist(node)
                 .iter()
                 .any(|tool| tool.starts_with("mcp.")));
-    let requires_workspace_read =
-        !node.input_refs.is_empty() || required_tools.iter().any(|tool| tool == "read");
+    let requires_workspace_read = required_tools.iter().any(|tool| tool == "read")
+        || (!connector_source_node && !node.input_refs.is_empty());
     let requires_workspace_discover = !connector_source_node
         && (automation_node_required_output_path(node).is_some()
             || automation_output_validator_kind(node)
@@ -120,7 +120,9 @@ pub(crate) fn automation_tool_capability_ids(
     if requires_artifact_write {
         capabilities.push("artifact_write".to_string());
     }
-    if automation_node_web_research_expected(node) {
+    if automation_node_web_research_expected(node)
+        || enforcement::automation_node_allows_optional_web_research(node)
+    {
         capabilities.push("web_research".to_string());
     }
     if automation_node_requires_email_delivery(node) {

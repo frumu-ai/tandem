@@ -551,12 +551,15 @@ fn step_cost_provenance_marks_budget_limit_and_cost_deltas() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn capability_ids_bare_node_empty() {
+fn capability_ids_default_artifact_node_includes_write_and_discover() {
     let node = bare_node();
     let caps = automation_tool_capability_ids(&node, "research");
-    assert!(
-        caps.is_empty(),
-        "bare node should yield no capabilities, got: {caps:?}"
+    assert_eq!(
+        caps,
+        vec![
+            "artifact_write".to_string(),
+            "workspace_discover".to_string()
+        ]
     );
 }
 
@@ -586,6 +589,72 @@ fn capability_ids_connector_source_output_excludes_workspace_discover() {
     assert!(
         !caps.contains(&"workspace_discover".to_string()),
         "connector-source artifact writes should not advertise workspace discovery"
+    );
+}
+
+#[test]
+fn capability_ids_connector_source_input_ref_excludes_implicit_workspace_read() {
+    let mut node = node_with_input_ref();
+    node.objective =
+        "Use Reddit MCP to collect follow-up source evidence from upstream triage.".to_string();
+    node.metadata = Some(json!({
+        "tool_allowlist": [
+            "mcp.reddit_gmail.reddit_search_across_subreddits",
+            "write"
+        ]
+    }));
+
+    let caps = automation_tool_capability_ids(&node, "artifact_write");
+
+    assert!(
+        !caps.contains(&"workspace_read".to_string()),
+        "connector-source nodes receive upstream context without requiring local read tools"
+    );
+    assert!(caps.contains(&"artifact_write".to_string()));
+}
+
+#[test]
+fn capability_ids_optional_web_context_offers_web_without_requiring_research_gate() {
+    let mut node = bare_node();
+    node.node_id = "gather_supporting_context".to_string();
+    node.objective = "Use web research and web_fetch only when useful to add supporting context for tools, market references, or claims that emerged from collect_reddit_signals. Do not replace Reddit as the primary evidence source. Return concise citations; if no web context is needed, return an empty citations list with rationale.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "citations".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/gather-supporting-context.json"
+        }
+    }));
+
+    let caps = automation_tool_capability_ids(&node, "artifact_write");
+    let enforcement = automation_node_output_enforcement(&node);
+
+    assert!(caps.contains(&"web_research".to_string()));
+    assert!(
+        !enforcement
+            .required_tools
+            .iter()
+            .any(|tool| tool == "websearch"),
+        "optional web context should not make websearch a required tool"
+    );
+    assert!(
+        !enforcement
+            .required_evidence
+            .iter()
+            .any(|evidence| evidence == "external_sources"),
+        "optional web context should not require external source evidence"
+    );
+    assert!(
+        !enforcement
+            .prewrite_gates
+            .iter()
+            .any(|gate| gate == "successful_web_research"),
+        "optional web context should not install a successful-web-research gate"
     );
 }
 
@@ -699,6 +768,50 @@ fn local_citations_contract_defaults_to_local_research_not_external_research() {
         .prewrite_gates
         .iter()
         .any(|gate| gate == "workspace_inspection"));
+}
+
+#[test]
+fn external_research_prewrite_does_not_require_workspace_inspection_from_offered_glob() {
+    let mut node = bare_node();
+    node.node_id = "gather_market_sources".to_string();
+    node.objective = "Use web_research and web_fetch to gather current market sources.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "citations".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: Some(crate::AutomationOutputEnforcement {
+            validation_profile: Some("external_research".to_string()),
+            required_tools: vec!["websearch".to_string()],
+            required_tool_calls: Vec::new(),
+            required_evidence: Vec::new(),
+            required_sections: vec!["web_sources_reviewed".to_string()],
+            prewrite_gates: vec!["successful_web_research".to_string()],
+            retry_on_missing: vec!["missing_successful_web_research".to_string()],
+            terminal_on: vec!["completed".to_string()],
+            repair_budget: Some(2),
+            session_text_recovery: None,
+        }),
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/gather-market-sources.json"
+        }
+    }));
+
+    let requirements = automation_node_prewrite_requirements_impl(
+        &node,
+        &[
+            "glob".to_string(),
+            "websearch".to_string(),
+            "write".to_string(),
+        ],
+    )
+    .expect("prewrite requirements");
+
+    assert!(!requirements.workspace_inspection_required);
+    assert!(requirements.web_research_required);
+    assert!(requirements.successful_web_research_required);
 }
 
 #[test]
@@ -1215,6 +1328,44 @@ async fn reconcile_verified_output_path_times_out_when_file_never_appears() {
     assert!(resolved.is_none());
 
     let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
+fn automation_node_prompt_timeout_error_matches_same_node_timeout_only() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "collect_reddit_signals".to_string(),
+        agent_id: "reddit".to_string(),
+        objective: "Collect Reddit signals".to_string(),
+        depends_on: vec![],
+        input_refs: vec![],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+
+    assert!(super::automation_node_prompt_timeout_error(
+        &anyhow::anyhow!("automation node `collect_reddit_signals` timed out after 180000 ms"),
+        &node,
+    ));
+    assert!(!super::automation_node_prompt_timeout_error(
+        &anyhow::anyhow!("automation node `other_node` timed out after 180000 ms"),
+        &node,
+    ));
+    assert!(!super::automation_node_prompt_timeout_error(
+        &anyhow::anyhow!("provider stream idle timeout after 60000 ms"),
+        &node,
+    ));
 }
 
 #[tokio::test]

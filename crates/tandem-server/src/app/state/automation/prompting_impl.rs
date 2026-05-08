@@ -995,6 +995,11 @@ pub(crate) fn render_automation_v2_prompt_with_options(
                     .to_string(),
             );
         }
+    } else if enforcement::automation_node_allows_optional_web_research(node) {
+        sections.push(
+            "Optional External Context:\n- Reddit/upstream evidence remains the primary source for this node.\n- Use `websearch`/`webfetch` only if a Reddit-derived tool, market reference, or claim needs concise supporting context.\n- If no web context is needed, write the required artifact with an empty `citations` list and a short rationale.\n- Do not block the node solely because web research was not useful or not performed."
+                .to_string(),
+        );
     }
     if handoff_only_structured_json {
         sections.push(

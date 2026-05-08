@@ -1034,6 +1034,11 @@ impl EngineLoop {
                             write_tool_attempted_in_cycle = true;
                         }
                         if !allowed_tool_names.contains(&tool_key) {
+                            if is_batch_wrapper_tool_name(&tool_key)
+                                && args.as_object().is_none_or(|value| value.is_empty())
+                            {
+                                continue;
+                            }
                             rejected_tool_call_in_cycle = true;
                             let note = if offered_tool_preview.is_empty() {
                                 format!(
@@ -1336,15 +1341,18 @@ impl EngineLoop {
                                 {
                                     required_write_retry_count += 1;
                                     required_tool_retry_count += 1;
-                                    followup_context = Some(build_write_required_retry_context(
-                                        &offered_tool_preview,
-                                        latest_required_tool_failure_kind,
-                                        &text,
-                                        &requested_prewrite_requirements,
-                                        productive_workspace_inspection_total > 0,
-                                        productive_concrete_read_total > 0,
-                                        productive_web_research_total > 0,
-                                        successful_web_research_total > 0,
+                                    followup_context = Some(append_recent_tool_results_context(
+                                        build_write_required_retry_context(
+                                            &offered_tool_preview,
+                                            latest_required_tool_failure_kind,
+                                            &text,
+                                            &requested_prewrite_requirements,
+                                            productive_workspace_inspection_total > 0,
+                                            productive_concrete_read_total > 0,
+                                            productive_web_research_total > 0,
+                                            successful_web_research_total > 0,
+                                        ),
+                                        &last_tool_outputs,
                                     ));
                                     self.event_bus.publish(EngineEvent::new(
                                         "provider.call.iteration.finish",
@@ -1454,15 +1462,18 @@ impl EngineLoop {
                                     let repair_attempt = unmet_prewrite_repair_retry_count;
                                     let repair_attempts_remaining =
                                         prewrite_repair_budget.saturating_sub(repair_attempt);
-                                    followup_context = Some(build_prewrite_repair_retry_context(
-                                        &offered_tool_preview,
-                                        latest_required_tool_failure_kind,
-                                        &text,
-                                        &requested_prewrite_requirements,
-                                        productive_workspace_inspection_total > 0,
-                                        productive_concrete_read_total > 0,
-                                        productive_web_research_total > 0,
-                                        successful_web_research_total > 0,
+                                    followup_context = Some(append_recent_tool_results_context(
+                                        build_prewrite_repair_retry_context(
+                                            &offered_tool_preview,
+                                            latest_required_tool_failure_kind,
+                                            &text,
+                                            &requested_prewrite_requirements,
+                                            productive_workspace_inspection_total > 0,
+                                            productive_concrete_read_total > 0,
+                                            productive_web_research_total > 0,
+                                            successful_web_research_total > 0,
+                                        ),
+                                        &last_tool_outputs,
                                     ));
                                     self.event_bus.publish(EngineEvent::new(
                                         "provider.call.iteration.finish",
@@ -1564,15 +1575,18 @@ impl EngineLoop {
                                 RequiredToolFailureKind::WriteRequiredNotSatisfied;
                             if required_write_retry_count + 1 < strict_write_retry_max_attempts {
                                 required_write_retry_count += 1;
-                                followup_context = Some(build_write_required_retry_context(
-                                    &offered_tool_preview,
-                                    latest_required_tool_failure_kind,
-                                    &text,
-                                    &requested_prewrite_requirements,
-                                    productive_workspace_inspection_total > 0,
-                                    productive_concrete_read_total > 0,
-                                    productive_web_research_total > 0,
-                                    successful_web_research_total > 0,
+                                followup_context = Some(append_recent_tool_results_context(
+                                    build_write_required_retry_context(
+                                        &offered_tool_preview,
+                                        latest_required_tool_failure_kind,
+                                        &text,
+                                        &requested_prewrite_requirements,
+                                        productive_workspace_inspection_total > 0,
+                                        productive_concrete_read_total > 0,
+                                        productive_web_research_total > 0,
+                                        successful_web_research_total > 0,
+                                    ),
+                                    &last_tool_outputs,
                                 ));
                                 self.event_bus.publish(EngineEvent::new(
                                     "provider.call.iteration.finish",
@@ -1695,15 +1709,18 @@ impl EngineLoop {
                                 let repair_attempt = unmet_prewrite_repair_retry_count;
                                 let repair_attempts_remaining =
                                     prewrite_repair_budget.saturating_sub(repair_attempt);
-                                followup_context = Some(build_prewrite_repair_retry_context(
-                                    &offered_tool_preview,
-                                    latest_required_tool_failure_kind,
-                                    &text,
-                                    &requested_prewrite_requirements,
-                                    productive_workspace_inspection_total > 0,
-                                    productive_concrete_read_total > 0,
-                                    productive_web_research_total > 0,
-                                    successful_web_research_total > 0,
+                                followup_context = Some(append_recent_tool_results_context(
+                                    build_prewrite_repair_retry_context(
+                                        &offered_tool_preview,
+                                        latest_required_tool_failure_kind,
+                                        &text,
+                                        &requested_prewrite_requirements,
+                                        productive_workspace_inspection_total > 0,
+                                        productive_concrete_read_total > 0,
+                                        productive_web_research_total > 0,
+                                        successful_web_research_total > 0,
+                                    ),
+                                    &last_tool_outputs,
                                 ));
                                 self.event_bus.publish(EngineEvent::new(
                                     "provider.call.iteration.finish",
@@ -1838,15 +1855,18 @@ impl EngineLoop {
                         && required_write_retry_count + 1 < strict_write_retry_max_attempts
                     {
                         required_write_retry_count += 1;
-                        followup_context = Some(build_write_required_retry_context(
-                            &offered_tool_preview,
-                            latest_required_tool_failure_kind,
-                            &text,
-                            &requested_prewrite_requirements,
-                            productive_workspace_inspection_total > 0,
-                            productive_concrete_read_total > 0,
-                            productive_web_research_total > 0,
-                            successful_web_research_total > 0,
+                        followup_context = Some(append_recent_tool_results_context(
+                            build_write_required_retry_context(
+                                &offered_tool_preview,
+                                latest_required_tool_failure_kind,
+                                &text,
+                                &requested_prewrite_requirements,
+                                productive_workspace_inspection_total > 0,
+                                productive_concrete_read_total > 0,
+                                productive_web_research_total > 0,
+                                successful_web_research_total > 0,
+                            ),
+                            &last_tool_outputs,
                         ));
                         continue;
                     }
@@ -1904,14 +1924,17 @@ impl EngineLoop {
                         && empty_completion_retry_count == 0
                     {
                         empty_completion_retry_count += 1;
-                        followup_context = Some(build_empty_completion_retry_context(
-                            &offered_tool_preview,
-                            &text,
-                            &requested_prewrite_requirements,
-                            productive_workspace_inspection_total > 0,
-                            productive_concrete_read_total > 0,
-                            productive_web_research_total > 0,
-                            successful_web_research_total > 0,
+                        followup_context = Some(append_recent_tool_results_context(
+                            build_empty_completion_retry_context(
+                                &offered_tool_preview,
+                                &text,
+                                &requested_prewrite_requirements,
+                                productive_workspace_inspection_total > 0,
+                                productive_concrete_read_total > 0,
+                                productive_web_research_total > 0,
+                                successful_web_research_total > 0,
+                            ),
+                            &last_tool_outputs,
                         ));
                         self.event_bus.publish(EngineEvent::new(
                             "provider.call.iteration.finish",
@@ -1953,15 +1976,18 @@ impl EngineLoop {
                             let repair_attempt = unmet_prewrite_repair_retry_count;
                             let repair_attempts_remaining =
                                 prewrite_repair_budget.saturating_sub(repair_attempt);
-                            followup_context = Some(build_prewrite_repair_retry_context(
-                                &offered_tool_preview,
-                                latest_required_tool_failure_kind,
-                                &text,
-                                &requested_prewrite_requirements,
-                                productive_workspace_inspection_total > 0,
-                                productive_concrete_read_total > 0,
-                                productive_web_research_total > 0,
-                                successful_web_research_total > 0,
+                            followup_context = Some(append_recent_tool_results_context(
+                                build_prewrite_repair_retry_context(
+                                    &offered_tool_preview,
+                                    latest_required_tool_failure_kind,
+                                    &text,
+                                    &requested_prewrite_requirements,
+                                    productive_workspace_inspection_total > 0,
+                                    productive_concrete_read_total > 0,
+                                    productive_web_research_total > 0,
+                                    successful_web_research_total > 0,
+                                ),
+                                &last_tool_outputs,
                             ));
                             self.event_bus.publish(EngineEvent::new(
                                 "provider.call.iteration.finish",
@@ -2063,15 +2089,18 @@ impl EngineLoop {
                         && required_write_retry_count + 1 < strict_write_retry_max_attempts
                     {
                         required_write_retry_count += 1;
-                        followup_context = Some(build_write_required_retry_context(
-                            &offered_tool_preview,
-                            latest_required_tool_failure_kind,
-                            &text,
-                            &requested_prewrite_requirements,
-                            productive_workspace_inspection_total > 0,
-                            productive_concrete_read_total > 0,
-                            productive_web_research_total > 0,
-                            successful_web_research_total > 0,
+                        followup_context = Some(append_recent_tool_results_context(
+                            build_write_required_retry_context(
+                                &offered_tool_preview,
+                                latest_required_tool_failure_kind,
+                                &text,
+                                &requested_prewrite_requirements,
+                                productive_workspace_inspection_total > 0,
+                                productive_concrete_read_total > 0,
+                                productive_web_research_total > 0,
+                                successful_web_research_total > 0,
+                            ),
+                            &last_tool_outputs,
                         ));
                         self.event_bus.publish(EngineEvent::new(
                             "provider.call.iteration.finish",

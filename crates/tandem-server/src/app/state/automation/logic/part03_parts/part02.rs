@@ -326,7 +326,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         || !enforcement.required_sections.is_empty()
         || !enforcement.prewrite_gates.is_empty();
     let parsed_status = parse_status_json(session_text);
-    let structured_handoff =
+    let mut structured_handoff =
         if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson {
             extract_structured_handoff_json(session_text)
         } else {
@@ -741,6 +741,14 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     .unwrap_or(0)
                     > 1);
         let selected_assessment = best_candidate.as_ref();
+        let selected_text = selected_assessment
+            .map(|assessment| assessment.text.as_str())
+            .unwrap_or(text.as_str());
+        if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson
+            && structured_handoff.is_none()
+        {
+            structured_handoff = extract_structured_handoff_json(selected_text);
+        }
         let required_tools_for_node = enforcement.required_tools.clone();
         let has_required_tools = !required_tools_for_node.is_empty();
         let requires_local_source_reads = enforcement
@@ -925,6 +933,20 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 });
             }
         }
+        let web_research_artifact_contradicts_tool_receipts = web_research_succeeded
+            && accepted_output.as_ref().is_some_and(|(_, artifact_text)| {
+                artifact_text_contradicts_successful_web_research(artifact_text)
+            });
+        if web_research_artifact_contradicts_tool_receipts {
+            unmet_requirements.push("web_research_artifact_contradicts_tool_receipts".to_string());
+            semantic_block_reason = Some(
+                "artifact claims web research was unavailable even though web research succeeded in this run"
+                    .to_string(),
+            );
+            if rejected_reason.is_none() {
+                rejected_reason = semantic_block_reason.clone();
+            }
+        }
         let strict_quality_mode = enforcement::automation_node_is_strict_quality(node);
         if strict_quality_mode
             && validator_kind == crate::AutomationOutputValidatorKind::GenericArtifact
@@ -1086,11 +1108,24 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             let had_read_only_source_mutation = unmet_requirements
                 .iter()
                 .any(|value| value == "read_only_source_mutations");
+            let had_web_research_artifact_contradiction = unmet_requirements
+                .iter()
+                .any(|value| value == "web_research_artifact_contradicts_tool_receipts");
             unmet_requirements.clear();
             if had_read_only_source_mutation {
                 unmet_requirements.push("read_only_source_mutations".to_string());
             }
-            repair_succeeded = true;
+            if had_web_research_artifact_contradiction {
+                unmet_requirements
+                    .push("web_research_artifact_contradicts_tool_receipts".to_string());
+                semantic_block_reason = Some(
+                    "artifact claims web research was unavailable even though web research succeeded in this run"
+                        .to_string(),
+                );
+                rejected_reason = semantic_block_reason.clone();
+            } else {
+                repair_succeeded = true;
+            }
             if let Some(object) = validation_basis.as_object_mut() {
                 object.insert(
                     "repair_promoted_after_write".to_string(),

@@ -1135,6 +1135,327 @@ fn validation_rejects_required_tool_mode_failure_artifact() {
 }
 
 #[test]
+fn validation_rejects_web_unavailable_artifact_after_successful_websearch() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-web-research-contradiction-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "gather_market_sources".to_string();
+    node.objective = "Use web_research and web_fetch to gather current market sources.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "citations".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: Some(crate::AutomationOutputEnforcement {
+            validation_profile: Some("external_research".to_string()),
+            required_tools: vec!["websearch".to_string()],
+            required_tool_calls: Vec::new(),
+            required_evidence: Vec::new(),
+            required_sections: vec!["web_sources_reviewed".to_string()],
+            prewrite_gates: vec!["successful_web_research".to_string()],
+            retry_on_missing: vec!["missing_successful_web_research".to_string()],
+            terminal_on: vec!["completed".to_string()],
+            repair_budget: Some(2),
+            session_text_recovery: None,
+        }),
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/gather-market-sources.json"
+        }
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "status": "completed",
+        "node_id": "gather_market_sources",
+        "web_research": {
+            "status": "unavailable_in_current_tooling",
+            "limitations": ["No websearch/webfetch tools were available in this workspace session."]
+        },
+        "sources_reviewed": [],
+        "citations_external": [],
+        "evidence_notes": ["No dated market or technical sources were captured in this attempt."]
+    }))
+    .expect("serialize artifact");
+    let session = Session::new(Some("web contradiction".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "",
+        &json!({
+            "executed_tools": ["websearch", "write"],
+            "requested_tools": ["websearch", "write"],
+            "web_research_used": true,
+            "web_research_succeeded": true,
+            "web_research_citations": ["https://example.com/source"],
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/gather-market-sources.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_none());
+    assert!(validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| {
+            value.as_str() == Some("web_research_artifact_contradicts_tool_receipts")
+        }));
+    assert!(rejected
+        .as_deref()
+        .unwrap_or_default()
+        .contains("web research was unavailable"));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
+fn validation_accepts_structured_json_handoff_from_verified_artifact() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-structured-handoff-artifact-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "collect_reddit_signals".to_string();
+    node.objective = "Use reddit-gmail MCP to collect Reddit posts and comments.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/collect-reddit-signals.json"
+        },
+        "tool_allowlist": [
+            "mcp.reddit_gmail.reddit_search_across_subreddits"
+        ]
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "artifact_type": "collect_reddit_signals",
+        "status": "completed",
+        "findings": [{
+            "title": "Agent cost anxiety",
+            "source_url": "https://www.reddit.com/r/vibecoding/comments/1t6bys1/",
+            "subreddit": "r/vibecoding",
+            "permalink": "https://www.reddit.com/r/vibecoding/comments/1t6bys1/",
+            "relevance_rationale": "Discusses token costs and AI agent workflow friction."
+        }],
+        "tool_evidence": [{
+            "tool": "mcp.reddit_gmail.reddit_search_across_subreddits",
+            "result_excerpt": "Returned Reddit posts about AI agent costs and reliability."
+        }]
+    }))
+    .expect("serialize artifact");
+    let session = Session::new(Some("compact final status".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": [
+                "mcp_list",
+                "mcp.reddit_gmail.reddit_search_across_subreddits",
+                "write"
+            ],
+            "requested_tools": [
+                "mcp_list",
+                "mcp.reddit_gmail.reddit_search_across_subreddits",
+                "write"
+            ],
+            "capability_resolution": {
+                "mcp_tool_diagnostics": {
+                    "selected_servers": ["reddit-gmail"]
+                }
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/collect-reddit-signals.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_some());
+    assert_eq!(validation["validation_outcome"], "passed");
+    assert!(!validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("structured_handoff_missing")));
+    assert!(rejected.is_none());
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
+fn validation_accepts_notion_fetch_markdown_as_connector_source_evidence() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-notion-fetch-artifact-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "confirm_notion_target".to_string();
+    node.objective =
+        "Use mcp.notion.notion_fetch to confirm the Notion target database.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "text_summary".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/confirm-notion-target.md"
+        },
+        "tool_allowlist": [
+            "mcp.notion.notion_fetch",
+            "mcp.notion.notion_search",
+            "write"
+        ]
+    }));
+    let artifact = "Confirmed the Notion target using `mcp.notion.notion_fetch`.\n\nSource evidence: `collection://database-id` returned a Notion database target named `AI productivity signals`; no connector limitation was observed.\n";
+    let session = Session::new(Some("notion target confirmation".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": [
+                "mcp_list",
+                "mcp.notion.notion_fetch",
+                "write"
+            ],
+            "requested_tools": [
+                "mcp_list",
+                "mcp.notion.notion_fetch",
+                "mcp.notion.notion_search",
+                "write"
+            ],
+            "capability_resolution": {
+                "mcp_tool_diagnostics": {
+                    "selected_servers": ["notion"]
+                }
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/confirm-notion-target.md".to_string(),
+            artifact.to_string(),
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_some());
+    assert_eq!(validation["validation_outcome"], "passed");
+    assert!(!validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("mcp_connector_source_artifact_missing")));
+    assert!(rejected.is_none());
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
+fn validation_accepts_unknown_mcp_server_artifact_from_concrete_tool_receipt() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-dynamic-mcp-artifact-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "confirm_acme_target".to_string();
+    node.objective = "Use the Acme MCP connector to confirm the external destination.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "text_summary".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/confirm-acme-target.md"
+        },
+        "tool_allowlist": [
+            "mcp.acme_connector.fetch_destination",
+            "write"
+        ]
+    }));
+    let artifact = "Confirmed the external target using `mcp.acme_connector.fetch_destination`.\n\nThe connector returned a concrete destination record for `destination://primary` with a display name, writable status, and no connector limitation. This is enough for downstream publishing to proceed without relying on connector inventory.";
+    let session = Session::new(Some("dynamic mcp confirmation".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": [
+                "mcp_list",
+                "mcp.acme_connector.fetch_destination",
+                "write"
+            ],
+            "requested_tools": [
+                "mcp_list",
+                "mcp.acme_connector.fetch_destination",
+                "write"
+            ],
+            "capability_resolution": {
+                "mcp_tool_diagnostics": {
+                    "selected_servers": ["acme-connector"]
+                }
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/confirm-acme-target.md".to_string(),
+            artifact.to_string(),
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_some());
+    assert_eq!(validation["validation_outcome"], "passed");
+    assert!(!validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("mcp_connector_source_artifact_missing")));
+    assert!(rejected.is_none());
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn validation_rejects_connector_source_inventory_only_artifact() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-connector-inventory-only-artifact-{}",

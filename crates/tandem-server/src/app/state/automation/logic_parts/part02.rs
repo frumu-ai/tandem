@@ -561,9 +561,17 @@ pub(crate) fn render_automation_repair_brief(
     } else {
         String::new()
     };
+    let web_research_receipt_corrective_line = if unmet_requirements
+        .iter()
+        .any(|value| value == "web_research_artifact_contradicts_tool_receipts")
+    {
+        "\n\nCORRECTIVE — web research receipts override artifact prose:\n- The previous attempt successfully executed web research, but the artifact claimed web research was unavailable.\n- For this retry, do not write `web_research.status: unavailable`, `unavailable_in_current_tooling`, or similar no-tool/no-source language.\n- Use the URLs and result summaries from the prior websearch/webfetch tool output, or call websearch again if you need fresher details, then write a citation-backed completed artifact.".to_string()
+    } else {
+        String::new()
+    };
 
     Some(format!(
-        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Upstream read paths available for synthesis: {}.\n- Required source read paths: {}.\n- Missing required source read paths: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.{}{}{}{}",
+        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Upstream read paths available for synthesis: {}.\n- Required source read paths: {}.\n- Missing required source read paths: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.{}{}{}{}{}",
         node.node_id,
         reason,
         validation_basis_line,
@@ -583,6 +591,7 @@ pub(crate) fn render_automation_repair_brief(
         declared_output_corrective_line,
         nonterminal_status_corrective_line,
         concrete_mcp_corrective_line,
+        web_research_receipt_corrective_line,
     ))
 }
 
@@ -1109,8 +1118,11 @@ pub(crate) fn normalize_automation_requested_tools(
     if has_read && !has_workspace_probe {
         normalized.push("glob".to_string());
     }
-    if automation_node_web_research_expected(node) {
+    if automation_node_web_research_expected(node)
+        || enforcement::automation_node_allows_optional_web_research(node)
+    {
         normalized.push("websearch".to_string());
+        normalized.push("webfetch".to_string());
     }
     if handoff_only_structured_json {
         normalized.retain(|tool| !matches!(tool.as_str(), "write" | "edit" | "apply_patch"));
@@ -1222,6 +1234,7 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
     let web_research_required =
         web_research_expected && requested_tools.iter().any(|tool| tool == "websearch");
     let brief_research_node = validation_profile == "local_research";
+    let external_research_node = validation_profile == "external_research";
     let research_finalize = validation_profile == "research_synthesis";
     let optional_workspace_reads =
         enforcement::automation_node_allows_optional_workspace_reads(node);
@@ -1253,6 +1266,7 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
         && requested_tools.iter().any(|tool| tool == "websearch");
     Some(PrewriteRequirements {
         workspace_inspection_required: workspace_inspection_required
+            && !external_research_node
             && !connector_source_node
             && !research_finalize
             && explicit_input_files.is_empty(),
@@ -1339,6 +1353,11 @@ pub(crate) fn semantic_block_reason_for_requirements(
         Some("connector-backed work completed without discovering available MCP tools".to_string())
     } else if has_unmet("missing_successful_web_research") {
         Some("research completed without required current web research".to_string())
+    } else if has_unmet("web_research_artifact_contradicts_tool_receipts") {
+        Some(
+            "artifact claims web research was unavailable even though web research succeeded in this run"
+                .to_string(),
+        )
     } else if has_unmet("required_source_paths_not_read") {
         Some("research completed without reading the exact required source files".to_string())
     } else if has_unmet("no_concrete_reads") || has_unmet("concrete_read_required") {
