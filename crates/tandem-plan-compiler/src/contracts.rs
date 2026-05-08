@@ -183,7 +183,10 @@ pub fn research_output_contract_policy_seed(
         "external_research"
     } else if normalized_kind == "citations" {
         "artifact_only"
-    } else if normalized_kind == "brief" {
+    } else if matches!(
+        normalized_kind,
+        "brief" | "draft_deliverable" | "final_deliverable" | "report" | "report_writing"
+    ) {
         "research_synthesis"
     } else {
         "local_research"
@@ -368,5 +371,20 @@ mod tests {
             .required_evidence
             .iter()
             .any(|evidence| evidence == "external_sources"));
+    }
+
+    #[test]
+    fn draft_deliverable_contract_does_not_require_fresh_local_reads() {
+        let seed = research_output_contract_policy_seed("draft_deliverable", false, 3);
+        assert_eq!(seed.validation_profile, "research_synthesis");
+        assert!(!seed.required_tools.iter().any(|tool| tool == "read"));
+        assert!(!seed
+            .required_evidence
+            .iter()
+            .any(|evidence| evidence == "local_source_reads"));
+        assert!(!seed
+            .prewrite_gates
+            .iter()
+            .any(|gate| gate == "concrete_reads"));
     }
 }

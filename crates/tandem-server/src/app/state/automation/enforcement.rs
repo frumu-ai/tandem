@@ -132,6 +132,44 @@ pub(crate) fn automation_node_allows_optional_connector_references(
     )
 }
 
+pub(crate) fn automation_node_consumes_upstream_artifacts_for_delivery(
+    node: &AutomationFlowNode,
+) -> bool {
+    if node.input_refs.is_empty() {
+        return false;
+    }
+    let builder = automation_node_legacy_builder(node);
+    let task_class = builder
+        .and_then(|builder| builder.get("task_class"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let task_kind = builder
+        .and_then(|builder| builder.get("task_kind"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let retry_class = builder
+        .and_then(|builder| builder.get("retry_class"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let objective = automation_node_workspace_intent_text(node).to_ascii_lowercase();
+
+    matches!(
+        task_class.as_str(),
+        "report_writing" | "brief_writer" | "delivery"
+    ) || matches!(task_kind.as_str(), "delivery" | "draft_deliverable")
+        || retry_class == "artifact_revision"
+        || (objective.contains("use the synthesized findings")
+            || objective.contains("use synthesized findings")
+            || objective.contains("draft the final report")
+            || objective.contains("final report body"))
+}
+
 pub(crate) fn automation_node_prefers_mcp_servers(node: &AutomationFlowNode) -> bool {
     automation_node_legacy_builder(node)
         .and_then(|builder| builder.get("preferred_mcp_servers"))
@@ -1060,6 +1098,26 @@ pub(crate) fn automation_node_output_enforcement(
     enforcement.retry_on_missing =
         super::super::normalize_non_empty_list(enforcement.retry_on_missing);
     enforcement.terminal_on = super::super::normalize_non_empty_list(enforcement.terminal_on);
+
+    if automation_node_consumes_upstream_artifacts_for_delivery(node) {
+        enforcement.validation_profile = Some("research_synthesis".to_string());
+        enforcement
+            .required_tools
+            .retain(|tool| tool != "read" && tool != "glob");
+        enforcement
+            .required_evidence
+            .retain(|item| item != "local_source_reads");
+        enforcement
+            .prewrite_gates
+            .retain(|gate| gate != "workspace_inspection" && gate != "concrete_reads");
+        enforcement
+            .retry_on_missing
+            .retain(|item| item != "local_source_reads" && item != "concrete_reads");
+        enforcement
+            .terminal_on
+            .retain(|item| item != "no_concrete_reads" && item != "local_source_reads");
+        enforcement.session_text_recovery = Some("allow".to_string());
+    }
 
     if is_bug_monitor_triage_artifact {
         if enforcement.validation_profile.as_deref() != Some("artifact_only") {

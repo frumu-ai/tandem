@@ -1047,6 +1047,68 @@ fn capability_ids_optional_web_context_offers_web_without_requiring_research_gat
 }
 
 #[test]
+fn report_writer_from_upstream_artifacts_does_not_require_local_reads() {
+    let mut node = bare_node();
+    node.node_id = "draft_final_report".to_string();
+    node.objective = "Draft the final report body for the existing Notion row. Use the synthesized findings, cite sources clearly, and include Tandem Run details.".to_string();
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "synthesize_reliability_approaches".to_string(),
+        alias: "synthesis".to_string(),
+    }];
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "brief".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+        enforcement: Some(crate::AutomationOutputEnforcement {
+            validation_profile: Some("local_research".to_string()),
+            required_tools: vec!["read".to_string()],
+            required_tool_calls: Vec::new(),
+            required_evidence: vec!["local_source_reads".to_string()],
+            required_sections: Vec::new(),
+            prewrite_gates: vec![
+                "workspace_inspection".to_string(),
+                "concrete_reads".to_string(),
+            ],
+            retry_on_missing: vec![
+                "local_source_reads".to_string(),
+                "workspace_inspection".to_string(),
+                "concrete_reads".to_string(),
+            ],
+            terminal_on: vec![
+                "tool_unavailable".to_string(),
+                "repair_budget_exhausted".to_string(),
+            ],
+            repair_budget: Some(5),
+            session_text_recovery: Some("require_prewrite_satisfied".to_string()),
+        }),
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "task_class": "report_writing",
+            "task_kind": "delivery",
+            "retry_class": "artifact_revision"
+        }
+    }));
+
+    let enforcement = automation_node_output_enforcement(&node);
+
+    assert_eq!(
+        enforcement.validation_profile.as_deref(),
+        Some("research_synthesis")
+    );
+    assert!(!enforcement.required_tools.iter().any(|tool| tool == "read"));
+    assert!(!enforcement
+        .required_evidence
+        .iter()
+        .any(|item| item == "local_source_reads"));
+    assert!(!enforcement
+        .prewrite_gates
+        .iter()
+        .any(|gate| gate == "concrete_reads"));
+}
+
+#[test]
 fn auto_cleaned_marker_file_rejection_is_downgraded_when_output_is_valid() {
     assert!(super::should_downgrade_auto_cleaned_marker_rejection(
         Some("undeclared marker files created: .tandem_ack"),
