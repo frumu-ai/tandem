@@ -120,9 +120,7 @@ pub(crate) fn automation_tool_capability_ids(
     if requires_artifact_write {
         capabilities.push("artifact_write".to_string());
     }
-    if automation_node_web_research_expected(node)
-        || enforcement::automation_node_allows_optional_web_research(node)
-    {
+    if automation_node_web_research_expected(node) {
         capabilities.push("web_research".to_string());
     }
     if automation_node_requires_email_delivery(node) {

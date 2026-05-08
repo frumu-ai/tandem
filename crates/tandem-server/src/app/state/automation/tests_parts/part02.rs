@@ -614,51 +614,6 @@ fn capability_ids_connector_source_input_ref_excludes_implicit_workspace_read() 
 }
 
 #[test]
-fn capability_ids_optional_web_context_offers_web_without_requiring_research_gate() {
-    let mut node = bare_node();
-    node.node_id = "gather_supporting_context".to_string();
-    node.objective = "Use web research and web_fetch only when useful to add supporting context for tools, market references, or claims that emerged from collect_reddit_signals. Do not replace Reddit as the primary evidence source. Return concise citations; if no web context is needed, return an empty citations list with rationale.".to_string();
-    node.output_contract = Some(AutomationFlowOutputContract {
-        kind: "citations".to_string(),
-        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
-        enforcement: None,
-        schema: None,
-        summary_guidance: None,
-    });
-    node.metadata = Some(json!({
-        "builder": {
-            "output_path": ".tandem/artifacts/gather-supporting-context.json"
-        }
-    }));
-
-    let caps = automation_tool_capability_ids(&node, "artifact_write");
-    let enforcement = automation_node_output_enforcement(&node);
-
-    assert!(caps.contains(&"web_research".to_string()));
-    assert!(
-        !enforcement
-            .required_tools
-            .iter()
-            .any(|tool| tool == "websearch"),
-        "optional web context should not make websearch a required tool"
-    );
-    assert!(
-        !enforcement
-            .required_evidence
-            .iter()
-            .any(|evidence| evidence == "external_sources"),
-        "optional web context should not require external source evidence"
-    );
-    assert!(
-        !enforcement
-            .prewrite_gates
-            .iter()
-            .any(|gate| gate == "successful_web_research"),
-        "optional web context should not install a successful-web-research gate"
-    );
-}
-
-#[test]
 fn capability_ids_code_workflow_git_patch_includes_verify_command() {
     let caps = automation_tool_capability_ids(&code_workflow_node(), "git_patch");
     assert!(
