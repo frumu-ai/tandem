@@ -600,8 +600,10 @@ pub struct AutomationFlowSpec {
     pub nodes: Vec<AutomationFlowNode>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AutomationExecutionPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_parallel_agents: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -619,6 +621,7 @@ impl From<tandem_plan_compiler::api::ProjectedAutomationExecutionPolicy>
 {
     fn from(value: tandem_plan_compiler::api::ProjectedAutomationExecutionPolicy) -> Self {
         Self {
+            profile: None,
             max_parallel_agents: value.max_parallel_agents,
             max_total_runtime_ms: value.max_total_runtime_ms,
             max_total_tool_calls: value.max_total_tool_calls,
@@ -626,6 +629,17 @@ impl From<tandem_plan_compiler::api::ProjectedAutomationExecutionPolicy>
             max_total_cost_usd: value.max_total_cost_usd,
         }
     }
+}
+
+/// Effective profile precedence: explicit run override → workflow policy →
+/// system default (Strict). Tenant-level defaults are a Phase 2 addition.
+pub fn resolve_effective_execution_profile(
+    automation: &AutomationV2Spec,
+    requested: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
+) -> crate::automation_v2::execution_profile::ExecutionProfile {
+    requested
+        .or(automation.execution.profile)
+        .unwrap_or(crate::automation_v2::execution_profile::ExecutionProfile::Strict)
 }
 
 impl AutomationV2Spec {
@@ -1179,6 +1193,16 @@ pub struct AutomationV2RunRecord {
     pub consumed_handoff_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub learning_summary: Option<WorkflowLearningRunSummary>,
+    /// Effective execution profile for this run, resolved at run start
+    /// from optional run-level override, automation policy, or Strict.
+    /// See `automation_v2::types::resolve_effective_execution_profile`.
+    #[serde(default)]
+    pub effective_execution_profile: crate::automation_v2::execution_profile::ExecutionProfile,
+    /// What the caller explicitly requested at run-now time, if any.
+    /// `None` means the run inherited from the automation/system default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_execution_profile:
+        Option<crate::automation_v2::execution_profile::ExecutionProfile>,
 }
 
 fn default_tenant_context() -> TenantContext {

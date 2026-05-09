@@ -155,6 +155,12 @@ fn structured_handoff_prompt_detector_matches_automation_contracts() {
     assert!(requires_structured_handoff_final_response_prompt(
         "Include the required structured handoff JSON in the final response."
     ));
+    assert!(requires_structured_handoff_final_response_prompt(
+        "Review Decision Output Contract:\n- The final JSON must include top-level `status` set to `completed` or `blocked`.\n- The final JSON must include top-level `approved` set to `true` or `false`."
+    ));
+    assert!(requires_structured_handoff_final_response_prompt(
+        "Final response requirements:\n- Include a final compact JSON object in the response body with at least `status` (`completed` or `blocked`).\n- For review-style nodes, also include `approved` (`true` or `false`)."
+    ));
     assert!(!requires_structured_handoff_final_response_prompt(
         "Please inspect the repo and summarize what you found."
     ));
@@ -226,6 +232,8 @@ fn post_tool_final_narrative_prompt_preserves_structured_response_requirements()
     assert!(prompt.contains("required JSON structure"));
     assert!(prompt.contains("required handoff fields"));
     assert!(prompt.contains("required final status object"));
+    assert!(prompt.contains("review-style workflow node"));
+    assert!(prompt.contains("top-level `approved`"));
     assert!(prompt.contains("Do not stop at a tool summary"));
 }
 

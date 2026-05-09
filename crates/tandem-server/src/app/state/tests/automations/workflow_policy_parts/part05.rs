@@ -348,6 +348,73 @@ fn code_workflow_without_structural_completion_signal_requests_repair() {
 }
 
 #[test]
+fn malformed_review_tool_result_requests_repair_instead_of_terminal_block() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "validate_report".to_string(),
+        agent_id: "reviewer".to_string(),
+        objective: "Review the synthesized report and approve or reject it.".to_string(),
+        depends_on: vec!["synthesize_report".to_string()],
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "review".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+    let session_text = r#"{
+  "result": {
+    "joinedTeams": [
+      {
+        "type": "team",
+        "id": "30f23b71-c127-818f-ade7-004220a37d22",
+        "name": "tandem agent's Space HQ",
+        "role": "owner"
+      }
+    ]
+  },
+  "handoff": {
+    "summary": "Found 1 joined Notion team and no other teams."
+  },
+  "status": {
+    "success": true,
+    "code": "OK"
+  }
+}"#;
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            session_text,
+            None,
+            &json!({
+                "requested_tools": ["mcp_list", "mcp.notion.notion_get_teams"],
+                "executed_tools": ["mcp_list", "mcp.notion.notion_get_teams"],
+                "tool_call_counts": {
+                    "mcp_list": 1,
+                    "mcp.notion.notion_get_teams": 4
+                }
+            }),
+            None,
+        );
+
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("node did not return a final workflow result with an explicit status or validated output")
+    );
+    assert_eq!(approved, None);
+}
+
+#[test]
 fn artifact_workflow_with_materialized_output_completes_without_explicit_status_json() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
@@ -1188,4 +1255,3 @@ fn completed_brief_without_read_is_blocked_even_if_it_looks_confident() {
     assert_eq!(reason.as_deref(), None);
     assert_eq!(approved, Some(true));
 }
-

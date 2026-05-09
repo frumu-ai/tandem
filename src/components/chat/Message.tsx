@@ -794,14 +794,22 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
   // ⚡ Bolt Optimization: Consolidate 4 separate O(n) filter loops into a single pass loop.
   // Reduces intermediate array allocations from 4 to 0 and iterations from 4n to 1n, easing GC pressure.
   const { runningCount, completedCount, pendingCount, failedCount } = useMemo(() => {
-    let running = 0, completed = 0, pending = 0, failed = 0;
+    let running = 0,
+      completed = 0,
+      pending = 0,
+      failed = 0;
     for (const t of toolCalls) {
       if (t.status === "running") running++;
       else if (t.status === "completed") completed++;
       else if (t.status === "pending") pending++;
       else if (t.status === "failed") failed++;
     }
-    return { runningCount: running, completedCount: completed, pendingCount: pending, failedCount: failed };
+    return {
+      runningCount: running,
+      completedCount: completed,
+      pendingCount: pending,
+      failedCount: failed,
+    };
   }, [toolCalls]);
   const isTerminal = runningCount === 0 && pendingCount === 0 && toolCalls.length > 0;
 

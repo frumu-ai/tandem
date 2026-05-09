@@ -1412,6 +1412,12 @@ fn detects_web_research_prompt_keywords() {
     assert!(requires_web_research_prompt(
         "research todays top news stories and include links"
     ));
+    assert!(requires_web_research_prompt(
+        "Use web_research and web_fetch to collect current market coverage"
+    ));
+    assert!(!requires_web_research_prompt(
+        "Synthesize the upstream web research artifact into the final report body; do not repeat discovery or fresh web research"
+    ));
     assert!(!requires_web_research_prompt(
         "say hello and summarize this text"
     ));

@@ -20,6 +20,8 @@ pub fn record_automation_lifecycle_event_with_metadata(
     stop_kind: Option<AutomationStopKind>,
     metadata: Option<Value>,
 ) {
+    let profile = run.effective_execution_profile;
+    let merged_metadata = merge_execution_profile_into_metadata(metadata, profile);
     run.checkpoint
         .lifecycle_history
         .push(AutomationLifecycleRecord {
@@ -27,8 +29,27 @@ pub fn record_automation_lifecycle_event_with_metadata(
             recorded_at_ms: now_ms(),
             reason,
             stop_kind,
-            metadata,
+            metadata: merged_metadata,
         });
+}
+
+fn merge_execution_profile_into_metadata(
+    metadata: Option<Value>,
+    profile: crate::automation_v2::execution_profile::ExecutionProfile,
+) -> Option<Value> {
+    let key = "effective_execution_profile";
+    let value = json!(profile.as_str());
+    match metadata {
+        Some(Value::Object(mut map)) => {
+            map.entry(key.to_string()).or_insert(value);
+            Some(Value::Object(map))
+        }
+        Some(other) => Some(json!({
+            "value": other,
+            key: value,
+        })),
+        None => Some(json!({ key: value })),
+    }
 }
 
 pub fn automation_last_activity_at_ms(run: &AutomationV2RunRecord) -> u64 {
@@ -389,5 +410,125 @@ pub fn record_automation_workflow_state_events(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::automation_v2::execution_profile::ExecutionProfile;
+
+    fn run_with_profile(profile: ExecutionProfile) -> AutomationV2RunRecord {
+        AutomationV2RunRecord {
+            run_id: "run-1".to_string(),
+            automation_id: "auto-1".to_string(),
+            tenant_context: tandem_types::TenantContext::local_implicit(),
+            trigger_type: "manual".to_string(),
+            status: crate::automation_v2::types::AutomationRunStatus::Queued,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            started_at_ms: None,
+            finished_at_ms: None,
+            active_session_ids: Vec::new(),
+            latest_session_id: None,
+            active_instance_ids: Vec::new(),
+            checkpoint: crate::automation_v2::types::AutomationRunCheckpoint {
+                completed_nodes: Vec::new(),
+                pending_nodes: Vec::new(),
+                node_outputs: std::collections::HashMap::new(),
+                node_attempts: std::collections::HashMap::new(),
+                node_attempt_verdicts: std::collections::HashMap::new(),
+                blocked_nodes: Vec::new(),
+                awaiting_gate: None,
+                gate_history: Vec::new(),
+                lifecycle_history: Vec::new(),
+                last_failure: None,
+            },
+            runtime_context: None,
+            automation_snapshot: None,
+            pause_reason: None,
+            resume_reason: None,
+            detail: None,
+            stop_kind: None,
+            stop_reason: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+            scheduler: None,
+            trigger_reason: None,
+            consumed_handoff_id: None,
+            learning_summary: None,
+            effective_execution_profile: profile,
+            requested_execution_profile: None,
+        }
+    }
+
+    #[test]
+    fn lifecycle_event_metadata_carries_effective_profile_when_absent() {
+        let mut run = run_with_profile(ExecutionProfile::Yolo);
+        record_automation_lifecycle_event(&mut run, "node_started", None, None);
+        let recorded = run.checkpoint.lifecycle_history.last().unwrap();
+        let metadata = recorded.metadata.as_ref().unwrap();
+        assert_eq!(
+            metadata
+                .get("effective_execution_profile")
+                .and_then(Value::as_str),
+            Some("yolo")
+        );
+    }
+
+    #[test]
+    fn lifecycle_event_metadata_does_not_overwrite_existing_profile_key() {
+        let mut run = run_with_profile(ExecutionProfile::Yolo);
+        record_automation_lifecycle_event_with_metadata(
+            &mut run,
+            "node_started",
+            None,
+            None,
+            Some(json!({"effective_execution_profile": "guided", "node_id": "x"})),
+        );
+        let metadata = run
+            .checkpoint
+            .lifecycle_history
+            .last()
+            .unwrap()
+            .metadata
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            metadata
+                .get("effective_execution_profile")
+                .and_then(Value::as_str),
+            Some("guided")
+        );
+        assert_eq!(metadata.get("node_id").and_then(Value::as_str), Some("x"));
+    }
+
+    #[test]
+    fn lifecycle_event_metadata_merges_into_existing_object() {
+        let mut run = run_with_profile(ExecutionProfile::Strict);
+        record_automation_lifecycle_event_with_metadata(
+            &mut run,
+            "node_started",
+            None,
+            None,
+            Some(json!({"node_id": "x"})),
+        );
+        let metadata = run
+            .checkpoint
+            .lifecycle_history
+            .last()
+            .unwrap()
+            .metadata
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            metadata
+                .get("effective_execution_profile")
+                .and_then(Value::as_str),
+            Some("strict")
+        );
+        assert_eq!(metadata.get("node_id").and_then(Value::as_str), Some("x"));
     }
 }

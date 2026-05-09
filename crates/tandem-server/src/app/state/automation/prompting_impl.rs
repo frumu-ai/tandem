@@ -1035,6 +1035,12 @@ pub(crate) fn render_automation_v2_prompt_with_options(
                 .to_string(),
         );
     }
+    if validator_kind == crate::AutomationOutputValidatorKind::ReviewDecision {
+        sections.push(
+            "Review Decision Output Contract:\n- End with JSON only, not a copied tool result or prose summary.\n- The final JSON must include top-level `status` set to `completed` or `blocked`.\n- The final JSON must include top-level `approved` set to `true` or `false`.\n- If `approved` is false or `status` is blocked, include a short top-level `reason`.\n- Do not use nested status objects such as `{ \"status\": { \"success\": true } }`; the workflow validator requires a string status at the top level."
+                .to_string(),
+        );
+    }
     let mut prompt = sections.join("\n\n");
     if !normalized_upstream_inputs.is_empty() {
         // For standup coordinator nodes, format participant outputs as structured

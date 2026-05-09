@@ -935,6 +935,7 @@ pub(in crate::http::tests) async fn create_test_automation_v2(
             ],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1109,6 +1110,7 @@ async fn create_branched_test_automation_v2(
             ],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(2),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1889,6 +1891,7 @@ async fn automation_v2_run_projects_backlog_tasks_into_context_blackboard() {
             }],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

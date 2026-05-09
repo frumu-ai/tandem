@@ -357,6 +357,7 @@ fn build_pack_builder_automation(
             }],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(max_agents.clamp(1, 16)),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

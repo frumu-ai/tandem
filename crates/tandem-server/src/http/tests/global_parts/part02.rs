@@ -65,6 +65,7 @@ async fn automation_v2_backlog_task_claim_and_requeue_routes_work() {
             }],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

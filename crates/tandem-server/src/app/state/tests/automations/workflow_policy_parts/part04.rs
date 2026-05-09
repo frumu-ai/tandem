@@ -507,6 +507,7 @@ fn research_finalize_prompt_includes_upstream_coverage_summary() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1213,4 +1214,3 @@ fn generic_artifact_validation_rejects_stale_preexisting_output_without_current_
 
     let _ = std::fs::remove_dir_all(workspace_root);
 }
-

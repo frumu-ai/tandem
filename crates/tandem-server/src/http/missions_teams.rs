@@ -182,6 +182,7 @@ pub(super) fn build_composed_automation(
         agents: desc.agents,
         flow: crate::AutomationFlowSpec { nodes: desc.nodes },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(desc.max_parallel_agents.clamp(1, 16)),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

@@ -238,6 +238,7 @@ fn publish_verified_output_snapshot_replace_copies_into_workspace_target() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -315,6 +316,7 @@ fn publish_verified_output_snapshot_replace_copies_into_global_target() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -402,6 +404,7 @@ fn publish_verified_output_append_jsonl_appends_records() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -498,6 +501,7 @@ fn publish_verified_output_falls_back_to_automation_output_targets() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -581,6 +585,7 @@ fn publish_verified_output_rejects_intermediate_node_for_automation_output_targe
             nodes: vec![source_node.clone(), final_node],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -646,6 +651,7 @@ fn publish_verified_output_rejects_workspace_target_outside_workspace() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1307,6 +1313,86 @@ fn validation_accepts_structured_json_handoff_from_verified_artifact() {
 }
 
 #[test]
+fn validation_accepts_concrete_mcp_source_from_top_level_diagnostics() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-top-level-mcp-diagnostics-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "extract_pain_points".to_string();
+    node.objective = "Use Reddit MCP to extract pain points from connector-backed source research about agent reliability. Retrieve representative Reddit posts or comments, summarize recurring pain points, and write a structured JSON artifact with source identifiers.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/extract-pain-points.json"
+        }
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "status": "completed",
+        "pain_points": [{
+            "theme": "Tool-calling failures",
+            "source": "https://www.reddit.com/r/LLMDevs/comments/example/",
+            "evidence": "A Reddit MCP search returned discussion about agent runtime behavior."
+        }],
+        "source_evidence": [{
+            "tool": "mcp.reddit_gmail.reddit_search_across_subreddits",
+            "result": "success"
+        }]
+    }))
+    .expect("serialize artifact");
+    let session = Session::new(Some("{\"status\":\"completed\"}".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": [
+                "mcp_list",
+                "mcp.reddit_gmail.reddit_search_across_subreddits",
+                "write"
+            ],
+            "requested_tools": [
+                "mcp_list",
+                "mcp.reddit_gmail.*",
+                "write"
+            ],
+            "capability_resolution": {},
+            "mcp_tool_diagnostics": {
+                "selected_servers": ["reddit-gmail"]
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/extract-pain-points.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_some(), "{validation:#}");
+    assert_eq!(validation["validation_outcome"], "passed");
+    assert!(!validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("mcp_connector_source_missing")));
+    assert!(rejected.is_none(), "{rejected:?}");
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn validation_accepts_optional_tandem_mcp_reference_without_connector_call() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-optional-mcp-reference-{}",
@@ -1457,6 +1543,105 @@ fn validation_accepts_notion_fetch_markdown_as_connector_source_evidence() {
         .iter()
         .any(|value| value.as_str() == Some("mcp_connector_source_artifact_missing")));
     assert!(rejected.is_none());
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
+fn structured_json_connector_fetch_does_not_require_workspace_inspection() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-notion-row-inspection-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "inspect_notion_row".to_string();
+    node.objective = "Fetch and inspect only the existing Notion database row at https://www.notion.so/f3975ce71d8d45318bea2812c65f209b inside Operational Workflow Results collection://892d3e9b-2bf8-4b3e-a541-dc725f77295d, confirming the target page/row identity and current editable fields. Do not create a database, top-level page, workspace page, or new database row.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: Some(crate::AutomationOutputEnforcement {
+            validation_profile: Some("artifact_only".to_string()),
+            required_tools: vec!["mcp.notion.notion_fetch".to_string()],
+            required_tool_calls: Vec::new(),
+            required_evidence: Vec::new(),
+            required_sections: Vec::new(),
+            prewrite_gates: vec!["workspace_inspection".to_string()],
+            retry_on_missing: vec!["workspace_inspection".to_string()],
+            terminal_on: vec!["completed".to_string()],
+            repair_budget: Some(2),
+            session_text_recovery: Some("require_prewrite_satisfied".to_string()),
+        }),
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/inspect-notion-row.json"
+        },
+        "tool_allowlist": [
+            "mcp.notion.*",
+            "mcp.notion.notion_fetch",
+            "write"
+        ]
+    }));
+    let artifact = json!({
+        "status": "completed",
+        "target": {
+            "url": "https://www.notion.so/f3975ce71d8d45318bea2812c65f209b",
+            "page_id": "f3975ce71d8d45318bea2812c65f209b",
+            "collection": "collection://892d3e9b-2bf8-4b3e-a541-dc725f77295d"
+        },
+        "source_evidence": {
+            "tool": "mcp.notion.notion_fetch",
+            "result": "Fetched existing Notion page in Operational Workflow Results with editable properties."
+        },
+        "editable_fields": ["Name", "Status", "Summary", "Evidence", "Sources", "Run ID"]
+    })
+    .to_string();
+    let session = Session::new(Some("notion row inspection".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": [
+                "mcp_list",
+                "mcp.notion.notion_fetch",
+                "write"
+            ],
+            "requested_tools": [
+                "mcp_list",
+                "mcp.notion.*",
+                "mcp.notion.notion_fetch",
+                "write"
+            ],
+            "capability_resolution": {
+                "mcp_tool_diagnostics": {
+                    "selected_servers": ["notion"]
+                }
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/inspect-notion-row.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_some());
+    assert_eq!(validation["validation_outcome"], "passed");
+    assert!(!validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("workspace_inspection_required")));
+    assert!(rejected.is_none(), "{rejected:?}");
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
@@ -1749,6 +1934,7 @@ fn validation_blocks_read_only_source_mutations_without_retry() {
                 agents: Vec::new(),
                 flow: crate::AutomationFlowSpec { nodes: Vec::new() },
                 execution: crate::AutomationExecutionPolicy {
+                    profile: None,
                     max_parallel_agents: None,
                     max_total_runtime_ms: None,
                     max_total_tool_calls: None,
@@ -2072,6 +2258,7 @@ fn standup_synthesis_effective_required_output_path_uses_report_template() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

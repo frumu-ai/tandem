@@ -232,6 +232,9 @@ impl AppState {
             trigger_reason: Some(trigger_reason),
             consumed_handoff_id,
             learning_summary: None,
+            effective_execution_profile:
+                crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+            requested_execution_profile: None,
         };
         self.automation_v2_runs
             .write()

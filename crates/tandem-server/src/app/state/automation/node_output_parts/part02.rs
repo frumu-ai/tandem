@@ -153,6 +153,7 @@ pub(crate) fn detect_automation_node_status(
     let validation_repairable = (validator_kind
         == crate::AutomationOutputValidatorKind::ResearchBrief
         || validator_kind == crate::AutomationOutputValidatorKind::GenericArtifact
+        || validator_kind == crate::AutomationOutputValidatorKind::ReviewDecision
         || has_required_tools
         || validator_kind == crate::AutomationOutputValidatorKind::StructuredJson)
         && !research_repair_exhausted;
@@ -1530,6 +1531,7 @@ pub(crate) fn wrap_automation_node_output(
             nodes: vec![node.clone()],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

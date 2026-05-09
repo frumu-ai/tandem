@@ -60,6 +60,7 @@ fn sample_automation(workspace_root: &str) -> crate::AutomationV2Spec {
             }],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: None,
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

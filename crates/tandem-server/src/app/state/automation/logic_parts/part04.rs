@@ -319,6 +319,11 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .get("capability_resolution")
             .and_then(|value| value.get("mcp_tool_diagnostics"))
             .and_then(|value| value.get("selected_servers"))
+            .or_else(|| {
+                tool_telemetry
+                    .get("mcp_tool_diagnostics")
+                    .and_then(|value| value.get("selected_servers"))
+            })
             .and_then(Value::as_array)
             .map(|rows| {
                 rows.iter()
@@ -338,9 +343,10 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     .filter_map(Value::as_str)
                     .filter(|tool_name| {
                         *tool_name != "mcp_list"
-                            && connector_action_patterns.iter().any(|pattern| {
-                                tandem_core::tool_name_matches_policy(pattern, tool_name)
-                            })
+                            && (connector_action_patterns.is_empty()
+                                || connector_action_patterns.iter().any(|pattern| {
+                                    tandem_core::tool_name_matches_policy(pattern, tool_name)
+                                }))
                     })
                     .map(str::to_string)
                     .collect::<Vec<_>>()
@@ -1191,6 +1197,15 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let requested_has_concrete_mcp = requested_tools
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|tool| tool.starts_with("mcp.") && tool != "mcp_list" && !tool.ends_with(".*"));
+        let executed_has_concrete_mcp = executed_tools
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|tool| tool.starts_with("mcp.") && tool != "mcp_list" && !tool.ends_with(".*"));
+        let connector_source_satisfied = requested_has_concrete_mcp && executed_has_concrete_mcp;
         let requested_has_websearch = requested_tools
             .iter()
             .any(|value| value.as_str() == Some("websearch"));
@@ -1264,19 +1279,27 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         {
             unmet_requirements.push("structured_handoff_missing".to_string());
         }
-        if requires_workspace_inspection && !workspace_inspection_satisfied {
+        if requires_workspace_inspection
+            && !workspace_inspection_satisfied
+            && !connector_source_satisfied
+        {
             unmet_requirements.push("workspace_inspection_required".to_string());
         }
         if !optional_workspace_reads
             && (requires_read || requires_concrete_reads)
             && !executed_has_read
+            && !connector_source_satisfied
         {
             unmet_requirements.push("no_concrete_reads".to_string());
         }
         if !missing_required_source_read_paths.is_empty() {
             unmet_requirements.push("required_source_paths_not_read".to_string());
         }
-        if !optional_workspace_reads && requires_concrete_reads && !executed_has_read {
+        if !optional_workspace_reads
+            && requires_concrete_reads
+            && !executed_has_read
+            && !connector_source_satisfied
+        {
             unmet_requirements.push("concrete_read_required".to_string());
         }
         if (requires_websearch || requires_successful_web_research) && !web_research_succeeded {

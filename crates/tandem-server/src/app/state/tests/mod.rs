@@ -113,6 +113,7 @@ impl AutomationSpecBuilder {
                 }],
                 flow: AutomationFlowSpec { nodes: Vec::new() },
                 execution: AutomationExecutionPolicy {
+                    profile: None,
                     max_parallel_agents: Some(2),
                     max_total_runtime_ms: None,
                     max_total_tool_calls: None,
@@ -208,6 +209,9 @@ impl AutomationRunBuilder {
                 trigger_reason: None,
                 consumed_handoff_id: None,
                 learning_summary: None,
+                effective_execution_profile:
+                    crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+                requested_execution_profile: None,
             },
         }
     }

@@ -1363,6 +1363,7 @@ mod tests {
                 }],
             },
             execution: crate::AutomationExecutionPolicy {
+                profile: None,
                 max_parallel_agents: None,
                 max_total_runtime_ms: None,
                 max_total_tool_calls: None,
@@ -1681,6 +1682,9 @@ mod tests {
             trigger_reason: None,
             consumed_handoff_id: None,
             learning_summary: None,
+            effective_execution_profile:
+                crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+            requested_execution_profile: None,
         };
         let metrics = derive_phase1_metrics_from_run(&run, &workflow, &phase1).expect("metrics");
         assert!((metrics.artifact_validator_pass_rate - 0.5).abs() < 1e-9);

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { renderIcons } from "../../app/icons.js";
+import { ConfirmDialog } from "../../components/ControlPanelDialogs";
 import { Badge, PanelCard, Toolbar } from "../../ui/index.tsx";
 
 type PromptCollectionOverride = {
@@ -59,6 +60,10 @@ export function KnowledgebasePromptsPanel({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showDefaults, setShowDefaults] = useState<Record<string, boolean>>({});
+  const [resetConfirm, setResetConfirm] = useState<{
+    key: string;
+    collectionId: string | null;
+  } | null>(null);
 
   const kbConfigQuery = useQuery({
     queryKey: ["knowledgebase", "config"],
@@ -96,11 +101,15 @@ export function KnowledgebasePromptsPanel({
 
   // When prompts load or scope changes, seed drafts with the *current effective* values
   // for the selected scope (so editing in the textarea starts from what the agent sees).
+  // Depend on dataUpdatedAt (a stable React Query timestamp) rather than the prompts
+  // array — the array gets a new reference each render but its contents only change
+  // when the query actually refetches.
   useEffect(() => {
-    if (!prompts.length) return;
+    const fresh = promptsQuery.data?.prompts || [];
+    if (!fresh.length) return;
     setDrafts((prev) => {
       const next: Record<string, string> = { ...prev };
-      for (const entry of prompts) {
+      for (const entry of fresh) {
         // Initialize draft only if untouched
         if (!(entry.key in next)) {
           next[entry.key] =
@@ -111,7 +120,7 @@ export function KnowledgebasePromptsPanel({
       }
       return next;
     });
-  }, [prompts, scope]);
+  }, [promptsQuery.dataUpdatedAt, scope]);
 
   // Reset drafts whenever scope changes — owners likely want a clean slate per scope
   useEffect(() => {
@@ -380,9 +389,9 @@ export function KnowledgebasePromptsPanel({
                               deletePromptMutation.isPending
                             }
                             onClick={() =>
-                              deletePromptMutation.mutate({
+                              setResetConfirm({
                                 key: entry.key,
-                                collection_id: scope === SCOPE_GLOBAL ? undefined : scope,
+                                collectionId: scope === SCOPE_GLOBAL ? null : scope,
                               })
                             }
                           >
@@ -434,6 +443,45 @@ export function KnowledgebasePromptsPanel({
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={resetConfirm !== null}
+        title="Reset prompt to default?"
+        message={
+          resetConfirm ? (
+            <span>
+              {resetConfirm.collectionId ? (
+                <>
+                  This removes the override for <code>{resetConfirm.key}</code> on collection{" "}
+                  <code>{resetConfirm.collectionId}</code>. The agent will fall back to the global
+                  override (if any) or the built-in default for this collection. Other collections
+                  are unaffected.
+                </>
+              ) : (
+                <>
+                  This removes the global override for <code>{resetConfirm.key}</code>. The agent
+                  will fall back to the built-in default. Per-collection overrides for this prompt
+                  remain in place.
+                </>
+              )}
+            </span>
+          ) : (
+            ""
+          )
+        }
+        confirmLabel="Reset"
+        confirmIcon="rotate-ccw"
+        confirmTone="danger"
+        confirmDisabled={deletePromptMutation.isPending}
+        onCancel={() => setResetConfirm(null)}
+        onConfirm={() => {
+          if (!resetConfirm) return;
+          deletePromptMutation.mutate({
+            key: resetConfirm.key,
+            collection_id: resetConfirm.collectionId ?? undefined,
+          });
+          setResetConfirm(null);
+        }}
+      />
     </PanelCard>
   );
 }

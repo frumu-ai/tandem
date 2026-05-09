@@ -231,6 +231,9 @@ mod tests {
             trigger_reason: None,
             consumed_handoff_id: None,
             learning_summary: None,
+            effective_execution_profile:
+                crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+            requested_execution_profile: None,
         }
     }
 
@@ -252,6 +255,7 @@ mod tests {
             agents: Vec::new(),
             flow: crate::AutomationFlowSpec { nodes: Vec::new() },
             execution: crate::AutomationExecutionPolicy {
+                profile: None,
                 max_parallel_agents: Some(1),
                 max_total_runtime_ms: None,
                 max_total_tool_calls: None,

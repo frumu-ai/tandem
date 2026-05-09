@@ -654,6 +654,10 @@ pub(super) struct AutomationV2PatchInput {
 pub(super) struct AutomationV2RunNowInput {
     #[serde(default)]
     pub dry_run: bool,
+    /// Run-level override for execution profile. When set, supersedes the
+    /// automation's saved policy for this run only.
+    #[serde(default)]
+    pub execution_profile: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
 }
 
 #[derive(Debug, Deserialize, Default)]

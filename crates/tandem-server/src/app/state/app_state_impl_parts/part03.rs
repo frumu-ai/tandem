@@ -1104,6 +1104,18 @@ impl AppState {
         automation: &AutomationV2Spec,
         trigger_type: &str,
     ) -> anyhow::Result<AutomationV2RunRecord> {
+        self.create_automation_v2_run_with_profile(automation, trigger_type, None)
+            .await
+    }
+
+    pub async fn create_automation_v2_run_with_profile(
+        &self,
+        automation: &AutomationV2Spec,
+        trigger_type: &str,
+        requested_execution_profile: Option<
+            crate::automation_v2::execution_profile::ExecutionProfile,
+        >,
+    ) -> anyhow::Result<AutomationV2RunRecord> {
         let now = now_ms();
         let runtime_context = self
             .automation_v2_effective_runtime_context(
@@ -1119,6 +1131,11 @@ impl AppState {
             .iter()
             .map(|n| n.node_id.clone())
             .collect::<Vec<_>>();
+        let effective_execution_profile =
+            crate::automation_v2::types::resolve_effective_execution_profile(
+                automation,
+                requested_execution_profile,
+            );
         let run = AutomationV2RunRecord {
             run_id: format!("automation-v2-run-{}", uuid::Uuid::new_v4()),
             automation_id: automation.automation_id.clone(),
@@ -1159,6 +1176,8 @@ impl AppState {
             trigger_reason: None,
             consumed_handoff_id: None,
             learning_summary: None,
+            effective_execution_profile,
+            requested_execution_profile,
         };
         self.automation_v2_runs
             .write()
@@ -1176,6 +1195,18 @@ impl AppState {
         automation: &AutomationV2Spec,
         trigger_type: &str,
     ) -> anyhow::Result<AutomationV2RunRecord> {
+        self.create_automation_v2_dry_run_with_profile(automation, trigger_type, None)
+            .await
+    }
+
+    pub async fn create_automation_v2_dry_run_with_profile(
+        &self,
+        automation: &AutomationV2Spec,
+        trigger_type: &str,
+        requested_execution_profile: Option<
+            crate::automation_v2::execution_profile::ExecutionProfile,
+        >,
+    ) -> anyhow::Result<AutomationV2RunRecord> {
         let now = now_ms();
         let runtime_context = self
             .automation_v2_effective_runtime_context(
@@ -1185,6 +1216,11 @@ impl AppState {
                     .or_else(|| automation.approved_plan_runtime_context_materialization()),
             )
             .await?;
+        let effective_execution_profile =
+            crate::automation_v2::types::resolve_effective_execution_profile(
+                automation,
+                requested_execution_profile,
+            );
         let run = AutomationV2RunRecord {
             run_id: format!("automation-v2-run-{}", uuid::Uuid::new_v4()),
             automation_id: automation.automation_id.clone(),
@@ -1225,6 +1261,8 @@ impl AppState {
             trigger_reason: None,
             consumed_handoff_id: None,
             learning_summary: None,
+            effective_execution_profile,
+            requested_execution_profile,
         };
         self.automation_v2_runs
             .write()

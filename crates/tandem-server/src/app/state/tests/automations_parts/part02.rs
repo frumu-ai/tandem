@@ -68,6 +68,7 @@ async fn automation_run_requeue_increments_attempt_counter() {
             }],
         },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -194,6 +195,7 @@ async fn automation_run_requires_stored_runtime_context_partition_at_startup() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -287,6 +289,7 @@ async fn automation_run_without_runtime_context_requirement_can_start_and_comple
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -453,6 +456,7 @@ async fn automation_run_rejects_invalid_activation_validation_snapshot() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -535,6 +539,7 @@ async fn stale_running_automation_runs_are_paused_and_release_scheduler_capacity
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -663,6 +668,7 @@ async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
             }],
         },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -827,6 +833,7 @@ async fn stale_running_automation_runs_fail_terminal_in_progress_nodes() {
             }],
         },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -929,6 +936,7 @@ async fn stale_running_automation_runs_ignore_recent_session_activity() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1015,6 +1023,7 @@ async fn stale_running_automation_runs_honor_internal_run_registry_heartbeat() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1109,6 +1118,7 @@ async fn recover_in_flight_runs_does_not_relock_workspace_for_paused_runs() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(2),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1293,6 +1303,7 @@ async fn automation_v2_approved_plan_materialization_is_recovered_from_snapshot(
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1476,6 +1487,7 @@ async fn automation_runtime_context_merges_shared_context_packs() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1535,6 +1547,7 @@ fn first_attempt_structured_json_prompt_without_output_path_requires_handoff_eve
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

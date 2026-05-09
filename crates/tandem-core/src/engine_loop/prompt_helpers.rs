@@ -47,7 +47,7 @@ pub(super) fn truncate_text(input: &str, max_len: usize) -> String {
 
 pub(super) fn build_post_tool_final_narrative_prompt(tool_outputs: &[String]) -> String {
     format!(
-        "Tool observations:\n{}\n\nUsing the tool observations and the existing conversation instructions, provide the required final answer now. Preserve any requested output contract, required JSON structure, required handoff fields, and required final status object from the original task. Do not call tools. Do not stop at a tool summary if the task requires a structured final response.",
+        "Tool observations:\n{}\n\nUsing the tool observations and the existing conversation instructions, provide the required final answer now. Preserve any requested output contract, required JSON structure, required handoff fields, and required final status object from the original task. If the original task is a review-style workflow node, return JSON with top-level `status` as `completed` or `blocked` and top-level `approved` as `true` or `false`; do not copy a raw tool result or use a nested status object. Do not call tools. Do not stop at a tool summary if the task requires a structured final response.",
         summarize_tool_outputs(tool_outputs)
     )
 }
@@ -302,8 +302,27 @@ pub(super) fn provider_tool_mode_for_selected_tools(
 
 pub(super) fn requires_web_research_prompt(input: &str) -> bool {
     let lower = input.to_ascii_lowercase();
+    if (lower.contains("upstream web research")
+        || lower.contains("web research artifact")
+        || lower.contains("web research handoff"))
+        && (lower.contains("do not repeat")
+            || lower.contains("without repeating")
+            || lower.contains("no fresh web research")
+            || lower.contains("do not rerun")
+            || lower.contains("source of truth"))
+    {
+        return false;
+    }
     [
-        "research",
+        "web research",
+        "web_research",
+        "websearch",
+        "web search",
+        "webfetch",
+        "web fetch",
+        "look up",
+        "search the web",
+        "browse the web",
         "top news",
         "today's news",
         "todays news",
@@ -321,10 +340,15 @@ pub(super) fn requires_structured_handoff_final_response_prompt(input: &str) -> 
         || (lower.contains("output contract kind: structured_json")
             && lower.contains("structured handoff"))
         || (lower.contains("required structured handoff json") && lower.contains("final response"))
+        || (lower.contains("review decision output contract")
+            && lower.contains("top-level `approved`"))
+        || (lower.contains("for review-style nodes")
+            && lower.contains("approved")
+            && lower.contains("final compact json"))
 }
 
 pub(super) fn structured_handoff_loop_guard_final_retry_context(outputs: &[String]) -> String {
-    let mut context = "A tool loop guard just prevented another repeated tool call. Stop calling tools now and return the required structured JSON handoff in the final response body, followed by the compact JSON status object. Use JSON only, with no headings, markdown fences, prose, or follow-up questions. Preserve any evidence already gathered in this session; if evidence is incomplete, record the limitation inside the JSON and set the top-level status to completed unless the task is semantically impossible.".to_string();
+    let mut context = "A tool loop guard just prevented another repeated tool call. Stop calling tools now and return the required structured JSON handoff or review decision in the final response body, followed by the compact JSON status object when one is required. Use JSON only, with no headings, markdown fences, prose, or follow-up questions. Preserve any evidence already gathered in this session; if evidence is incomplete, record the limitation inside the JSON and set the top-level status to completed unless the task is semantically impossible. For review-style nodes, include top-level `status` as a string and top-level `approved` as a boolean; never copy a raw tool result as the final answer.".to_string();
     let summary = summarize_tool_outputs(outputs);
     if !summary.trim().is_empty() {
         context.push_str("\n\nLoop-guard note:\n");

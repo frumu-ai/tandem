@@ -271,6 +271,7 @@ pub(crate) fn bug_monitor_triage_spec(
             ],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: Some(1_800_000),
             max_total_tool_calls: Some(96),
