@@ -2449,10 +2449,19 @@ export async function automationsV2Delete(
   return invoke("automations_v2_delete", { automationId });
 }
 
+export type ExecutionProfile = "strict" | "guided" | "yolo";
+
 export async function automationsV2RunNow(
-  automationId: string
+  automationId: string,
+  options?: { dryRun?: boolean; executionProfile?: ExecutionProfile }
 ): Promise<AutomationV2RunNowResponse> {
-  return invoke("automations_v2_run_now", { automationId });
+  const request: Record<string, unknown> = {};
+  if (options?.dryRun) request.dry_run = true;
+  if (options?.executionProfile) request.execution_profile = options.executionProfile;
+  if (Object.keys(request).length === 0) {
+    return invoke("automations_v2_run_now", { automationId });
+  }
+  return invoke("automations_v2_run_now", { automationId, request });
 }
 
 export async function automationsV2Pause(

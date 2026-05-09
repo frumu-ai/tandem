@@ -103,8 +103,12 @@ pub async fn automations_v2_delete(
 pub async fn automations_v2_run_now(
     state: State<'_, AppState>,
     automation_id: String,
+    request: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    state.sidecar.automations_v2_run_now(&automation_id).await
+    state
+        .sidecar
+        .automations_v2_run_now(&automation_id, request)
+        .await
 }
 
 #[tauri::command]

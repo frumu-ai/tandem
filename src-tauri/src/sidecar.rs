@@ -5302,17 +5302,22 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
-    pub async fn automations_v2_run_now(&self, automation_id: &str) -> Result<serde_json::Value> {
+    pub async fn automations_v2_run_now(
+        &self,
+        automation_id: &str,
+        request: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
         let url = format!(
             "{}/automations/v2/{}/run_now",
             self.base_url().await?,
             automation_id
         );
+        let body = request.unwrap_or_else(|| serde_json::json!({}));
         let response = self
             .http_client
             .post(&url)
-            .json(&serde_json::json!({}))
+            .json(&body)
             .send()
             .await
             .map_err(|e| {
