@@ -1656,3 +1656,121 @@ fn collect_inputs_prompt_requires_reading_before_writing() {
     assert!(prompt.contains("Do not let an empty `glob` end the run"));
     assert!(prompt.contains(&expected_output_path));
 }
+
+#[tokio::test]
+async fn create_automation_v2_run_defaults_effective_profile_to_strict() {
+    use crate::automation_v2::execution_profile::ExecutionProfile;
+    let root = std::env::temp_dir().join(format!(
+        "tandem-execution-profile-default-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).expect("state root");
+    let mut state = test_state_with_path(root.join("shared.json"));
+    state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_governance_path = root.join("automation_governance.json");
+    let automation = AutomationSpecBuilder::new("automation-profile-default")
+        .name("Profile default")
+        .build();
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("persist automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    assert_eq!(run.effective_execution_profile, ExecutionProfile::Strict);
+    assert!(run.requested_execution_profile.is_none());
+}
+
+#[tokio::test]
+async fn create_automation_v2_run_with_profile_uses_run_override() {
+    use crate::automation_v2::execution_profile::ExecutionProfile;
+    let root = std::env::temp_dir().join(format!(
+        "tandem-execution-profile-override-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).expect("state root");
+    let mut state = test_state_with_path(root.join("shared.json"));
+    state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_governance_path = root.join("automation_governance.json");
+    let automation = AutomationSpecBuilder::new("automation-profile-override")
+        .name("Profile override")
+        .execution_profile(ExecutionProfile::Strict)
+        .build();
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("persist automation");
+    let run = state
+        .create_automation_v2_run_with_profile(&automation, "manual", Some(ExecutionProfile::Yolo))
+        .await
+        .expect("create run with profile");
+    assert_eq!(run.effective_execution_profile, ExecutionProfile::Yolo);
+    assert_eq!(
+        run.requested_execution_profile,
+        Some(ExecutionProfile::Yolo)
+    );
+}
+
+#[tokio::test]
+async fn create_automation_v2_run_inherits_workflow_profile_when_no_override() {
+    use crate::automation_v2::execution_profile::ExecutionProfile;
+    let root = std::env::temp_dir().join(format!(
+        "tandem-execution-profile-inherit-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).expect("state root");
+    let mut state = test_state_with_path(root.join("shared.json"));
+    state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_governance_path = root.join("automation_governance.json");
+    let automation = AutomationSpecBuilder::new("automation-profile-inherit")
+        .name("Profile inherit")
+        .execution_profile(ExecutionProfile::Guided)
+        .build();
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("persist automation");
+    let run = state
+        .create_automation_v2_run_with_profile(&automation, "manual", None)
+        .await
+        .expect("create run");
+    // Resolver precedence: requested override (None) -> spec.execution.profile (Guided).
+    assert_eq!(run.effective_execution_profile, ExecutionProfile::Guided);
+    assert!(run.requested_execution_profile.is_none());
+}
+
+#[tokio::test]
+async fn create_automation_v2_dry_run_with_profile_persists_override() {
+    use crate::automation_v2::execution_profile::ExecutionProfile;
+    let root = std::env::temp_dir().join(format!(
+        "tandem-execution-profile-dry-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).expect("state root");
+    let mut state = test_state_with_path(root.join("shared.json"));
+    state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_governance_path = root.join("automation_governance.json");
+    let automation = AutomationSpecBuilder::new("automation-profile-dry")
+        .name("Profile dry")
+        .build();
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("persist automation");
+    let run = state
+        .create_automation_v2_dry_run_with_profile(
+            &automation,
+            "manual",
+            Some(ExecutionProfile::Guided),
+        )
+        .await
+        .expect("create dry run");
+    assert_eq!(run.effective_execution_profile, ExecutionProfile::Guided);
+    assert_eq!(
+        run.requested_execution_profile,
+        Some(ExecutionProfile::Guided)
+    );
+    assert_eq!(run.status, crate::AutomationRunStatus::Completed);
+}

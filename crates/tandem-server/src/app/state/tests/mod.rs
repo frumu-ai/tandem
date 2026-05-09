@@ -156,6 +156,15 @@ impl AutomationSpecBuilder {
         self
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn execution_profile(
+        mut self,
+        profile: crate::automation_v2::execution_profile::ExecutionProfile,
+    ) -> Self {
+        self.automation.execution.profile = Some(profile);
+        self
+    }
+
     pub(crate) fn build(self) -> AutomationV2Spec {
         self.automation
     }
