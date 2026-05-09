@@ -1430,6 +1430,60 @@ pub async fn run_automation_v2_run(
                                 &summary,
                                 &contract_kind,
                             );
+                            // Surface profile relaxation as a top-level
+                            // lifecycle event so it appears in run history,
+                            // failure events, and Bug Monitor receipts —
+                            // not only inside output["artifact_validation"].
+                            if let Some(relaxed_classes) = output
+                                .pointer("/artifact_validation/relaxed_validator_classes")
+                                .and_then(Value::as_array)
+                                .filter(|arr| !arr.is_empty())
+                                .cloned()
+                            {
+                                let original_outcome = output
+                                    .pointer("/artifact_validation/original_validator_outcome")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("blocked")
+                                    .to_string();
+                                let effective_outcome = output
+                                    .pointer("/artifact_validation/effective_outcome")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("warning")
+                                    .to_string();
+                                let original_status = output
+                                    .pointer("/artifact_validation/original_status")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string);
+                                let experimental = output
+                                    .pointer("/artifact_validation/experimental")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false);
+                                let class_count = relaxed_classes.len();
+                                let metadata = json!({
+                                    "node_id": node_id,
+                                    "attempt": attempt,
+                                    "session_id": session_id,
+                                    "relaxed_validator_classes": relaxed_classes,
+                                    "original_validator_outcome": original_outcome,
+                                    "effective_outcome": effective_outcome,
+                                    "original_status": original_status,
+                                    "experimental": experimental,
+                                });
+                                crate::app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata(
+                                    row,
+                                    "node_relaxed",
+                                    Some(format!(
+                                        "node `{}` accepted under relaxed profile ({} → {}; {} class{} relaxed)",
+                                        node_id,
+                                        original_outcome,
+                                        effective_outcome,
+                                        class_count,
+                                        if class_count == 1 { "" } else { "es" },
+                                    )),
+                                    None,
+                                    Some(metadata),
+                                );
+                            }
                             crate::app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata(
                                 row,
                                 if verify_failed {
