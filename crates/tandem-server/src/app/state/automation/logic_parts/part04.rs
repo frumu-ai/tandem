@@ -319,6 +319,11 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .get("capability_resolution")
             .and_then(|value| value.get("mcp_tool_diagnostics"))
             .and_then(|value| value.get("selected_servers"))
+            .or_else(|| {
+                tool_telemetry
+                    .get("mcp_tool_diagnostics")
+                    .and_then(|value| value.get("selected_servers"))
+            })
             .and_then(Value::as_array)
             .map(|rows| {
                 rows.iter()
@@ -338,9 +343,10 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     .filter_map(Value::as_str)
                     .filter(|tool_name| {
                         *tool_name != "mcp_list"
-                            && connector_action_patterns.iter().any(|pattern| {
-                                tandem_core::tool_name_matches_policy(pattern, tool_name)
-                            })
+                            && (connector_action_patterns.is_empty()
+                                || connector_action_patterns.iter().any(|pattern| {
+                                    tandem_core::tool_name_matches_policy(pattern, tool_name)
+                                }))
                     })
                     .map(str::to_string)
                     .collect::<Vec<_>>()

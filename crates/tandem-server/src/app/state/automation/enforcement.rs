@@ -786,10 +786,16 @@ pub(crate) fn automation_node_output_enforcement(
         .unwrap_or_default();
     let validator_kind = automation_output_validator_kind(node);
     let legacy_required_tools = automation_node_legacy_required_tools(node);
+    let mentions_connector_backed_sources =
+        tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
+            &automation_node_workspace_intent_text(node),
+        );
     let concrete_mcp_source_tools =
         automation_node_has_concrete_mcp_source_tools(node, &legacy_required_tools);
+    let connector_backed_source_node = !automation_node_is_code_workflow(node)
+        && (concrete_mcp_source_tools || mentions_connector_backed_sources);
     let legacy_web_research_expected =
-        !concrete_mcp_source_tools && automation_node_legacy_web_research_expected(node);
+        !connector_backed_source_node && automation_node_legacy_web_research_expected(node);
     let prefers_mcp_servers = automation_node_prefers_mcp_servers(node);
     let optional_workspace_reads = automation_node_allows_optional_workspace_reads(node);
     let is_research_contract =
@@ -825,7 +831,7 @@ pub(crate) fn automation_node_output_enforcement(
                 || legacy_required_tools.iter().any(|tool| tool == "websearch")
             {
                 "external_research".to_string()
-            } else if citations_contract && prefers_mcp_servers {
+            } else if citations_contract && (prefers_mcp_servers || connector_backed_source_node) {
                 "artifact_only".to_string()
             } else if automation_node_is_research_finalize(node)
                 || ((is_research_contract || citations_contract)
@@ -879,7 +885,7 @@ pub(crate) fn automation_node_output_enforcement(
     }
 
     if !code_patch_contract
-        && !concrete_mcp_source_tools
+        && !connector_backed_source_node
         && enforcement
             .required_tools
             .iter()
@@ -1005,7 +1011,7 @@ pub(crate) fn automation_node_output_enforcement(
     .any(|needle| combined_intent_lowered.contains(needle));
 
     let is_bootstrap = !optional_workspace_reads
-        && !concrete_mcp_source_tools
+        && !connector_backed_source_node
         && !is_standup_update
         && !is_local_research
         && !is_external_research
@@ -1129,19 +1135,27 @@ pub(crate) fn automation_node_output_enforcement(
         enforcement.validation_profile = Some("research_synthesis".to_string());
         enforcement
             .required_tools
-            .retain(|tool| tool != "read" && tool != "glob");
+            .retain(|tool| tool != "read" && tool != "glob" && tool != "websearch");
         enforcement
             .required_evidence
-            .retain(|item| item != "local_source_reads");
-        enforcement
-            .prewrite_gates
-            .retain(|gate| gate != "workspace_inspection" && gate != "concrete_reads");
-        enforcement
-            .retry_on_missing
-            .retain(|item| item != "local_source_reads" && item != "concrete_reads");
-        enforcement
-            .terminal_on
-            .retain(|item| item != "no_concrete_reads" && item != "local_source_reads");
+            .retain(|item| item != "local_source_reads" && item != "external_sources");
+        enforcement.prewrite_gates.retain(|gate| {
+            gate != "workspace_inspection"
+                && gate != "concrete_reads"
+                && gate != "successful_web_research"
+        });
+        enforcement.retry_on_missing.retain(|item| {
+            item != "local_source_reads"
+                && item != "external_sources"
+                && item != "concrete_reads"
+                && item != "successful_web_research"
+                && item != "missing_successful_web_research"
+        });
+        enforcement.terminal_on.retain(|item| {
+            item != "no_concrete_reads"
+                && item != "local_source_reads"
+                && item != "missing_successful_web_research"
+        });
         enforcement.session_text_recovery = Some("allow".to_string());
     }
 

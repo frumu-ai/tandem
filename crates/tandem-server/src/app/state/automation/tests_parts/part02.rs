@@ -959,6 +959,74 @@ fn tandem_mcp_reference_node_does_not_require_web_research() {
 }
 
 #[test]
+fn tandem_mcp_citations_node_does_not_require_workspace_read_capability() {
+    let mut node = bare_node();
+    node.node_id = "gather_tandem_reference".to_string();
+    node.objective = "Use Tandem MCP docs as reference material for reliability patterns in automated business workflows, including docs or guides about workflow design, validation, approvals, connector-backed work, retries, observability, and MCP/tool usage. Produce cited notes that can support the final report's Tandem Run details and reliability framing.".to_string();
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "runtime_context".to_string(),
+        alias: "runtime_context_partition".to_string(),
+    }];
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "citations".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/gather-tandem-reference.json"
+        }
+    }));
+
+    let caps = automation_tool_capability_ids(&node, "artifact_write");
+
+    assert!(caps.contains(&"artifact_write".to_string()));
+    assert!(
+        !caps.contains(&"workspace_read".to_string()),
+        "Tandem MCP citations nodes should use connector docs instead of requiring local read tools: {caps:?}"
+    );
+    assert!(
+        !caps.contains(&"workspace_discover".to_string()),
+        "Tandem MCP citations nodes should not require local workspace discovery: {caps:?}"
+    );
+
+    let available_tool_names = [
+        "mcp_list".to_string(),
+        "mcp.tandem_mcp.answer_how_to".to_string(),
+        "mcp.tandem_mcp.compare_doc_page_refresh".to_string(),
+        "mcp.tandem_mcp.compare_docs_index_refresh".to_string(),
+        "mcp.tandem_mcp.get_doc".to_string(),
+        "mcp.tandem_mcp.get_docs_cache_status".to_string(),
+        "mcp.tandem_mcp.get_start_path".to_string(),
+        "mcp.tandem_mcp.get_tandem_guide".to_string(),
+        "mcp.tandem_mcp.invalidate_docs_cache".to_string(),
+        "mcp.tandem_mcp.recommend_next_docs".to_string(),
+        "mcp.tandem_mcp.refresh_doc_page".to_string(),
+        "mcp.tandem_mcp.refresh_docs_index".to_string(),
+        "mcp.tandem_mcp.search_docs".to_string(),
+        "mcp.tandem_mcp.warmup_docs_cache".to_string(),
+        "write".to_string(),
+    ]
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    let offered_tools = available_tool_names.iter().cloned().collect::<Vec<_>>();
+    let resolution = automation_resolve_capabilities(
+        &node,
+        "artifact_write",
+        &offered_tools,
+        &available_tool_names,
+    );
+
+    assert_eq!(
+        automation_capability_resolution_missing_capabilities(&resolution),
+        Vec::<String>::new(),
+        "Tandem MCP tools plus write should satisfy capability preflight without workspace_read: {resolution:#}"
+    );
+}
+
+#[test]
 fn optional_tandem_mcp_reference_does_not_prompt_for_required_connector_source() {
     let mut node = bare_node();
     node.node_id = "gather_tandem_reference".to_string();
@@ -1165,6 +1233,99 @@ fn report_writer_from_upstream_artifacts_does_not_require_local_reads() {
         .prewrite_gates
         .iter()
         .any(|gate| gate == "concrete_reads"));
+}
+
+#[test]
+fn synthesis_from_upstream_web_artifact_does_not_require_web_research_capability() {
+    let mut node = bare_node();
+    node.node_id = "synthesize_report".to_string();
+    node.objective = "Synthesize the Tandem MCP reference notes, Reddit MCP findings, and current web research into a final report body for the existing Notion row. The report must include exactly these major sections: Summary, Key Findings, Market Notes, Reddit Signals, Sources, and Tandem Run details. The Sources section must consolidate web, Reddit, and Tandem documentation references; Tandem Run details must describe the tools/connectors used and the update target constraints.".to_string();
+    node.depends_on = vec![
+        "gather_tandem_reference".to_string(),
+        "gather_reddit_signals".to_string(),
+        "gather_web_sources".to_string(),
+        "inspect_notion_row".to_string(),
+    ];
+    node.input_refs = vec![
+        AutomationFlowInputRef {
+            from_step_id: "gather_tandem_reference".to_string(),
+            alias: "tandem_reference".to_string(),
+        },
+        AutomationFlowInputRef {
+            from_step_id: "gather_reddit_signals".to_string(),
+            alias: "reddit_signals".to_string(),
+        },
+        AutomationFlowInputRef {
+            from_step_id: "gather_web_sources".to_string(),
+            alias: "web_sources".to_string(),
+        },
+        AutomationFlowInputRef {
+            from_step_id: "inspect_notion_row".to_string(),
+            alias: "notion_target".to_string(),
+        },
+    ];
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "brief".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/synthesize-report.md"
+        }
+    }));
+
+    let enforcement = automation_node_output_enforcement(&node);
+    assert_eq!(
+        enforcement.validation_profile.as_deref(),
+        Some("research_synthesis")
+    );
+    assert!(
+        !enforcement
+            .required_tools
+            .iter()
+            .any(|tool| tool == "websearch"),
+        "synthesis should consume upstream web artifacts instead of requiring fresh websearch: {enforcement:#?}"
+    );
+    assert!(
+        !enforcement
+            .required_evidence
+            .iter()
+            .any(|item| item == "external_sources"),
+        "synthesis should not require fresh external source collection: {enforcement:#?}"
+    );
+    assert!(
+        !enforcement
+            .prewrite_gates
+            .iter()
+            .any(|gate| gate == "successful_web_research"),
+        "synthesis should not require fresh successful web research gate: {enforcement:#?}"
+    );
+
+    let available_tool_names = [
+        "mcp_list".to_string(),
+        "mcp.notion.notion_fetch".to_string(),
+        "mcp.reddit_gmail.reddit_search_across_subreddits".to_string(),
+        "mcp.tandem_mcp.answer_how_to".to_string(),
+        "write".to_string(),
+    ]
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    let offered_tools = available_tool_names.iter().cloned().collect::<Vec<_>>();
+    let resolution = automation_resolve_capabilities(
+        &node,
+        "artifact_write",
+        &offered_tools,
+        &available_tool_names,
+    );
+
+    assert_eq!(
+        automation_capability_resolution_missing_capabilities(&resolution),
+        Vec::<String>::new(),
+        "synthesis from upstream artifacts should not fail when web tools are not offered: {resolution:#}"
+    );
 }
 
 #[test]

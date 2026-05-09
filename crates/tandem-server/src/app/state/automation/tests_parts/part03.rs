@@ -1307,6 +1307,86 @@ fn validation_accepts_structured_json_handoff_from_verified_artifact() {
 }
 
 #[test]
+fn validation_accepts_concrete_mcp_source_from_top_level_diagnostics() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-top-level-mcp-diagnostics-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "extract_pain_points".to_string();
+    node.objective = "Use Reddit MCP to extract pain points from connector-backed source research about agent reliability. Retrieve representative Reddit posts or comments, summarize recurring pain points, and write a structured JSON artifact with source identifiers.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/extract-pain-points.json"
+        }
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "status": "completed",
+        "pain_points": [{
+            "theme": "Tool-calling failures",
+            "source": "https://www.reddit.com/r/LLMDevs/comments/example/",
+            "evidence": "A Reddit MCP search returned discussion about agent runtime behavior."
+        }],
+        "source_evidence": [{
+            "tool": "mcp.reddit_gmail.reddit_search_across_subreddits",
+            "result": "success"
+        }]
+    }))
+    .expect("serialize artifact");
+    let session = Session::new(Some("{\"status\":\"completed\"}".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": [
+                "mcp_list",
+                "mcp.reddit_gmail.reddit_search_across_subreddits",
+                "write"
+            ],
+            "requested_tools": [
+                "mcp_list",
+                "mcp.reddit_gmail.*",
+                "write"
+            ],
+            "capability_resolution": {},
+            "mcp_tool_diagnostics": {
+                "selected_servers": ["reddit-gmail"]
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/extract-pain-points.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_some(), "{validation:#}");
+    assert_eq!(validation["validation_outcome"], "passed");
+    assert!(!validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("mcp_connector_source_missing")));
+    assert!(rejected.is_none(), "{rejected:?}");
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn validation_accepts_optional_tandem_mcp_reference_without_connector_call() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-optional-mcp-reference-{}",
