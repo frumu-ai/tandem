@@ -3540,19 +3540,73 @@ export function AgentAutomationPage({
                 <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
                   <div className="text-sm font-medium text-text">Node Outputs</div>
                   <div className="mt-3 space-y-2">
-                    {selectedRunNodeOutputs.map((output) => (
-                      <div
-                        key={output.nodeId}
-                        className="rounded-lg border border-border bg-surface px-3 py-2"
-                      >
-                        <div className="text-xs uppercase tracking-wide text-text-subtle">
-                          {output.nodeId}
+                    {selectedRunNodeOutputs.map((output) => {
+                      const validation = (output.value as any)?.artifact_validation;
+                      const isExperimental =
+                        validation && typeof validation === "object"
+                          ? validation.experimental === true ||
+                            String(validation.effective_outcome || "").toLowerCase() ===
+                              "experimental"
+                          : false;
+                      const relaxed: Array<{ class: string; detail?: string }> =
+                        validation && Array.isArray(validation.relaxed_validator_classes)
+                          ? validation.relaxed_validator_classes
+                              .filter((row: any): row is Record<string, unknown> =>
+                                Boolean(row && typeof row === "object")
+                              )
+                              .map((row: Record<string, unknown>) => ({
+                                class: String(row["class"] ?? ""),
+                                detail:
+                                  typeof row["detail"] === "string"
+                                    ? (row["detail"] as string)
+                                    : undefined,
+                              }))
+                              .filter((row: { class: string }) => row.class.length > 0)
+                          : [];
+                      return (
+                        <div
+                          key={output.nodeId}
+                          className="rounded-lg border border-border bg-surface px-3 py-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs uppercase tracking-wide text-text-subtle">
+                              {output.nodeId}
+                            </div>
+                            {isExperimental ? (
+                              <span
+                                className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200"
+                                title={
+                                  relaxed.length
+                                    ? `Relaxed: ${relaxed
+                                        .map((row) =>
+                                          row.detail ? `${row.class}: ${row.detail}` : row.class
+                                        )
+                                        .join("; ")}`
+                                    : "Accepted under relaxed validation."
+                                }
+                              >
+                                Experimental
+                              </span>
+                            ) : null}
+                          </div>
+                          {relaxed.length ? (
+                            <ul className="mt-2 space-y-0.5 text-[11px] text-amber-200/80">
+                              {relaxed.map((row, idx) => (
+                                <li key={`${row.class}-${idx}`}>
+                                  <code>{row.class}</code>
+                                  {row.detail ? (
+                                    <span className="text-text-muted">: {row.detail}</span>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-text-muted">
+                            {nodeOutputText(output.value) || JSON.stringify(output.value, null, 2)}
+                          </pre>
                         </div>
-                        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-text-muted">
-                          {nodeOutputText(output.value) || JSON.stringify(output.value, null, 2)}
-                        </pre>
-                      </div>
-                    ))}
+                      );
+                    })}
                     {selectedRunNodeOutputs.length === 0 ? (
                       <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
                         No node outputs were found on this run checkpoint.
