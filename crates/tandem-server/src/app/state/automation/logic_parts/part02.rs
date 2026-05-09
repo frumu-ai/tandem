@@ -1043,6 +1043,8 @@ pub(crate) fn normalize_automation_requested_tools(
     workspace_root: &str,
     raw: Vec<String>,
 ) -> Vec<String> {
+    let review_decision_node = automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ReviewDecision;
     let handoff_only_structured_json = automation_output_validator_kind(node)
         == crate::AutomationOutputValidatorKind::StructuredJson
         && automation_node_required_output_path(node).is_none();
@@ -1132,6 +1134,12 @@ pub(crate) fn normalize_automation_requested_tools(
     if handoff_only_structured_json {
         normalized.retain(|tool| !matches!(tool.as_str(), "write" | "edit" | "apply_patch"));
     }
+    if review_decision_node {
+        normalized.retain(|tool| matches!(tool.as_str(), "read" | "glob" | "grep"));
+        if !normalized.iter().any(|tool| tool == "read") {
+            normalized.push("read".to_string());
+        }
+    }
     normalized.sort();
     normalized.dedup();
     normalized
@@ -1204,6 +1212,14 @@ pub(crate) fn automation_requested_tools_for_node(
                 || tool == "mcp_list"
                 || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
         });
+    }
+    if automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ReviewDecision
+    {
+        requested_tools.retain(|tool| matches!(tool.as_str(), "read" | "glob" | "grep"));
+        if !requested_tools.iter().any(|tool| tool == "read") {
+            requested_tools.push("read".to_string());
+        }
     }
     requested_tools.sort();
     requested_tools.dedup();

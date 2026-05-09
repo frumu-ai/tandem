@@ -1035,6 +1035,82 @@ fn review_decision_nodes_do_not_request_server_scoped_mcp_tools() {
 }
 
 #[test]
+fn review_decision_nodes_do_not_inherit_team_or_batch_tools() {
+    let mut node = bare_node();
+    node.node_id = "validate_report".to_string();
+    node.objective = "Review the synthesized report and return an approval decision.".to_string();
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "synthesize_report".to_string(),
+        alias: "draft_report".to_string(),
+    }];
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "review".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+
+    let requested = normalize_automation_requested_tools(
+        &node,
+        "/tmp/tandem-review-tools",
+        vec![
+            "batch".to_string(),
+            "TaskList".to_string(),
+            "TaskUpdate".to_string(),
+            "glob".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+            "mcp.notion.notion_get_teams".to_string(),
+        ],
+    );
+
+    assert!(requested.contains(&"read".to_string()));
+    assert!(requested.contains(&"glob".to_string()));
+    assert!(!requested.contains(&"batch".to_string()));
+    assert!(!requested.contains(&"TaskList".to_string()));
+    assert!(!requested.contains(&"tasklist".to_string()));
+    assert!(!requested.contains(&"TaskUpdate".to_string()));
+    assert!(!requested.contains(&"taskupdate".to_string()));
+    assert!(!requested.contains(&"write".to_string()));
+    assert!(!requested.iter().any(|tool| tool.starts_with("mcp.")));
+
+    let available_tool_names = std::collections::HashSet::from([
+        "batch".to_string(),
+        "TaskList".to_string(),
+        "TaskUpdate".to_string(),
+        "glob".to_string(),
+        "read".to_string(),
+        "write".to_string(),
+        "mcp.notion.notion_get_teams".to_string(),
+    ]);
+    let requested_for_execution = automation_requested_tools_for_node(
+        &node,
+        "/tmp/tandem-review-tools",
+        vec![
+            "batch".to_string(),
+            "TaskList".to_string(),
+            "TaskUpdate".to_string(),
+            "glob".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+            "mcp.notion.notion_get_teams".to_string(),
+        ],
+        &available_tool_names,
+    );
+
+    assert!(requested_for_execution.contains(&"read".to_string()));
+    assert!(requested_for_execution.contains(&"glob".to_string()));
+    assert!(!requested_for_execution.contains(&"batch".to_string()));
+    assert!(!requested_for_execution.contains(&"TaskList".to_string()));
+    assert!(!requested_for_execution.contains(&"TaskUpdate".to_string()));
+    assert!(!requested_for_execution.contains(&"write".to_string()));
+    assert!(!requested_for_execution
+        .iter()
+        .any(|tool| tool.starts_with("mcp.")));
+}
+
+#[test]
 fn connector_source_nodes_do_not_offer_source_mutation_tools() {
     let mut node = bare_node();
     node.objective =

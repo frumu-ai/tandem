@@ -317,6 +317,8 @@ pub(crate) fn normalize_automation_requested_tools(
     workspace_root: &str,
     raw: Vec<String>,
 ) -> Vec<String> {
+    let review_decision_node = automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ReviewDecision;
     let node_tool_allowlist = automation_node_metadata_tool_allowlist(node);
     let connector_hint_mentions =
         tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
@@ -399,6 +401,12 @@ pub(crate) fn normalize_automation_requested_tools(
     {
         normalized.push("websearch".to_string());
         normalized.push("webfetch".to_string());
+    }
+    if review_decision_node {
+        normalized.retain(|tool| matches!(tool.as_str(), "read" | "glob" | "grep"));
+        if !normalized.iter().any(|tool| tool == "read") {
+            normalized.push("read".to_string());
+        }
     }
     normalized.sort();
     normalized.dedup();
@@ -623,6 +631,14 @@ pub(crate) fn automation_requested_tools_for_node(
                 || tool == "mcp_list"
                 || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
         });
+    }
+    if automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ReviewDecision
+    {
+        requested_tools.retain(|tool| matches!(tool.as_str(), "read" | "glob" | "grep"));
+        if !requested_tools.iter().any(|tool| tool == "read") {
+            requested_tools.push("read".to_string());
+        }
     }
     requested_tools.sort();
     requested_tools.dedup();
