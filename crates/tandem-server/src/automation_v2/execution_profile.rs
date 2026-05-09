@@ -405,6 +405,88 @@ pub fn tenant_relaxation_denylist_from_env() -> Vec<ValidatorClass> {
         .unwrap_or_default()
 }
 
+/// Human-applied accept/reject signal on a relaxed (Guided/YOLO) artifact.
+///
+/// Together with `relaxed_validator_classes`, this is the input to the
+/// graduation loop: classes whose accept-rate is high enough over a rolling
+/// window can be promoted from "experimental" to "supported", or moved
+/// from YOLO into Guided. `Unmarked` is the default — it represents
+/// "no human has reviewed this yet" rather than a neutral verdict, and
+/// must not be confused with `Accepted`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanDisposition {
+    #[default]
+    Unmarked,
+    Accepted,
+    Rejected,
+    ReRanStrict,
+}
+
+impl HumanDisposition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HumanDisposition::Unmarked => "unmarked",
+            HumanDisposition::Accepted => "accepted",
+            HumanDisposition::Rejected => "rejected",
+            HumanDisposition::ReRanStrict => "re_ran_strict",
+        }
+    }
+}
+
+/// Parses a human-disposition string from API/UI input. Accepts the canonical
+/// snake_case form plus a few operator-friendly aliases (`approve`/`reject`/
+/// `rerun`). Whitespace and case are normalized. Unknown strings return
+/// `None` — callers should reject those rather than silently coercing.
+pub fn parse_human_disposition_str(raw: &str) -> Option<HumanDisposition> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "unmarked" | "" | "none" | "clear" => Some(HumanDisposition::Unmarked),
+        "accepted" | "accept" | "approve" | "approved" | "ok" => Some(HumanDisposition::Accepted),
+        "rejected" | "reject" | "deny" | "denied" | "fail" => Some(HumanDisposition::Rejected),
+        "re_ran_strict" | "rerun_strict" | "rerun-strict" | "rerun" | "re_ran" => {
+            Some(HumanDisposition::ReRanStrict)
+        }
+        _ => None,
+    }
+}
+
+/// Writes `human_disposition` into `output["artifact_validation"]`. Returns
+/// `true` when the value was newly set or changed; `false` when the key
+/// already held the same disposition. Creates an empty `artifact_validation`
+/// object if one is not yet present, so dispositions can be set on outputs
+/// that did not go through the relaxation chokepoint (e.g. Strict runs the
+/// human still wants to comment on).
+pub fn set_human_disposition_on_output(output: &mut Value, disposition: HumanDisposition) -> bool {
+    let object = match output.as_object_mut() {
+        Some(map) => map,
+        None => return false,
+    };
+    if !object.contains_key("artifact_validation") {
+        object.insert(
+            "artifact_validation".to_string(),
+            Value::Object(serde_json::Map::new()),
+        );
+    }
+    let validation = match object
+        .get_mut("artifact_validation")
+        .and_then(Value::as_object_mut)
+    {
+        Some(map) => map,
+        None => return false,
+    };
+    let previous = validation
+        .get("human_disposition")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let next = disposition.as_str().to_string();
+    if previous.as_deref() == Some(next.as_str()) {
+        return false;
+    }
+    validation.insert("human_disposition".to_string(), json!(next));
+    true
+}
+
 /// Profile-aware repair budget multiplier, bounded above by global caps in
 /// `AutomationExecutionPolicy`. Returns the effective number of repair
 /// attempts allowed for the given declared budget under `profile`.
@@ -1232,5 +1314,102 @@ mod tests {
         assert_eq!(effective_repair_budget(2, ExecutionProfile::Yolo), 4);
         assert_eq!(effective_repair_budget(0, ExecutionProfile::Yolo), 0);
         assert_eq!(effective_repair_budget(1, ExecutionProfile::Guided), 2);
+    }
+
+    #[test]
+    fn parse_human_disposition_canonical_strings() {
+        assert_eq!(
+            parse_human_disposition_str("accepted"),
+            Some(HumanDisposition::Accepted)
+        );
+        assert_eq!(
+            parse_human_disposition_str("rejected"),
+            Some(HumanDisposition::Rejected)
+        );
+        assert_eq!(
+            parse_human_disposition_str("re_ran_strict"),
+            Some(HumanDisposition::ReRanStrict)
+        );
+        assert_eq!(
+            parse_human_disposition_str("unmarked"),
+            Some(HumanDisposition::Unmarked)
+        );
+    }
+
+    #[test]
+    fn parse_human_disposition_aliases_and_normalization() {
+        assert_eq!(
+            parse_human_disposition_str("  ACCEPT  "),
+            Some(HumanDisposition::Accepted)
+        );
+        assert_eq!(
+            parse_human_disposition_str("Reject"),
+            Some(HumanDisposition::Rejected)
+        );
+        assert_eq!(
+            parse_human_disposition_str("rerun"),
+            Some(HumanDisposition::ReRanStrict)
+        );
+        assert_eq!(
+            parse_human_disposition_str(""),
+            Some(HumanDisposition::Unmarked)
+        );
+        assert_eq!(parse_human_disposition_str("maybe"), None);
+    }
+
+    #[test]
+    fn set_human_disposition_writes_into_artifact_validation() {
+        let mut output = json!({
+            "status": "completed_with_warnings",
+            "artifact_validation": {
+                "execution_profile": "guided",
+                "relaxed_validator_classes": [{"class": "missing_required_section"}],
+            },
+        });
+        let changed = set_human_disposition_on_output(&mut output, HumanDisposition::Accepted);
+        assert!(changed);
+        assert_eq!(
+            output
+                .pointer("/artifact_validation/human_disposition")
+                .and_then(Value::as_str),
+            Some("accepted")
+        );
+    }
+
+    #[test]
+    fn set_human_disposition_creates_validation_object_when_absent() {
+        let mut output = json!({ "status": "completed" });
+        let changed = set_human_disposition_on_output(&mut output, HumanDisposition::ReRanStrict);
+        assert!(changed);
+        assert_eq!(
+            output
+                .pointer("/artifact_validation/human_disposition")
+                .and_then(Value::as_str),
+            Some("re_ran_strict")
+        );
+    }
+
+    #[test]
+    fn set_human_disposition_is_idempotent_on_same_value() {
+        let mut output = json!({
+            "artifact_validation": { "human_disposition": "accepted" }
+        });
+        let changed = set_human_disposition_on_output(&mut output, HumanDisposition::Accepted);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn set_human_disposition_overwrites_previous_value() {
+        let mut output = json!({
+            "artifact_validation": { "human_disposition": "accepted" }
+        });
+        let changed = set_human_disposition_on_output(&mut output, HumanDisposition::Rejected);
+        assert!(changed);
+        assert_eq!(
+            output
+                .pointer("/artifact_validation/human_disposition")
+                .and_then(Value::as_str),
+            Some("rejected")
+        );
     }
 }
