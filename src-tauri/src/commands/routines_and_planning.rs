@@ -255,6 +255,19 @@ pub async fn automations_v2_run_repair(
 }
 
 #[tauri::command]
+pub async fn automations_v2_run_task_disposition(
+    state: State<'_, AppState>,
+    run_id: String,
+    node_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .automations_v2_run_task_disposition(&run_id, &node_id, request)
+        .await
+}
+
+#[tauri::command]
 pub async fn routines_list(state: State<'_, AppState>) -> Result<Vec<RoutineSpec>> {
     state.sidecar.routines_list().await
 }

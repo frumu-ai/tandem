@@ -2574,6 +2574,28 @@ export async function automationsV2RunRepair(
   return invoke("automations_v2_run_repair", { runId, request });
 }
 
+export type HumanDisposition = "unmarked" | "accepted" | "rejected" | "re_ran_strict";
+
+export async function automationsV2RunTaskDisposition(
+  runId: string,
+  nodeId: string,
+  disposition: HumanDisposition,
+  reason?: string
+): Promise<{
+  ok?: boolean;
+  changed?: boolean;
+  node_id?: string;
+  disposition?: string;
+  reason?: string;
+  run?: unknown;
+}> {
+  return invoke("automations_v2_run_task_disposition", {
+    runId,
+    nodeId,
+    request: { disposition, reason: reason ?? "" },
+  });
+}
+
 // ============================================================================
 // Sidecar Management
 // ============================================================================

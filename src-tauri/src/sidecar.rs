@@ -5548,6 +5548,27 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
+    pub async fn automations_v2_run_task_disposition(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/automations/v2/runs/{run_id}/tasks/{node_id}/disposition",
+            self.base_url().await?
+        );
+        let response = self
+            .http_client
+            .patch(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to set task disposition: {}", e)))?;
+        self.handle_response(response).await
+    }
+
     // ========================================================================
     // Routines
     // ========================================================================

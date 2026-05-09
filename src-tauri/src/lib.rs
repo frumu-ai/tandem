@@ -763,6 +763,7 @@ pub fn run() {
             commands::automations_v2_run_gate_decide,
             commands::automations_v2_run_recover,
             commands::automations_v2_run_repair,
+            commands::automations_v2_run_task_disposition,
             // Routine controls
             commands::routines_list,
             commands::routines_create,

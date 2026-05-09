@@ -56,6 +56,7 @@ import {
   automationsV2RunRecover,
   automationsV2RunResume,
   automationsV2RunsAll,
+  automationsV2RunTaskDisposition,
   automationsV2Update,
   getSessionMessages,
   getProvidersConfig,
@@ -3628,6 +3629,33 @@ export function AgentAutomationPage({
                               }))
                               .filter((row: { class: string }) => row.class.length > 0)
                           : [];
+                      const currentDisposition = String(
+                        (validation && typeof validation === "object"
+                          ? validation.human_disposition || validation.humanDisposition
+                          : "") || "unmarked"
+                      );
+                      const dispositionBusyKey = `disposition:${output.nodeId}`;
+                      const dispositionBusy = busyKey === dispositionBusyKey;
+                      const handleDisposition = async (
+                        next: "accepted" | "rejected" | "re_ran_strict" | "unmarked"
+                      ) => {
+                        if (!selectedRunId) return;
+                        setBusyKey(dispositionBusyKey);
+                        try {
+                          await automationsV2RunTaskDisposition(selectedRunId, output.nodeId, next);
+                          await loadSelectedRunDetail(selectedRunId);
+                        } catch (dispositionError) {
+                          setError(
+                            dispositionError instanceof Error
+                              ? dispositionError.message
+                              : String(dispositionError)
+                          );
+                        } finally {
+                          setBusyKey((current) =>
+                            current === dispositionBusyKey ? null : current
+                          );
+                        }
+                      };
                       return (
                         <div
                           key={output.nodeId}
@@ -3665,6 +3693,48 @@ export function AgentAutomationPage({
                                 </li>
                               ))}
                             </ul>
+                          ) : null}
+                          {relaxed.length ? (
+                            <div className="mt-2 grid gap-1 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-[11px]">
+                              <div className="text-text-muted">
+                                graduation review · current:{" "}
+                                <span className="font-semibold text-text">
+                                  {currentDisposition.replace(/_/g, " ")}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {(
+                                  [
+                                    { value: "accepted", label: "Accept" },
+                                    { value: "rejected", label: "Reject" },
+                                    { value: "re_ran_strict", label: "Re-ran Strict" },
+                                  ] as const
+                                ).map((option) => {
+                                  const isCurrent = currentDisposition === option.value;
+                                  return (
+                                    <Button
+                                      key={option.value}
+                                      size="sm"
+                                      variant={isCurrent ? "primary" : "secondary"}
+                                      disabled={isCurrent || dispositionBusy}
+                                      onClick={() => void handleDisposition(option.value)}
+                                    >
+                                      {dispositionBusy ? "Saving..." : option.label}
+                                    </Button>
+                                  );
+                                })}
+                                {currentDisposition !== "unmarked" ? (
+                                  <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    disabled={dispositionBusy}
+                                    onClick={() => void handleDisposition("unmarked")}
+                                  >
+                                    Clear
+                                  </Button>
+                                ) : null}
+                              </div>
+                            </div>
                           ) : null}
                           <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-text-muted">
                             {nodeOutputText(output.value) || JSON.stringify(output.value, null, 2)}
