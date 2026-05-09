@@ -34,8 +34,9 @@ pub use app::state::*;
 pub use app::tasks::run_session_context_run_journaler;
 pub use automation_v2::execution_profile::{
     augment_output_with_profile_relaxation, classify_unmet_requirement, decide_profile_validation,
-    effective_repair_budget, parse_execution_profile_str, propagate_experimental_input_taint,
-    tenant_default_execution_profile_from_env, ExecutionProfile, ProfileValidationDecision,
+    effective_repair_budget, parse_execution_profile_str, parse_validator_class_list,
+    propagate_experimental_input_taint, tenant_default_execution_profile_from_env,
+    tenant_relaxation_denylist_from_env, ExecutionProfile, ProfileValidationDecision,
     RelaxedValidatorClass, ValidationOutcome, ValidatorClass,
 };
 pub use automation_v2::types::*;

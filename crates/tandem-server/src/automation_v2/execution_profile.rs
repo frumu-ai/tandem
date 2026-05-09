@@ -354,6 +354,57 @@ pub fn tenant_default_execution_profile_from_env() -> Option<ExecutionProfile> {
         .and_then(parse_execution_profile_str)
 }
 
+/// Parses a comma-separated list of validator class names into the
+/// `ValidatorClass` taxonomy. Trims and lowercases each entry; unknown
+/// entries are silently skipped (operators get a safe under-restriction
+/// fallback rather than a panic on typos). Recognized inputs match the
+/// canonical `as_str` form, e.g. `missing_required_section`,
+/// `weak_markdown_structure`, `repair_budget_exhausted`.
+pub fn parse_validator_class_list(raw: &str) -> Vec<ValidatorClass> {
+    raw.split(',')
+        .filter_map(|item| {
+            let normalized = item.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "missing_required_section" => Some(ValidatorClass::MissingRequiredSection),
+                "weak_markdown_structure" => Some(ValidatorClass::WeakMarkdownStructure),
+                "missing_optional_evidence" => Some(ValidatorClass::MissingOptionalEvidence),
+                "artifact_word_count_below_minimum" => {
+                    Some(ValidatorClass::ArtifactWordCountBelowMinimum)
+                }
+                "missing_nonconsumed_workspace_files" => {
+                    Some(ValidatorClass::MissingNonconsumedWorkspaceFiles)
+                }
+                "missing_required_artifact_path" => {
+                    Some(ValidatorClass::MissingRequiredArtifactPath)
+                }
+                "validator_kind_specific_soft_check" => {
+                    Some(ValidatorClass::ValidatorKindSpecificSoftCheck)
+                }
+                "repair_budget_exhausted" => Some(ValidatorClass::RepairBudgetExhausted),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Reads the tenant-level relaxation denylist from the
+/// `TANDEM_RELAXATION_DENYLIST` environment variable. Returns the list
+/// of `ValidatorClass` values that should NEVER be relaxed under any
+/// profile, even when the chokepoint would otherwise allow them.
+///
+/// Operators set this to insist that specific validator classes always
+/// block (e.g. `missing_required_artifact_path,repair_budget_exhausted`)
+/// while still benefiting from the rest of the relaxation set under
+/// Guided/YOLO. Empty/unset returns an empty Vec — no classes are
+/// denied beyond the always-critical hard set.
+pub fn tenant_relaxation_denylist_from_env() -> Vec<ValidatorClass> {
+    std::env::var("TANDEM_RELAXATION_DENYLIST")
+        .ok()
+        .as_deref()
+        .map(parse_validator_class_list)
+        .unwrap_or_default()
+}
+
 /// Profile-aware repair budget multiplier, bounded above by global caps in
 /// `AutomationExecutionPolicy`. Returns the effective number of repair
 /// attempts allowed for the given declared budget under `profile`.
@@ -1120,6 +1171,58 @@ mod tests {
         assert_eq!(parse_execution_profile_str("loose"), None);
         assert_eq!(parse_execution_profile_str("relaxed"), None);
         assert_eq!(parse_execution_profile_str("danger"), None);
+    }
+
+    #[test]
+    fn parse_validator_class_list_handles_canonical_names() {
+        let parsed = parse_validator_class_list(
+            "missing_required_section, weak_markdown_structure,repair_budget_exhausted",
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                ValidatorClass::MissingRequiredSection,
+                ValidatorClass::WeakMarkdownStructure,
+                ValidatorClass::RepairBudgetExhausted,
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_validator_class_list_skips_unknown_entries() {
+        let parsed = parse_validator_class_list(
+            "missing_required_section,not_a_real_class,weak_markdown_structure",
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                ValidatorClass::MissingRequiredSection,
+                ValidatorClass::WeakMarkdownStructure,
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_validator_class_list_handles_empty_and_whitespace() {
+        assert!(parse_validator_class_list("").is_empty());
+        assert!(parse_validator_class_list("   ,, ,").is_empty());
+        assert_eq!(
+            parse_validator_class_list("  WEAK_MARKDOWN_STRUCTURE  "),
+            vec![ValidatorClass::WeakMarkdownStructure]
+        );
+    }
+
+    #[test]
+    fn denylisted_class_blocks_under_yolo_via_decision() {
+        let denylist = vec![ValidatorClass::MissingRequiredSection];
+        let decision = decide_profile_validation(
+            ExecutionProfile::Yolo,
+            ValidationOutcome::Blocked,
+            &[(ValidatorClass::MissingRequiredSection, None)],
+            &denylist,
+        );
+        assert!(decision.should_block);
+        assert_eq!(decision.effective_outcome, ValidationOutcome::Blocked);
     }
 
     #[test]

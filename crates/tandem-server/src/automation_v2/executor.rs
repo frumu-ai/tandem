@@ -1190,11 +1190,13 @@ pub async fn run_automation_v2_run(
                         // string are returned untouched. See
                         // docs/internal/execution-profiles/PROPOSAL.md
                         // "Executor Chokepoint Invariant".
+                        let tenant_denylist =
+                            crate::automation_v2::execution_profile::tenant_relaxation_denylist_from_env();
                         crate::automation_v2::execution_profile::augment_output_with_profile_relaxation(
                             &mut output,
                             row.effective_execution_profile,
                             row.requested_execution_profile,
-                            &[],
+                            &tenant_denylist,
                         );
                         // Experimental-input propagation: if any upstream
                         // dependency of this node already produced an
