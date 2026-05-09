@@ -596,6 +596,7 @@ fn collect_automation_external_action_receipts_records_bound_publisher_tools() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -715,6 +716,7 @@ fn collect_automation_external_action_receipts_ignores_non_outbound_nodes() {
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -809,6 +811,7 @@ fn collect_automation_external_action_receipts_stabilize_identity_across_retries
         agents: Vec::new(),
         flow: AutomationFlowSpec { nodes: Vec::new() },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

@@ -462,6 +462,7 @@ fn automation_with_output_targets(
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1383,6 +1384,7 @@ fn required_source_read_paths_focus_on_exact_named_source_files() {
             nodes: vec![node.clone()],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1444,6 +1446,7 @@ fn required_source_read_paths_handles_punctuation_backticks_and_mixed_language()
             nodes: vec![node.clone()],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_tool_calls: None,
             max_total_runtime_ms: None,
@@ -1571,6 +1574,7 @@ fn automation_output_targets_fill_in_final_node_workspace_writes() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1688,6 +1692,7 @@ fn run_cleanup_paths_exclude_live_automation_output_targets() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: vec![node] },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1740,6 +1745,7 @@ fn automation_output_targets_replace_runtime_placeholders_before_dedup() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

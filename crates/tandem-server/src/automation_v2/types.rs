@@ -600,8 +600,10 @@ pub struct AutomationFlowSpec {
     pub nodes: Vec<AutomationFlowNode>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AutomationExecutionPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_parallel_agents: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -619,6 +621,7 @@ impl From<tandem_plan_compiler::api::ProjectedAutomationExecutionPolicy>
 {
     fn from(value: tandem_plan_compiler::api::ProjectedAutomationExecutionPolicy) -> Self {
         Self {
+            profile: None,
             max_parallel_agents: value.max_parallel_agents,
             max_total_runtime_ms: value.max_total_runtime_ms,
             max_total_tool_calls: value.max_total_tool_calls,
@@ -626,6 +629,17 @@ impl From<tandem_plan_compiler::api::ProjectedAutomationExecutionPolicy>
             max_total_cost_usd: value.max_total_cost_usd,
         }
     }
+}
+
+/// Effective profile precedence: explicit run override → workflow policy →
+/// system default (Strict). Tenant-level defaults are a Phase 2 addition.
+pub fn resolve_effective_execution_profile(
+    automation: &AutomationV2Spec,
+    requested: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
+) -> crate::automation_v2::execution_profile::ExecutionProfile {
+    requested
+        .or(automation.execution.profile)
+        .unwrap_or(crate::automation_v2::execution_profile::ExecutionProfile::Strict)
 }
 
 impl AutomationV2Spec {

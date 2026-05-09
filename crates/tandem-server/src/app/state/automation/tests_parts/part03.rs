@@ -238,6 +238,7 @@ fn publish_verified_output_snapshot_replace_copies_into_workspace_target() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -315,6 +316,7 @@ fn publish_verified_output_snapshot_replace_copies_into_global_target() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -402,6 +404,7 @@ fn publish_verified_output_append_jsonl_appends_records() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -498,6 +501,7 @@ fn publish_verified_output_falls_back_to_automation_output_targets() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -581,6 +585,7 @@ fn publish_verified_output_rejects_intermediate_node_for_automation_output_targe
             nodes: vec![source_node.clone(), final_node],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -646,6 +651,7 @@ fn publish_verified_output_rejects_workspace_target_outside_workspace() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1928,6 +1934,7 @@ fn validation_blocks_read_only_source_mutations_without_retry() {
                 agents: Vec::new(),
                 flow: crate::AutomationFlowSpec { nodes: Vec::new() },
                 execution: crate::AutomationExecutionPolicy {
+                    profile: None,
                     max_parallel_agents: None,
                     max_total_runtime_ms: None,
                     max_total_tool_calls: None,
@@ -2251,6 +2258,7 @@ fn standup_synthesis_effective_required_output_path_uses_report_template() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

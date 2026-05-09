@@ -77,6 +77,7 @@ pub(crate) fn validate_automation_artifact_output_with_upstream(
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: None,
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

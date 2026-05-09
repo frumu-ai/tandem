@@ -1530,6 +1530,7 @@ pub(crate) fn wrap_automation_node_output(
             nodes: vec![node.clone()],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

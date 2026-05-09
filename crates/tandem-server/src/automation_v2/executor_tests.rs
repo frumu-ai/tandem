@@ -33,6 +33,7 @@ fn test_automation() -> crate::automation_v2::types::AutomationV2Spec {
             }],
         },
         execution: crate::automation_v2::types::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: None,
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -402,6 +403,90 @@ fn needs_repair_output_with_passing_validator_is_not_settled_completed() {
         !run_node_is_settled_completed(&run, "research-brief"),
         "a stale needs_repair output must not suppress later repair attempts"
     );
+}
+
+#[test]
+fn repair_expected_contract_uses_normalized_upstream_synthesis_enforcement() {
+    let node = crate::automation_v2::types::AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "synthesize_report".to_string(),
+        agent_id: "research_synthesizer".to_string(),
+        objective: "Synthesize the Tandem MCP reference notes, Reddit MCP findings, and current web research into a final report body for the existing Notion row.".to_string(),
+        depends_on: vec![
+            "gather_tandem_reference".to_string(),
+            "gather_reddit_signals".to_string(),
+            "gather_web_sources".to_string(),
+        ],
+        input_refs: vec![
+            crate::AutomationFlowInputRef {
+                from_step_id: "gather_tandem_reference".to_string(),
+                alias: "tandem_reference_notes".to_string(),
+            },
+            crate::AutomationFlowInputRef {
+                from_step_id: "gather_web_sources".to_string(),
+                alias: "web_source_notes".to_string(),
+            },
+        ],
+        output_contract: Some(crate::automation_v2::types::AutomationFlowOutputContract {
+            kind: "brief".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("external_research".to_string()),
+                required_tools: vec!["websearch".to_string()],
+                required_tool_calls: Vec::new(),
+                required_evidence: vec!["external_sources".to_string()],
+                required_sections: vec!["citations".to_string()],
+                prewrite_gates: vec!["successful_web_research".to_string()],
+                retry_on_missing: vec![
+                    "external_sources".to_string(),
+                    "citations".to_string(),
+                    "successful_web_research".to_string(),
+                ],
+                terminal_on: vec![
+                    "tool_unavailable".to_string(),
+                    "repair_budget_exhausted".to_string(),
+                ],
+                repair_budget: Some(5),
+                session_text_recovery: Some("require_prewrite_satisfied".to_string()),
+            }),
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": ".tandem/artifacts/synthesize-report.json"
+            }
+        })),
+    };
+
+    let expected = normalized_output_contract_value(&node).expect("normalized contract");
+    let enforcement = expected
+        .get("enforcement")
+        .expect("normalized enforcement")
+        .clone();
+
+    assert_eq!(enforcement["validation_profile"], "research_synthesis");
+    assert!(!enforcement["required_tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .any(|value| value.as_str() == Some("websearch")));
+    assert!(!enforcement["required_evidence"]
+        .as_array()
+        .expect("evidence array")
+        .iter()
+        .any(|value| value.as_str() == Some("external_sources")));
+    assert!(!enforcement["prewrite_gates"]
+        .as_array()
+        .expect("gates array")
+        .iter()
+        .any(|value| value.as_str() == Some("successful_web_research")));
+    assert_eq!(enforcement["session_text_recovery"], "allow");
 }
 
 #[test]

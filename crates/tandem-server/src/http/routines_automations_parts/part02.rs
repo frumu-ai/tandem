@@ -703,6 +703,7 @@ pub(super) async fn automations_v2_create(
             .collect(),
         flow: input.flow,
         execution: input.execution.unwrap_or(AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

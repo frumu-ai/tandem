@@ -1,4 +1,3 @@
-
 #[tokio::test]
 async fn automations_v2_gate_rework_on_failed_branch_preserves_completed_sibling_branch() {
     let state = test_state().await;
@@ -980,6 +979,7 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
             ],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1326,6 +1326,7 @@ async fn automation_v2_research_workflow_smoke_exposes_citation_validation_state
             }],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1621,6 +1622,7 @@ async fn automation_v2_code_workflow_smoke_exposes_verify_failed_state() {
             }],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -1809,6 +1811,7 @@ async fn automation_v2_editorial_workflow_smoke_exposes_quality_validation_state
             }],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

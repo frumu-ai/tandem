@@ -902,6 +902,7 @@ fn build_channel_automation(draft: &ChannelAutomationDraftRecord, now: u64) -> A
             }],
         },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: Some(15 * 60 * 1000),
             max_total_tool_calls: Some(24),

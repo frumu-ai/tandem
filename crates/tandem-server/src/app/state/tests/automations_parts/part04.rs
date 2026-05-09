@@ -16,6 +16,7 @@ fn prompt_orders_required_workspace_writes_before_run_artifact() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -121,6 +122,7 @@ fn prompt_includes_email_delivery_metadata_for_notify_user() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -247,6 +249,7 @@ fn prompt_compacts_upstream_outputs_for_downstream_nodes() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -431,6 +434,7 @@ async fn execute_collect_inputs_node_uses_deterministic_shortcut() {
             }],
         },
         execution: AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

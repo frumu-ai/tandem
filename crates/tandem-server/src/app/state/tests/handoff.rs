@@ -23,6 +23,7 @@ fn make_automation(id: &str, workspace_root: &str) -> crate::AutomationV2Spec {
         agents: vec![],
         flow: crate::automation_v2::types::AutomationFlowSpec { nodes: vec![] },
         execution: crate::automation_v2::types::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: None,
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

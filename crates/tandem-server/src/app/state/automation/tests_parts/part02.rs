@@ -77,6 +77,7 @@ fn report_markdown_nodes_do_not_infer_template_filenames_as_workspace_writes() {
         agents: Vec::new(),
         flow: crate::AutomationFlowSpec { nodes: Vec::new() },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
@@ -191,6 +192,7 @@ fn automation_wide_read_only_rules_filter_later_node_write_targets() {
             nodes: vec![protect_node, write_node.clone()],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

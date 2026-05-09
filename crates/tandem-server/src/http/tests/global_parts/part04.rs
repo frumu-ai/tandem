@@ -1,4 +1,3 @@
-
 #[tokio::test]
 async fn automation_v2_publish_block_smoke_skips_external_action_receipts() {
     let state = test_state().await;
@@ -87,6 +86,7 @@ async fn automation_v2_publish_block_smoke_skips_external_action_receipts() {
             ],
         },
         execution: crate::AutomationExecutionPolicy {
+            profile: None,
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,

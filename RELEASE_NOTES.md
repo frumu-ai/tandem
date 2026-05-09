@@ -4,6 +4,10 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.5.5 (Unreleased)
 
+This release lays down the foundation for **Execution Profiles** — a runtime governance toggle (Strict / Guided / YOLO) that lets users keep working while validators and contracts continue to harden, without abandoning Tandem's runtime ownership of state, receipts, replay, spend tracking, and approvals. The motivation is operational: full governance still has a high run-fail rate as bugs are ironed out, and a meaningful share of those failures are over-strict (false-positive validation, missing-but-non-essential sections, recoverable artifact issues) rather than real defects. Execution Profiles are the structured bridge that lets affected runs continue with the relaxation captured in receipts, so the data we collect can drive validator classes back to Strict-by-default once they mature.
+
+This first slice ships the type and helper foundation only. `ExecutionProfile`, `ValidatorClass`, `decide_profile_validation`, and `effective_repair_budget` now live in `automation_v2::execution_profile`. `AutomationExecutionPolicy.profile` is wired through, and `resolve_effective_execution_profile` enforces a deterministic precedence: explicit run override, then workflow policy, then Strict. No runtime behavior change yet — subsequent v0.5.5 work threads the profile through run records, the executor chokepoint, lifecycle/receipt metadata, and the control-panel UI. Internal planning lives under `docs/internal/execution-profiles/`.
+
 This patch keeps automation-owned runtime sessions out of the user Chat session list without hiding their audit trail from the rest of Tandem.
 
 Sessions now carry explicit source metadata. New interactive sessions default to `sourceKind: chat`, Automation V2/Bug Monitor worker sessions are classified as `automation_v2`, and session listing supports filtering by source. The TypeScript client and wire model expose the same fields so control-panel views can ask for the session class they actually need.

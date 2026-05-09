@@ -32,6 +32,10 @@ pub use app::startup::*;
 pub use app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata;
 pub use app::state::*;
 pub use app::tasks::run_session_context_run_journaler;
+pub use automation_v2::execution_profile::{
+    decide_profile_validation, effective_repair_budget, ExecutionProfile,
+    ProfileValidationDecision, RelaxedValidatorClass, ValidationOutcome, ValidatorClass,
+};
 pub use automation_v2::types::*;
 pub use browser::*;
 pub use bug_monitor::types::*;

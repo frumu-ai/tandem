@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Execution Profiles foundation (Strict / Guided / YOLO)**: Added the type-level scaffolding for runtime execution profiles. `ExecutionProfile` enum, `ValidatorClass` taxonomy with `is_relaxable_in(profile)` mapping, `decide_profile_validation` chokepoint, and `effective_repair_budget` helper now live in `automation_v2::execution_profile`. `AutomationExecutionPolicy` carries an optional `profile` and `resolve_effective_execution_profile` resolves the precedence (run override → workflow policy → Strict). No runtime behavior change yet — subsequent v0.5.5 work wires the chokepoint to the executor and adds the receipt/UI surfaces.
 - **Session records now carry explicit source metadata**: Engine sessions can now record `source_kind` and `source_metadata`, with wire responses and TypeScript client types exposing the same data. New user-created sessions default to `chat`, while automation-owned runtime sessions can be classified separately.
 
 ### Fixed
