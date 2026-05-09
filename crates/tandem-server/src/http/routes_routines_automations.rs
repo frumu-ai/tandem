@@ -124,6 +124,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             axum::routing::patch(automations_v2_run_task_disposition),
         )
         .route(
+            "/automations/v2/graduation/summary",
+            get(automations_v2_graduation_summary),
+        )
+        .route(
             "/automations/v2/runs/{run_id}/backlog/tasks/{task_id}/claim",
             post(automations_v2_run_backlog_task_claim),
         )

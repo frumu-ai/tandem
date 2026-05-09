@@ -734,6 +734,20 @@ pub(super) struct AutomationV2RunTaskDispositionInput {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct AutomationV2GraduationSummaryQuery {
+    /// Rolling window in hours. Defaults to 168 (7 days). Capped at 720
+    /// (30 days) to avoid scanning archived runs.
+    #[serde(default)]
+    pub window_hours: Option<u32>,
+    /// Optional: scope the aggregate to a single automation.
+    #[serde(default)]
+    pub automation_id: Option<String>,
+    /// Cap on number of recent runs scanned. Defaults to 200, max 500.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct AutomationV2BacklogClaimInput {
     #[serde(default)]
     pub reason: Option<String>,

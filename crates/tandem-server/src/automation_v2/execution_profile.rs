@@ -36,7 +36,7 @@ impl ExecutionProfile {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ValidatorClass {
     MissingRequiredSection,
@@ -485,6 +485,120 @@ pub fn set_human_disposition_on_output(output: &mut Value, disposition: HumanDis
     }
     validation.insert("human_disposition".to_string(), json!(next));
     true
+}
+
+/// Per-class accept/reject counts for graduation telemetry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DispositionCounts {
+    #[serde(default)]
+    pub accepted: u64,
+    #[serde(default)]
+    pub rejected: u64,
+    #[serde(default)]
+    pub re_ran_strict: u64,
+    #[serde(default)]
+    pub unmarked: u64,
+}
+
+impl DispositionCounts {
+    pub fn record(&mut self, disposition: HumanDisposition) {
+        match disposition {
+            HumanDisposition::Accepted => self.accepted = self.accepted.saturating_add(1),
+            HumanDisposition::Rejected => self.rejected = self.rejected.saturating_add(1),
+            HumanDisposition::ReRanStrict => {
+                self.re_ran_strict = self.re_ran_strict.saturating_add(1)
+            }
+            HumanDisposition::Unmarked => self.unmarked = self.unmarked.saturating_add(1),
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.accepted
+            .saturating_add(self.rejected)
+            .saturating_add(self.re_ran_strict)
+            .saturating_add(self.unmarked)
+    }
+
+    /// Accept rate over reviewed dispositions (excludes `unmarked`). Returns
+    /// `None` when no humans have reviewed any outputs in the bucket — the
+    /// dashboard should render that as "insufficient signal" rather than 0%.
+    pub fn accept_rate(&self) -> Option<f32> {
+        let reviewed = self
+            .accepted
+            .saturating_add(self.rejected)
+            .saturating_add(self.re_ran_strict);
+        if reviewed == 0 {
+            return None;
+        }
+        Some(self.accepted as f32 / reviewed as f32)
+    }
+}
+
+/// Aggregate result of walking a slice of run records: per-`ValidatorClass`
+/// disposition counts plus a few totals. Intended for the read-only
+/// graduation summary endpoint and any future per-class graduation
+/// dashboard. Pure — does not touch state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatorClassDispositionSummary {
+    #[serde(default)]
+    pub total_outputs_scanned: u64,
+    #[serde(default)]
+    pub total_relaxed_outputs: u64,
+    #[serde(default)]
+    pub by_class: std::collections::BTreeMap<ValidatorClass, DispositionCounts>,
+}
+
+/// Walk a slice of node outputs and attribute each output's
+/// `human_disposition` (defaulting to `unmarked`) to **every** validator
+/// class listed under `relaxed_validator_classes` for that output. Outputs
+/// without `relaxed_validator_classes` are not included — they were not
+/// relaxed under a profile and therefore have nothing to graduate.
+///
+/// Pure — does not touch state. The HTTP handler that surfaces this
+/// aggregate is responsible for filtering runs by time window and
+/// flattening the per-run `node_outputs` into the iterator.
+pub fn aggregate_human_dispositions_by_class<'a, I>(outputs: I) -> ValidatorClassDispositionSummary
+where
+    I: IntoIterator<Item = &'a Value>,
+{
+    let mut summary = ValidatorClassDispositionSummary::default();
+    for output in outputs {
+        summary.total_outputs_scanned = summary.total_outputs_scanned.saturating_add(1);
+        let validation = match output.get("artifact_validation") {
+            Some(value) => value,
+            None => continue,
+        };
+        let relaxed = match validation
+            .get("relaxed_validator_classes")
+            .and_then(Value::as_array)
+        {
+            Some(value) if !value.is_empty() => value,
+            _ => continue,
+        };
+        summary.total_relaxed_outputs = summary.total_relaxed_outputs.saturating_add(1);
+        let disposition = validation
+            .get("human_disposition")
+            .and_then(Value::as_str)
+            .and_then(parse_human_disposition_str)
+            .unwrap_or(HumanDisposition::Unmarked);
+        for entry in relaxed {
+            let class_name = entry
+                .as_str()
+                .or_else(|| entry.get("class").and_then(Value::as_str));
+            let class_name = match class_name {
+                Some(name) => name,
+                None => continue,
+            };
+            if let Some(class) = parse_validator_class_list(class_name).into_iter().next() {
+                summary
+                    .by_class
+                    .entry(class)
+                    .or_default()
+                    .record(disposition);
+            }
+        }
+    }
+    summary
 }
 
 /// Profile-aware repair budget multiplier, bounded above by global caps in
@@ -1411,5 +1525,111 @@ mod tests {
                 .and_then(Value::as_str),
             Some("rejected")
         );
+    }
+
+    fn output_with_relaxed_classes(classes: &[&str], disposition: Option<&str>) -> Value {
+        let entries: Vec<Value> = classes
+            .iter()
+            .map(|name| {
+                json!({
+                    "class": name,
+                    "original_outcome": "blocked",
+                    "effective_outcome": "warning",
+                })
+            })
+            .collect();
+        let mut validation = json!({ "relaxed_validator_classes": entries });
+        if let Some(value) = disposition {
+            validation
+                .as_object_mut()
+                .unwrap()
+                .insert("human_disposition".to_string(), json!(value));
+        }
+        json!({ "artifact_validation": validation })
+    }
+
+    #[test]
+    fn aggregate_dispositions_skips_outputs_without_relaxation() {
+        let plain = json!({ "status": "completed" });
+        let no_classes = json!({
+            "artifact_validation": { "relaxed_validator_classes": [] }
+        });
+        let summary = aggregate_human_dispositions_by_class([&plain, &no_classes]);
+        assert_eq!(summary.total_outputs_scanned, 2);
+        assert_eq!(summary.total_relaxed_outputs, 0);
+        assert!(summary.by_class.is_empty());
+    }
+
+    #[test]
+    fn aggregate_dispositions_attributes_to_every_relaxed_class() {
+        let output = output_with_relaxed_classes(
+            &["missing_required_section", "weak_markdown_structure"],
+            Some("accepted"),
+        );
+        let summary = aggregate_human_dispositions_by_class([&output]);
+        assert_eq!(summary.total_relaxed_outputs, 1);
+        let mrs = summary
+            .by_class
+            .get(&ValidatorClass::MissingRequiredSection)
+            .unwrap();
+        assert_eq!(mrs.accepted, 1);
+        let wms = summary
+            .by_class
+            .get(&ValidatorClass::WeakMarkdownStructure)
+            .unwrap();
+        assert_eq!(wms.accepted, 1);
+    }
+
+    #[test]
+    fn aggregate_dispositions_defaults_unmarked_when_no_signal() {
+        let output = output_with_relaxed_classes(&["missing_required_section"], None);
+        let summary = aggregate_human_dispositions_by_class([&output]);
+        let counts = summary
+            .by_class
+            .get(&ValidatorClass::MissingRequiredSection)
+            .unwrap();
+        assert_eq!(counts.unmarked, 1);
+        assert_eq!(counts.accepted, 0);
+        assert!(counts.accept_rate().is_none());
+    }
+
+    #[test]
+    fn aggregate_dispositions_mixed_signals_per_class() {
+        let outputs = vec![
+            output_with_relaxed_classes(&["missing_required_section"], Some("accepted")),
+            output_with_relaxed_classes(&["missing_required_section"], Some("accepted")),
+            output_with_relaxed_classes(&["missing_required_section"], Some("rejected")),
+            output_with_relaxed_classes(&["missing_required_section"], None),
+        ];
+        let summary = aggregate_human_dispositions_by_class(outputs.iter());
+        let counts = summary
+            .by_class
+            .get(&ValidatorClass::MissingRequiredSection)
+            .unwrap();
+        assert_eq!(counts.accepted, 2);
+        assert_eq!(counts.rejected, 1);
+        assert_eq!(counts.unmarked, 1);
+        assert_eq!(counts.total(), 4);
+        // accept_rate excludes unmarked: 2 / (2 + 1) = 0.666...
+        let rate = counts.accept_rate().unwrap();
+        assert!((rate - (2.0 / 3.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn aggregate_dispositions_skips_unknown_class_names() {
+        let output = json!({
+            "artifact_validation": {
+                "relaxed_validator_classes": [
+                    {"class": "missing_required_section"},
+                    {"class": "totally_made_up_class"}
+                ]
+            }
+        });
+        let summary = aggregate_human_dispositions_by_class([&output]);
+        assert_eq!(summary.total_relaxed_outputs, 1);
+        assert_eq!(summary.by_class.len(), 1);
+        assert!(summary
+            .by_class
+            .contains_key(&ValidatorClass::MissingRequiredSection));
     }
 }

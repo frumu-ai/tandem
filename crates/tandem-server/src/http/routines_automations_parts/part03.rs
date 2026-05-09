@@ -638,6 +638,45 @@ pub(super) async fn automations_v2_run_task_disposition(
     })))
 }
 
+/// GET /automations/v2/graduation/summary?window_hours=168&automation_id=…
+///
+/// Read-only aggregate over recent runs: how many times each
+/// `ValidatorClass` was relaxed, broken down by `human_disposition`. This is
+/// the input the per-class graduation dashboard will read; today the API is
+/// stable so dashboards or scripts can start consuming it.
+pub(super) async fn automations_v2_graduation_summary(
+    State(state): State<AppState>,
+    Query(query): Query<AutomationV2GraduationSummaryQuery>,
+) -> Json<Value> {
+    let window_hours = query.window_hours.unwrap_or(168).clamp(1, 720);
+    let limit = query.limit.unwrap_or(200).clamp(1, 500);
+    let automation_id = query
+        .automation_id
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+
+    let now = crate::now_ms();
+    let window_ms = (window_hours as u64).saturating_mul(60 * 60 * 1000);
+    let since_ms = now.saturating_sub(window_ms);
+
+    let runs = state.list_automation_v2_runs(automation_id, limit).await;
+    let outputs = runs
+        .iter()
+        .filter(|run| run.updated_at_ms >= since_ms)
+        .flat_map(|run| run.checkpoint.node_outputs.values());
+    let summary = crate::aggregate_human_dispositions_by_class(outputs);
+
+    Json(json!({
+        "ok": true,
+        "window_hours": window_hours,
+        "since_ms": since_ms,
+        "scanned_runs": runs.len(),
+        "automation_id": automation_id,
+        "summary": summary,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
