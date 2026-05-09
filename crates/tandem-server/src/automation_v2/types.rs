@@ -632,13 +632,30 @@ impl From<tandem_plan_compiler::api::ProjectedAutomationExecutionPolicy>
 }
 
 /// Effective profile precedence: explicit run override → workflow policy →
-/// system default (Strict). Tenant-level defaults are a Phase 2 addition.
+/// tenant default (TANDEM_DEFAULT_EXECUTION_PROFILE env var) → system default (Strict).
 pub fn resolve_effective_execution_profile(
     automation: &AutomationV2Spec,
     requested: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
 ) -> crate::automation_v2::execution_profile::ExecutionProfile {
+    resolve_effective_execution_profile_with_tenant(
+        automation,
+        requested,
+        crate::automation_v2::execution_profile::tenant_default_execution_profile_from_env(),
+    )
+}
+
+/// Pure resolver variant for tests and call sites that want to supply
+/// the tenant default explicitly. Real run creation should call
+/// [`resolve_effective_execution_profile`] which reads
+/// `TANDEM_DEFAULT_EXECUTION_PROFILE` from the environment.
+pub fn resolve_effective_execution_profile_with_tenant(
+    automation: &AutomationV2Spec,
+    requested: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
+    tenant_default: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
+) -> crate::automation_v2::execution_profile::ExecutionProfile {
     requested
         .or(automation.execution.profile)
+        .or(tenant_default)
         .unwrap_or(crate::automation_v2::execution_profile::ExecutionProfile::Strict)
 }
 
@@ -1217,6 +1234,83 @@ mod tests {
     use tandem_plan_compiler::api::{
         OutputContractSeed, ProjectedAutomationNode, ProjectedMissionInputRef,
     };
+
+    fn empty_spec() -> AutomationV2Spec {
+        AutomationV2Spec {
+            automation_id: "auto".to_string(),
+            name: "Test".to_string(),
+            description: None,
+            status: crate::AutomationV2Status::Active,
+            schedule: crate::AutomationV2Schedule {
+                schedule_type: crate::AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+            },
+            knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+            agents: Vec::new(),
+            flow: AutomationFlowSpec { nodes: Vec::new() },
+            execution: AutomationExecutionPolicy::default(),
+            output_targets: Vec::new(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            creator_id: "test".to_string(),
+            workspace_root: None,
+            metadata: None,
+            next_fire_at_ms: None,
+            last_fired_at_ms: None,
+            scope_policy: None,
+            watch_conditions: Vec::new(),
+            handoff_config: None,
+        }
+    }
+
+    #[test]
+    fn resolver_with_tenant_default_uses_run_override_first() {
+        use crate::automation_v2::execution_profile::ExecutionProfile;
+        let mut spec = empty_spec();
+        spec.execution.profile = Some(ExecutionProfile::Strict);
+        let resolved = resolve_effective_execution_profile_with_tenant(
+            &spec,
+            Some(ExecutionProfile::Yolo),
+            Some(ExecutionProfile::Guided),
+        );
+        assert_eq!(resolved, ExecutionProfile::Yolo);
+    }
+
+    #[test]
+    fn resolver_with_tenant_default_uses_workflow_policy_when_no_override() {
+        use crate::automation_v2::execution_profile::ExecutionProfile;
+        let mut spec = empty_spec();
+        spec.execution.profile = Some(ExecutionProfile::Guided);
+        let resolved = resolve_effective_execution_profile_with_tenant(
+            &spec,
+            None,
+            Some(ExecutionProfile::Yolo),
+        );
+        assert_eq!(resolved, ExecutionProfile::Guided);
+    }
+
+    #[test]
+    fn resolver_with_tenant_default_falls_back_to_tenant_when_workflow_unset() {
+        use crate::automation_v2::execution_profile::ExecutionProfile;
+        let spec = empty_spec();
+        let resolved = resolve_effective_execution_profile_with_tenant(
+            &spec,
+            None,
+            Some(ExecutionProfile::Guided),
+        );
+        assert_eq!(resolved, ExecutionProfile::Guided);
+    }
+
+    #[test]
+    fn resolver_with_tenant_default_falls_back_to_strict_when_all_unset() {
+        use crate::automation_v2::execution_profile::ExecutionProfile;
+        let spec = empty_spec();
+        let resolved = resolve_effective_execution_profile_with_tenant(&spec, None, None);
+        assert_eq!(resolved, ExecutionProfile::Strict);
+    }
 
     #[test]
     fn projected_node_metadata_lifts_knowledge_binding() {

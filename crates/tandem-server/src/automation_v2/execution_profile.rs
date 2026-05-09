@@ -322,6 +322,38 @@ where
     !already_experimental
 }
 
+/// Parses a string into an `ExecutionProfile`, accepting the same
+/// snake_case wire form as serde plus a few common aliases. Trims and
+/// lowercases the input. Empty strings and unknown values return `None`.
+///
+/// Used for parsing operator-supplied tenant-default settings (e.g.
+/// `TANDEM_DEFAULT_EXECUTION_PROFILE` env var) without forcing operators
+/// to remember exact casing.
+pub fn parse_execution_profile_str(raw: &str) -> Option<ExecutionProfile> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "strict" => Some(ExecutionProfile::Strict),
+        "guided" | "assisted" | "warn" => Some(ExecutionProfile::Guided),
+        "yolo" | "exploratory" | "lenient" | "permissive" => Some(ExecutionProfile::Yolo),
+        _ => None,
+    }
+}
+
+/// Reads the tenant-level default execution profile from the
+/// `TANDEM_DEFAULT_EXECUTION_PROFILE` environment variable. Returns
+/// `None` when the variable is unset, empty, or names an unknown value
+/// (operators get safe Strict fallback rather than a panic on typos).
+///
+/// Run-creation paths consult this before falling back to the system
+/// default of Strict, so the precedence chain is:
+///   run override → workflow policy → tenant default → Strict.
+pub fn tenant_default_execution_profile_from_env() -> Option<ExecutionProfile> {
+    std::env::var("TANDEM_DEFAULT_EXECUTION_PROFILE")
+        .ok()
+        .as_deref()
+        .and_then(parse_execution_profile_str)
+}
+
 /// Profile-aware repair budget multiplier, bounded above by global caps in
 /// `AutomationExecutionPolicy`. Returns the effective number of repair
 /// attempts allowed for the given declared budget under `profile`.
@@ -1044,6 +1076,50 @@ mod tests {
             .and_then(Value::as_array)
             .unwrap();
         assert_eq!(tainted_inputs.len(), 1);
+    }
+
+    #[test]
+    fn parse_execution_profile_accepts_canonical_and_aliases() {
+        assert_eq!(
+            parse_execution_profile_str("strict"),
+            Some(ExecutionProfile::Strict)
+        );
+        assert_eq!(
+            parse_execution_profile_str("Strict"),
+            Some(ExecutionProfile::Strict)
+        );
+        assert_eq!(
+            parse_execution_profile_str("  STRICT  "),
+            Some(ExecutionProfile::Strict)
+        );
+        assert_eq!(
+            parse_execution_profile_str("guided"),
+            Some(ExecutionProfile::Guided)
+        );
+        assert_eq!(
+            parse_execution_profile_str("assisted"),
+            Some(ExecutionProfile::Guided)
+        );
+        assert_eq!(
+            parse_execution_profile_str("yolo"),
+            Some(ExecutionProfile::Yolo)
+        );
+        assert_eq!(
+            parse_execution_profile_str("exploratory"),
+            Some(ExecutionProfile::Yolo)
+        );
+        assert_eq!(
+            parse_execution_profile_str("lenient"),
+            Some(ExecutionProfile::Yolo)
+        );
+    }
+
+    #[test]
+    fn parse_execution_profile_rejects_unknown_strings() {
+        assert_eq!(parse_execution_profile_str(""), None);
+        assert_eq!(parse_execution_profile_str("loose"), None);
+        assert_eq!(parse_execution_profile_str("relaxed"), None);
+        assert_eq!(parse_execution_profile_str("danger"), None);
     }
 
     #[test]
