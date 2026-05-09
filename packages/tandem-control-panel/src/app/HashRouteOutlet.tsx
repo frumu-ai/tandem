@@ -1,28 +1,51 @@
-import { DashboardPage } from "../pages/DashboardPage";
-import { ChatPage } from "../pages/ChatPage";
-import { IntentPlannerPage } from "../pages/IntentPlannerPage";
-import { WorkflowsPage } from "../pages/WorkflowsPage";
-import { MarketplacePage } from "../pages/MarketplacePage";
-import { WorkflowStudioPage } from "../pages/WorkflowStudioPage";
-import { AutomationsPage } from "../pages/AutomationsPage";
-import { ExperimentsPage } from "../pages/ExperimentsPage";
-import { CodingWorkflowsPage } from "../pages/CodingWorkflowsPage";
-import { ChannelsPage } from "../pages/ChannelsPage";
-import { PacksPage } from "../pages/PacksPage";
-import { OrchestratorPage } from "../pages/OrchestratorPage";
-import { FilesPage } from "../pages/FilesPage";
-import { MemoryPage } from "../pages/MemoryPage";
-import { RunsPage } from "../pages/RunsPage";
-import { ApprovalsInboxPage } from "../pages/ApprovalsInboxPage";
-import { BugMonitorPage } from "../pages/BugMonitorPage";
-import { TeamsPage } from "../pages/TeamsPage";
-import { SettingsPage } from "../pages/SettingsPage";
+import { Suspense, lazy } from "react";
 import { ensureRouteId } from "./routes";
 
-export function HashRouteOutlet({ routeId, pageProps }: { routeId: string; pageProps: any }) {
-  const safeRoute = ensureRouteId(routeId);
+const lazyNamed = <K extends string, M extends Record<K, any>>(loader: () => Promise<M>, name: K) =>
+  lazy(() => loader().then((m) => ({ default: m[name] })));
 
-  switch (safeRoute) {
+const DashboardPage = lazyNamed(() => import("../pages/DashboardPage"), "DashboardPage");
+const ChatPage = lazyNamed(() => import("../pages/ChatPage"), "ChatPage");
+const IntentPlannerPage = lazyNamed(
+  () => import("../pages/IntentPlannerPage"),
+  "IntentPlannerPage"
+);
+const WorkflowsPage = lazyNamed(() => import("../pages/WorkflowsPage"), "WorkflowsPage");
+const MarketplacePage = lazyNamed(() => import("../pages/MarketplacePage"), "MarketplacePage");
+const WorkflowStudioPage = lazyNamed(
+  () => import("../pages/WorkflowStudioPage"),
+  "WorkflowStudioPage"
+);
+const AutomationsPage = lazyNamed(() => import("../pages/AutomationsPage"), "AutomationsPage");
+const ExperimentsPage = lazyNamed(() => import("../pages/ExperimentsPage"), "ExperimentsPage");
+const CodingWorkflowsPage = lazyNamed(
+  () => import("../pages/CodingWorkflowsPage"),
+  "CodingWorkflowsPage"
+);
+const ChannelsPage = lazyNamed(() => import("../pages/ChannelsPage"), "ChannelsPage");
+const PacksPage = lazyNamed(() => import("../pages/PacksPage"), "PacksPage");
+const OrchestratorPage = lazyNamed(() => import("../pages/OrchestratorPage"), "OrchestratorPage");
+const FilesPage = lazyNamed(() => import("../pages/FilesPage"), "FilesPage");
+const MemoryPage = lazyNamed(() => import("../pages/MemoryPage"), "MemoryPage");
+const RunsPage = lazyNamed(() => import("../pages/RunsPage"), "RunsPage");
+const ApprovalsInboxPage = lazyNamed(
+  () => import("../pages/ApprovalsInboxPage"),
+  "ApprovalsInboxPage"
+);
+const BugMonitorPage = lazyNamed(() => import("../pages/BugMonitorPage"), "BugMonitorPage");
+const TeamsPage = lazyNamed(() => import("../pages/TeamsPage"), "TeamsPage");
+const SettingsPage = lazyNamed(() => import("../pages/SettingsPage"), "SettingsPage");
+
+function RouteFallback() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center">
+      <div className="tcp-subtle text-sm">Loading…</div>
+    </div>
+  );
+}
+
+function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) {
+  switch (routeId) {
     case "chat":
       return <ChatPage {...pageProps} />;
     case "planner":
@@ -69,4 +92,9 @@ export function HashRouteOutlet({ routeId, pageProps }: { routeId: string; pageP
     default:
       return <DashboardPage {...pageProps} />;
   }
+}
+
+export function HashRouteOutlet({ routeId, pageProps }: { routeId: string; pageProps: any }) {
+  const safeRoute = ensureRouteId(routeId);
+  return <Suspense fallback={<RouteFallback />}>{renderRoute(safeRoute, pageProps)}</Suspense>;
 }
