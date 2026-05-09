@@ -1178,14 +1178,18 @@ pub async fn run_automation_v2_run(
                         continue;
                     }
                     if let Some(row) = run_for_decision.as_ref() {
-                        // Profile chokepoint: write structured relaxation
-                        // metadata onto artifact_validation when the active
-                        // profile would relax all unmet_requirements. Purely
-                        // additive: existing executor flow is unchanged. The
-                        // behavior change (downgrading verify_failed/needs_repair
-                        // when relaxed) is intentionally deferred to a follow-up
-                        // commit that lands once telemetry confirms the
-                        // taxonomy is calibrated.
+                        // Profile chokepoint: when every unmet_requirement on
+                        // this output is relaxable under the active profile,
+                        // write structured relaxation metadata onto
+                        // artifact_validation AND downgrade the executor's
+                        // blocking signals so the run continues.
+                        // - Guided: status -> completed_with_warnings.
+                        // - YOLO:   status -> completed (with experimental).
+                        // Strict, critical-class outputs, and outputs whose
+                        // unmet_requirements include a not-yet-classified
+                        // string are returned untouched. See
+                        // docs/internal/execution-profiles/PROPOSAL.md
+                        // "Executor Chokepoint Invariant".
                         crate::automation_v2::execution_profile::augment_output_with_profile_relaxation(
                             &mut output,
                             row.effective_execution_profile,

@@ -317,20 +317,27 @@ pub fn classify_unmet_requirement(raw: &str) -> Option<ValidatorClass> {
 }
 
 /// Augments a node `output` JSON value with profile-aware relaxation
-/// metadata when the active profile would relax all of its unmet
-/// requirements.
+/// metadata AND rewrites the executor's blocking signals when the active
+/// profile would relax all of its unmet requirements.
 ///
-/// This is purely additive: it writes new keys
-/// (`relaxed_validator_classes`, `effective_outcome`,
-/// `experimental`, `requested_execution_profile`,
-/// `effective_execution_profile`, `original_validator_outcome`) into
-/// `output["artifact_validation"]`. Existing fields and the executor's
-/// blocking signals are NOT mutated by this function. Behavior change
-/// (clearing `verify_failed`, downgrading status) is intentionally
-/// scoped to a follow-up commit so the data-collection slice ships
-/// without changing any existing flows.
+/// On a successful relaxation, this function writes telemetry into
+/// `output["artifact_validation"]` (`relaxed_validator_classes`,
+/// `effective_outcome`, `original_validator_outcome`, `execution_profile`,
+/// optional `requested_execution_profile`, `experimental`, and
+/// `original_status`) AND downgrades the executor-facing fields so the run
+/// continues:
 ///
-/// Returns `true` when augmentation occurred.
+/// - `output["status"]` becomes `completed_with_warnings` (Guided) or
+///   `completed` (YOLO; experimental-flagged via `artifact_validation`).
+/// - `output["failure_kind"]` is cleared if it was validation-related.
+/// - `output["blocked_reason"]` is cleared.
+/// - `artifact_validation.warning_count` is set to the count of relaxed
+///   classes so `automation_output_has_warnings` returns true.
+///
+/// Strict runs and runs whose unmet requirements include any critical or
+/// not-yet-classified class are returned untouched.
+///
+/// Returns `true` when relaxation occurred.
 pub fn augment_output_with_profile_relaxation(
     output: &mut Value,
     profile: ExecutionProfile,
@@ -341,16 +348,9 @@ pub fn augment_output_with_profile_relaxation(
         Some(map) => map,
         None => return false,
     };
-    let validation = match object
-        .get_mut("artifact_validation")
-        .and_then(Value::as_object_mut)
-    {
-        Some(map) => map,
-        None => return false,
-    };
-
-    let raw_unmet = validation
-        .get("unmet_requirements")
+    let raw_unmet = object
+        .get("artifact_validation")
+        .and_then(|value| value.get("unmet_requirements"))
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
@@ -396,6 +396,42 @@ pub fn augment_output_with_profile_relaxation(
         // Strict-equivalent behavior even when others would relax.
         return false;
     }
+
+    let original_status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let original_failure_kind = object
+        .get("failure_kind")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    // Downgrade executor-facing blocking signals so the run continues.
+    let new_status = match decision.effective_outcome {
+        ValidationOutcome::Warning => "completed_with_warnings",
+        ValidationOutcome::Experimental => "completed",
+        // Defensive: by construction `effective_outcome` is non-blocking here.
+        ValidationOutcome::Passed | ValidationOutcome::Blocked => "completed",
+    };
+    object.insert("status".to_string(), json!(new_status));
+    let validation_failure_kinds = matches!(
+        original_failure_kind.as_deref(),
+        Some("validation_error") | Some("verification_failed") | Some("artifact_rejected")
+    );
+    if validation_failure_kinds {
+        object.insert("failure_kind".to_string(), Value::Null);
+    }
+    if matches!(
+        object.get("blocked_reason").and_then(Value::as_str),
+        Some(text) if !text.is_empty()
+    ) {
+        object.insert("blocked_reason".to_string(), Value::Null);
+    }
+
+    let validation = object
+        .get_mut("artifact_validation")
+        .and_then(Value::as_object_mut)
+        .expect("artifact_validation present (checked above)");
     validation.insert(
         "relaxed_validator_classes".to_string(),
         serde_json::to_value(&decision.relaxed_classes).unwrap_or(Value::Null),
@@ -418,6 +454,14 @@ pub fn augment_output_with_profile_relaxation(
     if decision.experimental {
         validation.insert("experimental".to_string(), json!(true));
     }
+    if let Some(prev) = original_status {
+        validation.insert("original_status".to_string(), json!(prev));
+    }
+    if let Some(prev) = original_failure_kind {
+        validation.insert("original_failure_kind".to_string(), json!(prev));
+    }
+    let warning_count = decision.relaxed_classes.len() as u64;
+    validation.insert("warning_count".to_string(), json!(warning_count));
     true
 }
 
@@ -649,6 +693,8 @@ mod tests {
     #[test]
     fn augment_strict_profile_no_change() {
         let mut output = json!({
+            "status": "verify_failed",
+            "failure_kind": "validation_error",
             "artifact_validation": {
                 "unmet_requirements": ["missing_required_section: Sources"],
             }
@@ -660,14 +706,27 @@ mod tests {
             &[],
         );
         assert!(!augmented);
+        // Status and failure_kind are preserved under Strict.
+        assert_eq!(
+            output.get("status").and_then(Value::as_str),
+            Some("verify_failed")
+        );
+        assert_eq!(
+            output.get("failure_kind").and_then(Value::as_str),
+            Some("validation_error")
+        );
         let validation = output.pointer("/artifact_validation").unwrap();
         assert!(validation.get("relaxed_validator_classes").is_none());
         assert!(validation.get("effective_outcome").is_none());
+        assert!(validation.get("warning_count").is_none());
     }
 
     #[test]
-    fn augment_guided_writes_warning_outcome() {
+    fn augment_guided_writes_warning_outcome_and_downgrades_status() {
         let mut output = json!({
+            "status": "verify_failed",
+            "failure_kind": "validation_error",
+            "blocked_reason": "missing required section `Sources`",
             "artifact_validation": {
                 "unmet_requirements": ["missing_required_section: Sources"],
             }
@@ -679,6 +738,12 @@ mod tests {
             &[],
         );
         assert!(augmented);
+        assert_eq!(
+            output.get("status").and_then(Value::as_str),
+            Some("completed_with_warnings")
+        );
+        assert!(output.get("failure_kind").map_or(true, Value::is_null));
+        assert!(output.get("blocked_reason").map_or(true, Value::is_null));
         let validation = output.pointer("/artifact_validation").unwrap();
         assert_eq!(
             validation.get("effective_outcome").and_then(Value::as_str),
@@ -693,6 +758,20 @@ mod tests {
         assert_eq!(
             validation.get("execution_profile").and_then(Value::as_str),
             Some("guided")
+        );
+        assert_eq!(
+            validation.get("original_status").and_then(Value::as_str),
+            Some("verify_failed")
+        );
+        assert_eq!(
+            validation
+                .get("original_failure_kind")
+                .and_then(Value::as_str),
+            Some("validation_error")
+        );
+        assert_eq!(
+            validation.get("warning_count").and_then(Value::as_u64),
+            Some(1)
         );
         assert!(validation.get("experimental").is_none());
         let classes = validation
@@ -711,8 +790,10 @@ mod tests {
     }
 
     #[test]
-    fn augment_yolo_writes_experimental_flag() {
+    fn augment_yolo_writes_experimental_flag_and_completes_node() {
         let mut output = json!({
+            "status": "verify_failed",
+            "failure_kind": "validation_error",
             "artifact_validation": {
                 "unmet_requirements": ["missing_required_section: Sources"],
             }
@@ -724,6 +805,11 @@ mod tests {
             &[],
         );
         assert!(augmented);
+        assert_eq!(
+            output.get("status").and_then(Value::as_str),
+            Some("completed")
+        );
+        assert!(output.get("failure_kind").map_or(true, Value::is_null));
         let validation = output.pointer("/artifact_validation").unwrap();
         assert_eq!(
             validation.get("effective_outcome").and_then(Value::as_str),
@@ -738,6 +824,28 @@ mod tests {
                 .get("requested_execution_profile")
                 .and_then(Value::as_str),
             Some("yolo")
+        );
+        assert_eq!(
+            validation.get("warning_count").and_then(Value::as_u64),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn augment_yolo_preserves_non_validation_failure_kind() {
+        // If the failure_kind is something we did not originate
+        // (e.g. provider stream error), do not clear it even when relaxing.
+        let mut output = json!({
+            "status": "verify_failed",
+            "failure_kind": "provider_stream_failed",
+            "artifact_validation": {
+                "unmet_requirements": ["missing_required_section: Sources"],
+            }
+        });
+        augment_output_with_profile_relaxation(&mut output, ExecutionProfile::Yolo, None, &[]);
+        assert_eq!(
+            output.get("failure_kind").and_then(Value::as_str),
+            Some("provider_stream_failed")
         );
     }
 

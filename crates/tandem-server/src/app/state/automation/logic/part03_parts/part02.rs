@@ -1402,6 +1402,13 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             Some("structured handoff was not returned in the final response".to_string());
         rejected_reason = semantic_block_reason.clone();
     }
+    let active_profile = automation
+        .execution
+        .profile
+        .unwrap_or(crate::automation_v2::execution_profile::ExecutionProfile::Strict);
+    let scaled_repair_budget = enforcement.repair_budget.map(|budget| {
+        crate::automation_v2::execution_profile::effective_repair_budget(budget, active_profile)
+    });
     let (repair_attempt, repair_attempts_remaining, mut repair_exhausted) =
         infer_artifact_repair_state(
             parsed_status.as_ref(),
@@ -1409,7 +1416,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             repair_succeeded,
             semantic_block_reason.as_deref(),
             tool_telemetry,
-            enforcement.repair_budget,
+            scaled_repair_budget,
         );
     let node_attempt_has_retry_remaining = tool_telemetry_u32(tool_telemetry, "node_attempt")
         .zip(tool_telemetry_u32(tool_telemetry, "node_max_attempts"))
