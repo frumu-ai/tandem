@@ -1159,11 +1159,11 @@ pub async fn run_automation_v2_run(
                             },
                         );
                     }
-                    let can_accept = state
-                        .get_automation_v2_run(&run_id)
-                        .await
+                    let run_for_decision = state.get_automation_v2_run(&run_id).await;
+                    let can_accept = run_for_decision
+                        .as_ref()
                         .map(|row| {
-                            if run_node_is_settled_completed(&row, &node_id) {
+                            if run_node_is_settled_completed(row, &node_id) {
                                 return false;
                             }
                             matches!(
@@ -1176,6 +1176,22 @@ pub async fn run_automation_v2_run(
                         .unwrap_or(false);
                     if !can_accept {
                         continue;
+                    }
+                    if let Some(row) = run_for_decision.as_ref() {
+                        // Profile chokepoint: write structured relaxation
+                        // metadata onto artifact_validation when the active
+                        // profile would relax all unmet_requirements. Purely
+                        // additive: existing executor flow is unchanged. The
+                        // behavior change (downgrading verify_failed/needs_repair
+                        // when relaxed) is intentionally deferred to a follow-up
+                        // commit that lands once telemetry confirms the
+                        // taxonomy is calibrated.
+                        crate::automation_v2::execution_profile::augment_output_with_profile_relaxation(
+                            &mut output,
+                            row.effective_execution_profile,
+                            row.requested_execution_profile,
+                            &[],
+                        );
                     }
                     let session_id = crate::app::state::automation_output_session_id(&output);
                     let summary = output

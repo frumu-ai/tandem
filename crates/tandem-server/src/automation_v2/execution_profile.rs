@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
@@ -258,6 +259,168 @@ pub fn effective_repair_budget(declared: u32, profile: ExecutionProfile) -> u32 
     scaled.clamp(0.0, u32::MAX as f32) as u32
 }
 
+/// Classifies a validator's `unmet_requirements` string into a
+/// `ValidatorClass`. Returns `None` for strings that have not yet been
+/// taxonomized — those default to "blocking, never relaxable" so behavior
+/// stays Strict-equivalent until the class is explicitly added.
+pub fn classify_unmet_requirement(raw: &str) -> Option<ValidatorClass> {
+    let key = raw
+        .split([':', '|'])
+        .next()
+        .map(str::trim)
+        .unwrap_or(raw)
+        .trim();
+    match key {
+        "missing_required_section" | "missing_section" | "section_missing" => {
+            Some(ValidatorClass::MissingRequiredSection)
+        }
+        "weak_markdown_structure" | "weak_structure" | "weak_markdown" => {
+            Some(ValidatorClass::WeakMarkdownStructure)
+        }
+        "missing_optional_evidence" | "missing_evidence_optional" => {
+            Some(ValidatorClass::MissingOptionalEvidence)
+        }
+        "artifact_word_count_below_minimum" | "artifact_too_short" => {
+            Some(ValidatorClass::ArtifactWordCountBelowMinimum)
+        }
+        "missing_nonconsumed_workspace_files" | "missing_optional_workspace_files" => {
+            Some(ValidatorClass::MissingNonconsumedWorkspaceFiles)
+        }
+        "missing_required_artifact_path" | "missing_artifact_path" => {
+            Some(ValidatorClass::MissingRequiredArtifactPath)
+        }
+        "validator_kind_specific_soft_check" | "soft_validator_check" => {
+            Some(ValidatorClass::ValidatorKindSpecificSoftCheck)
+        }
+        "repair_budget_exhausted" => Some(ValidatorClass::RepairBudgetExhausted),
+        "unauthorized_workspace" | "workspace_unauthorized" => {
+            Some(ValidatorClass::UnauthorizedWorkspace)
+        }
+        "secret_access_denied" => Some(ValidatorClass::SecretAccessDenied),
+        "destructive_action_requires_approval" | "destructive_requires_approval" => {
+            Some(ValidatorClass::DestructiveActionRequiresApproval)
+        }
+        "external_publish_requires_approval" => {
+            Some(ValidatorClass::ExternalPublishRequiresApproval)
+        }
+        "tenant_policy_denied" | "policy_denied" => Some(ValidatorClass::TenantPolicyDenied),
+        "tool_unauthorized" | "unauthorized_tool" => Some(ValidatorClass::ToolUnauthorized),
+        "budget_exceeded" => Some(ValidatorClass::BudgetExceeded),
+        "kill_switch_engaged" => Some(ValidatorClass::KillSwitchEngaged),
+        "engine_lease_expired" => Some(ValidatorClass::EngineLeaseExpired),
+        "invalid_api_token" => Some(ValidatorClass::InvalidApiToken),
+        "deterministic_verification_failed" | "code_patch_apply_failed" => {
+            Some(ValidatorClass::DeterministicVerificationFailed)
+        }
+        _ => None,
+    }
+}
+
+/// Augments a node `output` JSON value with profile-aware relaxation
+/// metadata when the active profile would relax all of its unmet
+/// requirements.
+///
+/// This is purely additive: it writes new keys
+/// (`relaxed_validator_classes`, `effective_outcome`,
+/// `experimental`, `requested_execution_profile`,
+/// `effective_execution_profile`, `original_validator_outcome`) into
+/// `output["artifact_validation"]`. Existing fields and the executor's
+/// blocking signals are NOT mutated by this function. Behavior change
+/// (clearing `verify_failed`, downgrading status) is intentionally
+/// scoped to a follow-up commit so the data-collection slice ships
+/// without changing any existing flows.
+///
+/// Returns `true` when augmentation occurred.
+pub fn augment_output_with_profile_relaxation(
+    output: &mut Value,
+    profile: ExecutionProfile,
+    requested_profile: Option<ExecutionProfile>,
+    tenant_relaxation_denylist: &[ValidatorClass],
+) -> bool {
+    let object = match output.as_object_mut() {
+        Some(map) => map,
+        None => return false,
+    };
+    let validation = match object
+        .get_mut("artifact_validation")
+        .and_then(Value::as_object_mut)
+    {
+        Some(map) => map,
+        None => return false,
+    };
+
+    let raw_unmet = validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if raw_unmet.is_empty() {
+        return false;
+    }
+    let mut classes: Vec<(ValidatorClass, Option<String>)> = Vec::new();
+    let mut had_unclassified = false;
+    for entry in &raw_unmet {
+        let raw = match entry.as_str() {
+            Some(value) => value.trim(),
+            None => continue,
+        };
+        match classify_unmet_requirement(raw) {
+            Some(class) => {
+                let detail = raw
+                    .splitn(2, [':', '|'])
+                    .nth(1)
+                    .map(|tail| tail.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                classes.push((class, detail));
+            }
+            None => {
+                had_unclassified = true;
+            }
+        }
+    }
+
+    let original_outcome = ValidationOutcome::Blocked;
+    let decision = decide_profile_validation(
+        profile,
+        original_outcome,
+        &classes,
+        tenant_relaxation_denylist,
+    );
+    let augmented = !decision.relaxed_classes.is_empty()
+        && !matches!(decision.effective_outcome, ValidationOutcome::Blocked);
+    if !augmented {
+        return false;
+    }
+    if had_unclassified {
+        // Conservative: if any unmet requirement is not yet classified, keep
+        // Strict-equivalent behavior even when others would relax.
+        return false;
+    }
+    validation.insert(
+        "relaxed_validator_classes".to_string(),
+        serde_json::to_value(&decision.relaxed_classes).unwrap_or(Value::Null),
+    );
+    validation.insert(
+        "effective_outcome".to_string(),
+        json!(decision.effective_outcome.as_str()),
+    );
+    validation.insert(
+        "original_validator_outcome".to_string(),
+        json!(original_outcome.as_str()),
+    );
+    validation.insert("execution_profile".to_string(), json!(profile.as_str()));
+    if let Some(req) = requested_profile {
+        validation.insert(
+            "requested_execution_profile".to_string(),
+            json!(req.as_str()),
+        );
+    }
+    if decision.experimental {
+        validation.insert("experimental".to_string(), json!(true));
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +600,187 @@ mod tests {
         );
         assert!(decision.should_block);
         assert_eq!(decision.effective_outcome, ValidationOutcome::Blocked);
+    }
+
+    #[test]
+    fn classify_known_strings_to_validator_classes() {
+        assert_eq!(
+            classify_unmet_requirement("missing_required_section"),
+            Some(ValidatorClass::MissingRequiredSection)
+        );
+        assert_eq!(
+            classify_unmet_requirement("missing_required_section: Sources"),
+            Some(ValidatorClass::MissingRequiredSection)
+        );
+        assert_eq!(
+            classify_unmet_requirement("destructive_action_requires_approval"),
+            Some(ValidatorClass::DestructiveActionRequiresApproval)
+        );
+        assert_eq!(
+            classify_unmet_requirement("budget_exceeded"),
+            Some(ValidatorClass::BudgetExceeded)
+        );
+        assert_eq!(classify_unmet_requirement("totally_unknown_class"), None);
+    }
+
+    #[test]
+    fn classifier_critical_strings_remain_critical() {
+        let critical_strings = [
+            "unauthorized_workspace",
+            "secret_access_denied",
+            "destructive_action_requires_approval",
+            "tenant_policy_denied",
+            "tool_unauthorized",
+            "budget_exceeded",
+            "kill_switch_engaged",
+            "deterministic_verification_failed",
+        ];
+        for raw in critical_strings {
+            let class = classify_unmet_requirement(raw)
+                .unwrap_or_else(|| panic!("expected classification for {raw}"));
+            assert!(
+                class.is_critical(),
+                "{raw} -> {:?} should be critical",
+                class
+            );
+        }
+    }
+
+    #[test]
+    fn augment_strict_profile_no_change() {
+        let mut output = json!({
+            "artifact_validation": {
+                "unmet_requirements": ["missing_required_section: Sources"],
+            }
+        });
+        let augmented = augment_output_with_profile_relaxation(
+            &mut output,
+            ExecutionProfile::Strict,
+            None,
+            &[],
+        );
+        assert!(!augmented);
+        let validation = output.pointer("/artifact_validation").unwrap();
+        assert!(validation.get("relaxed_validator_classes").is_none());
+        assert!(validation.get("effective_outcome").is_none());
+    }
+
+    #[test]
+    fn augment_guided_writes_warning_outcome() {
+        let mut output = json!({
+            "artifact_validation": {
+                "unmet_requirements": ["missing_required_section: Sources"],
+            }
+        });
+        let augmented = augment_output_with_profile_relaxation(
+            &mut output,
+            ExecutionProfile::Guided,
+            None,
+            &[],
+        );
+        assert!(augmented);
+        let validation = output.pointer("/artifact_validation").unwrap();
+        assert_eq!(
+            validation.get("effective_outcome").and_then(Value::as_str),
+            Some("warning")
+        );
+        assert_eq!(
+            validation
+                .get("original_validator_outcome")
+                .and_then(Value::as_str),
+            Some("blocked")
+        );
+        assert_eq!(
+            validation.get("execution_profile").and_then(Value::as_str),
+            Some("guided")
+        );
+        assert!(validation.get("experimental").is_none());
+        let classes = validation
+            .get("relaxed_validator_classes")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(classes.len(), 1);
+        assert_eq!(
+            classes[0].get("class").and_then(Value::as_str),
+            Some("missing_required_section")
+        );
+        assert_eq!(
+            classes[0].get("detail").and_then(Value::as_str),
+            Some("Sources")
+        );
+    }
+
+    #[test]
+    fn augment_yolo_writes_experimental_flag() {
+        let mut output = json!({
+            "artifact_validation": {
+                "unmet_requirements": ["missing_required_section: Sources"],
+            }
+        });
+        let augmented = augment_output_with_profile_relaxation(
+            &mut output,
+            ExecutionProfile::Yolo,
+            Some(ExecutionProfile::Yolo),
+            &[],
+        );
+        assert!(augmented);
+        let validation = output.pointer("/artifact_validation").unwrap();
+        assert_eq!(
+            validation.get("effective_outcome").and_then(Value::as_str),
+            Some("experimental")
+        );
+        assert_eq!(
+            validation.get("experimental").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            validation
+                .get("requested_execution_profile")
+                .and_then(Value::as_str),
+            Some("yolo")
+        );
+    }
+
+    #[test]
+    fn augment_critical_class_blocks_under_yolo() {
+        let mut output = json!({
+            "artifact_validation": {
+                "unmet_requirements": [
+                    "missing_required_section: Sources",
+                    "destructive_action_requires_approval"
+                ],
+            }
+        });
+        let augmented =
+            augment_output_with_profile_relaxation(&mut output, ExecutionProfile::Yolo, None, &[]);
+        assert!(!augmented);
+    }
+
+    #[test]
+    fn augment_unclassified_string_is_conservative() {
+        let mut output = json!({
+            "artifact_validation": {
+                "unmet_requirements": [
+                    "missing_required_section: Sources",
+                    "totally_unknown_class"
+                ],
+            }
+        });
+        let augmented =
+            augment_output_with_profile_relaxation(&mut output, ExecutionProfile::Yolo, None, &[]);
+        assert!(!augmented);
+    }
+
+    #[test]
+    fn augment_no_unmet_requirements_no_change() {
+        let mut output = json!({
+            "artifact_validation": {
+                "unmet_requirements": [],
+            }
+        });
+        let augmented =
+            augment_output_with_profile_relaxation(&mut output, ExecutionProfile::Yolo, None, &[]);
+        assert!(!augmented);
     }
 
     #[test]
