@@ -1592,11 +1592,18 @@ export function AgentAutomationPage({
     }
   };
 
-  const triggerAutomationRun = async (automationId: string) => {
+  const triggerAutomationRun = async (
+    automationId: string,
+    executionProfile?: "strict" | "guided" | "yolo"
+  ) => {
     setBusyKey(`run:${automationId}`);
     setError(null);
     try {
-      await automationsV2RunNow(automationId);
+      if (executionProfile) {
+        await automationsV2RunNow(automationId, { executionProfile });
+      } else {
+        await automationsV2RunNow(automationId);
+      }
       setTab("runs");
       await refreshWorkflowData();
     } catch (runError) {
@@ -2570,6 +2577,32 @@ export function AgentAutomationPage({
                                 : "none"}
                             </div>
                             <div>Runs loaded: {runCount}</div>
+                            {(() => {
+                              const savedProfile = String(
+                                (automation.execution as any)?.profile || ""
+                              )
+                                .trim()
+                                .toLowerCase();
+                              if (!savedProfile || savedProfile === "strict") return null;
+                              const label =
+                                savedProfile === "yolo"
+                                  ? "YOLO"
+                                  : savedProfile.charAt(0).toUpperCase() + savedProfile.slice(1);
+                              return (
+                                <div>
+                                  Profile:{" "}
+                                  <span
+                                    className={
+                                      savedProfile === "yolo"
+                                        ? "rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200"
+                                        : "rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200"
+                                    }
+                                  >
+                                    {label}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -2578,8 +2611,27 @@ export function AgentAutomationPage({
                             variant="secondary"
                             loading={busyKey === `run:${automationId}`}
                             onClick={() => void triggerAutomationRun(automationId)}
+                            title="Run with the automation's saved execution profile"
                           >
                             Run now
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            loading={busyKey === `run:${automationId}`}
+                            onClick={() => void triggerAutomationRun(automationId, "guided")}
+                            title="One-time run as Guided (relax non-critical validators)"
+                          >
+                            ↳ Guided
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            loading={busyKey === `run:${automationId}`}
+                            onClick={() => void triggerAutomationRun(automationId, "yolo")}
+                            title="One-time run as YOLO (continue past non-critical failures as experimental)"
+                          >
+                            ↳ YOLO
                           </Button>
                           <Button
                             size="sm"
