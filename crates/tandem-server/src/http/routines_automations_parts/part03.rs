@@ -1,4 +1,3 @@
-
 async fn automation_v2_task_reset_preview(
     state: &AppState,
     run_id: &str,
@@ -545,6 +544,98 @@ pub(super) async fn automations_v2_events(
         Err(_) => None,
     });
     Sse::new(ready.chain(live)).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+}
+
+/// PATCH /automations/v2/runs/{run_id}/tasks/{node_id}/disposition
+///
+/// Records a human-applied accept/reject signal on a node output. This is the
+/// graduation-loop input that, alongside `relaxed_validator_classes`, lets us
+/// compute per-validator-class accept-rate over a rolling window. Idempotent:
+/// re-applying the same disposition is a 200 with `changed: false`.
+///
+/// The endpoint does not require the run to be terminal — humans can disposition
+/// in-progress runs (e.g. while reviewing an experimental Guided/YOLO output).
+pub(super) async fn automations_v2_run_task_disposition(
+    State(state): State<AppState>,
+    Path((run_id, node_id)): Path<(String, String)>,
+    Json(input): Json<AutomationV2RunTaskDispositionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let node_id = node_id.trim().to_string();
+    if node_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error":"node_id is required",
+                "code":"AUTOMATION_V2_TASK_NODE_REQUIRED"
+            })),
+        ));
+    }
+    let disposition = match crate::parse_human_disposition_str(&input.disposition) {
+        Some(value) => value,
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error":"unrecognized human_disposition value",
+                    "code":"AUTOMATION_V2_TASK_DISPOSITION_INVALID",
+                    "disposition": input.disposition,
+                })),
+            ));
+        }
+    };
+
+    let Some(current) = state.get_automation_v2_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error":"Run not found",
+                "code":"AUTOMATION_V2_RUN_NOT_FOUND",
+                "runID": run_id
+            })),
+        ));
+    };
+    if !current.checkpoint.node_outputs.contains_key(&node_id) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error":"Node output not found on this run",
+                "code":"AUTOMATION_V2_TASK_NODE_OUTPUT_NOT_FOUND",
+                "runID": run_id,
+                "nodeID": node_id,
+            })),
+        ));
+    }
+
+    let mut changed = false;
+    let updated = state
+        .update_automation_v2_run(&run_id, |row| {
+            if let Some(output) = row.checkpoint.node_outputs.get_mut(&node_id) {
+                changed = crate::set_human_disposition_on_output(output, disposition);
+            }
+        })
+        .await;
+    let Some(updated) = updated else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error":"Run not found",
+                "code":"AUTOMATION_V2_RUN_NOT_FOUND",
+                "runID": run_id
+            })),
+        ));
+    };
+
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
+    Ok(Json(json!({
+        "ok": true,
+        "changed": changed,
+        "node_id": node_id,
+        "disposition": disposition.as_str(),
+        "reason": input.reason.unwrap_or_default(),
+        "run": automation_v2_run_with_context_links(&state, &updated).await,
+        "contextRunID": context_run_id,
+        "linked_context_run_id": context_run_id,
+    })))
 }
 
 #[cfg(test)]

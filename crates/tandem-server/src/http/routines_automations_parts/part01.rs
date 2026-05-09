@@ -725,6 +725,15 @@ pub(super) struct AutomationV2RunTaskActionInput {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct AutomationV2RunTaskDispositionInput {
+    /// Canonical: "unmarked" | "accepted" | "rejected" | "re_ran_strict".
+    /// Operator-friendly aliases are accepted (see `parse_human_disposition_str`).
+    pub disposition: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct AutomationV2BacklogClaimInput {
     #[serde(default)]
     pub reason: Option<String>,
