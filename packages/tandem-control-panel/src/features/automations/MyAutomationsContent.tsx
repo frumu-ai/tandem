@@ -8,6 +8,7 @@ import {
 } from "./MyAutomationsDialogs";
 import { RunDebuggerDialog } from "./RunDebuggerDialog";
 import { ExecutionProfilePill } from "./ExecutionProfileBadges";
+import { ExecutionProfileToggle } from "./ExecutionProfileToggle";
 import { EmptyState } from "../../pages/ui";
 import {
   WORKFLOW_LIBRARY_SOURCE_FILTERS,
@@ -354,29 +355,25 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
             >
               <i data-lucide="chevrons-up-down" className="w-3 h-3"></i>
             </summary>
-            <div
-              className="absolute right-0 top-9 z-10 flex flex-col rounded border border-slate-700/60 bg-slate-900/95 p-1 shadow-lg"
-              style={{ minWidth: "9rem" }}
-            >
-              {(["strict", "guided", "yolo"] as const).map((profile) => (
-                <button
-                  key={profile}
-                  type="button"
-                  className="tcp-btn h-7 px-2 text-[11px] justify-start"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    const details = event.currentTarget.closest(
-                      "details"
-                    ) as HTMLDetailsElement | null;
-                    if (details) details.open = false;
-                    runNowV2Mutation.mutate({ id, executionProfile: profile });
-                  }}
-                  disabled={!id || runNowV2Mutation.isPending}
-                >
-                  Run as{" "}
-                  {profile === "yolo" ? "YOLO" : profile.charAt(0).toUpperCase() + profile.slice(1)}
-                </button>
-              ))}
+            <div className="absolute right-0 top-9 z-10 grid gap-1 rounded border border-slate-700/60 bg-slate-900/95 p-2 shadow-lg">
+              <div className="text-[10px] uppercase tracking-wide text-slate-400">Run once as</div>
+              <ExecutionProfileToggle
+                size="sm"
+                value=""
+                disabled={!id || runNowV2Mutation.isPending}
+                pendingValue={
+                  runNowV2Mutation.isPending &&
+                  runNowV2Mutation.variables?.id === id &&
+                  runNowV2Mutation.variables?.executionProfile
+                    ? (runNowV2Mutation.variables.executionProfile as "strict" | "guided" | "yolo")
+                    : null
+                }
+                onChange={(next) => {
+                  if (!next) return;
+                  runNowV2Mutation.mutate({ id, executionProfile: next });
+                }}
+              />
+              <div className="text-[10px] text-slate-500">Override applies to this run only.</div>
             </div>
           </details>
           <button

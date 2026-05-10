@@ -10,6 +10,7 @@ import { WatchConditionEditor } from "./WatchConditionEditor";
 import { ScopePolicyEditor } from "./ScopePolicyEditor";
 import { HandoffConfigEditor } from "./HandoffConfigEditor";
 import { HandoffPanel } from "./HandoffPanel";
+import { ExecutionProfileToggle } from "./ExecutionProfileToggle";
 
 function normalizeMcpNamespaceSegment(raw: string) {
   let out = "";
@@ -625,35 +626,23 @@ export function WorkflowAutomationEditDialog({
                 </div>
                 <div className="grid gap-1">
                   <label className="text-xs text-slate-400">Execution profile</label>
-                  <select
-                    className="tcp-input"
+                  <ExecutionProfileToggle
                     value={workflowEditDraft.executionProfile || ""}
-                    onChange={(e) =>
+                    clearable
+                    onChange={(next) =>
                       setWorkflowEditDraft((current: any) =>
-                        current
-                          ? {
-                              ...current,
-                              executionProfile: (e.target as HTMLSelectElement).value as
-                                | ""
-                                | "strict"
-                                | "guided"
-                                | "yolo",
-                            }
-                          : current
+                        current ? { ...current, executionProfile: next } : current
                       )
                     }
-                  >
-                    <option value="">System default (Strict)</option>
-                    <option value="strict">Strict — production discipline</option>
-                    <option value="guided">Guided — assisted iteration</option>
-                    <option value="yolo">YOLO — exploratory</option>
-                  </select>
+                  />
                   <div className="text-xs text-slate-500">
                     {workflowEditDraft.executionProfile === "yolo"
                       ? "Non-critical validation failures continue as experimental; spend caps and approvals still enforced."
                       : workflowEditDraft.executionProfile === "guided"
                         ? "Non-critical validation failures become warnings; critical failures still block."
-                        : "All validators enforced. Use Guided/YOLO during validator hardening to unblock recoverable runs."}
+                        : workflowEditDraft.executionProfile === "strict"
+                          ? "All validators enforced."
+                          : "Falls back to the tenant default (or Strict if none set). Hover any segment for details."}
                   </div>
                 </div>
               </div>

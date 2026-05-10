@@ -9,6 +9,7 @@ import {
 } from "../../planner/plannerShared";
 import type { NavigationLockState } from "../../../pages/pageTypes";
 import { api } from "../../../lib/api";
+import { ExecutionProfileToggle } from "../ExecutionProfileToggle";
 
 type ComposerPhase = "intent_capture" | "clarification" | "draft_ready" | "created";
 
@@ -1057,27 +1058,20 @@ export function AutomationComposerPanel({
           </div>
           <div className="mt-3 grid gap-1">
             <label className="text-xs text-slate-400">Execution profile (saved default)</label>
-            <select
-              className="tcp-input"
+            <ExecutionProfileToggle
               value={executionProfile}
-              onChange={(e) =>
-                setExecutionProfile(
-                  (e.target as HTMLSelectElement).value as "" | "strict" | "guided" | "yolo"
-                )
-              }
+              clearable
               disabled={createMutation.isPending}
-            >
-              <option value="">System default (Strict)</option>
-              <option value="strict">Strict — production discipline</option>
-              <option value="guided">Guided — assisted iteration</option>
-              <option value="yolo">YOLO — exploratory</option>
-            </select>
+              onChange={(next) => setExecutionProfile(next)}
+            />
             <div className="text-xs text-slate-500">
               {executionProfile === "yolo"
                 ? "Non-critical validation continues as experimental; spend caps and approvals still enforced."
                 : executionProfile === "guided"
                   ? "Non-critical validation becomes warnings; critical failures still block."
-                  : "All validators enforced. Use Guided/YOLO during validator hardening to unblock recoverable runs."}
+                  : executionProfile === "strict"
+                    ? "All validators enforced."
+                    : "Falls back to the tenant default (or Strict if none set). Hover any segment for details."}
             </div>
           </div>
         </div>
