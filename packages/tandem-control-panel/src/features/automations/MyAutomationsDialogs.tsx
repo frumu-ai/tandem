@@ -531,6 +531,27 @@ export function WorkflowAutomationEditDialog({
                   hint="Use the timezone that matches when this workflow should fire."
                 />
               </div>
+              <div className="grid gap-1">
+                <label className="text-xs text-slate-400">Execution profile</label>
+                <ExecutionProfileToggle
+                  value={workflowEditDraft.executionProfile || ""}
+                  clearable
+                  onChange={(next) =>
+                    setWorkflowEditDraft((current: any) =>
+                      current ? { ...current, executionProfile: next } : current
+                    )
+                  }
+                />
+                <div className="text-xs text-slate-500">
+                  {workflowEditDraft.executionProfile === "yolo"
+                    ? "Non-critical validation failures continue as experimental; spend caps and approvals still enforced."
+                    : workflowEditDraft.executionProfile === "guided"
+                      ? "Non-critical validation failures become warnings; critical failures still block."
+                      : workflowEditDraft.executionProfile === "strict"
+                        ? "All validators enforced."
+                        : "Hover any dot for details."}
+                </div>
+              </div>
               <div className="grid gap-2">
                 <label className="text-xs text-slate-400">Agent type</label>
                 <div className="grid gap-2">
@@ -622,27 +643,6 @@ export function WorkflowAutomationEditDialog({
                     {workflowEditDraft.executionMode === "single"
                       ? "Single Agent ignores this value because it stays on one coordinated thread."
                       : "Team and swarm runs use this value as the concurrency cap for parallel sub-tasks."}
-                  </div>
-                </div>
-                <div className="grid gap-1">
-                  <label className="text-xs text-slate-400">Execution profile</label>
-                  <ExecutionProfileToggle
-                    value={workflowEditDraft.executionProfile || ""}
-                    clearable
-                    onChange={(next) =>
-                      setWorkflowEditDraft((current: any) =>
-                        current ? { ...current, executionProfile: next } : current
-                      )
-                    }
-                  />
-                  <div className="text-xs text-slate-500">
-                    {workflowEditDraft.executionProfile === "yolo"
-                      ? "Non-critical validation failures continue as experimental; spend caps and approvals still enforced."
-                      : workflowEditDraft.executionProfile === "guided"
-                        ? "Non-critical validation failures become warnings; critical failures still block."
-                        : workflowEditDraft.executionProfile === "strict"
-                          ? "All validators enforced."
-                          : "Falls back to the tenant default (or Strict if none set). Hover any segment for details."}
                   </div>
                 </div>
               </div>

@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import type { ExecutionProfile } from "./AutomationsRunHelpers";
 
 type ProfileValue = ExecutionProfile | "";
@@ -6,7 +7,8 @@ interface Segment {
   value: ExecutionProfile;
   label: string;
   tooltip: string;
-  activeClass: string;
+  /** Tailwind text/glow color for the active dot. */
+  accentClass: string;
 }
 
 const SEGMENTS: Segment[] = [
@@ -15,84 +17,125 @@ const SEGMENTS: Segment[] = [
     label: "Strict",
     tooltip:
       "All validators enforced. Use Guided/YOLO during validator hardening to unblock recoverable runs.",
-    activeClass: "bg-emerald-500/20 text-emerald-100 ring-emerald-400/40",
+    accentClass: "bg-emerald-300 shadow-[0_0_0_3px_rgba(110,231,183,0.18)]",
   },
   {
     value: "guided",
     label: "Guided",
     tooltip:
       "Non-critical validation failures become warnings; critical failures (auth, secret access, destructive-action approval, budget caps) still block.",
-    activeClass: "bg-amber-400/20 text-amber-100 ring-amber-400/40",
+    accentClass: "bg-amber-300 shadow-[0_0_0_3px_rgba(252,211,77,0.18)]",
   },
   {
     value: "yolo",
     label: "YOLO",
     tooltip:
       "Non-critical validation failures continue as experimental; spend caps and approvals still enforced. Downstream nodes inherit the experimental flag.",
-    activeClass: "bg-rose-500/20 text-rose-100 ring-rose-400/40",
+    accentClass: "bg-rose-300 shadow-[0_0_0_3px_rgba(253,164,175,0.18)]",
   },
 ];
+
+function segmentFor(value: ProfileValue): Segment | null {
+  return SEGMENTS.find((s) => s.value === value) || null;
+}
 
 export function ExecutionProfileToggle({
   value,
   onChange,
   disabled = false,
   pendingValue = null,
-  size = "md",
   clearable = false,
   className = "",
 }: {
   value: ProfileValue;
   onChange: (next: ProfileValue) => void;
   disabled?: boolean;
-  /** Set to one of the three values to render that segment as "Saving…". */
   pendingValue?: ExecutionProfile | null;
-  size?: "sm" | "md";
-  /** When true and value !== "", render a "Use system default" link below. */
   clearable?: boolean;
   className?: string;
 }) {
-  const sizeClass = size === "sm" ? "h-6 px-2 text-[10px]" : "h-7 px-3 text-[11px]";
+  const [hoverProfile, setHoverProfile] = useState<ExecutionProfile | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
+  const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const activeSegment = segmentFor(value);
+
+  const handleEnter = (profile: ExecutionProfile) => {
+    const el = buttonRefs.current[profile];
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      setTooltipPos({
+        top: rect.bottom + 8,
+        left: rect.left + rect.width / 2,
+      });
+    }
+    setHoverProfile(profile);
+  };
+
+  const handleLeave = () => {
+    setHoverProfile(null);
+    setTooltipPos(null);
+  };
+
+  const hoverSegment = hoverProfile ? segmentFor(hoverProfile) : null;
+
   return (
-    <div className={`grid gap-1 ${className}`}>
-      <div
-        role="radiogroup"
-        aria-label="Execution profile"
-        className="inline-flex w-fit items-center rounded-full border border-slate-700/60 bg-slate-950/40 p-0.5"
-      >
-        {SEGMENTS.map((segment) => {
-          const isActive = value === segment.value;
-          const isPending = pendingValue === segment.value;
-          return (
-            <div key={segment.value} className="group relative">
+    <div className={`grid gap-1.5 ${className}`}>
+      <div className="flex items-center gap-3">
+        <div
+          role="radiogroup"
+          aria-label="Execution profile"
+          className="inline-flex items-center gap-1 rounded-full border border-slate-700/70 bg-slate-900/70 px-2 py-1.5"
+        >
+          {SEGMENTS.map((segment) => {
+            const isActive = value === segment.value;
+            const isPending = pendingValue === segment.value;
+            return (
               <button
+                key={segment.value}
+                ref={(el) => {
+                  buttonRefs.current[segment.value] = el;
+                }}
                 type="button"
                 role="radio"
                 aria-checked={isActive}
+                aria-label={segment.label}
                 disabled={disabled}
-                className={`${sizeClass} rounded-full font-semibold uppercase tracking-wide transition focus:outline-none focus:ring-2 focus:ring-sky-400/60 ${
-                  isActive
-                    ? `ring-1 ${segment.activeClass}`
-                    : "text-slate-300 hover:bg-slate-800/60 hover:text-slate-100"
-                } ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+                className={`flex items-center justify-center rounded-full transition focus:outline-none focus:ring-2 focus:ring-sky-400/60 ${
+                  disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                }`}
+                style={{ width: 18, height: 18 }}
+                onMouseEnter={() => handleEnter(segment.value)}
+                onMouseLeave={handleLeave}
+                onFocus={() => handleEnter(segment.value)}
+                onBlur={handleLeave}
                 onClick={() => {
                   if (disabled) return;
                   onChange(segment.value);
                 }}
               >
-                {isPending ? "Saving…" : segment.label}
+                <span
+                  className={`block rounded-full transition ${
+                    isActive
+                      ? `h-3 w-3 ${segment.accentClass}`
+                      : isPending
+                        ? "h-2 w-2 animate-pulse bg-slate-300"
+                        : "h-1.5 w-1.5 bg-slate-500 hover:bg-slate-300"
+                  }`}
+                />
               </button>
-              <div
-                role="tooltip"
-                className="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 w-56 -translate-x-1/2 rounded-md border border-slate-700/70 bg-slate-950/95 p-2 text-[11px] leading-snug text-slate-200 opacity-0 shadow-lg transition group-hover:opacity-100 group-focus-within:opacity-100"
-              >
-                <div className="mb-0.5 font-semibold text-slate-100">{segment.label}</div>
-                {segment.tooltip}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
+        <div className="grid gap-0.5 text-left">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-100">
+            {activeSegment ? activeSegment.label : "System default"}
+          </div>
+          <div className="text-[11px] text-slate-400">
+            {activeSegment ? "" : "Falls back to tenant default · Strict if none set"}
+          </div>
+        </div>
       </div>
+
       {clearable && value !== "" ? (
         <button
           type="button"
@@ -102,6 +145,19 @@ export function ExecutionProfileToggle({
         >
           Use system default
         </button>
+      ) : null}
+
+      {hoverSegment && tooltipPos ? (
+        <div
+          role="tooltip"
+          className="pointer-events-none fixed z-[1000] w-64 -translate-x-1/2 rounded-md border border-slate-700/70 bg-slate-950/95 p-2.5 text-[11px] leading-snug text-slate-200 shadow-xl"
+          style={{ top: tooltipPos.top, left: tooltipPos.left }}
+        >
+          <div className="mb-1 font-semibold uppercase tracking-wide text-slate-100">
+            {hoverSegment.label}
+          </div>
+          {hoverSegment.tooltip}
+        </div>
       ) : null}
     </div>
   );
