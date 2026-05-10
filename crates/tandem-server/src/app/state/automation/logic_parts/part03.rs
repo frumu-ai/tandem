@@ -1085,6 +1085,33 @@ pub(crate) struct AutomationUpstreamEvidence {
     pub(crate) web_research_succeeded: bool,
     pub(crate) citation_count: usize,
     pub(crate) citations: Vec<String>,
+    pub(crate) notion_identity_unconfirmed: bool,
+    pub(crate) external_citations_missing: bool,
+}
+
+fn automation_output_contains_unconfirmed_notion_identity(output: &Value) -> bool {
+    let text = serde_json::to_string(output)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    text.contains("\"confirmed_page_identity\":false")
+        || text.contains("\"confirmed_identity\":false")
+        || text.contains("\"confirmed_identity\":null")
+        || text.contains("\"inspection_performed\":false")
+}
+
+fn automation_output_contains_missing_external_citations(output: &Value) -> bool {
+    let text = serde_json::to_string(output)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let web_artifact = text.contains("gather_web_sources")
+        || text.contains("web_research_limitations")
+        || text.contains("citations_external")
+        || text.contains("web_sources_reviewed");
+    web_artifact
+        && (text.contains("\"citations_external\":[]")
+            || text.contains("\"citations\":[]")
+            || text.contains("\"web_sources_reviewed\":[]"))
+        && !text.contains("https://")
 }
 
 async fn collect_automation_upstream_research_evidence(
@@ -1113,6 +1140,10 @@ async fn collect_automation_upstream_research_evidence(
         let Some(output) = run.checkpoint.node_outputs.get(&upstream_node_id) else {
             continue;
         };
+        evidence.notion_identity_unconfirmed |=
+            automation_output_contains_unconfirmed_notion_identity(output);
+        evidence.external_citations_missing |=
+            automation_output_contains_missing_external_citations(output);
         if let Some(validation) = output.get("artifact_validation") {
             if let Some(rows) = validation.get("read_paths").and_then(Value::as_array) {
                 evidence

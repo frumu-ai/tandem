@@ -1339,6 +1339,16 @@ pub(crate) fn semantic_block_reason_for_requirements(
             "artifact claims web research was unavailable even though web research succeeded in this run"
                 .to_string(),
         )
+    } else if has_unmet("upstream_notion_identity_overstated") {
+        Some(
+            "synthesis overstated an upstream Notion inspection that was explicitly unconfirmed"
+                .to_string(),
+        )
+    } else if has_unmet("uncited_market_claims_from_limited_web_artifact") {
+        Some(
+            "synthesis made market/web-backed claims even though upstream external citations were missing"
+                .to_string(),
+        )
     } else if has_unmet("required_source_paths_not_read") {
         Some("research completed without reading the exact required source files".to_string())
     } else if has_unmet("no_concrete_reads") || has_unmet("concrete_read_required") {

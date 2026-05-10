@@ -153,6 +153,8 @@ fn resume_job_search_execute_goal_replay_accepts_upstream_resume_sources() {
         }
     });
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec!["RESUME.md".to_string()],
         discovered_relevant_paths: vec![
             "RESUME.md".to_string(),
@@ -270,6 +272,8 @@ Continue the same search direction tomorrow with slightly tighter keyword filter
         }
     });
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             "resume_overview.md".to_string(),
             "job_search_results_2026-04-15.md".to_string(),

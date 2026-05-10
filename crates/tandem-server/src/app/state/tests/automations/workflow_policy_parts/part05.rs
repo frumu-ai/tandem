@@ -759,6 +759,8 @@ fn report_markdown_validation_accepts_updated_verified_output_without_session_wr
     std::fs::write(workspace_root.join("generate-report.md"), &updated_report)
         .expect("write updated report");
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),
@@ -908,6 +910,8 @@ fn report_markdown_validation_rejects_bare_relative_artifact_hrefs() {
         }],
     ));
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),

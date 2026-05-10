@@ -317,6 +317,8 @@ async fn compare_results_synthesis_flow_completes_with_upstream_evidence() {
     ];
     let tool_telemetry = summarize_automation_tool_activity(&node, &session, &requested_tools);
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/runs/run-compare/artifacts/collect-inputs.json".to_string(),
             ".tandem/runs/run-compare/artifacts/research-sources.json".to_string(),

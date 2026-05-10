@@ -1346,6 +1346,8 @@ fn compare_results_retry_without_current_artifact_surfaces_write_and_synthesis_a
         ],
     );
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             "content/blog-memory/01-facts.md".to_string(),
             "content/blog-memory/02-decisions.md".to_string(),

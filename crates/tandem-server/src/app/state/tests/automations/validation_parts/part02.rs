@@ -227,6 +227,8 @@ fn upstream_synthesis_validation_matrix_covers_markdown_and_html_evidence_preser
     .trim();
     let single_anchor_markdown_report = "# Final Synthesis Report\n\n## Executive Summary\nThis report is grounded in the local workflow evidence and summarizes the strongest matches from the run. It is meant to be substantive enough for release review and rerun planning without collapsing into vague workflow commentary.\n\n## Resume Direction\nThe `resume_overview.md` handoff keeps the search aligned with senior Rust, automation, and Europe-friendly roles. That source should continue to shape the search keywords and the shortlist criteria for future runs.\n\n## Observed Patterns\nThe current run still favors direct company postings and focused boards over broad aggregators. Keeping the report concise is useful, but the evidence should stay specific enough to preserve operator trust.\n\n## Recommendation\nContinue the same search pattern tomorrow and tighten the filters further around Rust, workflow automation, and product-facing systems work so the daily review stays high-signal.\n";
     let rich_upstream = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),
@@ -284,6 +286,8 @@ fn upstream_synthesis_validation_matrix_covers_markdown_and_html_evidence_preser
                 }
             }),
             upstream_evidence: AutomationUpstreamEvidence {
+                notion_identity_unconfirmed: false,
+                external_citations_missing: false,
                 read_paths: vec![
                     ".tandem/artifacts/collect-inputs.json".to_string(),
                     ".tandem/artifacts/research-sources.json".to_string(),
@@ -321,6 +325,8 @@ fn upstream_synthesis_validation_matrix_covers_markdown_and_html_evidence_preser
                 }
             }),
             upstream_evidence: AutomationUpstreamEvidence {
+                notion_identity_unconfirmed: false,
+                external_citations_missing: false,
                 read_paths: vec![
                     "resume_overview.md".to_string(),
                     "job_search_results_2026-04-15.md".to_string(),
@@ -823,6 +829,8 @@ fn upstream_shape_matrix_covers_none_strict_rich_and_legacy_rich_modes() {
     let generic_report = "# Summary\n\nPlaceholder update.\n";
     let no_upstream_report = "# Summary\n\nA concise report without upstream dependencies.\n";
     let rich_upstream = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),
@@ -1798,6 +1806,8 @@ fn upstream_evidence_can_satisfy_exact_required_source_read_paths() {
         &["read".to_string(), "write".to_string()],
     );
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec!["RESUME.md".to_string()],
         discovered_relevant_paths: vec!["RESUME.md".to_string()],
         web_research_attempted: false,

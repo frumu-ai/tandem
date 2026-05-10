@@ -316,6 +316,8 @@ fn research_finalize_validation_accepts_upstream_read_evidence() {
         &["read".to_string(), "write".to_string()],
     );
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec!["inputs/questions.md".to_string()],
         discovered_relevant_paths: vec!["inputs/questions.md".to_string()],
         web_research_attempted: false,
@@ -798,6 +800,8 @@ fn report_markdown_blocks_when_rich_upstream_evidence_is_reduced_to_generic_summ
     ));
     let thin_report = "# Strategic Summary\n\nTandem is an engineering agent for local execution.\n\n## Positioning\n\nIt connects human intent to repo changes.\n".to_string();
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             "README.md".to_string(),
             "docs/product-capabilities.md".to_string(),
@@ -918,6 +922,8 @@ fn report_markdown_accepts_structured_synthesis_without_inline_citations_when_up
         }],
     ));
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),
@@ -1049,6 +1055,8 @@ fn research_synthesis_does_not_require_fresh_workspace_reads_for_mcp_artifact_br
         }],
     ));
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: Vec::new(),
         discovered_relevant_paths: Vec::new(),
         web_research_attempted: true,
@@ -1159,6 +1167,8 @@ fn report_markdown_legacy_metadata_is_forced_to_strict_without_emergency_rollbac
             }],
         ));
         let upstream_evidence = AutomationUpstreamEvidence {
+            notion_identity_unconfirmed: false,
+            external_citations_missing: false,
             read_paths: vec![
                 ".tandem/artifacts/collect-inputs.json".to_string(),
                 ".tandem/artifacts/research-sources.json".to_string(),
@@ -1289,6 +1299,8 @@ fn report_markdown_legacy_quality_mode_allows_generic_synthesis_with_emergency_r
             }],
         ));
         let upstream_evidence = AutomationUpstreamEvidence {
+            notion_identity_unconfirmed: false,
+            external_citations_missing: false,
             read_paths: vec![
                 ".tandem/artifacts/collect-inputs.json".to_string(),
                 ".tandem/artifacts/research-sources.json".to_string(),
@@ -1418,6 +1430,8 @@ fn report_markdown_rejects_generic_synthesis_without_evidence_anchors_when_upstr
         }],
     ));
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),
@@ -1553,6 +1567,8 @@ fn report_markdown_accepts_rich_html_synthesis_when_upstream_is_rich() {
         }],
     ));
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),
@@ -1683,6 +1699,8 @@ fn report_markdown_rejects_generic_html_synthesis_without_evidence_anchors_when_
         }],
     ));
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),

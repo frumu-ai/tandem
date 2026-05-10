@@ -1479,6 +1479,152 @@ fn validation_accepts_required_connector_limitation_when_source_tool_unavailable
 }
 
 #[test]
+fn research_synthesis_rejects_unconfirmed_notion_identity_overstatement() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-synthesis-notion-overstatement-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "synthesize_report".to_string();
+    node.objective = "Synthesize upstream source artifacts into a final report.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "brief".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/synthesize-report.json"
+        }
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "status": "completed",
+        "report_body": "## Summary\nThe report is ready.\n\n## Tandem Run details\nUpstream Notion inspection artifact recorded that the target was the existing page f3975ce7-1d8d-4531-8bea-2812c65f209b.",
+        "citations": ["https://docs.tandem.ac/start-here/"]
+    }))
+    .expect("serialize artifact");
+    let session = Session::new(Some("{\"status\":\"completed\"}".to_string()), None);
+    let upstream = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: true,
+        citation_count: 1,
+        citations: vec!["https://docs.tandem.ac/start-here/".to_string()],
+        ..Default::default()
+    };
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output_with_upstream(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        Some("automation-v2-run-test"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": ["write"],
+            "requested_tools": ["write"],
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/synthesize-report.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+        Some(&upstream),
+    );
+
+    assert!(accepted.is_some(), "{validation:#}");
+    assert_eq!(validation["validation_outcome"], "blocked");
+    assert!(validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("upstream_notion_identity_overstated")));
+    assert!(rejected
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Notion inspection"));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
+fn research_synthesis_rejects_market_claims_when_external_citations_missing() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-synthesis-uncited-market-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "synthesize_report".to_string();
+    node.objective = "Synthesize upstream source artifacts into a final report.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "brief".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/synthesize-report.json"
+        }
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "status": "completed",
+        "report_body": "## Summary\nReliable agents are a systems problem.\n\n## Market Notes\nThe safest market read is that vendors are converging around orchestration and governance.",
+        "citations": ["https://docs.tandem.ac/start-here/"]
+    }))
+    .expect("serialize artifact");
+    let session = Session::new(Some("{\"status\":\"completed\"}".to_string()), None);
+    let upstream = AutomationUpstreamEvidence {
+        external_citations_missing: true,
+        citation_count: 1,
+        citations: vec!["https://docs.tandem.ac/start-here/".to_string()],
+        ..Default::default()
+    };
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output_with_upstream(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        Some("automation-v2-run-test"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": ["write"],
+            "requested_tools": ["write"],
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/synthesize-report.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+        Some(&upstream),
+    );
+
+    assert!(accepted.is_some(), "{validation:#}");
+    assert_eq!(validation["validation_outcome"], "blocked");
+    assert!(validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| {
+            value.as_str() == Some("uncited_market_claims_from_limited_web_artifact")
+        }));
+    assert!(rejected
+        .as_deref()
+        .unwrap_or_default()
+        .contains("market/web-backed claims"));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn validation_accepts_optional_tandem_mcp_reference_without_connector_call() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-optional-mcp-reference-{}",

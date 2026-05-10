@@ -927,6 +927,33 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 rejected_reason = semantic_block_reason.clone();
             }
         }
+        if research_synthesis_contract {
+            if upstream_evidence.is_some_and(|evidence| evidence.notion_identity_unconfirmed)
+                && synthesis_overstates_unconfirmed_notion_identity(selected_text)
+            {
+                unmet_requirements.push("upstream_notion_identity_overstated".to_string());
+                semantic_block_reason = Some(
+                    "synthesis overstated an upstream Notion inspection that was explicitly unconfirmed"
+                        .to_string(),
+                );
+                if rejected_reason.is_none() {
+                    rejected_reason = semantic_block_reason.clone();
+                }
+            }
+            if upstream_evidence.is_some_and(|evidence| evidence.external_citations_missing)
+                && synthesis_makes_uncited_market_claims(selected_text)
+            {
+                unmet_requirements
+                    .push("uncited_market_claims_from_limited_web_artifact".to_string());
+                semantic_block_reason = Some(
+                    "synthesis made market/web-backed claims even though upstream external citations were missing"
+                        .to_string(),
+                );
+                if rejected_reason.is_none() {
+                    rejected_reason = semantic_block_reason.clone();
+                }
+            }
+        }
         let strict_quality_mode = enforcement::automation_node_is_strict_quality(node);
         if strict_quality_mode
             && validator_kind == crate::AutomationOutputValidatorKind::GenericArtifact
@@ -1687,6 +1714,10 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         },
         "external_research_mode": external_research_mode,
         "upstream_evidence_applied": use_upstream_evidence,
+        "upstream_notion_identity_unconfirmed": use_upstream_evidence
+            && upstream_evidence.is_some_and(|evidence| evidence.notion_identity_unconfirmed),
+        "upstream_external_citations_missing": use_upstream_evidence
+            && upstream_evidence.is_some_and(|evidence| evidence.external_citations_missing),
         "blocked_handoff_cleanup_action": blocked_handoff_cleanup_action,
         "repair_attempted": repair_attempted,
         "repair_attempt": repair_attempt,
@@ -1717,6 +1748,29 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 .map(str::to_string)
         });
     (accepted_output, metadata, rejected)
+}
+
+fn synthesis_overstates_unconfirmed_notion_identity(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("notion inspection artifact recorded that the target was the existing")
+        || lowered.contains("upstream notion inspection artifact recorded that the target")
+        || (lowered.contains("notion inspection")
+            && lowered.contains("confirmed")
+            && lowered.contains("existing"))
+}
+
+fn synthesis_makes_uncited_market_claims(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    let acknowledges_no_external_evidence = lowered.contains("no current external web evidence")
+        || lowered.contains("no direct web citations")
+        || lowered.contains("web citations were unavailable")
+        || lowered.contains("external web evidence was not collected");
+    !acknowledges_no_external_evidence
+        && (lowered.contains("market preference")
+            || lowered.contains("market takeaways")
+            || lowered.contains("safest market read")
+            || lowered.contains("current market")
+            || lowered.contains("vendor or source-by-source comparisons"))
 }
 pub(crate) fn parsed_status_u32(status: Option<&Value>, key: &str) -> Option<u32> {
     status

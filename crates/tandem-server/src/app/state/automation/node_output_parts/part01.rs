@@ -734,6 +734,18 @@ pub(crate) fn research_required_next_tool_actions(
                 .to_string(),
         );
     }
+    if has_unmet("upstream_notion_identity_overstated") {
+        actions.push(
+            "Rewrite the synthesis so the Notion target is described as a delivery constraint only. If upstream inspection says identity was not confirmed, do not say the existing row/page was source-confirmed."
+                .to_string(),
+        );
+    }
+    if has_unmet("uncited_market_claims_from_limited_web_artifact") {
+        actions.push(
+            "Remove or explicitly limitation-label market/web-backed claims unless the report body includes direct external URLs from the web artifact. Empty `citations_external` means the synthesis can only say current web evidence was unavailable or incomplete."
+                .to_string(),
+        );
+    }
     if has_unmet("files_reviewed_missing") {
         actions.push(
             "Include a `Files reviewed` section that lists the exact local paths you actually read in this run."

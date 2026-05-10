@@ -72,6 +72,8 @@ fn report_markdown_accepts_rich_html_synthesis_when_upstream_is_rich() {
         }],
     ));
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),
@@ -202,6 +204,8 @@ fn report_markdown_rejects_generic_html_synthesis_without_evidence_anchors_when_
         }],
     ));
     let upstream_evidence = AutomationUpstreamEvidence {
+        notion_identity_unconfirmed: false,
+        external_citations_missing: false,
         read_paths: vec![
             ".tandem/artifacts/collect-inputs.json".to_string(),
             ".tandem/artifacts/research-sources.json".to_string(),
