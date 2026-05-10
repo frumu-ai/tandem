@@ -1312,19 +1312,27 @@ impl AppState {
         automation_id: Option<&str>,
         limit: usize,
     ) -> Vec<AutomationV2RunRecord> {
-        let mut rows = self
+        let mut merged = self
             .automation_v2_runs
             .read()
             .await
             .values()
-            .filter(|row| {
-                if let Some(id) = automation_id {
-                    row.automation_id == id
-                } else {
-                    true
-                }
-            })
             .cloned()
+            .map(|run| (run.run_id.clone(), run))
+            .collect::<std::collections::HashMap<_, _>>();
+        for history_run in
+            load_automation_v2_run_history_shards(&self.automation_v2_runs_path).await
+        {
+            match merged.get(&history_run.run_id) {
+                Some(existing) if existing.updated_at_ms >= history_run.updated_at_ms => {}
+                _ => {
+                    merged.insert(history_run.run_id.clone(), history_run);
+                }
+            }
+        }
+        let mut rows = merged
+            .into_values()
+            .filter(|row| automation_id.is_none_or(|id| row.automation_id == id))
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
         rows.truncate(limit.clamp(1, 500));

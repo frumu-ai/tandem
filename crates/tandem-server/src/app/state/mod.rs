@@ -789,6 +789,47 @@ async fn load_automation_v2_run_history_shard(
     None
 }
 
+async fn load_automation_v2_run_history_shards(active_path: &Path) -> Vec<AutomationV2RunRecord> {
+    let root = automation_v2_run_history_root(active_path);
+    let mut runs = Vec::new();
+    let Ok(mut years) = fs::read_dir(&root).await else {
+        return runs;
+    };
+    while let Ok(Some(year)) = years.next_entry().await {
+        let year_path = year.path();
+        if !year_path.is_dir() {
+            continue;
+        }
+        let mut months = match fs::read_dir(&year_path).await {
+            Ok(months) => months,
+            Err(_) => continue,
+        };
+        while let Ok(Some(month)) = months.next_entry().await {
+            let month_path = month.path();
+            if !month_path.is_dir() {
+                continue;
+            }
+            let mut shards = match fs::read_dir(&month_path).await {
+                Ok(shards) => shards,
+                Err(_) => continue,
+            };
+            while let Ok(Some(shard)) = shards.next_entry().await {
+                let path = shard.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                    continue;
+                }
+                let Ok(raw) = fs::read_to_string(&path).await else {
+                    continue;
+                };
+                if let Ok(run) = serde_json::from_str::<AutomationV2RunRecord>(&raw) {
+                    runs.push(run);
+                }
+            }
+        }
+    }
+    runs
+}
+
 fn parse_optimization_campaigns_file(
     raw: &str,
 ) -> std::collections::HashMap<String, OptimizationCampaignRecord> {

@@ -1,4 +1,40 @@
 #[tokio::test]
+async fn automation_v2_run_history_lists_archived_blocked_runs() {
+    let mut state = test_state_with_path(tmp_resource_file("automation-history-state"));
+    state.automation_v2_runs_path = tmp_resource_file("automation-history-runs");
+    let run = AutomationRunBuilder::new("run-history-blocked", "auto-history")
+        .status(AutomationRunStatus::Blocked)
+        .build();
+    {
+        let mut runs = state.automation_v2_runs.write().await;
+        runs.insert(run.run_id.clone(), run.clone());
+    }
+
+    let archived = state
+        .archive_stale_automation_v2_runs(0)
+        .await
+        .expect("archive stale runs");
+    assert_eq!(archived, 1);
+    assert!(state
+        .automation_v2_runs
+        .read()
+        .await
+        .get("run-history-blocked")
+        .is_none());
+
+    let rows = state.list_automation_v2_runs(None, 20).await;
+    assert!(rows.iter().any(|row| {
+        row.run_id == "run-history-blocked" && row.status == AutomationRunStatus::Blocked
+    }));
+
+    let filtered = state
+        .list_automation_v2_runs(Some("auto-history"), 20)
+        .await;
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].run_id, "run-history-blocked");
+}
+
+#[tokio::test]
 async fn automation_run_requeue_increments_attempt_counter() {
     let workspace_root =
         std::env::temp_dir().join(format!("tandem-requeue-attempts-{}", uuid::Uuid::new_v4()));
