@@ -1076,6 +1076,41 @@ mod tests {
         assert_eq!(result.metadata["count"], json!(0));
     }
 
+    #[tokio::test]
+    async fn batch_returns_per_call_errors_without_aborting() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {"tool":"read","args":{"path":"Cargo.toml"}},
+                    {"tool":"TaskList","args":{}},
+                    {
+                        "tool":"write",
+                        "args":{"path":"blocked.txt","content":"nope"},
+                        "_blocked":"batch sub-call skipped: tool `write` is not in the allowed list for this run"
+                    }
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult even when subcalls fail");
+        let parsed: Value = serde_json::from_str(&result.output).expect("batch output json");
+        let rows = parsed.as_array().expect("batch output array");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["status"], json!("ok"));
+        assert_eq!(rows[1]["status"], json!("error"));
+        assert_eq!(rows[1]["tool"], json!("TaskList"));
+        assert!(rows[1]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("team_name is required"));
+        assert_eq!(rows[2]["status"], json!("skipped"));
+        assert_eq!(rows[2]["tool"], json!("write"));
+        assert!(rows[2]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not in the allowed list"));
+    }
+
     #[test]
     fn sanitize_member_name_normalizes_agent_aliases() {
         assert_eq!(sanitize_member_name("A2").expect("valid"), "A2");

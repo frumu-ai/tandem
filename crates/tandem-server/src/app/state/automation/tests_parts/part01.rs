@@ -1,3 +1,4 @@
+use super::node_runtime_impl;
 use super::node_runtime_impl::automation_node_should_surface_mcp_discovery;
 use super::*;
 use crate::automation_v2::types::{AutomationFlowInputRef, AutomationFlowNode};
@@ -1108,6 +1109,60 @@ fn review_decision_nodes_do_not_inherit_team_or_batch_tools() {
     assert!(!requested_for_execution
         .iter()
         .any(|tool| tool.starts_with("mcp.")));
+
+    let envelope = node_runtime_impl::resolve_automation_node_tool_envelope(
+        &node,
+        "/tmp/tandem-review-tools",
+        vec![
+            "batch".to_string(),
+            "TaskList".to_string(),
+            "TaskUpdate".to_string(),
+            "glob".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+            "mcp.notion.notion_get_teams".to_string(),
+        ],
+        &available_tool_names,
+    );
+
+    assert!(envelope.is_review_node);
+    assert!(!envelope.is_connector_source_node);
+    assert!(envelope.tools.contains(&"read".to_string()));
+    assert!(envelope.tools.contains(&"glob".to_string()));
+    assert!(!envelope.tools.contains(&"batch".to_string()));
+    assert!(!envelope.tools.contains(&"TaskList".to_string()));
+    assert!(!envelope.tools.contains(&"write".to_string()));
+    assert!(envelope
+        .blocked_tools
+        .iter()
+        .any(|blocked| blocked.tool == "TaskList"));
+    assert!(envelope
+        .blocked_tools
+        .iter()
+        .any(|blocked| blocked.tool == "write"));
+}
+
+#[test]
+fn automation_logic_orphan_duplicate_tree_removed() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/state/automation/logic");
+    let has_rust_sources = std::fs::read_dir(&root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| {
+            let path = entry.path();
+            path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+                || path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with("_parts"))
+        });
+    assert!(
+        !has_rust_sources,
+        "automation/logic must not contain orphan duplicate Rust sources; use automation/logic.rs plus logic_parts/*"
+    );
 }
 
 #[test]

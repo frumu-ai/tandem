@@ -568,7 +568,23 @@ pub(crate) fn automation_tool_name_is_email_delivery(tool_name: &str) -> bool {
     })
 }
 
-fn discover_automation_tools_for_capability(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BlockedToolReason {
+    pub(crate) tool: String,
+    pub(crate) reason: String,
+    pub(crate) stage: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AutomationNodeToolEnvelope {
+    pub(crate) tools: Vec<String>,
+    pub(crate) capability_ids: Vec<String>,
+    pub(crate) blocked_tools: Vec<BlockedToolReason>,
+    pub(crate) is_review_node: bool,
+    pub(crate) is_connector_source_node: bool,
+}
+
+pub(crate) fn discover_automation_tools_for_capability(
     capability_id: &str,
     available_tool_names: &HashSet<String>,
 ) -> Vec<String> {
@@ -604,6 +620,16 @@ pub(crate) fn automation_requested_tools_for_node(
     raw: Vec<String>,
     available_tool_names: &HashSet<String>,
 ) -> Vec<String> {
+    resolve_automation_node_tool_envelope(node, workspace_root, raw, available_tool_names).tools
+}
+
+pub(crate) fn resolve_automation_node_tool_envelope(
+    node: &AutomationFlowNode,
+    workspace_root: &str,
+    raw: Vec<String>,
+    available_tool_names: &HashSet<String>,
+) -> AutomationNodeToolEnvelope {
+    let raw_requested_tools = raw.clone();
     let execution_mode = automation_node_execution_mode(node, workspace_root);
     let connector_hint_mentions =
         tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
@@ -615,16 +641,20 @@ pub(crate) fn automation_requested_tools_for_node(
             || automation_node_metadata_tool_allowlist(node)
                 .iter()
                 .any(|tool| tool.starts_with("mcp.")));
+    let is_review_node = automation_output_validator_kind(node)
+        == crate::AutomationOutputValidatorKind::ReviewDecision;
     let mut requested_tools = filter_requested_tools_to_available(
         normalize_automation_requested_tools(node, workspace_root, raw),
         available_tool_names,
     );
-    for capability_id in automation_tool_capability_ids(node, execution_mode) {
+    let capability_ids = automation_tool_capability_ids(node, execution_mode);
+    for capability_id in &capability_ids {
         requested_tools.extend(discover_automation_tools_for_capability(
-            &capability_id,
+            capability_id,
             available_tool_names,
         ));
     }
+    let before_policy = requested_tools.clone();
     if connector_source_node {
         requested_tools.retain(|tool| {
             tool == "write"
@@ -632,9 +662,7 @@ pub(crate) fn automation_requested_tools_for_node(
                 || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
         });
     }
-    if automation_output_validator_kind(node)
-        == crate::AutomationOutputValidatorKind::ReviewDecision
-    {
+    if is_review_node {
         requested_tools.retain(|tool| matches!(tool.as_str(), "read" | "glob" | "grep"));
         if !requested_tools.iter().any(|tool| tool == "read") {
             requested_tools.push("read".to_string());
@@ -642,7 +670,33 @@ pub(crate) fn automation_requested_tools_for_node(
     }
     requested_tools.sort();
     requested_tools.dedup();
-    requested_tools
+    let mut blocked_tools = raw_requested_tools
+        .into_iter()
+        .chain(before_policy)
+        .into_iter()
+        .filter(|tool| !requested_tools.contains(tool))
+        .map(|tool| BlockedToolReason {
+            reason: if is_review_node {
+                "review nodes are limited to read-only workspace inspection tools".to_string()
+            } else if connector_source_node {
+                "connector source nodes are limited to concrete source tools and artifact writes"
+                    .to_string()
+            } else {
+                "tool removed by automation node tool policy".to_string()
+            },
+            stage: "tool_envelope".to_string(),
+            tool,
+        })
+        .collect::<Vec<_>>();
+    blocked_tools.sort_by(|left, right| left.tool.cmp(&right.tool));
+    blocked_tools.dedup_by(|left, right| left.tool == right.tool && left.reason == right.reason);
+    AutomationNodeToolEnvelope {
+        tools: requested_tools,
+        capability_ids,
+        blocked_tools,
+        is_review_node,
+        is_connector_source_node: connector_source_node,
+    }
 }
 
 pub(crate) fn automation_node_prewrite_requirements(

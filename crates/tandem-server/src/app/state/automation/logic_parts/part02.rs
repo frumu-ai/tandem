@@ -1153,17 +1153,7 @@ pub(crate) fn discover_automation_tools_for_capability(
     capability_id: &str,
     available_tool_names: &HashSet<String>,
 ) -> Vec<String> {
-    if available_tool_names.is_empty() {
-        return vec!["*".to_string()];
-    }
-    let mut matches = available_tool_names
-        .iter()
-        .filter(|tool_name| automation_capability_matches_tool(capability_id, tool_name))
-        .cloned()
-        .collect::<Vec<_>>();
-    matches.sort();
-    matches.dedup();
-    matches
+    node_runtime_impl::discover_automation_tools_for_capability(capability_id, available_tool_names)
 }
 
 pub(crate) fn filter_requested_tools_to_available(
@@ -1185,45 +1175,13 @@ pub(crate) fn automation_requested_tools_for_node(
     raw: Vec<String>,
     available_tool_names: &HashSet<String>,
 ) -> Vec<String> {
-    let execution_mode = automation_node_execution_mode(node, workspace_root);
-    let connector_hint_mentions =
-        tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
-            &automation_connector_hint_text(node),
-        );
-    let connector_source_node = !automation_node_is_code_workflow(node)
-        && !enforcement::automation_node_allows_optional_connector_references(node)
-        && (connector_hint_mentions
-            || node_runtime_impl::automation_node_metadata_tool_allowlist(node)
-                .iter()
-                .any(|tool| tool.starts_with("mcp.")));
-    let mut requested_tools = filter_requested_tools_to_available(
-        normalize_automation_requested_tools(node, workspace_root, raw),
+    node_runtime_impl::resolve_automation_node_tool_envelope(
+        node,
+        workspace_root,
+        raw,
         available_tool_names,
-    );
-    for capability_id in automation_tool_capability_ids(node, execution_mode) {
-        requested_tools.extend(discover_automation_tools_for_capability(
-            &capability_id,
-            available_tool_names,
-        ));
-    }
-    if connector_source_node {
-        requested_tools.retain(|tool| {
-            tool == "write"
-                || tool == "mcp_list"
-                || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
-        });
-    }
-    if automation_output_validator_kind(node)
-        == crate::AutomationOutputValidatorKind::ReviewDecision
-    {
-        requested_tools.retain(|tool| matches!(tool.as_str(), "read" | "glob" | "grep"));
-        if !requested_tools.iter().any(|tool| tool == "read") {
-            requested_tools.push("read".to_string());
-        }
-    }
-    requested_tools.sort();
-    requested_tools.dedup();
-    requested_tools
+    )
+    .tools
 }
 
 pub(crate) fn automation_node_prewrite_requirements(

@@ -522,6 +522,13 @@ impl EngineLoop {
         {
             if !allowed_tools.is_empty() && !any_policy_matches(&allowed_tools, &tool) {
                 let reason = format!("Tool `{tool}` is not allowed for this run.");
+                let blocked_output = json!({
+                    "status": "skipped",
+                    "tool": tool,
+                    "reason": reason,
+                    "recoverable": true
+                })
+                .to_string();
                 publish_tool_effect(
                     None,
                     ToolEffectLedgerPhase::Outcome,
@@ -529,9 +536,9 @@ impl EngineLoop {
                     &args,
                     None,
                     None,
-                    Some(&reason),
+                    Some(&blocked_output),
                 );
-                return Ok(Some(reason));
+                return Ok(Some(blocked_output));
             }
         }
         if let Some(hook) = self.tool_policy_hook.read().await.clone() {

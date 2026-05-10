@@ -1987,6 +1987,40 @@ pub(crate) async fn execute_automation_v2_node(
                 "automation node prompt timed out after artifact-write attempt; reconciling required output before failing node"
             );
         } else {
+            let receipt_root = receipts::automation_attempt_receipts_root();
+            let payload = json!({
+                "automation_id": automation.automation_id,
+                "run_id": run_id,
+                "node_id": node.node_id,
+                "attempt": attempt,
+                "session_id": session_id,
+                "failure_class": "runtime_tool_or_provider_error",
+                "reason": error.to_string(),
+                "offered_tools": requested_tools,
+                "executed_tools": [],
+                "tool_error": error.to_string(),
+                "recoverable": true
+            });
+            if let Err(receipt_error) = append_automation_attempt_receipts(
+                &receipt_root,
+                run_id,
+                &node.node_id,
+                attempt,
+                &session_id,
+                &[AutomationAttemptReceiptEventInput {
+                    event_type: "runtime_failure".to_string(),
+                    payload,
+                }],
+            )
+            .await
+            {
+                tracing::warn!(
+                    run_id = %run_id,
+                    node_id = %node.node_id,
+                    error = %receipt_error,
+                    "failed to append automation runtime failure receipt"
+                );
+            }
             return Err(error);
         }
     }
