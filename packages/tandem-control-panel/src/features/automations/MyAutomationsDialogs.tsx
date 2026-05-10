@@ -387,7 +387,7 @@ export function WorkflowAutomationEditDialog({
             <i data-lucide="x"></i>
           </button>
         </div>
-        <div className="grid flex-1 gap-4 overflow-y-auto px-4 py-4 xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.35fr)]">
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
           <div className="grid content-start gap-4 min-w-0">
             <AccordionSection title="General setup" defaultOpen={true}>
               <div className="grid gap-1">
@@ -984,14 +984,12 @@ export function WorkflowAutomationEditDialog({
                 }}
               />
             </AccordionSection>
-          </div>
 
-          <div className="grid content-start gap-4 min-w-0">
             <div id="workflow-prompt-editor">
               <AccordionSection
                 title="Prompt Editor"
                 description="Edit the actual prompts Tandem sends for each workflow step. These objectives control what every node does at runtime."
-                defaultOpen={true}
+                defaultOpen={false}
               >
                 {workflowEditDraft.nodes.length ? (
                   <div className="grid gap-3">
