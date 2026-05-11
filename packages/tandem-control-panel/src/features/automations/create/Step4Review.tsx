@@ -2,6 +2,11 @@ import { useState } from "react";
 import { describeScheduleValue } from "../scheduleBuilder";
 import { renderMarkdownSafe } from "../../../lib/markdown";
 import { buildKnowledgeRolloutGuidance } from "../../planner/plannerShared";
+import {
+  executionProfileDescription,
+  executionProfileLabel,
+  type ExecutionProfile,
+} from "../AutomationsRunHelpers";
 
 function normalizeAllowedTools(raw: string[]) {
   const seen = new Set<string>();
@@ -29,6 +34,7 @@ function safeString(value: unknown) {
 }
 
 type ExecutionMode = "single" | "team" | "swarm";
+type WizardExecutionProfile = "" | ExecutionProfile;
 
 type Step4ReviewProps = {
   wizard: {
@@ -38,6 +44,7 @@ type Step4ReviewProps = {
     intervalSeconds: string;
     timezone: string;
     mode: ExecutionMode;
+    executionProfile: WizardExecutionProfile;
     maxAgents: string;
     modelProvider: string;
     modelId: string;
@@ -129,6 +136,23 @@ export function Step4Review({
       (planOperatorPreferences as any)?.maxParallelAgents ??
       (effectiveMode === "single" ? 1 : wizard.maxAgents)
   );
+  const effectiveExecutionProfile = String(
+    planPreview?.execution?.profile ||
+      planPreview?.execution_profile ||
+      planPreview?.executionProfile ||
+      (planOperatorPreferences as any)?.execution_profile ||
+      (planOperatorPreferences as any)?.executionProfile ||
+      wizard.executionProfile ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+  const effectiveExecutionProfileLabel = effectiveExecutionProfile
+    ? executionProfileLabel(effectiveExecutionProfile)
+    : "System default";
+  const effectiveExecutionProfileDescription = effectiveExecutionProfile
+    ? executionProfileDescription(effectiveExecutionProfile)
+    : "Falls back to the tenant default execution profile. If no tenant default is configured, Tandem runs as Guided.";
   const hasPlanPreview = !!planPreview;
   const effectiveModelProvider = String(
     hasPlanPreview
@@ -247,6 +271,15 @@ export function Step4Review({
                 ? ` · ${effectiveMaxParallel} agents`
                 : ""}
             </span>
+          </div>
+          <div className="grid gap-1">
+            <span className="text-xs uppercase tracking-wide text-slate-500">
+              Execution Profile
+            </span>
+            <span className="text-sm font-medium text-slate-200">
+              {effectiveExecutionProfileLabel}
+            </span>
+            <span className="text-xs text-slate-500">{effectiveExecutionProfileDescription}</span>
           </div>
         </div>
         {hasPlanPreview || effectiveModelProvider || effectiveModelId ? (

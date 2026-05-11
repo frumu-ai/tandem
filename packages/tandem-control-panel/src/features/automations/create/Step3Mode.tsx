@@ -1,8 +1,11 @@
 import { AnimatePresence, motion } from "motion/react";
 import { ProviderModelSelector } from "../../../components/ProviderModelSelector";
 import { EmptyState } from "../../../pages/ui";
+import type { ExecutionProfile } from "../AutomationsRunHelpers";
+import { ExecutionProfileToggle } from "../ExecutionProfileToggle";
 
 type ExecutionMode = "single" | "team" | "swarm";
+type WizardExecutionProfile = "" | ExecutionProfile;
 type WorkflowToolAccessMode = "all" | "custom";
 
 type ProviderOption = { id: string; models: string[] };
@@ -30,6 +33,8 @@ type Step3ModeProps = {
   executionModes: ExecutionModeInfo[];
   maxAgents: string;
   onMaxAgents: (v: string) => void;
+  executionProfile: WizardExecutionProfile;
+  onExecutionProfileChange: (v: WizardExecutionProfile) => void;
   workspaceRoot: string;
   onWorkspaceRootChange: (v: string) => void;
   providerOptions: ProviderOption[];
@@ -79,6 +84,8 @@ export function Step3Mode(props: Step3ModeProps) {
     executionModes,
     maxAgents,
     onMaxAgents,
+    executionProfile,
+    onExecutionProfileChange,
     workspaceRoot,
     onWorkspaceRootChange,
     providerOptions,
@@ -177,6 +184,21 @@ export function Step3Mode(props: Step3ModeProps) {
           </div>
         </div>
       ) : null}
+      <div className="grid gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 shadow-[0_0_24px_rgba(245,158,11,0.08)]">
+        <div className="grid gap-1">
+          <div className="text-xs uppercase tracking-wide text-amber-200/80">Execution Profile</div>
+          <div className="text-xs text-slate-300">
+            Choose how strictly Tandem validates this automation. If a workflow keeps failing on
+            artifact review or validator noise, use Guided or Lenient to keep recoverable work
+            moving.
+          </div>
+        </div>
+        <ExecutionProfileToggle
+          value={executionProfile}
+          onChange={onExecutionProfileChange}
+          clearable
+        />
+      </div>
       <div className="grid gap-2 rounded-xl border border-slate-700/50 bg-slate-900/30 p-3">
         <div className="text-xs uppercase tracking-wide text-slate-500">Execution Directory</div>
         <div className="grid gap-1">

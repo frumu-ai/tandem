@@ -11,9 +11,11 @@ import {
   buildDefaultKnowledgeOperatorPreferences,
   buildPlannerProviderOptions,
 } from "../../planner/plannerShared";
+import type { ExecutionProfile } from "../AutomationsRunHelpers";
 import type { NavigationLockState } from "../../../pages/pageTypes";
 
 type ExecutionMode = "single" | "team" | "swarm";
+type WizardExecutionProfile = "" | ExecutionProfile;
 type WizardStep = 1 | 2 | 3 | 4;
 type WorkflowToolAccessMode = "all" | "custom";
 
@@ -34,6 +36,7 @@ interface WizardState {
   cron: string;
   intervalSeconds: string;
   mode: ExecutionMode;
+  executionProfile: WizardExecutionProfile;
   maxAgents: string;
   routedSkill: string;
   routingConfidence: string;
@@ -229,6 +232,7 @@ function createDefaultWizardState(
     cron: defaultSchedule.cron,
     intervalSeconds: defaultSchedule.intervalSeconds,
     mode: AUTOMATION_WIZARD_CONFIG.defaults.mode,
+    executionProfile: "",
     maxAgents: AUTOMATION_WIZARD_CONFIG.defaults.maxAgents,
     routedSkill: "",
     routingConfidence: "",
@@ -350,16 +354,34 @@ function toSchedulePayload(wizard: WizardState) {
   return { type: "manual", timezone };
 }
 
-function planWithWizardTimezone(plan: any, wizard: WizardState) {
+function normalizeWizardExecutionProfile(value: unknown): ExecutionProfile | null {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "strict" || normalized === "guided" || normalized === "yolo") {
+    return normalized;
+  }
+  return null;
+}
+
+function planWithWizardSettings(plan: any, wizard: WizardState) {
+  if (!plan || typeof plan !== "object") return plan;
   const timezone = String(wizard.timezone || "").trim();
-  if (!timezone || !plan?.schedule || typeof plan.schedule !== "object") return plan;
-  return {
-    ...plan,
-    schedule: {
-      ...plan.schedule,
+  const executionProfile = normalizeWizardExecutionProfile(wizard.executionProfile);
+  const nextPlan = { ...plan };
+  if (timezone && nextPlan.schedule && typeof nextPlan.schedule === "object") {
+    nextPlan.schedule = {
+      ...nextPlan.schedule,
       timezone,
-    },
-  };
+    };
+  }
+  if (executionProfile) {
+    nextPlan.execution = {
+      ...(nextPlan.execution && typeof nextPlan.execution === "object" ? nextPlan.execution : {}),
+      profile: executionProfile,
+    };
+  }
+  return nextPlan;
 }
 
 function validateWorkspaceRootInput(raw: string) {
@@ -419,6 +441,8 @@ function buildOperatorPreferences(wizard: WizardState) {
     execution_mode: wizard.mode,
     max_parallel_agents: maxParallelAgents,
   };
+  const executionProfile = normalizeWizardExecutionProfile(wizard.executionProfile);
+  if (executionProfile) payload.execution_profile = executionProfile;
   if (String(wizard.modelProvider || "").trim())
     payload.model_provider = String(wizard.modelProvider).trim();
   if (String(wizard.modelId || "").trim()) payload.model_id = String(wizard.modelId).trim();
@@ -862,7 +886,7 @@ export function CreateWizard({
         (await compileMutation.mutateAsync().catch((error: unknown) => {
           throw error instanceof Error ? error : new Error(String(error));
         }));
-      const nextPlan = planWithWizardTimezone(preview?.plan || preview, wizard);
+      const nextPlan = planWithWizardSettings(preview?.plan || preview, wizard);
       if (!nextPlan) throw new Error("Workflow plan preview failed.");
       if (
         (overlapAnalysis?.requires_user_confirmation ||
@@ -1205,6 +1229,10 @@ export function CreateWizard({
               executionModes={AUTOMATION_WIZARD_CONFIG.executionModes}
               maxAgents={wizard.maxAgents}
               onMaxAgents={(v) => setWizard((s) => ({ ...s, maxAgents: v }))}
+              executionProfile={wizard.executionProfile}
+              onExecutionProfileChange={(executionProfile) =>
+                setWizard((s) => ({ ...s, executionProfile }))
+              }
               workspaceRoot={wizard.workspaceRoot}
               onWorkspaceRootChange={(v) => setWizard((s) => ({ ...s, workspaceRoot: v }))}
               providerOptions={providerOptions}
