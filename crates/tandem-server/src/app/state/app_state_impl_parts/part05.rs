@@ -395,6 +395,13 @@ impl AppState {
         update: impl FnOnce(&mut AutomationV2RunRecord),
     ) -> Option<AutomationV2RunRecord> {
         let mut guard = self.automation_v2_runs.write().await;
+        if !guard.contains_key(run_id) {
+            drop(guard);
+            let history =
+                load_automation_v2_run_history_shard(&self.automation_v2_runs_path, run_id).await?;
+            guard = self.automation_v2_runs.write().await;
+            guard.entry(run_id.to_string()).or_insert(history);
+        }
         let run = guard.get_mut(run_id)?;
         let previous_status = run.status.clone();
         update(run);

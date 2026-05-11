@@ -623,6 +623,37 @@ pub(crate) fn automation_requested_tools_for_node(
     resolve_automation_node_tool_envelope(node, workspace_root, raw, available_tool_names).tools
 }
 
+fn connector_source_tool_allowed_for_required_capability(
+    tool: &str,
+    capability_ids: &[String],
+) -> bool {
+    if tool == "write" || tool == "mcp_list" || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
+    {
+        return true;
+    }
+    capability_ids
+        .iter()
+        .any(|capability_id| match capability_id.as_str() {
+            "web_research" => tandem_core::tool_name_matches_profile(
+                tool,
+                tandem_core::ToolCapabilityProfile::WebResearch,
+            ),
+            "email_send" => tandem_core::tool_name_matches_profile(
+                tool,
+                tandem_core::ToolCapabilityProfile::EmailSend,
+            ),
+            "email_draft" => tandem_core::tool_name_matches_profile(
+                tool,
+                tandem_core::ToolCapabilityProfile::EmailDraft,
+            ),
+            "email_delivery" => tandem_core::tool_name_matches_profile(
+                tool,
+                tandem_core::ToolCapabilityProfile::EmailDelivery,
+            ),
+            _ => false,
+        })
+}
+
 pub(crate) fn resolve_automation_node_tool_envelope(
     node: &AutomationFlowNode,
     workspace_root: &str,
@@ -657,9 +688,7 @@ pub(crate) fn resolve_automation_node_tool_envelope(
     let before_policy = requested_tools.clone();
     if connector_source_node {
         requested_tools.retain(|tool| {
-            tool == "write"
-                || tool == "mcp_list"
-                || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
+            connector_source_tool_allowed_for_required_capability(tool, &capability_ids)
         });
     }
     if is_review_node {
@@ -679,8 +708,7 @@ pub(crate) fn resolve_automation_node_tool_envelope(
             reason: if is_review_node {
                 "review nodes are limited to read-only workspace inspection tools".to_string()
             } else if connector_source_node {
-                "connector source nodes are limited to concrete source tools and artifact writes"
-                    .to_string()
+                "connector source nodes are limited to concrete source tools, required delivery/research tools, and artifact writes".to_string()
             } else {
                 "tool removed by automation node tool policy".to_string()
             },

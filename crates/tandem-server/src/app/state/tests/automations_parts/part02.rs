@@ -35,6 +35,48 @@ async fn automation_v2_run_history_lists_archived_blocked_runs() {
 }
 
 #[tokio::test]
+async fn automation_v2_run_update_hydrates_history_only_run() {
+    let mut state = ready_test_state().await;
+    state.automation_v2_runs_path = tmp_resource_file("automation-history-update-runs");
+    let run = AutomationRunBuilder::new("run-history-update", "auto-history")
+        .status(AutomationRunStatus::Blocked)
+        .build();
+    {
+        let mut runs = state.automation_v2_runs.write().await;
+        runs.insert(run.run_id.clone(), run.clone());
+    }
+
+    let archived = state
+        .archive_stale_automation_v2_runs(0)
+        .await
+        .expect("archive stale runs");
+    assert_eq!(archived, 1);
+    assert!(state
+        .automation_v2_runs
+        .read()
+        .await
+        .get("run-history-update")
+        .is_none());
+
+    let updated = state
+        .update_automation_v2_run("run-history-update", |row| {
+            row.status = AutomationRunStatus::Cancelled;
+            row.detail = Some("cancelled from history".to_string());
+        })
+        .await
+        .expect("history-only run can be updated");
+
+    assert_eq!(updated.status, AutomationRunStatus::Cancelled);
+    assert_eq!(updated.detail.as_deref(), Some("cancelled from history"));
+    assert!(state
+        .automation_v2_runs
+        .read()
+        .await
+        .get("run-history-update")
+        .is_some());
+}
+
+#[tokio::test]
 async fn automation_run_requeue_increments_attempt_counter() {
     let workspace_root =
         std::env::temp_dir().join(format!("tandem-requeue-attempts-{}", uuid::Uuid::new_v4()));

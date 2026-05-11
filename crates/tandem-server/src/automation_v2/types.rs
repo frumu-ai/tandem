@@ -632,7 +632,7 @@ impl From<tandem_plan_compiler::api::ProjectedAutomationExecutionPolicy>
 }
 
 /// Effective profile precedence: explicit run override → workflow policy →
-/// tenant default (TANDEM_DEFAULT_EXECUTION_PROFILE env var) → system default (Strict).
+/// tenant default (TANDEM_DEFAULT_EXECUTION_PROFILE env var) → system default (Guided).
 pub fn resolve_effective_execution_profile(
     automation: &AutomationV2Spec,
     requested: Option<crate::automation_v2::execution_profile::ExecutionProfile>,
@@ -656,7 +656,7 @@ pub fn resolve_effective_execution_profile_with_tenant(
     requested
         .or(automation.execution.profile)
         .or(tenant_default)
-        .unwrap_or(crate::automation_v2::execution_profile::ExecutionProfile::Strict)
+        .unwrap_or(crate::automation_v2::execution_profile::ExecutionProfile::Guided)
 }
 
 impl AutomationV2Spec {
@@ -1305,11 +1305,11 @@ mod tests {
     }
 
     #[test]
-    fn resolver_with_tenant_default_falls_back_to_strict_when_all_unset() {
+    fn resolver_with_tenant_default_falls_back_to_guided_when_all_unset() {
         use crate::automation_v2::execution_profile::ExecutionProfile;
         let spec = empty_spec();
         let resolved = resolve_effective_execution_profile_with_tenant(&spec, None, None);
-        assert_eq!(resolved, ExecutionProfile::Strict);
+        assert_eq!(resolved, ExecutionProfile::Guided);
     }
 
     #[test]

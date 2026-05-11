@@ -499,6 +499,27 @@ export function WorkflowAutomationEditDialog({
             <AccordionSection title="Execution" defaultOpen={true}>
               <div className="grid gap-3">
                 <div className="grid gap-1">
+                  <label className="text-xs text-slate-400">Execution profile</label>
+                  <ExecutionProfileToggle
+                    value={workflowEditDraft.executionProfile || ""}
+                    clearable
+                    onChange={(next) =>
+                      setWorkflowEditDraft((current: any) =>
+                        current ? { ...current, executionProfile: next } : current
+                      )
+                    }
+                  />
+                  <div className="text-xs text-slate-500">
+                    {workflowEditDraft.executionProfile === "yolo"
+                      ? "Non-critical validation failures continue as experimental; spend caps and approvals still enforced."
+                      : workflowEditDraft.executionProfile === "guided"
+                        ? "Non-critical validation failures become warnings; critical failures still block."
+                        : workflowEditDraft.executionProfile === "strict"
+                          ? "All validators enforced."
+                          : "System default is selected. Guided is the fallback when no tenant default is set; use Lenient when recoverable checks are still blocking runs."}
+                  </div>
+                </div>
+                <div className="grid gap-1">
                   <label className="text-xs text-slate-400">Schedule</label>
                   <ScheduleBuilder
                     value={{
@@ -530,27 +551,6 @@ export function WorkflowAutomationEditDialog({
                   }
                   hint="Use the timezone that matches when this workflow should fire."
                 />
-              </div>
-              <div className="grid gap-1">
-                <label className="text-xs text-slate-400">Execution profile</label>
-                <ExecutionProfileToggle
-                  value={workflowEditDraft.executionProfile || ""}
-                  clearable
-                  onChange={(next) =>
-                    setWorkflowEditDraft((current: any) =>
-                      current ? { ...current, executionProfile: next } : current
-                    )
-                  }
-                />
-                <div className="text-xs text-slate-500">
-                  {workflowEditDraft.executionProfile === "yolo"
-                    ? "Non-critical validation failures continue as experimental; spend caps and approvals still enforced."
-                    : workflowEditDraft.executionProfile === "guided"
-                      ? "Non-critical validation failures become warnings; critical failures still block."
-                      : workflowEditDraft.executionProfile === "strict"
-                        ? "All validators enforced."
-                        : "Hover any dot for details."}
-                </div>
               </div>
               <div className="grid gap-2">
                 <label className="text-xs text-slate-400">Agent type</label>

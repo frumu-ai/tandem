@@ -630,7 +630,165 @@ fn relax_yolo_review_output(
         );
         summary.insert(
             "reason".to_string(),
-            json!("YOLO execution profile accepted this review decision as advisory."),
+            json!("Lenient execution profile accepted this review decision as advisory."),
+        );
+    }
+
+    true
+}
+
+fn yolo_relaxable_blocker_category(category: &str) -> bool {
+    matches!(
+        category,
+        "tool_resolution_failed"
+            | "repair_budget_exhausted"
+            | "provider_connect_timeout"
+            | "provider_server_error"
+            | "stale_no_provider_activity"
+            | "execution_error"
+    )
+}
+
+fn yolo_safety_blocker_category(category: &str) -> bool {
+    matches!(
+        category,
+        "provider_auth"
+            | "unauthorized_workspace"
+            | "secret_access_denied"
+            | "destructive_action_requires_approval"
+            | "external_publish_requires_approval"
+            | "tenant_policy_denied"
+            | "tool_unauthorized"
+            | "budget_exceeded"
+            | "kill_switch_engaged"
+            | "engine_lease_expired"
+            | "invalid_api_token"
+            | "deterministic_verification_failed"
+            | "unsafe_raw_write_rejected"
+            | "placeholder_overwrite_rejected"
+    )
+}
+
+fn relax_yolo_non_safety_blocker_output(
+    output: &mut Value,
+    profile: crate::automation_v2::execution_profile::ExecutionProfile,
+) -> bool {
+    if profile != crate::automation_v2::execution_profile::ExecutionProfile::Yolo {
+        return false;
+    }
+
+    let status = output
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !matches!(
+        status.as_str(),
+        "blocked" | "needs_repair" | "verify_failed" | "failed"
+    ) {
+        return false;
+    }
+
+    // Explicit human/approval rejections are handled by the review-specific
+    // relaxer above. Do not silently override non-review safety decisions here.
+    if output.get("approved").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+
+    let category = output
+        .get("blocker_category")
+        .or_else(|| output.pointer("/artifact_validation/blocking_classification"))
+        .or_else(|| output.get("failure_kind"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if yolo_safety_blocker_category(&category) || !yolo_relaxable_blocker_category(&category) {
+        return false;
+    }
+
+    let object = match output.as_object_mut() {
+        Some(object) => object,
+        None => return false,
+    };
+    let original_status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let original_reason = object
+        .get("blocked_reason")
+        .or_else(|| object.get("reason"))
+        .or_else(|| object.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    object.insert("status".to_string(), json!("completed"));
+    object.insert("failure_kind".to_string(), Value::Null);
+    object.insert("blocked_reason".to_string(), Value::Null);
+    object.insert("yolo_non_safety_blocker_relaxed".to_string(), json!(true));
+    object.insert("original_blocker_category".to_string(), json!(category));
+    if let Some(status) = original_status.clone() {
+        object.insert("original_status".to_string(), json!(status));
+    }
+    if let Some(reason) = &original_reason {
+        object.insert("yolo_relaxed_reason".to_string(), json!(reason));
+    }
+    object.entry("content".to_string()).or_insert_with(|| {
+        json!({
+            "status": "completed",
+            "experimental": true,
+            "limitations": [
+                "Lenient execution accepted this node with degraded evidence because a non-safety blocker prevented a normal artifact."
+            ]
+        })
+    });
+
+    let artifact_validation = object
+        .entry("artifact_validation".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(validation) = artifact_validation.as_object_mut() {
+        validation.insert("execution_profile".to_string(), json!("yolo"));
+        validation.insert("effective_outcome".to_string(), json!("experimental"));
+        validation.insert("original_validator_outcome".to_string(), json!("blocked"));
+        validation.insert("experimental".to_string(), json!(true));
+        validation.insert("warning_count".to_string(), json!(1));
+        validation.insert(
+            "warning_requirements".to_string(),
+            json!(["yolo_non_safety_blocker_relaxed"]),
+        );
+        validation.insert(
+            "relaxed_validator_classes".to_string(),
+            json!([{
+                "class": "validator_kind_specific_soft_check",
+                "detail": "non-safety blocker accepted as degraded output under yolo profile",
+                "original_outcome": "blocked",
+                "effective_outcome": "experimental"
+            }]),
+        );
+        if let Some(status) = original_status {
+            validation.insert("original_status".to_string(), json!(status));
+        }
+        if let Some(reason) = original_reason.clone() {
+            validation.insert("original_blocked_reason".to_string(), json!(reason));
+        }
+    }
+
+    let validator_summary = object
+        .entry("validator_summary".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(summary) = validator_summary.as_object_mut() {
+        summary.insert("outcome".to_string(), json!("experimental"));
+        summary.insert("warning_count".to_string(), json!(1));
+        summary.insert(
+            "warning_requirements".to_string(),
+            json!(["yolo_non_safety_blocker_relaxed"]),
+        );
+        summary.insert(
+            "reason".to_string(),
+            json!("Lenient execution profile accepted this non-safety blocker as degraded output."),
         );
     }
 
@@ -1361,7 +1519,7 @@ pub async fn run_automation_v2_run(
                         // artifact_validation AND downgrade the executor's
                         // blocking signals so the run continues.
                         // - Guided: status -> completed_with_warnings.
-                        // - YOLO:   status -> completed (with experimental).
+                        // - Lenient: status -> completed (with experimental).
                         // Strict, critical-class outputs, and outputs whose
                         // unmet_requirements include a not-yet-classified
                         // string are returned untouched. See
@@ -1386,6 +1544,10 @@ pub async fn run_automation_v2_run(
                             &mut output,
                             row.effective_execution_profile,
                             validator_kind,
+                        );
+                        relax_yolo_non_safety_blocker_output(
+                            &mut output,
+                            row.effective_execution_profile,
                         );
                         // Experimental-input propagation: if any upstream
                         // dependency of this node already produced an

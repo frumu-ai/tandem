@@ -305,6 +305,61 @@ fn yolo_review_relaxation_does_not_affect_strict_review_rejections() {
 }
 
 #[test]
+fn yolo_relaxes_tool_resolution_failure_into_experimental_completion() {
+    let node = &test_automation().flow.nodes[0];
+    let mut output = build_node_execution_error_output_with_category(
+        node,
+        "required automation capabilities were not offered after MCP/tool sync: web_research",
+        false,
+        "tool_resolution_failed",
+    );
+
+    let relaxed = relax_yolo_non_safety_blocker_output(
+        &mut output,
+        crate::automation_v2::execution_profile::ExecutionProfile::Yolo,
+    );
+
+    assert!(relaxed);
+    assert_eq!(
+        output.get("status").and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        output
+            .pointer("/artifact_validation/effective_outcome")
+            .and_then(Value::as_str),
+        Some("experimental")
+    );
+    assert_eq!(
+        output
+            .pointer("/artifact_validation/relaxed_validator_classes/0/class")
+            .and_then(Value::as_str),
+        Some("validator_kind_specific_soft_check")
+    );
+    assert!(output.get("content").is_some());
+}
+
+#[test]
+fn yolo_does_not_relax_safety_blockers() {
+    let mut output = json!({
+        "status": "blocked",
+        "blocker_category": "tenant_policy_denied",
+        "blocked_reason": "tenant policy denied this tool"
+    });
+
+    let relaxed = relax_yolo_non_safety_blocker_output(
+        &mut output,
+        crate::automation_v2::execution_profile::ExecutionProfile::Yolo,
+    );
+
+    assert!(!relaxed);
+    assert_eq!(
+        output.get("status").and_then(Value::as_str),
+        Some("blocked")
+    );
+}
+
+#[test]
 fn promote_materialized_output_completes_missing_output_repairs() {
     let node = crate::automation_v2::types::AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

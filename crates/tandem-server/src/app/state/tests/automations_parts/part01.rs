@@ -1658,7 +1658,7 @@ fn collect_inputs_prompt_requires_reading_before_writing() {
 }
 
 #[tokio::test]
-async fn create_automation_v2_run_defaults_effective_profile_to_strict() {
+async fn create_automation_v2_run_defaults_effective_profile_to_guided() {
     use crate::automation_v2::execution_profile::ExecutionProfile;
     let root = std::env::temp_dir().join(format!(
         "tandem-execution-profile-default-{}",
@@ -1667,6 +1667,7 @@ async fn create_automation_v2_run_defaults_effective_profile_to_strict() {
     std::fs::create_dir_all(&root).expect("state root");
     let mut state = test_state_with_path(root.join("shared.json"));
     state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_v2_runs_path = root.join("automation_v2_runs.json");
     state.automation_governance_path = root.join("automation_governance.json");
     let automation = AutomationSpecBuilder::new("automation-profile-default")
         .name("Profile default")
@@ -1679,7 +1680,7 @@ async fn create_automation_v2_run_defaults_effective_profile_to_strict() {
         .create_automation_v2_run(&automation, "manual")
         .await
         .expect("create run");
-    assert_eq!(run.effective_execution_profile, ExecutionProfile::Strict);
+    assert_eq!(run.effective_execution_profile, ExecutionProfile::Guided);
     assert!(run.requested_execution_profile.is_none());
 }
 
@@ -1693,6 +1694,7 @@ async fn create_automation_v2_run_with_profile_uses_run_override() {
     std::fs::create_dir_all(&root).expect("state root");
     let mut state = test_state_with_path(root.join("shared.json"));
     state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_v2_runs_path = root.join("automation_v2_runs.json");
     state.automation_governance_path = root.join("automation_governance.json");
     let automation = AutomationSpecBuilder::new("automation-profile-override")
         .name("Profile override")
@@ -1723,6 +1725,7 @@ async fn create_automation_v2_run_inherits_workflow_profile_when_no_override() {
     std::fs::create_dir_all(&root).expect("state root");
     let mut state = test_state_with_path(root.join("shared.json"));
     state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_v2_runs_path = root.join("automation_v2_runs.json");
     state.automation_governance_path = root.join("automation_governance.json");
     let automation = AutomationSpecBuilder::new("automation-profile-inherit")
         .name("Profile inherit")
@@ -1751,6 +1754,7 @@ async fn create_automation_v2_run_with_profile_stamps_snapshot_with_effective() 
     std::fs::create_dir_all(&root).expect("state root");
     let mut state = test_state_with_path(root.join("shared.json"));
     state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_v2_runs_path = root.join("automation_v2_runs.json");
     state.automation_governance_path = root.join("automation_governance.json");
     let automation = AutomationSpecBuilder::new("automation-profile-snapshot")
         .name("Profile snapshot")
@@ -1760,8 +1764,8 @@ async fn create_automation_v2_run_with_profile_stamps_snapshot_with_effective() 
         .put_automation_v2(automation.clone())
         .await
         .expect("persist automation");
-    // Run-level override of YOLO on a Strict-saved automation. The snapshot
-    // stored on the run must carry profile=YOLO so downstream validation
+    // Run-level override of Lenient (`yolo` wire value) on a Strict-saved automation. The snapshot
+    // stored on the run must carry profile=Yolo so downstream validation
     // logic that reads automation.execution.profile (e.g. the repair-budget
     // multiplier) honors the override.
     let run = state
@@ -1791,6 +1795,7 @@ async fn create_automation_v2_dry_run_with_profile_persists_override() {
     std::fs::create_dir_all(&root).expect("state root");
     let mut state = test_state_with_path(root.join("shared.json"));
     state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_v2_runs_path = root.join("automation_v2_runs.json");
     state.automation_governance_path = root.join("automation_governance.json");
     let automation = AutomationSpecBuilder::new("automation-profile-dry")
         .name("Profile dry")

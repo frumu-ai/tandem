@@ -345,8 +345,8 @@ pub fn parse_execution_profile_str(raw: &str) -> Option<ExecutionProfile> {
 /// (operators get safe Strict fallback rather than a panic on typos).
 ///
 /// Run-creation paths consult this before falling back to the system
-/// default of Strict, so the precedence chain is:
-///   run override → workflow policy → tenant default → Strict.
+/// default of Guided, so the precedence chain is:
+///   run override → workflow policy → tenant default → Guided.
 pub fn tenant_default_execution_profile_from_env() -> Option<ExecutionProfile> {
     std::env::var("TANDEM_DEFAULT_EXECUTION_PROFILE")
         .ok()
@@ -395,7 +395,7 @@ pub fn parse_validator_class_list(raw: &str) -> Vec<ValidatorClass> {
 /// Operators set this to insist that specific validator classes always
 /// block (e.g. `missing_required_artifact_path,repair_budget_exhausted`)
 /// while still benefiting from the rest of the relaxation set under
-/// Guided/YOLO. Empty/unset returns an empty Vec — no classes are
+/// Guided/Lenient. Empty/unset returns an empty Vec — no classes are
 /// denied beyond the always-critical hard set.
 pub fn tenant_relaxation_denylist_from_env() -> Vec<ValidatorClass> {
     std::env::var("TANDEM_RELAXATION_DENYLIST")
@@ -405,12 +405,12 @@ pub fn tenant_relaxation_denylist_from_env() -> Vec<ValidatorClass> {
         .unwrap_or_default()
 }
 
-/// Human-applied accept/reject signal on a relaxed (Guided/YOLO) artifact.
+/// Human-applied accept/reject signal on a relaxed (Guided/Lenient) artifact.
 ///
 /// Together with `relaxed_validator_classes`, this is the input to the
 /// graduation loop: classes whose accept-rate is high enough over a rolling
 /// window can be promoted from "experimental" to "supported", or moved
-/// from YOLO into Guided. `Unmarked` is the default — it represents
+/// from Lenient into Guided. `Unmarked` is the default — it represents
 /// "no human has reviewed this yet" rather than a neutral verdict, and
 /// must not be confused with `Accepted`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -679,7 +679,7 @@ pub fn classify_unmet_requirement(raw: &str) -> Option<ValidatorClass> {
 /// continues:
 ///
 /// - `output["status"]` becomes `completed_with_warnings` (Guided) or
-///   `completed` (YOLO; experimental-flagged via `artifact_validation`).
+///   `completed` (Lenient; experimental-flagged via `artifact_validation`).
 /// - `output["failure_kind"]` is cleared if it was validation-related.
 /// - `output["blocked_reason"]` is cleared.
 /// - `artifact_validation.warning_count` is set to the count of relaxed

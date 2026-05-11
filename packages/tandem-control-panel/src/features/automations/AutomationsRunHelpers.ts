@@ -19,14 +19,14 @@ import {
 export type ExecutionProfile = "strict" | "guided" | "yolo";
 
 export function executionProfileLabel(value?: string | null): string {
-  if (value === "yolo") return "YOLO";
+  if (value === "yolo") return "Lenient";
   if (value === "guided") return "Guided";
   return "Strict";
 }
 
 export function executionProfileDescription(value?: string | null): string {
   if (value === "yolo") {
-    return "Exploratory run. Runtime logging, receipts, spend caps, and approvals remain active.";
+    return "Lenient experimental run. Runtime logging, receipts, spend caps, and approvals remain active.";
   }
   if (value === "guided") {
     return "Assisted iteration. Non-critical validation failures become warnings; critical failures still block.";
@@ -66,9 +66,7 @@ export function artifactValidationIsExperimental(validation: any): boolean {
   );
 }
 
-export function artifactValidationRelaxedClasses(
-  validation: any
-): Array<{
+export function artifactValidationRelaxedClasses(validation: any): Array<{
   class: string;
   detail?: string;
   original_outcome?: string;

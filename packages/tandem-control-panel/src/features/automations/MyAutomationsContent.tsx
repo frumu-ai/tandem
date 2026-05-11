@@ -360,6 +360,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
               <ExecutionProfileToggle
                 size="sm"
                 value=""
+                showGuidance={false}
                 disabled={!id || runNowV2Mutation.isPending}
                 pendingValue={
                   runNowV2Mutation.isPending &&

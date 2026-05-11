@@ -67,7 +67,7 @@ interface WorkflowEditDraft {
   workspaceRoot: string;
   executionMode: ExecutionMode;
   maxParallelAgents: string;
-  /** Saved execution profile ("strict" | "guided" | "yolo"). Empty string = inherit system default (Strict). */
+  /** Saved execution profile ("strict" | "guided" | "yolo"). Empty string = inherit system default (Guided). */
   executionProfile: "" | "strict" | "guided" | "yolo";
   modelProvider: string;
   modelId: string;

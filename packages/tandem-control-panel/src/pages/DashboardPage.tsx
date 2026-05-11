@@ -400,7 +400,7 @@ export function DashboardPage(props: AppPageProps) {
 
       <PanelCard
         title="Graduation review"
-        subtitle="Per-class accept rate for relaxed Guided/YOLO outputs."
+        subtitle="Per-class accept rate for relaxed Guided/Lenient outputs."
       >
         <GraduationSummaryPanel client={client} />
       </PanelCard>

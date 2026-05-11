@@ -1071,7 +1071,7 @@ export function AutomationComposerPanel({
                   ? "Non-critical validation becomes warnings; critical failures still block."
                   : executionProfile === "strict"
                     ? "All validators enforced."
-                    : "Falls back to the tenant default (or Strict if none set). Hover any segment for details."}
+                    : "System default is selected. Guided is the fallback when no tenant default is set; use Lenient if recoverable validation or artifact-review checks still block this workflow."}
             </div>
           </div>
         </div>

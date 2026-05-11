@@ -772,6 +772,87 @@ fn external_research_prewrite_does_not_require_workspace_inspection_from_offered
 }
 
 #[test]
+fn connector_scoped_nodes_keep_required_web_research_tools() {
+    let mut node = bare_node();
+    node.node_id = "draft_productivity_signals_brief".to_string();
+    node.objective =
+        "Synthesize Reddit findings and supporting web citations into one concise brief."
+            .to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "brief".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+        enforcement: Some(crate::AutomationOutputEnforcement {
+            validation_profile: Some("external_research".to_string()),
+            required_tools: vec!["websearch".to_string()],
+            required_tool_calls: Vec::new(),
+            required_evidence: vec!["external_sources".to_string()],
+            required_sections: vec!["citations".to_string()],
+            prewrite_gates: vec!["successful_web_research".to_string()],
+            retry_on_missing: Vec::new(),
+            terminal_on: Vec::new(),
+            repair_budget: Some(2),
+            session_text_recovery: None,
+        }),
+        schema: None,
+        summary_guidance: None,
+    });
+    let available_tool_names = std::collections::HashSet::from([
+        "mcp_list".to_string(),
+        "mcp.reddit_gmail.reddit_search_across_subreddits".to_string(),
+        "websearch".to_string(),
+        "webfetch".to_string(),
+        "write".to_string(),
+    ]);
+
+    let requested = automation_requested_tools_for_node(
+        &node,
+        "/tmp",
+        vec!["mcp.reddit_gmail.*".to_string(), "write".to_string()],
+        &available_tool_names,
+    );
+
+    assert!(
+        requested.iter().any(|tool| tool == "websearch"),
+        "required websearch must not be dropped by connector-source policy: {requested:?}"
+    );
+    assert!(
+        requested.iter().any(|tool| tool == "webfetch"),
+        "required webfetch must not be dropped by connector-source policy: {requested:?}"
+    );
+}
+
+#[test]
+fn connector_scoped_nodes_keep_required_email_delivery_tools() {
+    let mut node = email_delivery_node();
+    node.node_id = "send_productivity_signals_brief".to_string();
+    node.objective =
+        "Use Reddit context and send the finalized brief to recipient@example.com.".to_string();
+    let available_tool_names = std::collections::HashSet::from([
+        "mcp_list".to_string(),
+        "mcp.reddit_gmail.reddit_search_across_subreddits".to_string(),
+        "send_email".to_string(),
+        "create_email_draft".to_string(),
+        "write".to_string(),
+    ]);
+
+    let requested = automation_requested_tools_for_node(
+        &node,
+        "/tmp",
+        vec!["mcp.reddit_gmail.*".to_string(), "write".to_string()],
+        &available_tool_names,
+    );
+
+    assert!(
+        requested.iter().any(|tool| tool == "send_email"),
+        "required email send tool must not be dropped by connector-source policy: {requested:?}"
+    );
+    assert!(
+        requested.iter().any(|tool| tool == "create_email_draft"),
+        "required email draft tool must not be dropped by connector-source policy: {requested:?}"
+    );
+}
+
+#[test]
 fn bug_monitor_downstream_structured_json_nodes_reuse_upstream_source_evidence() {
     let mut inspection = bare_node();
     inspection.node_id = "inspect_failure_report".to_string();
