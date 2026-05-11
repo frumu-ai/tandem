@@ -65,6 +65,86 @@ pub(crate) fn automation_tool_result_output_payload(result: Option<&Value>) -> O
     }
 }
 
+pub(crate) fn automation_tool_result_failure_reason(result: Option<&Value>) -> Option<String> {
+    fn failure_from_value(value: &Value) -> Option<String> {
+        match value {
+            Value::Object(map) => {
+                let status_failed = map
+                    .get("status")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|status| status >= 400)
+                    || map
+                        .get("status_code")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|status| status >= 400);
+                let named_error = map
+                    .get("name")
+                    .or_else(|| map.get("type"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.to_ascii_lowercase().contains("error"));
+                let coded_error = map
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .is_some_and(|code| code.to_ascii_lowercase().contains("error"));
+                let explicit_success_false = map.get("success").and_then(Value::as_bool)
+                    == Some(false)
+                    || map.get("successful").and_then(Value::as_bool) == Some(false)
+                    || map.get("successfull").and_then(Value::as_bool) == Some(false);
+
+                if status_failed || named_error || coded_error || explicit_success_false {
+                    let message = map
+                        .get("message")
+                        .or_else(|| map.get("error"))
+                        .or_else(|| map.get("body"))
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("tool result reported an API or connector error");
+                    return Some(message.to_string());
+                }
+
+                if let Some(body) = map.get("body").and_then(Value::as_str) {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(body) {
+                        if let Some(reason) = failure_from_value(&parsed) {
+                            return Some(reason);
+                        }
+                    }
+                }
+
+                for nested in map.values() {
+                    if let Some(reason) = failure_from_value(nested) {
+                        return Some(reason);
+                    }
+                }
+                None
+            }
+            Value::Array(rows) => rows.iter().find_map(failure_from_value),
+            Value::String(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                    return failure_from_value(&parsed);
+                }
+                let lowered = trimmed.to_ascii_lowercase();
+                if lowered.contains("apiresponseerror")
+                    || (lowered.contains("validation_error") && lowered.contains("\"status\":400"))
+                    || lowered.contains("request failed (500)")
+                    || lowered.contains("request failed (400)")
+                {
+                    return Some(trimmed.chars().take(500).collect());
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    let payload = automation_tool_result_output_payload(result)?;
+    failure_from_value(&payload)
+}
+
 pub(crate) fn extract_session_text_output(session: &Session) -> String {
     session
         .messages
@@ -404,4 +484,32 @@ pub(crate) fn detect_glob_loop(tool_telemetry: &Value) -> Option<String> {
         ));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn detects_serialized_connector_api_error_result() {
+        let result = json!(
+            "{\"name\":\"APIResponseError\",\"code\":\"validation_error\",\"status\":400,\"body\":\"{\\\"message\\\":\\\"Invalid select value\\\"}\"}"
+        );
+
+        let reason = automation_tool_result_failure_reason(Some(&result))
+            .expect("connector API errors should not count as successful tool results");
+
+        assert!(reason.contains("Invalid select value"));
+    }
+
+    #[test]
+    fn leaves_successful_tool_result_unflagged() {
+        let result = json!({
+            "object": "page",
+            "url": "https://www.notion.so/example",
+        });
+
+        assert!(automation_tool_result_failure_reason(Some(&result)).is_none());
+    }
 }

@@ -69,6 +69,8 @@ pub(crate) fn summarize_automation_tool_activity(
     let mut email_delivery_attempted = false;
     let mut email_delivery_succeeded = false;
     let mut latest_email_delivery_failure = None::<String>;
+    let mut failed_tools = Vec::<String>::new();
+    let mut latest_tool_failure = None::<Value>;
     for message in &session.messages {
         for part in &message.parts {
             let MessagePart::ToolInvocation {
@@ -90,9 +92,15 @@ pub(crate) fn summarize_automation_tool_activity(
                 "websearch" | "webfetch" | "webfetch_html"
             );
             let is_email_tool = automation_tool_name_is_email_delivery(&normalized);
-            if error.as_ref().is_some_and(|value| !value.trim().is_empty()) {
+            let result_failure = automation_tool_result_failure_reason(result.as_ref());
+            if error.as_ref().is_some_and(|value| !value.trim().is_empty())
+                || result_failure.is_some()
+            {
                 if !executed_tools.iter().any(|entry| entry == &normalized) {
                     executed_tools.push(normalized.clone());
+                }
+                if !failed_tools.iter().any(|entry| entry == &normalized) {
+                    failed_tools.push(normalized.clone());
                 }
                 let next_count = counts
                     .get(&normalized)
@@ -111,7 +119,12 @@ pub(crate) fn summarize_automation_tool_activity(
                         .as_deref()
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
-                        .map(normalize_web_research_failure_label);
+                        .map(normalize_web_research_failure_label)
+                        .or_else(|| {
+                            result_failure
+                                .as_deref()
+                                .map(normalize_web_research_failure_label)
+                        });
                 }
                 if is_email_tool {
                     email_delivery_attempted = true;
@@ -119,8 +132,18 @@ pub(crate) fn summarize_automation_tool_activity(
                         .as_deref()
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
-                        .map(str::to_string);
+                        .map(str::to_string)
+                        .or_else(|| result_failure.clone());
                 }
+                latest_tool_failure = Some(json!({
+                    "tool": normalized,
+                    "reason": error
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .or(result_failure),
+                }));
                 continue;
             }
             if !executed_tools.iter().any(|entry| entry == &normalized) {
@@ -345,6 +368,8 @@ pub(crate) fn summarize_automation_tool_activity(
     json!({
         "requested_tools": requested_tools,
         "executed_tools": executed_tools,
+        "failed_tools": failed_tools,
+        "latest_tool_failure": latest_tool_failure,
         "tool_call_counts": counts,
         "workspace_inspection_used": workspace_inspection_used,
         "web_research_used": web_research_used,
@@ -441,10 +466,23 @@ pub(crate) fn collect_automation_attempt_receipt_events(
             event_type: "tool_invoked".to_string(),
             payload: event_base.clone(),
         });
-        if error.as_ref().is_some_and(|value| !value.trim().is_empty()) {
+        let result_failure = automation_tool_result_failure_reason(result.as_ref());
+        if error.as_ref().is_some_and(|value| !value.trim().is_empty()) || result_failure.is_some()
+        {
+            let mut failed_payload = event_base;
+            if failed_payload.get("error").is_none_or(Value::is_null) {
+                if let Some(object) = failed_payload.as_object_mut() {
+                    object.insert(
+                        "error".to_string(),
+                        json!(result_failure.unwrap_or_else(|| {
+                            "tool result reported a connector/API error".to_string()
+                        })),
+                    );
+                }
+            }
             events.push(AutomationAttemptReceiptEventInput {
                 event_type: "tool_failed".to_string(),
-                payload: event_base,
+                payload: failed_payload,
             });
         } else {
             events.push(AutomationAttemptReceiptEventInput {

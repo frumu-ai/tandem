@@ -129,6 +129,7 @@ fn automation_structured_handoff_source_material(session: &Session) -> Option<Va
             };
             if !tool.eq_ignore_ascii_case("read")
                 || error.as_ref().is_some_and(|value| !value.trim().is_empty())
+                || automation_tool_result_failure_reason(result.as_ref()).is_some()
             {
                 continue;
             }
@@ -793,14 +794,21 @@ pub(crate) fn build_automation_attempt_evidence(
             if !attempted_tools.iter().any(|value| value == &normalized) {
                 attempted_tools.push(normalized.clone());
             }
-            if error.as_ref().is_some_and(|value| !value.trim().is_empty()) {
+            let result_failure = automation_tool_result_failure_reason(result.as_ref());
+            if error.as_ref().is_some_and(|value| !value.trim().is_empty())
+                || result_failure.is_some()
+            {
                 if !failed_tools.iter().any(|value| value == &normalized) {
                     failed_tools.push(normalized.clone());
                 }
                 normalized_failures.insert(
                     normalized.clone(),
                     json!(normalize_web_research_failure_label(
-                        error.as_deref().unwrap_or_default()
+                        error
+                            .as_deref()
+                            .filter(|value| !value.trim().is_empty())
+                            .or(result_failure.as_deref())
+                            .unwrap_or_default()
                     )),
                 );
                 continue;

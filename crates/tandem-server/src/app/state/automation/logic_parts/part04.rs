@@ -721,6 +721,51 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         }
         let required_tools_for_node = enforcement.required_tools.clone();
         let has_required_tools = !required_tools_for_node.is_empty();
+        let failed_tools_for_node = tool_telemetry
+            .get("failed_tools")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(|tool| tool.trim().to_ascii_lowercase().replace('-', "_"))
+                    .filter(|tool| !tool.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let failed_required_tools = required_tools_for_node
+            .iter()
+            .map(|tool| tool.trim().to_ascii_lowercase().replace('-', "_"))
+            .filter(|required| {
+                failed_tools_for_node.iter().any(|failed| {
+                    failed == required
+                        || required
+                            .strip_suffix(".*")
+                            .is_some_and(|prefix| failed.starts_with(prefix))
+                })
+            })
+            .collect::<Vec<_>>();
+        if !failed_required_tools.is_empty() {
+            unmet_requirements.push("mcp_required_tool_failed".to_string());
+            accepted_output = None;
+            let failure_detail = tool_telemetry
+                .get("latest_tool_failure")
+                .and_then(|value| value.get("reason"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("a required connector/tool call returned an error result");
+            let reason = format!(
+                "required tool call failed for {}: {}",
+                failed_required_tools.join(", "),
+                failure_detail
+            );
+            if semantic_block_reason.is_none() {
+                semantic_block_reason = Some(reason.clone());
+            }
+            if rejected_reason.is_none() {
+                rejected_reason = Some(reason);
+            }
+        }
         let validation_profile = enforcement
             .validation_profile
             .as_deref()

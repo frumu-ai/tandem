@@ -786,6 +786,20 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     {
         sections.push(concrete_source_coverage);
     }
+    let outbound_mcp_tools = automation_node_concrete_mcp_tool_allowlist(node)
+        .into_iter()
+        .filter(|tool| !tool.ends_with(".*"))
+        .collect::<Vec<_>>();
+    if automation_node_is_outbound_action(node) && !outbound_mcp_tools.is_empty() {
+        sections.push(format!(
+            "Connector Action Rules:\n- This node performs an external connector action with: {}.\n- For destination systems with schemas or select/status options, inspect the existing destination or upstream schema evidence before writing.\n- Use only values that are already allowed by the destination schema; do not invent new select/status option labels.\n- If an action tool returns an API error payload, validation_error, 4xx/5xx status, or `success: false`, treat the write as failed. Do not report `status: completed` until the connector action succeeds or a follow-up fetch proves the destination contains the intended update.",
+            outbound_mcp_tools
+                .iter()
+                .map(|tool| format!("`{tool}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if node.output_contract.is_some() {
         let enforcement = super::enforcement::automation_node_output_enforcement(node);
         let requires_local_source_reads = enforcement

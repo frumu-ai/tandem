@@ -735,7 +735,8 @@ pub(crate) fn detect_automation_node_failure_kind(
         && (has_unmet("no_concrete_reads")
             || has_unmet("concrete_read_required")
             || has_unmet("required_source_paths_not_read")
-            || has_unmet("missing_successful_web_research"));
+            || has_unmet("missing_successful_web_research")
+            || has_unmet("mcp_required_tool_failed"));
     let editorial_requirements_blocked = has_unmet("editorial_substance_missing")
         || has_unmet("markdown_structure_missing")
         || has_unmet("upstream_evidence_not_synthesized")
@@ -817,6 +818,9 @@ pub(crate) fn detect_automation_node_failure_kind(
         }
         if has_unmet("mcp_connector_source_missing") {
             return Some("required_tool_unused_mcp_connector".to_string());
+        }
+        if has_unmet("mcp_required_tool_failed") {
+            return Some("mcp_required_tool_failed".to_string());
         }
         if has_unmet("no_concrete_reads")
             || has_unmet("concrete_read_required")
