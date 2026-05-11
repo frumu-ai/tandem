@@ -101,6 +101,89 @@ fn test_run_with_output(output: Value) -> crate::automation_v2::types::Automatio
     }
 }
 
+fn test_node(
+    node_id: &str,
+    depends_on: Vec<&str>,
+) -> crate::automation_v2::types::AutomationFlowNode {
+    crate::automation_v2::types::AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: node_id.to_string(),
+        agent_id: format!("agent-{node_id}"),
+        objective: node_id.to_string(),
+        depends_on: depends_on.into_iter().map(str::to_string).collect(),
+        input_refs: Vec::new(),
+        output_contract: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    }
+}
+
+#[test]
+fn approval_rejection_rollback_prefers_derived_review_dependency() {
+    let mut automation = test_automation();
+    automation.flow.nodes = vec![
+        test_node("gather_reddit_signals", vec![]),
+        test_node("gather_tandem_reference", vec![]),
+        test_node("gather_web_sources", vec![]),
+        test_node("inspect_notion_row", vec![]),
+        test_node(
+            "synthesize_report",
+            vec![
+                "gather_reddit_signals",
+                "gather_tandem_reference",
+                "gather_web_sources",
+                "inspect_notion_row",
+            ],
+        ),
+        test_node(
+            "validate_report",
+            vec![
+                "synthesize_report",
+                "gather_reddit_signals",
+                "gather_tandem_reference",
+                "gather_web_sources",
+                "inspect_notion_row",
+            ],
+        ),
+        test_node(
+            "update_notion_row",
+            vec!["validate_report", "synthesize_report"],
+        ),
+        test_node("verify_notion_update", vec!["update_notion_row"]),
+    ];
+    let mut run = test_run_with_output(json!({"status": "blocked", "approved": false}));
+    run.checkpoint.completed_nodes = vec![
+        "gather_reddit_signals".to_string(),
+        "gather_tandem_reference".to_string(),
+        "gather_web_sources".to_string(),
+        "inspect_notion_row".to_string(),
+        "synthesize_report".to_string(),
+    ];
+
+    let roots = approval_rejection_rollback_roots(&automation, "validate_report", &run.checkpoint);
+
+    assert_eq!(roots, vec!["synthesize_report".to_string()]);
+    let reset_roots = roots.into_iter().collect::<std::collections::HashSet<_>>();
+    let mut nodes_to_reset =
+        crate::app::state::collect_automation_descendants(&automation, &reset_roots)
+            .into_iter()
+            .collect::<Vec<_>>();
+    nodes_to_reset.sort();
+    assert_eq!(
+        nodes_to_reset,
+        vec![
+            "synthesize_report".to_string(),
+            "update_notion_row".to_string(),
+            "validate_report".to_string(),
+            "verify_notion_update".to_string(),
+        ]
+    );
+}
+
 #[test]
 fn promote_materialized_output_completes_missing_output_repairs() {
     let node = crate::automation_v2::types::AutomationFlowNode {

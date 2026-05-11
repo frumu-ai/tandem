@@ -460,6 +460,81 @@ fn blocked_failure_kind(kind: &str) -> bool {
     )
 }
 
+fn approval_rejection_rollback_roots(
+    automation: &crate::automation_v2::types::AutomationV2Spec,
+    node_id: &str,
+    checkpoint: &crate::automation_v2::types::AutomationRunCheckpoint,
+) -> Vec<String> {
+    let Some(node) = automation
+        .flow
+        .nodes
+        .iter()
+        .find(|node| node.node_id == node_id)
+    else {
+        return Vec::new();
+    };
+    let flow_nodes = automation
+        .flow
+        .nodes
+        .iter()
+        .map(|node| (node.node_id.as_str(), node))
+        .collect::<std::collections::HashMap<_, _>>();
+    let is_resettable = |candidate_id: &str| {
+        checkpoint
+            .completed_nodes
+            .iter()
+            .any(|completed| completed == candidate_id)
+            && flow_nodes.get(candidate_id).is_some_and(|candidate| {
+                let used = checkpoint
+                    .node_attempts
+                    .get(candidate_id)
+                    .copied()
+                    .unwrap_or(0);
+                let max_attempts = crate::app::state::automation_node_max_attempts(candidate);
+                used < max_attempts
+            })
+    };
+
+    let mut direct_derived = node
+        .depends_on
+        .iter()
+        .filter(|dep_id| is_resettable(dep_id))
+        .filter(|dep_id| {
+            flow_nodes
+                .get(dep_id.as_str())
+                .is_some_and(|dep| !dep.depends_on.is_empty())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    direct_derived.sort();
+    direct_derived.dedup();
+    if !direct_derived.is_empty() {
+        return direct_derived;
+    }
+
+    let mut direct_resettable = node
+        .depends_on
+        .iter()
+        .filter(|dep_id| is_resettable(dep_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    direct_resettable.sort();
+    direct_resettable.dedup();
+    if !direct_resettable.is_empty() {
+        return direct_resettable;
+    }
+
+    let ancestors = crate::app::state::collect_automation_ancestors(automation, node_id);
+    let mut resettable_ancestors = ancestors
+        .iter()
+        .filter(|anc_id| is_resettable(anc_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    resettable_ancestors.sort();
+    resettable_ancestors.dedup();
+    resettable_ancestors
+}
+
 /// Returns `true` when a node should be skipped entirely because an upstream
 /// node that is marked as a triage gate found no work.
 ///
@@ -1294,28 +1369,14 @@ pub async fn run_automation_v2_run(
                                 return;
                             }
                             if is_approval_rejected {
-                                let ancestors =
-                                    crate::app::state::collect_automation_ancestors(&automation, &node_id);
-                                let resettable_ancestors: Vec<String> = ancestors
-                                    .iter()
-                                    .filter(|anc_id| row.checkpoint.completed_nodes.contains(*anc_id))
-                                    .filter(|anc_id| {
-                                        let used =
-                                            row.checkpoint.node_attempts.get(*anc_id).copied().unwrap_or(0);
-                                        let anc_max = automation
-                                            .flow
-                                            .nodes
-                                            .iter()
-                                            .find(|n| n.node_id == **anc_id)
-                                            .map(crate::app::state::automation_node_max_attempts)
-                                            .unwrap_or(1);
-                                        used < anc_max
-                                    })
-                                    .cloned()
-                                    .collect();
-                                if !resettable_ancestors.is_empty() {
+                                let rollback_roots = approval_rejection_rollback_roots(
+                                    &automation,
+                                    &node_id,
+                                    &row.checkpoint,
+                                );
+                                if !rollback_roots.is_empty() {
                                     let reset_roots: std::collections::HashSet<String> =
-                                        resettable_ancestors.iter().cloned().collect();
+                                        rollback_roots.iter().cloned().collect();
                                     let nodes_to_reset =
                                         crate::app::state::collect_automation_descendants(
                                             &automation,
