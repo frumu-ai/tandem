@@ -185,6 +185,126 @@ fn approval_rejection_rollback_prefers_derived_review_dependency() {
 }
 
 #[test]
+fn approval_rejection_rollback_stops_when_derived_dependency_is_exhausted() {
+    let mut automation = test_automation();
+    automation.flow.nodes = vec![
+        test_node("gather_reddit_signals", vec![]),
+        test_node("gather_tandem_reference", vec![]),
+        test_node("gather_web_sources", vec![]),
+        test_node("inspect_notion_row", vec![]),
+        test_node(
+            "synthesize_report",
+            vec![
+                "gather_reddit_signals",
+                "gather_tandem_reference",
+                "gather_web_sources",
+                "inspect_notion_row",
+            ],
+        ),
+        test_node(
+            "validate_report",
+            vec![
+                "synthesize_report",
+                "gather_reddit_signals",
+                "gather_tandem_reference",
+                "gather_web_sources",
+                "inspect_notion_row",
+            ],
+        ),
+    ];
+    let mut run = test_run_with_output(json!({"status": "blocked", "approved": false}));
+    run.checkpoint.completed_nodes = vec![
+        "gather_reddit_signals".to_string(),
+        "gather_tandem_reference".to_string(),
+        "gather_web_sources".to_string(),
+        "inspect_notion_row".to_string(),
+        "synthesize_report".to_string(),
+    ];
+    run.checkpoint
+        .node_attempts
+        .insert("synthesize_report".to_string(), 3);
+    run.checkpoint
+        .node_attempts
+        .insert("gather_reddit_signals".to_string(), 1);
+    run.checkpoint
+        .node_attempts
+        .insert("gather_tandem_reference".to_string(), 1);
+    run.checkpoint
+        .node_attempts
+        .insert("gather_web_sources".to_string(), 1);
+    run.checkpoint
+        .node_attempts
+        .insert("inspect_notion_row".to_string(), 1);
+
+    let roots = approval_rejection_rollback_roots(&automation, "validate_report", &run.checkpoint);
+
+    assert!(
+        roots.is_empty(),
+        "review rollback must not replay raw source nodes when the derived synthesis is exhausted"
+    );
+}
+
+#[test]
+fn yolo_review_relaxation_turns_rejection_into_advisory_completion() {
+    let mut output = json!({
+        "status": "blocked",
+        "approved": false,
+        "blocked_reason": "claims are not supported cleanly"
+    });
+
+    let relaxed = relax_yolo_review_output(
+        &mut output,
+        crate::automation_v2::execution_profile::ExecutionProfile::Yolo,
+        Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+    );
+
+    assert!(relaxed);
+    assert_eq!(
+        output.get("status").and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(output.get("approved").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        output.get("original_approved").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        output
+            .pointer("/artifact_validation/effective_outcome")
+            .and_then(Value::as_str),
+        Some("experimental")
+    );
+    assert_eq!(
+        output
+            .pointer("/artifact_validation/warning_count")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+}
+
+#[test]
+fn yolo_review_relaxation_does_not_affect_strict_review_rejections() {
+    let mut output = json!({
+        "status": "blocked",
+        "approved": false,
+        "blocked_reason": "claims are not supported cleanly"
+    });
+
+    let relaxed = relax_yolo_review_output(
+        &mut output,
+        crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+        Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+    );
+
+    assert!(!relaxed);
+    assert_eq!(
+        output.get("status").and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(output.get("approved").and_then(Value::as_bool), Some(false));
+}
+
+#[test]
 fn promote_materialized_output_completes_missing_output_repairs() {
     let node = crate::automation_v2::types::AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

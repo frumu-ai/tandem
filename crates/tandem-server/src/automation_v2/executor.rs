@@ -495,10 +495,9 @@ fn approval_rejection_rollback_roots(
             })
     };
 
-    let mut direct_derived = node
+    let direct_derived_ids = node
         .depends_on
         .iter()
-        .filter(|dep_id| is_resettable(dep_id))
         .filter(|dep_id| {
             flow_nodes
                 .get(dep_id.as_str())
@@ -506,10 +505,18 @@ fn approval_rejection_rollback_roots(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let mut direct_derived = direct_derived_ids
+        .iter()
+        .filter(|dep_id| is_resettable(dep_id))
+        .cloned()
+        .collect::<Vec<_>>();
     direct_derived.sort();
     direct_derived.dedup();
     if !direct_derived.is_empty() {
         return direct_derived;
+    }
+    if !direct_derived_ids.is_empty() {
+        return Vec::new();
     }
 
     let mut direct_resettable = node
@@ -524,15 +531,110 @@ fn approval_rejection_rollback_roots(
         return direct_resettable;
     }
 
-    let ancestors = crate::app::state::collect_automation_ancestors(automation, node_id);
-    let mut resettable_ancestors = ancestors
-        .iter()
-        .filter(|anc_id| is_resettable(anc_id))
-        .cloned()
-        .collect::<Vec<_>>();
-    resettable_ancestors.sort();
-    resettable_ancestors.dedup();
-    resettable_ancestors
+    Vec::new()
+}
+
+fn relax_yolo_review_output(
+    output: &mut Value,
+    profile: crate::automation_v2::execution_profile::ExecutionProfile,
+    validator_kind: Option<crate::AutomationOutputValidatorKind>,
+) -> bool {
+    if profile != crate::automation_v2::execution_profile::ExecutionProfile::Yolo
+        || validator_kind != Some(crate::AutomationOutputValidatorKind::ReviewDecision)
+    {
+        return false;
+    }
+
+    let status = output
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !matches!(
+        status.to_ascii_lowercase().as_str(),
+        "blocked" | "needs_repair" | "verify_failed" | "failed"
+    ) && output.get("approved").and_then(Value::as_bool) != Some(false)
+    {
+        return false;
+    }
+
+    let object = match output.as_object_mut() {
+        Some(object) => object,
+        None => return false,
+    };
+    let original_status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let original_approved = object.get("approved").and_then(Value::as_bool);
+    let original_reason = object
+        .get("blocked_reason")
+        .or_else(|| object.get("reason"))
+        .or_else(|| object.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    object.insert("status".to_string(), json!("completed"));
+    object.insert("approved".to_string(), json!(true));
+    object.insert("failure_kind".to_string(), Value::Null);
+    object.insert("blocked_reason".to_string(), Value::Null);
+    object.insert("yolo_review_relaxed".to_string(), json!(true));
+    if let Some(status) = original_status {
+        object.insert("original_status".to_string(), json!(status));
+    }
+    if let Some(approved) = original_approved {
+        object.insert("original_approved".to_string(), json!(approved));
+    }
+    if let Some(reason) = &original_reason {
+        object.insert("yolo_relaxed_reason".to_string(), json!(reason));
+    }
+
+    let artifact_validation = object
+        .entry("artifact_validation".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(validation) = artifact_validation.as_object_mut() {
+        validation.insert("execution_profile".to_string(), json!("yolo"));
+        validation.insert("effective_outcome".to_string(), json!("experimental"));
+        validation.insert("original_validator_outcome".to_string(), json!("blocked"));
+        validation.insert("experimental".to_string(), json!(true));
+        validation.insert("warning_count".to_string(), json!(1));
+        validation.insert(
+            "warning_requirements".to_string(),
+            json!(["yolo_review_decision_relaxed"]),
+        );
+        validation.insert(
+            "relaxed_validator_classes".to_string(),
+            json!([{
+                "class": "validator_kind_specific_soft_check",
+                "detail": "review decision accepted as advisory under yolo profile",
+                "original_outcome": "blocked",
+                "effective_outcome": "experimental"
+            }]),
+        );
+        if let Some(reason) = original_reason.clone() {
+            validation.insert("original_blocked_reason".to_string(), json!(reason));
+        }
+    }
+
+    let validator_summary = object
+        .entry("validator_summary".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(summary) = validator_summary.as_object_mut() {
+        summary.insert("outcome".to_string(), json!("experimental"));
+        summary.insert("warning_count".to_string(), json!(1));
+        summary.insert(
+            "warning_requirements".to_string(),
+            json!(["yolo_review_decision_relaxed"]),
+        );
+        summary.insert(
+            "reason".to_string(),
+            json!("YOLO execution profile accepted this review decision as advisory."),
+        );
+    }
+
+    true
 }
 
 /// Returns `true` when a node should be skipped entirely because an upstream
@@ -1272,6 +1374,18 @@ pub async fn run_automation_v2_run(
                             row.effective_execution_profile,
                             row.requested_execution_profile,
                             &tenant_denylist,
+                        );
+                        let validator_kind = automation
+                            .flow
+                            .nodes
+                            .iter()
+                            .find(|n| n.node_id == node_id)
+                            .and_then(|node| node.output_contract.as_ref())
+                            .and_then(|contract| contract.validator);
+                        relax_yolo_review_output(
+                            &mut output,
+                            row.effective_execution_profile,
+                            validator_kind,
                         );
                         // Experimental-input propagation: if any upstream
                         // dependency of this node already produced an
