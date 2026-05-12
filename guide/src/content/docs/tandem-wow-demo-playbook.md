@@ -150,6 +150,8 @@ What to include:
 - a handoff or approval boundary
 - `requires_approval: true` for routine-based flows, or `handoff_config.auto_approve: false` for handoff-based automations
 - a review step before anything downstream consumes the artifact
+- separate nodes for draft/create, approval, and post-approval execution
+- node-level tool/MCP policies so only the post-approval node has send/publish tools
 - a final output path that makes the result visible
 
 Why it works:
@@ -157,6 +159,8 @@ Why it works:
 - it shows governance instead of just automation
 - it makes Tandem feel safe enough for real work
 - it gives the user a clear pause point before promotion
+
+Do not give the approval gate external mutation tools. The gate should collect the decision only. A downstream execution node should read the upstream draft/artifact id and call the concrete approved tool, such as a namespaced `mcp.*.gmail_send_draft` action.
 
 ## What agents should optimize for
 

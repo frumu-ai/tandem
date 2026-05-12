@@ -136,6 +136,50 @@ This is the best fit for:
 - repeated scheduled runs
 - explicit policies per agent or per node
 
+### “I need approval before a high-impact external action”
+
+Use:
+
+- V2 automation with separate execution nodes before and after the approval gate
+- per-node `tool_policy` / `mcp_policy` on each step
+
+The safe graph shape is:
+
+1. prepare content or data
+2. create the reviewable draft/artifact
+3. pause at a human approval gate
+4. execute the external action in a separate post-approval node
+
+Do not make the approval node itself the final action. Approval only records the human decision; the following node performs the send, publish, merge, delete, or other high-impact mutation.
+
+Tool access should be scoped to the node that needs it:
+
+- compose/research nodes: no external mutation or send tools
+- draft/create nodes: create/update draft tools only, not send tools
+- approval gate: human decision only
+- post-approval node: the concrete send/publish tool only
+
+On V2 automation nodes, use first-class node policy fields:
+
+```json
+{
+  "node_id": "send-approved-draft",
+  "agent_id": "gmail_sender",
+  "depends_on": ["approve-send-draft"],
+  "objective": "After approval, send the existing Gmail draft created upstream.",
+  "tool_policy": {
+    "allowlist": ["read", "mcp.reddit_gmail.gmail_send_draft"],
+    "denylist": []
+  },
+  "mcp_policy": {
+    "allowed_servers": ["reddit-gmail"],
+    "allowed_tools": ["mcp.reddit_gmail.gmail_send_draft"]
+  }
+}
+```
+
+Do not hard-code the human-entered MCP server name into prompts as the source of truth. Discover concrete MCP tool ids/capabilities, then save exact namespaced tool ids in the node policy.
+
 ### “I need a larger coordinated operating loop with stages that gate each other”
 
 Use:

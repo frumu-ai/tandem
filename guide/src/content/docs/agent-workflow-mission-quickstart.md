@@ -48,10 +48,13 @@ When authoring a workflow node or mission stage, always define:
 - the stage objective
 - allowed inputs
 - required outputs
+- the smallest tool/MCP access needed by that exact stage
 - constraints
 - completion criteria
 
 Do not treat Tandem like one long chat prompt.
+
+For V2 automation DAGs, prefer per-node `tool_policy` and `mcp_policy` when a step has narrower powers than its agent. This matters most around approval gates: a compose or draft-create step should not have send tools, the approval gate should not execute external mutation tools, and a separate post-approval node should own the concrete send-draft tool.
 
 Use [Prompting Workflows And Missions](./prompting-workflows-and-missions/) for the full authoring pattern.
 

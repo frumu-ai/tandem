@@ -492,6 +492,8 @@ await client.automations_v2.run_now(applied.automation_id or "")
 
 Use V2 for persistent multi-agent DAG flows with per-agent model selection.
 
+Agent policy is the broad default. For high-impact workflows, especially MCP sends, publishes, deletes, merges, or payments, also set `tool_policy` and `mcp_policy` on the individual `flow.nodes[]` that need those tools. A node-level policy is the runtime hard scope for that task. Keep draft/create, approval, and post-approval send as separate nodes.
+
 Agent-ready pattern (manual run, artifact + MCP handoff):
 
 ```python
@@ -582,18 +584,27 @@ created = await client.automations_v2.create(
                     "node_id": "collect_todos",
                     "agent_id": "reader",
                     "objective": "Find TODO and FIXME items under src/ and docs/ with file + line context.",
+                    "tool_policy": {"allowlist": ["read"], "denylist": []},
+                    "mcp_policy": {"allowed_servers": [], "allowed_tools": []},
                 },
                 {
                     "node_id": "write_report",
                     "agent_id": "reader",
                     "depends_on": ["collect_todos"],
                     "objective": "Create docs/todo_digest.md with grouped findings and severity ranking.",
+                    "tool_policy": {"allowlist": ["read", "write"], "denylist": []},
+                    "mcp_policy": {"allowed_servers": [], "allowed_tools": []},
                 },
                 {
                     "node_id": "notify_team",
                     "agent_id": "notifier",
                     "depends_on": ["write_report"],
                     "objective": "Use MCP to send a short summary to team and include path docs/todo_digest.md.",
+                    "tool_policy": {"allowlist": ["read", "mcp.slack.send_message"], "denylist": []},
+                    "mcp_policy": {
+                        "allowed_servers": ["slack"],
+                        "allowed_tools": ["mcp.slack.send_message"],
+                    },
                 },
             ]
         },
