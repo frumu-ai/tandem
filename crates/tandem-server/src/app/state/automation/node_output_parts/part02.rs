@@ -655,6 +655,13 @@ pub(crate) fn detect_automation_node_status(
             approved,
         );
     }
+    // Email delivery/draft tools are externally visible side effects. Once the
+    // connector confirms success, treat the node as terminal even if the model's
+    // final compact status JSON is missing or malformed; retrying would create
+    // duplicate emails or drafts.
+    if automation_node_requires_email_delivery(node) && email_delivery_succeeded {
+        return ("completed".to_string(), explicit_reason, approved);
+    }
     // If the artifact exists on disk but the session text has no parseable status JSON,
     // accept as completed. The artifact is the authoritative output — a missing compact
     // status in the text is a prompt-compliance gap, not a runtime failure.

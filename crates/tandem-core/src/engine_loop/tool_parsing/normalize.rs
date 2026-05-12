@@ -391,10 +391,18 @@ fn email_tool_name_compact(tool_name: &str) -> String {
 pub(crate) fn is_email_delivery_tool_name(tool_name: &str) -> bool {
     let normalized = tool_name.trim().to_ascii_lowercase().replace('-', "_");
     if normalized.starts_with("mcp.") {
-        // MCP tool names are opaque connector labels. Capability decisions need
-        // explicit metadata, not substrings from user/vendor-controlled names.
-        return false;
+        // MCP server names are opaque user/vendor labels. Only classify the
+        // concrete action segment after the last dot, e.g. the
+        // `gmail_send_email` in `mcp.any_server.gmail_send_email`.
+        return normalized
+            .strip_prefix("mcp.")
+            .and_then(|rest| rest.rsplit('.').next())
+            .is_some_and(is_email_delivery_action_name);
     }
+    is_email_delivery_action_name(&normalized)
+}
+
+fn is_email_delivery_action_name(tool_name: &str) -> bool {
     let tokens = email_tool_name_tokens(tool_name);
     let compact = email_tool_name_compact(tool_name);
     let looks_like_email_provider = tokens.iter().any(|token| {

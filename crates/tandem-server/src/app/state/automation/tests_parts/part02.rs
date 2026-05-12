@@ -822,7 +822,7 @@ fn connector_scoped_nodes_keep_required_web_research_tools() {
 }
 
 #[test]
-fn connector_scoped_nodes_keep_required_email_delivery_tools() {
+fn connector_scoped_nodes_keep_required_email_send_tools() {
     let mut node = email_delivery_node();
     node.node_id = "send_productivity_signals_brief".to_string();
     node.objective =
@@ -831,7 +831,6 @@ fn connector_scoped_nodes_keep_required_email_delivery_tools() {
         "mcp_list".to_string(),
         "mcp.reddit_gmail.reddit_search_across_subreddits".to_string(),
         "send_email".to_string(),
-        "create_email_draft".to_string(),
         "write".to_string(),
     ]);
 
@@ -847,8 +846,55 @@ fn connector_scoped_nodes_keep_required_email_delivery_tools() {
         "required email send tool must not be dropped by connector-source policy: {requested:?}"
     );
     assert!(
-        requested.iter().any(|tool| tool == "create_email_draft"),
-        "required email draft tool must not be dropped by connector-source policy: {requested:?}"
+        !requested.iter().any(|tool| tool == "create_email_draft"),
+        "send-only email node should not offer draft tools by default: {requested:?}"
+    );
+}
+
+#[test]
+fn gmail_draft_only_nodes_do_not_offer_send_tools() {
+    let mut node = email_delivery_node();
+    node.node_id = "create-gmail-draft".to_string();
+    node.objective =
+        "Create a Gmail draft from the composed test email and prepare to send to evan@example.com"
+            .to_string();
+    let available_tool_names = std::collections::HashSet::from([
+        "mcp.poop.gmail_create_email_draft".to_string(),
+        "mcp.poop.gmail_update_draft".to_string(),
+        "mcp.poop.gmail_send_draft".to_string(),
+        "mcp.poop.gmail_send_email".to_string(),
+        "mcp_list".to_string(),
+        "write".to_string(),
+    ]);
+
+    let caps = automation_tool_capability_ids(&node, "artifact_write");
+    assert!(caps.contains(&"email_draft".to_string()));
+    assert!(!caps.contains(&"email_send".to_string()));
+
+    let requested = automation_requested_tools_for_node(
+        &node,
+        "/tmp",
+        vec!["mcp.poop.*".to_string(), "write".to_string()],
+        &available_tool_names,
+    );
+
+    assert!(
+        requested
+            .iter()
+            .any(|tool| tool == "mcp.poop.gmail_create_email_draft"),
+        "draft-only node should keep concrete draft creation tools: {requested:?}"
+    );
+    assert!(
+        requested
+            .iter()
+            .any(|tool| tool == "mcp.poop.gmail_update_draft"),
+        "draft-only node should keep concrete draft update tools: {requested:?}"
+    );
+    assert!(
+        !requested
+            .iter()
+            .any(|tool| tool == "mcp.poop.gmail_send_email" || tool == "mcp.poop.gmail_send_draft"),
+        "draft-only node must not offer send tools before approval: {requested:?}"
     );
 }
 

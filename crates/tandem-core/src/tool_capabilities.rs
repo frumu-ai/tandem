@@ -132,8 +132,15 @@ fn strip_known_namespace(name: &str) -> Option<String> {
 
 fn tool_name_looks_like_email_delivery(tool_name: &str) -> bool {
     if tool_name_is_mcp_connector_tool(tool_name) {
-        return false;
+        return mcp_tool_action_name(tool_name).is_some_and(|action| {
+            tool_name_looks_like_non_mcp_email_send(&action)
+                || tool_name_looks_like_non_mcp_email_draft(&action)
+        });
     }
+    tool_name_looks_like_email_provider(tool_name)
+}
+
+fn tool_name_looks_like_email_provider(tool_name: &str) -> bool {
     tool_name_tokens(tool_name).iter().any(|token| {
         matches!(
             token.as_str(),
@@ -157,9 +164,18 @@ fn tool_name_looks_like_email_delivery(tool_name: &str) -> bool {
 }
 
 fn tool_name_looks_like_email_send(tool_name: &str) -> bool {
+    if tool_name_is_mcp_connector_tool(tool_name) {
+        return mcp_tool_action_name(tool_name)
+            .is_some_and(|action| tool_name_looks_like_non_mcp_email_send(&action));
+    }
+    tool_name_looks_like_non_mcp_email_send(tool_name)
+}
+
+fn tool_name_looks_like_non_mcp_email_send(tool_name: &str) -> bool {
     let tokens = tool_name_tokens(tool_name);
     let compact = tool_name_compact(tool_name);
-    tool_name_looks_like_email_delivery(tool_name)
+    !tool_name_looks_like_email_read_or_settings(tool_name)
+        && tool_name_looks_like_email_provider(tool_name)
         && (tool_name_tokens_contains(&tokens, "send")
             || tool_name_tokens_contains(&tokens, "deliver")
             || tool_name_tokens_contains(&tokens, "reply")
@@ -170,9 +186,19 @@ fn tool_name_looks_like_email_send(tool_name: &str) -> bool {
 }
 
 fn tool_name_looks_like_email_draft(tool_name: &str) -> bool {
+    if tool_name_is_mcp_connector_tool(tool_name) {
+        return mcp_tool_action_name(tool_name)
+            .is_some_and(|action| tool_name_looks_like_non_mcp_email_draft(&action));
+    }
+    tool_name_looks_like_non_mcp_email_draft(tool_name)
+}
+
+fn tool_name_looks_like_non_mcp_email_draft(tool_name: &str) -> bool {
     let tokens = tool_name_tokens(tool_name);
     let compact = tool_name_compact(tool_name);
-    tool_name_looks_like_email_delivery(tool_name)
+    !tool_name_looks_like_email_read_or_settings(tool_name)
+        && tool_name_looks_like_email_provider(tool_name)
+        && !tool_name_looks_like_non_mcp_email_send(tool_name)
         && (tool_name_tokens_contains(&tokens, "draft")
             || tool_name_tokens_contains(&tokens, "compose")
             || compact.contains("draftemail")
@@ -181,8 +207,25 @@ fn tool_name_looks_like_email_draft(tool_name: &str) -> bool {
             || compact.contains("emailcompose"))
 }
 
+fn tool_name_looks_like_email_read_or_settings(tool_name: &str) -> bool {
+    let tokens = tool_name_tokens(tool_name);
+    ["settings", "imap", "pop", "fetch", "list", "get", "search"]
+        .iter()
+        .any(|needle| tool_name_tokens_contains(&tokens, needle))
+}
+
 fn tool_name_is_mcp_connector_tool(tool_name: &str) -> bool {
     tool_name.trim().to_ascii_lowercase().starts_with("mcp.")
+}
+
+fn mcp_tool_action_name(tool_name: &str) -> Option<String> {
+    let normalized = tool_name.trim().to_ascii_lowercase().replace('-', "_");
+    normalized
+        .strip_prefix("mcp.")
+        .and_then(|rest| rest.rsplit('.').next())
+        .map(str::trim)
+        .filter(|action| !action.is_empty())
+        .map(str::to_string)
 }
 
 fn tool_name_tokens(tool_name: &str) -> Vec<String> {
@@ -264,9 +307,29 @@ mod tests {
     }
 
     #[test]
-    fn mcp_action_name_does_not_infer_email_delivery() {
-        assert!(!tool_name_matches_profile(
+    fn mcp_action_name_can_satisfy_email_send_without_namespace_guessing() {
+        assert!(tool_name_matches_profile(
             "mcp.reddit_gmail.gmail_send_email",
+            ToolCapabilityProfile::EmailSend
+        ));
+        assert!(tool_name_matches_profile(
+            "mcp.reddit_gmail.gmail_create_email_draft",
+            ToolCapabilityProfile::EmailDraft
+        ));
+        assert!(tool_name_matches_profile(
+            "mcp.poop.gmail_send_draft",
+            ToolCapabilityProfile::EmailSend
+        ));
+        assert!(!tool_name_matches_profile(
+            "mcp.poop.gmail_send_draft",
+            ToolCapabilityProfile::EmailDraft
+        ));
+        assert!(tool_name_matches_profile(
+            "mcp.reddit_gmail.gmail_send_email",
+            ToolCapabilityProfile::EmailDelivery
+        ));
+        assert!(!tool_name_matches_profile(
+            "mcp.reddit_gmail.gmail_settings_send_as_get",
             ToolCapabilityProfile::EmailSend
         ));
     }

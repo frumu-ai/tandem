@@ -124,8 +124,11 @@ pub(crate) fn automation_tool_capability_ids(
         capabilities.push("web_research".to_string());
     }
     if automation_node_requires_email_delivery(node) {
-        capabilities.push("email_send".to_string());
-        capabilities.push("email_draft".to_string());
+        if node_runtime_impl::automation_node_requires_email_draft_without_send(node) {
+            capabilities.push("email_draft".to_string());
+        } else {
+            capabilities.push("email_send".to_string());
+        }
     }
     if automation_node_is_code_workflow(node)
         && (execution_mode == "git_patch" || execution_mode == "filesystem_patch")

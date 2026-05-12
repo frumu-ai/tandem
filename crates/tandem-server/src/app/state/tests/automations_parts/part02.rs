@@ -1817,7 +1817,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
             None,
         );
 
-    assert_eq!(status, "blocked");
+    assert_eq!(status, "needs_repair");
     assert_eq!(
         reason.as_deref(),
         Some(

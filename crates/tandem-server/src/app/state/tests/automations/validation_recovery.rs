@@ -757,7 +757,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
             None,
         );
 
-    assert_eq!(status, "blocked");
+    assert_eq!(status, "needs_repair");
     assert_eq!(
         reason.as_deref(),
         Some(
@@ -765,6 +765,66 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
         )
     );
     assert_eq!(approved, Some(true));
+}
+
+#[test]
+fn email_delivery_success_is_terminal_even_without_parseable_final_status() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "create-gmail-draft".to_string(),
+        agent_id: "gmail-draft-creator".to_string(),
+        objective: "Create a Gmail draft from the composed test email and prepare to send to test@example.com.".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "Draft created: r-12345",
+            None,
+            &json!({
+                "requested_tools": ["mcp_list", "mcp.poop.gmail_create_email_draft"],
+                "executed_tools": ["mcp_list", "mcp.poop.gmail_create_email_draft"],
+                "tool_call_counts": {"mcp_list": 1, "mcp.poop.gmail_create_email_draft": 1},
+                "email_delivery_attempted": true,
+                "email_delivery_succeeded": true,
+                "latest_email_delivery_failure": null,
+                "capability_resolution": {
+                    "email_tool_diagnostics": {
+                        "available_tools": ["mcp.poop.gmail_create_email_draft"],
+                        "offered_tools": ["mcp.poop.gmail_create_email_draft"],
+                        "available_send_tools": [],
+                        "offered_send_tools": [],
+                        "available_draft_tools": ["mcp.poop.gmail_create_email_draft"],
+                        "offered_draft_tools": ["mcp.poop.gmail_create_email_draft"]
+                    }
+                },
+                "attempt_evidence": {
+                    "delivery": {
+                        "status": "succeeded"
+                    }
+                }
+            }),
+            None,
+        );
+
+    assert_eq!(status, "completed");
+    assert_eq!(reason, None);
+    assert_eq!(approved, None);
 }
 
 #[test]

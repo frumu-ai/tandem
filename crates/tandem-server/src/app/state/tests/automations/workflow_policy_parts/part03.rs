@@ -1150,7 +1150,7 @@ fn email_delivery_nodes_block_without_email_tool_execution() {
     assert_eq!(
         reason.as_deref(),
         Some(
-            "email delivery to `recipient@example.com` was requested but no email draft/send tool executed"
+            "email delivery to `recipient@example.com` was requested but no email-capable tools were available. Selected MCP servers: none. Remote MCP tools on selected servers: none. Registered tool-registry tools on selected servers: none. Discovered email-like tools: none. Offered email-like tools: none. This usually means the email connector is unavailable, MCP tools were not synced into the registry, or the tool names did not match email capability detection."
         )
     );
     assert_eq!(approved, Some(true));

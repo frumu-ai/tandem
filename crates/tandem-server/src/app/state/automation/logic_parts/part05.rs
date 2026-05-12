@@ -1465,6 +1465,13 @@ pub(crate) async fn execute_automation_v2_node(
         node,
         &selected_mcp_wildcard_server_names,
     ));
+    if node_runtime_impl::automation_node_requires_email_draft_without_send(node) {
+        requested_tools.retain(|tool| {
+            !tool.starts_with("mcp.")
+                || (automation_tool_name_is_email_draft(tool)
+                    && !automation_tool_name_is_email_send(tool))
+        });
+    }
     let mut required_concrete_mcp_tools = automation_node_required_concrete_mcp_tools(node);
     required_concrete_mcp_tools.extend(
         automation_node_required_tool_calls(node)
@@ -1475,6 +1482,13 @@ pub(crate) async fn execute_automation_v2_node(
     required_concrete_mcp_tools.sort();
     required_concrete_mcp_tools.dedup();
     requested_tools.extend(required_concrete_mcp_tools.clone());
+    if node_runtime_impl::automation_node_requires_email_draft_without_send(node) {
+        requested_tools.retain(|tool| {
+            !tool.starts_with("mcp.")
+                || (automation_tool_name_is_email_draft(tool)
+                    && !automation_tool_name_is_email_send(tool))
+        });
+    }
     if automation_node_uses_broad_read_only_source_guard(node)
         && !matches!(execution_mode, "git_patch" | "filesystem_patch")
     {

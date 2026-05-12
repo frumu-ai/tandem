@@ -544,6 +544,44 @@ pub(crate) fn automation_node_requires_email_delivery(node: &AutomationFlowNode)
     false
 }
 
+pub(crate) fn automation_node_requires_email_draft_without_send(node: &AutomationFlowNode) -> bool {
+    if !automation_node_requires_email_delivery(node) {
+        return false;
+    }
+    let objective = node.objective.to_ascii_lowercase();
+    let asks_for_draft = [
+        "draft email",
+        "draft the email",
+        "gmail draft",
+        "create a gmail draft",
+        "create gmail draft",
+        "create an email draft",
+        "prepare a draft",
+        "prepare the draft",
+    ]
+    .iter()
+    .any(|needle| objective.contains(needle));
+    if !asks_for_draft {
+        return false;
+    }
+    ![
+        "send email",
+        "send the email",
+        "send it",
+        "send now",
+        "send the draft",
+        "send gmail draft",
+        "send the gmail draft",
+        "send approved",
+        "send after",
+        "only after human approval",
+        "gmail_send",
+        "send_draft",
+    ]
+    .iter()
+    .any(|needle| objective.contains(needle))
+}
+
 pub(crate) fn automation_tool_name_is_email_delivery(tool_name: &str) -> bool {
     let tokens = automation_tool_name_tokens(tool_name);
     tokens.iter().any(|token| {
@@ -684,6 +722,14 @@ pub(crate) fn resolve_automation_node_tool_envelope(
             capability_id,
             available_tool_names,
         ));
+    }
+    if automation_node_requires_email_draft_without_send(node) {
+        requested_tools.retain(|tool| {
+            !tandem_core::tool_name_matches_profile(
+                tool,
+                tandem_core::ToolCapabilityProfile::EmailSend,
+            )
+        });
     }
     let before_policy = requested_tools.clone();
     if connector_source_node {
