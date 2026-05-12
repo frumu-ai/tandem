@@ -592,6 +592,12 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     {
         sections.push(format!("Template system prompt:\n{}", system_prompt));
     }
+    if requested_tools.iter().any(|tool| tool == "read") {
+        sections.push(format!(
+            "Workspace Read Boundaries:\n- Workspace root: `{}`.\n- Use `read` only for declared workflow artifacts, explicit upstream file paths, or workspace-local source files required by this node.\n- Do not inspect host identity or system files such as `/etc/hostname`, `/proc/*`, `/sys/*`, `/dev/*`, shell history, or unrelated temp files unless the node explicitly names that exact path.\n- A blocked system-file read is not evidence that the workflow is blocked; ignore the unavailable system path and return the required structured final response from the workspace evidence you already have.",
+            workspace_root
+        ));
+    }
     if let Some(mission) = automation
         .metadata
         .as_ref()
@@ -792,7 +798,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         .collect::<Vec<_>>();
     if automation_node_is_outbound_action(node) && !outbound_mcp_tools.is_empty() {
         sections.push(format!(
-            "Connector Action Rules:\n- This node performs an external connector action with: {}.\n- For destination systems with schemas or select/status options, inspect the existing destination or upstream schema evidence before writing.\n- Use only values that are already allowed by the destination schema; do not invent new select/status option labels.\n- If an action tool returns an API error payload, validation_error, 4xx/5xx status, or `success: false`, treat the write as failed. Do not report `status: completed` until the connector action succeeds or a follow-up fetch proves the destination contains the intended update.",
+            "Connector Action Rules:\n- This node performs an external connector action with: {}.\n- For destination systems with schemas or select/status options, inspect the existing destination or upstream schema evidence before writing.\n- Use only values that are already allowed by the destination schema; do not invent new select/status option labels.\n- For Notion database rows, update the visible row properties with `mcp.notion.notion_update_page` `command: \"update_properties\"`; page-body `replace_content` alone is not enough when the operator expects table/database data. Set fields such as `Status`, `Summary`, `Evidence`, `Sources`, `Run ID`, and `date:Completed At:start` when the schema exposes them.\n- If an action tool returns an API error payload, validation_error, 4xx/5xx status, or `success: false`, treat the write as failed. Do not report `status: completed` until the connector action succeeds or a follow-up fetch proves the destination contains the intended update in the user-visible destination fields.",
             outbound_mcp_tools
                 .iter()
                 .map(|tool| format!("`{tool}`"))

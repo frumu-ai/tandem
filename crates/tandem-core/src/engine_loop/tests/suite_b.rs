@@ -2,12 +2,23 @@ use super::*;
 use tandem_types::PrewriteRepairExhaustionBehavior;
 
 #[test]
-fn email_tool_detector_finds_mcp_gmail_tools() {
+fn email_tool_detector_does_not_infer_mcp_capability_from_name() {
     let schemas = vec![
         ToolSchema::new("read", "", json!({})),
         ToolSchema::new("mcp.composio.gmail_send_email", "", json!({})),
+        ToolSchema::new(
+            "mcp.reddit-gmail.reddit_search_across_subreddits",
+            "",
+            json!({}),
+        ),
     ];
-    assert!(has_email_action_tools(&schemas));
+    assert!(!has_email_action_tools(&schemas));
+
+    let legacy_schemas = vec![
+        ToolSchema::new("read", "", json!({})),
+        ToolSchema::new("gmail_send_email", "", json!({})),
+    ];
+    assert!(has_email_action_tools(&legacy_schemas));
 }
 
 #[test]
@@ -681,13 +692,11 @@ fn duplicate_signature_limit_defaults_to_200_for_general_tools_and_1_for_email_d
     assert_eq!(duplicate_signature_limit_for("pack_builder"), 200);
     assert_eq!(duplicate_signature_limit_for("bash"), 200);
     assert_eq!(duplicate_signature_limit_for("write"), 200);
+    assert_eq!(duplicate_signature_limit_for("gmail_send_email"), 1);
+    assert_eq!(duplicate_signature_limit_for("gmail_create_email_draft"), 1);
     assert_eq!(
         duplicate_signature_limit_for("mcp.composio_1.gmail_send_email"),
-        1
-    );
-    assert_eq!(
-        duplicate_signature_limit_for("mcp.composio_1.gmail_create_email_draft"),
-        1
+        200
     );
 }
 
@@ -775,20 +784,14 @@ fn email_delivery_duplicate_signature_limit_env_override_respects_floor_of_one()
             "1",
         );
     }
-    assert_eq!(
-        duplicate_signature_limit_for("mcp.composio_1.gmail_send_email"),
-        1
-    );
+    assert_eq!(duplicate_signature_limit_for("gmail_send_email"), 1);
     unsafe {
         std::env::set_var(
             "TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT_EMAIL_DELIVERY",
             "3",
         );
     }
-    assert_eq!(
-        duplicate_signature_limit_for("mcp.composio_1.gmail_send_email"),
-        3
-    );
+    assert_eq!(duplicate_signature_limit_for("gmail_send_email"), 3);
     unsafe {
         std::env::remove_var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT_EMAIL_DELIVERY");
     }
@@ -796,12 +799,18 @@ fn email_delivery_duplicate_signature_limit_env_override_respects_floor_of_one()
 
 #[test]
 fn email_delivery_detection_is_provider_agnostic() {
-    assert!(is_email_delivery_tool_name(
+    assert!(is_email_delivery_tool_name("gmail_send_email"));
+    assert!(is_email_delivery_tool_name("sendgrid_send_email"));
+    assert!(is_email_delivery_tool_name("resend_create_email_draft"));
+    assert!(is_email_delivery_tool_name("outlook_reply_email"));
+    assert!(!is_email_delivery_tool_name(
         "mcp.composio_1.gmail_send_email"
     ));
-    assert!(is_email_delivery_tool_name("mcp.sendgrid.send_email"));
-    assert!(is_email_delivery_tool_name("mcp.resend.create_email_draft"));
-    assert!(is_email_delivery_tool_name("mcp.outlook.reply_email"));
+    assert!(!is_email_delivery_tool_name("mcp.sendgrid.send_email"));
+    assert!(!is_email_delivery_tool_name(
+        "mcp.resend.create_email_draft"
+    ));
+    assert!(!is_email_delivery_tool_name("mcp.outlook.reply_email"));
     assert!(!is_email_delivery_tool_name("mcp.reddit.send_message"));
     assert!(!is_email_delivery_tool_name("mcp.github.create_issue"));
 }
@@ -1327,7 +1336,11 @@ fn disable_tool_guard_budgets_env_overrides_all_budgets() {
         std::env::set_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS", "1");
         std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
     }
-    assert_eq!(tool_budget_for("mcp.arcade.gmail_sendemail"), 1);
+    assert_eq!(tool_budget_for("gmail_sendemail"), 1);
+    assert_eq!(
+        tool_budget_for("mcp.arcade.gmail_sendemail"),
+        HARD_TOOL_CALL_CEILING
+    );
     // M-2: disabling guards now returns HARD_TOOL_CALL_CEILING, not usize::MAX,
     // because the hard ceiling cannot be bypassed by any env setting.
     assert_eq!(tool_budget_for("websearch"), HARD_TOOL_CALL_CEILING);
@@ -1343,7 +1356,11 @@ fn email_delivery_budget_can_still_be_explicitly_overridden_when_global_budgets_
         std::env::set_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS", "1");
         std::env::set_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY", "0");
     }
-    assert_eq!(tool_budget_for("mcp.arcade.gmail_sendemail"), usize::MAX);
+    assert_eq!(tool_budget_for("gmail_sendemail"), usize::MAX);
+    assert_eq!(
+        tool_budget_for("mcp.arcade.gmail_sendemail"),
+        HARD_TOOL_CALL_CEILING
+    );
     unsafe {
         std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
         std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
@@ -1363,11 +1380,9 @@ fn tool_budget_defaults_to_200_calls_and_1_for_email_delivery() {
     assert_eq!(tool_budget_for("bash"), 200);
     assert_eq!(tool_budget_for("websearch"), 200);
     assert_eq!(tool_budget_for("read"), 200);
-    assert_eq!(tool_budget_for("mcp.composio_1.gmail_send_email"), 1);
-    assert_eq!(
-        tool_budget_for("mcp.composio_1.gmail_create_email_draft"),
-        1
-    );
+    assert_eq!(tool_budget_for("gmail_send_email"), 1);
+    assert_eq!(tool_budget_for("gmail_create_email_draft"), 1);
+    assert_eq!(tool_budget_for("mcp.composio_1.gmail_send_email"), 200);
 }
 
 #[test]
@@ -1394,24 +1409,30 @@ fn email_delivery_tool_budget_env_override_respects_floor_of_one() {
         std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
         std::env::set_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY", "1");
     }
-    assert_eq!(tool_budget_for("mcp.composio_1.gmail_send_email"), 1);
+    assert_eq!(tool_budget_for("gmail_send_email"), 1);
     unsafe {
         std::env::set_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY", "5");
     }
-    assert_eq!(tool_budget_for("mcp.composio_1.gmail_send_email"), 5);
+    assert_eq!(tool_budget_for("gmail_send_email"), 5);
     unsafe {
         std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
     }
 }
 
 #[test]
-fn provider_agnostic_email_tools_share_single_send_budget() {
+fn legacy_provider_agnostic_email_tools_share_single_send_budget() {
     let _guard = env_test_lock();
     unsafe {
         std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
         std::env::remove_var("TANDEM_TOOL_BUDGET_EMAIL_DELIVERY");
     }
-    assert_eq!(tool_budget_for("mcp.sendgrid.send_email"), 1);
-    assert_eq!(tool_budget_for("mcp.resend.create_email_draft"), 1);
-    assert_eq!(duplicate_signature_limit_for("mcp.outlook.reply_email"), 1);
+    assert_eq!(tool_budget_for("sendgrid_send_email"), 1);
+    assert_eq!(tool_budget_for("resend_create_email_draft"), 1);
+    assert_eq!(duplicate_signature_limit_for("outlook_reply_email"), 1);
+    assert_eq!(tool_budget_for("mcp.sendgrid.send_email"), 200);
+    assert_eq!(tool_budget_for("mcp.resend.create_email_draft"), 200);
+    assert_eq!(
+        duplicate_signature_limit_for("mcp.outlook.reply_email"),
+        200
+    );
 }

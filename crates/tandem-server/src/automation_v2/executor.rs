@@ -638,15 +638,20 @@ fn relax_yolo_review_output(
 }
 
 fn yolo_relaxable_blocker_category(category: &str) -> bool {
-    matches!(
-        category,
-        "tool_resolution_failed"
-            | "repair_budget_exhausted"
-            | "provider_connect_timeout"
-            | "provider_server_error"
-            | "stale_no_provider_activity"
-            | "execution_error"
-    )
+    !category.trim().is_empty()
+}
+
+fn yolo_must_not_relax_required_source_reads(output: &Value) -> bool {
+    output
+        .pointer("/artifact_validation/unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.as_str()
+                    .map(str::trim)
+                    .is_some_and(|raw| raw == "required_source_paths_not_read")
+            })
+        })
 }
 
 fn yolo_safety_blocker_category(category: &str) -> bool {
@@ -704,6 +709,9 @@ fn relax_yolo_non_safety_blocker_output(
         .map(str::trim)
         .unwrap_or_default()
         .to_ascii_lowercase();
+    if yolo_must_not_relax_required_source_reads(output) {
+        return false;
+    }
     if yolo_safety_blocker_category(&category) || !yolo_relaxable_blocker_category(&category) {
         return false;
     }

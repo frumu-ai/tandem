@@ -340,6 +340,39 @@ fn yolo_relaxes_tool_resolution_failure_into_experimental_completion() {
 }
 
 #[test]
+fn yolo_does_not_relax_missing_required_source_reads() {
+    let mut output = json!({
+        "status": "blocked",
+        "blocked_reason": "research completed without reading the exact required source files",
+        "failure_kind": "artifact_rejected",
+        "artifact_validation": {
+            "blocking_classification": "artifact_contract_unmet",
+            "unmet_requirements": ["required_source_paths_not_read"],
+            "validation_basis": {
+                "missing_required_source_read_paths": ["RESUME.md"]
+            }
+        }
+    });
+
+    let relaxed = relax_yolo_non_safety_blocker_output(
+        &mut output,
+        crate::automation_v2::execution_profile::ExecutionProfile::Yolo,
+    );
+
+    assert!(!relaxed);
+    assert_eq!(
+        output.get("status").and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(
+        output
+            .pointer("/artifact_validation/unmet_requirements/0")
+            .and_then(Value::as_str),
+        Some("required_source_paths_not_read")
+    );
+}
+
+#[test]
 fn yolo_does_not_relax_safety_blockers() {
     let mut output = json!({
         "status": "blocked",

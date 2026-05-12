@@ -1,3 +1,64 @@
+fn automation_node_notion_database_row_update_requires_properties(node_action_text: &str) -> bool {
+    (node_action_text.contains("notion")
+        || node_action_text.contains("database")
+        || node_action_text.contains("row"))
+        && (node_action_text.contains("update")
+            || node_action_text.contains("save")
+            || node_action_text.contains("write"))
+        && (node_action_text.contains("database")
+            || node_action_text.contains("row")
+            || node_action_text.contains("table")
+            || node_action_text.contains("result"))
+}
+
+fn session_has_notion_database_property_update(session: &Session) -> bool {
+    const USER_VISIBLE_ROW_FIELDS: &[&str] = &[
+        "Evidence",
+        "Summary",
+        "Sources",
+        "Run ID",
+        "Status",
+        "Source",
+        "Workflow",
+        "Topic",
+        "Completed At",
+        "date:Completed At:start",
+        "date:Completed At:is_datetime",
+    ];
+
+    session.messages.iter().any(|message| {
+        message.parts.iter().any(|part| {
+            let MessagePart::ToolInvocation {
+                tool,
+                args,
+                result,
+                error,
+            } = part
+            else {
+                return false;
+            };
+            if tool != "mcp.notion.notion_update_page"
+                || error.as_ref().is_some_and(|value| !value.trim().is_empty())
+                || automation_tool_result_failure_reason(result.as_ref()).is_some()
+            {
+                return false;
+            }
+            let Some(args) = tool_args_object(args) else {
+                return false;
+            };
+            if args.get("command").and_then(Value::as_str) != Some("update_properties") {
+                return false;
+            }
+            let Some(properties) = args.get("properties").and_then(Value::as_object) else {
+                return false;
+            };
+            USER_VISIBLE_ROW_FIELDS
+                .iter()
+                .any(|field| properties.contains_key(*field))
+        })
+    })
+}
+
 pub(crate) fn validate_automation_artifact_output_with_context(
     automation: &AutomationV2Spec,
     node: &AutomationFlowNode,
@@ -356,6 +417,62 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             })
             .unwrap_or_default();
         let executed_concrete_mcp_tool = !executed_concrete_mcp_tools.is_empty();
+        let failed_tools_for_attempt = tool_telemetry
+            .get("failed_tools")
+            .and_then(Value::as_array)
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let concrete_mcp_action_succeeded = executed_concrete_mcp_tools
+            .iter()
+            .any(|tool| !failed_tools_for_attempt.iter().any(|failed| failed == tool));
+        let task_kind = automation_node_task_kind(node);
+        let node_action_text = format!("{} {}", node.node_id, node.objective).to_ascii_lowercase();
+        let notion_database_row_update_requires_properties =
+            automation_node_notion_database_row_update_requires_properties(&node_action_text);
+        let notion_database_property_update_satisfied =
+            !notion_database_row_update_requires_properties
+                || session_has_notion_database_property_update(session);
+        let connector_action_receipt_satisfied = concrete_mcp_action_succeeded
+            && notion_database_property_update_satisfied
+            && (automation_node_is_outbound_action(node)
+                || matches!(
+                    task_kind.as_deref(),
+                    Some(
+                        "delivery"
+                            | "connector_action"
+                            | "external_action"
+                            | "notion_update"
+                            | "publish"
+                    )
+                )
+                || ((node_action_text.contains("notion")
+                    || node_action_text.contains("database")
+                    || node_action_text.contains("row"))
+                    && (node_action_text.contains("update")
+                        || node_action_text.contains("save")
+                        || node_action_text.contains("write"))));
+        if concrete_mcp_action_succeeded
+            && notion_database_row_update_requires_properties
+            && !notion_database_property_update_satisfied
+        {
+            unmet_requirements.push("notion_database_properties_not_updated".to_string());
+            if semantic_block_reason.is_none() {
+                semantic_block_reason = Some(
+                    "Notion database row update did not update user-visible row properties"
+                        .to_string(),
+                );
+            }
+            if rejected_reason.is_none() {
+                rejected_reason =
+                    Some("notion database row properties were not updated".to_string());
+            }
+        }
         let workspace_inspection_satisfied = tool_telemetry
             .get("workspace_inspection_used")
             .and_then(Value::as_bool)
@@ -1027,14 +1144,15 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 .required_sections
                 .iter()
                 .any(|section| matches!(section.as_str(), "citations" | "web_sources_reviewed"));
-            let missing_editorial_substance =
-                matches!(contract_kind.as_str(), "report_markdown" | "text_summary")
-                    && !selected.as_ref().is_some_and(|assessment| {
-                        !assessment.placeholder_like
-                            && (assessment.substantive
-                                || (assessment.length >= 120 && assessment.paragraph_count >= 1))
-                    });
-            let missing_markdown_structure = contract_kind == "report_markdown"
+            let missing_editorial_substance = !connector_action_receipt_satisfied
+                && matches!(contract_kind.as_str(), "report_markdown" | "text_summary")
+                && !selected.as_ref().is_some_and(|assessment| {
+                    !assessment.placeholder_like
+                        && (assessment.substantive
+                            || (assessment.length >= 120 && assessment.paragraph_count >= 1))
+                });
+            let missing_markdown_structure = !connector_action_receipt_satisfied
+                && contract_kind == "report_markdown"
                 && !selected.as_ref().is_some_and(|assessment| {
                     assessment.heading_count >= 1 && assessment.paragraph_count >= 2
                 });

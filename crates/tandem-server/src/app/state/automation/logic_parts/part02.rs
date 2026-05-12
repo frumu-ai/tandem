@@ -565,6 +565,18 @@ pub(crate) fn render_automation_repair_brief(
     } else {
         String::new()
     };
+    let required_source_read_corrective_line = if missing_required_source_read_paths.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nCORRECTIVE — exact source files are mandatory:\n- The previous attempt finalized without reading required source-of-truth file(s): {}.\n- For this retry, the first source action must be `read` on each exact missing path before `websearch`, `write`, `edit`, or `apply_patch`.\n- Do not use `glob`, `grep`, `codesearch`, summaries, or similarly named files as substitutes for these exact reads.\n- Do not finalize the artifact until these exact paths have been read in this attempt.",
+            missing_required_source_read_paths
+                .iter()
+                .map(|path| format!("`{}`", path))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let web_research_receipt_corrective_line = if unmet_requirements
         .iter()
         .any(|value| value == "web_research_artifact_contradicts_tool_receipts")
@@ -575,7 +587,7 @@ pub(crate) fn render_automation_repair_brief(
     };
 
     Some(format!(
-        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Upstream read paths available for synthesis: {}.\n- Required source read paths: {}.\n- Missing required source read paths: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.{}{}{}{}{}",
+        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Upstream read paths available for synthesis: {}.\n- Required source read paths: {}.\n- Missing required source read paths: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.{}{}{}{}{}{}",
         node.node_id,
         reason,
         validation_basis_line,
@@ -595,6 +607,7 @@ pub(crate) fn render_automation_repair_brief(
         declared_output_corrective_line,
         nonterminal_status_corrective_line,
         concrete_mcp_corrective_line,
+        required_source_read_corrective_line,
         web_research_receipt_corrective_line,
     ))
 }

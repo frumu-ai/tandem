@@ -324,7 +324,7 @@ fn wildcard_automation_allowlist_expands_to_minimal_research_tools() {
 }
 
 #[test]
-fn wildcard_automation_allowlist_keeps_email_delivery_tools_narrow() {
+fn wildcard_automation_allowlist_does_not_infer_mcp_email_delivery_by_name() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
         node_id: "notify_user".to_string(),
@@ -371,10 +371,10 @@ fn wildcard_automation_allowlist_keeps_email_delivery_tools_narrow() {
     );
 
     assert!(!requested.iter().any(|tool| tool == "*"));
-    assert!(requested
+    assert!(!requested
         .iter()
         .any(|tool| tool == "mcp.gmail_alt.gmail_send_email"));
-    assert!(requested
+    assert!(!requested
         .iter()
         .any(|tool| tool == "mcp.gmail_alt.gmail_send_draft"));
     assert!(!requested
@@ -383,7 +383,7 @@ fn wildcard_automation_allowlist_keeps_email_delivery_tools_narrow() {
 }
 
 #[test]
-fn wildcard_automation_allowlist_recognizes_outlook_reply_and_compose_email_tools() {
+fn wildcard_automation_allowlist_does_not_infer_outlook_mcp_email_tools_by_name() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
         node_id: "notify_user".to_string(),
@@ -429,10 +429,10 @@ fn wildcard_automation_allowlist_recognizes_outlook_reply_and_compose_email_tool
         &available_tool_names,
     );
 
-    assert!(requested
+    assert!(!requested
         .iter()
         .any(|tool| tool == "mcp.outlook.reply_message"));
-    assert!(requested
+    assert!(!requested
         .iter()
         .any(|tool| tool == "mcp.outlook.compose_draft"));
     assert!(!requested

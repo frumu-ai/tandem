@@ -405,9 +405,9 @@ pub(super) fn has_email_action_tools(schemas: &[ToolSchema]) -> bool {
 pub(super) fn tool_name_looks_like_email_action(name: &str) -> bool {
     let normalized = normalize_tool_name(name);
     if normalized.starts_with("mcp.") {
-        return normalized.contains("gmail")
-            || normalized.contains("mail")
-            || normalized.contains("email");
+        // MCP server and tool names are user/vendor-controlled labels. Do not
+        // infer capabilities from arbitrary names like `reddit-gmail`.
+        return false;
     }
     normalized.contains("mail") || normalized.contains("email")
 }

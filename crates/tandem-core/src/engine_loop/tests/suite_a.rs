@@ -1138,7 +1138,7 @@ fn normalize_tool_args_write_does_not_treat_path_as_content() {
 #[test]
 fn normalize_tool_args_gmail_send_email_omits_empty_attachment() {
     let normalized = normalize_tool_args(
-        "mcp.composio_1.gmail_send_email",
+        "gmail_send_email",
         json!({
             "to": "user123@example.com",
             "subject": "Test",
@@ -1157,7 +1157,7 @@ fn normalize_tool_args_gmail_send_email_omits_empty_attachment() {
 #[test]
 fn normalize_tool_args_gmail_send_email_keeps_valid_attachment() {
     let normalized = normalize_tool_args(
-        "mcp.composio_1.gmail_send_email",
+        "gmail_send_email",
         json!({
             "to": "user123@example.com",
             "subject": "Test",

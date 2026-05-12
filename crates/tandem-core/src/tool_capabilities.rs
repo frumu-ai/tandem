@@ -131,6 +131,9 @@ fn strip_known_namespace(name: &str) -> Option<String> {
 }
 
 fn tool_name_looks_like_email_delivery(tool_name: &str) -> bool {
+    if tool_name_is_mcp_connector_tool(tool_name) {
+        return false;
+    }
     tool_name_tokens(tool_name).iter().any(|token| {
         matches!(
             token.as_str(),
@@ -176,6 +179,10 @@ fn tool_name_looks_like_email_draft(tool_name: &str) -> bool {
             || compact.contains("emaildraft")
             || compact.contains("composeemail")
             || compact.contains("emailcompose"))
+}
+
+fn tool_name_is_mcp_connector_tool(tool_name: &str) -> bool {
+    tool_name.trim().to_ascii_lowercase().starts_with("mcp.")
 }
 
 fn tool_name_tokens(tool_name: &str) -> Vec<String> {
@@ -243,7 +250,23 @@ mod tests {
     #[test]
     fn email_send_falls_back_to_name_heuristics() {
         assert!(tool_name_matches_profile(
-            "mcp.composio.gmail_send_email",
+            "gmail_send_email",
+            ToolCapabilityProfile::EmailSend
+        ));
+    }
+
+    #[test]
+    fn mcp_server_name_does_not_make_reddit_tool_email_delivery() {
+        assert!(!tool_name_matches_profile(
+            "mcp.reddit_gmail.reddit_search_across_subreddits",
+            ToolCapabilityProfile::EmailDelivery
+        ));
+    }
+
+    #[test]
+    fn mcp_action_name_does_not_infer_email_delivery() {
+        assert!(!tool_name_matches_profile(
+            "mcp.reddit_gmail.gmail_send_email",
             ToolCapabilityProfile::EmailSend
         ));
     }

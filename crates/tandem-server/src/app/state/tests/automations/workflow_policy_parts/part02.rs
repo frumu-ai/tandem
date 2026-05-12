@@ -513,6 +513,184 @@ fn generic_artifact_validation_blocks_weak_report_markdown() {
 }
 
 #[test]
+fn connector_action_receipt_bypasses_editorial_markdown_shape_block() {
+    let workspace_root =
+        std::env::temp_dir().join(format!("tandem-notion-action-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&workspace_root).expect("workspace dir");
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "update_notion_row".to_string(),
+        agent_id: "notion".to_string(),
+        objective: "Update the existing Notion database row with the completed report.".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": "update-notion-row.md"
+            }
+        })),
+    };
+    let mut session = Session::new(
+        Some("notion update".to_string()),
+        Some(workspace_root.to_string_lossy().to_string()),
+    );
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "mcp.notion.notion_update_page".to_string(),
+            args: json!({
+                "command": "update_properties",
+                "page_id": "f3975ce71d8d45318bea2812c65f209b",
+                "properties": {
+                    "Run ID": "run-123",
+                    "Status": "Completed",
+                    "Summary": "Updated the row"
+                }
+            }),
+            result: Some(json!({"page_id": "f3975ce7-1d8d-4531-8bea-2812c65f209b"})),
+            error: None,
+        }],
+    ));
+    let tool_telemetry = json!({
+        "requested_tools": ["mcp_list", "mcp.notion.notion_update_page", "write"],
+        "executed_tools": ["mcp_list", "mcp.notion.notion_update_page", "write"],
+        "failed_tools": [],
+        "tool_call_counts": {
+            "mcp_list": 1,
+            "mcp.notion.notion_update_page": 1,
+            "write": 1
+        }
+    });
+    let (_, artifact_validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "",
+        &tool_telemetry,
+        None,
+        Some((
+            "update-notion-row.md".to_string(),
+            "# Notion row update result\n\n- Target row updated: yes\n".to_string(),
+        )),
+        &std::collections::BTreeSet::new(),
+    );
+
+    assert_eq!(rejected, None);
+    let unmet = artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(!unmet
+        .iter()
+        .any(|value| value.as_str() == Some("markdown_structure_missing")));
+    assert!(!unmet
+        .iter()
+        .any(|value| value.as_str() == Some("editorial_substance_missing")));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
+fn notion_database_row_update_blocks_when_only_page_content_was_replaced() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-notion-content-only-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("workspace dir");
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "update_notion_row".to_string(),
+        agent_id: "notion".to_string(),
+        objective: "Update the existing Notion database row with the completed report.".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": "update-notion-row.md"
+            }
+        })),
+    };
+    let mut session = Session::new(
+        Some("notion update content only".to_string()),
+        Some(workspace_root.to_string_lossy().to_string()),
+    );
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "mcp.notion.notion_update_page".to_string(),
+            args: json!({
+                "command": "replace_content",
+                "page_id": "f3975ce71d8d45318bea2812c65f209b",
+                "new_str": "## Summary\nContent changed, but table row fields did not."
+            }),
+            result: Some(json!({"page_id": "f3975ce7-1d8d-4531-8bea-2812c65f209b"})),
+            error: None,
+        }],
+    ));
+    let tool_telemetry = json!({
+        "requested_tools": ["mcp_list", "mcp.notion.notion_update_page", "write"],
+        "executed_tools": ["mcp_list", "mcp.notion.notion_update_page", "write"],
+        "failed_tools": [],
+        "tool_call_counts": {
+            "mcp_list": 1,
+            "mcp.notion.notion_update_page": 1,
+            "write": 1
+        }
+    });
+    let (_, artifact_validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "",
+        &tool_telemetry,
+        None,
+        Some((
+            "update-notion-row.md".to_string(),
+            "# Notion row update result\n\n- Target row updated: yes\n".to_string(),
+        )),
+        &std::collections::BTreeSet::new(),
+    );
+
+    assert_eq!(
+        rejected.as_deref(),
+        Some("notion database row properties were not updated")
+    );
+    assert!(artifact_validation
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items
+            .iter()
+            .any(|value| value.as_str() == Some("notion_database_properties_not_updated"))));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn publish_node_blocks_when_upstream_editorial_validation_failed() {
     let publish = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

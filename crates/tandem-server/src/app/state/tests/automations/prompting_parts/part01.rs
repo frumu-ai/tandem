@@ -292,6 +292,11 @@ fn review_decision_prompt_suppresses_mcp_discovery_guidance() {
     assert!(!prompt.contains("MCP Discovery:"));
     assert!(prompt.contains("Review Decision Output Contract:"));
     assert!(prompt.contains("top-level `approved`"));
+    assert!(prompt.contains("Workspace Read Boundaries:"));
+    assert!(prompt.contains("Do not inspect host identity or system files such as `/etc/hostname`"));
+    assert!(
+        prompt.contains("A blocked system-file read is not evidence that the workflow is blocked")
+    );
 }
 
 #[test]

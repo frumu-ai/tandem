@@ -1186,6 +1186,8 @@ fn render_automation_repair_brief_includes_exact_missing_required_source_reads()
     assert!(
         brief.contains("exact required source files before finalizing: RESUME.md, docs/resume.md")
     );
+    assert!(brief.contains("CORRECTIVE — exact source files are mandatory"));
+    assert!(brief.contains("the first source action must be `read` on each exact missing path"));
     assert!(brief.contains("required_source_paths_not_read"));
 }
 

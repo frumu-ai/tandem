@@ -389,6 +389,12 @@ fn email_tool_name_compact(tool_name: &str) -> String {
 }
 
 pub(crate) fn is_email_delivery_tool_name(tool_name: &str) -> bool {
+    let normalized = tool_name.trim().to_ascii_lowercase().replace('-', "_");
+    if normalized.starts_with("mcp.") {
+        // MCP tool names are opaque connector labels. Capability decisions need
+        // explicit metadata, not substrings from user/vendor-controlled names.
+        return false;
+    }
     let tokens = email_tool_name_tokens(tool_name);
     let compact = email_tool_name_compact(tool_name);
     let looks_like_email_provider = tokens.iter().any(|token| {

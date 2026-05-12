@@ -44,6 +44,7 @@ pub enum ValidatorClass {
     MissingOptionalEvidence,
     ArtifactWordCountBelowMinimum,
     MissingNonconsumedWorkspaceFiles,
+    RequiredSourcePathsNotRead,
     MissingRequiredArtifactPath,
     ValidatorKindSpecificSoftCheck,
     RepairBudgetExhausted,
@@ -111,6 +112,7 @@ impl ValidatorClass {
             ValidatorClass::MissingNonconsumedWorkspaceFiles => {
                 "missing_nonconsumed_workspace_files"
             }
+            ValidatorClass::RequiredSourcePathsNotRead => "required_source_paths_not_read",
             ValidatorClass::MissingRequiredArtifactPath => "missing_required_artifact_path",
             ValidatorClass::ValidatorKindSpecificSoftCheck => "validator_kind_specific_soft_check",
             ValidatorClass::RepairBudgetExhausted => "repair_budget_exhausted",
@@ -625,17 +627,21 @@ pub fn classify_unmet_requirement(raw: &str) -> Option<ValidatorClass> {
         "missing_required_section" | "missing_section" | "section_missing" => {
             Some(ValidatorClass::MissingRequiredSection)
         }
-        "weak_markdown_structure" | "weak_structure" | "weak_markdown" => {
-            Some(ValidatorClass::WeakMarkdownStructure)
-        }
-        "missing_optional_evidence" | "missing_evidence_optional" => {
-            Some(ValidatorClass::MissingOptionalEvidence)
-        }
+        "weak_markdown_structure"
+        | "weak_structure"
+        | "weak_markdown"
+        | "markdown_structure_missing" => Some(ValidatorClass::WeakMarkdownStructure),
+        "missing_optional_evidence"
+        | "missing_evidence_optional"
+        | "editorial_substance_missing" => Some(ValidatorClass::MissingOptionalEvidence),
         "artifact_word_count_below_minimum" | "artifact_too_short" => {
             Some(ValidatorClass::ArtifactWordCountBelowMinimum)
         }
         "missing_nonconsumed_workspace_files" | "missing_optional_workspace_files" => {
             Some(ValidatorClass::MissingNonconsumedWorkspaceFiles)
+        }
+        "required_source_paths_not_read" | "required_source_read_paths_not_read" => {
+            Some(ValidatorClass::RequiredSourcePathsNotRead)
         }
         "missing_required_artifact_path" | "missing_artifact_path" => {
             Some(ValidatorClass::MissingRequiredArtifactPath)
@@ -1014,6 +1020,18 @@ mod tests {
         assert_eq!(
             classify_unmet_requirement("budget_exceeded"),
             Some(ValidatorClass::BudgetExceeded)
+        );
+        assert_eq!(
+            classify_unmet_requirement("required_source_paths_not_read"),
+            Some(ValidatorClass::RequiredSourcePathsNotRead)
+        );
+        assert_eq!(
+            classify_unmet_requirement("markdown_structure_missing"),
+            Some(ValidatorClass::WeakMarkdownStructure)
+        );
+        assert_eq!(
+            classify_unmet_requirement("editorial_substance_missing"),
+            Some(ValidatorClass::MissingOptionalEvidence)
         );
         assert_eq!(classify_unmet_requirement("totally_unknown_class"), None);
     }
