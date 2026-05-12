@@ -138,6 +138,8 @@ fn bug_monitor_triage_node(
             &bug_monitor_triage_repo_evidence_guidance(artifact_type),
             true,
         )),
+        tool_policy: None,
+        mcp_policy: None,
         retry_policy: Some(json!({
             "max_attempts": 3,
             "backoff_ms": 10_000,

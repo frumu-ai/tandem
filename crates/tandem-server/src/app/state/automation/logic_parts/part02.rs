@@ -1067,7 +1067,7 @@ pub(crate) fn normalize_automation_requested_tools(
             &automation_connector_hint_text(node),
         );
     let explicit_connector_tool_allowlist = !automation_node_is_code_workflow(node)
-        && !node_tool_allowlist.is_empty()
+        && node_runtime_impl::automation_node_has_explicit_tool_policy(node)
         && (connector_hint_mentions
             || node_tool_allowlist
                 .iter()

@@ -1354,6 +1354,8 @@ mod tests {
                         schema: None,
                         summary_guidance: Some("Summarize clearly.".to_string()),
                     }),
+                    tool_policy: None,
+                    mcp_policy: None,
                     retry_policy: Some(json!({ "max_attempts": 1, "retries": 0 })),
                     timeout_ms: Some(60_000),
                     max_tool_calls: None,

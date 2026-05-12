@@ -155,6 +155,8 @@ fn automation_wide_read_only_rules_filter_later_node_write_targets() {
         depends_on: vec![],
         input_refs: vec![],
         output_contract: None,
+        tool_policy: None,
+        mcp_policy: None,
         retry_policy: None,
         timeout_ms: None,
         max_tool_calls: None,
@@ -997,6 +999,46 @@ fn node_tool_allowlist_overrides_broader_agent_policy() {
     );
 
     assert_eq!(requested, vec!["read".to_string(), "write".to_string()]);
+}
+
+#[test]
+fn node_first_class_mcp_policy_is_hard_tool_scope() {
+    let mut node = bare_node();
+    node.node_id = "send-approved-draft".to_string();
+    node.tool_policy = Some(crate::AutomationAgentToolPolicy {
+        allowlist: vec!["read".to_string()],
+        denylist: Vec::new(),
+    });
+    node.mcp_policy = Some(crate::AutomationAgentMcpPolicy {
+        allowed_servers: vec!["reddit-gmail".to_string()],
+        allowed_tools: Some(vec!["mcp.reddit_gmail.gmail_send_draft".to_string()]),
+    });
+    let available_tool_names = std::collections::HashSet::from([
+        "mcp.reddit_gmail.gmail_create_email_draft".to_string(),
+        "mcp.reddit_gmail.gmail_send_draft".to_string(),
+        "mcp.reddit_gmail.gmail_send_email".to_string(),
+        "mcp_list".to_string(),
+        "read".to_string(),
+        "write".to_string(),
+    ]);
+
+    let requested = automation_requested_tools_for_node(
+        &node,
+        "/tmp",
+        vec![
+            "read".to_string(),
+            "write".to_string(),
+            "mcp_list".to_string(),
+            "mcp.reddit_gmail.gmail_create_email_draft".to_string(),
+            "mcp.reddit_gmail.gmail_send_draft".to_string(),
+            "mcp.reddit_gmail.gmail_send_email".to_string(),
+        ],
+        &available_tool_names,
+    );
+
+    assert!(requested.contains(&"mcp.reddit_gmail.gmail_send_draft".to_string()));
+    assert!(!requested.contains(&"mcp.reddit_gmail.gmail_create_email_draft".to_string()));
+    assert!(!requested.contains(&"mcp.reddit_gmail.gmail_send_email".to_string()));
 }
 
 #[test]
@@ -1932,6 +1974,8 @@ async fn reconcile_verified_output_path_waits_for_late_file_visibility() {
                 schema: None,
                 summary_guidance: None,
             }),
+            tool_policy: None,
+            mcp_policy: None,
             retry_policy: None,
             timeout_ms: None,
             max_tool_calls: None,
@@ -1985,6 +2029,8 @@ async fn reconcile_verified_output_path_times_out_when_file_never_appears() {
                 schema: None,
                 summary_guidance: None,
             }),
+            tool_policy: None,
+            mcp_policy: None,
             retry_policy: None,
             timeout_ms: None,
             max_tool_calls: None,
@@ -2024,6 +2070,8 @@ fn automation_node_prompt_timeout_error_matches_same_node_timeout_only() {
             schema: None,
             summary_guidance: None,
         }),
+        tool_policy: None,
+        mcp_policy: None,
         retry_policy: None,
         timeout_ms: None,
         max_tool_calls: None,
@@ -2082,6 +2130,8 @@ async fn reconcile_verified_output_path_marks_stale_existing_run_output_as_not_c
                 schema: None,
                 summary_guidance: None,
             }),
+            tool_policy: None,
+            mcp_policy: None,
             retry_policy: None,
             timeout_ms: None,
             max_tool_calls: None,
@@ -2143,6 +2193,8 @@ async fn reconcile_verified_output_path_recovers_json_artifact_from_session_text
                 schema: None,
                 summary_guidance: None,
             }),
+            tool_policy: None,
+            mcp_policy: None,
             retry_policy: None,
             timeout_ms: None,
             max_tool_calls: None,

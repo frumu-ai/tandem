@@ -36,6 +36,16 @@ type InspectorPanelsProps = {
   loadTemplateIntoSelectedAgent: () => void;
 };
 
+function toolLooksSendCapable(tool: string) {
+  const normalized = String(tool || "").toLowerCase();
+  return (
+    normalized.includes("send_email") ||
+    normalized.includes("sendemail") ||
+    normalized.includes("send_draft") ||
+    normalized.includes("senddraft")
+  );
+}
+
 export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
   const {
     draft,
@@ -60,6 +70,33 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
     setSelectedTemplateLoadId,
     loadTemplateIntoSelectedAgent,
   } = props;
+  const selectedNodeToolMode = selectedNode?.toolAccessMode || "inherit";
+  const selectedNodeTools =
+    selectedNodeToolMode === "custom"
+      ? selectedNode?.toolAllowlist || []
+      : selectedAgent?.toolAllowlist || [];
+  const selectedNodeMcpTools =
+    selectedNodeToolMode === "custom"
+      ? selectedNode?.mcpAllowedTools === null
+        ? null
+        : [...(selectedNode?.mcpOtherAllowedTools || []), ...(selectedNode?.mcpAllowedTools || [])]
+      : selectedAgent?.mcpAllowedTools === null
+        ? null
+        : [
+            ...(selectedAgent?.mcpOtherAllowedTools || []),
+            ...(selectedAgent?.mcpAllowedTools || []),
+          ];
+  const selectedNodeSendCapable =
+    (selectedNodeTools || []).some(toolLooksSendCapable) ||
+    (selectedNodeMcpTools || []).some(toolLooksSendCapable);
+  const selectedNodeMcpSummary =
+    selectedNodeToolMode === "custom"
+      ? selectedNode?.mcpAllowedTools === null
+        ? "MCP: all selected"
+        : selectedNodeMcpTools?.length
+          ? `MCP: ${selectedNodeMcpTools.length} tools`
+          : "MCP: none"
+      : "inherits agent tools";
 
   return (
     <>
@@ -385,6 +422,139 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                 ))}
               </div>
             ) : null}
+            <details className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
+              <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 text-sm text-slate-100">
+                <span className="font-medium">Task Tool Access</span>
+                <span className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="rounded-full border border-slate-700 px-2 py-1 text-slate-300">
+                    {selectedNodeToolMode === "custom"
+                      ? "custom task tools"
+                      : "inherits agent tools"}
+                  </span>
+                  <span className="rounded-full border border-slate-700 px-2 py-1 text-slate-300">
+                    {selectedNodeMcpSummary}
+                  </span>
+                  {selectedNodeSendCapable ? (
+                    <span className="rounded-full border border-red-400/40 bg-red-500/10 px-2 py-1 text-red-200">
+                      send-capable
+                    </span>
+                  ) : null}
+                  <span className="text-slate-500">Expand to change tools for this task only.</span>
+                </span>
+              </summary>
+              <div className="mt-3 grid gap-3">
+                <div className="grid gap-2 md:grid-cols-2">
+                  <button
+                    type="button"
+                    className={
+                      selectedNodeToolMode === "inherit"
+                        ? "tcp-btn-primary justify-start"
+                        : "tcp-btn justify-start"
+                    }
+                    onClick={() =>
+                      updateNode(selectedNode.nodeId, {
+                        toolAccessMode: "inherit",
+                        toolAllowlist: [],
+                        toolDenylist: [],
+                        mcpAllowedServers: [],
+                        mcpAllowedTools: null,
+                        mcpOtherAllowedTools: [],
+                      })
+                    }
+                  >
+                    Inherit agent tools
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      selectedNodeToolMode === "custom"
+                        ? "tcp-btn-primary justify-start"
+                        : "tcp-btn justify-start"
+                    }
+                    onClick={() =>
+                      updateNode(selectedNode.nodeId, {
+                        toolAccessMode: "custom",
+                        toolAllowlist: selectedNode.toolAllowlist?.length
+                          ? selectedNode.toolAllowlist
+                          : selectedAgent?.toolAllowlist || ["read"],
+                        toolDenylist: selectedNode.toolDenylist || [],
+                        mcpAllowedServers: selectedNode.mcpAllowedServers?.length
+                          ? selectedNode.mcpAllowedServers
+                          : selectedAgent?.mcpAllowedServers || [],
+                        mcpAllowedTools:
+                          selectedNode.mcpAllowedTools === undefined
+                            ? selectedAgent?.mcpAllowedTools || null
+                            : selectedNode.mcpAllowedTools,
+                        mcpOtherAllowedTools:
+                          selectedNode.mcpOtherAllowedTools ||
+                          selectedAgent?.mcpOtherAllowedTools ||
+                          [],
+                      })
+                    }
+                  >
+                    Customize this task
+                  </button>
+                </div>
+                {selectedNodeToolMode === "custom" ? (
+                  <>
+                    <label className="grid gap-1">
+                      <span className="text-xs text-slate-400">Task Tool Allowlist</span>
+                      <input
+                        className="tcp-input text-sm"
+                        value={joinCsv(selectedNode.toolAllowlist || [])}
+                        onInput={(event) =>
+                          updateNode(selectedNode.nodeId, {
+                            toolAllowlist: splitCsv((event.target as HTMLInputElement).value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="grid gap-1">
+                      <span className="text-xs text-slate-400">Task Tool Denylist</span>
+                      <input
+                        className="tcp-input text-sm"
+                        value={joinCsv(selectedNode.toolDenylist || [])}
+                        onInput={(event) =>
+                          updateNode(selectedNode.nodeId, {
+                            toolDenylist: splitCsv((event.target as HTMLInputElement).value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="grid gap-1">
+                      <span className="text-xs text-slate-400">Task MCP Servers</span>
+                      <input
+                        className="tcp-input text-sm"
+                        value={joinCsv(selectedNode.mcpAllowedServers || [])}
+                        placeholder={joinCsv(mcpServers) || "No MCP servers detected"}
+                        onInput={(event) =>
+                          updateNode(selectedNode.nodeId, {
+                            mcpAllowedServers: splitCsv((event.target as HTMLInputElement).value),
+                          })
+                        }
+                      />
+                    </label>
+                    {(selectedNode.mcpAllowedServers || []).length ? (
+                      <McpToolAllowlistEditor
+                        title="Task MCP tool access"
+                        subtitle="This list applies only to the selected task. Unchecked tools cannot be reintroduced by capability inference."
+                        discoveredTools={mcpServerRows
+                          .filter((server) =>
+                            (selectedNode.mcpAllowedServers || []).includes(server.name)
+                          )
+                          .flatMap((server) => server.toolCache)}
+                        value={selectedNode.mcpAllowedTools ?? null}
+                        onChange={(next) =>
+                          updateNode(selectedNode.nodeId, { mcpAllowedTools: next })
+                        }
+                        collapsible
+                        defaultCollapsed
+                      />
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </details>
           </div>
         ) : (
           <EmptyState text="Select a stage to edit it." />

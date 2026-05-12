@@ -889,6 +889,8 @@ fn build_channel_automation(draft: &ChannelAutomationDraftRecord, now: u64) -> A
                         "Summarize the outcome in channel-safe language.".to_string(),
                     ),
                 }),
+                tool_policy: None,
+                mcp_policy: None,
                 retry_policy: None,
                 timeout_ms: None,
                 max_tool_calls: Some(16),

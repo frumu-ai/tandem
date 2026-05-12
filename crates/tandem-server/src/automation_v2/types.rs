@@ -398,6 +398,10 @@ pub struct AutomationFlowNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<AutomationFlowOutputContract>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_policy: Option<AutomationAgentToolPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_policy: Option<AutomationAgentMcpPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_policy: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
@@ -454,6 +458,8 @@ where
             depends_on: value.depends_on,
             input_refs: value.input_refs.into_iter().map(Into::into).collect(),
             output_contract: value.output_contract.map(Into::into),
+            tool_policy: None,
+            mcp_policy: None,
             retry_policy: value.retry_policy,
             timeout_ms: value.timeout_ms,
             max_tool_calls: None,

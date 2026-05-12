@@ -936,10 +936,57 @@ export function MyAutomationsContainer({
               node?.node_id || node?.nodeId || node?.id || `node-${index}`
             ).trim();
             const draftNode = draft.nodes.find((row: any) => row.nodeId === nodeId);
+            const nodeMcpAllowedTools =
+              draftNode?.toolAccessMode === "custom"
+                ? Array.isArray(draftNode.mcpAllowedTools)
+                  ? [...(draftNode.mcpOtherAllowedTools || []), ...draftNode.mcpAllowedTools]
+                  : draftNode.mcpOtherAllowedTools || []
+                : [];
             return draftNode
               ? {
                   ...node,
                   objective: String(draftNode.objective || "").trim(),
+                  tool_policy:
+                    draftNode.toolAccessMode === "custom"
+                      ? {
+                          allowlist: [
+                            ...(draftNode.toolAllowlist || []),
+                            ...(draftNode.mcpAllowedTools === null
+                              ? (draftNode.mcpAllowedServers || []).map(
+                                  (server: string) =>
+                                    `mcp.${
+                                      String(server || "")
+                                        .trim()
+                                        .toLowerCase()
+                                        .replace(/[^a-z0-9]+/g, "_")
+                                        .replace(/^_+|_+$/g, "") || "mcp"
+                                    }.*`
+                                )
+                              : nodeMcpAllowedTools),
+                          ]
+                            .map((entry: string) => String(entry || "").trim())
+                            .filter(Boolean),
+                          denylist: (draftNode.toolDenylist || [])
+                            .map((entry: string) => String(entry || "").trim())
+                            .filter(Boolean),
+                        }
+                      : undefined,
+                  toolPolicy: undefined,
+                  mcp_policy:
+                    draftNode.toolAccessMode === "custom"
+                      ? {
+                          allowed_servers: (draftNode.mcpAllowedServers || [])
+                            .map((entry: string) => String(entry || "").trim())
+                            .filter(Boolean),
+                          allowed_tools:
+                            draftNode.mcpAllowedTools === null
+                              ? null
+                              : nodeMcpAllowedTools
+                                  .map((entry: string) => String(entry || "").trim())
+                                  .filter(Boolean),
+                        }
+                      : undefined,
+                  mcpPolicy: undefined,
                 }
               : node;
           })

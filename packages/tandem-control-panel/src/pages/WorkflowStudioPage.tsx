@@ -842,7 +842,9 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
               (ref) => safeString(ref.alias) === "external_research"
             );
             const toolAllowlist = normalizeNodeAwareToolAllowlist(
-              agent?.toolAllowlist || [],
+              node.toolAccessMode === "custom"
+                ? node.toolAllowlist || []
+                : agent?.toolAllowlist || [],
               normalizedNodes.filter((entry) => entry.agentId === node.agentId)
             );
             const expectsWebResearch =
@@ -905,10 +907,37 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                   ].filter((value): value is string => Boolean(value))
                 : [];
             const retryOnMissing = [...requiredEvidence, ...requiredSections, ...prewriteGates];
+            const nodeMcpAllowedTools =
+              node.toolAccessMode === "custom"
+                ? Array.isArray(node.mcpAllowedTools)
+                  ? [...(node.mcpOtherAllowedTools || []), ...node.mcpAllowedTools]
+                  : (node.mcpAllowedServers || []).map(
+                      (server) => `mcp.${normalizeMcpServerNamespace(server)}.*`
+                    )
+                : [];
             return {
               node_id: safeString(node.nodeId),
               agent_id: safeString(node.agentId),
               objective: safeString(node.objective) || safeString(node.title),
+              tool_policy:
+                node.toolAccessMode === "custom"
+                  ? {
+                      allowlist: [...toolAllowlist, ...nodeMcpAllowedTools],
+                      denylist: (node.toolDenylist || [])
+                        .map((entry) => safeString(entry))
+                        .filter(Boolean),
+                    }
+                  : undefined,
+              mcp_policy:
+                node.toolAccessMode === "custom"
+                  ? {
+                      allowed_servers: (node.mcpAllowedServers || [])
+                        .map((entry) => safeString(entry))
+                        .filter(Boolean),
+                      allowed_tools:
+                        node.mcpAllowedTools === null ? null : nodeMcpAllowedTools.filter(Boolean),
+                    }
+                  : undefined,
               depends_on: node.dependsOn.map((dep) => safeString(dep)).filter(Boolean),
               input_refs: syncInputRefs(node.dependsOn, node.inputRefs).map((ref) => ({
                 from_step_id: safeString(ref.fromStepId),

@@ -852,6 +852,18 @@ impl AppState {
                 .take()
                 .map(normalize_allowed_tools);
         }
+        for node in &mut automation.flow.nodes {
+            if let Some(policy) = node.tool_policy.as_mut() {
+                policy.allowlist =
+                    config::channels::normalize_allowed_tools(policy.allowlist.clone());
+                policy.denylist =
+                    config::channels::normalize_allowed_tools(policy.denylist.clone());
+            }
+            if let Some(policy) = node.mcp_policy.as_mut() {
+                policy.allowed_servers = normalize_non_empty_list(policy.allowed_servers.clone());
+                policy.allowed_tools = policy.allowed_tools.take().map(normalize_allowed_tools);
+            }
+        }
         let now = now_ms();
         if automation.created_at_ms == 0 {
             automation.created_at_ms = now;

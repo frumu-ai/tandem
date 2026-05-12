@@ -55,6 +55,12 @@ export type StudioNodeDraft = {
   verificationState?: string;
   taskOwner?: string;
   verificationCommand?: string;
+  toolAccessMode?: "inherit" | "custom";
+  toolAllowlist?: string[];
+  toolDenylist?: string[];
+  mcpAllowedServers?: string[];
+  mcpAllowedTools?: string[] | null;
+  mcpOtherAllowedTools?: string[];
 };
 
 export type StudioWorkflowDraft = {
@@ -157,6 +163,12 @@ export function createEmptyNodeDraft(
     verificationState: "",
     taskOwner: "",
     verificationCommand: "",
+    toolAccessMode: "inherit",
+    toolAllowlist: [],
+    toolDenylist: [],
+    mcpAllowedServers: [],
+    mcpAllowedTools: null,
+    mcpOtherAllowedTools: [],
     ...overrides,
   };
 }

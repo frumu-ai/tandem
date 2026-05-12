@@ -58,21 +58,49 @@ pub(crate) fn merge_automation_agent_allowlist(
 }
 
 pub(crate) fn automation_node_metadata_tool_allowlist(node: &AutomationFlowNode) -> Vec<String> {
-    node.metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("tool_allowlist"))
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|tool| !tool.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .map(config::channels::normalize_allowed_tools)
-        .unwrap_or_default()
+    let mut allowlist = Vec::new();
+    if let Some(policy) = node.tool_policy.as_ref() {
+        allowlist.extend(policy.allowlist.clone());
+    } else {
+        allowlist.extend(
+            node.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("tool_allowlist"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|tool| !tool.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .map(config::channels::normalize_allowed_tools)
+                .unwrap_or_default(),
+        );
+    }
+    if let Some(policy) = node.mcp_policy.as_ref() {
+        if let Some(tools) = policy.allowed_tools.as_ref() {
+            allowlist.extend(tools.clone());
+        } else {
+            allowlist.extend(policy.allowed_servers.iter().map(|server| {
+                format!("mcp.{}.*", crate::http::mcp::mcp_namespace_segment(server))
+            }));
+        }
+    }
+    config::channels::normalize_allowed_tools(allowlist)
+}
+
+pub(crate) fn automation_node_has_explicit_tool_policy(node: &AutomationFlowNode) -> bool {
+    node.tool_policy.is_some()
+        || node.mcp_policy.is_some()
+        || node
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("tool_allowlist"))
+            .and_then(Value::as_array)
+            .is_some()
 }
 
 pub(crate) fn automation_node_builder_priority(node: &AutomationFlowNode) -> i32 {
@@ -325,7 +353,7 @@ pub(crate) fn normalize_automation_requested_tools(
             &automation_connector_hint_text(node),
         );
     let explicit_node_tool_allowlist =
-        !automation_node_is_code_workflow(node) && !node_tool_allowlist.is_empty();
+        !automation_node_is_code_workflow(node) && automation_node_has_explicit_tool_policy(node);
     let explicit_connector_tool_allowlist = explicit_node_tool_allowlist
         && (connector_hint_mentions
             || node_tool_allowlist
@@ -725,7 +753,7 @@ pub(crate) fn resolve_automation_node_tool_envelope(
         ));
     }
     let explicit_node_tool_allowlist = automation_node_metadata_tool_allowlist(node);
-    if !automation_node_is_code_workflow(node) && !explicit_node_tool_allowlist.is_empty() {
+    if !automation_node_is_code_workflow(node) && automation_node_has_explicit_tool_policy(node) {
         let mut explicit_allowed =
             config::channels::normalize_allowed_tools(explicit_node_tool_allowlist.clone());
         if explicit_allowed.iter().any(|tool| tool.starts_with("mcp.")) {

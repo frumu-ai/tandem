@@ -42,6 +42,8 @@ async fn automation_v2_backlog_task_claim_and_requeue_routes_work() {
                 depends_on: Vec::new(),
                 input_refs: Vec::new(),
                 output_contract: None,
+                tool_policy: None,
+                mcp_policy: None,
                 retry_policy: None,
                 timeout_ms: None,
                 max_tool_calls: None,

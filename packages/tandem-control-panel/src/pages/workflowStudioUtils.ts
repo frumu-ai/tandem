@@ -702,6 +702,54 @@ export function normalizeNodeDraft(row: any): StudioNodeDraft {
     : [];
   const metadataBuilder =
     row?.metadata?.builder && typeof row.metadata.builder === "object" ? row.metadata.builder : {};
+  const hasNodeToolPolicy =
+    row?.tool_policy && typeof row.tool_policy === "object"
+      ? true
+      : row?.toolPolicy && typeof row.toolPolicy === "object"
+        ? true
+        : false;
+  const hasNodeMcpPolicy =
+    row?.mcp_policy && typeof row.mcp_policy === "object"
+      ? true
+      : row?.mcpPolicy && typeof row.mcpPolicy === "object"
+        ? true
+        : false;
+  const legacyToolAllowlist = Array.isArray(row?.metadata?.tool_allowlist)
+    ? row.metadata.tool_allowlist.map((entry: any) => safeString(entry)).filter(Boolean)
+    : [];
+  const nodeToolAllowlist = hasNodeToolPolicy
+    ? normalizeWorkspaceToolAllowlist(
+        Array.isArray(row?.tool_policy?.allowlist || row?.toolPolicy?.allowlist)
+          ? (row.tool_policy?.allowlist || row.toolPolicy?.allowlist)
+              .map((entry: any) => safeString(entry))
+              .filter(Boolean)
+          : []
+      )
+    : normalizeWorkspaceToolAllowlist(legacyToolAllowlist);
+  const nodeToolDenylist = hasNodeToolPolicy
+    ? normalizeWorkspaceToolAllowlist(
+        Array.isArray(row?.tool_policy?.denylist || row?.toolPolicy?.denylist)
+          ? (row.tool_policy?.denylist || row.toolPolicy?.denylist)
+              .map((entry: any) => safeString(entry))
+              .filter(Boolean)
+          : []
+      )
+    : [];
+  const nodeMcpAllowedServers = hasNodeMcpPolicy
+    ? normalizeWorkspaceToolAllowlist(
+        Array.isArray(row?.mcp_policy?.allowed_servers || row?.mcpPolicy?.allowedServers)
+          ? (row.mcp_policy?.allowed_servers || row.mcpPolicy?.allowedServers)
+              .map((entry: any) => safeString(entry))
+              .filter(Boolean)
+          : []
+      )
+    : [];
+  const rawNodeMcpTools = hasNodeMcpPolicy
+    ? (row?.mcp_policy?.allowed_tools ?? row?.mcpPolicy?.allowedTools)
+    : nodeToolAllowlist;
+  const splitNodeMcpTools = splitMcpAllowedTools(
+    Array.isArray(rawNodeMcpTools) ? rawNodeMcpTools : []
+  );
   return normalizeNodeWorkflowClassification({
     nodeId: safeString(row?.nodeId || row?.node_id || row?.id),
     title: safeString(row?.title || row?.objective || row?.nodeId || row?.node_id),
@@ -766,6 +814,20 @@ export function normalizeNodeDraft(row: any): StudioNodeDraft {
     verificationCommand: safeString(
       row?.verificationCommand || row?.verification_command || metadataBuilder?.verification_command
     ),
+    toolAccessMode:
+      hasNodeToolPolicy || hasNodeMcpPolicy || legacyToolAllowlist.length ? "custom" : "inherit",
+    toolAllowlist: nodeToolAllowlist,
+    toolDenylist: nodeToolDenylist,
+    mcpAllowedServers: nodeMcpAllowedServers,
+    mcpAllowedTools:
+      hasNodeMcpPolicy && rawNodeMcpTools == null
+        ? null
+        : splitNodeMcpTools.mcpTools.length
+          ? splitNodeMcpTools.mcpTools
+          : hasNodeMcpPolicy
+            ? []
+            : null,
+    mcpOtherAllowedTools: splitNodeMcpTools.otherTools,
   });
 }
 

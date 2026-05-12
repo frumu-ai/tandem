@@ -91,6 +91,8 @@ fn sample_automation(workspace_root: &str, automation_id: &str) -> crate::Automa
                     schema: None,
                     summary_guidance: Some("Summarize the report.".to_string()),
                 }),
+                tool_policy: None,
+                mcp_policy: None,
                 retry_policy: Some(json!({"max_attempts": 1})),
                 timeout_ms: Some(60_000),
                 max_tool_calls: None,

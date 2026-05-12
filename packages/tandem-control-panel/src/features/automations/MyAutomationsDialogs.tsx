@@ -80,6 +80,11 @@ function downloadWorkflowRecoveryBundle(workflowEditDraft: any) {
   URL.revokeObjectURL(url);
 }
 
+function toolLooksSendCapable(tool: string) {
+  const value = String(tool || "").toLowerCase();
+  return /\bsend\b/.test(value) || value.includes("_send") || value.includes("send_");
+}
+
 export function LegacyAutomationEditDialog({
   editDraft,
   setEditDraft,
@@ -993,61 +998,44 @@ export function WorkflowAutomationEditDialog({
               >
                 {workflowEditDraft.nodes.length ? (
                   <div className="grid gap-3">
-                    {workflowEditDraft.nodes.map((node: any, index: number) => (
-                      <div
-                        key={node.nodeId || index}
-                        className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3"
-                      >
-                        <div className="mb-2 flex flex-wrap items-center gap-2">
-                          <strong className="text-sm text-slate-100">
-                            {node.nodeId || node.title || `Step ${index + 1}`}
-                          </strong>
-                          {node.agentId ? (
-                            <span className="tcp-badge-info">agent: {node.agentId}</span>
-                          ) : null}
-                        </div>
-                        <textarea
-                          className="tcp-input min-h-[180px] text-sm leading-6"
-                          value={node.objective}
-                          onInput={(e) =>
-                            setWorkflowEditDraft((current: any) =>
-                              current
-                                ? {
-                                    ...current,
-                                    nodes: current.nodes.map((row: any) =>
-                                      row.nodeId === node.nodeId
-                                        ? {
-                                            ...row,
-                                            objective: (e.target as HTMLTextAreaElement).value,
-                                          }
-                                        : row
-                                    ),
-                                  }
-                                : current
-                            )
-                          }
-                          placeholder="Describe exactly what this step should do."
-                        />
-                        <div className="mt-3 grid gap-2 rounded-lg border border-slate-800/70 bg-slate-950/30 p-3">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="text-xs uppercase tracking-wide text-slate-500">
-                              Step routing
-                            </div>
-                            {node.modelProvider || node.modelId ? (
-                              <span className="tcp-badge-info">overrides workflow model</span>
-                            ) : (
-                              <span className="tcp-badge-info">inherits workflow model</span>
-                            )}
+                    {workflowEditDraft.nodes.map((node: any, index: number) => {
+                      const nodeToolMode = node.toolAccessMode || "inherit";
+                      const nodeMcpTools =
+                        nodeToolMode === "custom"
+                          ? node.mcpAllowedTools === null
+                            ? (node.mcpAllowedServers || []).map(
+                                (server: string) => `mcp.${normalizeMcpNamespaceSegment(server)}.*`
+                              )
+                            : [
+                                ...(node.mcpOtherAllowedTools || []),
+                                ...(node.mcpAllowedTools || []),
+                              ]
+                          : workflowEditDraft.selectedMcpTools === null
+                            ? (workflowEditDraft.selectedMcpServers || []).map(
+                                (server: string) => `mcp.${normalizeMcpNamespaceSegment(server)}.*`
+                              )
+                            : [
+                                ...(workflowEditDraft.mcpOtherAllowedTools || []),
+                                ...(workflowEditDraft.selectedMcpTools || []),
+                              ];
+                      const nodeSendCapable = nodeMcpTools.some(toolLooksSendCapable);
+                      return (
+                        <div
+                          key={node.nodeId || index}
+                          className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3"
+                        >
+                          <div className="mb-2 flex flex-wrap items-center gap-2">
+                            <strong className="text-sm text-slate-100">
+                              {node.nodeId || node.title || `Step ${index + 1}`}
+                            </strong>
+                            {node.agentId ? (
+                              <span className="tcp-badge-info">agent: {node.agentId}</span>
+                            ) : null}
                           </div>
-                          <ProviderModelSelector
-                            providerLabel="Step model provider"
-                            modelLabel="Step model"
-                            draft={{
-                              provider: node.modelProvider,
-                              model: node.modelId,
-                            }}
-                            providers={providerOptions}
-                            onChange={(draftModel) =>
+                          <textarea
+                            className="tcp-input min-h-[180px] text-sm leading-6"
+                            value={node.objective}
+                            onInput={(e) =>
                               setWorkflowEditDraft((current: any) =>
                                 current
                                   ? {
@@ -1056,8 +1044,7 @@ export function WorkflowAutomationEditDialog({
                                         row.nodeId === node.nodeId
                                           ? {
                                               ...row,
-                                              modelProvider: draftModel.provider,
-                                              modelId: draftModel.model,
+                                              objective: (e.target as HTMLTextAreaElement).value,
                                             }
                                           : row
                                       ),
@@ -1065,20 +1052,297 @@ export function WorkflowAutomationEditDialog({
                                   : current
                               )
                             }
-                            inheritLabel="Use workflow model"
+                            placeholder="Describe exactly what this step should do."
                           />
-                          {validateModelInput(node.modelProvider, node.modelId) ? (
-                            <div className="text-xs text-red-300">
-                              {validateModelInput(node.modelProvider, node.modelId)}
+                          <div className="mt-3 grid gap-2 rounded-lg border border-slate-800/70 bg-slate-950/30 p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-xs uppercase tracking-wide text-slate-500">
+                                Step routing
+                              </div>
+                              {node.modelProvider || node.modelId ? (
+                                <span className="tcp-badge-info">overrides workflow model</span>
+                              ) : (
+                                <span className="tcp-badge-info">inherits workflow model</span>
+                              )}
                             </div>
-                          ) : (
-                            <div className="text-xs text-slate-500">
-                              Leave both fields blank to inherit the workflow model.
+                            <ProviderModelSelector
+                              providerLabel="Step model provider"
+                              modelLabel="Step model"
+                              draft={{
+                                provider: node.modelProvider,
+                                model: node.modelId,
+                              }}
+                              providers={providerOptions}
+                              onChange={(draftModel) =>
+                                setWorkflowEditDraft((current: any) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        nodes: current.nodes.map((row: any) =>
+                                          row.nodeId === node.nodeId
+                                            ? {
+                                                ...row,
+                                                modelProvider: draftModel.provider,
+                                                modelId: draftModel.model,
+                                              }
+                                            : row
+                                        ),
+                                      }
+                                    : current
+                                )
+                              }
+                              inheritLabel="Use workflow model"
+                            />
+                            {validateModelInput(node.modelProvider, node.modelId) ? (
+                              <div className="text-xs text-red-300">
+                                {validateModelInput(node.modelProvider, node.modelId)}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-slate-500">
+                                Leave both fields blank to inherit the workflow model.
+                              </div>
+                            )}
+                          </div>
+                          <details className="mt-3 rounded-lg border border-slate-800/70 bg-slate-950/30 p-3">
+                            <summary className="cursor-pointer list-none">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="text-xs uppercase tracking-wide text-slate-500">
+                                  Task tool access
+                                </div>
+                                <div className="flex flex-wrap gap-2 text-[11px]">
+                                  <span className="tcp-badge-info">
+                                    {nodeToolMode === "custom"
+                                      ? "custom task tools"
+                                      : "inherits workflow tools"}
+                                  </span>
+                                  <span
+                                    className={
+                                      nodeSendCapable ? "tcp-badge-danger" : "tcp-badge-info"
+                                    }
+                                  >
+                                    {nodeSendCapable ? "send-capable" : "no send tools selected"}
+                                  </span>
+                                  <span className="text-slate-500">
+                                    Expand to change tools for this task only.
+                                  </span>
+                                </div>
+                              </div>
+                            </summary>
+                            <div className="mt-3 grid gap-3">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  className={`tcp-btn h-7 px-2 text-xs ${
+                                    nodeToolMode === "inherit"
+                                      ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
+                                      : ""
+                                  }`}
+                                  onClick={() =>
+                                    setWorkflowEditDraft((current: any) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            nodes: current.nodes.map((row: any) =>
+                                              row.nodeId === node.nodeId
+                                                ? {
+                                                    ...row,
+                                                    toolAccessMode: "inherit",
+                                                    toolAllowlist: [],
+                                                    toolDenylist: [],
+                                                    mcpAllowedServers: [],
+                                                    mcpAllowedTools: null,
+                                                    mcpOtherAllowedTools: [],
+                                                  }
+                                                : row
+                                            ),
+                                          }
+                                        : current
+                                    )
+                                  }
+                                >
+                                  Inherit workflow tools
+                                </button>
+                                <button
+                                  className={`tcp-btn h-7 px-2 text-xs ${
+                                    nodeToolMode === "custom"
+                                      ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
+                                      : ""
+                                  }`}
+                                  onClick={() =>
+                                    setWorkflowEditDraft((current: any) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            nodes: current.nodes.map((row: any) =>
+                                              row.nodeId === node.nodeId
+                                                ? {
+                                                    ...row,
+                                                    toolAccessMode: "custom",
+                                                    toolAllowlist: row.toolAllowlist?.length
+                                                      ? row.toolAllowlist
+                                                      : String(current.customToolsText || "")
+                                                          .split(/[\n,]/g)
+                                                          .map((value: string) =>
+                                                            String(value || "").trim()
+                                                          )
+                                                          .filter(Boolean),
+                                                    mcpAllowedServers: row.mcpAllowedServers?.length
+                                                      ? row.mcpAllowedServers
+                                                      : current.selectedMcpServers || [],
+                                                    mcpAllowedTools:
+                                                      row.mcpAllowedTools === undefined
+                                                        ? current.selectedMcpTools
+                                                        : row.mcpAllowedTools,
+                                                    mcpOtherAllowedTools:
+                                                      row.mcpOtherAllowedTools ||
+                                                      current.mcpOtherAllowedTools ||
+                                                      [],
+                                                  }
+                                                : row
+                                            ),
+                                          }
+                                        : current
+                                    )
+                                  }
+                                >
+                                  Customize this task
+                                </button>
+                              </div>
+                              {nodeToolMode === "custom" ? (
+                                <>
+                                  <div className="grid gap-1">
+                                    <label className="text-xs text-slate-400">
+                                      Task tool allowlist
+                                    </label>
+                                    <textarea
+                                      className="tcp-input min-h-[96px] font-mono text-xs"
+                                      value={(node.toolAllowlist || []).join("\n")}
+                                      onInput={(e) =>
+                                        setWorkflowEditDraft((current: any) =>
+                                          current
+                                            ? {
+                                                ...current,
+                                                nodes: current.nodes.map((row: any) =>
+                                                  row.nodeId === node.nodeId
+                                                    ? {
+                                                        ...row,
+                                                        toolAllowlist: (
+                                                          e.target as HTMLTextAreaElement
+                                                        ).value
+                                                          .split(/[\n,]/g)
+                                                          .map((value: string) =>
+                                                            String(value || "").trim()
+                                                          )
+                                                          .filter(Boolean),
+                                                      }
+                                                    : row
+                                                ),
+                                              }
+                                            : current
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                  <div className="grid gap-1">
+                                    <label className="text-xs text-slate-400">
+                                      Task MCP servers
+                                    </label>
+                                    <input
+                                      className="tcp-input font-mono text-xs"
+                                      value={(node.mcpAllowedServers || []).join(", ")}
+                                      onInput={(e) =>
+                                        setWorkflowEditDraft((current: any) =>
+                                          current
+                                            ? {
+                                                ...current,
+                                                nodes: current.nodes.map((row: any) =>
+                                                  row.nodeId === node.nodeId
+                                                    ? {
+                                                        ...row,
+                                                        mcpAllowedServers: (
+                                                          e.target as HTMLInputElement
+                                                        ).value
+                                                          .split(/[\n,]/g)
+                                                          .map((value: string) =>
+                                                            String(value || "").trim()
+                                                          )
+                                                          .filter(Boolean),
+                                                      }
+                                                    : row
+                                                ),
+                                              }
+                                            : current
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                  <div className="grid gap-1">
+                                    <label className="text-xs text-slate-400">
+                                      Task tool denylist
+                                    </label>
+                                    <input
+                                      className="tcp-input font-mono text-xs"
+                                      value={(node.toolDenylist || []).join(", ")}
+                                      onInput={(e) =>
+                                        setWorkflowEditDraft((current: any) =>
+                                          current
+                                            ? {
+                                                ...current,
+                                                nodes: current.nodes.map((row: any) =>
+                                                  row.nodeId === node.nodeId
+                                                    ? {
+                                                        ...row,
+                                                        toolDenylist: (
+                                                          e.target as HTMLInputElement
+                                                        ).value
+                                                          .split(/[\n,]/g)
+                                                          .map((value: string) =>
+                                                            String(value || "").trim()
+                                                          )
+                                                          .filter(Boolean),
+                                                      }
+                                                    : row
+                                                ),
+                                              }
+                                            : current
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                  <McpToolAllowlistEditor
+                                    title="Task MCP tool access"
+                                    subtitle="This task-level allowlist overrides the workflow MCP selection for only this step."
+                                    discoveredTools={mcpServers
+                                      .filter((server: any) =>
+                                        (node.mcpAllowedServers || []).includes(server.name)
+                                      )
+                                      .flatMap((server: any) =>
+                                        Array.isArray(server.toolCache) ? server.toolCache : []
+                                      )}
+                                    value={node.mcpAllowedTools}
+                                    onChange={(next) =>
+                                      setWorkflowEditDraft((current: any) =>
+                                        current
+                                          ? {
+                                              ...current,
+                                              nodes: current.nodes.map((row: any) =>
+                                                row.nodeId === node.nodeId
+                                                  ? { ...row, mcpAllowedTools: next }
+                                                  : row
+                                              ),
+                                            }
+                                          : current
+                                      )
+                                    }
+                                    collapsible
+                                    defaultCollapsed
+                                  />
+                                </>
+                              ) : null}
                             </div>
-                          )}
+                          </details>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="text-xs text-slate-400">

@@ -28,6 +28,8 @@ fn bare_node() -> AutomationFlowNode {
         depends_on: vec![],
         input_refs: vec![],
         output_contract: None,
+        tool_policy: None,
+        mcp_policy: None,
         retry_policy: None,
         timeout_ms: None,
         max_tool_calls: None,

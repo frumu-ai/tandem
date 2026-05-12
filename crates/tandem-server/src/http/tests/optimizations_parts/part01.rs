@@ -51,6 +51,8 @@ fn sample_automation(workspace_root: &str) -> crate::AutomationV2Spec {
                     schema: None,
                     summary_guidance: Some("Summarize the report clearly.".to_string()),
                 }),
+                tool_policy: None,
+                mcp_policy: None,
                 retry_policy: Some(json!({"max_attempts": 1})),
                 timeout_ms: Some(60_000),
                 max_tool_calls: None,

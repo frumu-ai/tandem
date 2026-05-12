@@ -1247,6 +1247,8 @@ mod tests {
                 schema: None,
                 summary_guidance: None,
             }),
+            tool_policy: None,
+            mcp_policy: None,
             retry_policy: None,
             timeout_ms: None,
             max_tool_calls: None,

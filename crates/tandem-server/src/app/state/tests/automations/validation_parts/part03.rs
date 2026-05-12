@@ -1,4 +1,3 @@
-
 #[test]
 fn bootstrap_required_files_are_inferred_from_objective_paths_without_filename_hardcoding() {
     let workspace_root = std::env::temp_dir().join(format!(
@@ -22,6 +21,8 @@ fn bootstrap_required_files_are_inferred_from_objective_paths_without_filename_h
             schema: None,
             summary_guidance: Some("Return a structured handoff.".to_string()),
         }),
+        tool_policy: None,
+        mcp_policy: None,
         retry_policy: None,
         timeout_ms: None,
         max_tool_calls: None,
@@ -148,6 +149,8 @@ fn research_nodes_default_to_five_attempts() {
             schema: None,
             summary_guidance: None,
         }),
+        tool_policy: None,
+        mcp_policy: None,
         retry_policy: None,
         timeout_ms: None,
         max_tool_calls: None,

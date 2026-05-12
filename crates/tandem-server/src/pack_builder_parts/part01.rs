@@ -336,6 +336,8 @@ fn build_pack_builder_automation(
                     schema: None,
                     summary_guidance: None,
                 }),
+                tool_policy: None,
+                mcp_policy: None,
                 retry_policy: Some(json!({ "max_attempts": 3 })),
                 timeout_ms: None,
                 max_tool_calls: None,

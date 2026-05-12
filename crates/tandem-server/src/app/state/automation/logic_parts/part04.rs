@@ -377,10 +377,11 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         let connector_discovery_text = automation_connector_hint_text(node);
         let explicit_node_tool_allowlist =
             super::node_runtime_impl::automation_node_metadata_tool_allowlist(node);
-        let explicit_node_allows_no_mcp_tools = !explicit_node_tool_allowlist.is_empty()
-            && !explicit_node_tool_allowlist
-                .iter()
-                .any(|tool| tool == "mcp_list" || tool.starts_with("mcp."));
+        let explicit_node_allows_no_mcp_tools =
+            super::node_runtime_impl::automation_node_has_explicit_tool_policy(node)
+                && !explicit_node_tool_allowlist
+                    .iter()
+                    .any(|tool| tool == "mcp_list" || tool.starts_with("mcp."));
         let connector_discovery_required =
             tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
                 &connector_discovery_text,
@@ -1452,10 +1453,11 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         .join("\n");
         let explicit_node_tool_allowlist =
             super::node_runtime_impl::automation_node_metadata_tool_allowlist(node);
-        let explicit_node_allows_no_mcp_tools = !explicit_node_tool_allowlist.is_empty()
-            && !explicit_node_tool_allowlist
-                .iter()
-                .any(|tool| tool == "mcp_list" || tool.starts_with("mcp."));
+        let explicit_node_allows_no_mcp_tools =
+            super::node_runtime_impl::automation_node_has_explicit_tool_policy(node)
+                && !explicit_node_tool_allowlist
+                    .iter()
+                    .any(|tool| tool == "mcp_list" || tool.starts_with("mcp."));
         let connector_discovery_required =
             tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
                 &connector_discovery_text,

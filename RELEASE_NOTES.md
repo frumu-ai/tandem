@@ -69,6 +69,12 @@ Chat also preflights active-run cleanup before sending a new prompt. If a stale 
 
 The Coder board now matches ACA's updated GitHub Project intake rules for launchable work. `Todo` and `TODOS` lanes are recognized as runnable in the control panel, and planned GitHub tasks are moved into the detected launch lane rather than assuming the project has a `Ready` status. This fixes projects where the coding agent should accept cards from `TODOS` but the board UI left them looking unlaunchable or published new tasks into the wrong lane.
 
+Workflow tasks now have first-class per-node tool access. Automation V2 nodes can carry their own `tool_policy` and `mcp_policy`, and the runtime treats those policies as a hard session scope rather than a hint layered on top of broader workflow access. This is especially important for approval-gated Gmail draft workflows: the compose and draft-create steps can be scoped away from send tools, while the post-approval step can be scoped to the concrete send-draft MCP tool that should run only after approval.
+
+The control panel exposes this in both Workflow Studio and the existing automation edit dialog. Each node has a default-collapsed Task tool access panel with clear inherit/custom markers, MCP server/tool selectors, and a send-capable marker so operators can quickly spot which task is allowed to send. Saving a workflow preserves node-level built-in tool allowlists/denylists plus exact MCP server/tool choices.
+
+The runtime also understands node MCP policy when computing concrete MCP allowlists and connector discovery behavior. Explicit node policies, including empty custom policies, are treated as intentional constraints. A regression test covers the Gmail approval case by allowing `mcp.reddit_gmail.gmail_send_draft` on the post-approval node while filtering out `gmail_create_email_draft` and `gmail_send_email`.
+
 ## v0.5.4 (Released 2026-05-05)
 
 This patch fixes automation schedule timezone handling, tightens the distinction between local source-code research and final research synthesis, and introduces marketplace-ready workflow pack import/export.

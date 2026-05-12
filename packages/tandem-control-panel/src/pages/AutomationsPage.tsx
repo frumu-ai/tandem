@@ -45,6 +45,7 @@ import { splitMcpAllowedTools } from "../features/mcp/mcpTools";
 
 type ExecutionMode = "single" | "team" | "swarm";
 type WorkflowToolAccessMode = "all" | "custom";
+type WorkflowTaskToolAccessMode = "inherit" | "custom";
 
 interface McpServerOption {
   name: string;
@@ -100,6 +101,12 @@ interface WorkflowNodeEditDraft {
   agentId: string;
   modelProvider: string;
   modelId: string;
+  toolAccessMode: WorkflowTaskToolAccessMode;
+  toolAllowlist: string[];
+  toolDenylist: string[];
+  mcpAllowedServers: string[];
+  mcpAllowedTools: string[] | null;
+  mcpOtherAllowedTools: string[];
 }
 
 function toArray(input: any, key: string) {
@@ -435,6 +442,65 @@ function workflowToolAccessFromAutomation(automation: any) {
   };
 }
 
+function workflowNodeToolAccessDraft(
+  node: any
+): Pick<
+  WorkflowNodeEditDraft,
+  | "toolAccessMode"
+  | "toolAllowlist"
+  | "toolDenylist"
+  | "mcpAllowedServers"
+  | "mcpAllowedTools"
+  | "mcpOtherAllowedTools"
+> {
+  const metadata = node?.metadata && typeof node.metadata === "object" ? node.metadata : {};
+  const toolPolicy = node?.tool_policy || node?.toolPolicy || null;
+  const mcpPolicy = node?.mcp_policy || node?.mcpPolicy || null;
+  const legacyAllowlist = Array.isArray(metadata?.tool_allowlist || metadata?.toolAllowlist)
+    ? metadata.tool_allowlist || metadata.toolAllowlist
+    : [];
+  const rawToolAllowlist = Array.isArray(toolPolicy?.allowlist)
+    ? toolPolicy.allowlist
+    : legacyAllowlist;
+  const rawToolDenylist = Array.isArray(toolPolicy?.denylist) ? toolPolicy.denylist : [];
+  const rawMcpServers = Array.isArray(mcpPolicy?.allowed_servers || mcpPolicy?.allowedServers)
+    ? mcpPolicy.allowed_servers || mcpPolicy.allowedServers
+    : [];
+  const rawMcpTools = mcpPolicy
+    ? mcpPolicy.allowed_tools === null || mcpPolicy.allowedTools === null
+      ? null
+      : Array.isArray(mcpPolicy.allowed_tools || mcpPolicy.allowedTools)
+        ? mcpPolicy.allowed_tools || mcpPolicy.allowedTools
+        : []
+    : rawToolAllowlist;
+  const splitTools = splitMcpAllowedTools(
+    normalizeAllowedTools(rawToolAllowlist.map((value: any) => String(value || "")))
+  );
+  const splitMcpTools =
+    rawMcpTools === null
+      ? { mcpTools: [] as string[], otherTools: [] as string[] }
+      : splitMcpAllowedTools(
+          normalizeAllowedTools((rawMcpTools || []).map((value: any) => String(value || "")))
+        );
+  return {
+    toolAccessMode: toolPolicy || mcpPolicy || legacyAllowlist.length ? "custom" : "inherit",
+    toolAllowlist: splitTools.otherTools,
+    toolDenylist: normalizeAllowedTools(rawToolDenylist.map((value: any) => String(value || ""))),
+    mcpAllowedServers: normalizeAllowedTools(
+      rawMcpServers.map((value: any) => String(value || ""))
+    ),
+    mcpAllowedTools:
+      rawMcpTools === null
+        ? null
+        : splitMcpTools.mcpTools.length
+          ? splitMcpTools.mcpTools
+          : mcpPolicy
+            ? []
+            : null,
+    mcpOtherAllowedTools: splitMcpTools.otherTools,
+  };
+}
+
 function connectorBindingsJsonFromPlanPackage(planPackage: any | null) {
   return formatJson(
     Array.isArray(planPackage?.connector_bindings) ? planPackage.connector_bindings : []
@@ -675,6 +741,7 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
         ).trim(),
         objective: String(node?.objective || "").trim(),
         agentId: String(node?.agent_id || node?.agentId || "").trim(),
+        ...workflowNodeToolAccessDraft(node),
         ...(() => {
           const agent = agentsById.get(String(node?.agent_id || node?.agentId || "").trim()) as
             | any
