@@ -396,6 +396,15 @@ fn explicit_gmail_draft_objective_requires_email_delivery() {
 }
 
 #[test]
+fn gmail_draft_objective_with_no_send_constraint_requires_email_delivery() {
+    let mut node = bare_node();
+    node.node_id = "create-gmail-draft".to_string();
+    node.objective = "Create a Gmail draft from compose-email output. Do not send the email. Return draft_id, recipient, subject, and draft_url.".to_string();
+
+    assert!(automation_node_requires_email_delivery(&node));
+}
+
+#[test]
 fn generic_synthesis_nodes_get_default_artifact_paths_without_legacy_ids() {
     let node = generic_research_artifact_node();
 

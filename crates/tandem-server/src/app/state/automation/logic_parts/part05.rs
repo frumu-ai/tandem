@@ -1461,10 +1461,15 @@ pub(crate) async fn execute_automation_v2_node(
         .to_string();
     let execution_mode = automation_node_execution_mode(node, &workspace_root);
     let mut requested_tools = requested_tools;
-    requested_tools.extend(automation_requested_server_scoped_mcp_tools(
-        node,
-        &selected_mcp_wildcard_server_names,
-    ));
+    let has_concrete_mcp_tool_policy = allowlist
+        .iter()
+        .any(|tool| tool.starts_with("mcp.") && !tool.ends_with(".*"));
+    if !has_concrete_mcp_tool_policy {
+        requested_tools.extend(automation_requested_server_scoped_mcp_tools(
+            node,
+            &selected_mcp_wildcard_server_names,
+        ));
+    }
     if node_runtime_impl::automation_node_requires_email_draft_without_send(node) {
         requested_tools.retain(|tool| {
             !tool.starts_with("mcp.")
