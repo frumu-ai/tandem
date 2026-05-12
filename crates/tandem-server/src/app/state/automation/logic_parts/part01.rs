@@ -609,6 +609,9 @@ pub(crate) fn automation_requested_server_scoped_mcp_tools(
     if !concrete_tools.is_empty() {
         return concrete_tools;
     }
+    if !super::node_runtime_impl::automation_node_metadata_tool_allowlist(node).is_empty() {
+        return Vec::new();
+    }
     let mut requested = selected_server_names
         .iter()
         .filter(|server_name| {

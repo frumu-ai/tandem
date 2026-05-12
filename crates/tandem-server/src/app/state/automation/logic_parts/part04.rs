@@ -375,10 +375,17 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .unwrap_or_default();
         current_web_research_citation_count = current_web_research_citations.len();
         let connector_discovery_text = automation_connector_hint_text(node);
+        let explicit_node_tool_allowlist =
+            super::node_runtime_impl::automation_node_metadata_tool_allowlist(node);
+        let explicit_node_allows_no_mcp_tools = !explicit_node_tool_allowlist.is_empty()
+            && !explicit_node_tool_allowlist
+                .iter()
+                .any(|tool| tool == "mcp_list" || tool.starts_with("mcp."));
         let connector_discovery_required =
             tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
                 &connector_discovery_text,
-            ) && !enforcement::automation_node_allows_optional_connector_references(node);
+            ) && !enforcement::automation_node_allows_optional_connector_references(node)
+                && !explicit_node_allows_no_mcp_tools;
         let selected_mcp_server_names = tool_telemetry
             .get("capability_resolution")
             .and_then(|value| value.get("mcp_tool_diagnostics"))
@@ -1443,10 +1450,17 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 .unwrap_or_default(),
         ]
         .join("\n");
+        let explicit_node_tool_allowlist =
+            super::node_runtime_impl::automation_node_metadata_tool_allowlist(node);
+        let explicit_node_allows_no_mcp_tools = !explicit_node_tool_allowlist.is_empty()
+            && !explicit_node_tool_allowlist
+                .iter()
+                .any(|tool| tool == "mcp_list" || tool.starts_with("mcp."));
         let connector_discovery_required =
             tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
                 &connector_discovery_text,
-            ) && !enforcement::automation_node_allows_optional_connector_references(node);
+            ) && !enforcement::automation_node_allows_optional_connector_references(node)
+                && !explicit_node_allows_no_mcp_tools;
         let validation_profile = enforcement
             .validation_profile
             .as_deref()

@@ -124,7 +124,18 @@ pub(crate) fn automation_tool_capability_ids(
         capabilities.push("web_research".to_string());
     }
     if automation_node_requires_email_delivery(node) {
-        if node_runtime_impl::automation_node_requires_email_draft_without_send(node) {
+        let explicit_node_tools = node_runtime_impl::automation_node_metadata_tool_allowlist(node);
+        let explicit_send_tools = explicit_node_tools
+            .iter()
+            .any(|tool| automation_tool_name_is_email_send(tool));
+        let explicit_draft_tools = explicit_node_tools
+            .iter()
+            .any(|tool| tool_name_matches_profile(tool, ToolCapabilityProfile::EmailDraft));
+        if explicit_send_tools {
+            capabilities.push("email_send".to_string());
+        } else if explicit_draft_tools
+            || node_runtime_impl::automation_node_requires_email_draft_without_send(node)
+        {
             capabilities.push("email_draft".to_string());
         } else {
             capabilities.push("email_send".to_string());

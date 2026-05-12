@@ -1009,6 +1009,21 @@ fn connector_backed_publish_node_requests_named_server_mcp_tools() {
 }
 
 #[test]
+fn explicit_non_mcp_node_allowlist_does_not_infer_server_scoped_mcp_tools() {
+    let mut node = bare_node();
+    node.objective =
+        "Create a Gmail approval test payload without using external connector tools.".to_string();
+    node.metadata = Some(json!({
+        "tool_allowlist": ["read", "write"]
+    }));
+
+    let requested =
+        automation_requested_server_scoped_mcp_tools(&node, &["reddit-gmail".to_string()]);
+
+    assert!(requested.is_empty());
+}
+
+#[test]
 fn review_decision_nodes_do_not_request_server_scoped_mcp_tools() {
     let mut node = bare_node();
     node.node_id = "validate_report".to_string();

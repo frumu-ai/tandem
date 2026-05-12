@@ -536,13 +536,48 @@ pub(super) fn normalize_automation_v2_agent(
             denylist: Vec::new(),
         };
     }
-    if agent.mcp_policy.allowed_servers.is_empty() {
-        agent.mcp_policy = AutomationAgentMcpPolicy {
-            allowed_servers: Vec::new(),
-            allowed_tools: None,
-        };
+    agent.mcp_policy.allowed_servers = normalize_sorted_strings(&agent.mcp_policy.allowed_servers);
+    if let Some(allowed_tools) = agent.mcp_policy.allowed_tools.as_mut() {
+        *allowed_tools = normalize_sorted_strings(allowed_tools);
     }
     agent
+}
+
+#[cfg(test)]
+mod normalize_automation_v2_agent_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_mcp_allowed_tools_without_server_grant() {
+        let agent = AutomationAgentProfile {
+            agent_id: "gmail-draft-creator".to_string(),
+            display_name: "Gmail Draft Creator".to_string(),
+            template_id: None,
+            avatar_url: None,
+            model_policy: None,
+            skills: Vec::new(),
+            tool_policy: crate::AutomationAgentToolPolicy {
+                allowlist: vec![
+                    "read".to_string(),
+                    "mcp.reddit_gmail.gmail_create_email_draft".to_string(),
+                ],
+                denylist: Vec::new(),
+            },
+            mcp_policy: crate::AutomationAgentMcpPolicy {
+                allowed_servers: Vec::new(),
+                allowed_tools: Some(vec!["mcp.reddit_gmail.gmail_create_email_draft".to_string()]),
+            },
+            approval_policy: None,
+        };
+
+        let normalized = normalize_automation_v2_agent(agent);
+
+        assert_eq!(normalized.mcp_policy.allowed_servers, Vec::<String>::new());
+        assert_eq!(
+            normalized.mcp_policy.allowed_tools.as_deref(),
+            Some(&["mcp.reddit_gmail.gmail_create_email_draft".to_string()][..])
+        );
+    }
 }
 
 fn normalize_sorted_strings(values: &[String]) -> Vec<String> {

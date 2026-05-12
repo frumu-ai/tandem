@@ -171,6 +171,59 @@ fn email_delivery_nodes_complete_after_email_tool_execution() {
 }
 
 #[test]
+fn email_delivery_success_overrides_late_write_policy_block() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "send-approved-draft".to_string(),
+        agent_id: "gmail-draft-sender".to_string(),
+        objective: "Send the approved Gmail draft using gmail_send_draft.".to_string(),
+        depends_on: vec!["approve-send-draft".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "create-gmail-draft".to_string(),
+            alias: "created_gmail_draft".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "artifact".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "delivery": {
+                "method": "email",
+                "to": "recipient@example.com"
+            }
+        })),
+    };
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "{\"status\":\"blocked\",\"reason\":\"Write policy blocked because no declared output targets are available for this session.\"}",
+            None,
+            &json!({
+                "requested_tools": ["mcp_list", "mcp.reddit_gmail.gmail_send_draft", "write"],
+                "executed_tools": ["mcp_list", "mcp.reddit_gmail.gmail_send_draft", "write"],
+                "tool_call_counts": {"mcp_list": 1, "mcp.reddit_gmail.gmail_send_draft": 1, "write": 1},
+                "email_delivery_attempted": true,
+                "email_delivery_succeeded": true,
+                "latest_email_delivery_failure": null
+            }),
+            None,
+        );
+
+    assert_eq!(status, "completed");
+    assert_eq!(reason, None);
+    assert_eq!(approved, None);
+}
+
+#[test]
 fn infer_selected_mcp_servers_does_not_select_any_servers_for_wildcard_allowlist() {
     let selected = crate::app::state::automation::automation_infer_selected_mcp_servers(
         &[],

@@ -324,18 +324,19 @@ pub(crate) fn normalize_automation_requested_tools(
         tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
             &automation_connector_hint_text(node),
         );
-    let explicit_connector_tool_allowlist = !automation_node_is_code_workflow(node)
-        && !node_tool_allowlist.is_empty()
+    let explicit_node_tool_allowlist =
+        !automation_node_is_code_workflow(node) && !node_tool_allowlist.is_empty();
+    let explicit_connector_tool_allowlist = explicit_node_tool_allowlist
         && (connector_hint_mentions
             || node_tool_allowlist
                 .iter()
                 .any(|tool| tool.starts_with("mcp.")));
-    let mut normalized = if explicit_connector_tool_allowlist {
+    let mut normalized = if explicit_node_tool_allowlist {
         node_tool_allowlist
     } else {
         config::channels::normalize_allowed_tools(raw)
     };
-    if explicit_connector_tool_allowlist && normalized.iter().any(|tool| tool.starts_with("mcp.")) {
+    if explicit_node_tool_allowlist && normalized.iter().any(|tool| tool.starts_with("mcp.")) {
         normalized.push("mcp_list".to_string());
     }
     let had_wildcard = normalized.iter().any(|tool| tool == "*");
@@ -343,7 +344,7 @@ pub(crate) fn normalize_automation_requested_tools(
         normalized.retain(|tool| tool != "*");
     }
     normalized.extend(automation_node_required_tools(node));
-    if explicit_connector_tool_allowlist {
+    if explicit_node_tool_allowlist {
         if automation_node_requires_artifact_write_tool(node) {
             normalized.push("write".to_string());
         }
@@ -722,6 +723,25 @@ pub(crate) fn resolve_automation_node_tool_envelope(
             capability_id,
             available_tool_names,
         ));
+    }
+    let explicit_node_tool_allowlist = automation_node_metadata_tool_allowlist(node);
+    if !automation_node_is_code_workflow(node) && !explicit_node_tool_allowlist.is_empty() {
+        let mut explicit_allowed =
+            config::channels::normalize_allowed_tools(explicit_node_tool_allowlist.clone());
+        if explicit_allowed.iter().any(|tool| tool.starts_with("mcp.")) {
+            explicit_allowed.push("mcp_list".to_string());
+        }
+        explicit_allowed.extend(automation_node_required_tools(node));
+        if automation_node_requires_artifact_write_tool(node) {
+            explicit_allowed.push("write".to_string());
+        }
+        explicit_allowed.sort();
+        explicit_allowed.dedup();
+        requested_tools.retain(|tool| {
+            explicit_allowed
+                .iter()
+                .any(|allowed| tandem_core::tool_name_matches_policy(allowed, tool))
+        });
     }
     if automation_node_requires_email_draft_without_send(node) {
         requested_tools.retain(|tool| {

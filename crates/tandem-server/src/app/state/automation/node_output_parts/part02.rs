@@ -198,6 +198,13 @@ pub(crate) fn detect_automation_node_status(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let email_delivery_succeeded = tool_telemetry
+        .get("email_delivery_succeeded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if automation_node_requires_email_delivery(node) && email_delivery_succeeded {
+        return ("completed".to_string(), None, approved);
+    }
     let tool_mode_required_unsatisfied = session_text.contains("TOOL_MODE_REQUIRED_NOT_SATISFIED");
     if tool_mode_required_unsatisfied && parsed.is_none() {
         let reason = if session_text.contains("WRITE_REQUIRED_NOT_SATISFIED") {
@@ -429,10 +436,6 @@ pub(crate) fn detect_automation_node_status(
         .any(|value| value.as_str() == Some("read"));
     let email_delivery_attempted = tool_telemetry
         .get("email_delivery_attempted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let email_delivery_succeeded = tool_telemetry
-        .get("email_delivery_succeeded")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let latest_email_delivery_failure = tool_telemetry
