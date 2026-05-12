@@ -4,8 +4,9 @@
 //! subsystem that owns a pending-approval primitive.
 //!
 //! v1 sources: `automation_v2` mission runs whose `checkpoint.awaiting_gate`
-//! is set. Workflow runs and coder runs will be added once their pause/resume
-//! paths are wired (see `docs/internal/approval-gates-and-channel-ux/PLAN.md`).
+//! is set or can be recovered from a pending approval node. Workflow runs and
+//! coder runs will be added once their pause/resume paths are wired (see
+//! `docs/internal/approval-gates-and-channel-ux/PLAN.md`).
 //!
 //! The aggregator never mutates state. Decisions still go through the
 //! authoritative subsystem handlers (e.g. `automations_v2_run_gate_decide`);
@@ -17,7 +18,7 @@ use tandem_types::{
 };
 
 use crate::automation_v2::types::{
-    AutomationPendingGate, AutomationRunStatus, AutomationV2RunRecord,
+    AutomationPendingGate, AutomationRunStatus, AutomationV2RunRecord, AutomationV2Spec,
 };
 use crate::AppState;
 
@@ -28,8 +29,8 @@ const MAX_PENDING_LIMIT: usize = 500;
 
 /// Aggregate every pending approval matching `filter`.
 ///
-/// Today this only walks `automation_v2_runs`. The list is ordered most-recent
-/// first by `requested_at_ms`. Surfaces are expected to apply additional
+/// Today this walks automation-v2 run history, including sharded run records.
+/// The list is ordered most-recent first by `requested_at_ms`. Surfaces are expected to apply additional
 /// per-user filtering (e.g. only show approvals targeting the current user)
 /// at the surface layer; this aggregator does tenant filtering only.
 pub async fn list_pending_approvals(
@@ -49,18 +50,23 @@ pub async fn list_pending_approvals(
         .map(|source| matches!(source, ApprovalSourceKind::AutomationV2))
         .unwrap_or(true)
     {
-        let runs = state.automation_v2_runs.read().await;
-        for run in runs.values() {
+        let runs = state.list_automation_v2_runs(None, MAX_PENDING_LIMIT).await;
+        for run in runs.iter() {
             if run.status != AutomationRunStatus::AwaitingApproval {
                 continue;
             }
-            let Some(gate) = run.checkpoint.awaiting_gate.as_ref() else {
+            let gate = run.checkpoint.awaiting_gate.clone().or_else(|| {
+                run.automation_snapshot
+                    .as_ref()
+                    .and_then(|automation| recover_automation_v2_pending_gate(run, automation))
+            });
+            let Some(gate) = gate else {
                 continue;
             };
             if !tenant_matches(filter, run) {
                 continue;
             }
-            out.push(automation_v2_run_to_approval_request(run, gate));
+            out.push(automation_v2_run_to_approval_request(run, &gate));
         }
     }
 
@@ -69,6 +75,35 @@ pub async fn list_pending_approvals(
     out.sort_by(|a, b| b.requested_at_ms.cmp(&a.requested_at_ms));
     out.truncate(limit);
     out
+}
+
+fn recover_automation_v2_pending_gate(
+    run: &AutomationV2RunRecord,
+    automation: &AutomationV2Spec,
+) -> Option<AutomationPendingGate> {
+    let pending_nodes = run
+        .checkpoint
+        .pending_nodes
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    automation
+        .flow
+        .nodes
+        .iter()
+        .find(|node| {
+            pending_nodes.contains(&node.node_id)
+                && !run
+                    .checkpoint
+                    .gate_history
+                    .iter()
+                    .any(|record| record.node_id == node.node_id)
+                && crate::app::state::is_automation_approval_node(node)
+        })
+        .and_then(crate::app::state::build_automation_pending_gate)
+        .map(|mut gate| {
+            gate.requested_at_ms = run.updated_at_ms.max(run.created_at_ms);
+            gate
+        })
 }
 
 fn tenant_matches(filter: &ApprovalListFilter, run: &AutomationV2RunRecord) -> bool {
@@ -121,7 +156,7 @@ fn automation_v2_run_to_approval_request(
             "automation_id": run.automation_id,
             "node_id": gate.node_id,
             "decide_endpoint": format!(
-                "/automations/v2/runs/{}/gate_decide",
+                "/automations/v2/runs/{}/gate",
                 run.run_id
             ),
         })),

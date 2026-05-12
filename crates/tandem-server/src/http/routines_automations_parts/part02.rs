@@ -1613,7 +1613,49 @@ pub(crate) async fn automations_v2_run_gate_decide(
         }
         return Err((StatusCode::CONFLICT, Json(body)));
     }
-    let Some(gate) = current.checkpoint.awaiting_gate.clone() else {
+    let Some(automation) = state
+        .get_automation_v2(&current.automation_id)
+        .await
+        .or_else(|| current.automation_snapshot.clone())
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": current.automation_id}),
+            ),
+        ));
+    };
+    let recovered_gate = || {
+        let pending_nodes = current
+            .checkpoint
+            .pending_nodes
+            .iter()
+            .collect::<std::collections::HashSet<_>>();
+        automation
+            .flow
+            .nodes
+            .iter()
+            .find(|node| {
+                pending_nodes.contains(&node.node_id)
+                    && !current
+                        .checkpoint
+                        .gate_history
+                        .iter()
+                        .any(|record| record.node_id == node.node_id)
+                    && crate::app::state::is_automation_approval_node(node)
+            })
+            .and_then(crate::app::state::build_automation_pending_gate)
+            .map(|mut gate| {
+                gate.requested_at_ms = current.updated_at_ms.max(current.created_at_ms);
+                gate
+            })
+    };
+    let Some(gate) = current
+        .checkpoint
+        .awaiting_gate
+        .clone()
+        .or_else(recovered_gate)
+    else {
         return Err((
             StatusCode::CONFLICT,
             Json(
@@ -1630,14 +1672,6 @@ pub(crate) async fn automations_v2_run_gate_decide(
             ),
         ));
     }
-    let Some(automation) = state.get_automation_v2(&current.automation_id).await else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(
-                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": current.automation_id}),
-            ),
-        ));
-    };
     let Some(node) = automation
         .flow
         .nodes
@@ -1656,8 +1690,32 @@ pub(crate) async fn automations_v2_run_gate_decide(
         .reason
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let mut decision_applied = false;
+    let mut winning_decision = None;
     let updated = state
         .update_automation_v2_run(&run_id, |run| {
+            let gate_still_pending = run.status == AutomationRunStatus::AwaitingApproval
+                && run
+                    .checkpoint
+                    .awaiting_gate
+                    .as_ref()
+                    .map(|pending| pending.node_id == gate.node_id)
+                    .unwrap_or_else(|| {
+                        run.checkpoint
+                            .pending_nodes
+                            .iter()
+                            .any(|node_id| node_id == &gate.node_id)
+                            && !run
+                                .checkpoint
+                                .gate_history
+                                .iter()
+                                .any(|record| record.node_id == gate.node_id)
+                    });
+            if !gate_still_pending {
+                winning_decision = run.checkpoint.gate_history.last().cloned();
+                return;
+            }
+            decision_applied = true;
             run.checkpoint
                 .gate_history
                 .push(crate::AutomationGateDecisionRecord {
@@ -1762,6 +1820,28 @@ pub(crate) async fn automations_v2_run_gate_decide(
                 ),
             )
         })?;
+    if !decision_applied {
+        let winner_payload = winning_decision.map(|record| {
+            json!({
+                "node_id": record.node_id,
+                "decision": record.decision,
+                "reason": record.reason,
+                "decided_at_ms": record.decided_at_ms,
+            })
+        });
+        let mut body = json!({
+            "error": "Run is not awaiting approval",
+            "code": "AUTOMATION_V2_RUN_NOT_AWAITING_APPROVAL",
+            "runID": run_id,
+            "currentStatus": updated.status,
+        });
+        if let Some(winner_value) = winner_payload {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("winningDecision".to_string(), winner_value);
+            }
+        }
+        return Err((StatusCode::CONFLICT, Json(body)));
+    }
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
     let _ = node;

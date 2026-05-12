@@ -96,5 +96,9 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
 
 export function HashRouteOutlet({ routeId, pageProps }: { routeId: string; pageProps: any }) {
   const safeRoute = ensureRouteId(routeId);
-  return <Suspense fallback={<RouteFallback />}>{renderRoute(safeRoute, pageProps)}</Suspense>;
+  return (
+    <Suspense key={safeRoute} fallback={<RouteFallback />}>
+      {renderRoute(safeRoute, pageProps)}
+    </Suspense>
+  );
 }

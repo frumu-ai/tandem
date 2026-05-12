@@ -94,6 +94,8 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
   },
 };
 
+const FULL_HEIGHT_ROUTES = new Set(["chat", "automations", "approvals", "files", "runs"]);
+
 export function AppShell({
   identity,
   currentRoute,
@@ -428,7 +430,9 @@ export function AppShell({
       <aside className="tcp-context-rail hidden lg:flex xl:hidden">{contextRail(false)}</aside>
 
       <main
-        className={`tcp-main-shell ${currentRoute === "chat" ? "tcp-main-shell-fill" : ""}`.trim()}
+        className={`tcp-main-shell ${
+          FULL_HEIGHT_ROUTES.has(currentRoute) ? "tcp-main-shell-fill" : ""
+        }`.trim()}
       >
         <section className="tcp-mobile-topbar lg:hidden">
           <button
@@ -505,10 +509,12 @@ export function AppShell({
           </div>
         </section>
 
-        <AnimatePresence mode="wait">
+        <AnimatePresence initial={false} mode="popLayout">
           <motion.section
             key={routeKey}
-            className={`tcp-main-content ${currentRoute === "chat" || currentRoute === "automations" ? "tcp-main-content-fill" : ""}`.trim()}
+            className={`tcp-main-content ${
+              FULL_HEIGHT_ROUTES.has(currentRoute) ? "tcp-main-content-fill" : ""
+            }`.trim()}
             initial={reducedMotion ? false : { opacity: 0, y: 18 }}
             animate={reducedMotion ? undefined : { opacity: 1, y: 0 }}
             exit={reducedMotion ? undefined : { opacity: 0, y: -14 }}

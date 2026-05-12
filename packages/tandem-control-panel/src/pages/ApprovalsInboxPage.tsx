@@ -11,7 +11,8 @@ import type { AppPageProps } from "./pageTypes";
  *
  * One operator-shaped page that aggregates every pending approval across
  * automation_v2 mission runs (and, in future, coder + workflow runs). Backed
- * by `GET /approvals/pending` — the cross-subsystem aggregator added in W1.5.
+ * by `GET /api/engine/approvals/pending` — the cross-subsystem aggregator
+ * added in W1.5.
  *
  * Goals:
  * - Polled every 5s (SSE upgrade is a later improvement; polling is fine for v1).
@@ -61,10 +62,10 @@ function formatRelativeTime(ms: number): string {
 function decideEndpointFor(request: ApprovalRequest): string | null {
   const explicit = (request.surface_payload as any)?.decide_endpoint;
   if (typeof explicit === "string" && explicit.startsWith("/")) {
-    return explicit;
+    return explicit.startsWith("/api/engine") ? explicit : `/api/engine${explicit}`;
   }
   if (request.source === "automation_v2" && request.run_id) {
-    return `/automations/v2/runs/${request.run_id}/gate`;
+    return `/api/engine/automations/v2/runs/${request.run_id}/gate`;
   }
   return null;
 }
@@ -130,7 +131,7 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
   const pendingQuery = useQuery<PendingResponse>({
     queryKey: ["approvals", "pending"],
     queryFn: async () => {
-      const res = await api("/approvals/pending");
+      const res = await api("/api/engine/approvals/pending");
       return (res || {}) as PendingResponse;
     },
     refetchInterval: 5000,
@@ -186,7 +187,10 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
         fullHeight
       >
         {pendingQuery.isLoading ? (
-          <EmptyState title="Checking for pending approvals…" text="Polling /approvals/pending" />
+          <EmptyState
+            title="Checking for pending approvals…"
+            text="Polling /api/engine/approvals/pending"
+          />
         ) : approvals.length === 0 ? (
           <EmptyState
             title="No approvals waiting"
