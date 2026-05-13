@@ -30,6 +30,7 @@ use axum::Json;
 use serde_json::{json, Value};
 use tandem_channels::signing::verify_slack_signature;
 
+use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
 use crate::AppState;
 
 /// Bounded LRU-ish dedup set for Slack interaction `(action_ts, action_id)`
@@ -123,6 +124,25 @@ pub(crate) async fn slack_interactions(
         Ok(action) => action,
         Err(reason) => return reject_bad_request(&reason),
     };
+
+    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Slack, &action.user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // User is authorized; proceed to handle the action.
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                user_id = %action.user_id,
+                "rejecting Slack interaction from unauthorized user"
+            );
+            return reject_forbidden(&format!("user {} not in allowed_users", action.user_id));
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return reject_bad_request("slack channel not properly configured");
+        }
+    }
 
     let parsed_value = match parse_button_value(&action.value) {
         Ok(v) => v,
@@ -316,6 +336,17 @@ fn reject_unauthorized(reason: &str) -> Response {
         StatusCode::UNAUTHORIZED,
         Json(json!({
             "error": "Unauthorized",
+            "reason": reason,
+        })),
+    )
+        .into_response()
+}
+
+fn reject_forbidden(reason: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "Forbidden",
             "reason": reason,
         })),
     )

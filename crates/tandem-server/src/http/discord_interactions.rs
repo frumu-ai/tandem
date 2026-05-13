@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 use tandem_channels::discord_blocks::{parse_custom_id, ParsedCustomId};
 use tandem_channels::signing::verify_discord_signature;
 
+use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
 use crate::AppState;
 
 const DEDUP_CAP: usize = 4096;
