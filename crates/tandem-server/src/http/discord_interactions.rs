@@ -33,6 +33,7 @@ use crate::app::state::principals::channel_identity::{resolve_channel_user, Chan
 use crate::AppState;
 
 const DEDUP_CAP: usize = 4096;
+const DEDUP_TTL_SECS: u64 = 300; // 5 minutes — Discord retries within minutes
 
 static SEEN_INTERACTIONS: OnceLock<Mutex<DedupRing>> = OnceLock::new();
 
@@ -40,29 +41,52 @@ fn dedup_ring() -> &'static Mutex<DedupRing> {
     SEEN_INTERACTIONS.get_or_init(|| Mutex::new(DedupRing::new()))
 }
 
+struct DedupEntry {
+    inserted_at_secs: u64,
+}
+
 struct DedupRing {
-    set: HashSet<String>,
+    set: std::collections::HashMap<String, DedupEntry>,
     order: std::collections::VecDeque<String>,
 }
 
 impl DedupRing {
     fn new() -> Self {
         Self {
-            set: HashSet::with_capacity(DEDUP_CAP),
+            set: std::collections::HashMap::with_capacity(DEDUP_CAP),
             order: std::collections::VecDeque::with_capacity(DEDUP_CAP),
         }
     }
 
     fn record_new(&mut self, key: &str) -> bool {
-        if self.set.contains(key) {
-            return false;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Check if key exists and hasn't expired.
+        if let Some(entry) = self.set.get(key) {
+            if now_secs.saturating_sub(entry.inserted_at_secs) < DEDUP_TTL_SECS {
+                return false; // Duplicate within TTL window.
+            }
+            // Entry exists but expired; will be reinserted below.
+            self.set.remove(key);
+            // Note: order queue still has the old entry, but we'll skip it on next cleanup.
         }
+
+        // Evict oldest entry if at capacity.
         if self.order.len() >= DEDUP_CAP {
             if let Some(oldest) = self.order.pop_front() {
                 self.set.remove(&oldest);
             }
         }
-        self.set.insert(key.to_string());
+
+        self.set.insert(
+            key.to_string(),
+            DedupEntry {
+                inserted_at_secs: now_secs,
+            },
+        );
         self.order.push_back(key.to_string());
         true
     }

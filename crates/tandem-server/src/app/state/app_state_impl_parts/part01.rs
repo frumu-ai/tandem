@@ -17,6 +17,44 @@ fn is_slug_like(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-')
 }
 
+/// Validate that a file has secure permissions (readable only by owner).
+/// SECURITY: Prevents world-readable secrets in state files.
+/// Logs a warning if permissions are too permissive but does not fail.
+#[cfg(unix)]
+fn check_file_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            let mode = metadata.permissions().mode();
+            let world_readable = (mode & 0o004) != 0;
+            let world_writable = (mode & 0o002) != 0;
+            let group_writable = (mode & 0o020) != 0;
+            if world_readable || world_writable || group_writable {
+                tracing::warn!(
+                    target: "tandem_server::state",
+                    path = ?path,
+                    mode = format!("{:04o}", mode & 0o777),
+                    "state file has overly permissive permissions (world/group writable or world readable). \
+                     Recommend restricting to 0600 (owner read/write only)."
+                );
+            }
+        }
+        Err(e) => {
+            tracing::debug!(
+                target: "tandem_server::state",
+                path = ?path,
+                error = ?e,
+                "could not check file permissions"
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn check_file_permissions(_path: &std::path::Path) {
+    // Windows DACL permissions are checked less frequently in this context.
+}
+
 async fn write_state_file_atomically(path: &PathBuf, payload: String) -> anyhow::Result<()> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, payload).await?;
@@ -1699,6 +1737,7 @@ impl AppState {
         } else {
             return Ok(());
         };
+        check_file_permissions(&path);
         let raw = fs::read_to_string(path).await?;
         let parsed = serde_json::from_str::<BugMonitorConfig>(&raw)
             .unwrap_or_else(|_| config::env::resolve_bug_monitor_env_config());
@@ -1757,6 +1796,7 @@ impl AppState {
         if !self.bug_monitor_log_watcher_state_path.exists() {
             return Ok(());
         }
+        check_file_permissions(&self.bug_monitor_log_watcher_state_path);
         let raw = fs::read_to_string(&self.bug_monitor_log_watcher_state_path).await?;
         let parsed =
             serde_json::from_str::<BugMonitorLogWatcherStateFile>(&raw).unwrap_or_default();
@@ -1817,6 +1857,7 @@ impl AppState {
         if !self.bug_monitor_intake_keys_path.exists() {
             return Ok(());
         }
+        check_file_permissions(&self.bug_monitor_intake_keys_path);
         let raw = fs::read_to_string(&self.bug_monitor_intake_keys_path).await?;
         let parsed = serde_json::from_str::<
             std::collections::HashMap<String, BugMonitorProjectIntakeKey>,
