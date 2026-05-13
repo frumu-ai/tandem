@@ -211,12 +211,78 @@ fn summarize_tool_invocation_for_history(
         segments.push(format!("error={error}"));
     }
     if let Some(result) = result.filter(|value| !value.is_null()) {
-        segments.push(format!("result={result}"));
+        let compacted = compact_tool_result_for_history(tool, result);
+        segments.push(format!("result={compacted}"));
     }
     if segments.len() == 1 {
         segments.push("result={}".to_string());
     }
     segments.join(" ")
+}
+
+fn compact_tool_result_for_history(tool: &str, result: &Value) -> Value {
+    if tool.trim().eq_ignore_ascii_case("mcp_list") {
+        return compact_mcp_list_result_for_history(result);
+    }
+    result.clone()
+}
+
+fn compact_mcp_list_result_for_history(result: &Value) -> Value {
+    const MAX_TOOLS: usize = 40;
+    let mut tool_names = Vec::new();
+    collect_string_array(result, "registered_tools", &mut tool_names);
+    collect_string_array(result, "remote_tools", &mut tool_names);
+    tool_names.sort();
+    tool_names.dedup();
+
+    let mut connected_server_names = Vec::new();
+    collect_string_array(
+        result,
+        "connected_server_names",
+        &mut connected_server_names,
+    );
+    connected_server_names.sort();
+    connected_server_names.dedup();
+
+    let total_registered_tools = result
+        .get("registered_tool_count")
+        .and_then(Value::as_u64)
+        .or_else(|| result.get("registeredToolCount").and_then(Value::as_u64))
+        .unwrap_or(tool_names.len() as u64);
+    let total_remote_tools = result
+        .get("remote_tool_count")
+        .and_then(Value::as_u64)
+        .or_else(|| result.get("remoteToolCount").and_then(Value::as_u64))
+        .unwrap_or(total_registered_tools);
+
+    let truncated = tool_names.len() > MAX_TOOLS;
+    tool_names.truncate(MAX_TOOLS);
+
+    json!({
+        "summary": "mcp_list result compacted for chat history",
+        "connected_server_names": connected_server_names,
+        "registered_tool_count": total_registered_tools,
+        "remote_tool_count": total_remote_tools,
+        "registered_tools_sample": tool_names,
+        "truncated": truncated,
+    })
+}
+
+fn collect_string_array(value: &Value, key: &str, out: &mut Vec<String>) {
+    if let Some(rows) = value.get(key).and_then(Value::as_array) {
+        out.extend(
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string),
+        );
+    }
+    if let Some(servers) = value.get("servers").and_then(Value::as_array) {
+        for server in servers {
+            collect_string_array(server, key, out);
+        }
+    }
 }
 
 pub(super) fn attach_to_last_user_message(

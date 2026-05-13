@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../lib/api";
 import { renderMarkdownSafe } from "../lib/markdown";
-import { AnimatedPage, Badge, PanelCard } from "../ui/index.tsx";
+import { TandemLogoAnimation } from "../ui/TandemLogoAnimation";
+import { AnimatedPage, Badge, LoadingState, PanelCard, StatusPulse } from "../ui/index.tsx";
 import { EmptyState, PageCard } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 
@@ -173,21 +174,33 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
         subtitle="Pending approvals across every workflow that has paused on a human gate. Decisions go through the authoritative subsystem handler."
         actions={
           <div className="flex items-center gap-3 text-xs">
+            <StatusPulse
+              tone={pendingQuery.isFetching ? "live" : count > 0 ? "warn" : "info"}
+              text={pendingQuery.isFetching ? "checking approvals" : "approvals"}
+            />
             <Badge tone={count > 0 ? "warn" : "ok"}>{count} pending</Badge>
             <button
               className="tcp-btn h-8 px-3 text-xs"
               onClick={() => pendingQuery.refetch()}
               disabled={pendingQuery.isFetching}
             >
-              <i data-lucide="refresh-cw"></i>
-              Refresh
+              {pendingQuery.isFetching ? (
+                <TandemLogoAnimation
+                  mode="compact"
+                  className="h-4 w-4"
+                  title="Refreshing approvals"
+                />
+              ) : (
+                <i data-lucide="refresh-cw"></i>
+              )}
+              {pendingQuery.isFetching ? "Refreshing" : "Refresh"}
             </button>
           </div>
         }
         fullHeight
       >
         {pendingQuery.isLoading ? (
-          <EmptyState
+          <LoadingState
             title="Checking for pending approvals…"
             text="Polling /api/engine/approvals/pending"
           />

@@ -2504,6 +2504,8 @@ export function MyAutomationsContainer({
         activeRuns,
         workflowQueueCounts,
         failedRuns,
+        runsLoading: runsQuery.isLoading || workflowRunsQuery.isLoading,
+        runsRefreshing: runsQuery.isFetching || workflowRunsQuery.isFetching,
         runs,
         selectedRunId,
         selectedRun,

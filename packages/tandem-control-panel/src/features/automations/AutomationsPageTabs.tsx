@@ -285,6 +285,11 @@ export function AutomationsPageTabs({
                 setTab("create");
               }}
               onRecreateWorkflowAutomation={onRecreateWorkflowAutomation}
+              defaultRunningSectionsOpen={{
+                active: true,
+                issues: true,
+                history: true,
+              }}
             />
           </PageCardComponent>
         ) : tab === "list" ? (

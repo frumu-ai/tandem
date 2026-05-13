@@ -971,6 +971,50 @@ fn explicit_gmail_draft_node_allowlist_blocks_inferred_send_tools() {
 }
 
 #[test]
+fn explicit_draft_tool_policy_overrides_approval_send_wording() {
+    let mut node = email_delivery_node();
+    node.node_id = "create-gmail-draft".to_string();
+    node.objective =
+        "Create the Gmail draft now. It may be sent only after human approval.".to_string();
+    node.metadata = Some(json!({
+        "delivery": {
+            "method": "email",
+            "to": "recipient@example.com"
+        },
+        "tool_allowlist": [
+            "write",
+            "mcp.reddit_gmail.gmail_create_email_draft"
+        ]
+    }));
+    let available_tool_names = std::collections::HashSet::from([
+        "mcp.reddit_gmail.gmail_create_email_draft".to_string(),
+        "mcp.reddit_gmail.gmail_send_draft".to_string(),
+        "mcp.reddit_gmail.gmail_send_email".to_string(),
+        "mcp_list".to_string(),
+        "write".to_string(),
+    ]);
+
+    let caps = automation_tool_capability_ids(&node, "artifact_write");
+    assert!(caps.contains(&"email_draft".to_string()));
+    assert!(!caps.contains(&"email_send".to_string()));
+
+    let requested = automation_requested_tools_for_node(
+        &node,
+        "/tmp",
+        vec![
+            "mcp.reddit_gmail.*".to_string(),
+            "mcp.reddit_gmail.gmail_send_draft".to_string(),
+            "write".to_string(),
+        ],
+        &available_tool_names,
+    );
+
+    assert!(requested.contains(&"mcp.reddit_gmail.gmail_create_email_draft".to_string()));
+    assert!(!requested.contains(&"mcp.reddit_gmail.gmail_send_draft".to_string()));
+    assert!(!requested.contains(&"mcp.reddit_gmail.gmail_send_email".to_string()));
+}
+
+#[test]
 fn node_tool_allowlist_overrides_broader_agent_policy() {
     let mut node = bare_node();
     node.node_id = "compose-email".to_string();

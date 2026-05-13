@@ -10,6 +10,7 @@ import { RunDebuggerDialog } from "./RunDebuggerDialog";
 import { ExecutionProfilePill } from "./ExecutionProfileBadges";
 import { ExecutionProfileToggle } from "./ExecutionProfileToggle";
 import { EmptyState } from "../../pages/ui";
+import { LoadingState, StatusPulse } from "../../ui/index.tsx";
 import {
   WORKFLOW_LIBRARY_SOURCE_FILTERS,
   WORKFLOW_LIBRARY_STATUS_FILTERS,
@@ -41,6 +42,8 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     activeRuns,
     workflowQueueCounts,
     failedRuns,
+    runsLoading,
+    runsRefreshing,
     runs,
     selectedRunId,
     selectedRun,
@@ -514,6 +517,9 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     );
   };
 
+  const runsBusy = !!(runsLoading || runsRefreshing);
+  const runsInitialLoading = viewMode === "running" && runsBusy && !runs.length;
+
   return (
     <div ref={rootRef} className="grid gap-4">
       {viewMode === "calendar" ? (
@@ -752,7 +758,14 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
         </div>
       ) : null}
 
-      {viewMode === "running" ? (
+      {runsInitialLoading ? (
+        <LoadingState
+          title="Loading run history…"
+          text="Fetching active, blocked, and recent automation runs"
+        />
+      ) : null}
+
+      {viewMode === "running" && !runsInitialLoading ? (
         <div className="grid gap-2">
           <button
             type="button"
@@ -980,7 +993,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
         </div>
       ) : null}
 
-      {runs.length > 0 && viewMode === "running" ? (
+      {(runs.length > 0 || runsBusy) && viewMode === "running" ? (
         <div className="grid gap-2">
           <button
             type="button"
@@ -995,13 +1008,27 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
                   Run History
                 </p>
               </div>
-              <span className="tcp-subtle text-xs">
-                {runs.length} runs · {runningSectionsOpen.history ? "Collapse" : "Expand"}
+              <span className="flex items-center gap-2">
+                {runsRefreshing ? <StatusPulse tone="live" text="refreshing" /> : null}
+                <span className="tcp-subtle text-xs">
+                  {runsBusy && !runs.length
+                    ? "Loading runs"
+                    : `${runs.length} runs · ${
+                        runningSectionsOpen.history ? "Collapse" : "Expand"
+                      }`}
+                </span>
               </span>
             </div>
           </button>
-          {runningSectionsOpen.history
-            ? runs.slice(0, 12).map((run: any, index: number) => {
+          {runningSectionsOpen.history ? (
+            runsBusy && !runs.length ? (
+              <LoadingState
+                title="Loading automation history…"
+                text="Fetching recent legacy and workflow runs"
+                className="min-h-[10rem]"
+              />
+            ) : (
+              runs.slice(0, 12).map((run: any, index: number) => {
                 const executionSummary = runExecutionSummary(run);
                 return (
                   <div key={String(run?.run_id || run?.id || index)} className="tcp-list-item">
@@ -1065,11 +1092,12 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
                   </div>
                 );
               })
-            : null}
+            )
+          ) : null}
         </div>
       ) : null}
 
-      {!runs.length && viewMode === "running" ? (
+      {!runsBusy && !runs.length && viewMode === "running" ? (
         <EmptyState text="Run one automation, then use Logs to inspect full execution events." />
       ) : null}
       {!totalSavedAutomations && !packs.length && !runs.length && viewMode === "list" ? (

@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MOTION_TOKENS, prefersReducedMotion } from "../app/themes.js";
+import { TandemLogoAnimation } from "./TandemLogoAnimation";
 
 function useReducedMotionPreference() {
   const [reduced, setReduced] = useState(() => prefersReducedMotion());
@@ -310,6 +311,32 @@ export function EmptyState({
         <div className="tcp-empty-state-title">{title}</div>
         <p className="tcp-subtle mt-1">{text}</p>
         {action ? <div className="mt-3">{action}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+export function LoadingState({
+  title = "Loading",
+  text,
+  className = "",
+}: {
+  title?: string;
+  text?: string;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`grid min-h-[12rem] place-items-center rounded-lg border border-white/6 bg-black/20 p-6 text-center ${className}`.trim()}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="grid justify-items-center gap-3">
+        <TandemLogoAnimation mode="compact" className="h-14 w-14" title={title} />
+        <div>
+          <div className="text-sm font-medium text-tcp-text-primary">{title}</div>
+          {text ? <p className="tcp-subtle mt-1 text-xs">{text}</p> : null}
+        </div>
       </div>
     </div>
   );

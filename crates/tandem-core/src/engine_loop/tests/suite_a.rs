@@ -423,6 +423,51 @@ async fn load_chat_history_preserves_tool_args_and_result_context() {
     assert!(content.contains(r#"result={"output":"src/lib.rs\nsrc/main.rs"}"#));
 }
 
+#[tokio::test]
+async fn load_chat_history_compacts_mcp_list_results() {
+    let base = std::env::temp_dir().join(format!(
+        "tandem-core-load-chat-history-mcp-list-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(Some("chat history".to_string()), Some(".".to_string()));
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    let message = Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "mcp_list".to_string(),
+            args: json!({}),
+            result: Some(json!({
+                "connected_server_names": ["gmail"],
+                "registered_tools": ["mcp.gmail.gmail_create_email_draft"],
+                "servers": [{
+                    "name": "gmail",
+                    "registered_tools": ["mcp.gmail.gmail_send_draft"],
+                    "verbose": "x".repeat(5000)
+                }]
+            })),
+            error: None,
+        }],
+    );
+    storage
+        .append_message(&session_id, message)
+        .await
+        .expect("append message");
+
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
+    let content = history
+        .iter()
+        .find(|message| message.role == "assistant")
+        .map(|message| message.content.clone())
+        .unwrap_or_default();
+    assert!(content.contains("mcp_list result compacted for chat history"));
+    assert!(content.contains("mcp.gmail.gmail_create_email_draft"));
+    assert!(content.contains("mcp.gmail.gmail_send_draft"));
+    assert!(!content.contains(&"x".repeat(100)));
+}
+
 #[test]
 fn extracts_todos_from_checklist_and_numbered_lines() {
     let input = r#"

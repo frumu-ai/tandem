@@ -577,6 +577,18 @@ pub(crate) fn automation_node_requires_email_draft_without_send(node: &Automatio
     if !automation_node_requires_email_delivery(node) {
         return false;
     }
+    let explicit_tools = automation_node_metadata_tool_allowlist(node);
+    if automation_node_has_explicit_tool_policy(node) {
+        let has_draft_tool = explicit_tools.iter().any(|tool| {
+            automation_tool_name_is_email_draft(tool) && !automation_tool_name_is_email_send(tool)
+        });
+        let has_send_tool = explicit_tools
+            .iter()
+            .any(|tool| automation_tool_name_is_email_send(tool));
+        if has_draft_tool && !has_send_tool {
+            return true;
+        }
+    }
     let objective = node.objective.to_ascii_lowercase();
     let asks_for_draft = [
         "draft email",
