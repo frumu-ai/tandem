@@ -1,6 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { renderIcons } from "../../app/icons.js";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import {
   DEFAULT_WORKFLOW_LIBRARY_FILTERS,
@@ -23,15 +22,9 @@ import {
   workflowActiveSessionCount,
   workflowArtifactValidation,
   workflowBlockedNodeIds,
-  workflowCompletedNodeCount,
   workflowContextHistoryEntries,
   workflowDerivedRunStatus,
-  workflowEventAt,
   workflowEventBlockers,
-  workflowEventRunId,
-  workflowEventSessionId,
-  workflowEventType,
-  workflowPendingNodeCount,
   workflowPersistedHistoryEntries,
   workflowNodeOutput,
   workflowNodeToolTelemetry,
@@ -39,25 +32,23 @@ import {
   workflowRecentNodeEventSummaries,
   workflowRunWasStalePaused,
   workflowSessionIds,
-  workflowSessionLogEventEntries,
   workflowTaskInspectionDetails,
   workflowTelemetryDisplayEntries,
   workflowTelemetrySeedEvents,
-  workflowBlockedNodeCount,
   workflowNeedsRepairNodeIds,
   workflowTotalNodeCount,
 } from "../orchestration/workflowStability";
-import { useEngineStream } from "../stream/useEngineStream";
 import { MyAutomationsContent } from "./MyAutomationsContent";
 import { useBufferedAppender } from "./useBufferedAppender";
 import { useSelectedRunLifecycle } from "./useSelectedRunLifecycle";
+import { useAutomationRunMutations } from "./useAutomationRunMutations";
+import { useAutomationRunStreams } from "./useAutomationRunStreams";
+import { useCalendarAutomationEditing } from "./useCalendarAutomationEditing";
+import { useOverlapHistoryEntries } from "./useOverlapHistoryEntries";
+import { useRunSummaryRows } from "./useRunSummaryRows";
+import { useSessionLogEntries } from "./useSessionLogEntries";
+import { useRenderAutomationIcons } from "./useRenderAutomationIcons";
 import { buildPlannerProviderOptions } from "../planner/plannerShared";
-import {
-  executionProfileLabel,
-  workflowEffectiveExecutionProfile,
-  workflowRequestedExecutionProfile,
-} from "./AutomationsRunHelpers";
-
 export function MyAutomationsContainer({
   client,
   toast,
@@ -198,61 +189,7 @@ export function MyAutomationsContainer({
     }
     return Array.from(byId.values());
   }, [automationsV2Query.data, toArray]);
-  const overlapHistoryEntries = useMemo(() => {
-    const rows: Array<Record<string, any>> = [];
-    for (const automation of automationsV2) {
-      const automationId = String(
-        automation?.automation_id || automation?.automationId || automation?.id || ""
-      ).trim();
-      const automationName = String(automation?.name || "").trim();
-      const planPackage = automation?.metadata?.plan_package || automation?.metadata?.planPackage;
-      const overlapLog = toArray(planPackage?.overlap_policy, "overlap_log");
-      const sourcePlanId = String(
-        planPackage?.plan_id || planPackage?.planId || automationId || ""
-      ).trim();
-      const sourcePlanRevision = Number(
-        planPackage?.plan_revision || planPackage?.planRevision || 0
-      );
-      const sourceLifecycleState = String(
-        planPackage?.lifecycle_state || planPackage?.lifecycleState || automation?.status || ""
-      ).trim();
-      for (const entry of overlapLog) {
-        rows.push({
-          rowKey: [
-            automationId || sourcePlanId || "automation",
-            String(entry?.matched_plan_id || entry?.matchedPlanId || ""),
-            String(entry?.matched_plan_revision || entry?.matchedPlanRevision || ""),
-            String(entry?.decision || ""),
-            String(entry?.decided_at || entry?.decidedAt || ""),
-          ].join(":"),
-          sourceLabel: automationName || automationId || sourcePlanId || "workflow plan",
-          sourceAutomationId: automationId,
-          sourcePlanId,
-          sourcePlanRevision: Number.isFinite(sourcePlanRevision) ? sourcePlanRevision : 0,
-          sourceLifecycleState,
-          matchedPlanId: String(entry?.matched_plan_id || entry?.matchedPlanId || "").trim(),
-          matchedPlanRevision: Number(
-            entry?.matched_plan_revision || entry?.matchedPlanRevision || 0
-          ),
-          matchLayer: String(entry?.match_layer || entry?.matchLayer || "").trim(),
-          similarityScore: entry?.similarity_score ?? entry?.similarityScore ?? null,
-          decision: String(entry?.decision || "").trim(),
-          decidedBy: String(entry?.decided_by || entry?.decidedBy || "").trim(),
-          decidedAt: String(entry?.decided_at || entry?.decidedAt || "").trim(),
-        });
-      }
-    }
-    return rows.sort((left, right) => {
-      const leftAt = Number(Date.parse(String(left.decidedAt || "")));
-      const rightAt = Number(Date.parse(String(right.decidedAt || "")));
-      if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) {
-        return rightAt - leftAt;
-      }
-      return String(left.sourcePlanId || left.sourceAutomationId || left.rowKey).localeCompare(
-        String(right.sourcePlanId || right.sourceAutomationId || right.rowKey)
-      );
-    });
-  }, [automationsV2, toArray]);
+  const overlapHistoryEntries = useOverlapHistoryEntries(automationsV2, toArray);
   const providerCatalogQuery = useQuery({
     queryKey: ["providers", "catalog", "workflow-edit"],
     queryFn: () =>
@@ -363,10 +300,6 @@ export function MyAutomationsContainer({
         ? 5000
         : false,
   });
-  // Polling intervals are intentionally slow safety nets — the live data path
-  // is the SSE event stream, which calls queueContextInvalidation() to refresh
-  // these queries on demand. The blackboard payload in particular can be 1+ MB,
-  // so we no longer poll it at all and rely entirely on event-driven refetch.
   const contextRunPollMs =
     selectedContextRunId && isActiveRunStatus((runDetailQuery.data as any)?.run?.status)
       ? 30000
@@ -416,379 +349,27 @@ export function MyAutomationsContainer({
     refetchInterval: 30000,
   });
 
-  const runNowMutation = useMutation({
-    mutationFn: (id: string) => client?.automations?.runNow?.(id),
-    onSuccess: async () => {
-      toast("ok", "Automation triggered.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-    },
-    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
-  });
-  const runNowV2Mutation = useMutation({
-    mutationFn: async ({
-      id,
-      executionProfile,
-    }: {
-      id: string;
-      executionProfile?: "strict" | "guided" | "yolo";
-    }) => {
-      if (!client?.automationsV2?.runNow) {
-        throw new Error("Workflow run now is not available in this client.");
-      }
-      return client.automationsV2.runNow(id, executionProfile ? { executionProfile } : undefined);
-    },
-    onSuccess: async (payload: any) => {
-      const runId = String(payload?.run?.run_id || payload?.run?.runId || "").trim();
-      toast("ok", "Workflow automation triggered.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (runId) {
-        onSelectRunId(runId);
-        onOpenRunningView();
-      }
-    },
-    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
-  });
-  const parseEngineError = (err: unknown): { code: string; message: string } => {
-    const raw = err instanceof Error ? err.message : String(err ?? "");
-    const jsonStart = raw.indexOf("{");
-    if (jsonStart >= 0) {
-      try {
-        const body = JSON.parse(raw.slice(jsonStart));
-        return {
-          code: String(body?.code || "").trim(),
-          message: String(body?.error || body?.message || "").trim(),
-        };
-      } catch {
-        // fall through
-      }
-    }
-    return { code: "", message: raw };
-  };
-
-  const friendlyEngineError = (err: unknown, fallback: string): string => {
-    const { code, message } = parseEngineError(err);
-    if (
-      code === "AUTOMATION_V2_RUN_TASK_NOT_MUTABLE" ||
-      code === "AUTOMATION_V2_RUN_NOT_RECOVERABLE"
-    ) {
-      return "Run is still active. Pause or cancel it first, then retry.";
-    }
-    return message || fallback;
-  };
-
-  const isRunNotMutableError = (err: unknown): boolean => {
-    const { code } = parseEngineError(err);
-    return (
-      code === "AUTOMATION_V2_RUN_TASK_NOT_MUTABLE" || code === "AUTOMATION_V2_RUN_NOT_RECOVERABLE"
-    );
-  };
-
-  const withAutoPauseRetry = async <T,>(runId: string, action: () => Promise<T>): Promise<T> => {
-    try {
-      return await action();
-    } catch (err) {
-      if (!isRunNotMutableError(err) || !client?.automationsV2?.pauseRun) {
-        throw err;
-      }
-      try {
-        await client.automationsV2.pauseRun(runId, "auto-pause for retry");
-      } catch {
-        // ignore — engine may already be in a state pause cannot apply to
-      }
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      return await action();
-    }
-  };
-
-  const runActionMutation = useMutation({
-    mutationFn: async ({
-      action,
-      runId,
-      family,
-      reason,
-    }: {
-      action: "pause" | "resume" | "cancel";
-      runId: string;
-      family: "legacy" | "v2";
-      reason?: string;
-    }) => {
-      if (family === "v2") {
-        if (action === "cancel") return client.automationsV2.cancelRun(runId, reason);
-        if (action === "pause") return client.automationsV2.pauseRun(runId, reason);
-        return client.automationsV2.resumeRun(runId, reason);
-      }
-      if (action === "cancel") {
-        throw new Error("Cancel is only available for workflow runs in this client.");
-      }
-      if (action === "pause") return client.automations.pauseRun(runId, reason);
-      return client.automations.resumeRun(runId, reason);
-    },
-    onSuccess: async (_payload, vars) => {
-      if (vars.action === "cancel") {
-        toast("ok", "Run cancelled.");
-      } else {
-        toast("ok", "Run action applied.");
-      }
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-    },
-    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
-  });
-  const workflowRepairMutation = useMutation({
-    mutationFn: async ({
-      runId,
-      nodeId,
-      reason,
-    }: {
-      runId: string;
-      nodeId: string;
-      reason?: string;
-    }) => {
-      if (!client?.automationsV2?.repairRun) {
-        throw new Error("Workflow repair is not available in this client.");
-      }
-      return withAutoPauseRetry(runId, () =>
-        client.automationsV2.repairRun(runId, {
-          node_id: nodeId,
-          reason: reason ?? "",
-        })
-      );
-    },
-    onSuccess: async (payload: any) => {
-      const runId = String(
-        payload?.run?.run_id || payload?.run?.runId || selectedRunId || ""
-      ).trim();
-      toast("ok", "Workflow continued from blocked step.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (runId) {
-        onSelectRunId(runId);
-        onOpenRunningView();
-      }
-    },
-    onError: (error) => toast("err", friendlyEngineError(error, "Workflow repair failed.")),
-  });
-  const workflowRecoverMutation = useMutation({
-    mutationFn: async ({ runId, reason }: { runId: string; reason?: string }) => {
-      if (!client?.automationsV2?.recoverRun) {
-        throw new Error("Workflow retry is not available in this client.");
-      }
-      return withAutoPauseRetry(runId, () => client.automationsV2.recoverRun(runId, reason));
-    },
-    onSuccess: async (payload: any) => {
-      const runId = String(
-        payload?.run?.run_id || payload?.run?.runId || selectedRunId || ""
-      ).trim();
-      toast("ok", "Workflow run queued again.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (runId) {
-        onSelectRunId(runId);
-        onOpenRunningView();
-      }
-    },
-    onError: (error) => toast("err", friendlyEngineError(error, "Workflow retry failed.")),
-  });
-  const workflowTaskRetryMutation = useMutation({
-    mutationFn: async ({
-      runId,
-      nodeId,
-      reason,
-    }: {
-      runId: string;
-      nodeId: string;
-      reason?: string;
-    }) => {
-      if (!client?.automationsV2?.retryTask) {
-        throw new Error("Task retry is not available in this client.");
-      }
-      return withAutoPauseRetry(runId, () => client.automationsV2.retryTask(runId, nodeId, reason));
-    },
-    onSuccess: async (payload: any) => {
-      const runId = String(
-        payload?.run?.run_id || payload?.run?.runId || selectedRunId || ""
-      ).trim();
-      toast("ok", "Task retried and subtree requeued.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (runId) {
-        onSelectRunId(runId);
-        onOpenRunningView();
-      }
-    },
-    onError: (error) => toast("err", friendlyEngineError(error, "Task retry failed.")),
-  });
-  const workflowTaskContinueMutation = useMutation({
-    mutationFn: async ({
-      runId,
-      nodeId,
-      reason,
-    }: {
-      runId: string;
-      nodeId: string;
-      reason?: string;
-    }) => {
-      if (!client?.automationsV2?.continueTask) {
-        throw new Error("Task continue is not available in this client.");
-      }
-      return withAutoPauseRetry(runId, () =>
-        client.automationsV2.continueTask(runId, nodeId, reason)
-      );
-    },
-    onSuccess: async (payload: any) => {
-      const runId = String(
-        payload?.run?.run_id || payload?.run?.runId || selectedRunId || ""
-      ).trim();
-      toast("ok", "Blocked task continued with minimal reset.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (runId) {
-        onSelectRunId(runId);
-        onOpenRunningView();
-      }
-    },
-    onError: (error) => toast("err", friendlyEngineError(error, "Task continue failed.")),
-  });
-  const workflowTaskRequeueMutation = useMutation({
-    mutationFn: async ({
-      runId,
-      nodeId,
-      reason,
-    }: {
-      runId: string;
-      nodeId: string;
-      reason?: string;
-    }) => {
-      if (!client?.automationsV2?.requeueTask) {
-        throw new Error("Task requeue is not available in this client.");
-      }
-      return withAutoPauseRetry(runId, () =>
-        client.automationsV2.requeueTask(runId, nodeId, reason)
-      );
-    },
-    onSuccess: async (payload: any) => {
-      const runId = String(
-        payload?.run?.run_id || payload?.run?.runId || selectedRunId || ""
-      ).trim();
-      toast("ok", "Task requeued and subtree reset.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (runId) {
-        onSelectRunId(runId);
-        onOpenRunningView();
-      }
-    },
-    onError: (error) => toast("err", friendlyEngineError(error, "Task requeue failed.")),
-  });
-  const workflowTaskDispositionMutation = useMutation({
-    mutationFn: async ({
-      runId,
-      nodeId,
-      disposition,
-      reason,
-    }: {
-      runId: string;
-      nodeId: string;
-      disposition: "unmarked" | "accepted" | "rejected" | "re_ran_strict";
-      reason?: string;
-    }) => {
-      if (!client?.automationsV2?.setTaskDisposition) {
-        throw new Error("Task disposition is not available in this client.");
-      }
-      return client.automationsV2.setTaskDisposition(runId, nodeId, disposition, reason);
-    },
-    onSuccess: async (payload: any) => {
-      const runId = String(
-        payload?.run?.run_id || payload?.run?.runId || selectedRunId || ""
-      ).trim();
-      const disposition = String(payload?.disposition || "");
-      const changed = payload?.changed === true;
-      toast(
-        "ok",
-        changed
-          ? `Marked artifact as ${disposition.replace(/_/g, " ")}.`
-          : `Already marked ${disposition.replace(/_/g, " ")}.`
-      );
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (runId) {
-        onSelectRunId(runId);
-      }
-    },
-    onError: (error) => toast("err", friendlyEngineError(error, "Disposition update failed.")),
-  });
-  const backlogTaskClaimMutation = useMutation({
-    mutationFn: async ({
-      runId,
-      taskId,
-      agentId,
-      reason,
-    }: {
-      runId: string;
-      taskId: string;
-      agentId?: string;
-      reason?: string;
-    }) => {
-      if (!client?.automationsV2?.claimBacklogTask) {
-        throw new Error("Backlog task claim is not available in this client.");
-      }
-      return client.automationsV2.claimBacklogTask(runId, taskId, {
-        agent_id: agentId,
-        reason,
-      });
-    },
-    onSuccess: async () => {
-      toast("ok", "Backlog task claimed.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (selectedRunId) {
-        onSelectRunId(selectedRunId);
-        onOpenRunningView();
-      }
-    },
-    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
-  });
-  const backlogTaskRequeueMutation = useMutation({
-    mutationFn: async ({
-      runId,
-      taskId,
-      reason,
-    }: {
-      runId: string;
-      taskId: string;
-      reason?: string;
-    }) => {
-      if (!client?.automationsV2?.requeueBacklogTask) {
-        throw new Error("Backlog task requeue is not available in this client.");
-      }
-      return client.automationsV2.requeueBacklogTask(runId, taskId, reason);
-    },
-    onSuccess: async () => {
-      toast("ok", "Backlog task requeued.");
-      await queryClient.invalidateQueries({ queryKey: ["automations"] });
-      if (selectedRunId) {
-        onSelectRunId(selectedRunId);
-        onOpenRunningView();
-      }
-    },
-    onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
-  });
-  useEffect(() => {
-    runActionMutation.reset();
-    workflowRepairMutation.reset();
-    workflowRecoverMutation.reset();
-    workflowTaskRetryMutation.reset();
-    workflowTaskContinueMutation.reset();
-    workflowTaskRequeueMutation.reset();
-    workflowTaskDispositionMutation.reset();
-    backlogTaskClaimMutation.reset();
-    backlogTaskRequeueMutation.reset();
-  }, [
+  const {
+    runNowMutation,
+    runNowV2Mutation,
+    runActionMutation,
+    workflowRepairMutation,
+    workflowRecoverMutation,
+    workflowTaskRetryMutation,
+    workflowTaskContinueMutation,
+    workflowTaskRequeueMutation,
+    workflowTaskDispositionMutation,
     backlogTaskClaimMutation,
     backlogTaskRequeueMutation,
-    runActionMutation,
-    selectedBoardTaskId,
+  } = useAutomationRunMutations({
+    client,
+    toast,
+    queryClient,
     selectedRunId,
-    workflowRecoverMutation,
-    workflowRepairMutation,
-    workflowTaskContinueMutation,
-    workflowTaskDispositionMutation,
-    workflowTaskRequeueMutation,
-    workflowTaskRetryMutation,
-  ]);
-
+    selectedBoardTaskId,
+    onSelectRunId,
+    onOpenRunningView,
+  });
   const updateAutomationMutation = useMutation({
     mutationFn: async (draft: any) => {
       const name = String(draft.name || "").trim();
@@ -2006,60 +1587,16 @@ export function MyAutomationsContainer({
       }),
     [availableSessionIds, sessionMessageQueries]
   );
-  const runSummaryRows = useMemo(() => {
-    const rows: Array<{ label: string; value: string }> = [];
-    rows.push({ label: "status", value: runStatus || "unknown" });
-    if (runStatusDerivedNote) {
-      rows.push({ label: "status note", value: runStatusDerivedNote });
-    }
-    const effectiveProfile = workflowEffectiveExecutionProfile(selectedRun);
-    const requestedProfile = workflowRequestedExecutionProfile(selectedRun);
-    const profileValue =
-      requestedProfile && requestedProfile !== effectiveProfile
-        ? `${executionProfileLabel(effectiveProfile)} (requested ${executionProfileLabel(requestedProfile)})`
-        : executionProfileLabel(effectiveProfile);
-    rows.push({ label: "execution profile", value: profileValue });
-    rows.push({ label: "artifacts", value: String(runArtifacts.length) });
-    if (isWorkflowRun) {
-      rows.push({ label: "tasks", value: String(workflowProjection.tasks.length) });
-      rows.push({ label: "context events", value: String(workflowContextEvents.length) });
-      rows.push({ label: "blackboard patches", value: String(workflowContextPatches.length) });
-      rows.push({
-        label: "completed nodes",
-        value: String(workflowCompletedNodeCount(selectedRun)),
-      });
-      rows.push({ label: "pending nodes", value: String(workflowPendingNodeCount(selectedRun)) });
-      rows.push({ label: "blocked nodes", value: String(workflowBlockedNodeCount(selectedRun)) });
-    }
-    if (String(selectedRun?.detail || "").trim()) {
-      rows.push({ label: "detail", value: String(selectedRun.detail).trim() });
-    }
-    if (selectedRun?.requires_approval !== undefined) {
-      rows.push({
-        label: "requires approval",
-        value: String(Boolean(selectedRun?.requires_approval)),
-      });
-    }
-    if (String(selectedRun?.approval_reason || "").trim()) {
-      rows.push({ label: "approval reason", value: String(selectedRun.approval_reason).trim() });
-    }
-    if (String(selectedRun?.denial_reason || "").trim()) {
-      rows.push({ label: "denial reason", value: String(selectedRun.denial_reason).trim() });
-    }
-    if (String(selectedRun?.paused_reason || "").trim()) {
-      rows.push({ label: "paused reason", value: String(selectedRun.paused_reason).trim() });
-    }
-    return rows;
-  }, [
+  const runSummaryRows = useRunSummaryRows({
     isWorkflowRun,
-    runArtifacts.length,
+    runArtifacts,
     runStatus,
     runStatusDerivedNote,
     selectedRun,
-    workflowContextEvents.length,
-    workflowContextPatches.length,
-    workflowProjection.tasks.length,
-  ]);
+    workflowContextEvents,
+    workflowContextPatches,
+    workflowProjection,
+  });
   const failureReason = useMemo(
     () => explainRunFailure(selectedRun),
     [explainRunFailure, selectedRun]
@@ -2107,206 +1644,18 @@ export function MyAutomationsContainer({
     getId: (row) => row.id,
   });
 
-  // Coalesced SSE-driven invalidation for context queries — replaces aggressive
-  // 5s polling. We mark these queries dirty when blackboard/context events
-  // arrive and let React Query refetch on its next idle tick.
-  const contextInvalidationRafRef = useRef<number | null>(null);
-  const pendingContextInvalidations = useRef<{
-    run: boolean;
-    blackboard: boolean;
-    events: boolean;
-    patches: boolean;
-  }>({ run: false, blackboard: false, events: false, patches: false });
-  const flushContextInvalidationsRef = useRef<() => void>(() => {});
-  flushContextInvalidationsRef.current = () => {
-    contextInvalidationRafRef.current = null;
-    const flags = pendingContextInvalidations.current;
-    pendingContextInvalidations.current = {
-      run: false,
-      blackboard: false,
-      events: false,
-      patches: false,
-    };
-    if (!selectedContextRunId) return;
-    const tasks: Array<Promise<unknown>> = [];
-    if (flags.run) {
-      tasks.push(
-        queryClient.invalidateQueries({
-          queryKey: ["automations", "run", "context", selectedContextRunId],
-        })
-      );
-    }
-    if (flags.blackboard) {
-      tasks.push(
-        queryClient.invalidateQueries({
-          queryKey: ["automations", "run", "context", selectedContextRunId, "blackboard"],
-        })
-      );
-    }
-    if (flags.events) {
-      tasks.push(
-        queryClient.invalidateQueries({
-          queryKey: ["automations", "run", "context", selectedContextRunId, "events"],
-        })
-      );
-    }
-    if (flags.patches) {
-      tasks.push(
-        queryClient.invalidateQueries({
-          queryKey: ["automations", "run", "context", selectedContextRunId, "patches"],
-        })
-      );
-    }
-    if (tasks.length) void Promise.all(tasks);
-  };
-  const queueContextInvalidation = useCallback(
-    (kinds: Partial<{ run: boolean; blackboard: boolean; events: boolean; patches: boolean }>) => {
-      const pending = pendingContextInvalidations.current;
-      if (kinds.run) pending.run = true;
-      if (kinds.blackboard) pending.blackboard = true;
-      if (kinds.events) pending.events = true;
-      if (kinds.patches) pending.patches = true;
-      if (contextInvalidationRafRef.current == null) {
-        contextInvalidationRafRef.current = requestAnimationFrame(() =>
-          flushContextInvalidationsRef.current()
-        );
-      }
-    },
-    []
-  );
-  useEffect(
-    () => () => {
-      if (contextInvalidationRafRef.current != null) {
-        cancelAnimationFrame(contextInvalidationRafRef.current);
-        contextInvalidationRafRef.current = null;
-      }
-    },
-    []
-  );
-
-  useEngineStream(
-    selectedRunId
-      ? isWorkflowRun
-        ? `/api/engine/automations/v2/events?run_id=${encodeURIComponent(selectedRunId)}`
-        : `/api/engine/automations/events?run_id=${encodeURIComponent(selectedRunId)}`
-      : "",
-    (msg) => {
-      try {
-        const payload = JSON.parse(String(msg?.data || "{}"));
-        if (!payload || payload.status === "ready") return;
-        const runId = workflowEventRunId(payload);
-        if (!runId || runId !== selectedRunId) return;
-        const type = workflowEventType(payload);
-        const at = workflowEventAt(payload);
-        const id = `automations:${runId}:${type}:${at}:${Math.random().toString(16).slice(2, 8)}`;
-        appendRunEvent({ id, source: "automations", at, event: payload });
-        if (type) {
-          const kind = String(type).toLowerCase();
-          if (kind.includes("artifact") || kind.includes("blackboard") || kind.includes("patch")) {
-            queueContextInvalidation({ blackboard: true, patches: true });
-          }
-          if (kind.includes("task") || kind.includes("node") || kind.endsWith(".updated")) {
-            queueContextInvalidation({ run: true });
-          }
-        }
-      } catch {
-        return;
-      }
-    },
-    { enabled: runInspectorActive }
-  );
-  useEngineStream(
-    selectedContextRunId
-      ? `/api/engine/context/runs/${encodeURIComponent(selectedContextRunId)}/events/stream?tail=50`
-      : "",
-    (msg) => {
-      try {
-        const payload = JSON.parse(String(msg?.data || "{}"));
-        if (!payload || payload.status === "ready") return;
-        const id = `context:${String(payload?.seq || "")}:${String(payload?.event_type || "")}`;
-        const at =
-          timestampOrNull(
-            payload?.created_at_ms || payload?.timestamp_ms || payload?.timestampMs
-          ) || Date.now();
-        appendRunEvent({ id, source: "context", at, event: payload });
-        const kind = String(payload?.event_type || "").toLowerCase();
-        // Context-stream events drive blackboard/patch invalidation. Always
-        // refresh the events query (it's small) and conditionally refresh the
-        // heavier blackboard payload only when something blackboard-shaped fires.
-        const fields: Partial<{
-          run: boolean;
-          blackboard: boolean;
-          events: boolean;
-          patches: boolean;
-        }> = { events: true };
-        if (
-          kind.includes("blackboard") ||
-          kind.includes("patch") ||
-          kind.includes("artifact") ||
-          kind.includes("task")
-        ) {
-          fields.blackboard = true;
-          fields.patches = true;
-        }
-        if (kind.includes("run") || kind.includes("status") || kind.includes("phase")) {
-          fields.run = true;
-        }
-        queueContextInvalidation(fields);
-      } catch {
-        return;
-      }
-    },
-    { enabled: runInspectorActive && !!selectedContextRunId }
-  );
-  useEngineStream(
-    selectedRunId && selectedSessionId
-      ? `/api/engine/event?sessionID=${encodeURIComponent(selectedSessionId)}&runID=${encodeURIComponent(selectedRunId)}`
-      : "",
-    (msg) => {
-      try {
-        const payload = JSON.parse(String(msg?.data || "{}"));
-        if (!payload) return;
-        const type = workflowEventType(payload);
-        const at = workflowEventAt(payload);
-        const id = [
-          type || "event",
-          String(payload?.properties?.sessionID || payload?.sessionID || selectedSessionId || ""),
-          String(payload?.properties?.runID || payload?.runID || selectedRunId || ""),
-          String(payload?.properties?.messageID || payload?.messageID || ""),
-          String(
-            payload?.properties?.part?.id || payload?.properties?.seq || payload?.timestamp_ms || at
-          ),
-        ].join(":");
-        appendSessionEvent({ id, at, event: payload });
-      } catch {
-        return;
-      }
-    },
-    { enabled: runInspectorActive && !!selectedSessionId }
-  );
-  useEngineStream(
-    selectedRunId ? "/api/global/event" : "",
-    (msg) => {
-      try {
-        const payload = JSON.parse(String(msg?.data || "{}"));
-        const runId = workflowEventRunId(payload);
-        if (!runId || runId !== selectedRunId) return;
-        const type = workflowEventType(payload);
-        if (!type || type === "server.connected" || type === "engine.lifecycle.ready") return;
-        const at = workflowEventAt(payload);
-        const id = `global:${runId}:${type}:${at}:${Math.random().toString(16).slice(2, 8)}`;
-        appendRunEvent({ id, source: "global", at, event: payload });
-      } catch {
-        return;
-      }
-    },
-    { enabled: runInspectorActive }
-  );
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    renderIcons(root);
-  }, [
+  useAutomationRunStreams({
+    selectedRunId,
+    selectedSessionId,
+    selectedContextRunId,
+    isWorkflowRun,
+    runInspectorActive,
+    timestampOrNull,
+    appendRunEvent,
+    appendSessionEvent,
+    queryClient,
+  });
+  useRenderAutomationIcons(rootRef, [
     activeRuns.length,
     automations.length,
     automationsV2.length,
@@ -2329,110 +1678,24 @@ export function MyAutomationsContainer({
     !!selectedRunId,
     !!selectedSessionId,
   ]);
-  const beginEdit = (automation: any) => {
-    const automationId = String(
-      automation?.automation_id || automation?.id || automation?.routine_id || ""
-    ).trim();
-    if (!automationId) {
-      toast("err", "Cannot edit automation without an id.");
-      return;
-    }
-    const scheduleEditor = scheduleToEditor(automation?.schedule);
-    setEditDraft({
-      automationId,
-      name: String(automation?.name || automationId || "").trim(),
-      objective: String(
-        automation?.mission?.objective || automation?.mission_snapshot?.objective || ""
-      ).trim(),
-      mode:
-        String(automation?.mode || "").toLowerCase() === "standalone"
-          ? "standalone"
-          : "orchestrated",
-      requiresApproval:
-        automation?.requires_approval === true ||
-        automation?.policy?.approval?.requires_approval === true,
-      scheduleKind: scheduleEditor.scheduleKind === "cron" ? "cron" : "interval",
-      cronExpression: scheduleEditor.cronExpression,
-      intervalSeconds: String(scheduleEditor.intervalSeconds),
-    });
-  };
-  const isPausedAutomation = (automation: any) => {
-    const status = String(automation?.status || "")
-      .trim()
-      .toLowerCase();
-    return status === "paused" || status === "disabled";
-  };
-  const openCalendarAutomationEdit = (automation: any) => {
-    if (!automation) return;
-    if (isMissionBlueprintAutomation(automation)) {
-      onOpenAdvancedEdit(automation);
-      return;
-    }
-    const family = getAutomationCalendarFamily(automation);
-    if (family === "legacy") {
-      beginEdit(automation);
-      return;
-    }
-    const draft = workflowAutomationToEditDraft(automation);
-    if (!draft) {
-      toast("err", "Cannot open this workflow automation for editing.");
-      return;
-    }
-    setWorkflowEditDraft(draft);
-  };
-  const updateCalendarAutomationFromEvent = async (info: any) => {
-    const event = info?.event;
-    const automation = event?.extendedProps?.automation;
-    const family =
-      String(event?.extendedProps?.family || "legacy").trim() === "v2" ? "v2" : "legacy";
-    const cronExpression = String(event?.extendedProps?.cronExpression || "").trim();
-    const start = event?.start ? new Date(event.start) : null;
-    const nextCron = start ? rewriteCronForDroppedStart(cronExpression, start) : null;
-    if (!automation || !start || !nextCron) {
-      info?.revert?.();
-      toast("info", "That schedule cannot be moved from the calendar yet.");
-      return;
-    }
-    try {
-      if (family === "legacy") {
-        const automationId = String(
-          automation?.automation_id || automation?.id || automation?.routine_id || ""
-        ).trim();
-        const scheduleEditor = scheduleToEditor(automation?.schedule);
-        await updateAutomationMutation.mutateAsync({
-          automationId,
-          name: String(automation?.name || automationId || "").trim(),
-          objective: String(
-            automation?.mission?.objective || automation?.mission_snapshot?.objective || ""
-          ).trim(),
-          mode:
-            String(automation?.mode || "").toLowerCase() === "standalone"
-              ? "standalone"
-              : "orchestrated",
-          requiresApproval:
-            automation?.requires_approval === true ||
-            automation?.policy?.approval?.requires_approval === true,
-          scheduleKind: "cron",
-          cronExpression: nextCron,
-          intervalSeconds: String(scheduleEditor.intervalSeconds || 3600),
-        });
-        return;
-      }
-      const draft = workflowAutomationToEditDraft(automation);
-      if (!draft) {
-        throw new Error("Workflow automation draft could not be created.");
-      }
-      await updateWorkflowAutomationMutation.mutateAsync({
-        ...draft,
-        scheduleKind: "cron",
-        cronExpression: nextCron,
-        intervalSeconds: draft.intervalSeconds || "3600",
-      });
-    } catch (error) {
-      info?.revert?.();
-      toast("err", error instanceof Error ? error.message : String(error));
-    }
-  };
+  const {
+    beginEdit,
+    isPausedAutomation,
+    openCalendarAutomationEdit,
+    updateCalendarAutomationFromEvent,
+  } = useCalendarAutomationEditing({
+    toast,
+    scheduleToEditor,
+    setEditDraft,
+    isMissionBlueprintAutomation,
+    onOpenAdvancedEdit,
+    getAutomationCalendarFamily,
+    workflowAutomationToEditDraft,
+    setWorkflowEditDraft,
+    rewriteCronForDroppedStart,
+    updateAutomationMutation,
+    updateWorkflowAutomationMutation,
+  });
   const legacyAutomationCount = automations.length;
   const workflowAutomationCount = automationsV2.length;
   const workflowAutomationVisibleCount = workflowAutomationRows.length;
@@ -2441,29 +1704,7 @@ export function MyAutomationsContainer({
     () => buildRunBlockers(selectedRun, sessionEvents, runEvents),
     [buildRunBlockers, runEvents, selectedRun, sessionEvents]
   );
-  const sessionLogEntries = useMemo(() => {
-    const messageEntries = sessionMessages.map(({ sessionId, message }: any, index: number) => ({
-      id: `message:${sessionId}:${sessionMessageId(message, index)}`,
-      kind: "message" as const,
-      sessionId,
-      at: sessionMessageCreatedAt(message),
-      variant: sessionMessageVariant(message),
-      label: String(message?.info?.role || "session").trim() || "session",
-      body: sessionMessageText(message),
-      raw: message,
-      parts: sessionMessageParts(message),
-      sessionLabel: sessionLabel(sessionId),
-    }));
-    const liveEntries = workflowSessionLogEventEntries(sessionEvents, selectedSessionId).map(
-      (entry) => ({
-        ...entry,
-        sessionLabel: sessionLabel(workflowEventSessionId(entry.raw, selectedSessionId)),
-      })
-    );
-    const rows = [...messageEntries, ...liveEntries].sort((a, b) => a.at - b.at);
-    if (selectedSessionFilterId === "all") return rows;
-    return rows.filter((entry) => entry.sessionId === selectedSessionFilterId);
-  }, [
+  const sessionLogEntries = useSessionLogEntries({
     selectedSessionFilterId,
     selectedSessionId,
     sessionMessageCreatedAt,
@@ -2474,12 +1715,9 @@ export function MyAutomationsContainer({
     sessionMessages,
     sessionEvents,
     sessionLabel,
-  ]);
-  useEffect(() => {
-    const el = sessionLogRef.current;
-    if (!el || !sessionLogPinnedToBottom) return;
-    el.scrollTop = el.scrollHeight;
-  }, [sessionLogEntries, sessionLogPinnedToBottom]);
+    sessionLogRef,
+    sessionLogPinnedToBottom,
+  });
 
   return (
     <MyAutomationsContent
@@ -2749,8 +1987,6 @@ export function MyAutomationsContainer({
         runObjectiveText,
         shortText,
         runTimeLabel,
-        workflowCompletedNodeCount,
-        workflowBlockedNodeCount,
         workflowActiveSessionCount,
         workflowTotalNodeCount,
         isActiveRunStatus,
