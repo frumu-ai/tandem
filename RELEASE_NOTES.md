@@ -2,6 +2,24 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.5.6 (Unreleased)
+
+This release hardens approval-gate security and fixes race conditions in cache loading. Three critical vulnerabilities in channel interaction handlers are closed: missing user authorization in Slack/Discord/Telegram, Time-of-Check-Time-of-Use (TOCTOU) cache races allowing duplicate decisions, and path traversal in automation IDs. Additional medium-priority fixes include dedup TTL for webhook replay prevention and file permission validation.
+
+**Security fixes are backport candidates** for deployments running v0.5.5 or earlier.
+
+What ships now:
+
+- **Authorization fix for approval gates**: Slack, Discord, and Telegram interaction handlers now verify that clicking users are in the configured `allowed_users` allowlist before processing approval/rework/cancel decisions. The fix applies `resolve_channel_user(ChannelKind)` at each handler entry point and rejects unauthorized users with `403 Forbidden`. Previously, any user in the platform workspace/server/group could click approval buttons and decide gates regardless of allowlist configuration.
+
+- **TOCTOU race condition fix in automation run cache**: `update_automation_v2_run()` now records a timestamp before dropping the per-run mutation lock to load state from disk. After re-acquiring the lock, it validates that the in-memory entry wasn't modified during the load window (via `updated_at_ms > check_time_ms`). If stale, the loaded copy is skipped and the concurrent update wins, preventing lost gate decisions or duplicate task execution when two operators approve the same gate simultaneously.
+
+- **Path traversal protection for automation identifiers**: Added `sanitize_path_id()` to replace unsafe characters in automation IDs and run IDs with underscores (safe set: alphanumeric + hyphen + underscore), and `validate_path_within_root()` to verify constructed paths stay within their base directory via canonicalization. Applied to `automation_v2_definition_shard_path()` and `automation_v2_run_history_shard_path()` to prevent attacks like `../../../etc/passwd`.
+
+- **Dedup TTL for webhook replay prevention**: Discord and Slack interaction dedup rings now expire entries after 5 minutes, matching platform retry behavior (typically seconds-to-minutes). Updated `DedupRing` to track insertion timestamp and reject duplicates only if the key exists and the TTL window is still active, preventing stale entries from being replayed after ring eviction.
+
+- **File permission validation on startup**: Added `check_file_permissions()` (Unix-only) that logs warnings if state files are world-readable or world/group-writable. Checks run on load of sensitive files: `bug_monitor_config`, `bug_monitor_log_watcher_state`, and `bug_monitor_intake_keys`. Does not fail startup but alerts operators to restrict permissions to mode 0600 (owner read/write only).
+
 ## v0.5.5 (Unreleased)
 
 This release lays down the **Execution Profiles** foundation — a runtime governance toggle (Strict / Guided / YOLO) that will let users keep working while validators and contracts continue to harden, without abandoning Tandem's runtime ownership of state, receipts, replay, spend tracking, and approvals. The motivation is operational: full governance still has a high run-fail rate as bugs are ironed out, and a meaningful share of those failures are over-strict (false-positive validation, missing-but-non-essential sections, recoverable artifact issues) rather than real defects. Execution Profiles are the structured bridge that lets affected runs continue with the relaxation captured in receipts, so the data we collect can drive validator classes back to Strict-by-default once they mature.

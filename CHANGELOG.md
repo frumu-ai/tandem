@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - Unreleased
+
+### Security
+
+- **CRITICAL: Authorization bypass in channel interaction endpoints** - Fixed missing user validation in Slack, Discord, and Telegram interaction handlers. All three endpoints now verify that clicking users are in the configured `allowed_users` allowlist before processing approval/rework/cancel decisions. Previously, any user in a Slack workspace, Discord server, or Telegram group could click approval buttons and decide automation gates regardless of allowlist configuration. Fix applies `resolve_channel_user()` with proper ChannelKind classification at each interaction entry point.
+
+- **CRITICAL: TOCTOU race condition in automation run cache loading** - Fixed Time-of-Check-Time-of-Use vulnerability where concurrent requests to `update_automation_v2_run()` could race during cache misses. The function drops the per-run mutation lock to load state from disk, creating a window for concurrent updates. Now records timestamp before dropping lock and validates that the in-memory entry wasn't modified while loading (by checking `updated_at_ms > check_time_ms`). If stale, the loaded copy is skipped and the concurrent update wins, preventing lost gate decisions or duplicate execution.
+
+- **HIGH: Path traversal protection for automation IDs and run IDs** - Added `sanitize_path_id()` function that replaces unsafe characters (anything outside alphanumeric, hyphen, underscore) with underscores, and `validate_path_within_root()` that verifies constructed paths stay within their base directory using canonicalization. Applied sanitization to `automation_v2_definition_file_name()` and `automation_v2_run_history_shard_path()` to prevent attacks like `../../../etc/passwd` in ID fields.
+
+- **Dedup TTL for webhook interaction replay attacks** - Dedup rings in Discord and Slack interaction handlers now expire entries after 5 minutes (configurable via `DEDUP_TTL_SECS`). Previously, entries persisted indefinitely in the bounded ring and could be replayed after eviction. Updated `DedupRing` to track `inserted_at_secs` timestamp for each entry and reject duplicates only if both the key exists AND the TTL window is still active.
+
+- **File permission validation on state file load** - Added `check_file_permissions()` (Unix-only) that logs warnings if state files are world-readable or world/group-writable. Calls on startup during load of sensitive files: `bug_monitor_config`, `bug_monitor_log_watcher_state`, and `bug_monitor_intake_keys`. Does not fail startup but alerts operators to restrict state files to mode 0600 (owner read/write only).
+
 ## [0.5.5] - Unreleased
 
 ### Added
