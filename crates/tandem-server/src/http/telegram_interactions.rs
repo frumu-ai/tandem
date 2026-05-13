@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 use tandem_channels::signing::verify_telegram_secret_token;
 use tandem_channels::telegram_keyboards::{parse_callback_data, ParsedCallbackData};
 
+use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
 use crate::AppState;
 
 const DEDUP_CAP: usize = 4096;
@@ -140,6 +141,25 @@ pub(crate) async fn telegram_interactions(
         .map(|id| id.to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
+    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Telegram, &user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // User is authorized; proceed to handle the action.
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::telegram_interactions",
+                user_id = %user_id,
+                "rejecting Telegram interaction from unauthorized user"
+            );
+            return reject_forbidden(&format!("user {} not in allowed_users", user_id));
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return reject_bad_request("telegram channel not properly configured");
+        }
+    }
+
     match parsed.action.as_str() {
         "approve" | "cancel" => dispatch_decision(state, parsed, &user_id, None).await,
         "rework" => {
@@ -218,6 +238,17 @@ fn reject_unauthorized(reason: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(json!({ "error": "Unauthorized", "reason": reason })),
+    )
+        .into_response()
+}
+
+fn reject_forbidden(reason: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "Forbidden",
+            "reason": reason,
+        })),
     )
         .into_response()
 }

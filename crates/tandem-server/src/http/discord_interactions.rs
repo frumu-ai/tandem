@@ -161,6 +161,25 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
         .unwrap_or("unknown")
         .to_string();
 
+    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Discord, &user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // User is authorized; proceed to handle the action.
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::discord_interactions",
+                user_id = %user_id,
+                "rejecting Discord interaction from unauthorized user"
+            );
+            return reject_forbidden(&format!("user {} not in allowed_users", user_id));
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return reject_bad_request("discord channel not properly configured");
+        }
+    }
+
     match parsed.action.as_str() {
         "approve" | "cancel" => dispatch_decision(state, parsed, &user_id, None).await,
         "rework" => {
@@ -226,6 +245,25 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
+
+    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Discord, &user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // User is authorized; proceed to handle the modal submission.
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::discord_interactions",
+                user_id = %user_id,
+                "rejecting Discord modal submission from unauthorized user"
+            );
+            return reject_forbidden(&format!("user {} not in allowed_users", user_id));
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return reject_bad_request("discord channel not properly configured");
+        }
+    }
 
     dispatch_decision(
         state,
@@ -331,6 +369,17 @@ fn reject_unauthorized(reason: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(json!({ "error": "Unauthorized", "reason": reason })),
+    )
+        .into_response()
+}
+
+fn reject_forbidden(reason: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "Forbidden",
+            "reason": reason,
+        })),
     )
         .into_response()
 }
