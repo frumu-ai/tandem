@@ -479,7 +479,10 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
             ) : null}
             <details className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
               <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 text-sm text-slate-100">
-                <span className="font-medium">Task Tool Access</span>
+                <span className="inline-flex items-center gap-2 font-medium">
+                  <i data-lucide="wrench"></i>
+                  <span>Task Tool Access</span>
+                </span>
                 <span className="flex flex-wrap items-center gap-2 text-[11px]">
                   <span className="rounded-full border border-slate-700 px-2 py-1 text-slate-300">
                     {selectedNodeToolMode === "custom"

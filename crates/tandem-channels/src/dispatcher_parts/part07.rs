@@ -690,6 +690,21 @@ mod tests {
     }
 
     #[test]
+    fn exact_mcp_tool_without_enabled_server_does_not_make_factual_questions_strict() {
+        let prefs = ChannelToolPreferences {
+            enabled_mcp_tools: vec!["mcp.kb.search".to_string()],
+            ..Default::default()
+        };
+        let message = "Can you ban a Discord user who is spamming?";
+
+        assert!(channel_message_is_factual_question(message));
+        assert!(!effective_channel_strict_kb_grounding(
+            message, false, &prefs
+        ));
+        assert!(!strict_kb_prefers_answer_mode(message, false, &prefs));
+    }
+
+    #[test]
     fn strict_kb_routing_prefers_answer_mode_without_explicit_mcp_preferences() {
         let prefs = ChannelToolPreferences::default();
 
@@ -881,6 +896,7 @@ mod tests {
     fn channel_exact_mcp_tools_are_added_to_tool_allowlist() {
         let prefs = ChannelToolPreferences {
             enabled_tools: vec!["read".to_string()],
+            enabled_mcp_servers: vec!["composio-1".to_string()],
             enabled_mcp_tools: vec!["mcp.composio_1.gmail_send_email".to_string()],
             ..Default::default()
         };
@@ -894,6 +910,61 @@ mod tests {
             .any(|tool| tool == "mcp.composio_1.gmail_send_email"));
         assert!(result.iter().any(|tool| tool == "mcp_list"));
         assert!(!result.iter().any(|tool| tool == "mcp.composio_1.*"));
+    }
+
+    #[test]
+    fn channel_exact_mcp_tools_are_blocked_when_server_is_disabled() {
+        let prefs = ChannelToolPreferences {
+            enabled_tools: vec!["read".to_string()],
+            enabled_mcp_tools: vec!["mcp.composio_1.gmail_send_email".to_string()],
+            ..Default::default()
+        };
+
+        let result = build_channel_tool_allowlist(None, &prefs, ChannelSecurityProfile::Operator)
+            .expect("channel allowlist");
+
+        assert_eq!(result, vec!["read".to_string()]);
+        assert!(!result
+            .iter()
+            .any(|tool| tool == "mcp.composio_1.gmail_send_email"));
+        assert!(!result.iter().any(|tool| tool == "mcp_list"));
+    }
+
+    #[test]
+    fn channel_default_tool_allowlist_does_not_wildcard_mcp_tools() {
+        let prefs = ChannelToolPreferences::default();
+
+        let result = build_channel_tool_allowlist(None, &prefs, ChannelSecurityProfile::Operator)
+            .expect("channel allowlist");
+
+        assert!(result.iter().any(|tool| tool == "read"));
+        assert!(!result.iter().any(|tool| tool == "*"));
+        assert!(!result.iter().any(|tool| tool == "mcp_list"));
+        assert!(!result.iter().any(|tool| tool.starts_with("mcp.")));
+    }
+
+    #[test]
+    fn channel_route_allowlist_cannot_reenable_disabled_mcp_server() {
+        let route_allowlist = vec![
+            "read".to_string(),
+            "mcp.composio_1.gmail_send_email".to_string(),
+            "mcp.composio_1.*".to_string(),
+            "mcp_list".to_string(),
+        ];
+        let prefs = ChannelToolPreferences {
+            enabled_tools: vec!["read".to_string()],
+            enabled_mcp_tools: vec!["mcp.composio_1.gmail_send_email".to_string()],
+            ..Default::default()
+        };
+
+        let result = build_channel_tool_allowlist(
+            Some(&route_allowlist),
+            &prefs,
+            ChannelSecurityProfile::Operator,
+        )
+        .expect("channel allowlist");
+
+        assert_eq!(result, vec!["read".to_string()]);
     }
 
     #[test]

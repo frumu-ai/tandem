@@ -220,6 +220,7 @@ async fn start_channel_automation_draft(
 ) -> String {
     let allowed_tools =
         build_channel_tool_allowlist(None, tool_prefs, security_profile).unwrap_or_default();
+    let allowed_mcp_tools = filtered_enabled_mcp_tools(tool_prefs);
     let body = serde_json::json!({
         "text": prompt,
         "session_id": session_id,
@@ -236,7 +237,7 @@ async fn start_channel_automation_draft(
         },
         "allowed_tools": allowed_tools,
         "allowed_mcp_servers": tool_prefs.enabled_mcp_servers.clone(),
-        "allowed_mcp_tools": tool_prefs.enabled_mcp_tools.clone(),
+        "allowed_mcp_tools": allowed_mcp_tools,
         "security_profile": format!("{security_profile:?}"),
         "workflow_planner_enabled": channel_workflow_planner_enabled(tool_prefs),
         "strict_kb_grounding": strict_kb_grounding,
@@ -653,7 +654,7 @@ fn channel_workflow_planner_enabled(prefs: &ChannelToolPreferences) -> bool {
 }
 
 fn channel_has_enabled_mcp_context(prefs: &ChannelToolPreferences) -> bool {
-    !prefs.enabled_mcp_servers.is_empty() || !prefs.enabled_mcp_tools.is_empty()
+    !prefs.enabled_mcp_servers.is_empty() || !filtered_enabled_mcp_tools(prefs).is_empty()
 }
 
 fn channel_message_has_explicit_workflow_intent(message: &str) -> bool {
@@ -795,56 +796,86 @@ fn channel_tool_preferences_without_planner_gate(
     }
 }
 
+fn enabled_mcp_server_namespaces(
+    prefs: &ChannelToolPreferences,
+) -> std::collections::HashSet<String> {
+    prefs
+        .enabled_mcp_servers
+        .iter()
+        .map(|server| mcp_namespace_segment(server))
+        .collect()
+}
+
+fn mcp_tool_server_namespace(tool: &str) -> Option<String> {
+    let rest = tool.strip_prefix("mcp.")?;
+    let namespace = rest.split('.').next()?.trim();
+    if namespace.is_empty() {
+        return None;
+    }
+    Some(namespace.to_string())
+}
+
+fn filtered_enabled_mcp_tools(prefs: &ChannelToolPreferences) -> Vec<String> {
+    let enabled_servers = enabled_mcp_server_namespaces(prefs);
+    if enabled_servers.is_empty() {
+        return Vec::new();
+    }
+    prefs
+        .enabled_mcp_tools
+        .iter()
+        .filter(|tool| {
+            mcp_tool_server_namespace(tool)
+                .as_ref()
+                .is_some_and(|namespace| enabled_servers.contains(namespace))
+        })
+        .cloned()
+        .collect()
+}
+
+fn route_allowlist_respecting_mcp_preferences(
+    route_allowlist: Vec<String>,
+    tool_prefs: &ChannelToolPreferences,
+    enabled_mcp_tools: &[String],
+) -> Vec<String> {
+    let enabled_mcp_servers = enabled_mcp_server_namespaces(tool_prefs);
+    let enabled_exact_mcp_tools = enabled_mcp_tools
+        .iter()
+        .map(|tool| tool.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let exact_mcp_tool_namespaces = enabled_mcp_tools
+        .iter()
+        .filter_map(|tool| mcp_tool_server_namespace(tool))
+        .collect::<std::collections::HashSet<_>>();
+
+    route_allowlist
+        .into_iter()
+        .filter(|tool| {
+            if tool == "mcp_list" {
+                return !enabled_mcp_servers.is_empty();
+            }
+            let Some(rest) = tool.strip_prefix("mcp.") else {
+                return true;
+            };
+            let namespace = rest.split('.').next().unwrap_or_default();
+            if !enabled_mcp_servers.contains(namespace) {
+                return false;
+            }
+            if tool.ends_with(".*") {
+                return !exact_mcp_tool_namespaces.contains(namespace);
+            }
+            !exact_mcp_tool_namespaces.contains(namespace)
+                || enabled_exact_mcp_tools.contains(tool.as_str())
+        })
+        .collect()
+}
+
 fn build_channel_tool_allowlist(
     route_allowlist: Option<&Vec<String>>,
     tool_prefs: &ChannelToolPreferences,
     security_profile: ChannelSecurityProfile,
 ) -> Option<Vec<String>> {
     let tool_prefs = channel_tool_preferences_without_planner_gate(tool_prefs);
-    let route_allowlist = route_allowlist.map(|allowlist| {
-        allowlist
-            .iter()
-            .filter(|tool| tool.as_str() != WORKFLOW_PLANNER_PSEUDO_TOOL)
-            .cloned()
-            .collect::<Vec<_>>()
-    });
-    if security_profile == ChannelSecurityProfile::PublicDemo {
-        let mut allowed = PUBLIC_DEMO_ALLOWED_TOOLS
-            .iter()
-            .map(|tool| tool.to_string())
-            .collect::<Vec<_>>();
-        if let Some(route_override) = route_allowlist {
-            allowed.retain(|tool| route_override.iter().any(|candidate| candidate == tool));
-        }
-        allowed.retain(|tool| {
-            !tool_prefs
-                .disabled_tools
-                .iter()
-                .any(|disabled| disabled == tool)
-        });
-        if !tool_prefs.enabled_tools.is_empty() {
-            allowed.retain(|tool| {
-                tool_prefs
-                    .enabled_tools
-                    .iter()
-                    .any(|enabled| enabled == tool)
-            });
-        }
-        return Some(allowed);
-    }
-
-    if let Some(pb) = route_allowlist {
-        return Some(pb.clone());
-    }
-
-    if tool_prefs.enabled_tools.is_empty()
-        && tool_prefs.disabled_tools.is_empty()
-        && tool_prefs.enabled_mcp_servers.is_empty()
-        && tool_prefs.enabled_mcp_tools.is_empty()
-    {
-        return Some(vec!["*".to_string()]);
-    }
-
+    let enabled_mcp_tools = filtered_enabled_mcp_tools(&tool_prefs);
     let all_builtin = [
         "read",
         "glob",
@@ -881,6 +912,47 @@ fn build_channel_tool_allowlist(
         "question",
         "pack_builder",
     ];
+    let route_allowlist = route_allowlist.map(|allowlist| {
+        allowlist
+            .iter()
+            .filter(|tool| tool.as_str() != WORKFLOW_PLANNER_PSEUDO_TOOL)
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    if security_profile == ChannelSecurityProfile::PublicDemo {
+        let mut allowed = PUBLIC_DEMO_ALLOWED_TOOLS
+            .iter()
+            .map(|tool| tool.to_string())
+            .collect::<Vec<_>>();
+        if let Some(route_override) = route_allowlist {
+            allowed.retain(|tool| route_override.iter().any(|candidate| candidate == tool));
+        }
+        allowed.retain(|tool| {
+            !tool_prefs
+                .disabled_tools
+                .iter()
+                .any(|disabled| disabled == tool)
+        });
+        if !tool_prefs.enabled_tools.is_empty() {
+            allowed.retain(|tool| {
+                tool_prefs
+                    .enabled_tools
+                    .iter()
+                    .any(|enabled| enabled == tool)
+            });
+        }
+        return Some(allowed);
+    }
+
+    if let Some(pb) = route_allowlist {
+        if !pb.iter().any(|tool| tool == "*") {
+            return Some(route_allowlist_respecting_mcp_preferences(
+                pb,
+                &tool_prefs,
+                &enabled_mcp_tools,
+            ));
+        }
+    }
 
     let disabled: std::collections::HashSet<&str> = tool_prefs
         .disabled_tools
@@ -898,6 +970,9 @@ fn build_channel_tool_allowlist(
     let mut result = Vec::new();
 
     for tool in all_builtin {
+        if tool == "mcp_list" {
+            continue;
+        }
         if disabled.contains(tool) {
             continue;
         }
@@ -907,15 +982,24 @@ fn build_channel_tool_allowlist(
         result.push(tool.to_string());
     }
 
+    let exact_mcp_tool_namespaces = enabled_mcp_tools
+        .iter()
+        .filter_map(|tool| mcp_tool_server_namespace(tool))
+        .collect::<std::collections::HashSet<_>>();
     for server in &tool_prefs.enabled_mcp_servers {
-        result.push(format!("mcp.{}.*", mcp_namespace_segment(server)));
+        let namespace = mcp_namespace_segment(server);
+        if exact_mcp_tool_namespaces.contains(&namespace) {
+            continue;
+        }
+        result.push(format!("mcp.{namespace}.*"));
+    }
+    for tool in enabled_mcp_tools {
+        result.push(tool);
     }
 
-    for tool in &tool_prefs.enabled_mcp_tools {
-        result.push(tool.clone());
-    }
-
-    if !tool_prefs.enabled_mcp_servers.is_empty() || !tool_prefs.enabled_mcp_tools.is_empty() {
+    if !tool_prefs.enabled_mcp_servers.is_empty()
+        || result.iter().any(|tool| tool.starts_with("mcp."))
+    {
         result.push("mcp_list".to_string());
     }
 

@@ -93,7 +93,10 @@ pub(crate) fn automation_tool_capability_ids(
         tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
             &automation_connector_hint_text(node),
         );
+    let upstream_synthesis_node =
+        enforcement::automation_node_consumes_upstream_artifacts_for_delivery(node);
     let connector_source_node = !automation_node_is_code_workflow(node)
+        && !upstream_synthesis_node
         && (connector_hint_mentions
             || node_runtime_impl::automation_node_metadata_tool_allowlist(node)
                 .iter()

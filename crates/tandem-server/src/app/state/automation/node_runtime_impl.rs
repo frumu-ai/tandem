@@ -404,7 +404,10 @@ pub(crate) fn normalize_automation_requested_tools(
             }
         }
     }
+    let upstream_synthesis_node =
+        super::enforcement::automation_node_consumes_upstream_artifacts_for_delivery(node);
     let connector_source_node = !automation_node_is_code_workflow(node)
+        && !upstream_synthesis_node
         && !super::enforcement::automation_node_allows_optional_connector_references(node)
         && (connector_hint_mentions || normalized.iter().any(|tool| tool.starts_with("mcp.")));
     if connector_source_node {
@@ -745,7 +748,10 @@ pub(crate) fn resolve_automation_node_tool_envelope(
         tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
             &automation_connector_hint_text(node),
         );
+    let upstream_synthesis_node =
+        super::enforcement::automation_node_consumes_upstream_artifacts_for_delivery(node);
     let connector_source_node = !automation_node_is_code_workflow(node)
+        && !upstream_synthesis_node
         && !super::enforcement::automation_node_allows_optional_connector_references(node)
         && (connector_hint_mentions
             || automation_node_metadata_tool_allowlist(node)

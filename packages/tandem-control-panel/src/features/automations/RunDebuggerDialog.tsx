@@ -16,6 +16,11 @@ import { ExperimentalArtifactBadge, RelaxationOutcomeSummary } from "./Execution
 import { artifactValidationRelaxedClasses } from "./AutomationsRunHelpers";
 import { formatCompactNumber } from "../../lib/format";
 import { normalizeManagedFilesExplorerPath, openFilesExplorer } from "../files/explorerHandoff";
+import {
+  workflowActiveSessionCount as fallbackWorkflowActiveSessionCount,
+  workflowBlockedNodeCount as fallbackWorkflowBlockedNodeCount,
+  workflowCompletedNodeCount as fallbackWorkflowCompletedNodeCount,
+} from "../orchestration/workflowStability";
 
 function RunHistoryEventDetails({
   event,
@@ -181,6 +186,18 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
     sessionLabel,
     formatTimestampLabel,
   } = helpers;
+  const completedNodeCount =
+    typeof workflowCompletedNodeCount === "function"
+      ? workflowCompletedNodeCount
+      : fallbackWorkflowCompletedNodeCount;
+  const blockedNodeCount =
+    typeof workflowBlockedNodeCount === "function"
+      ? workflowBlockedNodeCount
+      : fallbackWorkflowBlockedNodeCount;
+  const activeSessionCount =
+    typeof workflowActiveSessionCount === "function"
+      ? workflowActiveSessionCount
+      : fallbackWorkflowActiveSessionCount;
 
   const openManagedPathInFiles = (path: string) => {
     const normalized = normalizeManagedFilesExplorerPath(path);
@@ -202,7 +219,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
   const pendingRunActionMessage = pendingRunAction
     ? `Waiting for ${pendingRunAction} request to finish.`
     : "";
-  const activeAgentCount = isWorkflowRun ? workflowActiveSessionCount(selectedRun) : 0;
+  const activeAgentCount = isWorkflowRun ? activeSessionCount(selectedRun) : 0;
 
   if (!selectedRunId) return null;
 
@@ -232,9 +249,9 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
             </div>
             {isWorkflowRun ? (
               <div className="tcp-subtle text-xs">
-                completed nodes: {workflowCompletedNodeCount(selectedRun)}
-                {" · "}blocked nodes: {workflowBlockedNodeCount(selectedRun)}
-                {" · "}active sessions: {workflowActiveSessionCount(selectedRun)}
+                completed nodes: {completedNodeCount(selectedRun)}
+                {" · "}blocked nodes: {blockedNodeCount(selectedRun)}
+                {" · "}active sessions: {activeSessionCount(selectedRun)}
               </div>
             ) : null}
             <div className="tcp-subtle text-xs">
@@ -1256,7 +1273,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                   needsRepairNodeIds={serverNeedsRepairNodeIds}
                   isWorkflowRun={isWorkflowRun}
                   selectedRunId={selectedRunId}
-                  hasActiveSessions={workflowActiveSessionCount(selectedRun) > 0}
+                  hasActiveSessions={activeSessionCount(selectedRun) > 0}
                   onFocusNode={onFocusNode}
                   workflowTaskRetryMutation={workflowTaskRetryMutation}
                   workflowTaskContinueMutation={workflowTaskContinueMutation}

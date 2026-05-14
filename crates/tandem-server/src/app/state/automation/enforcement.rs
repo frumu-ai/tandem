@@ -127,6 +127,9 @@ pub(crate) fn automation_node_allows_optional_web_research(node: &AutomationFlow
 pub(crate) fn automation_node_allows_optional_connector_references(
     node: &AutomationFlowNode,
 ) -> bool {
+    if automation_node_consumes_upstream_artifacts_for_delivery(node) {
+        return true;
+    }
     tandem_plan_compiler::api::workflow_step_allows_optional_connector_references(
         &automation_node_workspace_intent_text(node),
     )
@@ -161,11 +164,16 @@ pub(crate) fn automation_node_consumes_upstream_artifacts_for_delivery(
 
     matches!(
         task_class.as_str(),
-        "report_writing" | "brief_writer" | "delivery"
-    ) || matches!(task_kind.as_str(), "delivery" | "draft_deliverable")
-        || retry_class == "artifact_revision"
+        "report_writing" | "brief_writer" | "brief_writing" | "delivery"
+    ) || matches!(
+        task_kind.as_str(),
+        "delivery" | "draft_deliverable" | "synthesis"
+    ) || retry_class == "artifact_revision"
         || (objective.contains("use the synthesized findings")
             || objective.contains("use synthesized findings")
+            || objective.contains("synthesize the triage summary")
+            || objective.contains("synthesize the upstream")
+            || objective.contains("synthesize upstream")
             || objective.contains("draft the final report")
             || objective.contains("final report body"))
 }
@@ -1323,5 +1331,89 @@ mod tests {
         let enforcement = automation_node_output_enforcement(&node);
 
         assert!(enforcement.required_tools.iter().any(|tool| tool == "read"));
+    }
+
+    #[test]
+    fn upstream_brief_synthesis_does_not_require_fresh_websearch() {
+        let node = AutomationFlowNode {
+            node_id: "draft_productivity_signals_brief".to_string(),
+            agent_id: "agent_brief_synthesizer".to_string(),
+            objective: "Synthesize the triage summary, Reddit findings, and supporting web citations into one concise Daily AI Productivity Signals Brief.".to_string(),
+            knowledge: Default::default(),
+            depends_on: vec![
+                "collect_reddit_signals".to_string(),
+                "gather_supporting_context".to_string(),
+            ],
+            input_refs: vec![
+                AutomationFlowInputRef {
+                    from_step_id: "collect_reddit_signals".to_string(),
+                    alias: "reddit_findings".to_string(),
+                },
+                AutomationFlowInputRef {
+                    from_step_id: "gather_supporting_context".to_string(),
+                    alias: "supporting_citations".to_string(),
+                },
+            ],
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "brief".to_string(),
+                validator: Some(AutomationOutputValidatorKind::ResearchBrief),
+                enforcement: Some(AutomationOutputEnforcement {
+                    validation_profile: Some("external_research".to_string()),
+                    required_tools: vec!["websearch".to_string()],
+                    required_tool_calls: Vec::new(),
+                    required_evidence: vec!["external_sources".to_string()],
+                    required_sections: vec!["citations".to_string()],
+                    prewrite_gates: vec!["successful_web_research".to_string()],
+                    retry_on_missing: vec![
+                        "external_sources".to_string(),
+                        "citations".to_string(),
+                        "successful_web_research".to_string(),
+                    ],
+                    terminal_on: vec![
+                        "tool_unavailable".to_string(),
+                        "repair_budget_exhausted".to_string(),
+                    ],
+                    repair_budget: Some(5),
+                    session_text_recovery: Some("require_prewrite_satisfied".to_string()),
+                }),
+                schema: None,
+                summary_guidance: None,
+            }),
+            tool_policy: None,
+            mcp_policy: None,
+            retry_policy: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(serde_json::json!({
+                "builder": {
+                    "task_class": "brief_writing",
+                    "task_kind": "research",
+                    "web_research_expected": false
+                }
+            })),
+        };
+
+        let enforcement = automation_node_output_enforcement(&node);
+
+        assert_eq!(
+            enforcement.validation_profile.as_deref(),
+            Some("research_synthesis")
+        );
+        assert!(!enforcement
+            .required_tools
+            .iter()
+            .any(|tool| tool == "websearch"));
+        assert!(!enforcement
+            .required_evidence
+            .iter()
+            .any(|item| item == "external_sources"));
+        assert!(!enforcement
+            .prewrite_gates
+            .iter()
+            .any(|gate| gate == "successful_web_research"));
+        assert_eq!(enforcement.session_text_recovery.as_deref(), Some("allow"));
+        assert!(automation_node_allows_optional_connector_references(&node));
     }
 }

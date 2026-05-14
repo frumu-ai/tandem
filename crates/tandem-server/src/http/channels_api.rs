@@ -871,7 +871,10 @@ fn sanitize_tool_preferences_for_security_profile(
     let enabled_tools = unique_strings(prefs.enabled_tools);
     let disabled_tools = unique_strings(prefs.disabled_tools);
     let enabled_mcp_servers = unique_strings(prefs.enabled_mcp_servers);
-    let enabled_mcp_tools = unique_strings(prefs.enabled_mcp_tools);
+    let enabled_mcp_tools = filter_enabled_mcp_tools_by_enabled_servers(
+        &enabled_mcp_servers,
+        unique_strings(prefs.enabled_mcp_tools),
+    );
 
     if security_profile != tandem_channels::config::ChannelSecurityProfile::PublicDemo {
         return ChannelToolPreferences {
@@ -898,6 +901,50 @@ fn sanitize_tool_preferences_for_security_profile(
         enabled_mcp_servers: Vec::new(),
         enabled_mcp_tools: Vec::new(),
     }
+}
+
+fn mcp_namespace_segment(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
+
+fn mcp_tool_server_namespace(tool: &str) -> Option<String> {
+    let rest = tool.strip_prefix("mcp.")?;
+    let namespace = rest.split('.').next()?.trim();
+    if namespace.is_empty() {
+        return None;
+    }
+    Some(namespace.to_string())
+}
+
+fn filter_enabled_mcp_tools_by_enabled_servers(
+    enabled_mcp_servers: &[String],
+    enabled_mcp_tools: Vec<String>,
+) -> Vec<String> {
+    let enabled_namespaces = enabled_mcp_servers
+        .iter()
+        .map(|server| mcp_namespace_segment(server))
+        .collect::<std::collections::HashSet<_>>();
+    if enabled_namespaces.is_empty() {
+        return Vec::new();
+    }
+    enabled_mcp_tools
+        .into_iter()
+        .filter(|tool| {
+            mcp_tool_server_namespace(tool)
+                .as_ref()
+                .is_some_and(|namespace| enabled_namespaces.contains(namespace))
+        })
+        .collect()
 }
 
 fn merge_channel_tool_preferences(
@@ -1126,6 +1173,30 @@ mod tests {
         assert_eq!(
             sanitized.enabled_mcp_tools,
             vec!["mcp.github.create_issue".to_string()]
+        );
+    }
+
+    #[test]
+    fn operator_drops_exact_mcp_tools_when_server_is_disabled() {
+        let prefs = ChannelToolPreferences {
+            enabled_tools: vec!["read".to_string()],
+            disabled_tools: Vec::new(),
+            enabled_mcp_servers: vec!["notion".to_string()],
+            enabled_mcp_tools: vec![
+                "mcp.github.create_issue".to_string(),
+                "mcp.notion.search".to_string(),
+            ],
+        };
+
+        let sanitized = sanitize_tool_preferences_for_security_profile(
+            prefs,
+            tandem_channels::config::ChannelSecurityProfile::Operator,
+        );
+
+        assert_eq!(sanitized.enabled_mcp_servers, vec!["notion".to_string()]);
+        assert_eq!(
+            sanitized.enabled_mcp_tools,
+            vec!["mcp.notion.search".to_string()]
         );
     }
 

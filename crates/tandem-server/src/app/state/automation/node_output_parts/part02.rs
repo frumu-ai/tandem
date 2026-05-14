@@ -62,6 +62,13 @@ fn automation_node_is_bug_monitor_triage_handoff(node: &AutomationFlowNode) -> b
         })
 }
 
+fn artifact_validation_has_unmet_requirements(artifact_validation: Option<&Value>) -> bool {
+    artifact_validation
+        .and_then(|value| value.get("unmet_requirements"))
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty())
+}
+
 pub(crate) fn detect_automation_node_status(
     node: &AutomationFlowNode,
     session_text: &str,
@@ -663,6 +670,20 @@ pub(crate) fn detect_automation_node_status(
     // final compact status JSON is missing or malformed; retrying would create
     // duplicate emails or drafts.
     if automation_node_requires_email_delivery(node) && email_delivery_succeeded {
+        return ("completed".to_string(), explicit_reason, approved);
+    }
+    let external_mutation_succeeded = tool_telemetry
+        .get("external_mutation_succeeded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // External connector mutations are also visible side effects. If Notion,
+    // GitHub, Slack, etc. confirms a mutation and validation found no unmet
+    // requirements, do not retry just because the model omitted a compact final
+    // status object. Retrying create-style mutations produces duplicate rows,
+    // pages, issues, messages, or drafts.
+    if external_mutation_succeeded
+        && !artifact_validation_has_unmet_requirements(artifact_validation)
+    {
         return ("completed".to_string(), explicit_reason, approved);
     }
     let external_mutation_failed = artifact_validation

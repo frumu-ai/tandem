@@ -166,6 +166,7 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
 
   const approvals = pendingQuery.data?.approvals ?? [];
   const count = approvals.length;
+  const loadingApprovals = pendingQuery.isLoading || (pendingQuery.isFetching && count === 0);
 
   return (
     <AnimatedPage className="grid h-full min-h-0 gap-4">
@@ -190,16 +191,14 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
                   className="h-4 w-4"
                   title="Refreshing approvals"
                 />
-              ) : (
-                <i data-lucide="refresh-cw"></i>
-              )}
+              ) : null}
               {pendingQuery.isFetching ? "Refreshing" : "Refresh"}
             </button>
           </div>
         }
         fullHeight
       >
-        {pendingQuery.isLoading ? (
+        {loadingApprovals ? (
           <LoadingState
             title="Checking for pending approvals…"
             text="Polling /api/engine/approvals/pending"

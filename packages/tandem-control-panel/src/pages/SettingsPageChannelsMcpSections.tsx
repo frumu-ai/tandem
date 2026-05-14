@@ -114,6 +114,14 @@ export function SettingsPageChannelsMcpSections({
                   knownExactMcpToolPrefixes.some((prefix) => tool.startsWith(prefix))
                 )
               );
+              const enabledMcpServerPrefixes = new Set(
+                toolPrefs.enabled_mcp_servers.map(
+                  (server) => `mcp.${normalizeMcpNamespaceSegment(server)}.`
+                )
+              );
+              const activeExactMcpTools = toolPrefs.enabled_mcp_tools.filter((tool) =>
+                Array.from(enabledMcpServerPrefixes).some((prefix) => tool.startsWith(prefix))
+              );
               const publicDemo = draft.securityProfile === "public_demo";
               const hasSavedConfig = channelConfigHasSavedSettings(channel, config);
               const channelSettingsDirty = !channelDraftMatchesConfig(channel, draft, config);
@@ -267,6 +275,28 @@ export function SettingsPageChannelsMcpSections({
                         }
                       />
                       Mention only
+                    </label>
+                    <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-sm">
+                      <div className="flex flex-col">
+                        <span>Strict KB grounding</span>
+                        <span className="tcp-subtle text-[11px]">
+                          Factual channel questions use selected MCP knowledge sources as the
+                          grounding path.
+                        </span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={draft.strictKbGrounding}
+                        onChange={(e) =>
+                          setChannelDrafts((prev) => ({
+                            ...prev,
+                            [channel]: {
+                              ...draft,
+                              strictKbGrounding: e.target.checked,
+                            },
+                          }))
+                        }
+                      />
                     </label>
                   </div>
 
@@ -487,9 +517,9 @@ export function SettingsPageChannelsMcpSections({
                         : publicDemo
                           ? "MCP servers stay disabled in public demo mode."
                           : `No MCP servers enabled for this ${scopeTargetLabel}.`}
-                      {toolPrefs.enabled_mcp_tools.length
-                        ? ` ${toolPrefs.enabled_mcp_tools.length} exact MCP tool${
-                            toolPrefs.enabled_mcp_tools.length === 1 ? "" : "s"
+                      {activeExactMcpTools.length
+                        ? ` ${activeExactMcpTools.length} exact MCP tool${
+                            activeExactMcpTools.length === 1 ? "" : "s"
                           } also selected.`
                         : ""}
                       {` ${
@@ -671,8 +701,8 @@ export function SettingsPageChannelsMcpSections({
                                 Exact MCP tools
                               </div>
                               <div className="tcp-subtle text-xs">
-                                Choose exact tool names for this {scopeTargetLabel}. This narrows
-                                access without changing the whole-server toggles above.
+                                Choose exact tool names for this {scopeTargetLabel}. Exact tools
+                                only apply when their MCP server is enabled above.
                               </div>
                               {safeMcpServers.length ? (
                                 <div className="grid gap-3">
@@ -680,6 +710,9 @@ export function SettingsPageChannelsMcpSections({
                                     const discoveredTools = normalizeMcpTools(
                                       Array.isArray(server.toolCache) ? server.toolCache : []
                                     );
+                                    const serverEnabled =
+                                      !publicDemo &&
+                                      toolPrefs.enabled_mcp_servers.includes(server.name);
                                     const selectedExactTools = channelExactMcpToolsForServer(
                                       toolPrefs,
                                       server.name,
@@ -690,16 +723,20 @@ export function SettingsPageChannelsMcpSections({
                                         key={`${channel}-exact-mcp-${server.name}`}
                                         title={server.name}
                                         subtitle={
-                                          server.connected
-                                            ? server.enabled
-                                              ? "Connected and enabled globally. Pick the exact tools this scope can use."
-                                              : "Connected, but disabled globally. Exact selections are saved here and will apply if the server is enabled."
-                                            : "This server is disconnected. Exact selections are saved here and will apply when it reconnects."
+                                          !serverEnabled
+                                            ? "Server is disabled for this scope. Exact tool selections are inactive until you enable the server above."
+                                            : server.connected
+                                              ? server.enabled
+                                                ? "Connected and enabled globally. Pick the exact tools this scope can use."
+                                                : "Connected, but disabled globally. Exact selections are saved here and will apply if the server is enabled."
+                                              : "This server is disconnected. Exact selections are saved here and will apply when it reconnects."
                                         }
                                         discoveredTools={discoveredTools}
-                                        value={selectedExactTools}
+                                        value={serverEnabled ? selectedExactTools : []}
                                         disabled={
-                                          saveChannelToolPreferencesMutation.isPending || publicDemo
+                                          saveChannelToolPreferencesMutation.isPending ||
+                                          publicDemo ||
+                                          !serverEnabled
                                         }
                                         collapsible
                                         defaultCollapsed

@@ -160,6 +160,28 @@ function useBugMonitorStatus(enabled: boolean) {
   });
 }
 
+function usePendingApprovals(enabled: boolean) {
+  return useQuery({
+    queryKey: ["approvals", "pending", "count"],
+    enabled,
+    refetchInterval: enabled ? 5000 : false,
+    queryFn: async () => {
+      try {
+        const payload = await api("/api/engine/approvals/pending", { method: "GET" });
+        const approvals = Array.isArray((payload as any)?.approvals)
+          ? (payload as any).approvals
+          : [];
+        const count = Number((payload as any)?.count);
+        return {
+          count: Number.isFinite(count) ? count : approvals.length,
+        };
+      } catch {
+        return { count: 0 };
+      }
+    },
+  });
+}
+
 function ReconnectingPage({
   controlPanelName,
   controlPanelMode,
@@ -304,6 +326,7 @@ function AppBody() {
   const healthQuery = useSystemHealth(authed);
   const swarmStatusQuery = useSwarmStatus(authed);
   const bugMonitorQuery = useBugMonitorStatus(authed);
+  const pendingApprovalsQuery = usePendingApprovals(authed);
   const capabilitiesQuery = useCapabilities();
   const controlPanelMode =
     String(
@@ -679,6 +702,10 @@ function AppBody() {
                     : bugMonitorLastError,
               }
             : null,
+          approvals: {
+            pendingCount: Number(pendingApprovalsQuery.data?.count || 0),
+            checking: pendingApprovalsQuery.isFetching,
+          },
         }}
         routeKey={currentRoute}
         providerGate={

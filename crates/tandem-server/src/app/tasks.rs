@@ -63,6 +63,61 @@ fn extract_event_correlation_id(properties: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+const CONTEXT_TOOL_EVENT_STRING_LIMIT: usize = 2_000;
+
+fn is_running_tool_args_delta(properties: &Value) -> bool {
+    let Some(part) = properties.get("part") else {
+        return false;
+    };
+    let part_type = part
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if !matches!(
+        part_type,
+        "tool" | "tool-invocation" | "tool-result" | "tool_invocation" | "tool_result"
+    ) {
+        return false;
+    }
+    let tool_state = part
+        .get("state")
+        .and_then(|value| value.as_str())
+        .unwrap_or("running");
+    if matches!(tool_state, "completed" | "failed") {
+        return false;
+    }
+    properties
+        .get("toolCallDelta")
+        .and_then(|delta| delta.get("argsDelta").or_else(|| delta.get("args_delta")))
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.is_empty())
+}
+
+fn compact_large_context_event_strings(value: &mut Value) {
+    match value {
+        Value::String(text) if text.len() > CONTEXT_TOOL_EVENT_STRING_LIMIT => {
+            *text = truncate_text(text, CONTEXT_TOOL_EVENT_STRING_LIMIT);
+        }
+        Value::Array(items) => {
+            for item in items {
+                compact_large_context_event_strings(item);
+            }
+        }
+        Value::Object(map) => {
+            for child in map.values_mut() {
+                compact_large_context_event_strings(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn compact_context_tool_value(value: Option<&Value>) -> Value {
+    let mut compacted = value.cloned().unwrap_or(Value::Null);
+    compact_large_context_event_strings(&mut compacted);
+    compacted
+}
+
 async fn apply_provider_usage_to_routine_run(
     state: &AppState,
     run_id: &str,
@@ -139,6 +194,9 @@ fn session_context_run_event_input(event: &EngineEvent) -> Option<ContextRunEven
             }),
         }),
         "message.part.updated" => {
+            if is_running_tool_args_delta(&event.properties) {
+                return None;
+            }
             let part = event.properties.get("part")?;
             let part_type = part
                 .get("type")
@@ -170,8 +228,8 @@ fn session_context_run_event_input(event: &EngineEvent) -> Option<ContextRunEven
                 payload: serde_json::json!({
                     "sessionID": event.properties.get("sessionID").cloned().unwrap_or(Value::Null),
                     "runID": event.properties.get("runID").cloned().unwrap_or(Value::Null),
-                    "part": part.clone(),
-                    "toolCallDelta": event.properties.get("toolCallDelta").cloned().unwrap_or(Value::Null),
+                    "part": compact_context_tool_value(Some(part)),
+                    "toolCallDelta": compact_context_tool_value(event.properties.get("toolCallDelta")),
                     "tenantContext": event_tenant_context_value(event),
                     "why_next_step": why_next_step,
                     "step_status": if tool_state == "completed" { "done" } else { "in_progress" },
@@ -336,6 +394,58 @@ mod tests {
                 .and_then(Value::as_str),
             Some("succeeded")
         );
+    }
+
+    #[test]
+    fn session_context_run_event_input_skips_running_tool_arg_deltas() {
+        let input = session_context_run_event_input(&EngineEvent::new(
+            "message.part.updated",
+            serde_json::json!({
+                "sessionID": "session-1",
+                "runID": "run-1",
+                "part": {
+                    "type": "tool",
+                    "tool": "write",
+                    "state": "running",
+                    "args": {"content": "{\"partial\":"}
+                },
+                "toolCallDelta": {
+                    "argsDelta": "large streamed write body chunk"
+                }
+            }),
+        ));
+
+        assert!(input.is_none());
+    }
+
+    #[test]
+    fn session_context_run_event_input_compacts_completed_tool_payloads() {
+        let oversized_content = "x".repeat(CONTEXT_TOOL_EVENT_STRING_LIMIT + 200);
+        let input = session_context_run_event_input(&EngineEvent::new(
+            "message.part.updated",
+            serde_json::json!({
+                "sessionID": "session-1",
+                "runID": "run-1",
+                "part": {
+                    "type": "tool",
+                    "tool": "write",
+                    "state": "completed",
+                    "args": {"content": oversized_content}
+                },
+                "toolCallDelta": Value::Null
+            }),
+        ))
+        .expect("completed tool update should still be journaled");
+
+        let compacted = input
+            .payload
+            .get("part")
+            .and_then(|part| part.get("args"))
+            .and_then(|args| args.get("content"))
+            .and_then(Value::as_str)
+            .expect("compacted content");
+        assert!(compacted.len() < CONTEXT_TOOL_EVENT_STRING_LIMIT + 100);
+        assert!(compacted.ends_with("...<truncated>"));
     }
 
     #[test]

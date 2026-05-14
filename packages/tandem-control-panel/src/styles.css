@@ -469,6 +469,38 @@
     border-color: color-mix(in srgb, #22c55e 34%, transparent);
   }
 
+  .tcp-approval-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    min-height: 2rem;
+    border-radius: 9999px;
+    padding: 0.34rem 0.72rem;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    color: #fde68a;
+    border: 1px solid color-mix(in srgb, #f59e0b 48%, transparent);
+    background: color-mix(in srgb, #78350f 22%, var(--color-surface-elevated) 78%);
+    box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 8%, transparent);
+    transition:
+      border-color 150ms ease,
+      background 150ms ease,
+      color 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .tcp-approval-pill:hover {
+    border-color: color-mix(in srgb, #fbbf24 64%, transparent);
+    background: color-mix(in srgb, #78350f 32%, var(--color-surface-elevated) 68%);
+    box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 18%, transparent);
+  }
+
+  .tcp-approval-pill svg {
+    width: 14px;
+    height: 14px;
+  }
+
   .tcp-main-content {
     min-width: 0;
     min-height: 0;
@@ -2105,6 +2137,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   .tcp-theme-active,
   .tcp-brand-avatar,
   .tcp-bug-monitor-pill,
+  .tcp-approval-pill,
   .tcp-status-pulse,
   .tcp-icon-btn,
   .tcp-shell-glass,

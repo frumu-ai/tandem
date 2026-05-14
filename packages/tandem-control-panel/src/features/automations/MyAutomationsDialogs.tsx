@@ -1098,60 +1098,71 @@ export function WorkflowAutomationEditDialog({
                             }
                             placeholder="Describe exactly what this step should do."
                           />
-                          <div className="mt-3 grid gap-2 rounded-lg border border-slate-800/70 bg-slate-950/30 p-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="text-xs uppercase tracking-wide text-slate-500">
-                                Step routing
-                              </div>
-                              {node.modelProvider || node.modelId ? (
-                                <span className="tcp-badge-info">overrides workflow model</span>
-                              ) : (
-                                <span className="tcp-badge-info">inherits workflow model</span>
-                              )}
-                            </div>
-                            <ProviderModelSelector
-                              providerLabel="Step model provider"
-                              modelLabel="Step model"
-                              draft={{
-                                provider: node.modelProvider,
-                                model: node.modelId,
-                              }}
-                              providers={providerOptions}
-                              onChange={(draftModel) =>
-                                setWorkflowEditDraft((current: any) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        nodes: current.nodes.map((row: any) =>
-                                          row.nodeId === node.nodeId
-                                            ? {
-                                                ...row,
-                                                modelProvider: draftModel.provider,
-                                                modelId: draftModel.model,
-                                              }
-                                            : row
-                                        ),
-                                      }
-                                    : current
-                                )
-                              }
-                              inheritLabel="Use workflow model"
-                            />
-                            {validateModelInput(node.modelProvider, node.modelId) ? (
-                              <div className="text-xs text-red-300">
-                                {validateModelInput(node.modelProvider, node.modelId)}
-                              </div>
-                            ) : (
-                              <div className="text-xs text-slate-500">
-                                Leave both fields blank to inherit the workflow model.
-                              </div>
-                            )}
-                          </div>
                           <details className="mt-3 rounded-lg border border-slate-800/70 bg-slate-950/30 p-3">
                             <summary className="cursor-pointer list-none">
                               <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="text-xs uppercase tracking-wide text-slate-500">
-                                  Task tool access
+                                <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                  <i data-lucide="cpu"></i>
+                                  <span>Step model & provider</span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                  {node.modelProvider || node.modelId ? (
+                                    <span className="tcp-badge-info">overrides workflow model</span>
+                                  ) : (
+                                    <span className="tcp-badge-info">inherits workflow model</span>
+                                  )}
+                                  <span className="text-slate-500">
+                                    Expand to change this task's model.
+                                  </span>
+                                </div>
+                              </div>
+                            </summary>
+                            <div className="mt-3 grid gap-2">
+                              <ProviderModelSelector
+                                providerLabel="Step model provider"
+                                modelLabel="Step model"
+                                draft={{
+                                  provider: node.modelProvider,
+                                  model: node.modelId,
+                                }}
+                                providers={providerOptions}
+                                onChange={(draftModel) =>
+                                  setWorkflowEditDraft((current: any) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          nodes: current.nodes.map((row: any) =>
+                                            row.nodeId === node.nodeId
+                                              ? {
+                                                  ...row,
+                                                  modelProvider: draftModel.provider,
+                                                  modelId: draftModel.model,
+                                                }
+                                              : row
+                                          ),
+                                        }
+                                      : current
+                                  )
+                                }
+                                inheritLabel="Use workflow model"
+                              />
+                              {validateModelInput(node.modelProvider, node.modelId) ? (
+                                <div className="text-xs text-red-300">
+                                  {validateModelInput(node.modelProvider, node.modelId)}
+                                </div>
+                              ) : (
+                                <div className="text-xs text-slate-500">
+                                  Leave both fields blank to inherit the workflow model.
+                                </div>
+                              )}
+                            </div>
+                          </details>
+                          <details className="mt-3 rounded-lg border border-slate-800/70 bg-slate-950/30 p-3">
+                            <summary className="cursor-pointer list-none">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                  <i data-lucide="wrench"></i>
+                                  <span>Task tool access</span>
                                 </div>
                                 <div className="flex flex-wrap gap-2 text-[11px]">
                                   <span className="tcp-badge-info">

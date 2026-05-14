@@ -409,6 +409,7 @@ type ChannelConfigRow = {
   token_masked?: string;
   allowed_users?: string[];
   mention_only?: boolean;
+  strict_kb_grounding?: boolean;
   guild_id?: string;
   channel_id?: string;
   model_provider_id?: string;
@@ -429,6 +430,7 @@ type ChannelDraft = {
   botToken: string;
   allowedUsers: string;
   mentionOnly: boolean;
+  strictKbGrounding: boolean;
   guildId: string;
   channelId: string;
   modelProviderId: string;
@@ -808,6 +810,7 @@ export function normalizeChannelDraft(
     botToken: "",
     allowedUsers: Array.isArray(row.allowed_users) ? row.allowed_users.join(", ") : "",
     mentionOnly: row.mention_only !== false && channel === "discord" ? true : !!row.mention_only,
+    strictKbGrounding: !!row.strict_kb_grounding,
     guildId: String(row.guild_id || "").trim(),
     channelId: String(row.channel_id || "").trim(),
     modelProviderId: String(row.model_provider_id || "").trim(),
@@ -958,9 +961,14 @@ export function nextChannelMcpPreferences(
   enabled: boolean
 ): ChannelToolPreferencesRow {
   const servers = prefs.enabled_mcp_servers.filter((entry) => entry !== server);
+  const namespace = normalizeMcpNamespaceSegment(server);
+  const prefix = `mcp.${namespace}.`;
   return {
     ...prefs,
     enabled_mcp_servers: enabled ? uniqueChannelValues([...servers, server]) : servers,
+    enabled_mcp_tools: enabled
+      ? prefs.enabled_mcp_tools
+      : prefs.enabled_mcp_tools.filter((tool) => !tool.startsWith(prefix)),
   };
 }
 
@@ -969,6 +977,7 @@ export function channelExactMcpToolsForServer(
   serverName: string,
   discoveredTools: string[]
 ) {
+  if (!prefs.enabled_mcp_servers.includes(serverName)) return null;
   const namespace = normalizeMcpNamespaceSegment(serverName);
   const prefix = `mcp.${namespace}.`;
   const exactTools = prefs.enabled_mcp_tools.filter((tool) => tool.startsWith(prefix));
@@ -986,6 +995,12 @@ export function nextChannelExactMcpPreferences(
 ): ChannelToolPreferencesRow {
   const namespace = normalizeMcpNamespaceSegment(serverName);
   const prefix = `mcp.${namespace}.`;
+  if (!prefs.enabled_mcp_servers.includes(serverName)) {
+    return {
+      ...prefs,
+      enabled_mcp_tools: prefs.enabled_mcp_tools.filter((tool) => !tool.startsWith(prefix)),
+    };
+  }
   const toNamespaced = (tool: string) => {
     const trimmed = String(tool || "").trim();
     if (!trimmed) return "";
@@ -1050,6 +1065,7 @@ export function channelConfigHasSavedSettings(
     !!row.has_token ||
     allowedUsers.some((user) => user !== "*") ||
     !!row.mention_only ||
+    !!row.strict_kb_grounding ||
     !!String(row.guild_id || "").trim() ||
     !!String(row.channel_id || "").trim() ||
     !!String(row.model_provider_id || "").trim() ||
@@ -1069,6 +1085,7 @@ export function channelDraftMatchesConfig(
     !String(draft.botToken || "").trim() &&
     sameChannelAllowedUsers(draft.allowedUsers, savedDraft.allowedUsers) &&
     !!draft.mentionOnly === !!savedDraft.mentionOnly &&
+    !!draft.strictKbGrounding === !!savedDraft.strictKbGrounding &&
     String(draft.guildId || "").trim() === String(savedDraft.guildId || "").trim() &&
     String(draft.channelId || "").trim() === String(savedDraft.channelId || "").trim() &&
     String(draft.modelProviderId || "").trim() ===
@@ -2474,6 +2491,7 @@ export function useSettingsPageController({
       const payload: Record<string, unknown> = {
         allowed_users: parseAllowedUsers(draft.allowedUsers),
         mention_only: !!draft.mentionOnly,
+        strict_kb_grounding: !!draft.strictKbGrounding,
         security_profile: String(draft.securityProfile || "operator").trim() || "operator",
         model_provider_id: modelProviderId || null,
         model_id: modelId || null,

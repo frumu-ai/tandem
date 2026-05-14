@@ -132,6 +132,10 @@ export function AppShell({
       blocked: boolean;
       lastError?: string;
     } | null;
+    approvals?: {
+      pendingCount: number;
+      checking?: boolean;
+    } | null;
   };
   routeKey: string;
   navigationLock?: NavigationLockState | null;
@@ -164,6 +168,8 @@ export function AppShell({
     statusBar.bugMonitor?.paused,
     statusBar.bugMonitor?.pendingIncidents,
     statusBar.bugMonitor?.blocked,
+    statusBar.approvals?.pendingCount,
+    statusBar.approvals?.checking,
   ]);
 
   useEffect(() => {
@@ -216,6 +222,10 @@ export function AppShell({
       shortLabel: "Ready",
     };
   }, [statusBar.bugMonitor]);
+  const pendingApprovalCount = Math.max(0, Number(statusBar.approvals?.pendingCount || 0));
+  const approvalLabel = `${pendingApprovalCount} approval${
+    pendingApprovalCount === 1 ? "" : "s"
+  } pending`;
 
   const renderAvatar = () =>
     avatarMode !== "fallback" ? (
@@ -349,6 +359,24 @@ export function AppShell({
                 </button>
               </div>
             ) : null}
+            {pendingApprovalCount > 0 ? (
+              <div className="tcp-context-stat">
+                <span className="tcp-subtle text-xs">Approvals</span>
+                <button
+                  type="button"
+                  className="tcp-approval-pill"
+                  disabled={navigationLocked}
+                  title={approvalLabel}
+                  onClick={() => {
+                    onNavigate("approvals");
+                    if (mobile) setMobileNavOpen(false);
+                  }}
+                >
+                  <i data-lucide="shield-alert"></i>
+                  <span>{pendingApprovalCount}</span>
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -466,6 +494,18 @@ export function AppShell({
               <span className="tcp-bug-monitor-dot" aria-hidden="true"></span>
             </button>
           ) : null}
+          {pendingApprovalCount > 0 ? (
+            <button
+              type="button"
+              className="tcp-approval-pill"
+              disabled={navigationLocked}
+              title={approvalLabel}
+              onClick={() => onNavigate("approvals")}
+            >
+              <i data-lucide="shield-alert"></i>
+              <span>{pendingApprovalCount}</span>
+            </button>
+          ) : null}
           {statusBar.activeRuns > 0 ? (
             <StatusPulse tone="live" text={String(statusBar.activeRuns)} />
           ) : null}
@@ -493,6 +533,21 @@ export function AppShell({
                 <i data-lucide="bug-play"></i>
                 <span className="tcp-bug-monitor-dot" aria-hidden="true"></span>
                 <span>{bugMonitorState.shortLabel}</span>
+              </button>
+            ) : null}
+            {pendingApprovalCount > 0 ? (
+              <button
+                type="button"
+                className="tcp-approval-pill"
+                disabled={navigationLocked}
+                title={approvalLabel}
+                onClick={() => onNavigate("approvals")}
+              >
+                <i data-lucide="shield-alert"></i>
+                <span>{pendingApprovalCount}</span>
+                <span className="hidden sm:inline">
+                  Approval{pendingApprovalCount === 1 ? "" : "s"}
+                </span>
               </button>
             ) : null}
             <span className={statusBar.providerBadge}>{statusBar.providerText}</span>

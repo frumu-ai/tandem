@@ -28,9 +28,61 @@ fn stale_reap_is_within_auto_resume_window(
     now.saturating_sub(stale_reaped_at_ms) <= auto_resume_window_ms
 }
 
+fn detail_node_id(detail: &str) -> Option<&str> {
+    let (_, tail) = detail.split_once("node `")?;
+    let (node_id, _) = tail.split_once('`')?;
+    (!node_id.trim().is_empty()).then_some(node_id)
+}
+
+fn refresh_stale_running_detail(run: &mut AutomationV2RunRecord) {
+    if run.status != AutomationRunStatus::Running {
+        return;
+    }
+    let Some(detail) = run.detail.as_deref() else {
+        return;
+    };
+    let Some(stale_node_id) = detail_node_id(detail) else {
+        return;
+    };
+    if !run
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node_id| node_id == stale_node_id)
+    {
+        return;
+    }
+
+    if let Some((node_id, attempt)) = run.checkpoint.pending_nodes.iter().find_map(|node_id| {
+        if run
+            .checkpoint
+            .completed_nodes
+            .iter()
+            .any(|id| id == node_id)
+            || run.checkpoint.blocked_nodes.iter().any(|id| id == node_id)
+        {
+            return None;
+        }
+        let attempt = run
+            .checkpoint
+            .node_attempts
+            .get(node_id)
+            .copied()
+            .unwrap_or(0);
+        (attempt > 0).then_some((node_id, attempt))
+    }) {
+        run.detail = Some(format!("running node `{node_id}` attempt {attempt}"));
+    } else {
+        run.detail = Some(format!("completed node `{stale_node_id}`; continuing"));
+    }
+}
+
 #[cfg(test)]
 mod stale_auto_resume_window_tests {
-    use super::stale_reap_is_within_auto_resume_window;
+    use super::{
+        refresh_stale_running_detail, stale_reap_is_within_auto_resume_window,
+        AutomationRunCheckpoint, AutomationRunStatus, AutomationV2RunRecord, TenantContext,
+    };
 
     #[test]
     fn stale_auto_resume_window_allows_fresh_reaped_runs() {
@@ -44,6 +96,61 @@ mod stale_auto_resume_window_tests {
         assert!(!stale_reap_is_within_auto_resume_window(
             10_000, 7_000, 1_000,
         ));
+    }
+
+    #[test]
+    fn stale_running_detail_moves_to_active_attempt() {
+        let mut run = AutomationV2RunRecord {
+            run_id: "run-1".to_string(),
+            automation_id: "automation-1".to_string(),
+            tenant_context: TenantContext::local_implicit(),
+            trigger_type: "manual".to_string(),
+            status: AutomationRunStatus::Running,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: None,
+            active_session_ids: Vec::new(),
+            latest_session_id: None,
+            active_instance_ids: Vec::new(),
+            runtime_context: None,
+            automation_snapshot: None,
+            pause_reason: None,
+            resume_reason: None,
+            detail: Some("retrying node `collect` after transient provider failure".to_string()),
+            stop_kind: None,
+            stop_reason: None,
+            checkpoint: AutomationRunCheckpoint {
+                completed_nodes: vec!["collect".to_string()],
+                pending_nodes: vec!["draft".to_string()],
+                node_outputs: std::collections::HashMap::new(),
+                node_attempts: [("draft".to_string(), 1)].into_iter().collect(),
+                node_attempt_verdicts: std::collections::HashMap::new(),
+                blocked_nodes: Vec::new(),
+                awaiting_gate: None,
+                gate_history: Vec::new(),
+                lifecycle_history: Vec::new(),
+                last_failure: None,
+            },
+            total_tokens: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            scheduler: None,
+            trigger_reason: None,
+            consumed_handoff_id: None,
+            learning_summary: None,
+            effective_execution_profile:
+                crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+            requested_execution_profile: None,
+        };
+
+        refresh_stale_running_detail(&mut run);
+
+        assert_eq!(
+            run.detail.as_deref(),
+            Some("running node `draft` attempt 1")
+        );
     }
 }
 
@@ -419,6 +526,7 @@ impl AppState {
         let run = guard.get_mut(run_id)?;
         let previous_status = run.status.clone();
         update(run);
+        refresh_stale_running_detail(run);
         if run.status != AutomationRunStatus::Queued {
             run.scheduler = None;
         }

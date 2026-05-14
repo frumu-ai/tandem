@@ -17,6 +17,10 @@ import {
   WORKFLOW_SORT_MODES,
   formatAutomationCreatedAtLabel,
 } from "../../../lib/automations/workflow-list.js";
+import {
+  workflowBlockedNodeCount as fallbackWorkflowBlockedNodeCount,
+  workflowCompletedNodeCount as fallbackWorkflowCompletedNodeCount,
+} from "../orchestration/workflowStability";
 
 export function MyAutomationsContent({ state, actions, helpers }: any) {
   const [runningSectionsOpen, setRunningSectionsOpen] = useState(() => ({
@@ -201,6 +205,14 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     sessionLabel,
     formatTimestampLabel,
   } = helpers;
+  const completedNodeCount =
+    typeof workflowCompletedNodeCount === "function"
+      ? workflowCompletedNodeCount
+      : fallbackWorkflowCompletedNodeCount;
+  const blockedNodeCount =
+    typeof workflowBlockedNodeCount === "function"
+      ? workflowBlockedNodeCount
+      : fallbackWorkflowBlockedNodeCount;
 
   const toggleRunningSection = (section: "active" | "issues" | "history") =>
     setRunningSectionsOpen((current) => ({
@@ -217,9 +229,9 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     "Created: newest first";
 
   const runExecutionSummary = (run: any) => {
-    const completed = workflowCompletedNodeCount(run);
+    const completed = completedNodeCount(run);
     const total = workflowTotalNodeCount(run);
-    const blocked = workflowBlockedNodeCount(run);
+    const blocked = blockedNodeCount(run);
     const workers = workflowActiveSessionCount(run);
     const parts = [];
     if (total > 0) {
