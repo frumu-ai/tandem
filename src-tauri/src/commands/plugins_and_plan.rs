@@ -273,6 +273,21 @@ pub async fn opencode_test_mcp_connection(
         HeaderValue::from_static("application/json, text/event-stream"),
     );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    const ALLOWED_HEADER_PREFIXES: &[&str] = &["x-", "custom-"];
+    const BLOCKED_HEADERS: &[&str] = &[
+        "authorization",
+        "proxy-authorization",
+        "set-cookie",
+        "cookie",
+        "accept",
+        "content-type",
+        "connection",
+        "transfer-encoding",
+        "host",
+        "upgrade",
+    ];
+
     if let Some(arr) = server.get("headers").and_then(|v| v.as_array()) {
         for h in arr {
             let Some(line) = h.as_str() else { continue };
@@ -284,10 +299,25 @@ pub async fn opencode_test_mcp_connection(
             if name.is_empty() {
                 continue;
             }
+
+            let name_lower = name.to_ascii_lowercase();
+            if BLOCKED_HEADERS.contains(&name_lower.as_str()) {
+                tracing::warn!("Rejected blocked header in MCP config: {}", name);
+                continue;
+            }
+
+            let is_allowed = ALLOWED_HEADER_PREFIXES.iter().any(|prefix| name_lower.starts_with(prefix));
+            if !is_allowed {
+                tracing::warn!("Rejected non-whitelisted header in MCP config: {}", name);
+                continue;
+            }
+
             let Ok(hn) = HeaderName::from_bytes(name.as_bytes()) else {
+                tracing::warn!("Invalid header name in MCP config: {}", name);
                 continue;
             };
             let Ok(hv) = HeaderValue::from_str(value) else {
+                tracing::warn!("Invalid header value in MCP config for header: {}", name);
                 continue;
             };
             headers.insert(hn, hv);
