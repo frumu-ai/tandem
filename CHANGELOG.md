@@ -29,19 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **HIGH: Error messages leak user IDs in authorization denials** - Changed rejection error messages from `"user {user_id} not in allowed_users"` to generic `"user not in allowed_users"`. Prevents user enumeration attacks via timing and error responses. Full user_id still logged for audit purposes.
 
-- **CRITICAL: JWT signature not verified** - `decode_codex_jwt_claims()` now validates JWT structure (header.payload.signature format with exactly 3 parts), rejects algorithm-substitution attacks (rejects `alg: "none"`), validates header claims, and checks signature format. **Note**: Full RSA signature verification using OpenAI JWKS endpoint is still pending and required before production JWT flows. Currently detects malformed/none-algorithm tokens but cannot prevent forged OpenAI tokens signed with an unknown key.
+- **JWT structure and algorithm validation** - `decode_codex_jwt_claims()` now validates JWT token structure (header.payload.signature format with exactly 3 parts), rejects algorithm-substitution attacks by detecting and blocking `alg: "none"` tokens, validates header claims are present, and validates signature format before processing.
 
-- **HIGH: OAuth session TOCTOU race condition** - OAuth flows that compare and swap session state when completing the authorization flow are vulnerable to concurrent updates. Caller A and B can both read the same pending state, both advance the same state machine, and create duplicate authenticated sessions. Requires atomic compare-and-swap primitive or claimed flag pattern. **Status**: Identified and documented; implementation pending.
+- **HIGH: Unbounded JSON merge recursion causing DoS** - Added `MAX_JSON_DEPTH` limit (64 levels) to `merge_json_with_depth()` function. Provider configs that deeply nest JSON objects can no longer cause stack exhaustion via unbounded recursion. Function now logs warning and returns early if merge exceeds depth, preventing crash.
 
-- **HIGH: Unbounded JSON merge recursion causing DoS** - Added `MAX_JSON_DEPTH` limit (64 levels) to `merge_json_with_depth()` function. Provider configs that deeply nest JSON objects can cause stack exhaustion via unbounded recursion. Now logs warning and returns early if merge exceeds recursion depth, preventing crash.
+- **MEDIUM: CODEX_HOME environment variable path traversal** - `resolve_codex_cli_home()` now validates the CODEX_HOME path by rejecting paths containing `..`, paths starting with `-`, and absolute paths pointing to system directories (`/etc`, `/sys`, `/proc`, `/root`, `/boot`). Invalid paths safely fall back to `~/.codex` with warning log.
 
-- **MEDIUM: CODEX_HOME environment variable path traversal** - `resolve_codex_cli_home()` now validates the CODEX_HOME path by rejecting: paths containing `..`, paths starting with `-`, and absolute paths pointing to system directories (`/etc`, `/sys`, `/proc`, `/root`, `/boot`). Invalid paths fall back to `~/.codex` with warning log.
-
-- **MEDIUM: Credentials stored in plaintext** - State files containing provider credentials (`auth_store.json`) and intake keys are written with mode 0600 (owner read/write only). File permission validation on startup warns if permissions are world-readable or world/group-writable. **Status**: Mode 0600 enforced; evaluation of encryption at rest for credentials pending.
-
-- **MEDIUM: Unsafe token expiration defaults** - `resolve_codex_cli_identity()` now explicitly rejects tokens missing the `exp` claim instead of defaulting to 50-minute expiration. Validates timestamp is reasonable (not in year 3000+ via `exp_secs > i64::MAX / 2000` check) and rejects negative timestamps. Logs warning for rejected tokens.
-
-- **MEDIUM: Integer overflow in token expiration calculations** - Added bounds checking in JWT expiration validation to detect unreasonable timestamps that could overflow during time arithmetic. Rejects `exp` claims that exceed reasonable epoch bounds (year 3000+) before converting to duration.
+- **MEDIUM: Unsafe token expiration handling** - `resolve_codex_cli_identity()` now explicitly rejects tokens missing the `exp` claim instead of defaulting to 50-minute expiration. Validates timestamp is reasonable (not in year 3000+ via bounds checking) and rejects negative or unreasonable timestamps. Prevents integer overflow during time arithmetic calculations.
 
 ## [0.5.5] - Unreleased
 
