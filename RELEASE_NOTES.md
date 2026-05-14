@@ -30,6 +30,16 @@ What ships now:
 
 - **Error message information disclosure prevention**: Authorization rejection messages changed from `"user {user_id} not in allowed_users"` to `"user not in allowed_users"`, eliminating user enumeration attacks while keeping full user_id in audit logs for operator investigation.
 
+- **JWT structure and algorithm validation**: `decode_codex_jwt_claims()` now validates that tokens are properly formatted (header.payload.signature with exactly 3 parts), rejects algorithm-substitution attacks by detecting and blocking `alg: "none"` tokens, validates header claims are present, and checks signature format. However, **full RSA signature verification against the OpenAI JWKS endpoint is still pending** — currently detects malformed and none-algorithm tokens but cannot prevent forged tokens signed with an unknown key.
+
+- **JSON merge recursion depth limit**: Added `MAX_JSON_DEPTH` constant (64 levels) to prevent DoS attacks via deeply nested JSON merge operations in provider config handling. The `merge_json_with_depth()` function now logs a warning and returns early when recursion exceeds the limit, preventing stack exhaustion that could crash the engine.
+
+- **CODEX_HOME path traversal protection**: Environment variable `CODEX_HOME` is now validated to reject paths containing `..` (directory traversal), paths starting with `-` (flag injection), and absolute paths targeting system directories (`/etc`, `/sys`, `/proc`, `/root`, `/boot`). Invalid paths safely fall back to `~/.codex` with a warning log, preventing attackers from redirecting CLI credential storage.
+
+- **Credentials stored with restricted permissions**: Provider credential files and intake keys are written with mode 0600 (owner read/write only). On startup, `check_file_permissions()` validates that these files are not world-readable or world/group-writable, logging warnings to alert operators when permissions are too permissive. Evaluation of at-rest encryption for stored credentials is pending.
+
+- **JWT token expiration validation**: Tokens are now rejected if they lack the `exp` (expiration) claim, instead of defaulting to a 50-minute window. Timestamp validation detects unreasonable values (e.g., year 3000+) via `exp_secs > i64::MAX / 2000` comparison and rejects negative timestamps, preventing integer overflow during time arithmetic. Missing or invalid expiration claims are logged as warnings.
+
 ## v0.5.5 (Unreleased)
 
 This release lays down the **Execution Profiles** foundation — a runtime governance toggle (Strict / Guided / YOLO) that will let users keep working while validators and contracts continue to harden, without abandoning Tandem's runtime ownership of state, receipts, replay, spend tracking, and approvals. The motivation is operational: full governance still has a high run-fail rate as bugs are ironed out, and a meaningful share of those failures are over-strict (false-positive validation, missing-but-non-essential sections, recoverable artifact issues) rather than real defects. Execution Profiles are the structured bridge that lets affected runs continue with the relaxation captured in receipts, so the data we collect can drive validator classes back to Strict-by-default once they mature.
