@@ -2,15 +2,86 @@ use std::path::{Path, PathBuf};
 
 use tandem_core::resolve_shared_paths;
 
+fn validate_env_path(env_value: &str, env_name: &str) -> Option<PathBuf> {
+    let trimmed = env_value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.contains("..") {
+        tracing::warn!(
+            "Rejected {} - contains path traversal '..': {}",
+            env_name,
+            trimmed
+        );
+        return None;
+    }
+
+    let path = PathBuf::from(trimmed);
+
+    if !path.is_absolute() {
+        tracing::warn!(
+            "Rejected {} - must be absolute path: {}",
+            env_name,
+            trimmed
+        );
+        return None;
+    }
+
+    match path.canonicalize() {
+        Ok(canonical) => {
+            let canonical_str = canonical.to_string_lossy().to_string();
+            if !is_safe_directory(&canonical) {
+                tracing::warn!(
+                    "Rejected {} - points to unsafe directory: {}",
+                    env_name,
+                    canonical_str
+                );
+                return None;
+            }
+            Some(canonical)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Rejected {} - path does not exist or cannot be read ({}): {}",
+                env_name,
+                e,
+                trimmed
+            );
+            None
+        }
+    }
+}
+
+fn is_safe_directory(path: &Path) -> bool {
+    let path_str = path.to_string_lossy().to_string();
+
+    let unsafe_prefixes = [
+        "/etc",
+        "/sys",
+        "/proc",
+        "/root",
+        "/boot",
+        "/dev",
+        "/var/www",
+    ];
+
+    for prefix in &unsafe_prefixes {
+        if path_str.starts_with(prefix) {
+            return false;
+        }
+    }
+
+    true
+}
+
 pub(crate) fn resolve_shared_resources_path() -> PathBuf {
     resolve_canonical_data_file_path("system/shared_resources.json")
 }
 
 pub(crate) fn resolve_memory_audit_path() -> PathBuf {
     if let Ok(dir) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            let base = PathBuf::from(trimmed);
+        if let Some(base) = validate_env_path(&dir, "TANDEM_STATE_DIR") {
             return if path_is_data_dir(&base) {
                 base.join("memory").join("audit.log.jsonl")
             } else {
@@ -23,9 +94,7 @@ pub(crate) fn resolve_memory_audit_path() -> PathBuf {
 
 pub(crate) fn resolve_protected_audit_path() -> PathBuf {
     if let Ok(dir) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            let base = PathBuf::from(trimmed);
+        if let Some(base) = validate_env_path(&dir, "TANDEM_STATE_DIR") {
             return if path_is_data_dir(&base) {
                 base.join("audit").join("protected_events.log.jsonl")
             } else {
@@ -46,9 +115,8 @@ pub(crate) fn resolve_routines_path() -> PathBuf {
 
 pub(crate) fn resolve_routine_history_path() -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STORAGE_DIR") {
-        let trimmed = root.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("routine_history.json");
+        if let Some(base) = validate_env_path(&root, "TANDEM_STORAGE_DIR") {
+            return base.join("routine_history.json");
         }
     }
     resolve_canonical_data_file_path("routines/routine_history.json")
@@ -100,9 +168,7 @@ pub(crate) fn resolve_benchmark_runs_dir() -> PathBuf {
 
 pub(crate) fn resolve_canonical_data_file_path(file_name: &str) -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = root.trim();
-        if !trimmed.is_empty() {
-            let base = PathBuf::from(trimmed);
+        if let Some(base) = validate_env_path(&root, "TANDEM_STATE_DIR") {
             return if path_is_data_dir(&base) {
                 base.join(file_name)
             } else {
@@ -115,9 +181,7 @@ pub(crate) fn resolve_canonical_data_file_path(file_name: &str) -> PathBuf {
 
 pub(crate) fn resolve_legacy_root_file_path(file_name: &str) -> Option<PathBuf> {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = root.trim();
-        if !trimmed.is_empty() {
-            let base = PathBuf::from(trimmed);
+        if let Some(base) = validate_env_path(&root, "TANDEM_STATE_DIR") {
             if !path_is_data_dir(&base) {
                 return Some(base.join(file_name));
             }
@@ -130,9 +194,8 @@ pub(crate) fn resolve_legacy_root_file_path(file_name: &str) -> Option<PathBuf> 
 
 pub(crate) fn resolve_workflow_runs_path() -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = root.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("workflow_runs.json");
+        if let Some(base) = validate_env_path(&root, "TANDEM_STATE_DIR") {
+            return base.join("workflow_runs.json");
         }
     }
     default_state_dir().join("workflow_runs.json")
@@ -148,9 +211,8 @@ pub(crate) fn resolve_workflow_learning_candidates_path() -> PathBuf {
 
 pub(crate) fn resolve_context_packs_path() -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = root.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("context_packs.json");
+        if let Some(base) = validate_env_path(&root, "TANDEM_STATE_DIR") {
+            return base.join("context_packs.json");
         }
     }
     default_state_dir().join("context_packs.json")
