@@ -22,7 +22,7 @@ use crate::telegram_keyboards;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
     InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
-    TriggerSource,
+    ThreadReply, TriggerSource,
 };
 
 const MAX_MESSAGE_LEN: usize = 4096;
@@ -1002,6 +1002,39 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    async fn send_thread_reply(&self, reply: &ThreadReply) -> anyhow::Result<()> {
+        let styled = apply_telegram_style_profile(&reply.content, self.style_profile);
+        let formatted = format_markdown_for_telegram(&styled);
+        for chunk in split_message(&formatted) {
+            let mut body = serde_json::json!({
+                "chat_id": reply.recipient,
+                "text": chunk,
+                "parse_mode": "MarkdownV2",
+            });
+            if let Ok(thread_id) = reply.thread_id.parse::<i64>() {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert(
+                        "message_thread_id".to_string(),
+                        serde_json::json!(thread_id),
+                    );
+                }
+            }
+            let resp = self
+                .client
+                .post(self.api_url("sendMessage"))
+                .json(&body)
+                .send()
+                .await?;
+            if resp.status().is_success() {
+                continue;
+            }
+            let status = resp.status();
+            let err = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Telegram thread reply failed ({status}): {err}");
+        }
+        Ok(())
+    }
+
     async fn send_card(
         &self,
         card: &InteractiveCard,
@@ -1493,12 +1526,23 @@ mod tests {
             .update_card_for_decision(&card, &sent.message_id, "Approved by Ada", "*Approved.*")
             .await
             .expect("update card");
+        channel
+            .send_thread_reply(&ThreadReply {
+                content: "Run continued.".to_string(),
+                recipient: sent.recipient.clone(),
+                thread_id: "77".to_string(),
+            })
+            .await
+            .expect("thread reply");
 
         let guard = calls.lock().await;
-        assert_eq!(guard.sends.len(), 1);
+        assert_eq!(guard.sends.len(), 2);
         assert_eq!(guard.edits.len(), 1);
         assert_eq!(guard.sends[0]["chat_id"], "chat-1");
         assert!(guard.sends[0]["reply_markup"]["inline_keyboard"].is_array());
+        assert_eq!(guard.sends[1]["chat_id"], "chat-1");
+        assert_eq!(guard.sends[1]["message_thread_id"], 77);
+        assert_eq!(guard.sends[1]["text"], "Run continued\\.");
         assert_eq!(guard.edits[0]["chat_id"], "chat-1");
         assert_eq!(guard.edits[0]["message_id"], 42);
         assert_eq!(

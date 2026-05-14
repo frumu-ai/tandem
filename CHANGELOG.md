@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Slack approval notifier wiring**: Server startup now registers Slack approval fan-out from the pending approvals source when Slack bot credentials are configured, with shared notifier scaffolding for Slack, Discord, and Telegram.
 - **Per-step approval override controls**: Workflow edit prompts now expose per-step approval overrides. Operators can keep the default approval gate, mark a step for conditional auto-approval metadata, or explicitly skip approval with a confirmation; saved node metadata feeds the compiler's existing `metadata.approval.skip_approval` hook and clears stale injected gates for skipped steps.
 - **Telegram approval rework completion**: Telegram approval cards now use persisted opaque callback IDs for long run/node identifiers, while legacy truncated callbacks remain fail-closed. Rework taps send a force-reply prompt, capture the operator's next valid reply for that chat/user, and dispatch the feedback as a `rework` gate decision.
+- **Threaded approval status replies**: Channel adapters now expose a shared thread-reply primitive. After an approval decision updates the original card, Tandem posts a short follow-up into the stored Slack thread, Discord thread/channel target, or Telegram topic when available.
 
 ### Fixed
 

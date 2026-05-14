@@ -23,7 +23,7 @@ use crate::discord_blocks;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
     InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
-    TriggerSource,
+    ThreadReply, TriggerSource,
 };
 
 /// Discord's maximum message length for regular messages.
@@ -478,6 +478,34 @@ impl Channel for DiscordChannel {
             }
 
             // Small inter-chunk delay to avoid rate limiting
+            if i < chunks.len() - 1 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_thread_reply(&self, reply: &ThreadReply) -> anyhow::Result<()> {
+        let client = self.http_client();
+        let target_channel = if reply.thread_id.trim().is_empty() {
+            reply.recipient.as_str()
+        } else {
+            reply.thread_id.as_str()
+        };
+        let chunks = split_message(&reply.content);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let url = self.api_url(&format!("channels/{target_channel}/messages"));
+            let resp = client
+                .post(&url)
+                .header("Authorization", self.auth_header())
+                .json(&json!({ "content": chunk }))
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let err = resp.text().await.unwrap_or_default();
+                anyhow::bail!("Discord thread reply failed ({status}): {err}");
+            }
             if i < chunks.len() - 1 {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
@@ -1314,20 +1342,30 @@ mod tests {
             )
             .await
             .expect("update card");
+        channel
+            .send_thread_reply(&ThreadReply {
+                content: "Run continued.".to_string(),
+                recipient: sent.recipient.clone(),
+                thread_id: sent.thread_id.clone().expect("thread id"),
+            })
+            .await
+            .expect("thread reply");
 
         let guard = calls.lock().await;
-        assert_eq!(guard.auth_headers, vec!["Bot discord-test-token"; 2]);
+        assert_eq!(guard.auth_headers, vec!["Bot discord-test-token"; 3]);
         assert_eq!(
             guard.paths,
             vec![
                 "POST /channels/channel-1/messages",
-                "PATCH /channels/channel-1/messages/msg-1"
+                "PATCH /channels/channel-1/messages/msg-1",
+                "POST /channels/run-1/messages"
             ]
         );
-        assert_eq!(guard.posts.len(), 1);
+        assert_eq!(guard.posts.len(), 2);
         assert_eq!(guard.patches.len(), 1);
         assert!(guard.posts[0]["embeds"].is_array());
         assert!(guard.posts[0]["components"].is_array());
+        assert_eq!(guard.posts[1]["content"], "Run continued.");
         assert_eq!(guard.patches[0]["components"], json!([]));
         assert_eq!(guard.patches[0]["allowed_mentions"], json!({"parse": []}));
 

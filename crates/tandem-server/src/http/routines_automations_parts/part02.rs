@@ -1964,6 +1964,8 @@ async fn update_channel_approval_decision(
                 )
                 .await
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            send_approval_thread_reply(&channel, &record, &request, &decision, reason.as_deref())
+                .await?;
         }
         "discord" => {
             let Some(discord_value) = effective.pointer("/channels/discord").cloned() else {
@@ -1994,6 +1996,8 @@ async fn update_channel_approval_decision(
                 )
                 .await
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            send_approval_thread_reply(&channel, &record, &request, &decision, reason.as_deref())
+                .await?;
         }
         "telegram" => {
             let Some(telegram_value) = effective.pointer("/channels/telegram").cloned() else {
@@ -2023,10 +2027,49 @@ async fn update_channel_approval_decision(
                 )
                 .await
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            send_approval_thread_reply(&channel, &record, &request, &decision, reason.as_deref())
+                .await?;
         }
         _ => {}
     }
     Ok(())
+}
+
+async fn send_approval_thread_reply(
+    channel: &dyn tandem_channels::traits::Channel,
+    record: &crate::app::state::approval_message_map::ApprovalMessageRecord,
+    request: &tandem_types::ApprovalRequest,
+    decision: &str,
+    reason: Option<&str>,
+) -> anyhow::Result<()> {
+    let thread_id = record
+        .thread_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(record.message_id.as_str())
+        .to_string();
+    let node = request
+        .node_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("approval gate");
+    let mut content = format!(
+        "{} `{}` for run `{}`.",
+        decision_label(decision),
+        node,
+        request.run_id
+    );
+    if let Some(reason) = reason.map(str::trim).filter(|value| !value.is_empty()) {
+        content.push_str(&format!("\nReason: {reason}"));
+    }
+    channel
+        .send_thread_reply(&tandem_channels::traits::ThreadReply {
+            content,
+            recipient: record.recipient.clone(),
+            thread_id,
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 fn discord_decision_outcome(decision: &str) -> tandem_channels::discord_blocks::DecisionOutcome {

@@ -119,6 +119,13 @@ pub struct SendMessage {
     pub image_urls: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ThreadReply {
+    pub content: String,
+    pub recipient: String,
+    pub thread_id: String,
+}
+
 /// A rich, interactive card sent back to the channel — typically an approval
 /// request, a draft confirmation, or a status update with action buttons.
 ///
@@ -275,6 +282,15 @@ pub trait Channel: Send + Sync {
 
     /// Send a message to the given recipient.
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()>;
+
+    async fn send_thread_reply(&self, reply: &ThreadReply) -> anyhow::Result<()> {
+        self.send(&SendMessage {
+            content: reply.content.clone(),
+            recipient: reply.recipient.clone(),
+            image_urls: Vec::new(),
+        })
+        .await
+    }
 
     /// Listen for incoming messages and forward them through `tx`.
     ///

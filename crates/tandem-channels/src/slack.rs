@@ -17,7 +17,7 @@ use crate::slack_blocks;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
     InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
-    TriggerSource,
+    ThreadReply, TriggerSource,
 };
 
 const SLACK_API: &str = "https://slack.com/api";
@@ -314,6 +314,37 @@ impl Channel for SlackChannel {
             anyhow::bail!("Slack chat.postMessage error: {err}");
         }
 
+        Ok(())
+    }
+
+    async fn send_thread_reply(&self, reply: &ThreadReply) -> anyhow::Result<()> {
+        let body = serde_json::json!({
+            "channel": reply.recipient,
+            "text": reply.content,
+            "thread_ts": reply.thread_id,
+        });
+
+        let resp = self
+            .http_client()
+            .post(self.api_url("chat.postMessage"))
+            .bearer_auth(&self.bot_token)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("Slack thread reply failed ({status}): {body_text}");
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).unwrap_or_default();
+        if parsed.get("ok") == Some(&serde_json::Value::Bool(false)) {
+            let err = parsed
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown");
+            anyhow::bail!("Slack thread reply error: {err}");
+        }
         Ok(())
     }
 
@@ -768,13 +799,24 @@ mod tests {
             .update_card_for_decision(&card, &sent.message_id, "Approved by Ada", "*Approved.*")
             .await
             .expect("update card");
+        channel
+            .send_thread_reply(&ThreadReply {
+                content: "Run continued.".to_string(),
+                recipient: sent.recipient.clone(),
+                thread_id: sent.thread_id.clone().expect("thread id"),
+            })
+            .await
+            .expect("thread reply");
 
         let guard = calls.lock().expect("calls lock poisoned");
-        assert_eq!(guard.auth_headers, vec!["Bearer xoxb-test-token"; 2]);
-        assert_eq!(guard.posts.len(), 1);
+        assert_eq!(guard.auth_headers, vec!["Bearer xoxb-test-token"; 3]);
+        assert_eq!(guard.posts.len(), 2);
         assert_eq!(guard.updates.len(), 1);
         assert_eq!(guard.posts[0]["channel"], "C0FAKE");
         assert_eq!(guard.posts[0]["thread_ts"], "run-1");
+        assert_eq!(guard.posts[1]["channel"], "C0FAKE");
+        assert_eq!(guard.posts[1]["thread_ts"], "1710000000.000001");
+        assert_eq!(guard.posts[1]["text"], "Run continued.");
         assert!(guard.posts[0]["blocks"].is_array());
         assert_eq!(guard.updates[0]["channel"], "C0FAKE");
         assert_eq!(guard.updates[0]["ts"], "1710000000.000001");
