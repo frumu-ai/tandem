@@ -1,6 +1,7 @@
 use axum::middleware as axum_middleware;
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 
 use super::*;
 
@@ -9,6 +10,8 @@ pub(super) fn build_router(state: AppState) -> Router {
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
+
+    let body_limit = RequestBodyLimitLayer::max(50 * 1024 * 1024);
 
     let mut router: Router<AppState> = Router::new();
 
@@ -61,6 +64,7 @@ pub(super) fn build_router(state: AppState) -> Router {
 
     router
         .layer(cors)
+        .layer(body_limit)
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             super::middleware::startup_gate,

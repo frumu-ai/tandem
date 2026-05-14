@@ -48,7 +48,10 @@ fn truncate_output(text: String, max_chars: usize) -> String {
 }
 
 fn read_zip_entry(path: &Path, inner_path: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    const MAX_ZIP_BOMB_RATIO: u64 = 100;
+
     let bytes = fs::read(path)?;
+    let compressed_size = bytes.len() as u64;
     let cursor = Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor).map_err(|err| {
         DocumentError::InvalidDocument(format!("Failed to open zip container {:?}: {}", path, err))
@@ -60,6 +63,14 @@ fn read_zip_entry(path: &Path, inner_path: &str, max_bytes: usize) -> Result<Vec
             inner_path, path, err
         ))
     })?;
+
+    let uncompressed_size = entry.size();
+    if uncompressed_size > (compressed_size.saturating_mul(MAX_ZIP_BOMB_RATIO)) {
+        return Err(DocumentError::InvalidDocument(format!(
+            "Zip bomb detected: uncompressed size {} exceeds ratio limit ({}x compressed size {})",
+            uncompressed_size, MAX_ZIP_BOMB_RATIO, compressed_size
+        )));
+    }
 
     let mut out = Vec::new();
     let mut buffer = [0u8; 16 * 1024];
@@ -92,7 +103,9 @@ enum OoxmlKind {
 
 fn extract_ooxml_text(xml: &[u8], kind: OoxmlKind) -> Result<String> {
     let mut reader = XmlReader::from_reader(xml);
-    reader.config_mut().trim_text(false);
+    let config = reader.config_mut();
+    config.trim_text(false);
+    config.expand_empty_elements = false;
 
     let mut out = String::new();
     let mut in_text = false;
@@ -148,7 +161,10 @@ fn extract_text_docx(path: &Path, max_xml_bytes: usize) -> Result<String> {
 }
 
 fn extract_text_pptx(path: &Path, max_xml_bytes: usize) -> Result<String> {
+    const MAX_ZIP_BOMB_RATIO: u64 = 100;
+
     let bytes = fs::read(path)?;
+    let compressed_size = bytes.len() as u64;
     let cursor = Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor).map_err(|err| {
         DocumentError::InvalidDocument(format!("Failed to open zip container {:?}: {}", path, err))
@@ -162,6 +178,14 @@ fn extract_text_pptx(path: &Path, max_xml_bytes: usize) -> Result<String> {
         let name = file.name().to_string();
         if !name.starts_with("ppt/slides/slide") || !name.ends_with(".xml") {
             continue;
+        }
+
+        let uncompressed_size = file.size();
+        if uncompressed_size > (compressed_size.saturating_mul(MAX_ZIP_BOMB_RATIO)) {
+            return Err(DocumentError::InvalidDocument(format!(
+                "Zip bomb detected in slide {}: uncompressed size {} exceeds ratio limit",
+                name, uncompressed_size
+            )));
         }
 
         let mut buf = Vec::new();
