@@ -54,6 +54,8 @@ What ships now:
 
 - **Channel enrollment pairing codes**: `POST /channels/enroll` can issue a short-lived pairing code and confirm it out-of-band to bind a Slack, Discord, or Telegram user ID to a persisted capability tier. Approval button handlers now check the resolved user's tier and require `Approve` or higher before deciding a gate.
 
+- **Channel outbound redaction**: Dispatcher replies now pass through a shared redaction filter before Slack, Discord, or Telegram sends. The filter replaces common secret patterns, private-key markers, JWTs, and absolute paths outside the workspace root while preserving markdown structure; deployments can add regexes with `TANDEM_CHANNEL_REDACTION_PATTERNS_FILE`.
+
 - **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)
