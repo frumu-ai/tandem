@@ -552,12 +552,19 @@ fn apply_blackboard_patch(
     Ok(())
 }
 
-/// Atomic write using temp file and rename
+/// Atomic write using temp file and rename with restrictive permissions
 fn atomic_write(path: &Path, content: &str) -> Result<()> {
     let temp_path = path.with_extension("tmp");
 
     fs::write(&temp_path, content)
         .map_err(|e| TandemError::IoError(format!("Failed to write temp file: {}", e)))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| TandemError::IoError(format!("Failed to set temp file permissions: {}", e)))?;
+    }
 
     fs::rename(&temp_path, path)
         .map_err(|e| TandemError::IoError(format!("Failed to rename temp file: {}", e)))?;
