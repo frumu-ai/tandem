@@ -160,7 +160,7 @@ pub(crate) async fn slack_interactions(
                 user_id = %action.user_id,
                 "rejecting Slack interaction from unauthorized user"
             );
-            return reject_forbidden(&format!("user {} not in allowed_users", action.user_id));
+            return reject_forbidden("user not in allowed_users");
         }
         ChannelIdentityResolution::ChannelNotConfigured(_) => {
             return reject_bad_request("slack channel not properly configured");
@@ -275,7 +275,7 @@ fn extract_primary_action(payload: &Value) -> Result<PrimaryAction, String> {
     let user_id = payload
         .pointer("/user/id")
         .and_then(Value::as_str)
-        .unwrap_or("unknown")
+        .ok_or_else(|| "payload missing user identification".to_string())?
         .to_string();
     Ok(PrimaryAction {
         action_id,

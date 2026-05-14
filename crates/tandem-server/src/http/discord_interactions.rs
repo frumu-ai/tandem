@@ -178,12 +178,14 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
         None => return reject_bad_request(&format!("unrecognized custom_id: {custom_id}")),
     };
 
-    let user_id = payload
+    let user_id = match payload
         .pointer("/member/user/id")
         .or_else(|| payload.pointer("/user/id"))
         .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
+    {
+        Some(id) => id.to_string(),
+        None => return reject_bad_request("payload missing user identification"),
+    };
 
     // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
     let effective_config = state.config.get_effective_value().await;
@@ -197,7 +199,7 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
                 user_id = %user_id,
                 "rejecting Discord interaction from unauthorized user"
             );
-            return reject_forbidden(&format!("user {} not in allowed_users", user_id));
+            return reject_forbidden("user not in allowed_users");
         }
         ChannelIdentityResolution::ChannelNotConfigured(_) => {
             return reject_bad_request("discord channel not properly configured");
@@ -252,23 +254,28 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
     let run_id = parts.next().unwrap_or("").to_string();
     let node_id = parts.next().unwrap_or("").to_string();
 
-    if prefix != "tdm-modal" || action != "rework" {
-        return reject_bad_request(&format!("unrecognized modal custom_id: {custom_id}"));
+    if prefix != "tdm-modal" || action != "rework" || run_id.is_empty() || node_id.is_empty() {
+        return reject_bad_request(&format!("unrecognized or malformed modal custom_id: {custom_id}"));
     }
 
-    let reason = payload
+    let reason_raw = payload
         .pointer("/data/components/0/components/0/value")
         .and_then(Value::as_str)
         .unwrap_or("")
-        .trim()
-        .to_string();
+        .trim();
+    if reason_raw.len() > 4000 {
+        return reject_bad_request("reason exceeds 4000 character limit");
+    }
+    let reason = reason_raw.to_string();
 
-    let user_id = payload
+    let user_id = match payload
         .pointer("/member/user/id")
         .or_else(|| payload.pointer("/user/id"))
         .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
+    {
+        Some(id) => id.to_string(),
+        None => return reject_bad_request("modal payload missing user identification"),
+    };
 
     // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
     let effective_config = state.config.get_effective_value().await;
@@ -282,7 +289,7 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
                 user_id = %user_id,
                 "rejecting Discord modal submission from unauthorized user"
             );
-            return reject_forbidden(&format!("user {} not in allowed_users", user_id));
+            return reject_forbidden("user not in allowed_users");
         }
         ChannelIdentityResolution::ChannelNotConfigured(_) => {
             return reject_bad_request("discord channel not properly configured");
