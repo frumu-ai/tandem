@@ -1373,4 +1373,38 @@ mod tests {
         assert!(!pending.enabled_for_public_demo);
         assert!(!rework.enabled_for_public_demo);
     }
+
+    #[test]
+    fn capability_tiers_allow_status_but_block_approval_for_read_contexts() {
+        use crate::channel_registry::{command_allowed_by_tier, command_capability};
+        use crate::config::ChannelSecurityProfile;
+
+        let status = command_capability("status").expect("status registered");
+        let approve = command_capability("approve").expect("approve registered");
+        assert!(command_allowed_by_tier(
+            *status,
+            ChannelSecurityProfile::PublicDemo
+        ));
+        assert!(!command_allowed_by_tier(
+            *approve,
+            ChannelSecurityProfile::PublicDemo
+        ));
+    }
+
+    #[test]
+    fn trusted_team_can_act_but_not_approve() {
+        use crate::channel_registry::{command_allowed_by_tier, command_capability};
+        use crate::config::ChannelSecurityProfile;
+
+        let new_session = command_capability("new").expect("new registered");
+        let approve = command_capability("approve").expect("approve registered");
+        assert!(command_allowed_by_tier(
+            *new_session,
+            ChannelSecurityProfile::TrustedTeam
+        ));
+        assert!(!command_allowed_by_tier(
+            *approve,
+            ChannelSecurityProfile::TrustedTeam
+        ));
+    }
 }

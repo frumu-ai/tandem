@@ -33,8 +33,8 @@ use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
 use crate::channel_registry::{
-    command_capability, registered_channels, slash_command_capabilities, ChannelCommandCapability,
-    ChannelRuntimeDiagnostics,
+    command_allowed_by_tier, command_capability, registered_channels, slash_command_capabilities,
+    ChannelCommandCapability, ChannelRuntimeDiagnostics,
 };
 use crate::config::{ChannelSecurityProfile, ChannelsConfig};
 use crate::traits::{Channel, ChannelMessage, SendMessage};

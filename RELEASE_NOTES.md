@@ -48,6 +48,8 @@ What ships now:
 
 - **Threaded approval status replies**: Slack, Discord, and Telegram adapters now share a thread-reply primitive. Approval decisions update the original card and post a short status reply into the stored native thread/topic target when one is available.
 
+- **Channel command capability tiers**: Slash commands now carry read/act/approve/reconfigure tiers, and dispatcher execution checks the required tier against the channel security profile. Read contexts can inspect status without gaining approval or reconfiguration powers.
+
 - **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)

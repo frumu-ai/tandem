@@ -1004,17 +1004,16 @@ fn blocked_command_reason(
     cmd: &SlashCommand,
     security_profile: ChannelSecurityProfile,
 ) -> Option<&'static str> {
-    if security_profile != ChannelSecurityProfile::PublicDemo {
-        return None;
-    }
     let command_name = slash_command_name(cmd);
     let Some(capability) = command_capability(command_name) else {
         return None;
     };
-    if capability.enabled_for(security_profile) {
-        None
-    } else {
+    if !capability.enabled_for(security_profile) {
         capability.public_demo_reason
+    } else if !command_allowed_by_tier(*capability, security_profile) {
+        Some("This command requires a higher channel capability tier.")
+    } else {
+        None
     }
 }
 
