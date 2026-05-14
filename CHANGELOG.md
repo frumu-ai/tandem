@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **File permission validation on state file load** - Added `check_file_permissions()` (Unix-only) that logs warnings if state files are world-readable or world/group-writable. Calls on startup during load of sensitive files: `bug_monitor_config`, `bug_monitor_log_watcher_state`, and `bug_monitor_intake_keys`. Does not fail startup but alerts operators to restrict state files to mode 0600 (owner read/write only).
 
+- **CRITICAL: Empty run_id/node_id in Discord modal custom_id parsing** - Fixed validation gap where malformed modal custom_id like `tdm-modal:rework::` would result in empty run_id and node_id being passed to `dispatch_decision()`. Now validates that both run_id and node_id are non-empty after parsing the `tdm-modal:rework:{run_id}:{node_id}` format, preventing attackers from submitting empty IDs.
+
+- **CRITICAL: Telegram dedup ring missing TTL-based expiration** - Applied timestamp-based deduplication to Telegram interaction handler, matching Discord and Slack. Previously only used capacity-based eviction, allowing Telegram update_ids (which can be reused) to be replayed days later if the dedup ring is cleared or service restarted. Updated `DedupRing` to track `inserted_at_secs` for each entry with 5-minute expiration window.
+
+- **HIGH: User ID extraction defaults to "unknown" instead of rejecting** - All three channel handlers (Discord, Slack, Telegram) now reject requests with missing user identification instead of defaulting to "unknown". Prevents accidental authorization bypass of unmapped/malformed requests and improves audit trail accuracy. Changed from `.unwrap_or("unknown")` to explicit error handling that returns `reject_bad_request()`.
+
+- **HIGH: Reason field in rework requests not size-limited** - Discord modal reason field now validated to not exceed 4000 characters, preventing storage exhaustion attacks via oversized rework reasons submitted via direct API bypass of UI limits. Check added before storing reason in gate decision.
+
+- **HIGH: Error messages leak user IDs in authorization denials** - Changed rejection error messages from `"user {user_id} not in allowed_users"` to generic `"user not in allowed_users"`. Prevents user enumeration attacks via timing and error responses. Full user_id still logged for audit purposes.
+
 ## [0.5.5] - Unreleased
 
 ### Added

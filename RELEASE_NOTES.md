@@ -20,6 +20,16 @@ What ships now:
 
 - **File permission validation on startup**: Added `check_file_permissions()` (Unix-only) that logs warnings if state files are world-readable or world/group-writable. Checks run on load of sensitive files: `bug_monitor_config`, `bug_monitor_log_watcher_state`, and `bug_monitor_intake_keys`. Does not fail startup but alerts operators to restrict permissions to mode 0600 (owner read/write only).
 
+- **Empty run_id/node_id validation in Discord modal parsing**: Fixed critical gap where malformed modal custom_id (e.g., `tdm-modal:rework::`) would extract empty run_id/node_id and pass them to dispatch_decision. Now validates both are non-empty after parsing the `{run_id}:{node_id}` format, rejecting malformed requests with `400 Bad Request`.
+
+- **Telegram dedup TTL implementation**: Applied timestamp-based deduplication with 5-minute expiration to Telegram, closing a replay window that existed because update_ids are small integers that can be reused. Previously only capacity-based eviction allowed stale entries to be replayed days later if the dedup ring was cleared or the service restarted.
+
+- **User ID extraction: reject instead of default**: All three channel handlers now validate that user identification is present (Discord/Telegram from payload, Slack from extracted action), rejecting with `400 Bad Request` instead of defaulting to "unknown". Prevents accidental authorization of malformed requests and improves audit trail accuracy.
+
+- **Reason field size validation**: Discord modal rework reason now capped at 4000 characters, matching the UI modal enforcement. Prevents storage exhaustion attacks via oversized reasons submitted via direct API.
+
+- **Error message information disclosure prevention**: Authorization rejection messages changed from `"user {user_id} not in allowed_users"` to `"user not in allowed_users"`, eliminating user enumeration attacks while keeping full user_id in audit logs for operator investigation.
+
 ## v0.5.5 (Unreleased)
 
 This release lays down the **Execution Profiles** foundation — a runtime governance toggle (Strict / Guided / YOLO) that will let users keep working while validators and contracts continue to harden, without abandoning Tandem's runtime ownership of state, receipts, replay, spend tracking, and approvals. The motivation is operational: full governance still has a high run-fail rate as bugs are ironed out, and a meaningful share of those failures are over-strict (false-positive validation, missing-but-non-essential sections, recoverable artifact issues) rather than real defects. Execution Profiles are the structured bridge that lets affected runs continue with the relaxation captured in receipts, so the data we collect can drive validator classes back to Strict-by-default once they mature.
