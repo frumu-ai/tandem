@@ -1,17 +1,36 @@
 use axum::middleware as axum_middleware;
 use axum::Router;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
+use http::Method;
 
 use super::*;
 
 pub(super) fn build_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(AllowOrigin::predicate(|origin, _request_parts| {
+            if let Ok(origin_str) = origin.to_str() {
+                origin_str == "http://localhost:5173"
+                    || origin_str == "http://localhost:3000"
+                    || origin_str == "http://localhost:8080"
+                    || origin_str.starts_with("http://127.0.0.1:")
+                    || origin_str.starts_with("https://localhost")
+                    || origin_str.starts_with("tauri://")
+            } else {
+                false
+            }
+        }))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
+        .allow_headers(["content-type", "authorization", "x-tandem-correlation-id", "x-tandem-org-id", "x-tandem-workspace-id", "x-tandem-actor-id", "x-tandem-request-source"]);
 
-    let body_limit = RequestBodyLimitLayer::max(50 * 1024 * 1024);
+    let body_limit = RequestBodyLimitLayer::max(10 * 1024 * 1024);
 
     let mut router: Router<AppState> = Router::new();
 
