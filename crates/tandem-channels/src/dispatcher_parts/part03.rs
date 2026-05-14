@@ -15,6 +15,9 @@ fn build_channel_session_create_body(
             "scope_id": msg.scope.id,
         },
     });
+    if let Ok(workspace) = std::env::current_dir() {
+        payload["pinned_workspace_id"] = serde_json::json!(workspace.to_string_lossy().to_string());
+    }
     if let Some(project_id) = project_id {
         payload["project_id"] = serde_json::json!(project_id);
     }

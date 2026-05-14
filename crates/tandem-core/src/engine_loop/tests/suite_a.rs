@@ -156,6 +156,42 @@ async fn todo_updated_event_is_normalized() {
 }
 
 #[tokio::test]
+async fn channel_pinned_workspace_blocks_file_read_outside_pin() {
+    let base = std::env::temp_dir().join(format!("engine-loop-test-{}", Uuid::new_v4()));
+    let provider = Arc::new(ScriptedProviderStream {
+        calls: Arc::new(AtomicUsize::new(0)),
+        mode: ScriptedProviderStreamMode::DecodeThenSuccess,
+    });
+    let (engine, _bus, storage) = engine_loop_with_scripted_provider(&base, provider).await;
+    let acme = base.join("workspaces/acme");
+    let other = base.join("workspaces/other");
+    std::fs::create_dir_all(&acme).expect("acme workspace");
+    std::fs::create_dir_all(&other).expect("other workspace");
+    let other_file = other.join("secret.txt");
+    std::fs::write(&other_file, "nope").expect("other file");
+
+    let mut session = tandem_types::Session::new(
+        Some("slack channel".to_string()),
+        Some(other.to_string_lossy().to_string()),
+    );
+    session.source_kind = Some("channel".to_string());
+    session.workspace_root = Some(other.to_string_lossy().to_string());
+    session.pinned_workspace_id = Some(acme.to_string_lossy().to_string());
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    let violation = engine
+        .workspace_sandbox_violation(
+            &session_id,
+            "read",
+            &json!({ "path": other_file.to_string_lossy().to_string() }),
+        )
+        .await
+        .expect("workspace scope violation");
+    assert!(violation.contains("ToolDenied { reason: WorkspaceScope }"));
+}
+
+#[tokio::test]
 async fn provider_stream_decode_error_retries_current_iteration() {
     let base = std::env::temp_dir().join(format!(
         "engine-loop-provider-stream-retry-{}",

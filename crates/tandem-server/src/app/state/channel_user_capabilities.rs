@@ -18,6 +18,8 @@ pub struct ChannelUserCapabilityRecord {
     pub enrolled_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enrolled_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -39,6 +41,8 @@ pub struct ChannelEnrollmentCodeRecord {
     pub expires_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issued_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_workspace_id: Option<String>,
 }
 
 impl From<CommandTier> for StoredCommandTier {
@@ -71,6 +75,7 @@ impl AppState {
         max_tier: StoredCommandTier,
         ttl_ms: Option<u64>,
         issued_by: Option<String>,
+        pinned_workspace_id: Option<String>,
     ) -> ChannelEnrollmentCodeRecord {
         let issued_at_ms = crate::now_ms();
         let expires_at_ms =
@@ -90,6 +95,7 @@ impl AppState {
             issued_at_ms,
             expires_at_ms,
             issued_by,
+            pinned_workspace_id,
         };
         self.channel_enrollment_codes
             .write()
@@ -120,6 +126,7 @@ impl AppState {
             max_tier: pending.max_tier,
             enrolled_at_ms: Some(crate::now_ms()),
             enrolled_by: enrolled_by.or(pending.issued_by),
+            pinned_workspace_id: pending.pinned_workspace_id,
         };
         self.upsert_channel_user_capability(record.clone()).await?;
         Ok(record)
@@ -226,6 +233,7 @@ mod tests {
                 max_tier: StoredCommandTier::Approve,
                 enrolled_at_ms: Some(7),
                 enrolled_by: Some("admin".to_string()),
+                pinned_workspace_id: None,
             })
             .await
             .unwrap();
@@ -269,6 +277,7 @@ mod tests {
                 StoredCommandTier::Approve,
                 None,
                 Some("operator".to_string()),
+                Some("/workspace/acme".to_string()),
             )
             .await;
         let record = state
@@ -278,6 +287,10 @@ mod tests {
 
         assert_eq!(record.channel, "telegram");
         assert_eq!(record.user_id, "fake-telegram-user");
+        assert_eq!(
+            record.pinned_workspace_id.as_deref(),
+            Some("/workspace/acme")
+        );
         assert!(
             state
                 .channel_user_can_approve(

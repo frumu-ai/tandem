@@ -22,6 +22,8 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_workspace_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attached_from_workspace: Option<String>,
@@ -57,6 +59,7 @@ impl Session {
             title: title.unwrap_or_else(|| "New session".to_string()),
             directory: directory.unwrap_or_else(|| ".".to_string()),
             workspace_root: None,
+            pinned_workspace_id: None,
             origin_workspace_root: None,
             attached_from_workspace: None,
             attached_to_workspace: None,
@@ -98,6 +101,8 @@ pub struct CreateSessionRequest {
     pub title: Option<String>,
     pub directory: Option<String>,
     pub workspace_root: Option<String>,
+    #[serde(default, alias = "pinnedWorkspaceID", alias = "pinned_workspace_id")]
+    pub pinned_workspace_id: Option<String>,
     pub project_id: Option<String>,
     pub model: Option<ModelSpec>,
     pub provider: Option<String>,

@@ -1147,6 +1147,7 @@ fn load_legacy_opencode_sessions(base: &Path) -> anyhow::Result<HashMap<String, 
                         .directory
                         .as_deref()
                         .and_then(normalize_workspace_path),
+                    pinned_workspace_id: None,
                     origin_workspace_root: None,
                     attached_from_workspace: None,
                     attached_to_workspace: None,

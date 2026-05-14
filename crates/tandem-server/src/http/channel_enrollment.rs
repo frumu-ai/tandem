@@ -21,6 +21,8 @@ pub(crate) enum ChannelEnrollRequest {
         ttl_seconds: Option<u64>,
         #[serde(default)]
         issued_by: Option<String>,
+        #[serde(default)]
+        pinned_workspace_id: Option<String>,
     },
     Confirm {
         pairing_code: String,
@@ -53,6 +55,7 @@ pub(crate) async fn channel_enroll(
             tier,
             ttl_seconds,
             issued_by,
+            pinned_workspace_id,
         } => {
             if channel.trim().is_empty() || user_id.trim().is_empty() {
                 return enrollment_error(
@@ -67,6 +70,9 @@ pub(crate) async fn channel_enroll(
                     tier,
                     ttl_seconds.map(|seconds| seconds.saturating_mul(1000)),
                     issued_by,
+                    pinned_workspace_id
+                        .as_deref()
+                        .and_then(tandem_core::normalize_workspace_path),
                 )
                 .await;
             Json(ChannelEnrollResponse::CodeIssued {
@@ -115,6 +121,7 @@ mod tests {
                 tier: StoredCommandTier::Approve,
                 ttl_seconds: Some(60),
                 issued_by: Some("operator".to_string()),
+                pinned_workspace_id: Some("/workspace/acme".to_string()),
             }),
         )
         .await;

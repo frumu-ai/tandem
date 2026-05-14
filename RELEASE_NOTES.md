@@ -58,6 +58,8 @@ What ships now:
 
 - **Per-user channel rate limiting**: Tandem now applies per-user token buckets to channel-origin prompts and approval decisions. Prompts default to 10/minute, decisions default to 30/minute, limits are keyed by `(channel, user_id)`, profile-specific env overrides are supported, and rejected requests return `429 Too Many Requests` with `Retry-After`.
 
+- **Workspace pinning for channel sessions**: Channel sessions now carry a pinned workspace boundary. New channel-created sessions pin to the server workspace, enrollment records can preserve an explicit `pinned_workspace_id`, and file tools are denied with `ToolDenied { reason: WorkspaceScope }` if a channel session tries to read or write outside the pinned workspace.
+
 - **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)

@@ -245,6 +245,17 @@ pub(super) async fn create_session(
     session.model = req.model;
     session.provider = req.provider;
     apply_created_session_source(&mut session, req.source_kind, req.source_metadata);
+    session.pinned_workspace_id = req
+        .pinned_workspace_id
+        .as_deref()
+        .and_then(tandem_core::normalize_workspace_path)
+        .or_else(|| {
+            if session.source_kind.as_deref() == Some("channel") {
+                session.workspace_root.clone()
+            } else {
+                None
+            }
+        });
     state
         .storage
         .save_session(session.clone())

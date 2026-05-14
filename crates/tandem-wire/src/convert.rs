@@ -39,6 +39,7 @@ impl From<Session> for WireSession {
             project_id: value.project_id,
             directory: Some(value.directory),
             workspace_root: value.workspace_root,
+            pinned_workspace_id: value.pinned_workspace_id,
             origin_workspace_root: value.origin_workspace_root,
             attached_from_workspace: value.attached_from_workspace,
             attached_to_workspace: value.attached_to_workspace,
