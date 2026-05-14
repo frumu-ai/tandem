@@ -1,14 +1,48 @@
 use axum::middleware as axum_middleware;
 use axum::Router;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
+use http::Method;
 
 use super::*;
 
+fn build_cors_layer() -> CorsLayer {
+    let allowed_origins = std::env::var("TANDEM_CORS_ORIGINS")
+        .unwrap_or_else(|_| {
+            "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1,https://localhost,tauri://".to_string()
+        });
+
+    let origins: Vec<&str> = allowed_origins.split(',').map(|s| s.trim()).collect();
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+            if let Ok(origin_str) = origin.to_str() {
+                origins.iter().any(|allowed| {
+                    if allowed.ends_with("*") {
+                        let prefix = &allowed[..allowed.len() - 1];
+                        origin_str.starts_with(prefix)
+                    } else {
+                        origin_str == *allowed || origin_str.starts_with(&format!("{}:", allowed))
+                    }
+                })
+            } else {
+                false
+            }
+        }))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
+        .allow_headers(["content-type", "authorization", "x-tandem-correlation-id", "x-tandem-org-id", "x-tandem-workspace-id", "x-tandem-actor-id", "x-tandem-request-source"])
+}
+
 pub(super) fn build_router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = build_cors_layer();
+    let body_limit = RequestBodyLimitLayer::max(10 * 1024 * 1024);
 
     let mut router: Router<AppState> = Router::new();
 
@@ -61,6 +95,7 @@ pub(super) fn build_router(state: AppState) -> Router {
 
     router
         .layer(cors)
+        .layer(body_limit)
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             super::middleware::startup_gate,

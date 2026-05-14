@@ -29,9 +29,11 @@ use serde_json::{json, Value};
 use tandem_channels::discord_blocks::{parse_custom_id, ParsedCustomId};
 use tandem_channels::signing::verify_discord_signature;
 
+use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
 use crate::AppState;
 
 const DEDUP_CAP: usize = 4096;
+const DEDUP_TTL_SECS: u64 = 300; // 5 minutes — Discord retries within minutes
 
 static SEEN_INTERACTIONS: OnceLock<Mutex<DedupRing>> = OnceLock::new();
 
@@ -39,29 +41,52 @@ fn dedup_ring() -> &'static Mutex<DedupRing> {
     SEEN_INTERACTIONS.get_or_init(|| Mutex::new(DedupRing::new()))
 }
 
+struct DedupEntry {
+    inserted_at_secs: u64,
+}
+
 struct DedupRing {
-    set: HashSet<String>,
+    set: std::collections::HashMap<String, DedupEntry>,
     order: std::collections::VecDeque<String>,
 }
 
 impl DedupRing {
     fn new() -> Self {
         Self {
-            set: HashSet::with_capacity(DEDUP_CAP),
+            set: std::collections::HashMap::with_capacity(DEDUP_CAP),
             order: std::collections::VecDeque::with_capacity(DEDUP_CAP),
         }
     }
 
     fn record_new(&mut self, key: &str) -> bool {
-        if self.set.contains(key) {
-            return false;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Check if key exists and hasn't expired.
+        if let Some(entry) = self.set.get(key) {
+            if now_secs.saturating_sub(entry.inserted_at_secs) < DEDUP_TTL_SECS {
+                return false; // Duplicate within TTL window.
+            }
+            // Entry exists but expired; will be reinserted below.
+            self.set.remove(key);
+            // Note: order queue still has the old entry, but we'll skip it on next cleanup.
         }
+
+        // Evict oldest entry if at capacity.
         if self.order.len() >= DEDUP_CAP {
             if let Some(oldest) = self.order.pop_front() {
                 self.set.remove(&oldest);
             }
         }
-        self.set.insert(key.to_string());
+
+        self.set.insert(
+            key.to_string(),
+            DedupEntry {
+                inserted_at_secs: now_secs,
+            },
+        );
         self.order.push_back(key.to_string());
         true
     }
@@ -153,12 +178,33 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
         None => return reject_bad_request(&format!("unrecognized custom_id: {custom_id}")),
     };
 
-    let user_id = payload
+    let user_id = match payload
         .pointer("/member/user/id")
         .or_else(|| payload.pointer("/user/id"))
         .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
+    {
+        Some(id) => id.to_string(),
+        None => return reject_bad_request("payload missing user identification"),
+    };
+
+    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Discord, &user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // User is authorized; proceed to handle the action.
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::discord_interactions",
+                user_id = %user_id,
+                "rejecting Discord interaction from unauthorized user"
+            );
+            return reject_forbidden("user not in allowed_users");
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return reject_bad_request("discord channel not properly configured");
+        }
+    }
 
     match parsed.action.as_str() {
         "approve" | "cancel" => dispatch_decision(state, parsed, &user_id, None).await,
@@ -208,23 +254,47 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
     let run_id = parts.next().unwrap_or("").to_string();
     let node_id = parts.next().unwrap_or("").to_string();
 
-    if prefix != "tdm-modal" || action != "rework" {
-        return reject_bad_request(&format!("unrecognized modal custom_id: {custom_id}"));
+    if prefix != "tdm-modal" || action != "rework" || run_id.is_empty() || node_id.is_empty() {
+        return reject_bad_request(&format!("unrecognized or malformed modal custom_id: {custom_id}"));
     }
 
-    let reason = payload
+    let reason_raw = payload
         .pointer("/data/components/0/components/0/value")
         .and_then(Value::as_str)
         .unwrap_or("")
-        .trim()
-        .to_string();
+        .trim();
+    if reason_raw.len() > 4000 {
+        return reject_bad_request("reason exceeds 4000 character limit");
+    }
+    let reason = reason_raw.to_string();
 
-    let user_id = payload
+    let user_id = match payload
         .pointer("/member/user/id")
         .or_else(|| payload.pointer("/user/id"))
         .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
+    {
+        Some(id) => id.to_string(),
+        None => return reject_bad_request("modal payload missing user identification"),
+    };
+
+    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Discord, &user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // User is authorized; proceed to handle the modal submission.
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::discord_interactions",
+                user_id = %user_id,
+                "rejecting Discord modal submission from unauthorized user"
+            );
+            return reject_forbidden("user not in allowed_users");
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return reject_bad_request("discord channel not properly configured");
+        }
+    }
 
     dispatch_decision(
         state,
@@ -330,6 +400,17 @@ fn reject_unauthorized(reason: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(json!({ "error": "Unauthorized", "reason": reason })),
+    )
+        .into_response()
+}
+
+fn reject_forbidden(reason: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "Forbidden",
+            "reason": reason,
+        })),
     )
         .into_response()
 }

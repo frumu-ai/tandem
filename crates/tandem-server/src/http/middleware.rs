@@ -74,12 +74,50 @@ pub(super) async fn auth_gate(
 fn attach_enterprise_request_context(request: &mut Request) -> bool {
     let headers = request.headers();
     let (tenant_context, request_principal) = resolve_enterprise_request_context(headers);
-    let auth_hook = NoopRequestAuthorizationHook;
-    if !auth_hook.authorize(&request_principal, &tenant_context) {
+
+    if !authorize_request(&request_principal, &tenant_context) {
+        tracing::warn!(
+            "Authorization denied: principal={:?} tenant={} source={}",
+            request_principal.actor_id,
+            tenant_context.org_id,
+            request_principal.source
+        );
         return false;
     }
+
     request.extensions_mut().insert(tenant_context);
     request.extensions_mut().insert(request_principal);
+    true
+}
+
+fn authorize_request(principal: &RequestPrincipal, tenant: &TenantContext) -> bool {
+    if tenant.org_id.is_empty() || tenant.workspace_id.is_empty() {
+        tracing::warn!(
+            "Authorization denied: invalid tenant context - org_id={} workspace_id={}",
+            tenant.org_id,
+            tenant.workspace_id
+        );
+        return false;
+    }
+
+    if let Some(principal_actor) = &principal.actor_id {
+        if principal_actor.is_empty() {
+            tracing::warn!("Authorization denied: actor_id is empty string");
+            return false;
+        }
+
+        if let Some(tenant_actor) = &tenant.actor_id {
+            if principal_actor != tenant_actor {
+                tracing::warn!(
+                    "Authorization denied: actor mismatch - principal={} tenant={}",
+                    principal_actor,
+                    tenant_actor
+                );
+                return false;
+            }
+        }
+    }
+
     true
 }
 

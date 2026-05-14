@@ -12,6 +12,23 @@ use std::sync::{Arc, RwLock};
 use tandem_types::TenantContext;
 use tokio::sync::{Mutex, Semaphore};
 
+/// Helper trait to safely handle RwLock poisoning
+trait SafeLockRead<T: Clone> {
+    fn read_safe(&self) -> T;
+}
+
+impl<T: Clone + Default> SafeLockRead<T> for RwLock<T> {
+    fn read_safe(&self) -> T {
+        match self.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => {
+                tracing::error!("RwLock poisoned, attempting recovery with default value");
+                poisoned.into_inner().clone()
+            }
+        }
+    }
+}
+
 /// Selected model (provider + model id) for the OpenCode sidecar.
 ///
 /// Why: OpenCode supports many providers by name (including user-defined ones in `.opencode/config.json`).
@@ -415,7 +432,7 @@ impl AppState {
 
     /// Get the current workspace path
     pub fn get_workspace_path(&self) -> Option<PathBuf> {
-        self.workspace_path.read().unwrap().clone()
+        self.workspace_path.read_safe().clone()
     }
 }
 

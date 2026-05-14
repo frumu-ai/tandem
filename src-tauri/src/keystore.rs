@@ -54,16 +54,43 @@ impl ApiKeyType {
 
 /// Validate that an API key meets basic requirements
 pub fn validate_api_key(key: &str) -> Result<()> {
-    if key.is_empty() {
+    let trimmed = key.trim();
+
+    if trimmed.is_empty() {
         return Err(TandemError::InvalidConfig(
             "API key cannot be empty".to_string(),
         ));
     }
 
-    // Basic validation - keys should be reasonably long
-    if key.len() < 10 {
+    if trimmed.len() < 10 {
         return Err(TandemError::InvalidConfig(
-            "API key appears too short".to_string(),
+            "API key is too short (minimum 10 characters)".to_string(),
+        ));
+    }
+
+    if trimmed.len() > 1000 {
+        return Err(TandemError::InvalidConfig(
+            "API key is too long (maximum 1000 characters)".to_string(),
+        ));
+    }
+
+    if trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(TandemError::InvalidConfig(
+            "API key contains invalid newline characters".to_string(),
+        ));
+    }
+
+    if trimmed.contains('\0') {
+        return Err(TandemError::InvalidConfig(
+            "API key contains null bytes".to_string(),
+        ));
+    }
+
+    let suspicious_patterns = ["password", "test123", "12345", "secret", "admin"];
+    let key_lower = trimmed.to_ascii_lowercase();
+    if suspicious_patterns.iter().any(|p| key_lower.contains(p)) {
+        return Err(TandemError::InvalidConfig(
+            "API key appears to be a placeholder or test value".to_string(),
         ));
     }
 

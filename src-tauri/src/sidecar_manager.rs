@@ -596,10 +596,28 @@ fn build_release_request(client: &reqwest::Client, page: usize) -> reqwest::Requ
         .header("Accept", "application/vnd.github+json");
 
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        request = request.header("Authorization", format!("Bearer {}", token));
+        if is_valid_github_token(&token) {
+            request = request.header("Authorization", format!("Bearer {}", token));
+        } else {
+            tracing::warn!("GITHUB_TOKEN environment variable is invalid (empty or malformed)");
+        }
     }
 
     request
+}
+
+fn is_valid_github_token(token: &str) -> bool {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.len() < 20 {
+        return false;
+    }
+    if trimmed.len() > 1000 {
+        return false;
+    }
+    !trimmed.contains('\n') && !trimmed.contains('\r')
 }
 
 async fn parse_release_response(response: reqwest::Response) -> Result<Vec<GitHubRelease>> {

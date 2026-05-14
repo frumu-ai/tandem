@@ -487,17 +487,41 @@ fn automation_v2_definitions_root(active_path: &Path) -> PathBuf {
         .join("automations-v2")
 }
 
-fn automation_v2_definition_file_name(automation_id: &str) -> String {
-    let sanitized = automation_id
-        .chars()
+/// Sanitize an ID to prevent path traversal attacks.
+/// Converts any character outside the safe set to underscore.
+/// Safe characters: alphanumeric, hyphen, underscore (commonly used in IDs).
+fn sanitize_path_id(id: &str) -> String {
+    id.chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
                 ch
             } else {
                 '_'
             }
         })
-        .collect::<String>();
+        .collect()
+}
+
+/// Validate that a path is within the expected base directory.
+/// Prevents path traversal attacks like "../../../etc/passwd".
+fn validate_path_within_root(base: &Path, target: &Path) -> anyhow::Result<()> {
+    let canonical_base = base.canonicalize()
+        .map_err(|e| anyhow::anyhow!("failed to canonicalize base path: {e}"))?;
+    let canonical_target = target.canonicalize()
+        .map_err(|e| anyhow::anyhow!("failed to canonicalize target path: {e}"))?;
+
+    if !canonical_target.starts_with(&canonical_base) {
+        anyhow::bail!(
+            "path traversal attempt: {:?} is not within base directory {:?}",
+            canonical_target,
+            canonical_base
+        );
+    }
+    Ok(())
+}
+
+fn automation_v2_definition_file_name(automation_id: &str) -> String {
+    let sanitized = sanitize_path_id(automation_id);
     let stem = if sanitized.trim().is_empty() {
         "automation".to_string()
     } else {
@@ -743,10 +767,11 @@ fn automation_v2_run_history_shard_path(
     run: &AutomationV2RunRecord,
 ) -> PathBuf {
     let (year, month) = automation_v2_run_history_month(run);
+    let sanitized_run_id = sanitize_path_id(&run.run_id);
     automation_v2_run_history_root(active_path)
         .join(format!("{year:04}"))
         .join(format!("{month:02}"))
-        .join(format!("{}.json", run.run_id))
+        .join(format!("{}.json", sanitized_run_id))
 }
 
 async fn write_automation_v2_run_history_shard(

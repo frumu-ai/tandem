@@ -28,9 +28,11 @@ use serde_json::{json, Value};
 use tandem_channels::signing::verify_telegram_secret_token;
 use tandem_channels::telegram_keyboards::{parse_callback_data, ParsedCallbackData};
 
+use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
 use crate::AppState;
 
 const DEDUP_CAP: usize = 4096;
+const DEDUP_TTL_SECS: u64 = 300; // 5 minutes — Telegram retries within minutes
 
 static SEEN_UPDATES: OnceLock<Mutex<DedupRing>> = OnceLock::new();
 
@@ -38,29 +40,51 @@ fn dedup_ring() -> &'static Mutex<DedupRing> {
     SEEN_UPDATES.get_or_init(|| Mutex::new(DedupRing::new()))
 }
 
+struct DedupEntry {
+    inserted_at_secs: u64,
+}
+
 struct DedupRing {
-    set: HashSet<i64>,
+    set: std::collections::HashMap<i64, DedupEntry>,
     order: std::collections::VecDeque<i64>,
 }
 
 impl DedupRing {
     fn new() -> Self {
         Self {
-            set: HashSet::with_capacity(DEDUP_CAP),
+            set: std::collections::HashMap::with_capacity(DEDUP_CAP),
             order: std::collections::VecDeque::with_capacity(DEDUP_CAP),
         }
     }
 
     fn record_new(&mut self, key: i64) -> bool {
-        if self.set.contains(&key) {
-            return false;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Check if key exists and hasn't expired.
+        if let Some(entry) = self.set.get(&key) {
+            if now_secs.saturating_sub(entry.inserted_at_secs) < DEDUP_TTL_SECS {
+                return false; // Duplicate within TTL window.
+            }
+            // Entry exists but expired; will be reinserted below.
+            self.set.remove(&key);
         }
+
+        // Evict oldest entry if at capacity.
         if self.order.len() >= DEDUP_CAP {
             if let Some(oldest) = self.order.pop_front() {
                 self.set.remove(&oldest);
             }
         }
-        self.set.insert(key);
+
+        self.set.insert(
+            key,
+            DedupEntry {
+                inserted_at_secs: now_secs,
+            },
+        );
         self.order.push_back(key);
         true
     }
@@ -134,11 +158,33 @@ pub(crate) async fn telegram_interactions(
         return reject_bad_request("callback identifier truncated; cache resolution not yet wired");
     }
 
-    let user_id = callback_query
+    let user_id = match callback_query
         .pointer("/from/id")
         .and_then(Value::as_i64)
         .map(|id| id.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    {
+        Some(id) => id,
+        None => return reject_bad_request("callback_query missing user identification"),
+    };
+
+    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Telegram, &user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // User is authorized; proceed to handle the action.
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::telegram_interactions",
+                user_id = %user_id,
+                "rejecting Telegram interaction from unauthorized user"
+            );
+            return reject_forbidden("user not in allowed_users");
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return reject_bad_request("telegram channel not properly configured");
+        }
+    }
 
     match parsed.action.as_str() {
         "approve" | "cancel" => dispatch_decision(state, parsed, &user_id, None).await,
@@ -218,6 +264,17 @@ fn reject_unauthorized(reason: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(json!({ "error": "Unauthorized", "reason": reason })),
+    )
+        .into_response()
+}
+
+fn reject_forbidden(reason: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "Forbidden",
+            "reason": reason,
+        })),
     )
         .into_response()
 }

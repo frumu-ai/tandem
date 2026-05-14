@@ -30,6 +30,7 @@ use axum::Json;
 use serde_json::{json, Value};
 use tandem_channels::signing::verify_slack_signature;
 
+use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
 use crate::AppState;
 
 /// Bounded LRU-ish dedup set for Slack interaction `(action_ts, action_id)`
@@ -42,6 +43,7 @@ use crate::AppState;
 /// idempotent at the run level (the second call hits the 409 path with the
 /// winner identity from W2.6).
 const DEDUP_CAP: usize = 4096;
+const DEDUP_TTL_SECS: u64 = 300; // 5 minutes — Slack retries within minutes
 
 static SEEN_INTERACTIONS: OnceLock<Mutex<DedupRing>> = OnceLock::new();
 
@@ -49,31 +51,53 @@ fn dedup_ring() -> &'static Mutex<DedupRing> {
     SEEN_INTERACTIONS.get_or_init(|| Mutex::new(DedupRing::new()))
 }
 
+struct DedupEntry {
+    inserted_at_secs: u64,
+}
+
 struct DedupRing {
-    set: HashSet<String>,
+    set: std::collections::HashMap<String, DedupEntry>,
     order: std::collections::VecDeque<String>,
 }
 
 impl DedupRing {
     fn new() -> Self {
         Self {
-            set: HashSet::with_capacity(DEDUP_CAP),
+            set: std::collections::HashMap::with_capacity(DEDUP_CAP),
             order: std::collections::VecDeque::with_capacity(DEDUP_CAP),
         }
     }
 
     /// Returns `true` if the key is new (and records it). Returns `false` if
-    /// the key was already seen recently.
+    /// the key was already seen recently (within TTL).
     fn record_new(&mut self, key: &str) -> bool {
-        if self.set.contains(key) {
-            return false;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Check if key exists and hasn't expired.
+        if let Some(entry) = self.set.get(key) {
+            if now_secs.saturating_sub(entry.inserted_at_secs) < DEDUP_TTL_SECS {
+                return false; // Duplicate within TTL window.
+            }
+            // Entry exists but expired; will be reinserted below.
+            self.set.remove(key);
         }
+
+        // Evict oldest entry if at capacity.
         if self.order.len() >= DEDUP_CAP {
             if let Some(oldest) = self.order.pop_front() {
                 self.set.remove(&oldest);
             }
         }
-        self.set.insert(key.to_string());
+
+        self.set.insert(
+            key.to_string(),
+            DedupEntry {
+                inserted_at_secs: now_secs,
+            },
+        );
         self.order.push_back(key.to_string());
         true
     }
@@ -123,6 +147,25 @@ pub(crate) async fn slack_interactions(
         Ok(action) => action,
         Err(reason) => return reject_bad_request(&reason),
     };
+
+    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Slack, &action.user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // User is authorized; proceed to handle the action.
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                user_id = %action.user_id,
+                "rejecting Slack interaction from unauthorized user"
+            );
+            return reject_forbidden("user not in allowed_users");
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return reject_bad_request("slack channel not properly configured");
+        }
+    }
 
     let parsed_value = match parse_button_value(&action.value) {
         Ok(v) => v,
@@ -232,7 +275,7 @@ fn extract_primary_action(payload: &Value) -> Result<PrimaryAction, String> {
     let user_id = payload
         .pointer("/user/id")
         .and_then(Value::as_str)
-        .unwrap_or("unknown")
+        .ok_or_else(|| "payload missing user identification".to_string())?
         .to_string();
     Ok(PrimaryAction {
         action_id,
@@ -316,6 +359,17 @@ fn reject_unauthorized(reason: &str) -> Response {
         StatusCode::UNAUTHORIZED,
         Json(json!({
             "error": "Unauthorized",
+            "reason": reason,
+        })),
+    )
+        .into_response()
+}
+
+fn reject_forbidden(reason: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "Forbidden",
             "reason": reason,
         })),
     )

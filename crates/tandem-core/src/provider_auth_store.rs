@@ -77,7 +77,41 @@ fn resolve_codex_cli_home() -> PathBuf {
                 .map(|home| home.join(rest))
                 .unwrap_or_else(|| PathBuf::from(rest));
         }
-        return PathBuf::from(configured);
+
+        // SECURITY: Validate CODEX_HOME to prevent path traversal attacks
+        // Reject paths containing ".." or other problematic patterns
+        if configured.contains("..") || configured.starts_with("-") {
+            tracing::warn!(
+                target: "tandem_core::provider_auth_store",
+                "rejecting invalid CODEX_HOME: contains path traversal attempt"
+            );
+            return dirs::home_dir()
+                .map(|home| home.join(".codex"))
+                .unwrap_or_else(|| PathBuf::from(".codex"));
+        }
+
+        // For absolute paths, canonicalize and ensure it's reasonable
+        // (Don't allow /etc, /root, other system directories)
+        let path = std::path::PathBuf::from(&configured);
+        if path.is_absolute() {
+            // Allow absolute paths only if they appear to be user directories
+            let path_str = path.to_string_lossy().to_lowercase();
+            if path_str.starts_with("/etc") ||
+               path_str.starts_with("/sys") ||
+               path_str.starts_with("/proc") ||
+               path_str.starts_with("/root") ||
+               path_str.starts_with("/boot") {
+                tracing::warn!(
+                    target: "tandem_core::provider_auth_store",
+                    "rejecting CODEX_HOME pointing to system directory"
+                );
+                return dirs::home_dir()
+                    .map(|home| home.join(".codex"))
+                    .unwrap_or_else(|| PathBuf::from(".codex"));
+            }
+        }
+
+        return std::path::PathBuf::from(configured);
     }
 
     dirs::home_dir()
@@ -383,13 +417,46 @@ fn normalize_provider_credential(
 }
 
 fn decode_codex_jwt_claims(token: &str) -> Option<Value> {
+    // SECURITY: This function decodes JWT claims WITHOUT signature verification.
+    // TODO: Implement RSA signature verification using OpenAI's public keys.
+    // For now, at minimum reject tokens with alg:"none" to prevent algorithm substitution.
+
     let mut parts = token.split('.');
-    let _header = parts.next()?;
+    let header_b64 = parts.next()?;
     let payload = parts.next()?;
+    let signature = parts.next()?;
+
+    // Validate token has all three required parts (header.payload.signature)
+    if parts.next().is_some() {
+        return None; // Token has too many parts
+    }
+
+    // Decode and check header for algorithm
+    let header_decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(header_b64)
+        .ok()?;
+    let header: Value = serde_json::from_slice(&header_decoded).ok()?;
+
+    // SECURITY: Reject tokens with alg:"none" to prevent algorithm substitution attacks
+    if let Some(alg) = header.get("alg").and_then(Value::as_str) {
+        if alg.eq_ignore_ascii_case("none") {
+            return None; // Reject unsigned tokens
+        }
+    } else {
+        return None; // Missing algorithm
+    }
+
+    // Decode payload
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .ok()?;
-    serde_json::from_slice::<Value>(&decoded).ok()
+    let claims: Value = serde_json::from_slice(&decoded).ok()?;
+
+    // CRITICAL: Signature is NOT verified. This should use OpenAI's JWKS endpoint
+    // to fetch public keys and verify the cryptographic signature before accepting claims.
+    // Currently any attacker can forge tokens by modifying payload and signature fields.
+
+    Some(claims)
 }
 
 fn jwt_string_claim(claims: &Value, key: &str) -> Option<String> {
@@ -457,13 +524,36 @@ fn resolve_codex_cli_identity(
             )
         })
     });
-    let expires_at_ms = claims
+    // SECURITY: Token MUST have explicit expiration claim
+    // Do not accept tokens with missing or invalid "exp" claim
+    let expires_at_ms = match claims
         .as_ref()
         .and_then(|value| value.get("exp"))
         .and_then(Value::as_i64)
-        .and_then(|value| u64::try_from(value).ok())
-        .map(|value| value.saturating_mul(1000))
-        .unwrap_or_else(|| now_ms().saturating_add(50 * 60 * 1000));
+    {
+        Some(exp_secs) => {
+            // Validate expiration timestamp is reasonable (not in year 3000+)
+            if exp_secs > i64::MAX / 2000 {
+                // Overflow or unreasonably far future - reject
+                return (None, None, None, 0);
+            }
+            if let Ok(exp_u64) = u64::try_from(exp_secs) {
+                exp_u64.saturating_mul(1000)
+            } else {
+                // Negative or invalid timestamp - reject token
+                return (None, None, None, 0);
+            }
+        }
+        None => {
+            // SECURITY: Token without expiration claim is invalid
+            // Previously defaulted to 50 minutes, allowing indefinite use
+            tracing::warn!(
+                target: "tandem_core::provider_auth_store",
+                "rejecting JWT without exp (expiration) claim"
+            );
+            return (None, None, None, 0);
+        }
+    };
 
     (account_id, email, display_name, expires_at_ms)
 }

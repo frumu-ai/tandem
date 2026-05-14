@@ -820,6 +820,11 @@ pub(super) async fn routines_create(
     State(state): State<AppState>,
     Json(input): Json<RoutineCreateInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // TODO: SECURITY - Add authorization check to verify user can create routines.
+    // The authorization pattern is not yet wired into routines handlers.
+    // This should extract Extension<RequestPrincipal> and verify permissions
+    // similar to how automation V2 handlers do it in part02.rs.
+
     let routine = RoutineSpec {
         routine_id: input
             .routine_id

@@ -526,7 +526,23 @@ fn contains_secret_config_fields(value: &Value) -> bool {
     }
 }
 
+const MAX_JSON_DEPTH: usize = 64; // Prevent stack overflow from deeply nested JSON
+
 fn merge_json(base: &mut Value, overlay: &Value) {
+    merge_json_with_depth(base, overlay, 0);
+}
+
+fn merge_json_with_depth(base: &mut Value, overlay: &Value, depth: usize) {
+    // SECURITY: Prevent stack overflow from unbounded recursion
+    if depth > MAX_JSON_DEPTH {
+        tracing::warn!(
+            target: "tandem_server::config",
+            "rejecting JSON merge: exceeded maximum nesting depth ({})",
+            MAX_JSON_DEPTH
+        );
+        return;
+    }
+
     if overlay.is_null() {
         return;
     }
@@ -537,7 +553,7 @@ fn merge_json(base: &mut Value, overlay: &Value) {
                     continue;
                 }
                 match base_map.get_mut(key) {
-                    Some(existing) => merge_json(existing, value),
+                    Some(existing) => merge_json_with_depth(existing, value, depth + 1),
                     None => {
                         base_map.insert(key.clone(), value.clone());
                     }
