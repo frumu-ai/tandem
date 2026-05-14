@@ -44,6 +44,8 @@ What ships now:
 
 - **Per-step approval override controls**: Workflow edit prompts now let operators keep default approval, set conditional auto-approval metadata, or skip approval for an individual step with confirmation. The saved node metadata drives the compiler's existing approval-skip hook and clears stale injected gates on skipped steps.
 
+- **Telegram approval rework completion**: Telegram approval cards now prefer persisted opaque callback IDs so long run/node identifiers do not rely on unsafe truncation. Rework button taps send a force-reply prompt, capture the operator's next valid reply for that chat/user, and dispatch it as a `rework` gate decision with feedback.
+
 - **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)

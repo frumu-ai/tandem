@@ -206,11 +206,20 @@ fn prefix_for_style(style: InteractiveCardButtonStyle, label: &str) -> String {
 
 /// Telegram `callback_data` is the round-trip identifier for a button click.
 /// Hard-capped at 64 bytes UTF-8 — we can't use a JSON object like Slack/Discord.
-/// Format: `tdm:{action}:{run_id_short}:{node_id_short}`.
+/// Preferred format: `tdm:{action}:{telegram_callback_id}`.
 ///
-/// Long run_ids are truncated; the dispatcher resolves the full ID via a
-/// short-lived cache (W5 wiring) since Telegram sees only what we encode.
+/// Legacy cards without `telegram_callback_id` still use
+/// `tdm:{action}:{run_id}:{node_id}` when it fits. If it does not fit, we
+/// emit a deliberately unresolvable truncated marker so the server fails
+/// closed instead of dispatching against partial identifiers.
 fn build_callback_data(correlation: &Value, action_id: &str) -> String {
+    if let Some(callback_id) = correlation
+        .pointer("/telegram_callback_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return format!("tdm:{action_id}:{}", callback_id.trim());
+    }
     let run_id = correlation
         .pointer("/automation_v2_run_id")
         .and_then(Value::as_str)
@@ -234,18 +243,27 @@ fn build_callback_data(correlation: &Value, action_id: &str) -> String {
 pub fn parse_callback_data(data: &str) -> Option<ParsedCallbackData> {
     let trimmed = data.trim_end_matches('~');
     let was_truncated = trimmed.len() < data.len();
-    let mut parts = trimmed.splitn(4, ':');
-    let prefix = parts.next()?;
-    if prefix != "tdm" {
+    let parts = trimmed.split(':').collect::<Vec<_>>();
+    if parts.first().copied() != Some("tdm") {
         return None;
     }
-    let action = parts.next()?;
-    let run_id = parts.next()?;
-    let node_id = parts.next().unwrap_or("");
+    let action = parts.get(1)?;
+    if parts.len() == 3 {
+        return Some(ParsedCallbackData {
+            action: (*action).to_string(),
+            run_id: String::new(),
+            node_id: String::new(),
+            callback_id: Some(parts[2].to_string()),
+            was_truncated,
+        });
+    }
+    let run_id = parts.get(2)?;
+    let node_id = parts.get(3).copied().unwrap_or("");
     Some(ParsedCallbackData {
-        action: action.to_string(),
-        run_id: run_id.to_string(),
+        action: (*action).to_string(),
+        run_id: (*run_id).to_string(),
         node_id: node_id.to_string(),
+        callback_id: None,
         was_truncated,
     })
 }
@@ -255,6 +273,7 @@ pub struct ParsedCallbackData {
     pub action: String,
     pub run_id: String,
     pub node_id: String,
+    pub callback_id: Option<String>,
     /// True if the callback_data exceeded 64 bytes and was truncated. The
     /// dispatcher must resolve the full identifier via its short-lived cache.
     pub was_truncated: bool,
@@ -458,6 +477,30 @@ mod tests {
         assert!(cb.ends_with('~'));
         let parsed = parse_callback_data(cb).expect("parses");
         assert!(parsed.was_truncated);
+    }
+
+    #[test]
+    fn long_ids_use_short_callback_id_without_truncation() {
+        let mut card = approval_card();
+        card.correlation = json!({
+            "automation_v2_run_id": "very-long-run-id-with-many-characters-that-exceeds-the-budget-zzz",
+            "node_id": "and-an-equally-long-node-id-that-also-eats-bytes",
+            "telegram_callback_id": "tgcb_0123456789abcdef",
+        });
+        let payload = build_send_message_payload(&card);
+        let approve = payload
+            .pointer("/reply_markup/inline_keyboard/0/0")
+            .unwrap();
+        let cb = approve
+            .get("callback_data")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(cb.len() <= 64);
+        assert!(!cb.ends_with('~'));
+        let parsed = parse_callback_data(cb).expect("parses");
+        assert_eq!(parsed.action, "approve");
+        assert_eq!(parsed.callback_id.as_deref(), Some("tgcb_0123456789abcdef"));
+        assert!(!parsed.was_truncated);
     }
 
     #[test]

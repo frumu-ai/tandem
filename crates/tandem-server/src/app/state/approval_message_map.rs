@@ -28,12 +28,25 @@ impl ApprovalMessageRecord {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApprovalCallbackRecord {
+    pub callback_id: String,
+    pub request_id: String,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    pub channel: String,
+    pub recipient: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ApprovalMessageMapFile {
     #[serde(default)]
     messages: HashMap<String, ApprovalMessageRecord>,
     #[serde(default)]
     run_threads: HashMap<String, ApprovalMessageRecord>,
+    #[serde(default)]
+    telegram_callbacks: HashMap<String, ApprovalCallbackRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +91,26 @@ impl ApprovalMessageMap {
             .await
     }
 
+    pub async fn record_telegram_callback(
+        &self,
+        callback_id: impl Into<String>,
+        request: &tandem_types::ApprovalRequest,
+        recipient: impl Into<String>,
+    ) -> anyhow::Result<()> {
+        let callback_id = callback_id.into();
+        let record = ApprovalCallbackRecord {
+            callback_id: callback_id.clone(),
+            request_id: request.request_id.clone(),
+            run_id: request.run_id.clone(),
+            node_id: request.node_id.clone(),
+            channel: "telegram".to_string(),
+            recipient: recipient.into(),
+        };
+        let mut data = self.data.write().await;
+        data.telegram_callbacks.insert(callback_id, record);
+        self.persist_locked(&data).await
+    }
+
     async fn record_message(
         &self,
         record: ApprovalMessageRecord,
@@ -97,6 +130,15 @@ impl ApprovalMessageMap {
 
     pub async fn get_thread_for_run(&self, run_id: &str) -> Option<ApprovalMessageRecord> {
         self.data.read().await.run_threads.get(run_id).cloned()
+    }
+
+    pub async fn get_telegram_callback(&self, callback_id: &str) -> Option<ApprovalCallbackRecord> {
+        self.data
+            .read()
+            .await
+            .telegram_callbacks
+            .get(callback_id)
+            .cloned()
     }
 
     async fn persist_locked(&self, data: &ApprovalMessageMapFile) -> anyhow::Result<()> {
@@ -220,5 +262,36 @@ mod tests {
         let record = loaded.get_thread_for_run("run-1").await.unwrap();
         assert_eq!(record.recipient, "C123");
         assert_eq!(record.message_id, "1700000000.000100");
+    }
+
+    #[tokio::test]
+    async fn records_and_reads_telegram_callback_mapping() {
+        let map = ApprovalMessageMap::ephemeral();
+        let request = request("run-abcdef");
+        map.record_telegram_callback("tgcb_123", &request, "12345")
+            .await
+            .unwrap();
+
+        let record = map.get_telegram_callback("tgcb_123").await.unwrap();
+        assert_eq!(record.request_id, "automation_v2:run-abcdef:send_email");
+        assert_eq!(record.run_id, "run-abcdef");
+        assert_eq!(record.node_id.as_deref(), Some("send_email"));
+        assert_eq!(record.recipient, "12345");
+    }
+
+    #[tokio::test]
+    async fn persists_telegram_callback_mapping_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approval_message_map.json");
+        let map = ApprovalMessageMap::load_or_default(&path).await;
+        let request = request("run-abcdef");
+        map.record_telegram_callback("tgcb_123", &request, "12345")
+            .await
+            .unwrap();
+
+        let loaded = ApprovalMessageMap::load_or_default(&path).await;
+        let record = loaded.get_telegram_callback("tgcb_123").await.unwrap();
+        assert_eq!(record.run_id, "run-abcdef");
+        assert_eq!(record.node_id.as_deref(), Some("send_email"));
     }
 }

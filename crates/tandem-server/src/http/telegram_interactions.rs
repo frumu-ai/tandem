@@ -16,7 +16,7 @@
 //! - Idempotent on retries by `update_id` (Telegram retries when our 200 is
 //!   slow or absent).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use axum::body::Bytes;
@@ -28,16 +28,39 @@ use serde_json::{json, Value};
 use tandem_channels::signing::verify_telegram_secret_token;
 use tandem_channels::telegram_keyboards::{parse_callback_data, ParsedCallbackData};
 
-use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
+use crate::app::state::principals::channel_identity::{
+    resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+};
 use crate::AppState;
 
 const DEDUP_CAP: usize = 4096;
 const DEDUP_TTL_SECS: u64 = 300; // 5 minutes — Telegram retries within minutes
+const PENDING_REWORK_TTL_SECS: u64 = 10 * 60;
+const TELEGRAM_API: &str = "https://api.telegram.org/bot";
 
 static SEEN_UPDATES: OnceLock<Mutex<DedupRing>> = OnceLock::new();
+static PENDING_REWORK: OnceLock<Mutex<HashMap<String, PendingTelegramRework>>> = OnceLock::new();
 
 fn dedup_ring() -> &'static Mutex<DedupRing> {
     SEEN_UPDATES.get_or_init(|| Mutex::new(DedupRing::new()))
+}
+
+fn pending_rework() -> &'static Mutex<HashMap<String, PendingTelegramRework>> {
+    PENDING_REWORK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Debug, Clone)]
+struct PendingTelegramRework {
+    run_id: String,
+    node_id: String,
+    prompt_message_id: Option<i64>,
+    inserted_at_secs: u64,
+}
+
+impl PendingTelegramRework {
+    fn is_expired(&self, now_secs: u64) -> bool {
+        now_secs.saturating_sub(self.inserted_at_secs) > PENDING_REWORK_TTL_SECS
+    }
 }
 
 struct DedupEntry {
@@ -130,9 +153,10 @@ pub(crate) async fn telegram_interactions(
         }
     }
 
-    // We only handle callback_query updates here; the dispatcher's listener
-    // owns regular `message` updates and the rework `force_reply` capture
-    // (W5 wiring).
+    if let Some(message) = update.get("message") {
+        return handle_message_update(state, message).await;
+    }
+
     let Some(callback_query) = update.get("callback_query") else {
         return ok_empty();
     };
@@ -142,20 +166,34 @@ pub(crate) async fn telegram_interactions(
         None => return reject_bad_request("callback_query missing data"),
     };
 
-    let parsed = match parse_callback_data(callback_data) {
+    let mut parsed = match parse_callback_data(callback_data) {
         Some(p) => p,
         None => return reject_bad_request(&format!("unrecognized callback_data: {callback_data}")),
     };
 
     if parsed.was_truncated {
-        // W5 wiring: the dispatcher would resolve the full identifier from a
-        // short-lived cache here. For now, refuse rather than dispatch a
-        // partial run_id and risk wrong-run mutations.
         tracing::warn!(
             target: "tandem_server::telegram_interactions",
-            "callback_data was truncated; full ID resolution lands in W5"
+            "legacy truncated callback_data refused"
         );
-        return reject_bad_request("callback identifier truncated; cache resolution not yet wired");
+        return reject_bad_request("callback identifier truncated and could not be resolved");
+    }
+
+    if let Some(callback_id) = parsed.callback_id.as_deref() {
+        match resolve_callback_token(callback_id).await {
+            Some(record) => {
+                parsed.run_id = record.run_id;
+                parsed.node_id = record.node_id.unwrap_or_default();
+            }
+            None => {
+                tracing::warn!(
+                    target: "tandem_server::telegram_interactions",
+                    callback_id,
+                    "Telegram callback token did not resolve"
+                );
+                return reject_bad_request("callback identifier not found");
+            }
+        }
     }
 
     let user_id = match callback_query
@@ -189,20 +227,89 @@ pub(crate) async fn telegram_interactions(
     match parsed.action.as_str() {
         "approve" | "cancel" => dispatch_decision(state, parsed, &user_id, None).await,
         "rework" => {
-            // Telegram has no modal. The dispatcher will capture the user's
-            // next message via `force_reply` (built by
-            // telegram_keyboards::build_force_reply_for_rework). For now,
-            // ack the callback so the loading spinner stops and instruct
-            // callers to wire the force-reply state machine in W5.
-            tracing::info!(
-                target: "tandem_server::telegram_interactions",
-                run_id = %parsed.run_id,
-                "rework button tapped; force-reply capture lands in W5"
-            );
+            let chat_id = callback_query
+                .pointer("/message/chat/id")
+                .and_then(Value::as_i64)
+                .map(|id| id.to_string())
+                .or_else(|| {
+                    callback_query
+                        .pointer("/message/chat/id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+            if let Some(chat_id) = chat_id {
+                let prompt_message_id =
+                    send_rework_force_reply(&state, &chat_id, &user_id, &parsed).await;
+                record_pending_rework(
+                    &chat_id,
+                    &user_id,
+                    PendingTelegramRework {
+                        run_id: parsed.run_id.clone(),
+                        node_id: parsed.node_id.clone(),
+                        prompt_message_id,
+                        inserted_at_secs: now_secs(),
+                    },
+                );
+            } else {
+                tracing::warn!(
+                    target: "tandem_server::telegram_interactions",
+                    run_id = %parsed.run_id,
+                    "Telegram rework callback missing chat id"
+                );
+            }
             ok_empty()
         }
         other => reject_bad_request(&format!("unknown action: {other}")),
     }
+}
+
+async fn handle_message_update(state: AppState, message: &Value) -> Response {
+    let user_id = match message
+        .pointer("/from/id")
+        .and_then(Value::as_i64)
+        .map(|id| id.to_string())
+    {
+        Some(id) => id,
+        None => return ok_empty(),
+    };
+    let chat_id = message
+        .pointer("/chat/id")
+        .and_then(Value::as_i64)
+        .map(|id| id.to_string())
+        .or_else(|| {
+            message
+                .pointer("/chat/id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    let Some(chat_id) = chat_id else {
+        return ok_empty();
+    };
+
+    let Some(pending) = take_pending_rework(&chat_id, &user_id, message) else {
+        return ok_empty();
+    };
+    let reason = match message.get("text").and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => text.trim().to_string(),
+        _ => {
+            record_pending_rework(&chat_id, &user_id, pending);
+            return ok_empty();
+        }
+    };
+
+    dispatch_decision(
+        state,
+        ParsedCallbackData {
+            action: "rework".to_string(),
+            run_id: pending.run_id,
+            node_id: pending.node_id,
+            callback_id: None,
+            was_truncated: false,
+        },
+        &user_id,
+        Some(reason),
+    )
+    .await
 }
 
 async fn dispatch_decision(
@@ -258,6 +365,116 @@ async fn read_telegram_secret(state: &AppState) -> Option<String> {
         .and_then(Value::as_str)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+async fn read_telegram_bot_token(state: &AppState) -> Option<String> {
+    let effective = state.config.get_effective_value().await;
+    effective
+        .pointer("/channels/telegram/bot_token")
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+async fn resolve_callback_token(
+    callback_id: &str,
+) -> Option<crate::app::state::approval_message_map::ApprovalCallbackRecord> {
+    let map = crate::app::state::approval_message_map::ApprovalMessageMap::load_or_default(
+        crate::config::paths::resolve_approval_message_map_path(),
+    )
+    .await;
+    map.get_telegram_callback(callback_id).await
+}
+
+async fn send_rework_force_reply(
+    state: &AppState,
+    chat_id: &str,
+    user_id: &str,
+    parsed: &ParsedCallbackData,
+) -> Option<i64> {
+    let token = read_telegram_bot_token(state).await?;
+    let payload = json!({
+        "chat_id": chat_id,
+        "text": format!("@user{user_id} What should change before this can be approved?"),
+        "reply_markup": {
+            "force_reply": true,
+            "selective": true,
+            "input_field_placeholder": "Type your rework feedback...",
+        },
+    });
+    let url = format!("{TELEGRAM_API}{token}/sendMessage");
+    let response = match reqwest::Client::new().post(url).json(&payload).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(
+                target: "tandem_server::telegram_interactions",
+                run_id = %parsed.run_id,
+                ?error,
+                "failed to send Telegram rework force-reply prompt"
+            );
+            return None;
+        }
+    };
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        tracing::warn!(
+            target: "tandem_server::telegram_interactions",
+            run_id = %parsed.run_id,
+            status = %status,
+            "Telegram rework force-reply prompt failed"
+        );
+        return None;
+    }
+    serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|value| value.pointer("/result/message_id").and_then(Value::as_i64))
+}
+
+fn pending_key(chat_id: &str, user_id: &str) -> String {
+    format!("{}:{}", chat_id.trim(), user_id.trim())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn record_pending_rework(chat_id: &str, user_id: &str, pending: PendingTelegramRework) {
+    let now = now_secs();
+    let mut guard = pending_rework()
+        .lock()
+        .expect("pending rework mutex poisoned");
+    guard.retain(|_, value| !value.is_expired(now));
+    guard.insert(pending_key(chat_id, user_id), pending);
+}
+
+fn take_pending_rework(
+    chat_id: &str,
+    user_id: &str,
+    message: &Value,
+) -> Option<PendingTelegramRework> {
+    let mut guard = pending_rework()
+        .lock()
+        .expect("pending rework mutex poisoned");
+    let key = pending_key(chat_id, user_id);
+    let pending = guard.get(&key)?.clone();
+    if pending.is_expired(now_secs()) {
+        guard.remove(&key);
+        return None;
+    }
+    if let Some(prompt_message_id) = pending.prompt_message_id {
+        let replied_to_prompt = message
+            .pointer("/reply_to_message/message_id")
+            .and_then(Value::as_i64)
+            == Some(prompt_message_id);
+        if !replied_to_prompt {
+            return None;
+        }
+    }
+    guard.remove(&key)
 }
 
 fn reject_unauthorized(reason: &str) -> Response {
@@ -325,5 +542,51 @@ mod tests {
         assert_eq!(parsed.run_id, "auto-v2-run-abc");
         assert_eq!(parsed.node_id, "send_email");
         assert!(!parsed.was_truncated);
+    }
+
+    #[test]
+    fn pending_rework_requires_reply_to_prompt_when_prompt_id_exists() {
+        let pending = PendingTelegramRework {
+            run_id: "run-1".to_string(),
+            node_id: "send_email".to_string(),
+            prompt_message_id: Some(42),
+            inserted_at_secs: now_secs(),
+        };
+        record_pending_rework("123", "456", pending);
+
+        let unrelated = json!({
+            "chat": { "id": 123 },
+            "from": { "id": 456 },
+            "text": "try again"
+        });
+        assert!(take_pending_rework("123", "456", &unrelated).is_none());
+
+        let reply = json!({
+            "chat": { "id": 123 },
+            "from": { "id": 456 },
+            "text": "try again",
+            "reply_to_message": { "message_id": 42 }
+        });
+        let taken = take_pending_rework("123", "456", &reply).expect("pending rework");
+        assert_eq!(taken.run_id, "run-1");
+        assert_eq!(taken.node_id, "send_email");
+    }
+
+    #[test]
+    fn pending_rework_expires() {
+        let pending = PendingTelegramRework {
+            run_id: "run-expired".to_string(),
+            node_id: "send_email".to_string(),
+            prompt_message_id: None,
+            inserted_at_secs: now_secs().saturating_sub(PENDING_REWORK_TTL_SECS + 1),
+        };
+        record_pending_rework("expired-chat", "expired-user", pending);
+
+        let message = json!({
+            "chat": { "id": "expired-chat" },
+            "from": { "id": "expired-user" },
+            "text": "try again"
+        });
+        assert!(take_pending_rework("expired-chat", "expired-user", &message).is_none());
     }
 }

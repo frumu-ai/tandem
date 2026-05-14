@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tandem_channels::traits::{
     Channel, InteractiveCard, InteractiveCardButton, InteractiveCardButtonStyle,
     InteractiveCardField, InteractiveCardReasonPrompt,
@@ -188,13 +189,30 @@ impl ApprovalNotifier for ChannelApprovalNotifier {
             )));
         }
 
-        let card = approval_request_to_card(request, self.recipient.clone());
+        let mut card = approval_request_to_card(request, self.recipient.clone());
+        if self.name == "telegram" {
+            let callback_id = telegram_callback_id(&request.request_id);
+            if let Some(obj) = card.correlation.as_object_mut() {
+                obj.insert("telegram_callback_id".to_string(), json!(callback_id));
+            }
+        }
         let sent = self
             .channel
             .send_card(&card)
             .await
             .map_err(|err| NotifierError::Transient(err.to_string()))?;
         if let Some(message_map) = self.message_map.as_ref() {
+            if self.name == "telegram" {
+                let callback_id = telegram_callback_id(&request.request_id);
+                message_map
+                    .record_telegram_callback(callback_id, request, self.recipient.clone())
+                    .await
+                    .map_err(|err| {
+                        NotifierError::Transient(format!(
+                            "failed to persist Telegram callback mapping: {err}"
+                        ))
+                    })?;
+            }
             message_map
                 .record_approval_sent(request, sent)
                 .await
@@ -204,6 +222,14 @@ impl ApprovalNotifier for ChannelApprovalNotifier {
         }
         Ok(())
     }
+}
+
+fn telegram_callback_id(request_id: &str) -> String {
+    let digest = Sha256::digest(request_id.as_bytes());
+    format!(
+        "tgcb_{:016x}",
+        u64::from_be_bytes(digest[0..8].try_into().unwrap())
+    )
 }
 
 #[cfg(test)]
