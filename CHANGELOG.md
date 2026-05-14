@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Threaded approval status replies**: Channel adapters now expose a shared thread-reply primitive. After an approval decision updates the original card, Tandem posts a short follow-up into the stored Slack thread, Discord thread/channel target, or Telegram topic when available.
 - **Channel command capability tiers**: Built-in slash commands now carry read/act/approve/reconfigure tiers, and dispatcher execution checks those tiers against the channel security profile before running a command.
 - **Persisted channel user capabilities**: Added `channel_user_capabilities.json` state for explicit per-channel user capability assignments, with load/persist/upsert helpers and profile-tier fallback for users that have not enrolled yet.
+- **Channel enrollment pairing codes**: Added `POST /channels/enroll` issue/confirm flow for short-lived pairing codes that bind Slack, Discord, or Telegram user IDs to persisted channel capability tiers. Approval interactions now require an explicit `Approve`-or-higher user capability unless the channel security profile already grants that tier.
 
 ### Fixed
 

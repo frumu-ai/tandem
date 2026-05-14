@@ -210,6 +210,7 @@ impl AppState {
             automations_v2: Arc::new(RwLock::new(std::collections::HashMap::new())),
             channel_automation_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             channel_user_capabilities: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            channel_enrollment_codes: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automation_governance: Arc::new(RwLock::new(
                 crate::automation_v2::governance::GovernanceState::default(),
             )),

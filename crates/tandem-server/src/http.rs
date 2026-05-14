@@ -56,6 +56,7 @@ mod automation_projection_runtime;
 pub(crate) mod bug_monitor;
 mod capabilities;
 pub(crate) mod channel_automation_drafts;
+mod channel_enrollment;
 mod channels_api;
 mod coder;
 pub(crate) mod config_providers;

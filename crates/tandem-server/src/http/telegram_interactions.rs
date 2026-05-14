@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 use tandem_channels::signing::verify_telegram_secret_token;
 use tandem_channels::telegram_keyboards::{parse_callback_data, ParsedCallbackData};
 
+use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
 use crate::app::state::principals::channel_identity::{
     resolve_channel_user, ChannelIdentityResolution, ChannelKind,
 };
@@ -222,6 +223,19 @@ pub(crate) async fn telegram_interactions(
         ChannelIdentityResolution::ChannelNotConfigured(_) => {
             return reject_bad_request("telegram channel not properly configured");
         }
+    }
+    let profile =
+        channel_security_profile_from_config(&effective_config, ChannelKind::Telegram.as_str());
+    if !state
+        .channel_user_can_approve(ChannelKind::Telegram.as_str(), &user_id, profile)
+        .await
+    {
+        tracing::warn!(
+            target: "tandem_server::telegram_interactions",
+            user_id = %user_id,
+            "rejecting Telegram interaction without approval capability"
+        );
+        return reject_forbidden("user lacks approval capability");
     }
 
     match parsed.action.as_str() {

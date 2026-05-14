@@ -3,8 +3,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tandem_channels::channel_registry::{command_tier_for_profile, CommandTier};
 use tandem_channels::config::ChannelSecurityProfile;
+use uuid::Uuid;
 
 use crate::app::state::AppState;
+
+const DEFAULT_ENROLLMENT_TTL_MS: u64 = 10 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChannelUserCapabilityRecord {
@@ -24,6 +27,18 @@ pub enum StoredCommandTier {
     Act,
     Approve,
     Reconfigure,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChannelEnrollmentCodeRecord {
+    pub code: String,
+    pub channel: String,
+    pub user_id: String,
+    pub max_tier: StoredCommandTier,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issued_by: Option<String>,
 }
 
 impl From<CommandTier> for StoredCommandTier {
@@ -49,6 +64,67 @@ impl From<StoredCommandTier> for CommandTier {
 }
 
 impl AppState {
+    pub async fn issue_channel_enrollment_code(
+        &self,
+        channel: impl Into<String>,
+        user_id: impl Into<String>,
+        max_tier: StoredCommandTier,
+        ttl_ms: Option<u64>,
+        issued_by: Option<String>,
+    ) -> ChannelEnrollmentCodeRecord {
+        let issued_at_ms = crate::now_ms();
+        let expires_at_ms =
+            issued_at_ms.saturating_add(ttl_ms.unwrap_or(DEFAULT_ENROLLMENT_TTL_MS));
+        let code = Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect::<String>()
+            .to_ascii_uppercase();
+        let record = ChannelEnrollmentCodeRecord {
+            code: code.clone(),
+            channel: channel.into(),
+            user_id: user_id.into(),
+            max_tier,
+            issued_at_ms,
+            expires_at_ms,
+            issued_by,
+        };
+        self.channel_enrollment_codes
+            .write()
+            .await
+            .insert(code, record.clone());
+        record
+    }
+
+    pub async fn confirm_channel_enrollment_code(
+        &self,
+        code: &str,
+        enrolled_by: Option<String>,
+    ) -> anyhow::Result<ChannelUserCapabilityRecord> {
+        let key = normalize_enrollment_code(code);
+        let pending = {
+            let mut guard = self.channel_enrollment_codes.write().await;
+            guard.remove(&key)
+        }
+        .ok_or_else(|| anyhow::anyhow!("pairing code not found"))?;
+
+        if pending.expires_at_ms < crate::now_ms() {
+            return Err(anyhow::anyhow!("pairing code expired"));
+        }
+
+        let record = ChannelUserCapabilityRecord {
+            channel: pending.channel,
+            user_id: pending.user_id,
+            max_tier: pending.max_tier,
+            enrolled_at_ms: Some(crate::now_ms()),
+            enrolled_by: enrolled_by.or(pending.issued_by),
+        };
+        self.upsert_channel_user_capability(record.clone()).await?;
+        Ok(record)
+    }
+
     pub async fn load_channel_user_capabilities(&self) -> anyhow::Result<()> {
         if !self.channel_user_capabilities_path.exists() {
             return Ok(());
@@ -98,6 +174,28 @@ impl AppState {
             .map(|record| CommandTier::from(record.max_tier))
             .unwrap_or_else(|| command_tier_for_profile(fallback_profile))
     }
+
+    pub async fn channel_user_can_approve(
+        &self,
+        channel: &str,
+        user_id: &str,
+        fallback_profile: ChannelSecurityProfile,
+    ) -> bool {
+        self.channel_user_capability_tier(channel, user_id, fallback_profile)
+            .await
+            >= CommandTier::Approve
+    }
+}
+
+pub fn channel_security_profile_from_config(
+    effective_config: &serde_json::Value,
+    channel: &str,
+) -> ChannelSecurityProfile {
+    effective_config
+        .pointer(&format!("/channels/{channel}/security_profile"))
+        .cloned()
+        .and_then(|value| serde_json::from_value::<ChannelSecurityProfile>(value).ok())
+        .unwrap_or_default()
 }
 
 pub fn channel_user_capability_key(channel: &str, user_id: &str) -> String {
@@ -106,6 +204,10 @@ pub fn channel_user_capability_key(channel: &str, user_id: &str) -> String {
         channel.trim().to_ascii_lowercase(),
         user_id.trim().to_ascii_lowercase()
     )
+}
+
+fn normalize_enrollment_code(code: &str) -> String {
+    code.trim().to_ascii_uppercase()
 }
 
 #[cfg(test)]
@@ -151,6 +253,39 @@ mod tests {
                 )
                 .await,
             CommandTier::Read
+        );
+    }
+
+    #[tokio::test]
+    async fn enrollment_code_binds_fake_telegram_user_to_approve_tier() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = AppState::new_starting("test".to_string(), true);
+        state.channel_user_capabilities_path = dir.path().join("channel_user_capabilities.json");
+
+        let issued = state
+            .issue_channel_enrollment_code(
+                "telegram",
+                "fake-telegram-user",
+                StoredCommandTier::Approve,
+                None,
+                Some("operator".to_string()),
+            )
+            .await;
+        let record = state
+            .confirm_channel_enrollment_code(&issued.code.to_ascii_lowercase(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(record.channel, "telegram");
+        assert_eq!(record.user_id, "fake-telegram-user");
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "telegram",
+                    "fake-telegram-user",
+                    ChannelSecurityProfile::PublicDemo
+                )
+                .await
         );
     }
 }

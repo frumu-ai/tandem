@@ -97,6 +97,14 @@ pub struct AppState {
             >,
         >,
     >,
+    pub channel_enrollment_codes: Arc<
+        RwLock<
+            std::collections::HashMap<
+                String,
+                channel_user_capabilities::ChannelEnrollmentCodeRecord,
+            >,
+        >,
+    >,
     pub automation_governance: Arc<RwLock<GovernanceState>>,
     pub governance_engine: Arc<dyn GovernancePolicyEngine>,
     pub automation_v2_runs: Arc<RwLock<std::collections::HashMap<String, AutomationV2RunRecord>>>,

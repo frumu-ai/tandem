@@ -30,7 +30,10 @@ use axum::Json;
 use serde_json::{json, Value};
 use tandem_channels::signing::verify_slack_signature;
 
-use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
+use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
+use crate::app::state::principals::channel_identity::{
+    resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+};
 use crate::AppState;
 
 /// Bounded LRU-ish dedup set for Slack interaction `(action_ts, action_id)`
@@ -165,6 +168,19 @@ pub(crate) async fn slack_interactions(
         ChannelIdentityResolution::ChannelNotConfigured(_) => {
             return reject_bad_request("slack channel not properly configured");
         }
+    }
+    let profile =
+        channel_security_profile_from_config(&effective_config, ChannelKind::Slack.as_str());
+    if !state
+        .channel_user_can_approve(ChannelKind::Slack.as_str(), &action.user_id, profile)
+        .await
+    {
+        tracing::warn!(
+            target: "tandem_server::slack_interactions",
+            user_id = %action.user_id,
+            "rejecting Slack interaction without approval capability"
+        );
+        return reject_forbidden("user lacks approval capability");
     }
 
     let parsed_value = match parse_button_value(&action.value) {

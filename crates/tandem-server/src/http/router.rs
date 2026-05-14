@@ -61,6 +61,10 @@ pub(super) fn build_router(state: AppState) -> Router {
 
     router = super::routes_approvals::apply(router);
     router = router.route(
+        "/channels/enroll",
+        axum::routing::post(super::channel_enrollment::channel_enroll),
+    );
+    router = router.route(
         "/channels/slack/interactions",
         axum::routing::post(super::slack_interactions::slack_interactions),
     );

@@ -52,6 +52,8 @@ What ships now:
 
 - **Persisted channel user capabilities**: Tandem now has `channel_user_capabilities.json` state for explicit per-channel user capability assignments. Missing users fall back to the channel profile tier until enrollment binds them to a higher tier.
 
+- **Channel enrollment pairing codes**: `POST /channels/enroll` can issue a short-lived pairing code and confirm it out-of-band to bind a Slack, Discord, or Telegram user ID to a persisted capability tier. Approval button handlers now check the resolved user's tier and require `Approve` or higher before deciding a gate.
+
 - **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)
