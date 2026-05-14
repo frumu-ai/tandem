@@ -52,6 +52,7 @@ use crate::{
 };
 
 mod approvals;
+mod audit_stream;
 mod automation_projection_runtime;
 pub(crate) mod bug_monitor;
 mod capabilities;

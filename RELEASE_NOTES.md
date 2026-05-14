@@ -60,6 +60,8 @@ What ships now:
 
 - **Workspace pinning for channel sessions**: Channel sessions now carry a pinned workspace boundary. New channel-created sessions pin to the server workspace, enrollment records can preserve an explicit `pinned_workspace_id`, and file tools are denied with `ToolDenied { reason: WorkspaceScope }` if a channel session tries to read or write outside the pinned workspace.
 
+- **Streaming audit export**: `GET /audit/stream` now exposes an admin-gated newline-delimited JSON feed for external SIEM-style consumers. The stream normalizes approval decisions, tool execution ledger records, and channel capability changes into records with actor, command, workspace, tool call, result, timestamp, and channel fields where available.
+
 - **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)

@@ -1879,6 +1879,18 @@ pub(crate) async fn automations_v2_run_gate_decide(
     }
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    state.event_bus.publish(tandem_types::EngineEvent::new(
+        "approval.decision.recorded",
+        json!({
+            "run_id": run_id,
+            "automation_id": automation.automation_id.clone(),
+            "node_id": gate.node_id.clone(),
+            "decision": decision.clone(),
+            "reason": reason.clone(),
+            "executed_as": "approval_gate",
+            "timestamp": crate::now_ms(),
+        }),
+    ));
     spawn_channel_approval_decision_update(
         state.clone(),
         super::approvals::automation_v2_run_to_approval_request(&current, &gate),

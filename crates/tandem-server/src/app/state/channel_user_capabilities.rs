@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tandem_channels::channel_registry::{command_tier_for_profile, CommandTier};
 use tandem_channels::config::ChannelSecurityProfile;
+use tandem_types::EngineEvent;
 use uuid::Uuid;
 
 use crate::app::state::AppState;
@@ -163,7 +165,20 @@ impl AppState {
         self.channel_user_capabilities
             .write()
             .await
-            .insert(key, record);
+            .insert(key, record.clone());
+        if let Some(runtime) = self.runtime.get() {
+            runtime.event_bus.publish(EngineEvent::new(
+                "channel.capability.changed",
+                json!({
+                    "channel": record.channel,
+                    "user_id": record.user_id,
+                    "max_tier": record.max_tier,
+                    "actor_id": record.enrolled_by,
+                    "executed_as": "channel_enrollment",
+                    "workspace": record.pinned_workspace_id,
+                }),
+            ));
+        }
         self.persist_channel_user_capabilities().await
     }
 

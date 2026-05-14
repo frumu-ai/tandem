@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Channel outbound redaction**: Added a shared outbound redaction pass for dispatcher replies, stripping common secret patterns and filesystem paths outside the workspace boundary before Slack, Discord, or Telegram sends. Operators can extend patterns via `TANDEM_CHANNEL_REDACTION_PATTERNS_FILE`.
 - **Per-user channel rate limiting**: Added in-memory token buckets keyed by channel user, with separate prompt and approval-decision budgets. Channel-origin `prompt_sync` requests default to 10 prompts/minute, approval interactions default to 30 decisions/minute, and `429` responses include `Retry-After`.
 - **Workspace pinning for channel sessions**: Sessions can now carry `pinned_workspace_id`; channel-created sessions pin to the server workspace and enrollment records can preserve an explicit pin. Tool execution and sandbox checks use the pinned workspace for channel sessions and return `ToolDenied { reason: WorkspaceScope }` when file paths target another workspace.
+- **Streaming audit export**: Added `GET /audit/stream` as an admin-gated newline-delimited JSON feed for approval decisions, tool execution ledger events, and channel capability changes.
 
 ### Fixed
 
