@@ -351,7 +351,7 @@ mod tests {
     fn help_text_lists_schedule_topic() {
         let help = help_text(None, ChannelSecurityProfile::Operator);
         assert!(help.contains("/schedule help"));
-        assert!(help.contains("/help schedule"));
+        assert!(help.contains("/help [topic]"));
         assert!(help.contains("/automations"));
         assert!(help.contains("/memory"));
     }
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn public_demo_help_lists_disabled_commands_for_security() {
         let help = help_text(None, ChannelSecurityProfile::PublicDemo);
-        assert!(help.contains("Disabled In This Public Channel For Security"));
+        assert!(help.contains("Disabled in this public channel for security"));
         assert!(help.contains("/workspace"));
         assert!(help.contains("/memory"));
         assert!(help.contains("real Tandem capabilities"));
@@ -995,11 +995,15 @@ mod tests {
     }
 
     #[test]
-    fn channel_tool_allowlist_defaults_to_wildcard_for_operator_channels() {
+    fn channel_tool_allowlist_defaults_to_concrete_operator_tools() {
         let prefs = ChannelToolPreferences::default();
         let result = build_channel_tool_allowlist(None, &prefs, ChannelSecurityProfile::Operator)
             .expect("channel allowlist");
-        assert_eq!(result, vec!["*".to_string()]);
+        assert!(result.iter().any(|tool| tool == "read"));
+        assert!(result.iter().any(|tool| tool == "bash"));
+        assert!(result.iter().any(|tool| tool == "pack_builder"));
+        assert!(!result.iter().any(|tool| tool == "*"));
+        assert!(!result.iter().any(|tool| tool == "mcp_list"));
     }
 
     #[tokio::test]

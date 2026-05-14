@@ -57,6 +57,8 @@ use crate::{
     OptimizationPromotionDecisionKind,
 };
 
+pub mod approval_message_map;
+
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<OnceLock<RuntimeState>>,
@@ -505,9 +507,11 @@ fn sanitize_path_id(id: &str) -> String {
 /// Validate that a path is within the expected base directory.
 /// Prevents path traversal attacks like "../../../etc/passwd".
 fn validate_path_within_root(base: &Path, target: &Path) -> anyhow::Result<()> {
-    let canonical_base = base.canonicalize()
+    let canonical_base = base
+        .canonicalize()
         .map_err(|e| anyhow::anyhow!("failed to canonicalize base path: {e}"))?;
-    let canonical_target = target.canonicalize()
+    let canonical_target = target
+        .canonicalize()
         .map_err(|e| anyhow::anyhow!("failed to canonicalize target path: {e}"))?;
 
     if !canonical_target.starts_with(&canonical_base) {

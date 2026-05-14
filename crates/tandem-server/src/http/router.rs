@@ -1,8 +1,10 @@
+use axum::http::{header, HeaderName, Method};
 use axum::middleware as axum_middleware;
 use axum::Router;
-use tower_http::cors::{AllowOrigin, CorsLayer};
-use tower_http::limit::RequestBodyLimitLayer;
-use http::Method;
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    limit::RequestBodyLimitLayer,
+};
 
 use super::*;
 
@@ -12,7 +14,10 @@ fn build_cors_layer() -> CorsLayer {
             "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1,https://localhost,tauri://".to_string()
         });
 
-    let origins: Vec<&str> = allowed_origins.split(',').map(|s| s.trim()).collect();
+    let origins: Vec<String> = allowed_origins
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
 
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
@@ -22,7 +27,7 @@ fn build_cors_layer() -> CorsLayer {
                         let prefix = &allowed[..allowed.len() - 1];
                         origin_str.starts_with(prefix)
                     } else {
-                        origin_str == *allowed || origin_str.starts_with(&format!("{}:", allowed))
+                        origin_str == allowed || origin_str.starts_with(&format!("{}:", allowed))
                     }
                 })
             } else {
@@ -37,12 +42,20 @@ fn build_cors_layer() -> CorsLayer {
             Method::PATCH,
             Method::OPTIONS,
         ])
-        .allow_headers(["content-type", "authorization", "x-tandem-correlation-id", "x-tandem-org-id", "x-tandem-workspace-id", "x-tandem-actor-id", "x-tandem-request-source"])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("x-tandem-correlation-id"),
+            HeaderName::from_static("x-tandem-org-id"),
+            HeaderName::from_static("x-tandem-workspace-id"),
+            HeaderName::from_static("x-tandem-actor-id"),
+            HeaderName::from_static("x-tandem-request-source"),
+        ])
 }
 
 pub(super) fn build_router(state: AppState) -> Router {
     let cors = build_cors_layer();
-    let body_limit = RequestBodyLimitLayer::max(10 * 1024 * 1024);
+    let body_limit = RequestBodyLimitLayer::new(10 * 1024 * 1024);
 
     let mut router: Router<AppState> = Router::new();
 

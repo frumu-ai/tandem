@@ -1879,11 +1879,100 @@ pub(crate) async fn automations_v2_run_gate_decide(
     }
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    spawn_slack_approval_decision_update(
+        state.clone(),
+        super::approvals::automation_v2_run_to_approval_request(&current, &gate),
+        decision.clone(),
+        reason.clone(),
+    );
     let _ = node;
     let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
     Ok(Json(
         json!({ "ok": true, "run": automation_v2_run_with_context_links(&state, &updated).await, "contextRunID": context_run_id, "linked_context_run_id": context_run_id }),
     ))
+}
+
+fn spawn_slack_approval_decision_update(
+    state: AppState,
+    request: tandem_types::ApprovalRequest,
+    decision: String,
+    reason: Option<String>,
+) {
+    tokio::spawn(async move {
+        if let Err(error) = update_slack_approval_decision(state, request, decision, reason).await {
+            tracing::warn!(
+                target: "tandem_server::approval_outbound",
+                %error,
+                "failed to update Slack approval card after gate decision"
+            );
+        }
+    });
+}
+
+async fn update_slack_approval_decision(
+    state: AppState,
+    request: tandem_types::ApprovalRequest,
+    decision: String,
+    reason: Option<String>,
+) -> anyhow::Result<()> {
+    let message_map = crate::app::state::approval_message_map::ApprovalMessageMap::load_or_default(
+        crate::config::paths::resolve_approval_message_map_path(),
+    )
+    .await;
+    let Some(record) = message_map.get(&request.request_id).await else {
+        return Ok(());
+    };
+    if record.channel != "slack" {
+        return Ok(());
+    }
+
+    let effective = state.config.get_effective_value().await;
+    let Some(slack_value) = effective.pointer("/channels/slack").cloned() else {
+        return Ok(());
+    };
+    let cfg: crate::SlackConfigFile = serde_json::from_value(slack_value)?;
+    if cfg.bot_token.trim().is_empty() {
+        return Ok(());
+    }
+
+    let slack_config = tandem_channels::config::SlackConfig {
+        bot_token: cfg.bot_token,
+        channel_id: record.recipient.clone(),
+        allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
+            cfg.allowed_users,
+        ),
+        mention_only: cfg.mention_only,
+        security_profile: cfg.security_profile,
+    };
+    let channel = tandem_channels::slack::SlackChannel::new(slack_config);
+    let card = crate::app::notifiers::approval_request_to_card(&request, record.recipient.clone());
+    let decided_by_display = format!("{} by Tandem operator", decision_label(&decision));
+    let decision_summary = match reason.as_deref().filter(|value| !value.trim().is_empty()) {
+        Some(reason) => format!(
+            "*{}.*\nReason: {}",
+            decision_label(&decision),
+            reason.trim()
+        ),
+        None => format!("*{}.*", decision_label(&decision)),
+    };
+    channel
+        .update_card_for_decision(
+            &card,
+            &record.message_id,
+            &decided_by_display,
+            &decision_summary,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
+fn decision_label(decision: &str) -> &'static str {
+    match decision {
+        "approve" => "Approved",
+        "rework" => "Sent back for rework",
+        "cancel" => "Cancelled",
+        _ => "Decided",
+    }
 }
 
 pub(super) async fn automations_v2_run_recover(

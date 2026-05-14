@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.6] - Unreleased
+## [0.5.6] - 2026-05-14
 
 ### Security
 
@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MEDIUM: CODEX_HOME environment variable path traversal** - `resolve_codex_cli_home()` now validates the CODEX_HOME path by rejecting paths containing `..`, paths starting with `-`, and absolute paths pointing to system directories (`/etc`, `/sys`, `/proc`, `/root`, `/boot`). Invalid paths safely fall back to `~/.codex` with warning log.
 
 - **MEDIUM: Unsafe token expiration handling** - `resolve_codex_cli_identity()` now explicitly rejects tokens missing the `exp` claim instead of defaulting to 50-minute expiration. Validates timestamp is reasonable (not in year 3000+ via bounds checking) and rejects negative or unreasonable timestamps. Prevents integer overflow during time arithmetic calculations.
+
+### Added
+
+- **Approval notification fan-out and rich channel delivery**: Slack, Discord, and Telegram channel adapters now implement interactive card delivery, posting native approval cards via Block Kit, Discord embeds/components, and Telegram inline keyboards.
+- **Approval message handle map**: Added persisted `approval_message_map.json` state so delivered approval cards can be looked up by request ID for later lifecycle updates.
+- **Slack approval notifier wiring**: Server startup now registers Slack approval fan-out from the pending approvals source when Slack bot credentials are configured, with shared notifier scaffolding for Slack, Discord, and Telegram.
+
+### Fixed
+
+- **Slack approval cards update after decisions**: Successful automation gate decisions now best-effort edit the original Slack approval card to remove action buttons and show approved, rework, or cancelled status.
+- **Channel dispatcher test baseline**: Updated dispatcher tests to match registry-driven help text and concrete operator tool allowlists.
 
 ## [0.5.5] - 2026-05-13
 

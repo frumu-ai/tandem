@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.5.6 (Unreleased)
+## v0.5.6 (2026-05-14)
 
 This release hardens approval-gate security and fixes race conditions in cache loading. Three critical vulnerabilities in channel interaction handlers are closed: missing user authorization in Slack/Discord/Telegram, Time-of-Check-Time-of-Use (TOCTOU) cache races allowing duplicate decisions, and path traversal in automation IDs. Additional medium-priority fixes include dedup TTL for webhook replay prevention and file permission validation.
 
@@ -37,6 +37,12 @@ What ships now:
 - **CODEX_HOME path traversal protection**: Environment variable `CODEX_HOME` is now validated to reject paths containing `..`, paths starting with `-`, and absolute paths targeting system directories (`/etc`, `/sys`, `/proc`, `/root`, `/boot`). Invalid paths safely fall back to `~/.codex` with warning log.
 
 - **JWT token expiration validation**: Tokens are now rejected if they lack the `exp` claim, instead of defaulting to 50-minute expiration. Timestamp validation detects unreasonable values (e.g., year 3000+) and rejects negative timestamps, preventing integer overflow during time arithmetic.
+
+- **Approval card delivery fan-out**: Slack, Discord, and Telegram channel adapters now support native interactive card sends. Approval requests can render as Block Kit messages, Discord embeds with components, or Telegram inline-keyboard messages instead of plain text fallbacks.
+
+- **Slack approval card lifecycle updates**: The server records delivered approval message handles in `approval_message_map.json` and best-effort edits Slack approval cards after approve, rework, or cancel decisions so stale buttons disappear and operators see the final decision inline.
+
+- **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)
 

@@ -18,9 +18,11 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 
 use crate::config::{is_user_allowed, TelegramConfig, TelegramStyleProfile};
+use crate::telegram_keyboards;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
-    MessageTriggerContext, SendMessage, TriggerSource,
+    InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
+    TriggerSource,
 };
 
 const MAX_MESSAGE_LEN: usize = 4096;
@@ -939,6 +941,81 @@ impl Channel for TelegramChannel {
             }
         }
         Ok(())
+    }
+
+    async fn send_card(
+        &self,
+        card: &InteractiveCard,
+    ) -> Result<InteractiveCardSent, InteractiveCardError> {
+        if card.recipient.trim().is_empty() {
+            return Err(InteractiveCardError::InvalidCard(
+                "Telegram card recipient is required".to_string(),
+            ));
+        }
+
+        let payload = telegram_keyboards::build_send_message_payload(card);
+        let resp = self
+            .client
+            .post(self.api_url("sendMessage"))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Telegram sendMessage failed ({status}): {}",
+                self.redact_token(&body_text)
+            )));
+        }
+
+        let parsed: Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Telegram response was not JSON: {err}"))
+        })?;
+        if parsed.get("ok") != Some(&Value::Bool(true)) {
+            let description = parsed
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Telegram sendMessage error: {}",
+                self.redact_token(description)
+            )));
+        }
+
+        let result = parsed.get("result").cloned().unwrap_or_default();
+        let message_id = result
+            .get("message_id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                InteractiveCardError::PlatformError(
+                    "Telegram sendMessage response missing message_id".to_string(),
+                )
+            })?
+            .to_string();
+        let recipient = result
+            .get("chat")
+            .and_then(|chat| chat.get("id"))
+            .map(|id| {
+                id.as_i64()
+                    .map(|value| value.to_string())
+                    .or_else(|| id.as_str().map(ToString::to_string))
+                    .unwrap_or_else(|| card.recipient.clone())
+            })
+            .unwrap_or_else(|| card.recipient.clone());
+
+        Ok(InteractiveCardSent {
+            channel: self.name().to_string(),
+            message_id,
+            recipient,
+            thread_id: None,
+        })
+    }
+
+    fn supports_interactive_cards(&self) -> bool {
+        true
     }
 
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {

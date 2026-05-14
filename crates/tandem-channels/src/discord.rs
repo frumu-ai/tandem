@@ -19,9 +19,11 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::config::DiscordConfig;
+use crate::discord_blocks;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
-    MessageTriggerContext, SendMessage, TriggerSource,
+    InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
+    TriggerSource,
 };
 
 /// Discord's maximum message length for regular messages.
@@ -423,6 +425,67 @@ impl Channel for DiscordChannel {
             }
         }
         Ok(())
+    }
+
+    async fn send_card(
+        &self,
+        card: &InteractiveCard,
+    ) -> Result<InteractiveCardSent, InteractiveCardError> {
+        if card.recipient.trim().is_empty() {
+            return Err(InteractiveCardError::InvalidCard(
+                "Discord card recipient is required".to_string(),
+            ));
+        }
+
+        let client = self.http_client();
+        let payload = discord_blocks::build_create_message_payload(card);
+        let resp = client
+            .post(format!(
+                "{DISCORD_API}/channels/{}/messages",
+                card.recipient
+            ))
+            .header("Authorization", self.auth_header())
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Discord create message failed ({status}): {body_text}"
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Discord response was not JSON: {err}"))
+        })?;
+        let message_id = parsed
+            .get("id")
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| {
+                InteractiveCardError::PlatformError(
+                    "Discord create message response missing id".to_string(),
+                )
+            })?
+            .to_string();
+        let recipient = parsed
+            .get("channel_id")
+            .and_then(|channel_id| channel_id.as_str())
+            .unwrap_or(&card.recipient)
+            .to_string();
+
+        Ok(InteractiveCardSent {
+            channel: self.name().to_string(),
+            message_id,
+            recipient,
+            thread_id: card.thread_key.clone(),
+        })
+    }
+
+    fn supports_interactive_cards(&self) -> bool {
+        true
     }
 
     #[allow(clippy::too_many_lines)]

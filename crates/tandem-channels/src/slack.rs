@@ -13,9 +13,11 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::config::{is_user_allowed, SlackConfig};
+use crate::slack_blocks;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
-    MessageTriggerContext, SendMessage, TriggerSource,
+    InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
+    TriggerSource,
 };
 
 const SLACK_API: &str = "https://slack.com/api";
@@ -187,6 +189,52 @@ impl SlackChannel {
         tokio::fs::write(&path, &bytes).await.ok()?;
         Some(path.to_string_lossy().to_string())
     }
+
+    pub async fn update_card_for_decision(
+        &self,
+        card: &InteractiveCard,
+        message_ts: &str,
+        decided_by_display: &str,
+        decision_summary_markdown: &str,
+    ) -> Result<(), InteractiveCardError> {
+        let payload = slack_blocks::build_chat_update_payload_for_decision(
+            card,
+            message_ts,
+            decided_by_display,
+            decision_summary_markdown,
+        );
+        let resp = self
+            .http_client()
+            .post(format!("{SLACK_API}/chat.update"))
+            .bearer_auth(&self.bot_token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Slack chat.update failed ({status}): {body_text}"
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Slack response was not JSON: {err}"))
+        })?;
+        if parsed.get("ok") != Some(&serde_json::Value::Bool(true)) {
+            let err = parsed
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown");
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Slack chat.update error: {err}"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 fn normalize_slack_content(text: &str, bot_user_id: &str) -> (Option<String>, bool) {
@@ -257,6 +305,84 @@ impl Channel for SlackChannel {
         }
 
         Ok(())
+    }
+
+    async fn send_card(
+        &self,
+        card: &InteractiveCard,
+    ) -> Result<InteractiveCardSent, InteractiveCardError> {
+        let text_fallback = if card.title.trim().is_empty() {
+            "Tandem approval"
+        } else {
+            card.title.as_str()
+        };
+        let payload = slack_blocks::build_post_message_payload(
+            card,
+            text_fallback,
+            card.thread_key.as_deref(),
+        );
+
+        let resp = self
+            .http_client()
+            .post(format!("{SLACK_API}/chat.postMessage"))
+            .bearer_auth(&self.bot_token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Slack chat.postMessage failed ({status}): {body_text}"
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Slack response was not JSON: {err}"))
+        })?;
+        if parsed.get("ok") != Some(&serde_json::Value::Bool(true)) {
+            let err = parsed
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown");
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Slack chat.postMessage error: {err}"
+            )));
+        }
+
+        let message_id = parsed
+            .get("ts")
+            .and_then(|ts| ts.as_str())
+            .ok_or_else(|| {
+                InteractiveCardError::PlatformError(
+                    "Slack chat.postMessage response missing ts".to_string(),
+                )
+            })?
+            .to_string();
+        let recipient = parsed
+            .get("channel")
+            .and_then(|channel| channel.as_str())
+            .unwrap_or(&card.recipient)
+            .to_string();
+        let thread_id = parsed
+            .get("message")
+            .and_then(|message| message.get("thread_ts"))
+            .and_then(|thread_ts| thread_ts.as_str())
+            .map(ToString::to_string)
+            .or_else(|| card.thread_key.clone());
+
+        Ok(InteractiveCardSent {
+            channel: self.name().to_string(),
+            message_id,
+            recipient,
+            thread_id,
+        })
+    }
+
+    fn supports_interactive_cards(&self) -> bool {
+        true
     }
 
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
