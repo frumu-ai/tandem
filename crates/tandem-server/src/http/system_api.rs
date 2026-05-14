@@ -423,6 +423,10 @@ pub(super) async fn run_command(
         if normalized.is_empty() {
             return Err(StatusCode::BAD_REQUEST);
         }
+        if normalized.contains("..") || normalized.starts_with("-") {
+            tracing::warn!("Invalid cwd parameter: {}", normalized);
+            return Err(StatusCode::BAD_REQUEST);
+        }
         if let Some(root) = workspace_root.as_ref() {
             let requested_path = PathBuf::from(&normalized);
             let candidate = if requested_path.is_absolute() {
