@@ -154,8 +154,31 @@ pub(super) async fn file_list(Query(query): Query<FileListQuery>) -> Json<Value>
 pub(super) async fn file_content(
     Query(query): Query<FileContentQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let path = PathBuf::from(query.path);
-    let content = tokio::fs::read_to_string(path)
+    let requested_path = PathBuf::from(query.path);
+
+    let canonical_cwd = std::env::current_dir()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let target_path = if requested_path.is_absolute() {
+        requested_path
+    } else {
+        canonical_cwd.join(&requested_path)
+    };
+
+    let canonical_target = target_path
+        .canonicalize()
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    if !canonical_target.starts_with(&canonical_cwd) {
+        tracing::warn!(
+            "file_content path traversal attempt blocked: requested={} canonical={}",
+            query.path,
+            canonical_target.display()
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let content = tokio::fs::read_to_string(&canonical_target)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(json!({"content": content})))
@@ -346,6 +369,8 @@ pub(super) async fn formatter_status() -> Json<Value> {
     Json(json!([]))
 }
 
+const ALLOWED_COMMANDS: &[&str] = &["git", "cargo", "rustc", "node", "npm", "python", "python3", "bash", "sh"];
+
 pub(super) async fn command_list() -> Json<Value> {
     Json(json!([
         {"id":"git-status","command":"git","args":["status","--short"]},
@@ -379,6 +404,17 @@ pub(super) async fn run_command(
         .unwrap_or_else(|| ".".to_string());
 
     let command = input.command.ok_or(StatusCode::BAD_REQUEST)?;
+
+    if !is_command_allowed(&command) {
+        tracing::warn!(
+            "session.command request_id={} session_id={} rejected_command={} reason=not_in_whitelist",
+            request_id,
+            id,
+            command
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     let mut cmd = Command::new(&command);
     cmd.args(input.args);
     let effective_cwd = if let Some(requested_cwd) = input.cwd {
@@ -412,7 +448,7 @@ pub(super) async fn run_command(
     let command_ms = command_started.elapsed().as_millis();
     let elapsed_ms = started.elapsed().as_millis();
     tracing::info!(
-        "session.command request_id={} session_id={} command={} ok={} elapsed_ms={} lookup_ms={} command_ms={}",
+        "session.command request_id={} session_id={} command_name={} ok={} elapsed_ms={} lookup_ms={} command_ms={}",
         request_id,
         id,
         command,
@@ -423,7 +459,7 @@ pub(super) async fn run_command(
     );
     if elapsed_ms >= 2_000 {
         tracing::warn!(
-            "slow request request_id={} route=POST /session/{{id}}/command session_id={} command={} elapsed_ms={} lookup_ms={} command_ms={}",
+            "slow request request_id={} route=POST /session/{{id}}/command session_id={} command_name={} elapsed_ms={} lookup_ms={} command_ms={}",
             request_id,
             id,
             command,
@@ -440,6 +476,15 @@ pub(super) async fn run_command(
     })))
 }
 
+fn is_command_allowed(command: &str) -> bool {
+    let cmd_name = std::path::Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(command);
+
+    ALLOWED_COMMANDS.contains(&cmd_name)
+}
+
 pub(crate) fn request_id_from_headers(headers: &HeaderMap) -> String {
     headers
         .get("x-tandem-correlation-id")
@@ -451,21 +496,8 @@ pub(crate) fn request_id_from_headers(headers: &HeaderMap) -> String {
 }
 
 pub(super) async fn run_shell(Json(input): Json<ShellRunInput>) -> Result<Json<Value>, StatusCode> {
-    let command = input.command.ok_or(StatusCode::BAD_REQUEST)?;
-    let mut cmd = Command::new("powershell");
-    cmd.args(["-NoProfile", "-Command", &command]);
-    if let Some(cwd) = input.cwd {
-        cmd.current_dir(cwd);
-    }
-    let output = cmd
-        .output()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({
-        "ok": output.status.success(),
-        "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
-        "stderr": String::from_utf8_lossy(&output.stderr).to_string()
-    })))
+    tracing::warn!("run_shell endpoint called - this endpoint is disabled for security reasons");
+    Err(StatusCode::FORBIDDEN)
 }
 
 pub(super) async fn path_info(
