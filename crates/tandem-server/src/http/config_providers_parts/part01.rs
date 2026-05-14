@@ -1615,6 +1615,56 @@ fn provider_config_api_key(
         })
 }
 
+/// Validate provider base URL to prevent SSRF attacks.
+/// Rejects private IP addresses and non-HTTPS schemes.
+fn validate_provider_url(url_str: &str) -> Result<(), String> {
+    // Require HTTPS for security
+    if !url_str.starts_with("https://") {
+        if url_str.starts_with("http://127.0.0.1") || url_str.starts_with("http://localhost") {
+            // Allow HTTP for localhost in development
+        } else if url_str.starts_with("http://") {
+            return Err("provider URLs must use HTTPS for non-localhost addresses".to_string());
+        } else {
+            return Err("provider URLs must start with https://".to_string());
+        }
+    }
+
+    // Extract host from URL
+    let host = url_str
+        .strip_prefix("https://")
+        .or_else(|| url_str.strip_prefix("http://"))
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|host_part| host_part.split(':').next())
+        .ok_or("invalid provider URL format")?;
+
+    // Block localhost-like domains
+    if host.eq_ignore_ascii_case("localhost") ||
+       host == "127.0.0.1" ||
+       host == "::1" ||
+       host.ends_with(".local") ||
+       host.ends_with(".localdomain") ||
+       host.ends_with(".internal") {
+        return Err("provider URL cannot use localhost or private hostnames".to_string());
+    }
+
+    // Block private IP ranges (RFC 1918 and other reserved ranges)
+    if host.starts_with("10.") ||
+       host.starts_with("172.16.") || host.starts_with("172.17.") || host.starts_with("172.18.") ||
+       host.starts_with("172.19.") || host.starts_with("172.20.") || host.starts_with("172.21.") ||
+       host.starts_with("172.22.") || host.starts_with("172.23.") || host.starts_with("172.24.") ||
+       host.starts_with("172.25.") || host.starts_with("172.26.") || host.starts_with("172.27.") ||
+       host.starts_with("172.28.") || host.starts_with("172.29.") || host.starts_with("172.30.") ||
+       host.starts_with("172.31.") ||
+       host.starts_with("192.168.") ||
+       host.starts_with("169.254.") || // Link-local
+       host.starts_with("224.") || host.starts_with("225.") || host.starts_with("226.") || // Multicast
+       host == "0.0.0.0" {
+        return Err("provider URL cannot use private or reserved IP addresses".to_string());
+    }
+
+    Ok(())
+}
+
 fn provider_base_url(cfg: &Value, provider_id: &str) -> Option<String> {
     provider_config_value(cfg, provider_id)
         .and_then(|entry| entry.get("url"))
@@ -1764,6 +1814,10 @@ async fn fetch_openai_compatible_models(
     let Some(base_url) = provider_base_url(cfg, provider_id) else {
         return Err("No provider base URL is configured for live model discovery.".to_string());
     };
+
+    // SECURITY: Validate provider URL to prevent SSRF attacks
+    validate_provider_url(&base_url)?;
+
     let url = format!("{}/models", normalize_openai_catalog_base(&base_url));
     let client = reqwest::Client::new();
     let request = client.get(&url).timeout(Duration::from_secs(20));
