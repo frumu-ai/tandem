@@ -46,6 +46,7 @@ import { splitMcpAllowedTools } from "../features/mcp/mcpTools";
 type ExecutionMode = "single" | "team" | "swarm";
 type WorkflowToolAccessMode = "all" | "custom";
 type WorkflowTaskToolAccessMode = "inherit" | "custom";
+type WorkflowApprovalOverride = "default" | "auto" | "skip";
 
 interface McpServerOption {
   name: string;
@@ -107,6 +108,8 @@ interface WorkflowNodeEditDraft {
   mcpAllowedServers: string[];
   mcpAllowedTools: string[] | null;
   mcpOtherAllowedTools: string[];
+  approvalOverride: WorkflowApprovalOverride;
+  approvalCondition: string;
 }
 
 function toArray(input: any, key: string) {
@@ -729,30 +732,47 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
       : []
   );
   const nodes = Array.isArray(automation?.flow?.nodes)
-    ? automation.flow.nodes.map((node: any, index: number) => ({
-        nodeId: String(node?.node_id || node?.nodeId || node?.id || `node-${index}`).trim(),
-        title: String(
-          node?.title ||
-            node?.name ||
-            node?.objective ||
-            node?.node_id ||
-            node?.id ||
-            "Workflow step"
-        ).trim(),
-        objective: String(node?.objective || "").trim(),
-        agentId: String(node?.agent_id || node?.agentId || "").trim(),
-        ...workflowNodeToolAccessDraft(node),
-        ...(() => {
-          const agent = agentsById.get(String(node?.agent_id || node?.agentId || "").trim()) as
-            | any
-            | undefined;
-          return workflowNodeModelPolicyDraft(
-            agent?.model_policy || agent?.modelPolicy || null,
-            workflowModelProvider,
-            workflowModelId
-          );
-        })(),
-      }))
+    ? automation.flow.nodes.map((node: any, index: number) => {
+        const approvalMetadata =
+          node?.metadata?.approval && typeof node.metadata.approval === "object"
+            ? node.metadata.approval
+            : {};
+        const approvalCondition = String(
+          approvalMetadata?.auto_approve_when || approvalMetadata?.autoApproveWhen || ""
+        ).trim();
+        const approvalOverride: WorkflowApprovalOverride =
+          approvalMetadata?.skip_approval === true || approvalMetadata?.skipApproval === true
+            ? "skip"
+            : approvalCondition
+              ? "auto"
+              : "default";
+        return {
+          nodeId: String(node?.node_id || node?.nodeId || node?.id || `node-${index}`).trim(),
+          title: String(
+            node?.title ||
+              node?.name ||
+              node?.objective ||
+              node?.node_id ||
+              node?.id ||
+              "Workflow step"
+          ).trim(),
+          objective: String(node?.objective || "").trim(),
+          agentId: String(node?.agent_id || node?.agentId || "").trim(),
+          approvalOverride,
+          approvalCondition,
+          ...workflowNodeToolAccessDraft(node),
+          ...(() => {
+            const agent = agentsById.get(String(node?.agent_id || node?.agentId || "").trim()) as
+              | any
+              | undefined;
+            return workflowNodeModelPolicyDraft(
+              agent?.model_policy || agent?.modelPolicy || null,
+              workflowModelProvider,
+              workflowModelId
+            );
+          })(),
+        };
+      })
     : [];
   const scopeSnapshot =
     automation?.metadata?.plan_package || automation?.metadata?.planPackage || null;

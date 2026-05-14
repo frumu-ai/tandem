@@ -42,6 +42,8 @@ What ships now:
 
 - **Slack approval card lifecycle updates**: The server records delivered approval message handles in `approval_message_map.json` and best-effort edits Slack approval cards after approve, rework, or cancel decisions so stale buttons disappear and operators see the final decision inline.
 
+- **Per-step approval override controls**: Workflow edit prompts now let operators keep default approval, set conditional auto-approval metadata, or skip approval for an individual step with confirmation. The saved node metadata drives the compiler's existing approval-skip hook and clears stale injected gates on skipped steps.
+
 - **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)
