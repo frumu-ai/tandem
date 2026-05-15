@@ -14,7 +14,6 @@
 /// up `AppState` and provider injection. That keeps engine-executor testable in
 /// isolation and avoids dragging the entire engine setup into unit tests of the
 /// extraction logic.
-
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -80,10 +79,7 @@ impl EngineExecutor {
         extract_eval_result(case, &final_run, started.elapsed())
     }
 
-    async fn poll_until_terminal(
-        &self,
-        run_id: &str,
-    ) -> Result<AutomationV2RunRecord, String> {
+    async fn poll_until_terminal(&self, run_id: &str) -> Result<AutomationV2RunRecord, String> {
         let deadline = Instant::now() + self.max_duration;
         loop {
             if Instant::now() > deadline {
@@ -488,7 +484,11 @@ mod tests {
     #[test]
     fn extract_eval_result_uses_engine_duration_when_present() {
         let case = make_case_with_validators(vec!["contract"]);
-        let run = make_record(AutomationRunStatus::Completed, HashMap::new(), HashMap::new());
+        let run = make_record(
+            AutomationRunStatus::Completed,
+            HashMap::new(),
+            HashMap::new(),
+        );
         // started_at_ms=1100, finished_at_ms=1800 -> 700ms engine duration
         let result = extract_eval_result(&case, &run, Duration::from_millis(99_999));
         assert_eq!(result.duration_ms, 700);
@@ -497,7 +497,11 @@ mod tests {
     #[test]
     fn extract_eval_result_falls_back_to_wall_clock_when_engine_times_missing() {
         let case = make_case_with_validators(vec!["contract"]);
-        let mut run = make_record(AutomationRunStatus::Completed, HashMap::new(), HashMap::new());
+        let mut run = make_record(
+            AutomationRunStatus::Completed,
+            HashMap::new(),
+            HashMap::new(),
+        );
         run.started_at_ms = None;
         run.finished_at_ms = None;
         let result = extract_eval_result(&case, &run, Duration::from_millis(420));
@@ -507,7 +511,11 @@ mod tests {
     #[test]
     fn extract_eval_result_prefers_total_tokens_over_sum() {
         let case = make_case_with_validators(vec!["contract"]);
-        let mut run = make_record(AutomationRunStatus::Completed, HashMap::new(), HashMap::new());
+        let mut run = make_record(
+            AutomationRunStatus::Completed,
+            HashMap::new(),
+            HashMap::new(),
+        );
         run.total_tokens = 1234;
         run.prompt_tokens = 100;
         run.completion_tokens = 50;
@@ -518,7 +526,11 @@ mod tests {
     #[test]
     fn extract_eval_result_sums_tokens_when_total_zero() {
         let case = make_case_with_validators(vec!["contract"]);
-        let mut run = make_record(AutomationRunStatus::Completed, HashMap::new(), HashMap::new());
+        let mut run = make_record(
+            AutomationRunStatus::Completed,
+            HashMap::new(),
+            HashMap::new(),
+        );
         run.total_tokens = 0;
         run.prompt_tokens = 100;
         run.completion_tokens = 50;

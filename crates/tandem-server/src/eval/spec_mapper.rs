@@ -15,7 +15,6 @@
 ///   later add an explicit dependency field if needed
 /// - `max_repair_iterations` from the test case's config block is used for per-node
 ///   retry policy and (× 60s) for the per-node timeout
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
@@ -385,10 +384,9 @@ mod tests {
     #[test]
     fn config_max_repair_overrides_expected_output() {
         let mut case = make_case("ev_003", vec![make_node("n1", "research")]);
-        case.automation_spec.config.insert(
-            "max_repair_iterations".to_string(),
-            serde_json::json!(5),
-        );
+        case.automation_spec
+            .config
+            .insert("max_repair_iterations".to_string(), serde_json::json!(5));
         case.expected_output.max_repair_iterations = Some(2);
 
         let spec = test_case_to_spec(&case);

@@ -158,7 +158,9 @@ impl EvalRunner {
                         .with_max_duration(Duration::from_secs(self.config.max_test_duration_secs));
                     executor.run_test_case(test_case).await
                 }
-                None => engine_mode_unavailable(test_case, self.effective_engine_mode(), start_time),
+                None => {
+                    engine_mode_unavailable(test_case, self.effective_engine_mode(), start_time)
+                }
             },
         }
     }
@@ -390,7 +392,10 @@ mod tests {
 
     #[test]
     fn engine_mode_parses_known_strings() {
-        assert_eq!(EngineMode::parse("simulation").unwrap(), EngineMode::Simulation);
+        assert_eq!(
+            EngineMode::parse("simulation").unwrap(),
+            EngineMode::Simulation
+        );
         assert_eq!(EngineMode::parse("sim").unwrap(), EngineMode::Simulation);
         assert_eq!(EngineMode::parse("STUB").unwrap(), EngineMode::Stub);
         assert_eq!(EngineMode::parse("scripted").unwrap(), EngineMode::Stub);

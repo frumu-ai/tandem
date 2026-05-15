@@ -11,7 +11,6 @@
 /// a tailored response via `.with_pattern(...)`.
 ///
 /// Used by `EngineExecutor` in `--engine-mode stub` runs of the eval-runner CLI.
-
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -75,11 +74,7 @@ impl ScriptedEvalProvider {
 
     /// Register a substring pattern. The first pattern whose substring is found in the
     /// assembled prompt wins.
-    pub fn with_pattern(
-        mut self,
-        contains: impl Into<String>,
-        response: ScriptedResponse,
-    ) -> Self {
+    pub fn with_pattern(mut self, contains: impl Into<String>, response: ScriptedResponse) -> Self {
         self.patterns.push((contains.into(), response));
         self
     }
@@ -235,7 +230,13 @@ mod tests {
             attachments: Vec::new(),
         }];
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, None, CancellationToken::new())
+            .stream(
+                messages,
+                None,
+                ToolMode::Auto,
+                None,
+                CancellationToken::new(),
+            )
             .await
             .expect("stream");
         let chunks: Vec<StreamChunk> = stream
@@ -267,7 +268,10 @@ mod tests {
     async fn first_matching_pattern_wins() {
         let provider = ScriptedEvalProvider::new()
             .with_pattern("research", ScriptedResponse::Text("R".to_string()))
-            .with_pattern("research and cite", ScriptedResponse::Text("RC".to_string()));
+            .with_pattern(
+                "research and cite",
+                ScriptedResponse::Text("RC".to_string()),
+            );
 
         let body = provider
             .complete("Research and cite recent AI safety papers", None)
@@ -323,10 +327,8 @@ mod tests {
 
     #[tokio::test]
     async fn json_response_serializes_to_string_body() {
-        let provider = ScriptedEvalProvider::new().with_pattern(
-            "needs json",
-            ScriptedResponse::Json(json!({"answer": 42})),
-        );
+        let provider = ScriptedEvalProvider::new()
+            .with_pattern("needs json", ScriptedResponse::Json(json!({"answer": 42})));
         let body = provider
             .complete("this prompt needs json", None)
             .await
