@@ -1,18 +1,1 @@
-{
-  "dataset_name": "critical_path",
-  "dataset_version": "1.0",
-  "baseline_version": "1.0",
-  "created_at_ms": 1715784000000,
-  "commit_sha": "abc123def456789",
-  "branch": "main",
-  "pass_rate": 0.92,
-  "avg_repair_iterations": 1.4,
-  "avg_cost_per_test": 0.0485,
-  "total_cost_usd": 0.485,
-  "provider_failure_rate": 0.01,
-  "validator_pass_rates": {
-    "contract": 0.95,
-    "citations": 0.88,
-    "web_sources": 0.90
-  }
-}
+{"dataset_name":"critical_path","pass_rate":0.9,"total_tests":10,"passed_tests":9,"failed_tests":1}
