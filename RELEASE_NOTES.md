@@ -4,11 +4,79 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.5.6 (Unreleased)
 
-This release hardens approval-gate security and fixes race conditions in cache loading. Three critical vulnerabilities in channel interaction handlers are closed: missing user authorization in Slack/Discord/Telegram, Time-of-Check-Time-of-Use (TOCTOU) cache races allowing duplicate decisions, and path traversal in automation IDs. Additional medium-priority fixes include dedup TTL for webhook replay prevention and file permission validation.
+### AI Evaluation Framework
 
-**Security fixes are backport candidates** for deployments running v0.5.5 or earlier.
+This release ships the complete AI Evaluation Framework (Phases 1-5): a production-ready system for structured testing, regression detection, and compliance documentation of AI quality. The framework enables automated quality gates that prevent AI performance regressions from reaching production, provide quantitative proof of AI safety practices for compliance audits (e.g., EU AI Act Article 50 transparency), and make it easy for teams to experiment with new AI features while maintaining quality baseline.
 
-What ships now:
+**What ships now:**
+
+- **Failure Mode Taxonomy** (`AIFailureMode` enum with 30+ variants): Formalized categorization of AI failures across validation (artifact validation, contract violations, citation missing, web sources missing), provider (timeout, rate limit, model not found, stream failures), repair (budget exhausted, loop detection, unavailable), resource (token exhausted, cost exhausted, memory exhausted), authorization (failed, invalid API key, permission denied), and system-level (config error, dependency missing, feature disabled) domains. Each failure is classified into a severity category (Critical, High, Medium, Low) for incident response prioritization. Includes deterministic classifiers (`classify_error_text()`, `categorize_failure()`, `should_retry()`) for automatically tagging failures from real error text.
+
+- **Evaluation Dataset Format** (YAML/JSON): Structured `EvalDataset` schema with `EvalTestCase` definitions, `AutomationSpecTest` node specifications, and configurable `EvalExpectedOutput` validation criteria. Four example datasets ship in `eval_datasets/`: **critical_path.yaml** (happy-path scenarios for core features), **provider_failures.yaml** (resilience tests for timeouts and rate limits), **repair_exhaustion.yaml** (budget depletion edge cases), and **citation_validation.yaml** (web research validation). Dataset format is version-controlled and extensible for adding new test scenarios.
+
+- **Eval Runner CLI** (`cargo run --bin eval-runner`): Standalone command-line tool for bulk test execution with the following capabilities:
+  - **Metrics aggregation**: Computes pass_rate, avg_repair_iterations, total_cost_usd, avg_cost_per_test, provider_failure_rate, and per-validator-class pass rates from test results
+  - **Simulation mode** (`--simulation`): Deterministic test execution without making AI provider calls, making evals safe to run in CI and cost-free during development
+  - **Parallel workers** (`--num-workers`): Configurable parallelism for faster test suite runs
+  - **Tag filtering** (`--filter-tag`): Run only tests matching a specific tag (e.g., `regression`, `happy_path`)
+  - **CLI arguments**: `--dataset` (required), `--output`, `--provider`, `--model`, `--max-duration`, `--verbose`
+  - **Output format**: Human-readable summary on stdout + structured JSON to file for programmatic CI consumption
+  - **Exit codes**: 0 (all tests passed), 1 (one or more test failures), 2 (dataset load error or invalid arguments)
+
+- **Regression Detection System**: Baseline comparison infrastructure that prevents AI quality degradation. `EvalBaseline` stores snapshots of evaluation metrics with git commit/branch metadata. `detect_regressions()` function compares current run metrics against a saved baseline using configurable thresholds (default: 5 percentage point pass_rate drop, 20% cost increase, 30% repair iteration increase, 5 percentage point provider failure increase). Results are reported as `RegressionStatus` (Pass / Warning / Regression) with human-readable messages explaining the deltas.
+
+- **Regression Detection CI Gate** (`.github/workflows/eval-regression-gate.yml`): GitHub Actions workflow that:
+  - Triggers on every PR against main/develop and on main branch pushes
+  - Builds and runs `eval-runner` against critical_path.yaml dataset
+  - Compares results to eval_baselines/main_branch.json baseline
+  - Posts a summary comment on the PR with pass rate and test counts
+  - **Fails the check** if any regression threshold is exceeded (protecting main from quality degradation)
+  - **Auto-updates the baseline** on successful main branch push so future PR comparisons use the latest production metrics
+  - Uploads eval results as CI artifact for debugging and audit trail
+
+- **Developer Documentation** (`docs/dev/EVAL_FRAMEWORK.md`, ~500 lines): Comprehensive guide including:
+  - Quick start with CLI examples
+  - Architecture overview and data flow diagrams
+  - Step-by-step guide for adding new eval datasets
+  - Threshold customization patterns
+  - Failure mode taxonomy reference
+  - Running tests locally and in CI
+  - Troubleshooting common issues (model differences, rate limits, nondeterminism)
+  - FAQ covering simulation mode, parallelization, validators, costs, baseline updates
+
+- **User & Compliance Documentation** (`docs/user/AI_QUALITY_ASSURANCE.md`, ~350 lines): Non-technical guide covering:
+  - **Core quality metrics** explained for end users (pass rate, repair iterations, cost, provider reliability)
+  - **Test scenarios** described (happy path, edge cases, regression tests)
+  - **Quality assurance process** (automated regression detection, continuous monitoring, failure analysis)
+  - **EU AI Act Article 50 compliance**: Explicit mapping of Tandem's testing practices to transparency requirements for natural persons interacting with the AI system
+  - **Trust model**: What Tandem can and cannot guarantee, limitations of AI systems
+  - **Incident response**: How issues are detected, investigated, and resolved
+  - **Support contacts** and glossary
+
+### Quality Gate Features
+
+The regression-detection workflow is designed to be **low-friction and CI-friendly**:
+- Default thresholds are conservative but tunable per team/metric
+- Simulation mode means evaluations complete in seconds with zero API cost
+- Pass/Warning/Regression statuses provide clear go/no-go signals for CI gates
+- JSON output integrates with custom CI/CD tooling for advanced use cases
+- PR comments make quality trends visible to the whole team
+
+### EU AI Act Article 50 Compliance
+
+This framework explicitly supports Article 50 transparency obligations for hosted Tandem services:
+- ✅ **Documented AI system**: The framework demonstrates how AI components are systematically tested
+- ✅ **Quality assurance**: Automated gates and metrics prove ongoing quality practices
+- ✅ **Failure categorization**: 30+ failure types enable post-mortem root-cause analysis
+- ✅ **Performance tracking**: Metrics track AI quality before, during, and after deployment
+- ✅ **Regression prevention**: Automated safeguards block degradations from reaching users
+- ✅ **Audit trail**: All test results are timestamped and logged for compliance audits
+
+Users and auditors can request detailed evaluation metrics, regression reports, and failure analysis logs via support channels.
+
+---
+
+### Security
 
 - **Authorization fix for approval gates**: Slack, Discord, and Telegram interaction handlers now verify that clicking users are in the configured `allowed_users` allowlist before processing approval/rework/cancel decisions. The fix applies `resolve_channel_user(ChannelKind)` at each handler entry point and rejects unauthorized users with `403 Forbidden`. Previously, any user in the platform workspace/server/group could click approval buttons and decide gates regardless of allowlist configuration.
 
