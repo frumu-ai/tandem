@@ -46,6 +46,7 @@ let provider = ScriptedEvalProvider::new()
     .with_pattern("write rust code", ScriptedResponse::Text("fn solution() -> i32 { 42 }".to_string()));
 ```
 
+> **Note**: as of the first integration phase, the CLI itself does not yet construct an `AppState`. Stub/Live modes therefore produce a failed `EvalRunResult` with `failure_mode: FeatureDisabled` when invoked directly through the binary. A follow-up will lift `test_state()` from `http/tests` so the binary can wire up `AppState` and call `EvalRunner::with_app_state(state)` automatically. Until that lands, stub-mode testing happens via the engine_executor unit tests and the `eval-stub-baseline.yml` workflow which expects the same wiring.
 
 ## Quick Start
 
