@@ -1,0 +1,136 @@
+name: Evaluation Stub Baseline
+
+# Captures a deterministic baseline by running the eval-runner with the
+# scripted stub engine mode. Runs weekly on Sunday and on demand via
+# workflow_dispatch. Output is written to eval_baselines/stub_branch.json
+# (separate from main_branch.json so the simulation gate is unaffected).
+#
+# This complements the regression-gate workflow:
+#   eval-regression-gate.yml: runs on every PR/push with --engine-mode simulation
+#                             (zero cost, hardcoded outcomes)
+#   eval-stub-baseline.yml:   runs weekly with --engine-mode stub
+#                             (real engine, scripted provider, still zero API cost)
+
+on:
+  schedule:
+    # Sunday 03:00 UTC
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Path to dataset YAML"
+        required: false
+        default: "eval_datasets/critical_path.yaml"
+      update_baseline:
+        description: "Push updated baseline back to main"
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  stub-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/tandem-server
+
+      - name: Build eval-runner binary
+        run: cargo build --release --bin eval-runner -p tandem-server
+
+      - name: Resolve dataset path
+        id: dataset
+        run: |
+          PATH_VAL="${{ github.event.inputs.dataset }}"
+          if [ -z "$PATH_VAL" ]; then
+            PATH_VAL="eval_datasets/critical_path.yaml"
+          fi
+          if [ ! -f "$PATH_VAL" ]; then
+            echo "::error::Dataset not found: $PATH_VAL"
+            exit 1
+          fi
+          echo "path=$PATH_VAL" >> $GITHUB_OUTPUT
+
+      - name: Run eval-runner in stub mode
+        id: eval-run
+        continue-on-error: true
+        run: |
+          ./target/release/eval-runner \
+            --dataset "${{ steps.dataset.outputs.path }}" \
+            --output /tmp/stub_results.json \
+            --engine-mode stub \
+            --verbose
+
+      - name: Diff against previous stub baseline (if exists)
+        id: diff
+        if: always()
+        run: |
+          if [ ! -f /tmp/stub_results.json ]; then
+            echo "::warning::stub_results.json not produced; nothing to diff"
+            echo "drift=unknown" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if [ -f eval_baselines/stub_branch.json ]; then
+            # Strip volatile timestamps before comparing so deterministic-output drift
+            # is the only signal.
+            FILTER='del(.started_at_ms, .finished_at_ms, .duration_ms, .test_results[].duration_ms)'
+            if diff -u \
+                <(jq -S "$FILTER" eval_baselines/stub_branch.json) \
+                <(jq -S "$FILTER" /tmp/stub_results.json) > /tmp/stub_diff.txt; then
+              echo "drift=none" >> $GITHUB_OUTPUT
+              echo "Stub baseline unchanged."
+            else
+              echo "drift=detected" >> $GITHUB_OUTPUT
+              echo "::notice::Stub baseline drift detected — review /tmp/stub_diff.txt"
+              cat /tmp/stub_diff.txt | head -200
+            fi
+          else
+            echo "drift=initial" >> $GITHUB_OUTPUT
+            echo "::notice::No existing stub baseline — this run will establish it."
+          fi
+
+      - name: Save results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stub-baseline-results
+          path: |
+            /tmp/stub_results.json
+            /tmp/stub_diff.txt
+          retention-days: 90
+
+      - name: Summarize in step output
+        if: always()
+        run: |
+          echo "## Stub Baseline Run" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Dataset: \`${{ steps.dataset.outputs.path }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Engine mode: \`stub\`" >> $GITHUB_STEP_SUMMARY
+          echo "Drift status: \`${{ steps.diff.outputs.drift }}\`" >> $GITHUB_STEP_SUMMARY
+          if [ -f /tmp/stub_results.json ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Metrics:**" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            jq '{pass_rate, total_tests, passed_tests, failed_tests, avg_repair_iterations, total_cost_usd, total_tokens}' /tmp/stub_results.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_To update \`eval_baselines/stub_branch.json\`, download the artifact and commit the change in a reviewed PR._" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail if eval-runner crashed
+        if: steps.eval-run.outcome == 'failure'
+        run: |
+          echo "::error::eval-runner exited non-zero in stub mode — see logs above"
+          exit 1

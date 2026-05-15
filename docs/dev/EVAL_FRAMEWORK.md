@@ -10,20 +10,64 @@ The Tandem evaluation framework provides structured testing, regression detectio
 - **Regression Detection**: Baseline comparison with configurable alert thresholds
 - **Failure Mode Taxonomy**: 30+ categorized AI failure types for post-mortem analysis
 
+## Engine Modes
+
+The eval-runner has three execution modes, selected via `--engine-mode <MODE>`:
+
+| Mode | Engine | Provider | API key | Cost | Determinism | Used for |
+|---|---|---|---|---|---|---|
+| `simulation` (default) | Not invoked | None | No | $0 | Fully deterministic (hardcoded outcomes) | Per-PR CI gate (`eval-regression-gate.yml`) |
+| `stub` | Real Tandem engine | `ScriptedEvalProvider` | No | $0 | Deterministic (scripted responses) | Weekly baseline (`eval-stub-baseline.yml`), local engine-path validation |
+| `live` | Real Tandem engine | Real provider from config | Yes (e.g. `ANTHROPIC_API_KEY`) | Real $ | Best-effort (depends on model) | Human-run baseline captures, scheduled manual CI |
+
+**When to use which:**
+- Working on a quick fix and you want to know the gate still passes → `simulation`
+- Touching the engine itself (executor, validators, repair logic) → `stub` to confirm the full path still drives test cases to terminal status
+- Capturing a realistic baseline before a release → `live` (requires API key in environment)
+
+**Mode lookup is case-insensitive and accepts synonyms:** `simulation`/`sim`, `stub`/`scripted`, `live`/`real`.
+
+**Backward compatibility:** the legacy `--simulation` flag is preserved and is equivalent to `--engine-mode simulation`.
+
+### Stub mode internals
+
+`--engine-mode stub` wires `ScriptedEvalProvider` (`crates/tandem-server/src/eval/scripted_provider.rs`) into the engine's `ProviderRegistry` via `replace_for_test`. The provider matches against the assembled prompt with substring patterns; the first match wins, and an unmatched prompt falls back to a kitchen-sink JSON response (containing `summary`, `content`, `citations`, `web_sources`, `code`, and a few other fields most output-contract validators look for).
+
+To customize stub responses for a specific test case:
+
+```rust
+use tandem_server::eval::{ScriptedEvalProvider, ScriptedResponse};
+
+let provider = ScriptedEvalProvider::new()
+    .with_pattern("research AI safety", ScriptedResponse::Json(serde_json::json!({
+        "summary": "AI safety papers found",
+        "citations": ["https://arxiv.org/abs/2401.01"],
+    })))
+    .with_pattern("write rust code", ScriptedResponse::Text("fn solution() -> i32 { 42 }".to_string()));
+```
+
+> **Note**: as of the first integration phase, the CLI itself does not yet construct an `AppState`. Stub/Live modes therefore produce a failed `EvalRunResult` with `failure_mode: FeatureDisabled` when invoked directly through the binary. A follow-up will lift `test_state()` from `http/tests` so the binary can wire up `AppState` and call `EvalRunner::with_app_state(state)` automatically. Until that lands, stub-mode testing happens via the engine_executor unit tests and the `eval-stub-baseline.yml` workflow which expects the same wiring.
+
 ## Quick Start
 
 ### Running an Evaluation
 
 ```bash
-# Run critical path tests in simulation mode (no AI calls, deterministic)
+# Run critical path tests in simulation mode (default; no AI calls, deterministic)
+cargo run --release --bin eval-runner -- \
+  --dataset eval_datasets/critical_path.yaml \
+  --output /tmp/results.json
+
+# Run against the scripted engine stub
 cargo run --release --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --output /tmp/results.json \
-  --simulation
+  --engine-mode stub
 
-# Run against live provider and filter by tag
+# Run against live provider (requires ANTHROPIC_API_KEY) and filter by tag
 cargo run --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
+  --engine-mode live \
   --provider anthropic \
   --model claude-opus-4-7 \
   --filter-tag happy_path \
