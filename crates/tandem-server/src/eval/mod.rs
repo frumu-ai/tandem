@@ -24,7 +24,7 @@ pub use metrics::{EvalMetrics, EvalRunResult};
 pub use regression_detection::{
     detect_regressions, EvalBaseline, RegressionReport, RegressionStatus, RegressionThresholds,
 };
-pub use runner::{EvalRunner, EvalRunnerConfig};
+pub use runner::{EngineMode, EvalRunner, EvalRunnerConfig};
 pub use scripted_provider::{
     ScriptedEvalProvider, ScriptedResponse, SCRIPTED_MODEL_ID, SCRIPTED_PROVIDER_ID,
 };

@@ -1,16 +1,62 @@
 /// Evaluation Runner
 ///
 /// This module provides the core evaluation execution logic. The runner loads eval datasets,
-/// executes test cases (currently via simulation), and produces metrics for analysis.
+/// executes test cases, and produces metrics for analysis.
 ///
-/// In future iterations, this will integrate with the full Tandem engine to execute real
-/// automation runs. For now, it provides the framework structure and simulation mode for
-/// CI/CD integration testing.
+/// Three engine modes (`EngineMode`):
+/// - **Simulation** (default): hardcoded deterministic outcomes, no engine involved. Used
+///   by the regression-gate CI workflow because it's zero-cost and fast.
+/// - **Stub**: real Tandem engine execution backed by `ScriptedEvalProvider` — exercises
+///   the full automation/validator/repair path with deterministic responses. Used to
+///   capture realistic baselines without real API spend.
+/// - **Live**: real engine + real provider (requires API keys). Used for human-run
+///   baseline captures and scheduled CI.
+///
+/// Stub and Live modes require an `AppState` to be wired into the runner via
+/// `EvalRunner::with_app_state()`. The CLI does not yet bootstrap an `AppState`; a
+/// follow-up phase will lift `test_state()` from `http/tests` so the binary can
+/// construct one on demand.
 use std::path::Path;
+use std::time::Duration;
 
+use crate::app::state::AppState;
 use crate::eval::dataset::{ArtifactStatus, EvalDataset, EvalTestCase};
+use crate::eval::engine_executor::EngineExecutor;
 use crate::eval::metrics::{EvalMetrics, EvalRunResult};
 use crate::failures::AIFailureMode;
+
+/// Which execution path a test case takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineMode {
+    /// Hardcoded deterministic simulation — no engine, no AI calls.
+    Simulation,
+    /// Real engine, `ScriptedEvalProvider` swapped in for deterministic responses.
+    Stub,
+    /// Real engine, real provider (requires API keys in config).
+    Live,
+}
+
+impl EngineMode {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "simulation" | "sim" => Ok(Self::Simulation),
+            "stub" | "scripted" => Ok(Self::Stub),
+            "live" | "real" => Ok(Self::Live),
+            other => Err(format!(
+                "unknown engine mode '{}' — expected one of simulation|stub|live",
+                other
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EngineMode::Simulation => "simulation",
+            EngineMode::Stub => "stub",
+            EngineMode::Live => "live",
+        }
+    }
+}
 
 /// Configuration for an evaluation run
 #[derive(Debug, Clone)]
@@ -23,7 +69,11 @@ pub struct EvalRunnerConfig {
     pub default_model: String,
     /// Maximum test execution time in seconds
     pub max_test_duration_secs: u64,
-    /// Whether to use simulation mode (no actual AI calls)
+    /// Engine execution mode. Defaults to `Simulation` for safety.
+    pub engine_mode: EngineMode,
+    /// Legacy alias for `engine_mode == Simulation`. Kept for backward compatibility
+    /// with existing callers and the `--simulation` CLI flag. When `engine_mode` is
+    /// set, this is informational only.
     pub simulation_mode: bool,
     /// Random seed for reproducible simulation results
     pub random_seed: Option<u64>,
@@ -36,7 +86,8 @@ impl Default for EvalRunnerConfig {
             default_provider: "anthropic".to_string(),
             default_model: "claude-haiku-4-5-20251001".to_string(),
             max_test_duration_secs: 300,
-            simulation_mode: true, // Default to simulation for safety
+            engine_mode: EngineMode::Simulation,
+            simulation_mode: true,
             random_seed: None,
         }
     }
@@ -45,12 +96,25 @@ impl Default for EvalRunnerConfig {
 /// The evaluation runner
 pub struct EvalRunner {
     config: EvalRunnerConfig,
+    /// AppState for Stub/Live modes. None means only Simulation can run.
+    app_state: Option<AppState>,
 }
 
 impl EvalRunner {
-    /// Create a new evaluation runner with the given config
+    /// Create a new evaluation runner with the given config. AppState is unset, so only
+    /// Simulation mode will work — Stub/Live calls will return failed `EvalRunResult`s
+    /// with a clear error message.
     pub fn new(config: EvalRunnerConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            app_state: None,
+        }
+    }
+
+    /// Attach an `AppState` so Stub/Live modes can dispatch through `EngineExecutor`.
+    pub fn with_app_state(mut self, state: AppState) -> Self {
+        self.app_state = Some(state);
+        self
     }
 
     /// Load a dataset from a YAML file
@@ -86,12 +150,27 @@ impl EvalRunner {
     pub async fn run_test_case(&self, test_case: &EvalTestCase) -> EvalRunResult {
         let start_time = std::time::Instant::now();
 
-        if self.config.simulation_mode {
-            self.run_simulation(test_case, start_time)
+        match self.effective_engine_mode() {
+            EngineMode::Simulation => self.run_simulation(test_case, start_time),
+            EngineMode::Stub | EngineMode::Live => match self.app_state.as_ref() {
+                Some(state) => {
+                    let executor = EngineExecutor::new(state.clone())
+                        .with_max_duration(Duration::from_secs(self.config.max_test_duration_secs));
+                    executor.run_test_case(test_case).await
+                }
+                None => engine_mode_unavailable(test_case, self.effective_engine_mode(), start_time),
+            },
+        }
+    }
+
+    /// Reconciles the new `engine_mode` field with the legacy `simulation_mode` bool.
+    /// When `simulation_mode` is explicitly true and `engine_mode` is at its Simulation
+    /// default, we honor that for backward compatibility. Otherwise `engine_mode` wins.
+    fn effective_engine_mode(&self) -> EngineMode {
+        if self.config.simulation_mode && self.config.engine_mode == EngineMode::Simulation {
+            EngineMode::Simulation
         } else {
-            // TODO: Integrate with actual Tandem engine
-            // For now, simulation mode is the only implementation
-            self.run_simulation(test_case, start_time)
+            self.config.engine_mode
         }
     }
 
@@ -193,6 +272,37 @@ impl EvalRunner {
     }
 }
 
+/// Returned for Stub/Live test cases when no `AppState` has been attached to the
+/// runner — keeps the same `EvalRunResult` shape so metrics aggregation still works
+/// and the error is visible in the JSON output.
+fn engine_mode_unavailable(
+    test_case: &EvalTestCase,
+    mode: EngineMode,
+    start_time: std::time::Instant,
+) -> EvalRunResult {
+    let error = format!(
+        "engine mode '{}' requires AppState — call EvalRunner::with_app_state(...) before run_test_case",
+        mode.as_str()
+    );
+    EvalRunResult {
+        test_id: test_case.id.clone(),
+        description: test_case.description.clone(),
+        passed: false,
+        artifact_status: ArtifactStatus::Failed,
+        repair_iterations: 0,
+        tokens_used: 0,
+        cost_usd: 0.0,
+        duration_ms: start_time.elapsed().as_millis() as u64,
+        validators_passed: Vec::new(),
+        validators_failed: test_case.expected_output.required_validators.clone(),
+        failure_mode: Some(AIFailureMode::FeatureDisabled {
+            feature: format!("eval_runner_mode_{}", mode.as_str()),
+        }),
+        error_message: Some(error),
+        tags: test_case.tags.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +386,83 @@ mod tests {
         let result = runner.save_results(&metrics, &output_path);
         assert!(result.is_ok());
         assert!(output_path.exists());
+    }
+
+    #[test]
+    fn engine_mode_parses_known_strings() {
+        assert_eq!(EngineMode::parse("simulation").unwrap(), EngineMode::Simulation);
+        assert_eq!(EngineMode::parse("sim").unwrap(), EngineMode::Simulation);
+        assert_eq!(EngineMode::parse("STUB").unwrap(), EngineMode::Stub);
+        assert_eq!(EngineMode::parse("scripted").unwrap(), EngineMode::Stub);
+        assert_eq!(EngineMode::parse("Live").unwrap(), EngineMode::Live);
+        assert_eq!(EngineMode::parse("real").unwrap(), EngineMode::Live);
+        assert!(EngineMode::parse("unknown").is_err());
+    }
+
+    #[test]
+    fn engine_mode_as_str_roundtrips() {
+        for mode in [EngineMode::Simulation, EngineMode::Stub, EngineMode::Live] {
+            assert_eq!(EngineMode::parse(mode.as_str()).unwrap(), mode);
+        }
+    }
+
+    #[tokio::test]
+    async fn stub_mode_without_app_state_returns_clear_error() {
+        let config = EvalRunnerConfig {
+            engine_mode: EngineMode::Stub,
+            simulation_mode: false,
+            ..Default::default()
+        };
+        let runner = EvalRunner::new(config);
+
+        let mut tc = EvalTestCase::new("test_stub", "needs engine");
+        tc.tags = vec!["happy_path".to_string()];
+        let result = runner.run_test_case(&tc).await;
+
+        assert!(!result.passed);
+        assert!(matches!(
+            result.failure_mode,
+            Some(AIFailureMode::FeatureDisabled { .. })
+        ));
+        assert!(result
+            .error_message
+            .as_ref()
+            .map_or(false, |m| m.contains("AppState")));
+    }
+
+    #[tokio::test]
+    async fn live_mode_without_app_state_returns_clear_error() {
+        let config = EvalRunnerConfig {
+            engine_mode: EngineMode::Live,
+            simulation_mode: false,
+            ..Default::default()
+        };
+        let runner = EvalRunner::new(config);
+
+        let tc = EvalTestCase::new("test_live", "needs engine");
+        let result = runner.run_test_case(&tc).await;
+
+        assert!(!result.passed);
+        assert!(result
+            .error_message
+            .as_ref()
+            .map_or(false, |m| m.contains("live")));
+    }
+
+    #[tokio::test]
+    async fn legacy_simulation_mode_bool_still_routes_to_simulation() {
+        // Caller sets simulation_mode=true but leaves engine_mode at default — must keep
+        // running in simulation, not break with a missing-AppState error.
+        let config = EvalRunnerConfig {
+            simulation_mode: true,
+            engine_mode: EngineMode::Simulation, // default but make it explicit
+            ..Default::default()
+        };
+        let runner = EvalRunner::new(config);
+        let mut tc = EvalTestCase::new("legacy", "legacy caller");
+        tc.tags = vec!["happy_path".to_string()];
+        let result = runner.run_test_case(&tc).await;
+        assert!(result.passed);
     }
 
     #[test]
