@@ -470,22 +470,6 @@ tandem/
 └── docs/                   # Documentation
 ```
 
-## 路线图
-
-- [x] **阶段 1：安全基础** - 加密保险库、权限系统
-- [x] **阶段 2：Sidecar 集成** - Tandem agent 运行时
-- [x] **阶段 3：Glass UI** - 现代、精致界面
-- [x] **阶段 4：提供商路由** - 多提供商支持
-- [x] **阶段 5：Agent 能力** - 多模式 agents、执行计划
-- [x] **阶段 6：项目管理** - 多工作区支持
-- [x] **阶段 7：高级演示能力** - PPTX 导出引擎、主题映射、显式定位
-- [x] **阶段 8：品牌演进** - Rubik 900 字体、打磨后的启动序列
-- [x] **阶段 9：记忆与上下文** - 向量数据库集成（`sqlite-vec`）
-- [x] **阶段 10：Skills 系统** - 可导入的 agent skills 与自定义指令
-- [ ] **阶段 11：浏览器集成** - Web 内容访问
-- [ ] **阶段 12：团队特性** - 协作工具
-- [ ] **阶段 13：移动端伴侣应用** - iOS/Android
-
 非技术用户专用 AI 助手思路见 [docs/todo_specialists.md](docs/todo_specialists.md)。
 
 ## 为什么选择 Tandem？

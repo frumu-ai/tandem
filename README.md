@@ -402,22 +402,6 @@ tandem/
 └── docs/                   # Documentation
 ```
 
-## Roadmap
-
-- [x] **Phase 1: Security Foundation** - Encrypted vault, permission system
-- [x] **Phase 2: Sidecar Integration** - Tandem agent runtime
-- [x] **Phase 3: Glass UI** - Modern, polished interface
-- [x] **Phase 4: Provider Routing** - Multi-provider support
-- [x] **Phase 5: Agent Capabilities** - Multi-mode agents, execution planning
-- [x] **Phase 6: Project Management** - Multi-workspace support
-- [x] **Phase 7: Advanced Presentations** - PPTX export engine, theme mapping, explicit positioning
-- [x] **Phase 8: Brand Evolution** - Rubik 900 typography, polished boot sequence
-- [x] **Phase 9: Memory & Context** - Vector database integration (`sqlite-vec`)
-- [x] **Phase 10: Skills System** - Importable agent skills and custom instructions
-- [ ] **Phase 11: Browser Integration** - Web content access
-- [ ] **Phase 12: Team Features** - Collaboration tools
-- [ ] **Phase 13: Mobile Companion** - iOS/Android apps
-
 ## Support this project
 
 If Tandem saves you time, consider [sponsoring development](https://github.com/sponsors/frumu-ai).
