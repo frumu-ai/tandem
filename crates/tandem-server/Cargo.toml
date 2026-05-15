@@ -60,3 +60,8 @@ tandem-plan-compiler = { path = "../tandem-plan-compiler", version = "0.5.6" }
 tempfile = "3"
 tower = "0.5"
 serial_test = "3"
+
+[[bin]]
+name = "eval-runner"
+path = "src/bin/eval_runner.rs"
+

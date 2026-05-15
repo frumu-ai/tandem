@@ -1,0 +1,183 @@
+# Critical Path Evaluation Dataset
+# Tests core happy-path scenarios that must always work
+#
+# Usage: cargo run --bin eval_runner -- --dataset eval_datasets/critical_path.yaml
+#
+name: "critical_path"
+version: "1.0"
+description: "Core happy-path automation scenarios that must always succeed"
+tags:
+  - "critical"
+  - "regression"
+  - "daily"
+created_at: "2026-05-15T00:00:00Z"
+
+test_cases:
+  - id: "critical_001"
+    description: "Simple research automation with web sources"
+    priority: 1
+    enabled: true
+    tags:
+      - "happy_path"
+      - "research"
+    automation_spec:
+      name: "simple_research"
+      nodes:
+        - id: "research_node"
+          node_type: "research"
+          objective: "Research current trends in AI safety"
+          output_contract: "JSON with sources array and summary"
+        - id: "validation_node"
+          node_type: "validation"
+          objective: "Validate research output quality"
+          output_contract: "JSON with pass/fail decision"
+      validators:
+        - "contract"
+        - "citations"
+        - "web_sources"
+      config:
+        timeout_ms: 60000
+        max_repair_iterations: 3
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+      optional_validators:
+        - "citations"
+        - "tone_appropriateness"
+      max_repair_iterations: 3
+      output_format: "json"
+      quality_indicators:
+        - "has_sources"
+        - "structured_output"
+    metric_tolerance:
+      repair_iterations_delta: 1
+      token_usage_tolerance_percent: 0.15
+
+  - id: "critical_002"
+    description: "Code generation and validation"
+    priority: 1
+    enabled: true
+    tags:
+      - "happy_path"
+      - "code_generation"
+    automation_spec:
+      name: "code_gen"
+      nodes:
+        - id: "gen_node"
+          node_type: "generation"
+          objective: "Generate Python function to parse JSON"
+          output_contract: "Python code block with function definition"
+        - id: "test_node"
+          node_type: "testing"
+          objective: "Verify generated code runs without errors"
+          output_contract: "JSON with test_results"
+      validators:
+        - "contract"
+        - "syntax"
+      config:
+        max_repair_iterations: 2
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+        - "syntax"
+      max_repair_iterations: 2
+      output_format: "code"
+    metric_tolerance:
+      repair_iterations_delta: 1
+
+  - id: "critical_003"
+    description: "Document summarization task"
+    priority: 1
+    enabled: true
+    tags:
+      - "happy_path"
+      - "summarization"
+    automation_spec:
+      name: "doc_summary"
+      nodes:
+        - id: "read_node"
+          node_type: "data_fetch"
+          objective: "Fetch document content"
+          output_contract: "Plain text document"
+        - id: "summary_node"
+          node_type: "generation"
+          objective: "Create executive summary"
+          output_contract: "Markdown with key points list"
+      validators:
+        - "contract"
+        - "markdown_structure"
+      config:
+        max_repair_iterations: 2
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+      max_repair_iterations: 2
+      output_format: "markdown"
+
+  - id: "critical_004"
+    description: "Multi-step workflow with branching"
+    priority: 2
+    enabled: true
+    tags:
+      - "happy_path"
+      - "workflow"
+    automation_spec:
+      name: "branching_workflow"
+      nodes:
+        - id: "decision_node"
+          node_type: "decision"
+          objective: "Determine data type"
+          output_contract: "JSON with category"
+        - id: "process_node"
+          node_type: "processing"
+          objective: "Process based on category"
+          output_contract: "JSON with results"
+      validators:
+        - "contract"
+      config:
+        max_repair_iterations: 3
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+      max_repair_iterations: 3
+      output_format: "json"
+    metric_tolerance:
+      repair_iterations_delta: 1
+
+  - id: "critical_005"
+    description: "Error recovery - handling missing data gracefully"
+    priority: 2
+    enabled: true
+    tags:
+      - "happy_path"
+      - "error_recovery"
+    automation_spec:
+      name: "graceful_degradation"
+      nodes:
+        - id: "fetch_node"
+          node_type: "data_fetch"
+          objective: "Fetch optional data sources"
+          output_contract: "JSON with available_sources"
+        - id: "synthesize_node"
+          node_type: "generation"
+          objective: "Synthesize report from available data"
+          output_contract: "JSON report with data_quality indicator"
+      validators:
+        - "contract"
+      config:
+        max_repair_iterations: 2
+    expected_output:
+      artifact_status: "completed_with_warnings"
+      required_validators:
+        - "contract"
+      unmet_requirements_acceptable: true
+      max_repair_iterations: 2
+      output_format: "json"
+      quality_indicators:
+        - "degraded_gracefully"
+    metric_tolerance:
+      repair_iterations_delta: 1
