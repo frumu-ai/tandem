@@ -96,38 +96,46 @@ tandem-engine serve --hostname 127.0.0.1 --port 39731
 ## Architecture
 
 ```mermaid
-graph TD
+flowchart TD
     %% Clients
-    Desktop[Desktop App]
+    Desktop[Desktop App<br/>Tauri + React]
     ControlPanel[Web Control Panel]
     TUI[Terminal UI]
     API[SDKs & API Clients]
+    Channels[Slack / Discord / Telegram]
 
     subgraph "Tandem Engine (Source of Truth)"
-        Orchestrator[Orchestration & Approvals]
-        Blackboard[(Blackboard & Shared State)]
-        Memory[(Vector Memory & Checkpoints)]
-        Worktrees[Git Worktree Isolation]
+        EngineAPI[HTTP/SSE API<br/>tandem-server]
+        Automations[Workflows, Automations<br/>& Approval Gates]
+        Governance[Plan Compiler<br/>& Governance]
+        Runtime[Runtime: Tools, MCP,<br/>Providers & Browser]
+        State[(Memory, Checkpoints,<br/>Audit & Shared State)]
+        Workspace[Workspace & Git Isolation]
     end
 
-    subgraph "Agent Swarm"
-        Planner[Planner Agent]
-        Builder[Builder Agent]
-        Validator[Verifier Agent]
+    subgraph "Agent Runtime"
+        Planner[Planner]
+        Builder[Builder]
+        Verifier[Verifier]
     end
 
-    Desktop -.-> Orchestrator
-    ControlPanel -.-> Orchestrator
-    TUI -.-> Orchestrator
-    API -.-> Orchestrator
+    Desktop <--> EngineAPI
+    ControlPanel <--> EngineAPI
+    TUI <--> EngineAPI
+    API <--> EngineAPI
+    Channels <--> EngineAPI
 
-    Orchestrator --> Blackboard
-    Orchestrator --> Memory
-    Orchestrator --> Worktrees
+    EngineAPI --> Automations
+    EngineAPI --> Runtime
+    Automations --> Governance
+    Automations --> State
+    Automations --> Workspace
+    Runtime --> State
+    Runtime --> Workspace
 
-    Blackboard <--> Planner
-    Blackboard <--> Builder
-    Blackboard <--> Validator
+    Automations <--> Planner
+    Automations <--> Builder
+    Automations <--> Verifier
 ```
 
 ## Common workflows

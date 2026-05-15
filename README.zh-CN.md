@@ -43,38 +43,46 @@ npx @frumu/tandem-panel
 ```
 
 ```mermaid
-graph TD
+flowchart TD
     %% Clients
-    Desktop[Desktop App]
-    ControlPanel[Web Control Panel]
-    TUI[Terminal UI]
-    API[SDKs & API Clients]
+    Desktop[桌面应用<br/>Tauri + React]
+    ControlPanel[Web 控制面板]
+    TUI[终端 UI]
+    API[SDK 与 API 客户端]
+    Channels[Slack / Discord / Telegram]
 
-    subgraph "Tandem Engine (Source of Truth)"
-        Orchestrator[Orchestration & Approvals]
-        Blackboard[(Blackboard & Shared State)]
-        Memory[(Vector Memory & Checkpoints)]
-        Worktrees[Git Worktree Isolation]
+    subgraph "Tandem Engine（事实来源）"
+        EngineAPI[HTTP/SSE API<br/>tandem-server]
+        Automations[工作流、自动化<br/>与审批门]
+        Governance[计划编译器<br/>与治理]
+        Runtime[运行时：工具、MCP、<br/>Provider 与浏览器]
+        State[(记忆、检查点、<br/>审计与共享状态)]
+        Workspace[工作区与 Git 隔离]
     end
 
-    subgraph "Agent Swarm"
-        Planner[Planner Agent]
-        Builder[Builder Agent]
-        Validator[Verifier Agent]
+    subgraph "Agent Runtime"
+        Planner[Planner]
+        Builder[Builder]
+        Verifier[Verifier]
     end
 
-    Desktop -.-> Orchestrator
-    ControlPanel -.-> Orchestrator
-    TUI -.-> Orchestrator
-    API -.-> Orchestrator
+    Desktop <--> EngineAPI
+    ControlPanel <--> EngineAPI
+    TUI <--> EngineAPI
+    API <--> EngineAPI
+    Channels <--> EngineAPI
 
-    Orchestrator --> Blackboard
-    Orchestrator --> Memory
-    Orchestrator --> Worktrees
+    EngineAPI --> Automations
+    EngineAPI --> Runtime
+    Automations --> Governance
+    Automations --> State
+    Automations --> Workspace
+    Runtime --> State
+    Runtime --> Workspace
 
-    Blackboard <--> Planner
-    Blackboard <--> Builder
-    Blackboard <--> Validator
+    Automations <--> Planner
+    Automations <--> Builder
+    Automations <--> Verifier
 ```
 
 ```python
