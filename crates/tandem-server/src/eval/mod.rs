@@ -12,6 +12,7 @@ pub mod dataset;
 pub mod metrics;
 pub mod regression_detection;
 pub mod runner;
+pub mod scripted_provider;
 
 pub use dataset::{ArtifactStatus, EvalDataset, EvalExpectedOutput, EvalTestCase, MetricTolerance};
 pub use metrics::{EvalMetrics, EvalRunResult};
@@ -19,3 +20,6 @@ pub use regression_detection::{
     detect_regressions, EvalBaseline, RegressionReport, RegressionStatus, RegressionThresholds,
 };
 pub use runner::{EvalRunner, EvalRunnerConfig};
+pub use scripted_provider::{
+    ScriptedEvalProvider, ScriptedResponse, SCRIPTED_MODEL_ID, SCRIPTED_PROVIDER_ID,
+};
