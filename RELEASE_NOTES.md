@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.5.6 (Unreleased)
+## v0.5.6 (2026-05-14)
 
 ### AI Evaluation Framework
 
@@ -105,6 +105,36 @@ Users and auditors can request detailed evaluation metrics, regression reports, 
 - **CODEX_HOME path traversal protection**: Environment variable `CODEX_HOME` is now validated to reject paths containing `..`, paths starting with `-`, and absolute paths targeting system directories (`/etc`, `/sys`, `/proc`, `/root`, `/boot`). Invalid paths safely fall back to `~/.codex` with warning log.
 
 - **JWT token expiration validation**: Tokens are now rejected if they lack the `exp` claim, instead of defaulting to 50-minute expiration. Timestamp validation detects unreasonable values (e.g., year 3000+) and rejects negative timestamps, preventing integer overflow during time arithmetic.
+
+- **Approval card delivery fan-out**: Slack, Discord, and Telegram channel adapters now support native interactive card sends. Approval requests can render as Block Kit messages, Discord embeds with components, or Telegram inline-keyboard messages instead of plain text fallbacks.
+
+- **Slack approval card lifecycle updates**: The server records delivered approval message handles in `approval_message_map.json` and best-effort edits Slack approval cards after approve, rework, or cancel decisions so stale buttons disappear and operators see the final decision inline.
+
+- **Shared automation gate state helpers**: Automation V2 gate pause and decision mutations now route through shared state helpers. The executor uses `pause_automation_run_for_gate` when an approval node blocks downstream work, and the gate-decision HTTP handler uses `apply_automation_gate_decision` for approve/rework/cancel state transitions, preserving the existing race-safe one-winner behavior.
+
+- **Per-step approval override controls**: Workflow edit prompts now let operators keep default approval, set conditional auto-approval metadata, or skip approval for an individual step with confirmation. The saved node metadata drives the compiler's existing approval-skip hook and clears stale injected gates on skipped steps.
+
+- **Telegram approval rework completion**: Telegram approval cards now prefer persisted opaque callback IDs so long run/node identifiers do not rely on unsafe truncation. Rework button taps send a force-reply prompt, capture the operator's next valid reply for that chat/user, and dispatch it as a `rework` gate decision with feedback.
+
+- **Threaded approval status replies**: Slack, Discord, and Telegram adapters now share a thread-reply primitive. Approval decisions update the original card and post a short status reply into the stored native thread/topic target when one is available.
+
+- **Channel command capability tiers**: Slash commands now carry read/act/approve/reconfigure tiers, and dispatcher execution checks the required tier against the channel security profile. Read contexts can inspect status without gaining approval or reconfiguration powers.
+
+- **Persisted channel user capabilities**: Tandem now has `channel_user_capabilities.json` state for explicit per-channel user capability assignments. Missing users fall back to the channel profile tier until enrollment binds them to a higher tier.
+
+- **Channel enrollment pairing codes**: `POST /channels/enroll` can issue a short-lived pairing code and confirm it out-of-band to bind a Slack, Discord, or Telegram user ID to a persisted capability tier. Approval button handlers now check the resolved user's tier and require `Approve` or higher before deciding a gate.
+
+- **Channel outbound redaction**: Dispatcher replies now pass through a shared redaction filter before Slack, Discord, or Telegram sends. The filter replaces common secret patterns, private-key markers, JWTs, and absolute paths outside the workspace root while preserving markdown structure; deployments can add regexes with `TANDEM_CHANNEL_REDACTION_PATTERNS_FILE`.
+
+- **Per-user channel rate limiting**: Tandem now applies per-user token buckets to channel-origin prompts and approval decisions. Prompts default to 10/minute, decisions default to 30/minute, limits are keyed by `(channel, user_id)`, profile-specific env overrides are supported, and rejected requests return `429 Too Many Requests` with `Retry-After`.
+
+- **Workspace pinning for channel sessions**: Channel sessions now carry a pinned workspace boundary. New channel-created sessions pin to the server workspace, enrollment records can preserve an explicit `pinned_workspace_id`, and file tools are denied with `ToolDenied { reason: WorkspaceScope }` if a channel session tries to read or write outside the pinned workspace.
+
+- **Streaming audit export**: `GET /audit/stream` now exposes an admin-gated newline-delimited JSON feed for external SIEM-style consumers. The stream normalizes approval decisions, tool execution ledger records, and channel capability changes into records with actor, command, workspace, tool call, result, timestamp, and channel fields where available.
+
+- **Step-up confirmation for channel reconfiguration**: Reconfigure-tier slash commands now require a fresh second-surface confirmation before execution. The dispatcher blocks `/providers`, `/model`, `/schedule`, `/automations`, and `/config` with a "step-up required" response unless the chat message carries a desktop-issued PIN from the last 5 minutes. The PIN token is removed before command parsing so it is not treated as a model id, schedule prompt, or config argument.
+
+- **Dispatcher baseline cleanup**: Channel dispatcher tests now match the registry-driven help output and concrete operator tool allowlist behavior, keeping the approval-channel test suite aligned with the current dispatcher contract.
 
 ## v0.5.5 (2026-05-13)
 

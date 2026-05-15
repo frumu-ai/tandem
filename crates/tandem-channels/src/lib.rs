@@ -22,6 +22,7 @@ pub mod config;
 pub mod discord;
 pub mod discord_blocks;
 pub mod dispatcher;
+pub mod redaction;
 pub mod signing;
 pub mod slack;
 pub mod slack_blocks;

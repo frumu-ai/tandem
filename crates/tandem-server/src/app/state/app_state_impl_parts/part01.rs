@@ -209,6 +209,9 @@ impl AppState {
             routine_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automations_v2: Arc::new(RwLock::new(std::collections::HashMap::new())),
             channel_automation_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            channel_user_capabilities: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            channel_enrollment_codes: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            channel_rate_limiter: Arc::new(crate::app::rate_limit::ChannelRateLimiter::default()),
             automation_governance: Arc::new(RwLock::new(
                 crate::automation_v2::governance::GovernanceState::default(),
             )),
@@ -259,6 +262,7 @@ impl AppState {
             routine_runs_path: config::paths::resolve_routine_runs_path(),
             automations_v2_path: config::paths::resolve_automations_v2_path(),
             channel_automation_drafts_path: config::paths::resolve_channel_automation_drafts_path(),
+            channel_user_capabilities_path: config::paths::resolve_channel_user_capabilities_path(),
             automation_governance_path: config::paths::resolve_automation_governance_path(),
             automation_v2_runs_path: config::paths::resolve_automation_v2_runs_path(),
             automation_v2_runs_archive_path: config::paths::resolve_automation_v2_runs_archive_path(
@@ -440,6 +444,7 @@ impl AppState {
         let _ = self.load_routine_runs().await;
         self.load_automations_v2().await?;
         let _ = self.load_channel_automation_drafts().await;
+        let _ = self.load_channel_user_capabilities().await;
         let _ = self.load_automation_governance().await;
         let _ = self.bootstrap_automation_governance().await;
         let _ = self.load_automation_v2_runs().await;

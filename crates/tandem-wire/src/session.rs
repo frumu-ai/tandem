@@ -25,6 +25,8 @@ pub struct WireSession {
     pub directory: Option<String>,
     #[serde(rename = "workspaceRoot", skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<String>,
+    #[serde(rename = "pinnedWorkspaceID", skip_serializing_if = "Option::is_none")]
+    pub pinned_workspace_id: Option<String>,
     #[serde(
         rename = "originWorkspaceRoot",
         skip_serializing_if = "Option::is_none"

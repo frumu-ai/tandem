@@ -29,7 +29,11 @@ use serde_json::{json, Value};
 use tandem_channels::discord_blocks::{parse_custom_id, ParsedCustomId};
 use tandem_channels::signing::verify_discord_signature;
 
-use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
+use crate::app::rate_limit::{ChannelRateLimitKey, ChannelRateLimitKind};
+use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
+use crate::app::state::principals::channel_identity::{
+    resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+};
 use crate::AppState;
 
 const DEDUP_CAP: usize = 4096;
@@ -205,6 +209,30 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
             return reject_bad_request("discord channel not properly configured");
         }
     }
+    let profile =
+        channel_security_profile_from_config(&effective_config, ChannelKind::Discord.as_str());
+    if !state
+        .channel_user_can_approve(ChannelKind::Discord.as_str(), &user_id, profile)
+        .await
+    {
+        tracing::warn!(
+            target: "tandem_server::discord_interactions",
+            user_id = %user_id,
+            "rejecting Discord interaction without approval capability"
+        );
+        return reject_forbidden("user lacks approval capability");
+    }
+    let rate_key = ChannelRateLimitKey {
+        channel: ChannelKind::Discord.as_str().to_string(),
+        user_id: user_id.clone(),
+    };
+    let rate_decision = state
+        .channel_rate_limiter
+        .check(&rate_key, ChannelRateLimitKind::Decision, profile)
+        .await;
+    if !rate_decision.allowed {
+        return reject_rate_limited(rate_decision.retry_after_secs);
+    }
 
     match parsed.action.as_str() {
         "approve" | "cancel" => dispatch_decision(state, parsed, &user_id, None).await,
@@ -255,7 +283,9 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
     let node_id = parts.next().unwrap_or("").to_string();
 
     if prefix != "tdm-modal" || action != "rework" || run_id.is_empty() || node_id.is_empty() {
-        return reject_bad_request(&format!("unrecognized or malformed modal custom_id: {custom_id}"));
+        return reject_bad_request(&format!(
+            "unrecognized or malformed modal custom_id: {custom_id}"
+        ));
     }
 
     let reason_raw = payload
@@ -294,6 +324,30 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
         ChannelIdentityResolution::ChannelNotConfigured(_) => {
             return reject_bad_request("discord channel not properly configured");
         }
+    }
+    let profile =
+        channel_security_profile_from_config(&effective_config, ChannelKind::Discord.as_str());
+    if !state
+        .channel_user_can_approve(ChannelKind::Discord.as_str(), &user_id, profile)
+        .await
+    {
+        tracing::warn!(
+            target: "tandem_server::discord_interactions",
+            user_id = %user_id,
+            "rejecting Discord modal submission without approval capability"
+        );
+        return reject_forbidden("user lacks approval capability");
+    }
+    let rate_key = ChannelRateLimitKey {
+        channel: ChannelKind::Discord.as_str().to_string(),
+        user_id: user_id.clone(),
+    };
+    let rate_decision = state
+        .channel_rate_limiter
+        .check(&rate_key, ChannelRateLimitKind::Decision, profile)
+        .await;
+    if !rate_decision.allowed {
+        return reject_rate_limited(rate_decision.retry_after_secs);
     }
 
     dispatch_decision(
@@ -413,6 +467,20 @@ fn reject_forbidden(reason: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+fn reject_rate_limited(retry_after_secs: u64) -> Response {
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": "rate limit exceeded" })),
+    )
+        .into_response();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, value);
+    }
+    response
 }
 
 fn reject_bad_request(reason: &str) -> Response {

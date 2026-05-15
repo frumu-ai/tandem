@@ -30,7 +30,11 @@ use axum::Json;
 use serde_json::{json, Value};
 use tandem_channels::signing::verify_slack_signature;
 
-use crate::app::state::principals::channel_identity::{resolve_channel_user, ChannelKind, ChannelIdentityResolution};
+use crate::app::rate_limit::{ChannelRateLimitKey, ChannelRateLimitKind};
+use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
+use crate::app::state::principals::channel_identity::{
+    resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+};
 use crate::AppState;
 
 /// Bounded LRU-ish dedup set for Slack interaction `(action_ts, action_id)`
@@ -165,6 +169,30 @@ pub(crate) async fn slack_interactions(
         ChannelIdentityResolution::ChannelNotConfigured(_) => {
             return reject_bad_request("slack channel not properly configured");
         }
+    }
+    let profile =
+        channel_security_profile_from_config(&effective_config, ChannelKind::Slack.as_str());
+    if !state
+        .channel_user_can_approve(ChannelKind::Slack.as_str(), &action.user_id, profile)
+        .await
+    {
+        tracing::warn!(
+            target: "tandem_server::slack_interactions",
+            user_id = %action.user_id,
+            "rejecting Slack interaction without approval capability"
+        );
+        return reject_forbidden("user lacks approval capability");
+    }
+    let rate_key = ChannelRateLimitKey {
+        channel: ChannelKind::Slack.as_str().to_string(),
+        user_id: action.user_id.clone(),
+    };
+    let rate_decision = state
+        .channel_rate_limiter
+        .check(&rate_key, ChannelRateLimitKind::Decision, profile)
+        .await;
+    if !rate_decision.allowed {
+        return reject_rate_limited(rate_decision.retry_after_secs);
     }
 
     let parsed_value = match parse_button_value(&action.value) {
@@ -374,6 +402,20 @@ fn reject_forbidden(reason: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+fn reject_rate_limited(retry_after_secs: u64) -> Response {
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": "rate limit exceeded" })),
+    )
+        .into_response();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, value);
+    }
+    response
 }
 
 fn reject_bad_request(reason: &str) -> Response {

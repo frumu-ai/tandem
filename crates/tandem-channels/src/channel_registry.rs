@@ -64,6 +64,25 @@ pub struct ChannelSpec {
 }
 
 /// Command capability metadata shared by all built-in adapters in v1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CommandTier {
+    Read,
+    Act,
+    Approve,
+    Reconfigure,
+}
+
+impl CommandTier {
+    pub const fn label(self) -> &'static str {
+        match self {
+            CommandTier::Read => "read",
+            CommandTier::Act => "act",
+            CommandTier::Approve => "approve",
+            CommandTier::Reconfigure => "reconfigure",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ChannelCommandCapability {
     pub name: &'static str,
@@ -77,6 +96,17 @@ pub struct ChannelCommandCapability {
 }
 
 impl ChannelCommandCapability {
+    pub fn tier(self) -> CommandTier {
+        match self.name {
+            "answer" | "approve" | "deny" | "pending" | "rework" => CommandTier::Approve,
+            "providers" | "model" | "schedule" | "automations" | "config" => {
+                CommandTier::Reconfigure
+            }
+            "new" | "rename" | "cancel" | "tools" | "mcp" | "packs" => CommandTier::Act,
+            _ => CommandTier::Read,
+        }
+    }
+
     pub const fn enabled_for(self, profile: ChannelSecurityProfile) -> bool {
         match profile {
             ChannelSecurityProfile::Operator => self.enabled_for_operator,
@@ -84,6 +114,21 @@ impl ChannelCommandCapability {
             ChannelSecurityProfile::PublicDemo => self.enabled_for_public_demo,
         }
     }
+}
+
+pub fn command_tier_for_profile(profile: ChannelSecurityProfile) -> CommandTier {
+    match profile {
+        ChannelSecurityProfile::Operator => CommandTier::Reconfigure,
+        ChannelSecurityProfile::TrustedTeam => CommandTier::Act,
+        ChannelSecurityProfile::PublicDemo => CommandTier::Read,
+    }
+}
+
+pub fn command_allowed_by_tier(
+    capability: ChannelCommandCapability,
+    profile: ChannelSecurityProfile,
+) -> bool {
+    capability.tier() <= command_tier_for_profile(profile)
 }
 
 const PUBLIC_DEMO_TOOL_CMD_DISABLED_REASON: &str =
@@ -380,7 +425,7 @@ pub fn command_capabilities_for_profile(
 ) -> Vec<&'static ChannelCommandCapability> {
     BUILTIN_CHANNEL_COMMANDS
         .iter()
-        .filter(|cmd| cmd.enabled_for(profile))
+        .filter(|cmd| cmd.enabled_for(profile) && command_allowed_by_tier(**cmd, profile))
         .collect()
 }
 

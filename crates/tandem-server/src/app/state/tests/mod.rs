@@ -299,6 +299,7 @@ pub(crate) fn test_state_with_path(path: PathBuf) -> AppState {
     state.routine_history_path = tmp_routines_file("routine-history");
     state.routine_runs_path = tmp_routines_file("routine-runs");
     state.external_actions_path = tmp_routines_file("external-actions");
+    state.channel_user_capabilities_path = tmp_routines_file("channel-user-capabilities");
     state
 }
 

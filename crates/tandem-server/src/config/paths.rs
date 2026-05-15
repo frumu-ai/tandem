@@ -20,11 +20,7 @@ fn validate_env_path(env_value: &str, env_name: &str) -> Option<PathBuf> {
     let path = PathBuf::from(trimmed);
 
     if !path.is_absolute() {
-        tracing::warn!(
-            "Rejected {} - must be absolute path: {}",
-            env_name,
-            trimmed
-        );
+        tracing::warn!("Rejected {} - must be absolute path: {}", env_name, trimmed);
         return None;
     }
 
@@ -57,13 +53,7 @@ fn is_safe_directory(path: &Path) -> bool {
     let path_str = path.to_string_lossy().to_string();
 
     let unsafe_prefixes = [
-        "/etc",
-        "/sys",
-        "/proc",
-        "/root",
-        "/boot",
-        "/dev",
-        "/var/www",
+        "/etc", "/sys", "/proc", "/root", "/boot", "/dev", "/var/www",
     ];
 
     for prefix in &unsafe_prefixes {
@@ -132,6 +122,14 @@ pub(crate) fn resolve_automations_v2_path() -> PathBuf {
 
 pub(crate) fn resolve_channel_automation_drafts_path() -> PathBuf {
     resolve_canonical_data_file_path("channel_automation_drafts.json")
+}
+
+pub(crate) fn resolve_channel_user_capabilities_path() -> PathBuf {
+    resolve_canonical_data_file_path("channel_user_capabilities.json")
+}
+
+pub(crate) fn resolve_approval_message_map_path() -> PathBuf {
+    resolve_canonical_data_file_path("approval_message_map.json")
 }
 
 pub(crate) fn resolve_automation_v2_runs_path() -> PathBuf {

@@ -102,9 +102,7 @@ impl EngineLoop {
                 return None;
             }
             let session = self.storage.get_session(session_id).await?;
-            let workspace = session
-                .workspace_root
-                .or_else(|| crate::normalize_workspace_path(&session.directory))?;
+            let workspace = session_effective_workspace_root(&session)?;
             let workspace_path = PathBuf::from(&workspace);
             if let Some(sensitive) = candidate_paths.iter().find(|path| {
                 let raw = Path::new(path);
@@ -129,13 +127,11 @@ impl EngineLoop {
                 !crate::is_within_workspace_root(&resolved, &workspace_path)
             })?;
             return Some(format!(
-                "Sandbox blocked MCP tool `{tool}` path `{outside}` (workspace root: `{workspace}`)"
+                "ToolDenied {{ reason: WorkspaceScope }}: Sandbox blocked MCP tool `{tool}` path `{outside}` (workspace root: `{workspace}`)"
             ));
         }
         let session = self.storage.get_session(session_id).await?;
-        let workspace = session
-            .workspace_root
-            .or_else(|| crate::normalize_workspace_path(&session.directory))?;
+        let workspace = session_effective_workspace_root(&session)?;
         let workspace_path = PathBuf::from(&workspace);
         let candidate_paths = extract_tool_candidate_paths(tool, args);
         if candidate_paths.is_empty() {
@@ -174,7 +170,7 @@ impl EngineLoop {
             !crate::is_within_workspace_root(&resolved, &workspace_path)
         })?;
         Some(format!(
-            "Sandbox blocked `{tool}` path `{outside}` (workspace root: `{workspace}`)"
+            "ToolDenied {{ reason: WorkspaceScope }}: Sandbox blocked `{tool}` path `{outside}` (workspace root: `{workspace}`)"
         ))
     }
 
@@ -242,16 +238,24 @@ impl EngineLoop {
         session_id: &str,
     ) -> Option<(String, String, Option<String>)> {
         let session = self.storage.get_session(session_id).await?;
-        let workspace_root = session
-            .workspace_root
-            .or_else(|| crate::normalize_workspace_path(&session.directory))?;
-        let effective_cwd = if session.directory.trim().is_empty()
-            || session.directory.trim() == "."
-        {
-            workspace_root.clone()
-        } else {
-            crate::normalize_workspace_path(&session.directory).unwrap_or(workspace_root.clone())
-        };
+        let workspace_root = session_effective_workspace_root(&session)?;
+        let effective_cwd =
+            if session.directory.trim().is_empty() || session.directory.trim() == "." {
+                workspace_root.clone()
+            } else {
+                let candidate = crate::normalize_workspace_path(&session.directory)
+                    .unwrap_or(workspace_root.clone());
+                if session.pinned_workspace_id.is_some()
+                    && !crate::is_within_workspace_root(
+                        Path::new(&candidate),
+                        Path::new(&workspace_root),
+                    )
+                {
+                    workspace_root.clone()
+                } else {
+                    candidate
+                }
+            };
         let project_id = session
             .project_id
             .clone()
@@ -380,6 +384,15 @@ impl EngineLoop {
     }
 }
 
+fn session_effective_workspace_root(session: &tandem_types::Session) -> Option<String> {
+    session
+        .pinned_workspace_id
+        .as_deref()
+        .and_then(crate::normalize_workspace_path)
+        .or_else(|| session.workspace_root.clone())
+        .or_else(|| crate::normalize_workspace_path(&session.directory))
+}
+
 fn resolve_policy_path(path: &str, effective_cwd: &Path, workspace_root: &Path) -> PathBuf {
     let raw = Path::new(path);
     let resolved = if raw.is_absolute() {
@@ -454,5 +467,32 @@ mod session_write_policy_tests {
             resolved,
             PathBuf::from("/workspace/project/.tandem/runs/run-1/artifacts/out.md")
         );
+    }
+
+    #[test]
+    fn pinned_workspace_overrides_session_workspace_root() {
+        let mut session = tandem_types::Session::new(
+            Some("slack channel".to_string()),
+            Some("/workspaces/other".to_string()),
+        );
+        session.source_kind = Some("channel".to_string());
+        session.workspace_root = Some("/workspaces/other".to_string());
+        session.pinned_workspace_id = Some("/workspaces/acme".to_string());
+
+        assert_eq!(
+            session_effective_workspace_root(&session).as_deref(),
+            Some("/workspaces/acme")
+        );
+    }
+
+    #[test]
+    fn workspace_scope_denial_message_is_structured() {
+        let tool = "read";
+        let outside = "/workspaces/other/secret.txt";
+        let workspace = "/workspaces/acme";
+        let message = format!(
+            "ToolDenied {{ reason: WorkspaceScope }}: Sandbox blocked `{tool}` path `{outside}` (workspace root: `{workspace}`)"
+        );
+        assert!(message.contains("ToolDenied { reason: WorkspaceScope }"));
     }
 }

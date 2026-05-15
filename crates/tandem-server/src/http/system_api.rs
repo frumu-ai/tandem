@@ -154,10 +154,10 @@ pub(super) async fn file_list(Query(query): Query<FileListQuery>) -> Json<Value>
 pub(super) async fn file_content(
     Query(query): Query<FileContentQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let requested_path = PathBuf::from(query.path);
+    let query_path = query.path;
+    let requested_path = PathBuf::from(&query_path);
 
-    let canonical_cwd = std::env::current_dir()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let canonical_cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let target_path = if requested_path.is_absolute() {
         requested_path
@@ -172,7 +172,7 @@ pub(super) async fn file_content(
     if !canonical_target.starts_with(&canonical_cwd) {
         tracing::warn!(
             "file_content path traversal attempt blocked: requested={} canonical={}",
-            query.path,
+            query_path,
             canonical_target.display()
         );
         return Err(StatusCode::FORBIDDEN);
@@ -369,7 +369,9 @@ pub(super) async fn formatter_status() -> Json<Value> {
     Json(json!([]))
 }
 
-const ALLOWED_COMMANDS: &[&str] = &["git", "cargo", "rustc", "node", "npm", "python", "python3", "bash", "sh"];
+const ALLOWED_COMMANDS: &[&str] = &[
+    "git", "cargo", "rustc", "node", "npm", "python", "python3", "bash", "sh",
+];
 
 pub(super) async fn command_list() -> Json<Value> {
     Json(json!([

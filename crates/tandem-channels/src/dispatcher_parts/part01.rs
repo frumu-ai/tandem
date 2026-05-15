@@ -33,10 +33,11 @@ use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
 use crate::channel_registry::{
-    command_capability, registered_channels, slash_command_capabilities, ChannelCommandCapability,
-    ChannelRuntimeDiagnostics,
+    command_allowed_by_tier, command_capability, registered_channels, slash_command_capabilities,
+    ChannelCommandCapability, ChannelRuntimeDiagnostics, CommandTier,
 };
 use crate::config::{ChannelSecurityProfile, ChannelsConfig};
+use crate::redaction::redact_outbound;
 use crate::traits::{Channel, ChannelMessage, SendMessage};
 
 #[derive(Debug)]
@@ -1359,7 +1360,8 @@ async fn process_channel_message(
     let security_profile = channel_security_profile(&msg.channel, security_profiles);
     // --- Slash command intercept ---
     if msg.content.starts_with('/') {
-        if let Some(cmd) = parse_slash_command(&msg.content) {
+        let command_text = strip_step_up_pin_from_command(&msg.content);
+        if let Some(cmd) = parse_slash_command(&command_text) {
             let response = handle_slash_command(
                 cmd,
                 &msg,
@@ -1369,13 +1371,8 @@ async fn process_channel_message(
                 security_profile,
             )
             .await;
-            if let Err(e) = channel
-                .send(&SendMessage {
-                    content: response,
-                    recipient: msg.reply_target.clone(),
-                    image_urls: Vec::new(),
-                })
-                .await
+            if let Err(e) =
+                send_redacted(channel.as_ref(), &response, &msg.reply_target, Vec::new()).await
             {
                 error!(
                     "failed to send slash-command response via channel '{}': {e}",
@@ -2063,14 +2060,26 @@ async fn process_channel_message(
 
     let reply = response.unwrap_or_else(|e| format!("⚠️ Error: {e}"));
     let (reply_text, image_urls) = extract_image_urls_and_clean_text(&reply);
-    if let Err(e) = channel
-        .send(&SendMessage {
-            content: reply_text,
-            recipient: msg.reply_target.clone(),
-            image_urls,
-        })
-        .await
+    if let Err(e) =
+        send_redacted(channel.as_ref(), &reply_text, &msg.reply_target, image_urls).await
     {
         error!("failed to send channel reply via '{}': {e}", channel.name());
     }
+}
+
+async fn send_redacted(
+    channel: &dyn Channel,
+    content: &str,
+    recipient: &str,
+    image_urls: Vec<String>,
+) -> anyhow::Result<()> {
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let content = redact_outbound(content, &workspace_root);
+    channel
+        .send(&SendMessage {
+            content,
+            recipient: recipient.to_string(),
+            image_urls,
+        })
+        .await
 }

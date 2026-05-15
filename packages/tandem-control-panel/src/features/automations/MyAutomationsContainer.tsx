@@ -523,10 +523,46 @@ export function MyAutomationsContainer({
                   ? [...(draftNode.mcpOtherAllowedTools || []), ...draftNode.mcpAllowedTools]
                   : draftNode.mcpOtherAllowedTools || []
                 : [];
+            const nodeMetadata =
+              node?.metadata && typeof node.metadata === "object"
+                ? cloneJsonValue(node.metadata)
+                : {};
+            const approvalMetadata =
+              nodeMetadata?.approval && typeof nodeMetadata.approval === "object"
+                ? { ...nodeMetadata.approval }
+                : {};
+            if (draftNode?.approvalOverride === "skip") {
+              approvalMetadata.skip_approval = true;
+              delete approvalMetadata.auto_approve_when;
+              delete approvalMetadata.autoApproveWhen;
+            } else if (draftNode?.approvalOverride === "auto") {
+              const approvalCondition = String(draftNode.approvalCondition || "").trim();
+              delete approvalMetadata.skip_approval;
+              delete approvalMetadata.skipApproval;
+              if (approvalCondition) {
+                approvalMetadata.auto_approve_when = approvalCondition;
+              } else {
+                delete approvalMetadata.auto_approve_when;
+                delete approvalMetadata.autoApproveWhen;
+              }
+            } else if (draftNode) {
+              delete approvalMetadata.skip_approval;
+              delete approvalMetadata.skipApproval;
+              delete approvalMetadata.auto_approve_when;
+              delete approvalMetadata.autoApproveWhen;
+            }
+            const nextMetadata = { ...nodeMetadata };
+            if (Object.keys(approvalMetadata).length > 0) {
+              nextMetadata.approval = approvalMetadata;
+            } else {
+              delete nextMetadata.approval;
+            }
             return draftNode
               ? {
                   ...node,
                   objective: String(draftNode.objective || "").trim(),
+                  metadata: nextMetadata,
+                  ...(draftNode.approvalOverride === "skip" ? { gate: null } : {}),
                   tool_policy:
                     draftNode.toolAccessMode === "custom"
                       ? {

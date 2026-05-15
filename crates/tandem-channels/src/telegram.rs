@@ -18,9 +18,11 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 
 use crate::config::{is_user_allowed, TelegramConfig, TelegramStyleProfile};
+use crate::telegram_keyboards;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
-    MessageTriggerContext, SendMessage, TriggerSource,
+    InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
+    ThreadReply, TriggerSource,
 };
 
 const MAX_MESSAGE_LEN: usize = 4096;
@@ -716,6 +718,7 @@ fn sanitize_filename(name: &str) -> String {
 
 pub struct TelegramChannel {
     bot_token: String,
+    api_base_url: String,
     allowed_users: Vec<String>,
     mention_only: bool,
     style_profile: TelegramStyleProfile,
@@ -725,8 +728,13 @@ pub struct TelegramChannel {
 
 impl TelegramChannel {
     pub fn new(config: TelegramConfig) -> Self {
+        Self::new_with_api_base_url(config, TELEGRAM_API)
+    }
+
+    pub fn new_with_api_base_url(config: TelegramConfig, api_base_url: impl Into<String>) -> Self {
         Self {
             bot_token: config.bot_token,
+            api_base_url: api_base_url.into().trim_end_matches('/').to_string(),
             allowed_users: config.allowed_users,
             mention_only: config.mention_only,
             style_profile: config.style_profile,
@@ -739,11 +747,64 @@ impl TelegramChannel {
     }
 
     fn api_url(&self, method: &str) -> String {
-        format!("{}{}/{}", TELEGRAM_API, self.bot_token, method)
+        format!("{}/{}/{}", self.api_base_url, self.bot_token, method)
     }
 
     fn redact_token(&self, text: &str) -> String {
         text.replace(&format!("bot{}", self.bot_token), "bot<redacted>")
+    }
+
+    pub async fn update_card_for_decision(
+        &self,
+        card: &InteractiveCard,
+        message_id: &str,
+        decided_by_display: &str,
+        decision_summary_markdown: &str,
+    ) -> Result<(), InteractiveCardError> {
+        if card.recipient.trim().is_empty() {
+            return Err(InteractiveCardError::InvalidCard(
+                "Telegram card recipient is required".to_string(),
+            ));
+        }
+        let message_id = message_id.parse::<i64>().map_err(|_| {
+            InteractiveCardError::InvalidCard("Telegram message_id must be numeric".to_string())
+        })?;
+        let payload = telegram_keyboards::build_edit_message_text_for_decision(
+            card,
+            message_id,
+            decided_by_display,
+            decision_summary_markdown,
+        );
+        let resp = self
+            .client
+            .post(self.api_url("editMessageText"))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Telegram editMessageText failed ({status}): {}",
+                self.redact_token(&body_text)
+            )));
+        }
+        let parsed: Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Telegram response was not JSON: {err}"))
+        })?;
+        if parsed.get("ok") != Some(&Value::Bool(true)) {
+            let description = parsed
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Telegram editMessageText error: {}",
+                self.redact_token(description)
+            )));
+        }
+        Ok(())
     }
 
     async fn bot_identity(&self) -> (Option<String>, Option<String>) {
@@ -939,6 +1000,114 @@ impl Channel for TelegramChannel {
             }
         }
         Ok(())
+    }
+
+    async fn send_thread_reply(&self, reply: &ThreadReply) -> anyhow::Result<()> {
+        let styled = apply_telegram_style_profile(&reply.content, self.style_profile);
+        let formatted = format_markdown_for_telegram(&styled);
+        for chunk in split_message(&formatted) {
+            let mut body = serde_json::json!({
+                "chat_id": reply.recipient,
+                "text": chunk,
+                "parse_mode": "MarkdownV2",
+            });
+            if let Ok(thread_id) = reply.thread_id.parse::<i64>() {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert(
+                        "message_thread_id".to_string(),
+                        serde_json::json!(thread_id),
+                    );
+                }
+            }
+            let resp = self
+                .client
+                .post(self.api_url("sendMessage"))
+                .json(&body)
+                .send()
+                .await?;
+            if resp.status().is_success() {
+                continue;
+            }
+            let status = resp.status();
+            let err = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Telegram thread reply failed ({status}): {err}");
+        }
+        Ok(())
+    }
+
+    async fn send_card(
+        &self,
+        card: &InteractiveCard,
+    ) -> Result<InteractiveCardSent, InteractiveCardError> {
+        if card.recipient.trim().is_empty() {
+            return Err(InteractiveCardError::InvalidCard(
+                "Telegram card recipient is required".to_string(),
+            ));
+        }
+
+        let payload = telegram_keyboards::build_send_message_payload(card);
+        let resp = self
+            .client
+            .post(self.api_url("sendMessage"))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Telegram sendMessage failed ({status}): {}",
+                self.redact_token(&body_text)
+            )));
+        }
+
+        let parsed: Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Telegram response was not JSON: {err}"))
+        })?;
+        if parsed.get("ok") != Some(&Value::Bool(true)) {
+            let description = parsed
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Telegram sendMessage error: {}",
+                self.redact_token(description)
+            )));
+        }
+
+        let result = parsed.get("result").cloned().unwrap_or_default();
+        let message_id = result
+            .get("message_id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                InteractiveCardError::PlatformError(
+                    "Telegram sendMessage response missing message_id".to_string(),
+                )
+            })?
+            .to_string();
+        let recipient = result
+            .get("chat")
+            .and_then(|chat| chat.get("id"))
+            .map(|id| {
+                id.as_i64()
+                    .map(|value| value.to_string())
+                    .or_else(|| id.as_str().map(ToString::to_string))
+                    .unwrap_or_else(|| card.recipient.clone())
+            })
+            .unwrap_or_else(|| card.recipient.clone());
+
+        Ok(InteractiveCardSent {
+            channel: self.name().to_string(),
+            message_id,
+            recipient,
+            thread_id: None,
+        })
+    }
+
+    fn supports_interactive_cards(&self) -> bool {
+        true
     }
 
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
@@ -1184,6 +1353,10 @@ impl Channel for TelegramChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{extract::State, routing::post, Json, Router};
+    use serde_json::{json, Value};
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex as AsyncMutex;
 
     #[test]
     fn test_split_short_message() {
@@ -1268,6 +1441,116 @@ mod tests {
         assert!(out.contains("✨ Updates"));
         assert!(out.contains("• first"));
         assert!(out.contains("• second"));
+    }
+
+    #[tokio::test]
+    async fn send_card_posts_and_update_card_edits_against_mock_telegram() {
+        #[derive(Default)]
+        struct Calls {
+            sends: Vec<Value>,
+            edits: Vec<Value>,
+        }
+
+        async fn send_message(
+            State(calls): State<Arc<AsyncMutex<Calls>>>,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            calls.lock().await.sends.push(payload);
+            Json(json!({
+                "ok": true,
+                "result": {
+                    "message_id": 42,
+                    "chat": { "id": "chat-1" }
+                }
+            }))
+        }
+
+        async fn edit_message(
+            State(calls): State<Arc<AsyncMutex<Calls>>>,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            calls.lock().await.edits.push(payload);
+            Json(json!({ "ok": true, "result": true }))
+        }
+
+        let calls = Arc::new(AsyncMutex::new(Calls::default()));
+        let app = Router::new()
+            .route("/{token}/sendMessage", post(send_message))
+            .route("/{token}/editMessageText", post(edit_message))
+            .with_state(calls.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock Telegram server");
+        });
+
+        let config = TelegramConfig {
+            bot_token: "telegram-test-token".to_string(),
+            allowed_users: vec!["*".to_string()],
+            mention_only: false,
+            style_profile: TelegramStyleProfile::Default,
+            security_profile: crate::config::ChannelSecurityProfile::Operator,
+        };
+        let channel = TelegramChannel::new_with_api_base_url(config, base_url);
+        let card = InteractiveCard {
+            recipient: "chat-1".to_string(),
+            title: "Sales outreach: send email".to_string(),
+            body_markdown: "Review the outbound email.".to_string(),
+            fields: vec![crate::traits::InteractiveCardField {
+                label: "Run".to_string(),
+                value: "run-1".to_string(),
+            }],
+            buttons: vec![crate::traits::InteractiveCardButton {
+                action_id: "approve".to_string(),
+                label: "Approve".to_string(),
+                style: crate::traits::InteractiveCardButtonStyle::Primary,
+                requires_reason: false,
+                confirm: None,
+            }],
+            reason_prompt: None,
+            thread_key: Some("run-1".to_string()),
+            correlation: json!({
+                "automation_v2_run_id": "run-1",
+                "node_id": "send_email"
+            }),
+        };
+
+        let sent = channel.send_card(&card).await.expect("send card");
+        assert_eq!(sent.channel, "telegram");
+        assert_eq!(sent.recipient, "chat-1");
+        assert_eq!(sent.message_id, "42");
+
+        channel
+            .update_card_for_decision(&card, &sent.message_id, "Approved by Ada", "*Approved.*")
+            .await
+            .expect("update card");
+        channel
+            .send_thread_reply(&ThreadReply {
+                content: "Run continued.".to_string(),
+                recipient: sent.recipient.clone(),
+                thread_id: "77".to_string(),
+            })
+            .await
+            .expect("thread reply");
+
+        let guard = calls.lock().await;
+        assert_eq!(guard.sends.len(), 2);
+        assert_eq!(guard.edits.len(), 1);
+        assert_eq!(guard.sends[0]["chat_id"], "chat-1");
+        assert!(guard.sends[0]["reply_markup"]["inline_keyboard"].is_array());
+        assert_eq!(guard.sends[1]["chat_id"], "chat-1");
+        assert_eq!(guard.sends[1]["message_thread_id"], 77);
+        assert_eq!(guard.sends[1]["text"], "Run continued\\.");
+        assert_eq!(guard.edits[0]["chat_id"], "chat-1");
+        assert_eq!(guard.edits[0]["message_id"], 42);
+        assert_eq!(
+            guard.edits[0]["reply_markup"],
+            json!({"inline_keyboard": []})
+        );
+
+        server.abort();
     }
 
     #[test]

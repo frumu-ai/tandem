@@ -41,6 +41,30 @@ Tandem is built with a **zero-trust, security-first** architecture. This documen
 - No "call home" functionality
 - All data stays on your device
 
+### 6. Channel Attack Surface Controls
+
+Slack, Discord, and Telegram adapters are treated as semi-trusted network
+surfaces. Tandem applies defense-in-depth before a channel action can affect a
+run, session, workspace, or configuration:
+
+- Interaction endpoints validate the platform user and reject missing or
+  unauthorized identities instead of defaulting to an anonymous actor.
+- Approval and rework buttons require an `Approve`-or-higher channel user
+  capability, backed by explicit enrollment records or the configured channel
+  security profile.
+- Slash commands are tiered as read, act, approve, or reconfigure, and the
+  dispatcher refuses commands above the channel/user tier before execution.
+- Reconfigure-tier slash commands require a fresh step-up confirmation from a
+  second surface, currently a desktop-issued PIN typed into the chat within 5
+  minutes.
+- Channel-origin prompts and approval decisions are rate-limited per user, and
+  outbound replies pass through redaction for common secrets and paths outside
+  the pinned workspace.
+- Channel-created sessions are pinned to a workspace boundary so file tools
+  cannot read or write outside the session's assigned workspace.
+- Audit streaming can export approval decisions, tool execution ledger events,
+  and channel capability changes for external monitoring.
+
 ## Reporting a Vulnerability
 
 We take security seriously. If you discover a security vulnerability, please report it responsibly.

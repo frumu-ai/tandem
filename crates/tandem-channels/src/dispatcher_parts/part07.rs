@@ -183,6 +183,16 @@ mod tests {
     }
 
     #[test]
+    fn strip_step_up_pin_keeps_model_id_clean() {
+        let command_text = strip_step_up_pin_from_command("/model gpt-5-mini --pin 123456");
+        let cmd = parse_slash_command(&command_text);
+        assert!(matches!(
+            cmd,
+            Some(SlashCommand::Model { ref model_id }) if model_id == "gpt-5-mini"
+        ));
+    }
+
+    #[test]
     fn parse_help() {
         assert!(matches!(
             parse_slash_command("/help"),
@@ -203,6 +213,50 @@ mod tests {
         assert!(parse_slash_command("/unknown").is_none());
         assert!(parse_slash_command("not a command").is_none());
         assert!(parse_slash_command("").is_none());
+    }
+
+    #[test]
+    fn reconfigure_command_without_step_up_is_blocked() {
+        let env = DispatcherEnvGuard::new(&[
+            CHANNEL_STEP_UP_PIN_ENV,
+            CHANNEL_STEP_UP_PIN_ISSUED_AT_MS_ENV,
+        ]);
+        let _env = env;
+        let mut msg = test_channel_message("channel:room-a");
+        msg.content = "/providers".to_string();
+
+        let reason = step_up_required_reason(&SlashCommand::Providers, &msg).unwrap();
+        assert!(reason.contains("Step-up required"));
+    }
+
+    #[test]
+    fn reconfigure_command_accepts_fresh_step_up_pin() {
+        let env = DispatcherEnvGuard::new(&[
+            CHANNEL_STEP_UP_PIN_ENV,
+            CHANNEL_STEP_UP_PIN_ISSUED_AT_MS_ENV,
+        ]);
+        env.set(CHANNEL_STEP_UP_PIN_ENV, "123456");
+        env.set(CHANNEL_STEP_UP_PIN_ISSUED_AT_MS_ENV, now_ms().to_string());
+        let mut msg = test_channel_message("channel:room-a");
+        msg.content = "/schedule plan daily standup --pin 123456".to_string();
+
+        assert!(step_up_required_reason(
+            &SlashCommand::Schedule {
+                action: ScheduleCommand::Plan {
+                    prompt: "daily standup".to_string(),
+                },
+            },
+            &msg,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn read_command_does_not_require_step_up() {
+        let mut msg = test_channel_message("channel:room-a");
+        msg.content = "/status".to_string();
+
+        assert!(step_up_required_reason(&SlashCommand::Status, &msg).is_none());
     }
 
     #[test]
@@ -351,7 +405,7 @@ mod tests {
     fn help_text_lists_schedule_topic() {
         let help = help_text(None, ChannelSecurityProfile::Operator);
         assert!(help.contains("/schedule help"));
-        assert!(help.contains("/help schedule"));
+        assert!(help.contains("/help [topic]"));
         assert!(help.contains("/automations"));
         assert!(help.contains("/memory"));
     }
@@ -481,7 +535,9 @@ mod tests {
 
     #[test]
     fn channel_session_create_body_allows_memory_and_browser_tools() {
+        let msg = test_channel_message("channel:room-a");
         let body = build_channel_session_create_body(
+            &msg,
             "Channel Session",
             ChannelSecurityProfile::Operator,
             None,
@@ -525,7 +581,9 @@ mod tests {
 
     #[test]
     fn public_demo_session_create_body_disables_workspace_and_shell_access() {
+        let msg = test_channel_message("channel:room-a");
         let body = build_channel_session_create_body(
+            &msg,
             "Public Demo Session",
             ChannelSecurityProfile::PublicDemo,
             Some("channel-public::discord::room-a"),
@@ -559,7 +617,7 @@ mod tests {
     #[test]
     fn public_demo_help_lists_disabled_commands_for_security() {
         let help = help_text(None, ChannelSecurityProfile::PublicDemo);
-        assert!(help.contains("Disabled In This Public Channel For Security"));
+        assert!(help.contains("Disabled in this public channel for security"));
         assert!(help.contains("/workspace"));
         assert!(help.contains("/memory"));
         assert!(help.contains("real Tandem capabilities"));
@@ -995,11 +1053,15 @@ mod tests {
     }
 
     #[test]
-    fn channel_tool_allowlist_defaults_to_wildcard_for_operator_channels() {
+    fn channel_tool_allowlist_defaults_to_concrete_operator_tools() {
         let prefs = ChannelToolPreferences::default();
         let result = build_channel_tool_allowlist(None, &prefs, ChannelSecurityProfile::Operator)
             .expect("channel allowlist");
-        assert_eq!(result, vec!["*".to_string()]);
+        assert!(result.iter().any(|tool| tool == "read"));
+        assert!(result.iter().any(|tool| tool == "bash"));
+        assert!(result.iter().any(|tool| tool == "pack_builder"));
+        assert!(!result.iter().any(|tool| tool == "*"));
+        assert!(!result.iter().any(|tool| tool == "mcp_list"));
     }
 
     #[tokio::test]
@@ -1368,5 +1430,39 @@ mod tests {
             .expect("rework registered");
         assert!(!pending.enabled_for_public_demo);
         assert!(!rework.enabled_for_public_demo);
+    }
+
+    #[test]
+    fn capability_tiers_allow_status_but_block_approval_for_read_contexts() {
+        use crate::channel_registry::{command_allowed_by_tier, command_capability};
+        use crate::config::ChannelSecurityProfile;
+
+        let status = command_capability("status").expect("status registered");
+        let approve = command_capability("approve").expect("approve registered");
+        assert!(command_allowed_by_tier(
+            *status,
+            ChannelSecurityProfile::PublicDemo
+        ));
+        assert!(!command_allowed_by_tier(
+            *approve,
+            ChannelSecurityProfile::PublicDemo
+        ));
+    }
+
+    #[test]
+    fn trusted_team_can_act_but_not_approve() {
+        use crate::channel_registry::{command_allowed_by_tier, command_capability};
+        use crate::config::ChannelSecurityProfile;
+
+        let new_session = command_capability("new").expect("new registered");
+        let approve = command_capability("approve").expect("approve registered");
+        assert!(command_allowed_by_tier(
+            *new_session,
+            ChannelSecurityProfile::TrustedTeam
+        ));
+        assert!(!command_allowed_by_tier(
+            *approve,
+            ChannelSecurityProfile::TrustedTeam
+        ));
     }
 }

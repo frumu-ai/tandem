@@ -1725,125 +1725,23 @@ pub(crate) async fn automations_v2_run_gate_decide(
         .reason
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let mut decision_applied = false;
     let mut winning_decision = None;
+    let mut decision_applied = false;
     let updated = state
         .update_automation_v2_run(&run_id, |run| {
-            let gate_still_pending = run.status == AutomationRunStatus::AwaitingApproval
-                && run
-                    .checkpoint
-                    .awaiting_gate
-                    .as_ref()
-                    .map(|pending| pending.node_id == gate.node_id)
-                    .unwrap_or_else(|| {
-                        run.checkpoint
-                            .pending_nodes
-                            .iter()
-                            .any(|node_id| node_id == &gate.node_id)
-                            && !run
-                                .checkpoint
-                                .gate_history
-                                .iter()
-                                .any(|record| record.node_id == gate.node_id)
-                    });
-            if !gate_still_pending {
-                winning_decision = run.checkpoint.gate_history.last().cloned();
-                return;
-            }
-            decision_applied = true;
-            run.checkpoint
-                .gate_history
-                .push(crate::AutomationGateDecisionRecord {
-                    node_id: gate.node_id.clone(),
-                    decision: decision.clone(),
-                    reason: reason.clone(),
-                    decided_at_ms: crate::now_ms(),
-                });
-            run.checkpoint.awaiting_gate = None;
-            match decision.as_str() {
-                "approve" => {
-                    run.status = AutomationRunStatus::Queued;
-                    run.detail = Some(format!("gate `{}` approved", gate.node_id));
-                    run.stop_kind = None;
-                    run.stop_reason = None;
-                    run.checkpoint
-                        .pending_nodes
-                        .retain(|node_id| node_id != &gate.node_id);
-                    if !run
-                        .checkpoint
-                        .completed_nodes
-                        .iter()
-                        .any(|node_id| node_id == &gate.node_id)
-                    {
-                        run.checkpoint.completed_nodes.push(gate.node_id.clone());
-                    }
-                    run.checkpoint.node_outputs.insert(
-                        gate.node_id.clone(),
-                        json!({
-                            "contract_kind": "approval_gate",
-                            "summary": format!("Gate `{}` approved.", gate.node_id),
-                            "content": {
-                                "decision": "approve",
-                                "reason": reason,
-                            },
-                            "created_at_ms": crate::now_ms(),
-                            "node_id": gate.node_id.clone(),
-                        }),
-                    );
+            match crate::app::state::apply_automation_gate_decision(
+                run,
+                &automation,
+                &gate,
+                &decision,
+                reason.clone(),
+            ) {
+                crate::app::state::AutomationGateDecisionOutcome::Applied => {
+                    decision_applied = true;
                 }
-                "rework" => {
-                    run.status = AutomationRunStatus::Queued;
-                    run.detail = Some(format!("gate `{}` sent work back for rework", gate.node_id));
-                    run.stop_kind = None;
-                    run.stop_reason = None;
-                    let mut roots = gate
-                        .rework_targets
-                        .iter()
-                        .cloned()
-                        .collect::<std::collections::HashSet<_>>();
-                    if roots.is_empty() {
-                        roots.extend(gate.upstream_node_ids.iter().cloned());
-                    }
-                    roots.insert(gate.node_id.clone());
-                    let reset_nodes = crate::collect_automation_descendants(&automation, &roots);
-                    for node_id in &reset_nodes {
-                        run.checkpoint.node_outputs.remove(node_id);
-                        run.checkpoint.node_attempts.remove(node_id);
-                    }
-                    run.checkpoint
-                        .completed_nodes
-                        .retain(|node_id| !reset_nodes.contains(node_id));
-                    let mut pending = run.checkpoint.pending_nodes.clone();
-                    for node_id in reset_nodes {
-                        if !pending.iter().any(|existing| existing == &node_id) {
-                            pending.push(node_id);
-                        }
-                    }
-                    pending.sort();
-                    pending.dedup();
-                    run.checkpoint.pending_nodes = pending;
+                crate::app::state::AutomationGateDecisionOutcome::AlreadyDecided(winner) => {
+                    winning_decision = winner;
                 }
-                "cancel" => {
-                    run.status = AutomationRunStatus::Cancelled;
-                    let stop_reason = reason
-                        .clone()
-                        .unwrap_or_else(|| format!("gate `{}` cancelled the run", gate.node_id));
-                    run.detail = Some(stop_reason.clone());
-                    run.stop_kind = Some(crate::AutomationStopKind::Cancelled);
-                    run.stop_reason = Some(stop_reason.clone());
-                    crate::record_automation_lifecycle_event(
-                        run,
-                        "run_cancelled",
-                        Some(stop_reason),
-                        Some(crate::AutomationStopKind::Cancelled),
-                    );
-                }
-                _ => {}
-            }
-            if decision != "cancel" {
-                run.resume_reason = Some(format!("gate `{}` decision: {}", gate.node_id, decision));
-                clear_automation_run_execution_handles(run);
-                crate::refresh_automation_runtime_state(&automation, run);
             }
         })
         .await
@@ -1879,11 +1777,227 @@ pub(crate) async fn automations_v2_run_gate_decide(
     }
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    state.event_bus.publish(tandem_types::EngineEvent::new(
+        "approval.decision.recorded",
+        json!({
+            "run_id": run_id,
+            "automation_id": automation.automation_id.clone(),
+            "node_id": gate.node_id.clone(),
+            "decision": decision.clone(),
+            "reason": reason.clone(),
+            "executed_as": "approval_gate",
+            "timestamp": crate::now_ms(),
+        }),
+    ));
+    spawn_channel_approval_decision_update(
+        state.clone(),
+        super::approvals::automation_v2_run_to_approval_request(&current, &gate),
+        decision.clone(),
+        reason.clone(),
+    );
     let _ = node;
     let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
     Ok(Json(
         json!({ "ok": true, "run": automation_v2_run_with_context_links(&state, &updated).await, "contextRunID": context_run_id, "linked_context_run_id": context_run_id }),
     ))
+}
+
+fn spawn_channel_approval_decision_update(
+    state: AppState,
+    request: tandem_types::ApprovalRequest,
+    decision: String,
+    reason: Option<String>,
+) {
+    tokio::spawn(async move {
+        if let Err(error) = update_channel_approval_decision(state, request, decision, reason).await
+        {
+            tracing::warn!(
+                target: "tandem_server::approval_outbound",
+                %error,
+                "failed to update channel approval card after gate decision"
+            );
+        }
+    });
+}
+
+async fn update_channel_approval_decision(
+    state: AppState,
+    request: tandem_types::ApprovalRequest,
+    decision: String,
+    reason: Option<String>,
+) -> anyhow::Result<()> {
+    let message_map = crate::app::state::approval_message_map::ApprovalMessageMap::load_or_default(
+        crate::config::paths::resolve_approval_message_map_path(),
+    )
+    .await;
+    let Some(record) = message_map.get(&request.request_id).await else {
+        return Ok(());
+    };
+
+    let card = crate::app::notifiers::approval_request_to_card(&request, record.recipient.clone());
+    let decided_by_display = format!("{} by Tandem operator", decision_label(&decision));
+    let decision_summary = match reason.as_deref().filter(|value| !value.trim().is_empty()) {
+        Some(reason) => format!(
+            "*{}.*\nReason: {}",
+            decision_label(&decision),
+            reason.trim()
+        ),
+        None => format!("*{}.*", decision_label(&decision)),
+    };
+    let effective = state.config.get_effective_value().await;
+    match record.channel.as_str() {
+        "slack" => {
+            let Some(slack_value) = effective.pointer("/channels/slack").cloned() else {
+                return Ok(());
+            };
+            let cfg: crate::SlackConfigFile = serde_json::from_value(slack_value)?;
+            if cfg.bot_token.trim().is_empty() {
+                return Ok(());
+            }
+
+            let slack_config = tandem_channels::config::SlackConfig {
+                bot_token: cfg.bot_token,
+                channel_id: record.recipient.clone(),
+                allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
+                    cfg.allowed_users,
+                ),
+                mention_only: cfg.mention_only,
+                security_profile: cfg.security_profile,
+            };
+            let channel = tandem_channels::slack::SlackChannel::new(slack_config);
+            channel
+                .update_card_for_decision(
+                    &card,
+                    &record.message_id,
+                    &decided_by_display,
+                    &decision_summary,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            send_approval_thread_reply(&channel, &record, &request, &decision, reason.as_deref())
+                .await?;
+        }
+        "discord" => {
+            let Some(discord_value) = effective.pointer("/channels/discord").cloned() else {
+                return Ok(());
+            };
+            let cfg: crate::DiscordConfigFile = serde_json::from_value(discord_value)?;
+            if cfg.bot_token.trim().is_empty() {
+                return Ok(());
+            }
+
+            let discord_config = tandem_channels::config::DiscordConfig {
+                bot_token: cfg.bot_token,
+                guild_id: cfg.guild_id,
+                allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
+                    cfg.allowed_users,
+                ),
+                mention_only: cfg.mention_only,
+                security_profile: cfg.security_profile,
+            };
+            let channel = tandem_channels::discord::DiscordChannel::new(discord_config);
+            channel
+                .update_card_for_decision(
+                    &card,
+                    &record.message_id,
+                    discord_decision_outcome(&decision),
+                    &decided_by_display,
+                    &decision_summary,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            send_approval_thread_reply(&channel, &record, &request, &decision, reason.as_deref())
+                .await?;
+        }
+        "telegram" => {
+            let Some(telegram_value) = effective.pointer("/channels/telegram").cloned() else {
+                return Ok(());
+            };
+            let cfg: crate::TelegramConfigFile = serde_json::from_value(telegram_value)?;
+            if cfg.bot_token.trim().is_empty() {
+                return Ok(());
+            }
+
+            let telegram_config = tandem_channels::config::TelegramConfig {
+                bot_token: cfg.bot_token,
+                allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
+                    cfg.allowed_users,
+                ),
+                mention_only: cfg.mention_only,
+                style_profile: cfg.style_profile,
+                security_profile: cfg.security_profile,
+            };
+            let channel = tandem_channels::telegram::TelegramChannel::new(telegram_config);
+            channel
+                .update_card_for_decision(
+                    &card,
+                    &record.message_id,
+                    &decided_by_display,
+                    &decision_summary,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            send_approval_thread_reply(&channel, &record, &request, &decision, reason.as_deref())
+                .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn send_approval_thread_reply(
+    channel: &dyn tandem_channels::traits::Channel,
+    record: &crate::app::state::approval_message_map::ApprovalMessageRecord,
+    request: &tandem_types::ApprovalRequest,
+    decision: &str,
+    reason: Option<&str>,
+) -> anyhow::Result<()> {
+    let thread_id = record
+        .thread_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(record.message_id.as_str())
+        .to_string();
+    let node = request
+        .node_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("approval gate");
+    let mut content = format!(
+        "{} `{}` for run `{}`.",
+        decision_label(decision),
+        node,
+        request.run_id
+    );
+    if let Some(reason) = reason.map(str::trim).filter(|value| !value.is_empty()) {
+        content.push_str(&format!("\nReason: {reason}"));
+    }
+    channel
+        .send_thread_reply(&tandem_channels::traits::ThreadReply {
+            content,
+            recipient: record.recipient.clone(),
+            thread_id,
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
+fn discord_decision_outcome(decision: &str) -> tandem_channels::discord_blocks::DecisionOutcome {
+    match decision {
+        "approve" => tandem_channels::discord_blocks::DecisionOutcome::Approved,
+        "rework" => tandem_channels::discord_blocks::DecisionOutcome::Reworked,
+        "cancel" => tandem_channels::discord_blocks::DecisionOutcome::Cancelled,
+        _ => tandem_channels::discord_blocks::DecisionOutcome::Cancelled,
+    }
+}
+
+fn decision_label(decision: &str) -> &'static str {
+    match decision {
+        "approve" => "Approved",
+        "rework" => "Sent back for rework",
+        "cancel" => "Cancelled",
+        _ => "Decided",
+    }
 }
 
 pub(super) async fn automations_v2_run_recover(

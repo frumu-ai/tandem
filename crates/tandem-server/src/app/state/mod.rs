@@ -33,6 +33,7 @@ use tandem_workflows::{
 };
 
 use crate::agent_teams::AgentTeamRuntime;
+use crate::app::rate_limit::ChannelRateLimiter;
 use crate::app::startup::{StartupSnapshot, StartupState, StartupStatus};
 use crate::automation_v2::governance::GovernanceState;
 use crate::automation_v2::types::*;
@@ -56,6 +57,9 @@ use crate::{
     OptimizationExperimentRecord, OptimizationExperimentStatus, OptimizationMutableField,
     OptimizationPromotionDecisionKind,
 };
+
+pub mod approval_message_map;
+pub mod channel_user_capabilities;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -86,6 +90,23 @@ pub struct AppState {
             >,
         >,
     >,
+    pub channel_user_capabilities: Arc<
+        RwLock<
+            std::collections::HashMap<
+                String,
+                channel_user_capabilities::ChannelUserCapabilityRecord,
+            >,
+        >,
+    >,
+    pub channel_enrollment_codes: Arc<
+        RwLock<
+            std::collections::HashMap<
+                String,
+                channel_user_capabilities::ChannelEnrollmentCodeRecord,
+            >,
+        >,
+    >,
+    pub channel_rate_limiter: Arc<ChannelRateLimiter>,
     pub automation_governance: Arc<RwLock<GovernanceState>>,
     pub governance_engine: Arc<dyn GovernancePolicyEngine>,
     pub automation_v2_runs: Arc<RwLock<std::collections::HashMap<String, AutomationV2RunRecord>>>,
@@ -152,6 +173,7 @@ pub struct AppState {
     pub routine_runs_path: PathBuf,
     pub automations_v2_path: PathBuf,
     pub channel_automation_drafts_path: PathBuf,
+    pub channel_user_capabilities_path: PathBuf,
     pub automation_governance_path: PathBuf,
     pub automation_v2_runs_path: PathBuf,
     pub automation_v2_runs_archive_path: PathBuf,
@@ -505,9 +527,11 @@ fn sanitize_path_id(id: &str) -> String {
 /// Validate that a path is within the expected base directory.
 /// Prevents path traversal attacks like "../../../etc/passwd".
 fn validate_path_within_root(base: &Path, target: &Path) -> anyhow::Result<()> {
-    let canonical_base = base.canonicalize()
+    let canonical_base = base
+        .canonicalize()
         .map_err(|e| anyhow::anyhow!("failed to canonicalize base path: {e}"))?;
-    let canonical_target = target.canonicalize()
+    let canonical_target = target
+        .canonicalize()
         .map_err(|e| anyhow::anyhow!("failed to canonicalize target path: {e}"))?;
 
     if !canonical_target.starts_with(&canonical_base) {

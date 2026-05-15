@@ -1133,6 +1133,7 @@ async fn new_session_text(
         None
     };
     let body = build_channel_session_create_body(
+        msg,
         &display_name,
         security_profile,
         public_memory_project_id.as_deref(),

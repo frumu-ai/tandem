@@ -13,9 +13,11 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::config::{is_user_allowed, SlackConfig};
+use crate::slack_blocks;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
-    MessageTriggerContext, SendMessage, TriggerSource,
+    InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
+    ThreadReply, TriggerSource,
 };
 
 const SLACK_API: &str = "https://slack.com/api";
@@ -108,16 +110,26 @@ pub struct SlackChannel {
     channel_id: String,
     allowed_users: Vec<String>,
     mention_only: bool,
+    api_base_url: String,
 }
 
 impl SlackChannel {
     pub fn new(config: SlackConfig) -> Self {
+        Self::new_with_api_base_url(config, SLACK_API)
+    }
+
+    pub fn new_with_api_base_url(config: SlackConfig, api_base_url: impl Into<String>) -> Self {
         Self {
             bot_token: config.bot_token,
             channel_id: config.channel_id,
             allowed_users: config.allowed_users,
             mention_only: config.mention_only,
+            api_base_url: api_base_url.into().trim_end_matches('/').to_string(),
         }
+    }
+
+    fn api_url(&self, method: &str) -> String {
+        format!("{}/{}", self.api_base_url, method)
     }
 
     fn http_client(&self) -> Client {
@@ -131,7 +143,7 @@ impl SlackChannel {
     async fn get_bot_user_id(&self) -> Option<String> {
         let resp: serde_json::Value = self
             .http_client()
-            .get(format!("{SLACK_API}/auth.test"))
+            .get(self.api_url("auth.test"))
             .bearer_auth(&self.bot_token)
             .send()
             .await
@@ -187,6 +199,52 @@ impl SlackChannel {
         tokio::fs::write(&path, &bytes).await.ok()?;
         Some(path.to_string_lossy().to_string())
     }
+
+    pub async fn update_card_for_decision(
+        &self,
+        card: &InteractiveCard,
+        message_ts: &str,
+        decided_by_display: &str,
+        decision_summary_markdown: &str,
+    ) -> Result<(), InteractiveCardError> {
+        let payload = slack_blocks::build_chat_update_payload_for_decision(
+            card,
+            message_ts,
+            decided_by_display,
+            decision_summary_markdown,
+        );
+        let resp = self
+            .http_client()
+            .post(self.api_url("chat.update"))
+            .bearer_auth(&self.bot_token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Slack chat.update failed ({status}): {body_text}"
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Slack response was not JSON: {err}"))
+        })?;
+        if parsed.get("ok") != Some(&serde_json::Value::Bool(true)) {
+            let err = parsed
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown");
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Slack chat.update error: {err}"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 fn normalize_slack_content(text: &str, bot_user_id: &str) -> (Option<String>, bool) {
@@ -233,7 +291,7 @@ impl Channel for SlackChannel {
 
         let resp = self
             .http_client()
-            .post(format!("{SLACK_API}/chat.postMessage"))
+            .post(self.api_url("chat.postMessage"))
             .bearer_auth(&self.bot_token)
             .json(&body)
             .send()
@@ -257,6 +315,115 @@ impl Channel for SlackChannel {
         }
 
         Ok(())
+    }
+
+    async fn send_thread_reply(&self, reply: &ThreadReply) -> anyhow::Result<()> {
+        let body = serde_json::json!({
+            "channel": reply.recipient,
+            "text": reply.content,
+            "thread_ts": reply.thread_id,
+        });
+
+        let resp = self
+            .http_client()
+            .post(self.api_url("chat.postMessage"))
+            .bearer_auth(&self.bot_token)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("Slack thread reply failed ({status}): {body_text}");
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).unwrap_or_default();
+        if parsed.get("ok") == Some(&serde_json::Value::Bool(false)) {
+            let err = parsed
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown");
+            anyhow::bail!("Slack thread reply error: {err}");
+        }
+        Ok(())
+    }
+
+    async fn send_card(
+        &self,
+        card: &InteractiveCard,
+    ) -> Result<InteractiveCardSent, InteractiveCardError> {
+        let text_fallback = if card.title.trim().is_empty() {
+            "Tandem approval"
+        } else {
+            card.title.as_str()
+        };
+        let payload = slack_blocks::build_post_message_payload(
+            card,
+            text_fallback,
+            card.thread_key.as_deref(),
+        );
+
+        let resp = self
+            .http_client()
+            .post(self.api_url("chat.postMessage"))
+            .bearer_auth(&self.bot_token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Slack chat.postMessage failed ({status}): {body_text}"
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Slack response was not JSON: {err}"))
+        })?;
+        if parsed.get("ok") != Some(&serde_json::Value::Bool(true)) {
+            let err = parsed
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown");
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Slack chat.postMessage error: {err}"
+            )));
+        }
+
+        let message_id = parsed
+            .get("ts")
+            .and_then(|ts| ts.as_str())
+            .ok_or_else(|| {
+                InteractiveCardError::PlatformError(
+                    "Slack chat.postMessage response missing ts".to_string(),
+                )
+            })?
+            .to_string();
+        let recipient = parsed
+            .get("channel")
+            .and_then(|channel| channel.as_str())
+            .unwrap_or(&card.recipient)
+            .to_string();
+        let thread_id = parsed
+            .get("message")
+            .and_then(|message| message.get("thread_ts"))
+            .and_then(|thread_ts| thread_ts.as_str())
+            .map(ToString::to_string)
+            .or_else(|| card.thread_key.clone());
+
+        Ok(InteractiveCardSent {
+            channel: self.name().to_string(),
+            message_id,
+            recipient,
+            thread_id,
+        })
+    }
+
+    fn supports_interactive_cards(&self) -> bool {
+        true
     }
 
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
@@ -284,7 +451,7 @@ impl Channel for SlackChannel {
 
             let resp = match self
                 .http_client()
-                .get(format!("{SLACK_API}/conversations.history"))
+                .get(self.api_url("conversations.history"))
                 .bearer_auth(&self.bot_token)
                 .query(&params)
                 .send()
@@ -415,7 +582,7 @@ impl Channel for SlackChannel {
 
     async fn health_check(&self) -> bool {
         self.http_client()
-            .get(format!("{SLACK_API}/auth.test"))
+            .get(self.api_url("auth.test"))
             .bearer_auth(&self.bot_token)
             .send()
             .await
@@ -427,6 +594,10 @@ impl Channel for SlackChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
+    use tokio::net::TcpListener;
 
     fn make_channel() -> SlackChannel {
         SlackChannel {
@@ -434,6 +605,7 @@ mod tests {
             channel_id: "C0FAKE".into(),
             allowed_users: vec![],
             mention_only: false,
+            api_base_url: SLACK_API.to_string(),
         }
     }
 
@@ -522,6 +694,139 @@ mod tests {
         let id1 = format!("slack_C12345_1000.000001");
         let id2 = format!("slack_C12345_1000.000002");
         assert_ne!(id1, id2);
+    }
+
+    #[tokio::test]
+    async fn send_card_posts_and_update_card_edits_against_mock_slack() {
+        #[derive(Default)]
+        struct Calls {
+            posts: Vec<Value>,
+            updates: Vec<Value>,
+            auth_headers: Vec<String>,
+        }
+
+        async fn post_message(
+            State(calls): State<Arc<Mutex<Calls>>>,
+            headers: HeaderMap,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            let mut guard = calls.lock().expect("calls lock poisoned");
+            guard.posts.push(payload);
+            guard.auth_headers.push(
+                headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            Json(json!({
+                "ok": true,
+                "channel": "C0FAKE",
+                "ts": "1710000000.000001",
+                "message": {
+                    "thread_ts": "1710000000.000001"
+                }
+            }))
+        }
+
+        async fn update_message(
+            State(calls): State<Arc<Mutex<Calls>>>,
+            headers: HeaderMap,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            let mut guard = calls.lock().expect("calls lock poisoned");
+            guard.updates.push(payload);
+            guard.auth_headers.push(
+                headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            Json(json!({ "ok": true }))
+        }
+
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let app = Router::new()
+            .route("/chat.postMessage", post(post_message))
+            .route("/chat.update", post(update_message))
+            .with_state(calls.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock Slack server");
+        });
+
+        let config = SlackConfig {
+            bot_token: "xoxb-test-token".to_string(),
+            channel_id: "C0FAKE".to_string(),
+            allowed_users: vec!["*".to_string()],
+            mention_only: false,
+            security_profile: crate::config::ChannelSecurityProfile::Operator,
+        };
+        let channel = SlackChannel::new_with_api_base_url(config, base_url);
+        let card = InteractiveCard {
+            recipient: "C0FAKE".to_string(),
+            title: "Sales outreach: send email".to_string(),
+            body_markdown: "Review the outbound email.".to_string(),
+            fields: vec![crate::traits::InteractiveCardField {
+                label: "Run".to_string(),
+                value: "run-1".to_string(),
+            }],
+            buttons: vec![crate::traits::InteractiveCardButton {
+                action_id: "approve".to_string(),
+                label: "Approve".to_string(),
+                style: crate::traits::InteractiveCardButtonStyle::Primary,
+                requires_reason: false,
+                confirm: None,
+            }],
+            reason_prompt: None,
+            thread_key: Some("run-1".to_string()),
+            correlation: json!({
+                "request_id": "automation_v2:run-1:send_email",
+                "run_id": "run-1",
+                "node_id": "send_email"
+            }),
+        };
+
+        let sent = channel.send_card(&card).await.expect("send card");
+        assert_eq!(sent.channel, "slack");
+        assert_eq!(sent.recipient, "C0FAKE");
+        assert_eq!(sent.message_id, "1710000000.000001");
+        assert_eq!(sent.thread_id.as_deref(), Some("1710000000.000001"));
+
+        channel
+            .update_card_for_decision(&card, &sent.message_id, "Approved by Ada", "*Approved.*")
+            .await
+            .expect("update card");
+        channel
+            .send_thread_reply(&ThreadReply {
+                content: "Run continued.".to_string(),
+                recipient: sent.recipient.clone(),
+                thread_id: sent.thread_id.clone().expect("thread id"),
+            })
+            .await
+            .expect("thread reply");
+
+        let guard = calls.lock().expect("calls lock poisoned");
+        assert_eq!(guard.auth_headers, vec!["Bearer xoxb-test-token"; 3]);
+        assert_eq!(guard.posts.len(), 2);
+        assert_eq!(guard.updates.len(), 1);
+        assert_eq!(guard.posts[0]["channel"], "C0FAKE");
+        assert_eq!(guard.posts[0]["thread_ts"], "run-1");
+        assert_eq!(guard.posts[1]["channel"], "C0FAKE");
+        assert_eq!(guard.posts[1]["thread_ts"], "1710000000.000001");
+        assert_eq!(guard.posts[1]["text"], "Run continued.");
+        assert!(guard.posts[0]["blocks"].is_array());
+        assert_eq!(guard.updates[0]["channel"], "C0FAKE");
+        assert_eq!(guard.updates[0]["ts"], "1710000000.000001");
+        assert!(guard.updates[0]["blocks"]
+            .as_array()
+            .expect("update blocks")
+            .iter()
+            .all(|block| block["type"] != "actions"));
+
+        server.abort();
     }
 
     #[test]

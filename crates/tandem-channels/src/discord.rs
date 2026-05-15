@@ -19,9 +19,11 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::config::DiscordConfig;
+use crate::discord_blocks;
 use crate::traits::{
     should_accept_message, Channel, ChannelMessage, ConversationScope, ConversationScopeKind,
-    MessageTriggerContext, SendMessage, TriggerSource,
+    InteractiveCard, InteractiveCardError, InteractiveCardSent, MessageTriggerContext, SendMessage,
+    ThreadReply, TriggerSource,
 };
 
 /// Discord's maximum message length for regular messages.
@@ -308,19 +310,29 @@ pub struct DiscordChannel {
     guild_id: Option<String>,
     allowed_users: Vec<String>,
     mention_only: bool,
+    api_base_url: String,
     /// Typing indicator handle — single per-channel (Discord typing is per channel).
     typing_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl DiscordChannel {
     pub fn new(config: DiscordConfig) -> Self {
+        Self::new_with_api_base_url(config, DISCORD_API)
+    }
+
+    pub fn new_with_api_base_url(config: DiscordConfig, api_base_url: impl Into<String>) -> Self {
         Self {
             bot_token: config.bot_token,
             guild_id: config.guild_id,
             allowed_users: config.allowed_users,
             mention_only: config.mention_only,
+            api_base_url: api_base_url.into().trim_end_matches('/').to_string(),
             typing_handle: Mutex::new(None),
         }
+    }
+
+    fn api_url(&self, path: &str) -> String {
+        format!("{}/{}", self.api_base_url, path.trim_start_matches('/'))
     }
 
     fn http_client(&self) -> Client {
@@ -332,6 +344,54 @@ impl DiscordChannel {
 
     fn auth_header(&self) -> String {
         format!("Bot {}", self.bot_token)
+    }
+
+    pub async fn update_card_for_decision(
+        &self,
+        card: &InteractiveCard,
+        message_id: &str,
+        decision: discord_blocks::DecisionOutcome,
+        decided_by_display: &str,
+        decision_summary_markdown: &str,
+    ) -> Result<(), InteractiveCardError> {
+        if card.recipient.trim().is_empty() {
+            return Err(InteractiveCardError::InvalidCard(
+                "Discord card recipient is required".to_string(),
+            ));
+        }
+        if message_id.trim().is_empty() {
+            return Err(InteractiveCardError::InvalidCard(
+                "Discord message_id is required".to_string(),
+            ));
+        }
+
+        let payload = discord_blocks::build_edit_message_payload_for_decision(
+            card,
+            decision,
+            decided_by_display,
+            decision_summary_markdown,
+        );
+        let resp = self
+            .http_client()
+            .patch(self.api_url(&format!(
+                "channels/{}/messages/{}",
+                card.recipient, message_id
+            )))
+            .header("Authorization", self.auth_header())
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Discord edit message failed ({status}): {body_text}"
+            )));
+        }
+
+        Ok(())
     }
 
     async fn download_discord_attachment(
@@ -403,7 +463,7 @@ impl Channel for DiscordChannel {
         let chunks = split_message(&outgoing);
 
         for (i, chunk) in chunks.iter().enumerate() {
-            let url = format!("{DISCORD_API}/channels/{}/messages", message.recipient);
+            let url = self.api_url(&format!("channels/{}/messages", message.recipient));
             let resp = client
                 .post(&url)
                 .header("Authorization", self.auth_header())
@@ -425,6 +485,92 @@ impl Channel for DiscordChannel {
         Ok(())
     }
 
+    async fn send_thread_reply(&self, reply: &ThreadReply) -> anyhow::Result<()> {
+        let client = self.http_client();
+        let target_channel = if reply.thread_id.trim().is_empty() {
+            reply.recipient.as_str()
+        } else {
+            reply.thread_id.as_str()
+        };
+        let chunks = split_message(&reply.content);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let url = self.api_url(&format!("channels/{target_channel}/messages"));
+            let resp = client
+                .post(&url)
+                .header("Authorization", self.auth_header())
+                .json(&json!({ "content": chunk }))
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let err = resp.text().await.unwrap_or_default();
+                anyhow::bail!("Discord thread reply failed ({status}): {err}");
+            }
+            if i < chunks.len() - 1 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_card(
+        &self,
+        card: &InteractiveCard,
+    ) -> Result<InteractiveCardSent, InteractiveCardError> {
+        if card.recipient.trim().is_empty() {
+            return Err(InteractiveCardError::InvalidCard(
+                "Discord card recipient is required".to_string(),
+            ));
+        }
+
+        let client = self.http_client();
+        let payload = discord_blocks::build_create_message_payload(card);
+        let resp = client
+            .post(self.api_url(&format!("channels/{}/messages", card.recipient)))
+            .header("Authorization", self.auth_header())
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| InteractiveCardError::PlatformError(err.to_string()))?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(InteractiveCardError::PlatformError(format!(
+                "Discord create message failed ({status}): {body_text}"
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).map_err(|err| {
+            InteractiveCardError::PlatformError(format!("Discord response was not JSON: {err}"))
+        })?;
+        let message_id = parsed
+            .get("id")
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| {
+                InteractiveCardError::PlatformError(
+                    "Discord create message response missing id".to_string(),
+                )
+            })?
+            .to_string();
+        let recipient = parsed
+            .get("channel_id")
+            .and_then(|channel_id| channel_id.as_str())
+            .unwrap_or(&card.recipient)
+            .to_string();
+
+        Ok(InteractiveCardSent {
+            channel: self.name().to_string(),
+            message_id,
+            recipient,
+            thread_id: card.thread_key.clone(),
+        })
+    }
+
+    fn supports_interactive_cards(&self) -> bool {
+        true
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
         let bot_user_id = bot_user_id_from_token(&self.bot_token).unwrap_or_default();
@@ -432,7 +578,7 @@ impl Channel for DiscordChannel {
         // Fetch gateway URL
         let gw_resp: serde_json::Value = self
             .http_client()
-            .get(format!("{DISCORD_API}/gateway/bot"))
+            .get(self.api_url("gateway/bot"))
             .header("Authorization", self.auth_header())
             .send()
             .await?
@@ -777,7 +923,7 @@ impl Channel for DiscordChannel {
 
     async fn health_check(&self) -> bool {
         self.http_client()
-            .get(format!("{DISCORD_API}/users/@me"))
+            .get(self.api_url("users/@me"))
             .header("Authorization", self.auth_header())
             .send()
             .await
@@ -792,9 +938,9 @@ impl Channel for DiscordChannel {
         let client = self.http_client();
         let token = self.bot_token.clone();
         let channel_id = recipient.to_string();
+        let url = self.api_url(&format!("channels/{channel_id}/typing"));
 
         let handle = tokio::spawn(async move {
-            let url = format!("{DISCORD_API}/channels/{channel_id}/typing");
             loop {
                 let _ = client
                     .post(&url)
@@ -820,6 +966,16 @@ impl Channel for DiscordChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        extract::{Path, State},
+        http::HeaderMap,
+        routing::{patch, post},
+        Json, Router,
+    };
+    use serde_json::Value;
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex as AsyncMutex;
 
     fn make_channel() -> DiscordChannel {
         DiscordChannel {
@@ -827,6 +983,7 @@ mod tests {
             guild_id: None,
             allowed_users: vec![],
             mention_only: false,
+            api_base_url: DISCORD_API.to_string(),
             typing_handle: Mutex::new(None),
         }
     }
@@ -1065,6 +1222,154 @@ mod tests {
         let ch = make_channel();
         assert!(ch.stop_typing("123456").await.is_ok());
         assert!(ch.stop_typing("123456").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn send_card_posts_and_update_card_patches_against_mock_discord() {
+        #[derive(Default)]
+        struct Calls {
+            posts: Vec<Value>,
+            patches: Vec<Value>,
+            auth_headers: Vec<String>,
+            paths: Vec<String>,
+        }
+
+        async fn post_message(
+            State(calls): State<Arc<AsyncMutex<Calls>>>,
+            Path(channel_id): Path<String>,
+            headers: HeaderMap,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            let mut guard = calls.lock().await;
+            guard.posts.push(payload);
+            guard
+                .paths
+                .push(format!("POST /channels/{channel_id}/messages"));
+            guard.auth_headers.push(
+                headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            Json(json!({
+                "id": "msg-1",
+                "channel_id": channel_id,
+            }))
+        }
+
+        async fn patch_message(
+            State(calls): State<Arc<AsyncMutex<Calls>>>,
+            Path((channel_id, message_id)): Path<(String, String)>,
+            headers: HeaderMap,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            let mut guard = calls.lock().await;
+            guard.patches.push(payload);
+            guard.paths.push(format!(
+                "PATCH /channels/{channel_id}/messages/{message_id}"
+            ));
+            guard.auth_headers.push(
+                headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            Json(json!({ "id": message_id, "channel_id": channel_id }))
+        }
+
+        let calls = Arc::new(AsyncMutex::new(Calls::default()));
+        let app = Router::new()
+            .route("/channels/{channel_id}/messages", post(post_message))
+            .route(
+                "/channels/{channel_id}/messages/{message_id}",
+                patch(patch_message),
+            )
+            .with_state(calls.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock Discord server");
+        });
+
+        let config = DiscordConfig {
+            bot_token: "discord-test-token".to_string(),
+            guild_id: None,
+            allowed_users: vec!["*".to_string()],
+            mention_only: false,
+            security_profile: crate::config::ChannelSecurityProfile::Operator,
+        };
+        let channel = DiscordChannel::new_with_api_base_url(config, base_url);
+        let card = InteractiveCard {
+            recipient: "channel-1".to_string(),
+            title: "Sales outreach: send email".to_string(),
+            body_markdown: "Review the outbound email.".to_string(),
+            fields: vec![crate::traits::InteractiveCardField {
+                label: "Run".to_string(),
+                value: "run-1".to_string(),
+            }],
+            buttons: vec![crate::traits::InteractiveCardButton {
+                action_id: "approve".to_string(),
+                label: "Approve".to_string(),
+                style: crate::traits::InteractiveCardButtonStyle::Primary,
+                requires_reason: false,
+                confirm: None,
+            }],
+            reason_prompt: None,
+            thread_key: Some("run-1".to_string()),
+            correlation: json!({
+                "automation_v2_run_id": "run-1",
+                "node_id": "send_email"
+            }),
+        };
+
+        let sent = channel.send_card(&card).await.expect("send card");
+        assert_eq!(sent.channel, "discord");
+        assert_eq!(sent.recipient, "channel-1");
+        assert_eq!(sent.message_id, "msg-1");
+        assert_eq!(sent.thread_id.as_deref(), Some("run-1"));
+
+        channel
+            .update_card_for_decision(
+                &card,
+                &sent.message_id,
+                discord_blocks::DecisionOutcome::Approved,
+                "Approved by Ada",
+                "**Approved.**",
+            )
+            .await
+            .expect("update card");
+        channel
+            .send_thread_reply(&ThreadReply {
+                content: "Run continued.".to_string(),
+                recipient: sent.recipient.clone(),
+                thread_id: sent.thread_id.clone().expect("thread id"),
+            })
+            .await
+            .expect("thread reply");
+
+        let guard = calls.lock().await;
+        assert_eq!(guard.auth_headers, vec!["Bot discord-test-token"; 3]);
+        assert_eq!(
+            guard.paths,
+            vec![
+                "POST /channels/channel-1/messages",
+                "PATCH /channels/channel-1/messages/msg-1",
+                "POST /channels/run-1/messages"
+            ]
+        );
+        assert_eq!(guard.posts.len(), 2);
+        assert_eq!(guard.patches.len(), 1);
+        assert!(guard.posts[0]["embeds"].is_array());
+        assert!(guard.posts[0]["components"].is_array());
+        assert_eq!(guard.posts[1]["content"], "Run continued.");
+        assert_eq!(guard.patches[0]["components"], json!([]));
+        assert_eq!(guard.patches[0]["allowed_mentions"], json!({"parse": []}));
+
+        server.abort();
     }
 
     #[test]

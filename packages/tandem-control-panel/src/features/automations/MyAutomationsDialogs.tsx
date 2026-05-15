@@ -1102,6 +1102,153 @@ export function WorkflowAutomationEditDialog({
                             <summary className="cursor-pointer list-none">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                  <i data-lucide="shield-check"></i>
+                                  <span>Approval override</span>
+                                </div>
+                                <div className="flex flex-wrap gap-2 text-[11px]">
+                                  <span
+                                    className={
+                                      node.approvalOverride === "skip"
+                                        ? "tcp-badge-danger"
+                                        : "tcp-badge-info"
+                                    }
+                                  >
+                                    {node.approvalOverride === "skip"
+                                      ? "skip"
+                                      : node.approvalOverride === "auto"
+                                        ? "auto"
+                                        : "default"}
+                                  </span>
+                                </div>
+                              </div>
+                            </summary>
+                            <div className="mt-3 grid gap-3">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  className={`tcp-btn h-7 px-2 text-xs ${
+                                    !node.approvalOverride || node.approvalOverride === "default"
+                                      ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
+                                      : ""
+                                  }`}
+                                  onClick={() =>
+                                    setWorkflowEditDraft((current: any) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            nodes: current.nodes.map((row: any) =>
+                                              row.nodeId === node.nodeId
+                                                ? {
+                                                    ...row,
+                                                    approvalOverride: "default",
+                                                    approvalCondition: "",
+                                                  }
+                                                : row
+                                            ),
+                                          }
+                                        : current
+                                    )
+                                  }
+                                >
+                                  Default
+                                </button>
+                                <button
+                                  className={`tcp-btn h-7 px-2 text-xs ${
+                                    node.approvalOverride === "auto"
+                                      ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
+                                      : ""
+                                  }`}
+                                  onClick={() =>
+                                    setWorkflowEditDraft((current: any) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            nodes: current.nodes.map((row: any) =>
+                                              row.nodeId === node.nodeId
+                                                ? {
+                                                    ...row,
+                                                    approvalOverride: "auto",
+                                                  }
+                                                : row
+                                            ),
+                                          }
+                                        : current
+                                    )
+                                  }
+                                >
+                                  Auto
+                                </button>
+                                <button
+                                  className={`tcp-btn h-7 px-2 text-xs ${
+                                    node.approvalOverride === "skip"
+                                      ? "border-red-400/60 bg-red-400/10 text-red-300"
+                                      : ""
+                                  }`}
+                                  onClick={() => {
+                                    const stepName = node.title || node.nodeId || "this step";
+                                    if (
+                                      !window.confirm(
+                                        `Skip approval for ${stepName}? This can allow external actions to run without review.`
+                                      )
+                                    ) {
+                                      return;
+                                    }
+                                    setWorkflowEditDraft((current: any) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            nodes: current.nodes.map((row: any) =>
+                                              row.nodeId === node.nodeId
+                                                ? {
+                                                    ...row,
+                                                    approvalOverride: "skip",
+                                                    approvalCondition: "",
+                                                  }
+                                                : row
+                                            ),
+                                          }
+                                        : current
+                                    );
+                                  }}
+                                >
+                                  Skip
+                                </button>
+                              </div>
+                              {node.approvalOverride === "auto" ? (
+                                <div className="grid gap-1">
+                                  <label className="text-xs text-slate-400">
+                                    Auto-approve condition
+                                  </label>
+                                  <input
+                                    className="tcp-input font-mono text-xs"
+                                    value={node.approvalCondition || ""}
+                                    onInput={(e) =>
+                                      setWorkflowEditDraft((current: any) =>
+                                        current
+                                          ? {
+                                              ...current,
+                                              nodes: current.nodes.map((row: any) =>
+                                                row.nodeId === node.nodeId
+                                                  ? {
+                                                      ...row,
+                                                      approvalCondition: (
+                                                        e.target as HTMLInputElement
+                                                      ).value,
+                                                    }
+                                                  : row
+                                              ),
+                                            }
+                                          : current
+                                      )
+                                    }
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
+                          </details>
+                          <details className="mt-3 rounded-lg border border-slate-800/70 bg-slate-950/30 p-3">
+                            <summary className="cursor-pointer list-none">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
                                   <i data-lucide="cpu"></i>
                                   <span>Step model & provider</span>
                                 </div>

@@ -290,6 +290,53 @@ async fn run_prompt_sync_messages_with_allowlist(
     serde_json::from_slice::<Vec<Value>>(&body).expect("prompt_sync messages")
 }
 
+#[tokio::test]
+async fn prompt_sync_channel_user_eleventh_request_returns_429_retry_after() {
+    let state = test_state().await;
+    let mut session = Session::new(Some("channel limited".to_string()), Some(".".to_string()));
+    session.source_kind = Some("channel".to_string());
+    session.source_metadata = Some(json!({
+        "channel": "telegram",
+        "user_id": "42"
+    }));
+    let session_id = session.id.clone();
+    state
+        .storage
+        .save_session(session)
+        .await
+        .expect("save session");
+
+    let key = crate::app::rate_limit::ChannelRateLimitKey {
+        channel: "telegram".to_string(),
+        user_id: "42".to_string(),
+    };
+    for _ in 0..10 {
+        assert!(
+            state
+                .channel_rate_limiter
+                .check(
+                    &key,
+                    crate::app::rate_limit::ChannelRateLimitKind::Prompt,
+                    tandem_channels::config::ChannelSecurityProfile::PublicDemo,
+                )
+                .await
+                .allowed
+        );
+    }
+
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/session/{session_id}/prompt_sync"))
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"parts": []}).to_string()))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(resp.headers().contains_key(header::RETRY_AFTER));
+}
+
 fn latest_assistant_text(messages: &[Value]) -> String {
     messages
         .iter()

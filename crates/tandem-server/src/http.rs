@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path as FsPath;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,8 +33,9 @@ use uuid::Uuid;
 
 use tandem_tools::Tool;
 use tandem_types::{
-    CreateSessionRequest, EngineEvent, Message, MessagePart, MessagePartInput, MessageRole,
-    SendMessageRequest, Session, TenantContext, TodoItem, ToolResult, ToolSchema,
+    ApprovalListFilter, ApprovalRequest, CreateSessionRequest, EngineEvent, Message, MessagePart,
+    MessagePartInput, MessageRole, SendMessageRequest, Session, TenantContext, TodoItem,
+    ToolResult, ToolSchema,
 };
 use tandem_wire::{WireSession, WireSessionMessage};
 
@@ -50,10 +52,12 @@ use crate::{
 };
 
 mod approvals;
+mod audit_stream;
 mod automation_projection_runtime;
 pub(crate) mod bug_monitor;
 mod capabilities;
 pub(crate) mod channel_automation_drafts;
+mod channel_enrollment;
 mod channels_api;
 mod coder;
 pub(crate) mod config_providers;
@@ -286,6 +290,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let bug_monitor_log_watcher_state = state.clone();
     let bug_monitor_recovery_sweep_state = state.clone();
     let governance_health_state = state.clone();
+    let approval_outbound_state = state.clone();
     let mcp_bootstrap_state = state.clone();
     tokio::spawn(async move {
         bootstrap_mcp_servers_when_ready(mcp_bootstrap_state).await;
@@ -359,6 +364,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     ));
     let global_memory_ingestor =
         tokio::spawn(run_global_memory_ingestor(global_memory_ingestor_state));
+    let approval_outbound = tokio::spawn(run_approval_outbound(approval_outbound_state));
     let shutdown_state = state.clone();
     let shutdown_timeout_secs = crate::config::env::resolve_scheduler_shutdown_timeout_secs();
 
@@ -521,10 +527,192 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     bug_monitor_log_watcher.abort();
     bug_monitor_recovery_sweep.abort();
     global_memory_ingestor.abort();
+    approval_outbound.abort();
     hygiene_task.abort();
     automation_governance_health_checker.abort();
     result?;
     Ok(())
+}
+
+struct AppStatePendingApprovalsSource {
+    state: AppState,
+}
+
+#[async_trait]
+impl crate::app::approval_outbound::PendingApprovalsSource for AppStatePendingApprovalsSource {
+    async fn list_pending(&self, filter: &ApprovalListFilter) -> Vec<ApprovalRequest> {
+        approvals::list_pending_approvals(&self.state, filter).await
+    }
+}
+
+async fn run_approval_outbound(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        let startup = state.startup_snapshot().await;
+        tracing::warn!(
+            component = "approval_outbound",
+            startup_status = ?startup.status,
+            startup_phase = %startup.phase,
+            attempt_id = %startup.attempt_id,
+            "approval outbound fan-out exiting before runtime access because startup did not become ready"
+        );
+        return;
+    }
+
+    let effective = state.config.get_effective_value().await;
+    let channels = effective
+        .get("channels")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    let message_map = Arc::new(
+        crate::app::state::approval_message_map::ApprovalMessageMap::load_or_default(
+            crate::config::paths::resolve_approval_message_map_path(),
+        )
+        .await,
+    );
+
+    let mut notifiers: Vec<Arc<dyn crate::app::approval_outbound::ApprovalNotifier>> = Vec::new();
+    if let Some(slack_value) = channels.get("slack") {
+        match serde_json::from_value::<SlackConfigFile>(slack_value.clone()) {
+            Ok(cfg) if !cfg.bot_token.trim().is_empty() && !cfg.channel_id.trim().is_empty() => {
+                let slack_config = tandem_channels::config::SlackConfig {
+                    bot_token: cfg.bot_token,
+                    channel_id: cfg.channel_id,
+                    allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
+                        cfg.allowed_users,
+                    ),
+                    mention_only: cfg.mention_only,
+                    security_profile: cfg.security_profile,
+                };
+                notifiers.push(Arc::new(
+                    crate::app::notifiers::slack::from_config_with_message_map(
+                        slack_config,
+                        message_map.clone(),
+                    ),
+                ));
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    target: "tandem_server::approval_outbound",
+                    "Slack approval notifier disabled because bot_token or channel_id is empty"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "tandem_server::approval_outbound",
+                    %error,
+                    "Slack approval notifier disabled because config could not be parsed"
+                );
+            }
+        }
+    }
+    if let Some(discord_value) = channels.get("discord") {
+        match serde_json::from_value::<DiscordConfigFile>(discord_value.clone()) {
+            Ok(cfg)
+                if !cfg.bot_token.trim().is_empty()
+                    && cfg
+                        .approval_channel_id
+                        .as_deref()
+                        .map(|value| !value.trim().is_empty())
+                        .unwrap_or(false) =>
+            {
+                let recipient = cfg.approval_channel_id.unwrap_or_default();
+                let discord_config = tandem_channels::config::DiscordConfig {
+                    bot_token: cfg.bot_token,
+                    guild_id: cfg.guild_id,
+                    allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
+                        cfg.allowed_users,
+                    ),
+                    mention_only: cfg.mention_only,
+                    security_profile: cfg.security_profile,
+                };
+                notifiers.push(Arc::new(
+                    crate::app::notifiers::discord::from_config_with_message_map(
+                        discord_config,
+                        recipient,
+                        message_map.clone(),
+                    ),
+                ));
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    target: "tandem_server::approval_outbound",
+                    "Discord approval notifier disabled because bot_token or approval_channel_id is empty"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "tandem_server::approval_outbound",
+                    %error,
+                    "Discord approval notifier disabled because config could not be parsed"
+                );
+            }
+        }
+    }
+    if let Some(telegram_value) = channels.get("telegram") {
+        match serde_json::from_value::<TelegramConfigFile>(telegram_value.clone()) {
+            Ok(cfg)
+                if !cfg.bot_token.trim().is_empty()
+                    && cfg
+                        .approval_chat_id
+                        .as_deref()
+                        .map(|value| !value.trim().is_empty())
+                        .unwrap_or(false) =>
+            {
+                let recipient = cfg.approval_chat_id.unwrap_or_default();
+                let telegram_config = tandem_channels::config::TelegramConfig {
+                    bot_token: cfg.bot_token,
+                    allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
+                        cfg.allowed_users,
+                    ),
+                    mention_only: cfg.mention_only,
+                    style_profile: cfg.style_profile,
+                    security_profile: cfg.security_profile,
+                };
+                notifiers.push(Arc::new(
+                    crate::app::notifiers::telegram::from_config_with_message_map(
+                        telegram_config,
+                        recipient,
+                        message_map.clone(),
+                    ),
+                ));
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    target: "tandem_server::approval_outbound",
+                    "Telegram approval notifier disabled because bot_token or approval_chat_id is empty"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "tandem_server::approval_outbound",
+                    %error,
+                    "Telegram approval notifier disabled because config could not be parsed"
+                );
+            }
+        }
+    }
+
+    if notifiers.is_empty() {
+        tracing::info!(
+            target: "tandem_server::approval_outbound",
+            "approval outbound fan-out has no configured channel notifiers"
+        );
+        return;
+    }
+
+    let source = Arc::new(AppStatePendingApprovalsSource {
+        state: state.clone(),
+    });
+    crate::app::approval_outbound::run_polling_loop(
+        source,
+        Arc::new(notifiers),
+        ApprovalListFilter::default(),
+        crate::app::approval_outbound::DEFAULT_POLL_INTERVAL,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await;
 }
 
 fn app_router(state: AppState) -> Router {

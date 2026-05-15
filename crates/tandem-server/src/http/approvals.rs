@@ -120,7 +120,7 @@ fn tenant_matches(filter: &ApprovalListFilter, run: &AutomationV2RunRecord) -> b
     true
 }
 
-fn automation_v2_run_to_approval_request(
+pub(crate) fn automation_v2_run_to_approval_request(
     run: &AutomationV2RunRecord,
     gate: &AutomationPendingGate,
 ) -> ApprovalRequest {

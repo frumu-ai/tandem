@@ -1310,10 +1310,11 @@ pub async fn run_automation_v2_run(
                 };
                 let _ = state
                     .update_automation_v2_run(&run_id, |row| {
-                        row.status = AutomationRunStatus::AwaitingApproval;
-                        row.detail = Some(format!("awaiting approval for gate `{}`", gate.node_id));
-                        row.checkpoint.awaiting_gate = Some(gate.clone());
-                        row.checkpoint.blocked_nodes = blocked_nodes.clone();
+                        crate::app::state::pause_automation_run_for_gate(
+                            row,
+                            gate.clone(),
+                            blocked_nodes.clone(),
+                        );
                     })
                     .await;
             }

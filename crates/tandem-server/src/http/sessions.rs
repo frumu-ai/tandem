@@ -4,6 +4,9 @@ use super::session_kb_grounding::{
     apply_strict_kb_grounding_after_run, render_strict_kb_direct_answer,
 };
 use super::*;
+use crate::app::rate_limit::{
+    channel_rate_limit_key_from_session_metadata, retry_after_duration, ChannelRateLimitKind,
+};
 use sha2::{Digest, Sha256};
 use tandem_types::{Session, ToolMode};
 
@@ -242,6 +245,17 @@ pub(super) async fn create_session(
     session.model = req.model;
     session.provider = req.provider;
     apply_created_session_source(&mut session, req.source_kind, req.source_metadata);
+    session.pinned_workspace_id = req
+        .pinned_workspace_id
+        .as_deref()
+        .and_then(tandem_core::normalize_workspace_path)
+        .or_else(|| {
+            if session.source_kind.as_deref() == Some("channel") {
+                session.workspace_root.clone()
+            } else {
+                None
+            }
+        });
     state
         .storage
         .save_session(session.clone())
@@ -842,6 +856,29 @@ pub(super) async fn prompt_sync(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    if session.source_kind.as_deref() == Some("channel") {
+        if let Some(key) =
+            channel_rate_limit_key_from_session_metadata(session.source_metadata.as_ref())
+        {
+            let decision = state
+                .channel_rate_limiter
+                .check(
+                    &key,
+                    ChannelRateLimitKind::Prompt,
+                    tandem_channels::config::ChannelSecurityProfile::PublicDemo,
+                )
+                .await;
+            if !decision.allowed {
+                let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+                if let Ok(value) =
+                    HeaderValue::from_str(&retry_after_duration(decision).as_secs().to_string())
+                {
+                    response.headers_mut().insert(header::RETRY_AFTER, value);
+                }
+                return Ok(response);
+            }
+        }
+    }
     let accept_sse = headers
         .get(header::ACCEPT)
         .and_then(|v| v.to_str().ok())
