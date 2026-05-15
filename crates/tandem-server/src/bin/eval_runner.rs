@@ -11,7 +11,6 @@ use std::process::ExitCode;
 
 use tandem_server::eval::runner::EngineMode;
 use tandem_server::eval::{EvalRunner, EvalRunnerConfig};
-use tandem_server::http::tests::test_state;
 
 const USAGE: &str = r#"
 Tandem Eval Runner - AI Quality Evaluation Tool
@@ -211,19 +210,7 @@ async fn main() -> ExitCode {
         random_seed: None,
     };
 
-    let mut runner = EvalRunner::new(config);
-
-    // For Stub/Live modes, build AppState for engine execution
-    if !matches!(args.engine_mode, EngineMode::Simulation) {
-        println!("Initializing engine...");
-        let state = match test_state().await {
-            state => {
-                println!("Engine ready");
-                state
-            }
-        };
-        runner = runner.with_app_state(state);
-    }
+    let runner = EvalRunner::new(config);
 
     let dataset = match runner.load_dataset(&args.dataset) {
         Ok(d) => d,

@@ -52,7 +52,7 @@ use uuid::Uuid;
 
 use crate::http::global::sanitize_relative_subpath;
 
-pub async fn test_state() -> AppState {
+pub(super) async fn test_state() -> AppState {
     let root = std::env::temp_dir().join(format!("tandem-http-test-{}", Uuid::new_v4()));
     let global = root.join("global-config.json");
     let tandem_home = root.join("tandem-home");
