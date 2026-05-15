@@ -1,0 +1,150 @@
+# Provider Failure Evaluation Dataset
+# Tests handling of transient provider errors with proper retry and fallback logic
+#
+name: "provider_failures"
+version: "1.0"
+description: "Tests resilience to provider timeouts, rate limits, and stream errors"
+tags:
+  - "regression"
+  - "provider_resilience"
+  - "weekly"
+created_at: "2026-05-15T00:00:00Z"
+
+test_cases:
+  - id: "provider_001"
+    description: "Provider timeout with successful retry"
+    priority: 1
+    enabled: true
+    tags:
+      - "timeout"
+      - "transient"
+    automation_spec:
+      name: "timeout_recovery"
+      nodes:
+        - id: "call_node"
+          node_type: "ai_call"
+          objective: "Make provider call that may timeout"
+          output_contract: "JSON result"
+      validators:
+        - "contract"
+      config:
+        timeout_ms: 30000
+        max_repair_iterations: 3
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+      max_repair_iterations: 3
+    metric_tolerance:
+      repair_iterations_delta: 2
+
+  - id: "provider_002"
+    description: "Rate limit recovery with backoff"
+    priority: 1
+    enabled: true
+    tags:
+      - "rate_limit"
+      - "transient"
+    automation_spec:
+      name: "rate_limit_recovery"
+      nodes:
+        - id: "batch_node"
+          node_type: "ai_call"
+          objective: "Make batch of provider calls"
+          output_contract: "JSON array of results"
+      validators:
+        - "contract"
+      config:
+        max_repair_iterations: 5
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+      max_repair_iterations: 5
+    metric_tolerance:
+      repair_iterations_delta: 2
+      token_usage_tolerance_percent: 0.20
+
+  - id: "provider_003"
+    description: "Stream decode error recovery"
+    priority: 2
+    enabled: true
+    tags:
+      - "stream"
+      - "transient"
+    automation_spec:
+      name: "stream_error_recovery"
+      nodes:
+        - id: "stream_node"
+          node_type: "ai_call"
+          objective: "Stream large response from provider"
+          output_contract: "Streamed JSON or markdown"
+      validators:
+        - "contract"
+      config:
+        max_repair_iterations: 3
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+      max_repair_iterations: 3
+    metric_tolerance:
+      repair_iterations_delta: 1
+
+  - id: "provider_004"
+    description: "Fallback provider after primary failure"
+    priority: 2
+    enabled: true
+    tags:
+      - "fallback"
+      - "provider_selection"
+    automation_spec:
+      name: "fallback_provider"
+      nodes:
+        - id: "call_node"
+          node_type: "ai_call"
+          objective: "Call AI provider with fallback configured"
+          output_contract: "JSON result"
+      validators:
+        - "contract"
+      config:
+        primary_provider: "openai"
+        fallback_provider: "anthropic"
+        max_repair_iterations: 2
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+      max_repair_iterations: 2
+    metric_tolerance:
+      repair_iterations_delta: 1
+      token_usage_tolerance_percent: 0.25
+
+  - id: "provider_005"
+    description: "Model not found with graceful degradation"
+    priority: 2
+    enabled: false  # Skip if specific model versions aren't tested
+    tags:
+      - "model_selection"
+      - "degradation"
+    automation_spec:
+      name: "missing_model"
+      nodes:
+        - id: "call_node"
+          node_type: "ai_call"
+          objective: "Call AI with fallback model selection"
+          output_contract: "JSON with actual_model field"
+      validators:
+        - "contract"
+      config:
+        preferred_model: "gpt-99-ultra"  # Non-existent
+        fallback_model: "gpt-4o-mini"    # Real model
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+      output_format: "json"
+      quality_indicators:
+        - "used_fallback_model"
+    metric_tolerance:
+      repair_iterations_delta: 1
