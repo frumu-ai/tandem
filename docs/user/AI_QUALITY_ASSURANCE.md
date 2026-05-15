@@ -90,11 +90,11 @@ Every time code is deployed, we run our full test suite and compare results to a
 - **Repair iterations increase >30%** → Manual review required (warning)
 
 ### Continuous Monitoring
-We run evaluation tests:
-- **On every PR**: Before code merges
-- **Nightly**: Full test suite on latest main branch
-- **Weekly**: Extended tests covering edge cases and slow scenarios
-- **On-demand**: When investigating user-reported issues
+We run evaluation tests at multiple cadences and depths:
+- **On every PR (fast, deterministic)**: A simulation-mode gate runs in seconds with no API calls. It compares results against the saved main-branch baseline and fails the PR if pass rate, cost, repair iterations, or provider reliability regress past safe thresholds.
+- **Weekly (deterministic, full engine)**: A scripted stub-mode baseline run exercises the actual Tandem engine — automation submission, validator chokepoints, repair loops — with deterministic stub provider responses. This catches regressions in the engine code path itself, not just in the evaluation logic.
+- **Nightly**: Full test suite on the latest main branch
+- **On-demand**: When investigating user-reported issues, we re-run targeted evals in live mode against real AI providers
 
 ### Failure Analysis
 When tests fail, we automatically categorize failures:
