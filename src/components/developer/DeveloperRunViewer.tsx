@@ -1260,12 +1260,20 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     );
   }, [filteredRuns]);
 
-  const runStatuses = useMemo(() => {
-    return ["all", "active", ...new Set(runs.map((run) => run.status ?? "unknown"))];
-  }, [runs]);
-
-  const workflowModes = useMemo(() => {
-    return ["all", ...new Set(runs.map((run) => run.workflow_mode))];
+  const { runStatuses, workflowModes } = useMemo(() => {
+    const statuses = new Set<string>();
+    const modes = new Set<string>();
+    for (let i = 0; i < runs.length; i++) {
+      const run = runs[i];
+      statuses.add(run.status ?? "unknown");
+      if (run.workflow_mode) {
+        modes.add(run.workflow_mode);
+      }
+    }
+    return {
+      runStatuses: ["all", "active", ...statuses],
+      workflowModes: ["all", ...modes],
+    };
   }, [runs]);
 
   const taskColumns = useMemo(() => {
@@ -1830,10 +1838,6 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     return artifactGroups.find((group) => group.key === "validation")?.artifacts ?? [];
   }, [artifactGroups]);
 
-  const latestValidationArtifact = useMemo(() => {
-    return [...validationArtifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
-  }, [validationArtifacts]);
-
   const latestBlackboardArtifact = useMemo(() => {
     const blackboardArtifacts = Array.isArray(selectedBlackboard?.artifacts)
       ? selectedBlackboard.artifacts
@@ -1860,44 +1864,64 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       }
     }
     if (refs.size === 0) return null;
-    return (
-      [...artifacts]
-        .filter((artifact) =>
-          [
-            artifact.path,
-            artifact.id,
-            artifact.artifact_type,
-            artifact.step_id ?? "",
-            artifact.source_event_id ?? "",
-          ].some((value) => value && refs.has(value))
-        )
-        .sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null
-    );
-  }, [artifacts, selectedBlackboard]);
-
-  const latestDuplicateArtifact = useMemo(() => {
-    const duplicateArtifacts =
-      artifactGroups.find((group) => group.key === "duplicate")?.artifacts ?? [];
-    return [...duplicateArtifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
-  }, [artifactGroups]);
-
-  const latestMemoryArtifact = useMemo(() => {
-    const memoryArtifacts = artifactGroups.find((group) => group.key === "memory")?.artifacts ?? [];
-    return [...memoryArtifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
-  }, [artifactGroups]);
-
-  const latestTriageArtifact = useMemo(() => {
-    const triageArtifacts = artifactGroups.find((group) => group.key === "triage")?.artifacts ?? [];
-    return [...triageArtifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
-  }, [artifactGroups]);
-
-  const latestArtifactByCategory = useMemo(() => {
-    const latest = new Map<ArtifactCategory, CoderArtifactRecord>();
-    for (const group of artifactGroups) {
-      const top = [...group.artifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0];
-      if (top) latest.set(group.key, top);
+    let latest: CoderArtifactRecord | null = null;
+    for (let i = 0; i < artifacts.length; i++) {
+      const artifact = artifacts[i];
+      if (
+        [
+          artifact.path,
+          artifact.id,
+          artifact.artifact_type,
+          artifact.step_id ?? "",
+          artifact.source_event_id ?? "",
+        ].some((value) => value && refs.has(value))
+      ) {
+        if (!latest || artifact.ts_ms > latest.ts_ms) {
+          latest = artifact;
+        }
+      }
     }
     return latest;
+  }, [artifacts, selectedBlackboard]);
+
+  const {
+    latestValidationArtifact,
+    latestDuplicateArtifact,
+    latestMemoryArtifact,
+    latestTriageArtifact,
+    latestArtifactByCategory,
+  } = useMemo(() => {
+    let validation: CoderArtifactRecord | null = null;
+    let duplicate: CoderArtifactRecord | null = null;
+    let memory: CoderArtifactRecord | null = null;
+    let triage: CoderArtifactRecord | null = null;
+    const latestByCategory = new Map<ArtifactCategory, CoderArtifactRecord>();
+
+    for (let i = 0; i < artifactGroups.length; i++) {
+      const group = artifactGroups[i];
+      let top: CoderArtifactRecord | null = null;
+      for (let j = 0; j < group.artifacts.length; j++) {
+        const artifact = group.artifacts[j];
+        if (!top || artifact.ts_ms > top.ts_ms) {
+          top = artifact;
+        }
+      }
+      if (top) {
+        latestByCategory.set(group.key, top);
+        if (group.key === "validation") validation = top;
+        else if (group.key === "duplicate") duplicate = top;
+        else if (group.key === "memory") memory = top;
+        else if (group.key === "triage") triage = top;
+      }
+    }
+
+    return {
+      latestValidationArtifact: validation,
+      latestDuplicateArtifact: duplicate,
+      latestMemoryArtifact: memory,
+      latestTriageArtifact: triage,
+      latestArtifactByCategory: latestByCategory,
+    };
   }, [artifactGroups]);
 
   const detailTabMeta = useMemo(() => {

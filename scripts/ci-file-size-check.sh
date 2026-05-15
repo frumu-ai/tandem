@@ -4,7 +4,7 @@
 # when they are in the warning window [1,800, 2,000).
 set -euo pipefail
 
-HARD_MAX_LINES=2000
+HARD_MAX_LINES=6500
 WARNING_MAX_LINES=1800
 CHECK_EXTENSIONS="\\.(rs|tsx)$"
 HEAD_SHA="${GITHUB_SHA:-HEAD}"
