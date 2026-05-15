@@ -1,0 +1,106 @@
+# Repair Exhaustion Evaluation Dataset
+# Tests scenarios where repair budget is depleted, ensuring proper failure modes
+#
+name: "repair_exhaustion"
+version: "1.0"
+description: "Tests behavior when repair budget runs out - graceful failure required"
+tags:
+  - "regression"
+  - "repair_budget"
+  - "weekly"
+created_at: "2026-05-15T00:00:00Z"
+
+test_cases:
+  - id: "repair_001"
+    description: "Hard validator that never passes - should exhaust budget"
+    priority: 1
+    enabled: true
+    tags:
+      - "exhaustion"
+      - "validator"
+    automation_spec:
+      name: "impossible_validation"
+      nodes:
+        - id: "gen_node"
+          node_type: "generation"
+          objective: "Generate output that cannot pass strict contract"
+          output_contract: "Contract that requires impossible structure"
+      validators:
+        - "contract"
+      config:
+        max_repair_iterations: 3
+    expected_output:
+      artifact_status: "blocked"
+      required_validators: []
+      max_repair_iterations: 3
+
+  - id: "repair_002"
+    description: "Citation budget exhausted - should fail gracefully"
+    priority: 2
+    enabled: true
+    tags:
+      - "exhaustion"
+      - "citations"
+    automation_spec:
+      name: "citation_required"
+      nodes:
+        - id: "research_node"
+          node_type: "research"
+          objective: "Research topic but cannot find authoritative sources"
+          output_contract: "JSON with at least 5 citations"
+      validators:
+        - "citations"
+      config:
+        max_repair_iterations: 2
+    expected_output:
+      artifact_status: "blocked"
+      required_validators: []
+      unmet_requirements_acceptable: false
+      max_repair_iterations: 2
+
+  - id: "repair_003"
+    description: "Repair loop detection - circular failure"
+    priority: 2
+    enabled: true
+    tags:
+      - "exhaustion"
+      - "loop_detection"
+    automation_spec:
+      name: "circular_failure"
+      nodes:
+        - id: "node_a"
+          node_type: "generation"
+          objective: "Generate output that fails validation in cyclic pattern"
+          output_contract: "JSON with cyclic requirements"
+      validators:
+        - "contract"
+      config:
+        max_repair_iterations: 5
+    expected_output:
+      artifact_status: "failed"
+      required_validators: []
+      max_repair_iterations: 5
+
+  - id: "repair_004"
+    description: "Token budget exhausted before validation passes"
+    priority: 3
+    enabled: false  # Disabled by default - expensive
+    tags:
+      - "exhaustion"
+      - "token_budget"
+    automation_spec:
+      name: "token_exhaustion"
+      nodes:
+        - id: "verbose_node"
+          node_type: "generation"
+          objective: "Generate verbose output that consumes large token budget"
+          output_contract: "JSON with long descriptions"
+      validators:
+        - "contract"
+      config:
+        max_repair_iterations: 3
+        max_tokens_per_repair: 10000
+    expected_output:
+      artifact_status: "failed"
+      required_validators: []
+      max_repair_iterations: 3

@@ -5,10 +5,14 @@
 ///
 /// The evaluation framework consists of:
 /// - **dataset.rs**: Test case definitions in YAML/JSON format
-/// - **runner.rs**: CLI tool for bulk evaluation execution (Phase 3)
-/// - **metrics.rs**: Metric computation and aggregation (Phase 3)
+/// - **metrics.rs**: Metric computation and aggregation
+/// - **runner.rs**: Eval execution engine (CLI binary in bin/eval_runner.rs)
 /// - **regression_detection.rs**: Baseline comparison and alerting (Phase 4)
 
 pub mod dataset;
+pub mod metrics;
+pub mod runner;
 
-pub use dataset::{EvalDataset, EvalExpectedOutput, EvalTestCase};
+pub use dataset::{ArtifactStatus, EvalDataset, EvalExpectedOutput, EvalTestCase, MetricTolerance};
+pub use metrics::{EvalMetrics, EvalRunResult};
+pub use runner::{EvalRunner, EvalRunnerConfig};

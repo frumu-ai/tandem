@@ -1,0 +1,147 @@
+# Citation Validation Evaluation Dataset
+# Tests web research and citation validation logic
+#
+name: "citation_validation"
+version: "1.0"
+description: "Tests proper handling of web sources, citations, and provenance"
+tags:
+  - "regression"
+  - "citations"
+  - "research"
+created_at: "2026-05-15T00:00:00Z"
+
+test_cases:
+  - id: "citation_001"
+    description: "Web research with required citations"
+    priority: 1
+    enabled: true
+    tags:
+      - "happy_path"
+      - "web_search"
+    automation_spec:
+      name: "researched_brief"
+      nodes:
+        - id: "research_node"
+          node_type: "research"
+          objective: "Research and cite recent AI safety papers"
+          output_contract: "JSON with citations array (3+ items)"
+      validators:
+        - "citations"
+        - "web_sources"
+      config:
+        min_citations: 3
+        max_repair_iterations: 3
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "citations"
+        - "web_sources"
+      max_repair_iterations: 3
+      output_format: "json"
+      quality_indicators:
+        - "min_3_citations"
+        - "verified_urls"
+
+  - id: "citation_002"
+    description: "Research synthesis without local source reads"
+    priority: 2
+    enabled: true
+    tags:
+      - "happy_path"
+      - "research_synthesis"
+    automation_spec:
+      name: "synthesis_no_local"
+      nodes:
+        - id: "synthesize_node"
+          node_type: "research_synthesis"
+          objective: "Synthesize web research without requiring local files"
+          output_contract: "Markdown report with web citations"
+      validators:
+        - "citations"
+      config:
+        require_local_source_reads: false
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "citations"
+      max_repair_iterations: 2
+      output_format: "markdown"
+
+  - id: "citation_003"
+    description: "MCP connector source - must call actual connector"
+    priority: 2
+    enabled: true
+    tags:
+      - "happy_path"
+      - "connector"
+      - "mcp"
+    automation_spec:
+      name: "connector_research"
+      nodes:
+        - id: "reddit_node"
+          node_type: "research"
+          objective: "Research from Reddit MCP connector"
+          output_contract: "JSON with reddit_results array"
+      validators:
+        - "contract"
+        - "connector_called"
+      config:
+        connector_id: "reddit-gmail"
+        required_tool: "mcp.reddit_gmail.reddit_search_across_subreddits"
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "contract"
+        - "connector_called"
+      max_repair_iterations: 2
+      quality_indicators:
+        - "connector_actually_called"
+
+  - id: "citation_004"
+    description: "Sparse citations should fail validation"
+    priority: 2
+    enabled: true
+    tags:
+      - "validation"
+      - "citations"
+    automation_spec:
+      name: "sparse_citations"
+      nodes:
+        - id: "research_node"
+          node_type: "research"
+          objective: "Research topic but generate response with insufficient citations"
+          output_contract: "JSON requiring 5+ citations"
+      validators:
+        - "citations"
+      config:
+        min_citations: 5
+        max_repair_iterations: 2
+    expected_output:
+      artifact_status: "blocked"
+      required_validators: []
+      max_repair_iterations: 2
+
+  - id: "citation_005"
+    description: "Web sources missing should trigger repair"
+    priority: 3
+    enabled: true
+    tags:
+      - "validation"
+      - "web_sources"
+    automation_spec:
+      name: "web_required"
+      nodes:
+        - id: "research_node"
+          node_type: "research"
+          objective: "Research with web sources fully cited"
+          output_contract: "JSON with web_sources_reviewed array"
+      validators:
+        - "web_sources"
+      config:
+        max_repair_iterations: 2
+    expected_output:
+      artifact_status: "completed_with_warnings"
+      required_validators:
+        - "web_sources"
+      unmet_requirements_acceptable: true
+      max_repair_iterations: 2
