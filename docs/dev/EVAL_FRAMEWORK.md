@@ -29,7 +29,41 @@ The eval-runner has three execution modes, selected via `--engine-mode <MODE>`:
 
 **Backward compatibility:** the legacy `--simulation` flag is preserved and is equivalent to `--engine-mode simulation`.
 
-### Stub mode internals
+### Remote Engine Support (HTTP)
+
+Both Stub and Live modes now support remote engine execution via HTTP. This allows the CLI to connect to a running Tandem engine without needing to bootstrap an `AppState` locally.
+
+**New CLI flags:**
+- `--engine-url <URL>` — Remote engine HTTP endpoint (default: `http://127.0.0.1:39731`)
+- `--engine-token <TOKEN>` — API token for authentication (default: `TANDEM_API_TOKEN` env var)
+
+**Dispatch logic:**
+1. If `--engine-url` is set → use `RemoteEngineExecutor` (HTTP client)
+2. Else if `AppState` is available → use local `EngineExecutor`
+3. Else → error with clear message
+
+**Example — running against a local engine:**
+
+```bash
+# Set up the token from your systemd service
+export TANDEM_API_TOKEN="$(sed -n 's/^TANDEM_API_TOKEN=//p' /etc/tandem/engine.env | head -1)"
+
+# Run eval-runner against the engine via HTTP
+cargo run --bin eval-runner -- \
+  --dataset eval_datasets/critical_path.yaml \
+  --engine-mode live \
+  --engine-url http://127.0.0.1:39731 \
+  --engine-token $TANDEM_API_TOKEN \
+  --output /tmp/results.json
+```
+
+The remote executor:
+- POSTs the automation spec to `/api/automations/v2/runs/submit`
+- Polls `/api/automations/v2/runs/{run_id}` until terminal status
+- Extracts metrics the same way as local execution
+- Passes the token via `X-Tandem-Token` header
+
+### Stub Mode Internals
 
 `--engine-mode stub` wires `ScriptedEvalProvider` (`crates/tandem-server/src/eval/scripted_provider.rs`) into the engine's `ProviderRegistry` via `replace_for_test`. The provider matches against the assembled prompt with substring patterns; the first match wins, and an unmatched prompt falls back to a kitchen-sink JSON response (containing `summary`, `content`, `citations`, `web_sources`, `code`, and a few other fields most output-contract validators look for).
 
@@ -46,8 +80,6 @@ let provider = ScriptedEvalProvider::new()
     .with_pattern("write rust code", ScriptedResponse::Text("fn solution() -> i32 { 42 }".to_string()));
 ```
 
-> **Note**: as of the first integration phase, the CLI itself does not yet construct an `AppState`. Stub/Live modes therefore produce a failed `EvalRunResult` with `failure_mode: FeatureDisabled` when invoked directly through the binary. A follow-up will lift `test_state()` from `http/tests` so the binary can wire up `AppState` and call `EvalRunner::with_app_state(state)` automatically. Until that lands, stub-mode testing happens via the engine_executor unit tests and the `eval-stub-baseline.yml` workflow which expects the same wiring.
-
 ## Quick Start
 
 ### Running an Evaluation
@@ -58,20 +90,32 @@ cargo run --release --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --output /tmp/results.json
 
-# Run against the scripted engine stub
-cargo run --release --bin eval-runner -- \
-  --dataset eval_datasets/critical_path.yaml \
-  --output /tmp/results.json \
-  --engine-mode stub
-
-# Run against live provider (requires ANTHROPIC_API_KEY) and filter by tag
+# Run against a live engine via HTTP (requires running engine at http://127.0.0.1:39731)
+export TANDEM_API_TOKEN="$(sed -n 's/^TANDEM_API_TOKEN=//p' /etc/tandem/engine.env | head -1)"
 cargo run --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --engine-mode live \
-  --provider anthropic \
-  --model claude-opus-4-7 \
+  --engine-url http://127.0.0.1:39731 \
+  --engine-token $TANDEM_API_TOKEN \
+  --output /tmp/results.json
+
+# Run against the scripted engine stub (via remote engine)
+cargo run --release --bin eval-runner -- \
+  --dataset eval_datasets/critical_path.yaml \
+  --engine-mode stub \
+  --engine-url http://127.0.0.1:39731 \
+  --engine-token $TANDEM_API_TOKEN \
+  --output /tmp/results.json
+
+# Run against live provider and filter by tag
+cargo run --bin eval-runner -- \
+  --dataset eval_datasets/critical_path.yaml \
+  --engine-mode live \
+  --engine-url http://127.0.0.1:39731 \
+  --engine-token $TANDEM_API_TOKEN \
   --filter-tag happy_path \
-  --num-workers 4
+  --num-workers 4 \
+  --output /tmp/results.json
 
 # View results
 jq . /tmp/results.json
