@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, RefreshCw } from "lucide-react";
 import {
   Button,
   Card,
@@ -13,11 +14,15 @@ import { AdvancedMissionBuilder } from "@/components/agent-automation/AdvancedMi
 import { DeveloperRunViewer } from "@/components/developer/DeveloperRunViewer";
 import { CoderRunDetailCard } from "@/components/coder/shared/CoderRunDetailCard";
 import { CoderRunList } from "@/components/coder/shared/CoderRunList";
+import { CoderRunsSummary } from "@/components/coder/CoderRunsSummary";
+import { CoderGithubProjectPanel } from "@/components/coder/CoderGithubProjectPanel";
 import {
   coderMetadataFromAutomation,
   extractSessionIdsFromRun,
   matchesActiveProject,
+  runIsActive,
   runSortTimestamp,
+  runStatusTone,
   shortText,
   type DerivedCoderRun,
 } from "@/components/coder/shared/coderRunUtils";
@@ -73,7 +78,6 @@ type CoderWorkspacePageProps = {
   onOpenMcpExtensions?: () => void;
 };
 
-type CoderTab = "create" | "runs";
 type SavedCoderTemplate = {
   id: string;
   name: string;
@@ -112,29 +116,50 @@ const CODER_PRESETS = [
   },
 ] as const;
 
-function TabButton({
+type TabKey = "create" | "runs";
+
+type TabBadgeTone = "default" | "attention" | "danger";
+
+function TabPill({
   active,
-  children,
+  label,
+  count,
+  tone = "default",
   onClick,
 }: {
   active: boolean;
-  children: React.ReactNode;
+  label: string;
+  count?: number;
+  tone?: TabBadgeTone;
   onClick: () => void;
 }) {
+  const badgeClass =
+    tone === "attention"
+      ? "bg-amber-300/20 text-amber-100 border border-amber-300/40"
+      : tone === "danger"
+        ? "bg-red-500/20 text-red-100 border border-red-500/40"
+        : "bg-surface-elevated text-text-muted border border-border";
   return (
-    <Button size="sm" variant={active ? "primary" : "secondary"} onClick={onClick}>
-      {children}
-    </Button>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-all ${
+        active
+          ? "bg-primary text-background"
+          : "text-text-muted hover:bg-surface-elevated hover:text-text"
+      }`}
+    >
+      <span>{label}</span>
+      {typeof count === "number" && count > 0 ? (
+        <span
+          className={`inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold ${active ? "bg-background/30 text-background" : badgeClass}`}
+        >
+          {count}
+        </span>
+      ) : null}
+    </button>
   );
-}
-
-function syncStateLabel(value: string | null | undefined): string {
-  if (!value) return "Unknown";
-  return value
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 export function CoderWorkspacePage({
@@ -149,7 +174,10 @@ export function CoderWorkspacePage({
   onOpenContextRun,
   onOpenMcpExtensions,
 }: CoderWorkspacePageProps) {
-  const [tab, setTab] = useState<CoderTab>("create");
+  const [tab, setTab] = useState<TabKey>("create");
+  const [tabAutoChosen, setTabAutoChosen] = useState(false);
+  const [runsLastUpdatedMs, setRunsLastUpdatedMs] = useState<number | null>(null);
+  const [legacyOpen, setLegacyOpen] = useState(false);
   const [selectedPreset, setSelectedPreset] =
     useState<(typeof CODER_PRESETS)[number]["id"]>("repo-task");
   const [savedTemplates, setSavedTemplates] = useState<SavedCoderTemplate[]>([]);
@@ -451,6 +479,7 @@ export function CoderWorkspacePage({
         .sort((a, b) => runSortTimestamp(b.run) - runSortTimestamp(a.run));
       setCoderRuns(nextRuns);
       setRunsError(null);
+      setRunsLastUpdatedMs(Date.now());
       setSelectedRunId((current) => {
         if (current && nextRuns.some((row) => row.run.run_id === current)) return current;
         return nextRuns[0]?.run.run_id || "";
@@ -550,6 +579,15 @@ export function CoderWorkspacePage({
   }, [activeProject?.id]);
 
   useEffect(() => {
+    if (tabAutoChosen) return;
+    if (runsLoading) return;
+    if (coderRuns.some((row) => runIsActive(row.run))) {
+      setTab("runs");
+    }
+    setTabAutoChosen(true);
+  }, [coderRuns, runsLoading, tabAutoChosen]);
+
+  useEffect(() => {
     if (!selectedRunId) {
       setSelectedRunDetail(null);
       setSelectedCoderRunRecord(null);
@@ -621,7 +659,6 @@ export function CoderWorkspacePage({
   );
 
   const githubProjectBinding = projectBinding?.github_project_binding || null;
-  const githubProjectStatusMapping = githubProjectBinding?.status_mapping || null;
   const githubProjectServerConnected = useMemo(() => {
     const explicitServer = String(githubProjectBinding?.mcp_server || "").trim();
     if (explicitServer) {
@@ -831,82 +868,89 @@ export function CoderWorkspacePage({
     }
   };
 
+  const runsTally = useMemo(() => {
+    const tally = { total: coderRuns.length, active: 0, awaiting: 0, failed: 0 };
+    for (const row of coderRuns) {
+      const tone = runStatusTone(row.run);
+      if (tone === "running" || tone === "queued" || tone === "paused" || tone === "awaiting") {
+        tally.active += 1;
+      }
+      if (tone === "awaiting") tally.awaiting += 1;
+      if (tone === "failed") tally.failed += 1;
+    }
+    return tally;
+  }, [coderRuns]);
+
+  const runsTabTone: TabBadgeTone =
+    runsTally.awaiting > 0 ? "attention" : runsTally.failed > 0 ? "danger" : "default";
+  const runsTabCount = runsTally.active + runsTally.failed;
+
   return (
     <div className="h-full overflow-y-auto p-4">
       <div className="mx-auto max-w-[1480px] space-y-4">
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
-            <div>
-              <CardTitle>Coder</CardTitle>
-              <CardDescription>
-                Home for coding swarm creation and operation, reusing the existing mission and
-                automation machinery.
+        <Card className="p-4">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <CardTitle className="text-xl">Coder</CardTitle>
+              <CardDescription className="mt-1">
+                Launch coding swarms against your repo, pull in GitHub Project items, and steer runs
+                as they go.
               </CardDescription>
+              <div className="mt-3 max-w-md">
+                <ProjectSwitcher
+                  projects={userProjects}
+                  activeProject={activeProject}
+                  onSwitchProject={onSwitchProject}
+                  onAddProject={onAddProject}
+                  onManageProjects={onManageProjects}
+                  isLoading={projectSwitcherLoading}
+                />
+                {repoContextLoading ? (
+                  <div className="mt-1.5 text-[11px] text-text-subtle">Detecting git repo…</div>
+                ) : repoContext?.is_repo ? (
+                  <div className="mt-1.5 text-[11px] text-text-subtle">
+                    {repoContext.repo_slug || "Local git repo"}
+                    {repoContext.current_branch ? ` · ${repoContext.current_branch}` : ""}
+                    {repoContext.default_branch &&
+                    repoContext.default_branch !== repoContext.current_branch
+                      ? ` (default ${repoContext.default_branch})`
+                      : ""}
+                  </div>
+                ) : repoContextError ? (
+                  <div className="mt-1.5 text-[11px] text-red-300">{repoContextError}</div>
+                ) : activeProject ? (
+                  <div className="mt-1.5 text-[11px] text-text-subtle">
+                    Not a git repo — coder runs will use the folder path only.
+                  </div>
+                ) : null}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <TabButton active={tab === "create"} onClick={() => setTab("create")}>
-                Create
-              </TabButton>
-              <TabButton active={tab === "runs"} onClick={() => setTab("runs")}>
-                Runs
-              </TabButton>
-              <Button size="sm" variant="secondary" onClick={onOpenAutomation}>
+            <div className="flex flex-col items-end gap-2">
+              <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-surface-elevated/40 p-1">
+                <TabPill
+                  active={tab === "create"}
+                  label="Create"
+                  onClick={() => {
+                    setTab("create");
+                    setTabAutoChosen(true);
+                  }}
+                />
+                <TabPill
+                  active={tab === "runs"}
+                  label="Runs"
+                  count={runsTabCount > 0 ? runsTabCount : undefined}
+                  tone={runsTabTone}
+                  onClick={() => {
+                    setTab("runs");
+                    setTabAutoChosen(true);
+                  }}
+                />
+              </div>
+              <Button size="sm" variant="ghost" onClick={onOpenAutomation}>
                 Open Agent Automation
               </Button>
             </div>
-          </CardHeader>
-          <CardContent className="grid gap-3 md:grid-cols-3">
-            <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-              <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                Active Project
-              </div>
-              <div className="mt-1 text-sm font-medium text-text">
-                {activeProject?.name || "No folder selected"}
-              </div>
-              <div className="mt-1 text-xs text-text-muted">
-                {activeProject?.path || "Select a user repo before launching a coding swarm."}
-              </div>
-            </div>
-            <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-              <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                First Slice
-              </div>
-              <div className="mt-1 text-sm font-medium text-text">UI-only Coder shell</div>
-              <div className="mt-1 text-xs text-text-muted">
-                This slice consolidates navigation and creation UX. Automation-backed coder runs are
-                wired in the follow-on backend slices.
-              </div>
-            </div>
-            <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-              <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                Compatibility
-              </div>
-              <div className="mt-1 text-sm font-medium text-text">Legacy coder runs remain</div>
-              <div className="mt-1 text-xs text-text-muted">
-                The existing coder inspector stays available below until the unified run model is in
-                place.
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Project Context</CardTitle>
-            <CardDescription>
-              The Coder workspace operates against the active user project and its git repo.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ProjectSwitcher
-              projects={userProjects}
-              activeProject={activeProject}
-              onSwitchProject={onSwitchProject}
-              onAddProject={onAddProject}
-              onManageProjects={onManageProjects}
-              isLoading={projectSwitcherLoading}
-            />
-          </CardContent>
+          </div>
         </Card>
 
         {tab === "create" ? (
@@ -1052,345 +1096,62 @@ export function CoderWorkspacePage({
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">User Repo Context</CardTitle>
-                <CardDescription>
-                  Detected from the active user project path and merged into coder-originated
-                  mission metadata when available.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {repoContextError ? (
-                  <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-                    {repoContextError}
-                  </div>
-                ) : null}
-                {repoContextLoading ? (
-                  <div className="rounded-lg border border-border bg-surface px-4 py-6 text-sm text-text-muted">
-                    Detecting git repo context...
-                  </div>
-                ) : (
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                    <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                      <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                        Repo Root
-                      </div>
-                      <div className="mt-1 break-all text-xs text-text">
-                        {repoContext?.repo_root || activeProject?.path || "Not detected"}
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                      <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                        Remote Slug
-                      </div>
-                      <div className="mt-1 break-all text-xs text-text">
-                        {repoContext?.repo_slug || "Not detected"}
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                      <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                        Current Branch
-                      </div>
-                      <div className="mt-1 break-all text-xs text-text">
-                        {repoContext?.current_branch || "Not detected"}
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                      <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                        Default Branch
-                      </div>
-                      <div className="mt-1 break-all text-xs text-text">
-                        {repoContext?.default_branch || "Not detected"}
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <div className="rounded-lg border border-border bg-surface-elevated/20 px-4 py-3 text-xs text-text-muted">
-                  {repoContext?.is_repo
-                    ? "Detected git metadata is now used to prefill coder mission metadata for this user repo."
-                    : "The active project path is not currently resolving to a git repo with a discoverable origin remote."}
-                </div>
-              </CardContent>
-            </Card>
+            <CoderGithubProjectPanel
+              activeProjectId={activeProject?.id}
+              activeProjectName={activeProject?.name}
+              projectBinding={projectBinding}
+              projectBindingLoading={projectBindingLoading}
+              projectBindingError={projectBindingError}
+              githubProjectOwnerInput={githubProjectOwnerInput}
+              setGithubProjectOwnerInput={setGithubProjectOwnerInput}
+              githubProjectNumberInput={githubProjectNumberInput}
+              setGithubProjectNumberInput={setGithubProjectNumberInput}
+              githubProjectInbox={githubProjectInbox}
+              githubProjectInboxLoading={githubProjectInboxLoading}
+              githubProjectInboxError={githubProjectInboxError}
+              githubProjectSchemaDrift={githubProjectSchemaDrift}
+              githubProjectLiveSchemaFingerprint={githubProjectLiveSchemaFingerprint}
+              githubProjectBusyKey={githubProjectBusyKey}
+              githubProjectReadReady={githubProjectReadReady}
+              githubProjectWriteReady={githubProjectWriteReady}
+              githubProjectServerConnected={githubProjectServerConnected}
+              onSaveBinding={() => void saveGithubProjectBinding()}
+              onRefreshInbox={() =>
+                activeProject?.id ? void refreshGithubProjectInbox(activeProject.id) : undefined
+              }
+              onIntakeItem={(item) => void handleIntakeProjectItem(item)}
+              onOpenLinkedRun={(runId) => {
+                setSelectedRunId(runId);
+                setTab("runs");
+                setTabAutoChosen(true);
+              }}
+              onOpenMcpExtensions={onOpenMcpExtensions}
+            />
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">GitHub Project Intake</CardTitle>
-                <CardDescription>
-                  Connect one GitHub Project to this coder workspace, pull issue-backed TODO items
-                  into Tandem, and project key status changes back out.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {projectBindingError ? (
-                  <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-                    {projectBindingError}
-                  </div>
-                ) : null}
-                {githubProjectInboxError ? (
-                  <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-                    {githubProjectInboxError}
-                  </div>
-                ) : null}
-                {!githubProjectReadReady ? (
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                    <div>
-                      GitHub Project tools are not ready yet. We need MCP read access before this
-                      intake flow can validate or list project items.
-                    </div>
-                    {onOpenMcpExtensions ? (
-                      <Button size="sm" variant="secondary" onClick={onOpenMcpExtensions}>
-                        Open MCP Extensions
-                      </Button>
-                    ) : null}
-                  </div>
-                ) : null}
-                {githubProjectReadReady && !githubProjectWriteReady ? (
-                  <div className="rounded-lg border border-border bg-surface-elevated/20 px-4 py-3 text-xs text-text-muted">
-                    GitHub Project access is currently read-only. Inbox listing and intake can still
-                    work, but outward status projection is unavailable until update access is
-                    connected.
-                  </div>
-                ) : null}
-                <div className="grid gap-3 rounded-xl border border-border bg-surface-elevated/20 p-4 lg:grid-cols-[minmax(0,1fr)_180px_auto]">
-                  <div className="space-y-2">
-                    <div className="text-xs font-medium uppercase tracking-wide text-text-subtle">
-                      Owner
-                    </div>
-                    <Input
-                      value={githubProjectOwnerInput}
-                      onChange={(event) => setGithubProjectOwnerInput(event.target.value)}
-                      placeholder="acme-inc"
-                      disabled={!activeProject || projectBindingLoading}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="text-xs font-medium uppercase tracking-wide text-text-subtle">
-                      Project Number
-                    </div>
-                    <Input
-                      value={githubProjectNumberInput}
-                      onChange={(event) => setGithubProjectNumberInput(event.target.value)}
-                      placeholder="12"
-                      inputMode="numeric"
-                      disabled={!activeProject || projectBindingLoading}
-                    />
-                  </div>
-                  <div className="flex flex-wrap items-end gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => void saveGithubProjectBinding()}
-                      loading={githubProjectBusyKey === "save-binding"}
-                      disabled={!activeProject || !githubProjectReadReady}
-                    >
-                      {githubProjectBinding ? "Refresh Binding" : "Connect Project"}
-                    </Button>
-                    {githubProjectBinding && activeProject?.id ? (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => void refreshGithubProjectInbox(activeProject.id)}
-                        loading={githubProjectInboxLoading}
-                      >
-                        Refresh Inbox
-                      </Button>
-                    ) : null}
-                  </div>
+            <Card className="p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Mission</CardTitle>
+                  <CardDescription>
+                    Using{" "}
+                    <span className="font-medium text-text">
+                      {CODER_PRESETS.find((preset) => preset.id === selectedPreset)?.title ||
+                        selectedPreset}
+                    </span>{" "}
+                    preset. The builder below emits the same mission contract Agent Automation
+                    consumes.
+                  </CardDescription>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                      Repo Slug
-                    </div>
-                    <div className="mt-1 break-all text-xs text-text">
-                      {repoContext?.repo_slug || githubProjectBinding?.repo_slug || "Advisory only"}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                      MCP Transport
-                    </div>
-                    <div className="mt-1 text-xs text-text">
-                      {githubProjectBinding?.mcp_server ||
-                        (githubProjectServerConnected ? "Detected" : "Not connected")}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                      Saved Fingerprint
-                    </div>
-                    <div className="mt-1 break-all text-xs text-text">
-                      {githubProjectBinding?.schema_fingerprint || "Not bound"}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                      Live Fingerprint
-                    </div>
-                    <div className="mt-1 break-all text-xs text-text">
-                      {githubProjectLiveSchemaFingerprint || "Not checked"}
-                    </div>
-                  </div>
-                </div>
-                {githubProjectStatusMapping ? (
-                  <div className="rounded-xl border border-border bg-surface-elevated/20 p-4">
-                    <div className="text-sm font-semibold text-text">Resolved Status Mapping</div>
-                    <div className="mt-3 grid gap-2 text-xs text-text-muted md:grid-cols-2 xl:grid-cols-5">
-                      <div>
-                        TODO:{" "}
-                        <span className="font-medium text-text">
-                          {githubProjectStatusMapping.todo.name}
-                        </span>
-                      </div>
-                      <div>
-                        In Progress:{" "}
-                        <span className="font-medium text-text">
-                          {githubProjectStatusMapping.in_progress.name}
-                        </span>
-                      </div>
-                      <div>
-                        In Review:{" "}
-                        <span className="font-medium text-text">
-                          {githubProjectStatusMapping.in_review.name}
-                        </span>
-                      </div>
-                      <div>
-                        Blocked:{" "}
-                        <span className="font-medium text-text">
-                          {githubProjectStatusMapping.blocked.name}
-                        </span>
-                      </div>
-                      <div>
-                        Done:{" "}
-                        <span className="font-medium text-text">
-                          {githubProjectStatusMapping.done.name}
-                        </span>
-                      </div>
-                    </div>
-                    {githubProjectSchemaDrift ? (
-                      <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                        The live project schema no longer matches the saved binding fingerprint.
-                        Re-saving the binding will refresh the stored mapping.
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                {!githubProjectBinding ? (
-                  <div className="rounded-lg border border-dashed border-border bg-surface-elevated/10 px-4 py-8 text-center text-sm text-text-muted">
-                    Connect a GitHub Project to show a live inbox of issue-backed TODO items for
-                    this coder workspace.
-                  </div>
-                ) : githubProjectInboxLoading ? (
-                  <div className="rounded-lg border border-border bg-surface px-4 py-8 text-center text-sm text-text-muted">
-                    Loading GitHub Project inbox...
-                  </div>
-                ) : githubProjectInbox.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-border bg-surface-elevated/10 px-4 py-8 text-center text-sm text-text-muted">
-                    No project items are currently ready for intake.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="text-sm font-semibold text-text">Inbox</div>
-                    <div className="space-y-3">
-                      {githubProjectInbox.map((item) => {
-                        const linkedRunId = item.linked_run?.coder_run?.coder_run_id || "";
-                        const canIntake =
-                          item.actionable && (!item.linked_run || !item.linked_run.active);
-                        return (
-                          <div
-                            key={item.project_item_id}
-                            className="rounded-xl border border-border bg-surface-elevated/20 p-4"
-                          >
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm font-semibold text-text">{item.title}</div>
-                                <div className="mt-1 text-xs text-text-muted">
-                                  {item.issue ? `Issue #${item.issue.number}` : "Unsupported item"}
-                                  {item.issue?.html_url ? ` • ${item.issue.html_url}` : ""}
-                                </div>
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2 text-xs">
-                                <span className="rounded-full border border-border bg-surface px-2 py-1 text-text-muted">
-                                  {item.status_name}
-                                </span>
-                                <span className="rounded-full border border-border bg-surface px-2 py-1 text-text-muted">
-                                  {syncStateLabel(item.remote_sync_state)}
-                                </span>
-                              </div>
-                            </div>
-                            {!item.actionable && item.unsupported_reason ? (
-                              <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-muted">
-                                {item.unsupported_reason}
-                              </div>
-                            ) : null}
-                            {item.linked_run ? (
-                              <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-muted">
-                                Linked run {item.linked_run.coder_run.coder_run_id}
-                                {item.linked_run.active
-                                  ? " is active and already owns this item."
-                                  : " is terminal, so a new intake can create a fresh run generation."}
-                              </div>
-                            ) : null}
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {canIntake ? (
-                                <Button
-                                  size="sm"
-                                  onClick={() => void handleIntakeProjectItem(item)}
-                                  loading={
-                                    githubProjectBusyKey === `intake:${item.project_item_id}`
-                                  }
-                                >
-                                  Intake Into Coder
-                                </Button>
-                              ) : null}
-                              {linkedRunId ? (
-                                <Button
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={() => {
-                                    setSelectedRunId(linkedRunId);
-                                    setTab("runs");
-                                  }}
-                                >
-                                  Open Linked Run
-                                </Button>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Mission Builder</CardTitle>
-                <CardDescription>
-                  The existing advanced mission builder is the authoring engine behind Coder in this
-                  first slice.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="rounded-lg border border-border bg-surface-elevated/40 px-4 py-3 text-sm text-text-muted">
-                  Selected preset:{" "}
-                  <span className="font-medium text-text">
-                    {CODER_PRESETS.find((preset) => preset.id === selectedPreset)?.title}
-                  </span>
-                  . The preset cards are UI scaffolding in this slice; the builder below still emits
-                  the existing mission contract unchanged.
-                </div>
+              </div>
+              <CardContent className="p-0">
                 {catalogError ? (
-                  <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                  <div className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
                     {catalogError}
                   </div>
                 ) : null}
                 {loadingCatalog ? (
                   <div className="rounded-lg border border-border bg-surface px-4 py-8 text-center text-sm text-text-muted">
-                    Loading builder catalog...
+                    Loading builder catalog…
                   </div>
                 ) : (
                   <AdvancedMissionBuilder
@@ -1401,7 +1162,10 @@ export function CoderWorkspacePage({
                     blueprintMetadataPatch={{ coder: metadataPatch }}
                     onRefreshAutomations={async () => undefined}
                     onShowAutomations={onOpenAutomation}
-                    onShowRuns={() => setTab("runs")}
+                    onShowRuns={() => {
+                      setTab("runs");
+                      setTabAutoChosen(true);
+                    }}
                     onOpenMcpExtensions={onOpenMcpExtensions}
                   />
                 )}
@@ -1409,85 +1173,113 @@ export function CoderWorkspacePage({
             </Card>
           </>
         ) : (
-          <div className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Automation-backed Coder Runs</CardTitle>
-                <CardDescription>
-                  Coder now projects runs from coder-tagged Automation V2 records instead of relying
-                  only on the legacy coder store.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" onClick={() => setTab("create")}>
-                    New Coding Swarm
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => void refreshCoderRuns()}>
-                    Refresh Runs
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={onOpenAutomation}>
-                    Open Agent Automation Runtime
-                  </Button>
-                </div>
-                {runsError ? (
-                  <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-                    {runsError}
-                  </div>
-                ) : null}
-                {runsLoading ? (
-                  <div className="rounded-lg border border-border bg-surface px-4 py-8 text-center text-sm text-text-muted">
-                    Loading coder-tagged automation runs...
-                  </div>
-                ) : coderRuns.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-border bg-surface-elevated/20 px-4 py-8 text-center text-sm text-text-muted">
-                    No coder-tagged automation runs yet. Launch a coding swarm from the Create tab
-                    to populate this view.
-                  </div>
-                ) : (
-                  <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
-                    <CoderRunList
-                      runs={coderRuns}
-                      selectedRunId={selectedRunId}
-                      onSelectRun={setSelectedRunId}
-                      onOpenAutomationRun={onOpenAutomationRun}
-                      onOpenContextRun={openContextRunForAutomationRun}
-                    />
+          <div className="space-y-3">
+            <CoderRunsSummary
+              runs={coderRuns}
+              lastUpdatedMs={runsLastUpdatedMs}
+              isLoading={runsLoading}
+            />
 
-                    <CoderRunDetailCard
-                      key={selectedRunId || "empty-run-detail"}
-                      selectedCoderRun={selectedCoderRun}
-                      selectedCoderRunRecord={selectedCoderRunRecord}
-                      selectedRunDetail={selectedRunDetail}
-                      selectedContextRunId={selectedContextRunId}
-                      selectedSessionPreview={selectedSessionPreview}
-                      sessionMessagesBySession={selectedRunMessagesBySession}
-                      selectedContextRun={selectedContextRun}
-                      selectedContextBlackboard={selectedContextBlackboard}
-                      selectedContextPatches={selectedContextPatches}
-                      selectedContextError={selectedContextError}
-                      busyKey={busyKey}
-                      onRefreshDetail={(runId) => void loadSelectedRunDetail(runId)}
-                      onRunAction={(runId, action) => void handleRunAction(runId, action)}
-                      onGateDecision={(runId, decision) => void handleGateDecision(runId, decision)}
-                      onOpenAutomationRun={onOpenAutomationRun}
-                      onOpenContextRun={onOpenContextRun}
-                    />
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => {
+                  setTab("create");
+                  setTabAutoChosen(true);
+                }}
+              >
+                New coding swarm
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void refreshCoderRuns()}
+                loading={runsLoading}
+              >
+                <RefreshCw className="mr-1 h-3.5 w-3.5" aria-hidden />
+                Refresh
+              </Button>
+              <Button size="sm" variant="ghost" onClick={onOpenAutomation}>
+                Agent Automation runtime
+              </Button>
+            </div>
 
-            <div>
-              <div className="mb-3 px-1">
-                <div className="text-sm font-semibold text-text">Legacy Compatibility</div>
-                <div className="text-xs text-text-muted">
-                  Existing coder runs remain available here until the hybrid run model is wired.
+            {runsError ? (
+              <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                {runsError}
+              </div>
+            ) : null}
+
+            {runsLoading && coderRuns.length === 0 ? (
+              <div className="rounded-2xl border border-border bg-surface px-4 py-12 text-center text-sm text-text-muted">
+                Loading coder runs…
+              </div>
+            ) : coderRuns.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-border bg-surface-elevated/20 px-4 py-16 text-center">
+                <div className="text-sm font-medium text-text">No coder runs yet</div>
+                <div className="mt-1 text-xs text-text-muted">
+                  Launch a coding swarm from the Create tab — runs will show up here live.
                 </div>
+                <Button
+                  className="mt-4"
+                  size="sm"
+                  onClick={() => {
+                    setTab("create");
+                    setTabAutoChosen(true);
+                  }}
+                >
+                  Go to Create
+                </Button>
               </div>
-              <div className="min-h-[960px] rounded-2xl border border-border bg-surface">
-                <DeveloperRunViewer onOpenMcpSettings={onOpenMcpExtensions} />
+            ) : (
+              <div className="grid gap-3 xl:grid-cols-[380px_minmax(0,1fr)]">
+                <CoderRunList
+                  runs={coderRuns}
+                  selectedRunId={selectedRunId}
+                  onSelectRun={setSelectedRunId}
+                  onOpenAutomationRun={onOpenAutomationRun}
+                  onOpenContextRun={openContextRunForAutomationRun}
+                />
+
+                <CoderRunDetailCard
+                  key={selectedRunId || "empty-run-detail"}
+                  selectedCoderRun={selectedCoderRun}
+                  selectedCoderRunRecord={selectedCoderRunRecord}
+                  selectedRunDetail={selectedRunDetail}
+                  selectedContextRunId={selectedContextRunId}
+                  selectedSessionPreview={selectedSessionPreview}
+                  sessionMessagesBySession={selectedRunMessagesBySession}
+                  selectedContextRun={selectedContextRun}
+                  selectedContextBlackboard={selectedContextBlackboard}
+                  selectedContextPatches={selectedContextPatches}
+                  selectedContextError={selectedContextError}
+                  busyKey={busyKey}
+                  onRefreshDetail={(runId) => void loadSelectedRunDetail(runId)}
+                  onRunAction={(runId, action) => void handleRunAction(runId, action)}
+                  onGateDecision={(runId, decision) => void handleGateDecision(runId, decision)}
+                  onOpenAutomationRun={onOpenAutomationRun}
+                  onOpenContextRun={onOpenContextRun}
+                />
               </div>
+            )}
+
+            <div className="rounded-2xl border border-border bg-surface-elevated/20">
+              <button
+                type="button"
+                onClick={() => setLegacyOpen((prev) => !prev)}
+                className="flex w-full items-center justify-between gap-2 px-4 py-2.5 text-xs text-text-muted transition-colors hover:text-text"
+              >
+                <span>Legacy coder inspector</span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${legacyOpen ? "rotate-180" : ""}`}
+                  aria-hidden
+                />
+              </button>
+              {legacyOpen ? (
+                <div className="min-h-[600px] border-t border-border bg-surface">
+                  <DeveloperRunViewer onOpenMcpSettings={onOpenMcpExtensions} />
+                </div>
+              ) : null}
             </div>
           </div>
         )}

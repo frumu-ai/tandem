@@ -478,3 +478,79 @@ export function matchesActiveProject(
   if (!workspaceRoot) return true;
   return workspaceRoot === activeProject.path || workspaceRoot.startsWith(`${activeProject.path}/`);
 }
+
+export type RunStatusTone =
+  | "running"
+  | "queued"
+  | "paused"
+  | "awaiting"
+  | "failed"
+  | "completed"
+  | "cancelled"
+  | "unknown";
+
+export function runStatusTone(run: AutomationV2RunRecord | null): RunStatusTone {
+  if (!run) return "unknown";
+  if (runAwaitingGate(run)) return "awaiting";
+  const status = String(run.status || "")
+    .trim()
+    .toLowerCase();
+  switch (status) {
+    case "running":
+    case "pausing":
+      return "running";
+    case "queued":
+      return "queued";
+    case "paused":
+      return "paused";
+    case "awaiting_approval":
+      return "awaiting";
+    case "failed":
+      return "failed";
+    case "completed":
+    case "succeeded":
+    case "success":
+      return "completed";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "unknown";
+  }
+}
+
+export function runIsActive(run: AutomationV2RunRecord | null) {
+  const tone = runStatusTone(run);
+  return tone === "running" || tone === "queued" || tone === "paused" || tone === "awaiting";
+}
+
+export type RunProgress = {
+  completed: number;
+  pending: number;
+  blocked: number;
+  total: number;
+  percent: number;
+};
+
+export function runProgress(run: AutomationV2RunRecord | null): RunProgress {
+  const completed = completedNodeIds(run).length;
+  const pending = pendingNodeIds(run).length;
+  const blocked = blockedNodeIds(run).length;
+  const total = completed + pending + blocked;
+  const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+  return { completed, pending, blocked, total, percent };
+}
+
+export function relativeTimeFromMs(value: unknown): string {
+  const asNumber = Number(value || 0);
+  if (!Number.isFinite(asNumber) || asNumber <= 0) return "—";
+  const deltaSec = Math.max(0, Math.floor((Date.now() - asNumber) / 1000));
+  if (deltaSec < 5) return "just now";
+  if (deltaSec < 60) return `${deltaSec}s ago`;
+  const min = Math.floor(deltaSec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  return new Date(asNumber).toLocaleDateString();
+}
