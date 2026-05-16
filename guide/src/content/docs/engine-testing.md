@@ -36,6 +36,14 @@ cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731
 cargo test -p tandem-server -p tandem-core -p tandem-ai
 ```
 
+For AI quality datasets and regression checks, use the [Eval Runner CLI](./eval-runner/):
+
+```bash
+cargo run -p tandem-server --bin eval-runner -- \
+  --dataset eval_datasets/critical_path.yaml \
+  --engine-mode simulation
+```
+
 ## API token validation
 
 `tandem-engine serve` requires API token auth by default. Without an explicit token, the engine
@@ -71,6 +79,17 @@ Do not use this opt-out with public, hosted, reverse-proxied, tunneled, or share
 ```bash
 cargo test -p tandem-server -p tandem-core -p tandem-ai
 ```
+
+**AI eval dataset checks**:
+
+```bash
+cargo run -p tandem-server --bin eval-runner -- \
+  --dataset eval_datasets/critical_path.yaml \
+  --engine-mode simulation \
+  --output /tmp/tandem-eval-results.json
+```
+
+The standalone eval CLI currently supports simulation mode for direct local use. Stub/live modes are parsed by the CLI but require engine `AppState` wiring; see [Eval Runner CLI](./eval-runner/) before relying on those modes.
 
 **Mission/routine focused tests**:
 

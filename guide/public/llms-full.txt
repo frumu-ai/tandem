@@ -44,6 +44,7 @@
 - /webmcp-for-agents/ - WebMCP workflow guidance for agents.
 - /autonomous-coding-agents-github-projects/ - GitHub Projects coding-agent workflows.
 - /browser-setup-and-testing/ - Browser install, setup, and validation.
+- /eval-runner/ - AI evaluation CLI for `eval-runner`, `eval_runner`, `EvalRunner`, `eval_datasets`, simulation mode, and regression result JSON.
 
 ## Architecture and reference
 
@@ -51,6 +52,7 @@
 - /architecture/ - Internal architecture overview.
 - /protocol-matrix/ - Protocol compatibility matrix.
 - /engine-testing/ - Engine testing guidance.
+- /eval-runner/ - Eval Runner CLI reference for AI quality datasets and regression checks.
 - /reference/engine-commands/ - Engine CLI reference.
 - /reference/tui-commands/ - TUI command reference.
 - /reference/tools/ - Tool API reference.
@@ -78,6 +80,7 @@
 - If it needs integration guidance, use `/mcp-automated-agents/`, `/webmcp-for-agents/`, and the SDK pages.
 - If it needs the shortest actionable checklist, use `/agent-workflow-mission-quickstart/`.
 - If it needs provider or model policy guidance, use `/choosing-providers-and-models-for-agents/`.
+- If it needs AI quality evals, eval datasets, or `cargo run -p tandem-server --bin eval-runner`, use `/eval-runner/`.
 - If it needs to generate a mission or workflow from human intent, use `/prompting-workflows-and-missions/`.
 - If it needs to choose the correct runtime path, use `/creating-and-running-workflows-and-missions/`.
 - If it needs engine auth or token handling, use `/engine-authentication-for-agents/`.

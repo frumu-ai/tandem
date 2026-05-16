@@ -86,6 +86,7 @@ export default defineConfig({
             "reference/agent-team-events",
             "architecture",
             "engine-testing",
+            "eval-runner",
             "build-from-source",
           ],
         },

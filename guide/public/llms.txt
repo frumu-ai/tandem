@@ -48,6 +48,7 @@
 - /webmcp-for-agents/ - Local HTTP APIs for agents.
 - /autonomous-coding-agents-github-projects/ - GitHub Projects coding-agent workflows.
 - /browser-setup-and-testing/ - Browser setup, install, and validation.
+- /eval-runner/ - AI evaluation CLI for `eval-runner`, `eval_runner`, `EvalRunner`, `eval_datasets`, simulation mode, and regression result JSON.
 - /sdk/ - SDK landing page.
 - /sdk/typescript/ - TypeScript SDK.
 - /sdk/python/ - Python SDK.
@@ -59,6 +60,7 @@
 - /architecture/ - System architecture overview.
 - /protocol-matrix/ - Protocol and compatibility matrix.
 - /engine-testing/ - Engine testing guidance.
+- /eval-runner/ - Eval Runner CLI reference for AI quality datasets and regression checks.
 - /reference/engine-commands/ - Engine CLI commands.
 - /reference/tui-commands/ - TUI commands.
 - /reference/tools/ - Tool API reference.
@@ -74,6 +76,7 @@
 - Want to build integrations? Use `/mcp-automated-agents/`, `/webmcp-for-agents/`, and the SDK pages.
 - Want the shortest reliable checklist? Start with `/agent-workflow-mission-quickstart/`.
 - Need help picking providers or model policies? Use `/choosing-providers-and-models-for-agents/`.
+- Need AI quality evals or `cargo run -p tandem-server --bin eval-runner`? Use `/eval-runner/`.
 - Want to generate strong workflow or mission specs? Start with `/prompting-workflows-and-missions/`.
 - Want a ready-made showcase payload playbook? Start with `/tandem-wow-demo-playbook/`.
 - Want to know which engine path to call next? Use `/creating-and-running-workflows-and-missions/`.
