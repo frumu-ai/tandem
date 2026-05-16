@@ -24,6 +24,7 @@ What ships now:
 - Protected fintech tools and unknown external mutation tools are blocked with clear denial reasons until an approval path is used.
 - Denied protected fintech actions emit runtime events and protected audit records.
 - `/audit/stream` maps fintech protected-action denials into admin-readable audit rows.
+- Mission runtime projection ignores `metadata.approval.skip_approval` for fintech strict nodes, so UI/planner metadata cannot suppress injected approval gates for fintech strict work.
 
 ### Evidence, Citations, And Audit Packages
 
@@ -41,6 +42,8 @@ What ships now:
 
 - No public HTTP API changes were added for fintech strict mode.
 - This is not a production-ready regulated fintech deployment claim.
+- `fintech_strict` is an internal profile marker, not mandatory isolation by itself.
+- Approval gates are runtime control points, not complete authorization; regulated protected-tool execution should fail closed unless the runtime verifies matching policy/approval evidence at call time.
 - Automatic protected-action approval routing, approved-gate verification before protected execution, persisted fintech audit exports, OIDC, SCIM, SIEM export, SOC2, full RBAC, and private sidecar enforcement remain follow-up work.
 
 ### Versioning

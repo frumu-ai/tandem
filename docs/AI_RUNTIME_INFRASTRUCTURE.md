@@ -70,7 +70,7 @@ The important boundary is that clients do not become separate runtimes. They sub
 
 Fintech compliance and risk operations are a strong example of why Tandem is runtime infrastructure instead of a chat wrapper. A compliance/risk update brief can run as a durable workflow with scoped sources, cited artifacts, validation metadata, protected approval gates, and replayable audit evidence.
 
-The boundary matters: Tandem can help investigate, draft, reconcile, classify, and prepare evidence. It should not autonomously move money, freeze accounts, approve customers, file regulatory reports, make credit decisions, or change risk ratings. Those actions require protected approvals and stronger enterprise gates.
+The boundary matters: Tandem can help investigate, draft, reconcile, classify, and prepare evidence. It should not autonomously move money, freeze accounts, approve customers, file regulatory reports, make credit decisions, or change risk ratings. Those actions require runtime-verified protected approvals, policy evidence, and stronger enterprise gates; approval-gate workflow state alone should not be described as complete authorization.
 
 ## What Tandem Is Not
 

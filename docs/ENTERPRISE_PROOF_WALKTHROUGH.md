@@ -12,7 +12,7 @@ This walkthrough shows how a platform engineer can evaluate Tandem as governed A
 
 4. **Execution uses scoped tools.** Runtime policy controls which built-in tools and MCP connector tools are visible and callable for a workflow or step. Per-task tool/MCP policy prevents broad connector access from leaking into steps that do not need it.
 
-5. **Approval gates pause consequential actions.** A send, post, publish, write, or other sensitive action can pause as a runtime-owned approval request. The Approvals Inbox and channel cards resolve the same underlying gate state instead of relying on prompt text.
+5. **Approval gates pause consequential actions.** A send, post, publish, write, or other sensitive action can pause as a runtime-owned approval request. The Approvals Inbox and channel cards resolve the same underlying gate state instead of relying on prompt text. For regulated actions, this should be paired with runtime-verified policy/approval evidence at tool execution time before it is treated as authorization.
 
 6. **Artifacts are validated.** The run records output artifacts and validation metadata. Success and failure are runtime state, not only model prose.
 
@@ -57,7 +57,7 @@ For fintech buyers, use compliance and risk operations as the first proof sprint
 6. Inspect audit evidence through protected records or `/audit/stream`.
 7. Show how replay/debug traces the source, artifact, approval, and policy path.
 
-Keep the boundary explicit: this proof sprint demonstrates governed investigation and drafting. It does not demonstrate autonomous money movement, account freezes, customer approval, regulatory filings, credit decisions, or risk-rating changes.
+Keep the boundary explicit: this proof sprint demonstrates governed investigation and drafting. It does not demonstrate autonomous money movement, account freezes, customer approval, regulatory filings, credit decisions, or risk-rating changes. A buyer-facing fintech dry run should attach no protected external mutation tools unless the runtime verifies a matching approval/policy receipt at the protected tool call.
 
 ## Related Docs
 

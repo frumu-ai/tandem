@@ -349,7 +349,9 @@ fn projected_gate(gate: &tandem_workflows::HumanApprovalGate) -> ProjectedAutoma
 /// real: even if the planner agent forgets to add a gate, the compiler adds
 /// one for any node that touches an external mutation. Operators can override
 /// per-step at scope-review time (`SkipApproval` toggle in `ScopeInspector`)
-/// — that override is recorded in node metadata and consulted here.
+/// for ordinary workflows. Fintech strict nodes intentionally ignore that UI
+/// hint because protected-action approval must be enforced by runtime policy,
+/// not by planner metadata or artifact text.
 pub(crate) fn inject_default_approval_gates(
     nodes: &mut [ProjectedAutomationNode<ProjectedMissionInputRef, OutputContractSeed>],
     agents: &[ProjectedAutomationAgentProfile],
@@ -452,11 +454,13 @@ fn node_tool_allowlist<I, O>(
     Vec::new()
 }
 
-/// Operators can pin a step as auto-approved at scope-review time. We honor
-/// the override here so the compiler does not re-inject a gate the human
-/// already explicitly waived. The override lives at
-/// `metadata.approval.skip_approval = true` (a UI-emitted hint).
+/// Operators can pin an ordinary step as auto-approved at scope-review time.
+/// The override lives at `metadata.approval.skip_approval = true` (a
+/// UI-emitted hint). Fintech strict nodes never honor this hint.
 fn node_skip_approval_override<I, O>(node: &ProjectedAutomationNode<I, O>) -> bool {
+    if tandem_core::metadata_enables_fintech_strict(node.metadata.as_ref()) {
+        return false;
+    }
     node.metadata
         .as_ref()
         .and_then(|m| m.pointer("/approval/skip_approval"))
@@ -802,6 +806,27 @@ mod tests {
         assert!(
             projection.nodes[0].gate.is_none(),
             "skip_approval override must prevent re-injection"
+        );
+    }
+
+    #[test]
+    fn fintech_strict_ignores_skip_approval_metadata_override() {
+        let mut projection = compile_mission_runtime_projection(&blueprint_with_workstreams(vec![
+            workstream_with_tools("release_funds", vec!["mcp.bank.release_funds".to_string()]),
+        ]));
+        projection.nodes[0].gate = None;
+        let mut metadata = projection.nodes[0]
+            .metadata
+            .clone()
+            .unwrap_or_else(|| json!({}));
+        metadata["runtime_profile"] = json!("fintech_strict");
+        metadata["approval"] = json!({ "skip_approval": true });
+        projection.nodes[0].metadata = Some(metadata);
+
+        inject_default_approval_gates(&mut projection.nodes, &projection.agents);
+        assert!(
+            projection.nodes[0].gate.is_some(),
+            "fintech_strict must not allow metadata to suppress approval injection"
         );
     }
 

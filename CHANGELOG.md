@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Tool effect ledger source identifiers**: Tool ledger summaries now preserve safe source identifiers such as `source_id`, `document_id`, `ticket_id`, and `record_id` while continuing to avoid raw query text.
 - **Context-run ledger fintech proof summary**: Existing context-run ledger summaries now include `fintech_connector_proof` derived from successful source retrieval calls.
+- **Fintech approval override hardening**: Mission runtime projection now ignores `metadata.approval.skip_approval` for fintech strict nodes, so UI/planner metadata cannot suppress injected approval gates on fintech strict work.
 - **Workflow-level fintech brief validation**: Explicitly marked fintech compliance/risk brief nodes now persist connector proof and validation results in artifact validation metadata, and reject citations that cannot be mapped to recorded connector proof.
 - **Planner fintech strict stamping**: Workflow plans that explicitly ask for fintech compliance/risk brief artifacts now materialize with `fintech_strict` runtime metadata and artifact markers by default, while generic finance workflows remain unstamped.
 - **Eval runner fintech metadata mapping**: Eval specs now carry `runtime_profile`, `tenant_id`, and artifact-contract config into Automation V2 metadata so fintech strict fixtures can exercise the same runtime gates as generated workflows.
@@ -33,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 
 - This release does not add public HTTP API changes for fintech strict mode.
-- OIDC, SCIM, SIEM export, SOC2, full RBAC, private sidecar enforcement, automatic protected-action approval routing, and persisted fintech audit exports remain planned or follow-up work.
+- `fintech_strict` is an internal profile marker, not mandatory isolation by itself; approval gates are runtime control points, not complete authorization.
+- OIDC, SCIM, SIEM export, SOC2, full RBAC, private sidecar enforcement, automatic protected-action approval routing, call-site approved-gate verification, and persisted fintech audit exports remain planned or follow-up work.
 
 ## [0.5.6] - 2026-05-14
 

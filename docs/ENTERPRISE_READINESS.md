@@ -43,11 +43,13 @@ Tandem can honestly claim a serious enterprise architecture path today:
 
 > The public runtime already carries the primitives enterprise AI work needs: durable runs, tenant-aware records, scoped tools, approval gates, artifact validation, protected audit events, and a sidecar-ready contract. Full enterprise identity, RBAC/policy enforcement, OIDC, SCIM, SIEM export, and SOC2 are roadmap items, not shipped guarantees.
 
+Approval gates are runtime control points, not a complete authorization boundary by themselves. For regulated or customer-impacting actions, Tandem should fail closed unless the runtime can verify tenant, policy, approval, proposed-action identity, and capability evidence at the protected tool call. That required-mode enforcement remains roadmap work.
+
 ## Fintech Readiness Note
 
 Fintech compliance and risk operations are a strong proof-sprint fit for Tandem because they need cited artifacts, scoped connectors, protected approvals, tenant-aware records, and replayable audit evidence. A credible first demo is a compliance/risk update brief that reads selected sources, drafts a cited artifact, flags limitations, and pauses before any external or customer-impacting action.
 
-This is not a claim that Tandem is production-ready for regulated fintech deployment. Autonomous money movement, account freezes, customer approval, regulatory filings, credit decisions, and risk-rating changes require protected approval and stronger enterprise gates. Required enterprise mode, policy authorization, private sidecar enforcement, OIDC, SCIM, SIEM export, full RBAC, and SOC2 remain in progress or planned as described above.
+This is not a claim that Tandem is production-ready for regulated fintech deployment. `fintech_strict` is an internal runtime profile marker, not mandatory isolation on its own. Autonomous money movement, account freezes, customer approval, regulatory filings, credit decisions, and risk-rating changes require runtime-verified protected approval/policy evidence and stronger enterprise gates. Required enterprise mode, policy authorization, private sidecar enforcement, OIDC, SCIM, SIEM export, full RBAC, and SOC2 remain in progress or planned as described above.
 
 ## Related Docs
 
