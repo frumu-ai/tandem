@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Protected fintech action classifier and runtime gate**: The runtime now classifies account actions, customer communications, regulatory filings, system-of-record updates, credit decisions, money movement, and evidence publication as protected fintech actions. Fintech strict automations block protected actions and unknown external mutation tools until an approval path is used.
 - **Connector proof and compliance artifact validation helpers**: Added core helpers for extracting connector proof from successful source retrieval tool records, treating discovery/listing as insufficient evidence, and validating compliance/risk brief artifacts for required fields, citations, limitations, approval state, and audit IDs.
 - **Fintech audit evidence assembly**: Added an internal audit package shape and an Automation V2 helper that assembles run, tenant, actor, tool ledger, artifact, approval, and policy-decision evidence for compliance review.
+- **Fintech compliance/risk eval dataset**: Added proof-sprint eval fixtures for unsupported claim rejection, connector proof-of-use, protected-action bypass attempts, cross-tenant source denial, and incomplete evidence limitations.
 
 ### Changed
 
@@ -21,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Context-run ledger fintech proof summary**: Existing context-run ledger summaries now include `fintech_connector_proof` derived from successful source retrieval calls.
 - **Workflow-level fintech brief validation**: Explicitly marked fintech compliance/risk brief nodes now persist connector proof and validation results in artifact validation metadata, and reject citations that cannot be mapped to recorded connector proof.
 - **Planner fintech strict stamping**: Workflow plans that explicitly ask for fintech compliance/risk brief artifacts now materialize with `fintech_strict` runtime metadata and artifact markers by default, while generic finance workflows remain unstamped.
+- **Eval runner fintech metadata mapping**: Eval specs now carry `runtime_profile`, `tenant_id`, and artifact-contract config into Automation V2 metadata so fintech strict fixtures can exercise the same runtime gates as generated workflows.
 - **Audit stream coverage**: `/audit/stream` now normalizes `fintech.protected_action.denied` events into admin-readable audit rows.
 - **Version bump**: Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles move to `0.5.7`.
 

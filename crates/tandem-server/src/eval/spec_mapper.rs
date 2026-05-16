@@ -17,7 +17,7 @@
 ///   retry policy and (× 60s) for the per-node timeout
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::eval::dataset::{EvalTestCase, TestNode};
 use crate::{
@@ -45,7 +45,7 @@ pub fn test_case_to_spec(case: &EvalTestCase) -> AutomationV2Spec {
         .automation_spec
         .nodes
         .iter()
-        .map(|n| map_node(n, max_repair))
+        .map(|n| map_node(case, n, max_repair))
         .collect();
 
     let now = current_time_ms();
@@ -82,7 +82,7 @@ pub fn test_case_to_spec(case: &EvalTestCase) -> AutomationV2Spec {
         updated_at_ms: now,
         creator_id: EVAL_TRIGGER_TYPE.to_string(),
         workspace_root: None,
-        metadata: None,
+        metadata: eval_automation_metadata(case),
         next_fire_at_ms: None,
         last_fired_at_ms: None,
         scope_policy: None,
@@ -91,7 +91,7 @@ pub fn test_case_to_spec(case: &EvalTestCase) -> AutomationV2Spec {
     }
 }
 
-fn map_node(node: &TestNode, max_repair: u32) -> AutomationFlowNode {
+fn map_node(case: &EvalTestCase, node: &TestNode, max_repair: u32) -> AutomationFlowNode {
     let validator = validator_for_node_type(&node.node_type);
     let kind_label = contract_kind_for_node_type(&node.node_type);
     let summary_guidance = if node.output_contract.is_empty() {
@@ -124,7 +124,96 @@ fn map_node(node: &TestNode, max_repair: u32) -> AutomationFlowNode {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
-        metadata: None,
+        metadata: eval_node_metadata(case),
+    }
+}
+
+fn eval_automation_metadata(case: &EvalTestCase) -> Option<Value> {
+    let mut metadata = Map::new();
+    copy_config_string(
+        &case.automation_spec.config,
+        &mut metadata,
+        "runtime_profile",
+    );
+    copy_config_string(
+        &case.automation_spec.config,
+        &mut metadata,
+        "domain_profile",
+    );
+    copy_config_string(
+        &case.automation_spec.config,
+        &mut metadata,
+        "fintech_profile",
+    );
+    copy_config_string(&case.automation_spec.config, &mut metadata, "tenant_id");
+    if metadata_enables_eval_fintech_strict(&metadata) {
+        metadata
+            .entry("runtime_profile".to_string())
+            .or_insert_with(|| Value::String(tandem_core::FINTECH_STRICT_PROFILE.to_string()));
+        metadata
+            .entry("domain_profile".to_string())
+            .or_insert_with(|| Value::String(tandem_core::FINTECH_STRICT_PROFILE.to_string()));
+        metadata
+            .entry("fintech_profile".to_string())
+            .or_insert_with(|| Value::String(tandem_core::FINTECH_STRICT_PROFILE.to_string()));
+        metadata
+            .entry("fintech_strict".to_string())
+            .or_insert(Value::Bool(true));
+    }
+    if metadata.is_empty() {
+        None
+    } else {
+        Some(Value::Object(metadata))
+    }
+}
+
+fn eval_node_metadata(case: &EvalTestCase) -> Option<Value> {
+    let mut metadata = Map::new();
+    copy_config_string(
+        &case.automation_spec.config,
+        &mut metadata,
+        "artifact_contract",
+    );
+    copy_config_string(&case.automation_spec.config, &mut metadata, "artifact_type");
+    if let Some(contract) = metadata
+        .get("artifact_contract")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        let mut fintech = Map::new();
+        fintech.insert("artifact_contract".to_string(), Value::String(contract));
+        metadata.insert("fintech".to_string(), Value::Object(fintech));
+    }
+    if case
+        .automation_spec
+        .config
+        .get("runtime_profile")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case(tandem_core::FINTECH_STRICT_PROFILE))
+    {
+        metadata.insert("fintech_strict".to_string(), Value::Bool(true));
+    }
+    if metadata.is_empty() {
+        None
+    } else {
+        Some(Value::Object(metadata))
+    }
+}
+
+fn metadata_enables_eval_fintech_strict(metadata: &Map<String, Value>) -> bool {
+    let value = Value::Object(metadata.clone());
+    tandem_core::metadata_enables_fintech_strict(Some(&value))
+}
+
+fn copy_config_string(
+    config: &std::collections::HashMap<String, Value>,
+    metadata: &mut Map<String, Value>,
+    key: &str,
+) {
+    if let Some(value) = config.get(key).and_then(Value::as_str).map(str::trim) {
+        if !value.is_empty() {
+            metadata.insert(key.to_string(), Value::String(value.to_string()));
+        }
     }
 }
 
@@ -401,6 +490,45 @@ mod tests {
         assert_eq!(
             spec.flow.nodes[0].timeout_ms,
             Some(5 * PER_REPAIR_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn config_runtime_profile_stamps_fintech_metadata() {
+        let mut case = make_case("fintech_001", vec![make_node("n1", "structured_json")]);
+        case.automation_spec.config.insert(
+            "runtime_profile".to_string(),
+            serde_json::json!("fintech_strict"),
+        );
+        case.automation_spec.config.insert(
+            "artifact_contract".to_string(),
+            serde_json::json!("compliance_risk_update_brief"),
+        );
+        case.automation_spec
+            .config
+            .insert("tenant_id".to_string(), serde_json::json!("tenant-a"));
+
+        let spec = test_case_to_spec(&case);
+
+        let metadata = spec.metadata.as_ref().expect("automation metadata");
+        assert!(tandem_core::metadata_enables_fintech_strict(Some(metadata)));
+        assert_eq!(
+            metadata.get("tenant_id").and_then(Value::as_str),
+            Some("tenant-a")
+        );
+        let node_metadata = spec.flow.nodes[0].metadata.as_ref().expect("node metadata");
+        assert_eq!(
+            node_metadata
+                .get("artifact_contract")
+                .and_then(Value::as_str),
+            Some("compliance_risk_update_brief")
+        );
+        assert_eq!(
+            node_metadata
+                .get("fintech")
+                .and_then(|value| value.get("artifact_contract"))
+                .and_then(Value::as_str),
+            Some("compliance_risk_update_brief")
         );
     }
 

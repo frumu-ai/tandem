@@ -34,6 +34,8 @@ What ships now:
 - Explicitly marked fintech brief workflow nodes persist connector proof and validation results in artifact validation metadata, and reject citations that cannot be mapped to connector proof.
 - Workflow plans that explicitly ask for fintech compliance/risk brief artifacts now materialize with `fintech_strict` runtime metadata and artifact markers by default; generic finance workflows are left alone.
 - An internal audit package helper can assemble run, tenant, actor, tool calls, connector proof, artifacts, approvals, and policy decisions from Automation V2 run state.
+- `eval_datasets/fintech_compliance_risk.yaml` adds proof-sprint fixtures for unsupported claim rejection, connector selected-but-unused rejection, protected-action bypass attempts, cross-tenant source denial, and incomplete evidence surfaced as limitations.
+- Eval runner spec mapping now carries fintech runtime profile, tenant, and artifact-contract metadata into generated Automation V2 specs for stub/live evals.
 
 ### Boundaries
 
