@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { AlertCircle, ExternalLink } from "lucide-react";
+import { Button, Card, CardContent } from "@/components/ui";
 import type {
   AutomationV2RunRecord,
   Blackboard,
@@ -11,11 +12,15 @@ import type {
 } from "@/lib/tauri";
 import { readFileText } from "@/lib/tauri";
 import { CoderRunActionToolbar } from "./CoderRunActionToolbar";
+import { CoderRunStatusBadge } from "./CoderRunStatusBadge";
+import { CoderRunProgress } from "./CoderRunProgress";
 import {
   extractRunBlockers,
   extractSessionIdsFromRun,
+  relativeTimeFromMs,
   runAwaitingGate,
-  runStatusLabel,
+  runProgress,
+  runSortTimestamp,
   runSummary,
   type DerivedCoderRun,
   type SessionPreview,
@@ -257,94 +262,93 @@ export function CoderRunDetailCard({
     },
   ];
 
+  const progress = useMemo(() => runProgress(selectedRunDetail), [selectedRunDetail]);
+  const githubRef = selectedCoderRunRecord?.github_project_ref || null;
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">
-          {selectedCoderRun?.automation.name || "Run detail"}
-        </CardTitle>
-        <CardDescription>
-          Operator view over the linked automation run and its explicit backend context run ID.
-        </CardDescription>
-      </CardHeader>
+    <Card className="p-4">
       <CardContent className="space-y-4">
         {selectedCoderRun && selectedRunDetail ? (
           <>
-            <div className="grid gap-3 md:grid-cols-2">
-              <DetailStat
-                label="Workflow Kind"
-                value={selectedCoderRun.coderMetadata.workflow_kind.replace(/_/g, " ")}
-              />
-              <DetailStat label="Status" value={runStatusLabel(selectedRunDetail)} />
-              <DetailStat
-                label="Automation ID"
-                value={selectedCoderRun.automation.automation_id || "Unknown"}
-              />
-              <DetailStat
-                label="Linked Context Run"
-                value={selectedContextRunId || "Not returned"}
-              />
-              <DetailStat
-                label="Coder Run ID"
-                value={selectedCoderRunRecord?.coder_run_id || "Not resolved"}
-              />
-              <DetailStat
-                label="Workspace Root"
-                value={selectedCoderRun.automation.workspace_root || "Not set"}
-              />
-              <DetailStat
-                label="Active Sessions"
-                value={extractSessionIdsFromRun(selectedRunDetail).join(", ") || "None"}
-              />
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-lg font-semibold text-text">
+                    {selectedCoderRun.automation.name || "Untitled coder run"}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-subtle">
+                    <span className="capitalize">
+                      {selectedCoderRun.coderMetadata.workflow_kind.replace(/_/g, " ")}
+                    </span>
+                    <span aria-hidden>·</span>
+                    <span>Updated {relativeTimeFromMs(runSortTimestamp(selectedRunDetail))}</span>
+                    {progress.total > 0 ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span>
+                          {progress.completed}/{progress.total} steps
+                        </span>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+                <CoderRunStatusBadge run={selectedRunDetail} size="md" />
+              </div>
+              <CoderRunProgress run={selectedRunDetail} />
             </div>
 
-            {selectedCoderRunRecord?.github_project_ref ? (
-              <div className="rounded-lg border border-border bg-surface-elevated/30 p-3">
-                <div className="text-sm font-semibold text-text">GitHub Project Linkage</div>
-                <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <DetailStat
-                    label="Project"
-                    value={`${selectedCoderRunRecord.github_project_ref.owner} #${selectedCoderRunRecord.github_project_ref.project_number}`}
-                  />
-                  <DetailStat
-                    label="Project Item"
-                    value={selectedCoderRunRecord.github_project_ref.project_item_id}
-                  />
-                  <DetailStat
-                    label="Issue"
-                    value={
-                      selectedCoderRunRecord.github_project_ref.issue_url ||
-                      `#${selectedCoderRunRecord.github_project_ref.issue_number}`
-                    }
-                  />
-                  <DetailStat
-                    label="Remote Sync"
-                    value={String(selectedCoderRunRecord.remote_sync_state || "unknown").replace(
-                      /_/g,
-                      " "
-                    )}
-                  />
+            {awaitingGate ? (
+              <div className="rounded-xl border border-amber-300/50 bg-amber-300/10 p-4">
+                <div className="flex items-start gap-2 text-amber-100">
+                  <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" aria-hidden />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold">
+                      Waiting on you:{" "}
+                      {String(awaitingGate.title || awaitingGate.node_id || "operator decision")}
+                    </div>
+                    {String(awaitingGate.instructions || "").trim() ? (
+                      <div className="mt-1 text-xs text-amber-100/80">
+                        {String(awaitingGate.instructions)}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            ) : null}
-
-            {runSummary(selectedRunDetail) ? (
-              <div className="rounded-lg border border-border bg-surface-elevated/30 p-3 text-sm text-text-muted">
-                {runSummary(selectedRunDetail)}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => onGateDecision(selectedRunDetail.run_id, "approve")}
+                    disabled={busyKey === `gate:approve:${selectedRunDetail.run_id}`}
+                  >
+                    Approve & continue
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => onGateDecision(selectedRunDetail.run_id, "rework")}
+                    disabled={busyKey === `gate:rework:${selectedRunDetail.run_id}`}
+                  >
+                    Request rework
+                  </Button>
+                </div>
               </div>
             ) : null}
 
             {runBlockers.length ? (
               <div className="space-y-2">
-                {runBlockers.slice(0, 4).map((blocker) => (
+                {runBlockers.slice(0, 3).map((blocker) => (
                   <div
                     key={blocker.key}
                     className="rounded-lg border border-red-500/30 bg-red-500/10 p-3"
                   >
                     <div className="text-sm font-medium text-red-100">{blocker.title}</div>
-                    <div className="mt-1 text-sm text-red-200">{blocker.reason}</div>
+                    <div className="mt-1 text-xs text-red-200">{blocker.reason}</div>
                   </div>
                 ))}
+              </div>
+            ) : runSummary(selectedRunDetail) ? (
+              <div className="rounded-lg border border-border bg-surface-elevated/30 p-3 text-sm text-text-muted">
+                {runSummary(selectedRunDetail)}
               </div>
             ) : null}
 
@@ -356,25 +360,47 @@ export function CoderRunDetailCard({
               onGateDecision={onGateDecision}
             />
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-subtle">
+              {githubRef ? (
+                <a
+                  href={githubRef.issue_url || "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 transition-colors hover:bg-surface hover:text-text"
+                >
+                  <ExternalLink className="h-3 w-3" aria-hidden />
+                  {githubRef.owner} #{githubRef.project_number} · issue #{githubRef.issue_number}
+                </a>
+              ) : null}
               {selectedRunDetail.run_id && onOpenAutomationRun ? (
                 <button
                   type="button"
                   onClick={() => onOpenAutomationRun(selectedRunDetail.run_id)}
-                  className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 transition-colors hover:bg-surface hover:text-text"
                 >
-                  Open In Agent Automation
+                  <ExternalLink className="h-3 w-3" aria-hidden />
+                  Agent Automation
                 </button>
               ) : null}
               {selectedContextRunId && onOpenContextRun ? (
                 <button
                   type="button"
                   onClick={() => onOpenContextRun(selectedContextRunId)}
-                  className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 transition-colors hover:bg-surface hover:text-text"
                 >
-                  Open In Command Center
+                  <ExternalLink className="h-3 w-3" aria-hidden />
+                  Command Center
                 </button>
               ) : null}
+              <span className="ml-auto inline-flex items-center gap-3 text-text-subtle">
+                <span>Run {selectedRunDetail.run_id.slice(0, 8)}</span>
+                {extractSessionIdsFromRun(selectedRunDetail).length > 0 ? (
+                  <span>
+                    {extractSessionIdsFromRun(selectedRunDetail).length} session
+                    {extractSessionIdsFromRun(selectedRunDetail).length === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+              </span>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -398,23 +424,33 @@ export function CoderRunDetailCard({
             {detailTab === "overview" ? (
               <div className="grid gap-3 lg:grid-cols-2">
                 <div className="rounded-xl border border-border bg-surface-elevated/20 p-3">
-                  <div className="text-sm font-semibold text-text">Gate State</div>
-                  {awaitingGate ? (
-                    <div className="mt-2 space-y-2 text-xs text-text-muted">
-                      <div>
-                        Awaiting decision on{" "}
-                        {String(awaitingGate.title || awaitingGate.node_id || "").trim()}
-                      </div>
-                      <div className="break-words">
-                        {String(awaitingGate.instructions || "").trim() ||
-                          "No gate instructions provided."}
-                      </div>
+                  <div className="text-sm font-semibold text-text">Run Identifiers</div>
+                  <div className="mt-2 space-y-1.5 text-xs text-text-muted">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-text-subtle">Workspace</span>
+                      <span className="truncate font-mono text-[11px] text-text">
+                        {selectedCoderRun.automation.workspace_root || "Not set"}
+                      </span>
                     </div>
-                  ) : (
-                    <div className="mt-2 text-xs text-text-muted">
-                      No active operator gate on this run.
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-text-subtle">Automation</span>
+                      <span className="truncate font-mono text-[11px] text-text">
+                        {selectedCoderRun.automation.automation_id || "Unknown"}
+                      </span>
                     </div>
-                  )}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-text-subtle">Context run</span>
+                      <span className="truncate font-mono text-[11px] text-text">
+                        {selectedContextRunId || "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-text-subtle">Coder record</span>
+                      <span className="truncate font-mono text-[11px] text-text">
+                        {selectedCoderRunRecord?.coder_run_id || "—"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div className="rounded-xl border border-border bg-surface-elevated/20 p-3">
                   <div className="text-sm font-semibold text-text">Transcript Snapshot</div>
@@ -785,8 +821,12 @@ export function CoderRunDetailCard({
             ) : null}
           </>
         ) : (
-          <div className="rounded-lg border border-dashed border-border bg-surface-elevated/20 px-4 py-8 text-center text-sm text-text-muted">
-            Select a coder-tagged automation run to inspect status, sessions, and operator controls.
+          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-surface-elevated/20 px-4 py-16 text-center">
+            <div className="text-sm font-medium text-text">No run selected</div>
+            <div className="text-xs text-text-muted">
+              Pick a run from the list to see live status, transcripts, artifacts, and operator
+              controls.
+            </div>
           </div>
         )}
       </CardContent>
