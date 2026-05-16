@@ -22,22 +22,34 @@
   <a href="https://tandem.ac/agents?utm_source=github&utm_medium=readme&utm_campaign=hosted_waitlist&utm_content=top_banner">Join the waitlist</a>
 </p>
 
-Tandem is an **engine-owned workflow runtime** for coordinated autonomous work.
+Tandem is **governed AI runtime infrastructure** for long-running agentic work.
 
-While the current landscape of AI agents is flooded with "chat-first assistants," these conversational routing models inevitably fail at scale due to context bloat and concurrency blindness. **Chat is fine as an interface, but it is weak as an authoritative coordination substrate for parallel, durable engineering workflows.**
+While the current landscape of AI agents is flooded with "chat-first assistants," chat transcripts are not a safe enterprise control plane. They do not provide durable state, scoped authority, replay, tenant boundaries, or audit-grade receipts by themselves.
 
-Tandem takes a fundamentally different approach to tackle the complex realities of agentic engineering. **We treat autonomous execution as a distributed systems problem**, prioritizing robust engine state over fragile chat transcripts.
+Tandem treats autonomous execution as a distributed systems problem. The source of truth is the engine: durable runs, scoped tools, approvals, artifacts, validators, audit trails, tenant-aware state, and enterprise sidecar boundaries.
 
-It provides durable coordination primitives, including blackboards, workboards, explicit task claiming, operational memory accumulation, and checkpoints, allowing multiple agents to work concurrently on complex, long-running software engineering and automation tasks without colliding.
+It provides runtime primitives for platform teams that need agentic work to be observable, recoverable, policy-aware, and self-hostable instead of hidden inside a prompt loop.
 
-- **Entrypoints are clients, not separate engines:** The Tauri desktop app, TUI, web control panel, and SDKs all talk to the same engine runtime.
-- **Engine-owned orchestration:** Shared task state, replay, approvals, and deterministic workflow projections natively solve coordination failures.
-- **Provider agnostic:** Use OpenRouter, Anthropic, OpenAI, OpenCode Zen, or local Ollama endpoints effortlessly.
+- **Entrypoints are clients, not separate engines:** The Tauri desktop app, TUI, web control panel, channels, and SDKs all talk to the same engine runtime.
+- **Engine-owned orchestration:** Shared task state, replay, approvals, validators, and deterministic workflow projections make long-running work inspectable.
+- **Governed tool execution:** Built-in tools and MCP connectors can be scoped per workflow step, with approval gates and receipts for consequential actions.
+- **Enterprise-ready architecture path:** Tenant context, protected audit events, public enterprise status, and a sidecar-ready contract are already in the OSS runtime; private identity, policy, OIDC, SCIM, and SIEM integrations remain enterprise roadmap work.
+- **Provider agnostic:** Use OpenRouter, Anthropic, OpenAI, OpenCode Zen, or local Ollama endpoints.
 - **Codex account auth for local Tandem:** Connect a Codex account through the local control panel so heavy testing can use your ChatGPT/Codex allocation instead of requiring a separate OpenAI API key or more OpenRouter spend.
 
-`Durable State → Workboards → Agent Swarm → Artifacts`
+`Intent -> Plan Bundle -> Scoped Execution -> Approvals -> Artifacts -> Audit Trail`
 
-**→ [Connect an agent via MCP](https://tandem.ac/docs-mcp) · [Download desktop app](https://tandem.ac/) · [Read the docs](https://docs.tandem.ac/)**
+**-> [AI runtime infrastructure](docs/AI_RUNTIME_INFRASTRUCTURE.md) | [Enterprise readiness](docs/ENTERPRISE_READINESS.md) | [Proof walkthrough](docs/ENTERPRISE_PROOF_WALKTHROUGH.md) | [Connect an agent via MCP](https://tandem.ac/docs-mcp)**
+
+## Why Platform Teams Care
+
+Tandem is designed for teams that need to run AI work under real operational controls:
+
+- **Tenant-aware execution:** Runtime records carry tenant and principal context so hosted and enterprise deployments can enforce hard separation.
+- **Policy hooks:** Tool access, MCP access, approval gates, and enterprise bridge contracts give platform teams places to enforce authority.
+- **Replayable runs:** Durable run journals, checkpoints, blackboards, and artifacts make failures debuggable instead of buried in a chat transcript.
+- **Auditable actions:** Approval decisions, policy denials, provider secret changes, MCP activity, and tool ledger events can be written as protected audit records.
+- **Self-hostable runtime:** The engine can run locally or headlessly, with a public/private enterprise split planned around a sidecar rather than a closed fork.
 
 ## 30-second quickstart
 

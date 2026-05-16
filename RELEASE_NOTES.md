@@ -2,6 +2,47 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.5.7 (2026-05-16)
+
+Tandem 0.5.7 moves the project positioning and first domain-specific runtime hardening toward governed AI infrastructure for enterprise work. The release adds public enterprise runtime docs, a fintech strict-mode foundation for compliance and risk workflows, and the first runtime evidence paths needed to prove that Tandem can govern long-running AI work with scoped tools, citations, approvals, artifacts, audit events, and replayable run records.
+
+### Enterprise Runtime Infrastructure Positioning
+
+- The README now opens with Tandem as governed AI runtime infrastructure for long-running agentic work.
+- `docs/AI_RUNTIME_INFRASTRUCTURE.md` explains the runtime model: engine-owned state, canonical run journal, task graph, tool/MCP policy, approvals, validators, artifacts, receipts, replay, and enterprise sidecar boundaries.
+- `docs/ENTERPRISE_READINESS.md` separates what is available now from in-progress and planned enterprise capabilities.
+- `docs/ENTERPRISE_PROOF_WALKTHROUGH.md` gives platform engineers a repo-grounded path for verifying one governed run from intent through plan, scoped tools, approval, artifact validation, audit evidence, and replay/debug.
+
+### Fintech Strict Runtime Foundation
+
+This release adds an internal `fintech_strict` profile marker for Automation V2 metadata. It is aimed at compliance and risk operations proof sprints, especially compliance/risk update briefs.
+
+What ships now:
+
+- A protected fintech action classifier in `tandem-core` for account actions, customer communications, regulatory filings, system-of-record updates, credit decisions, money movement, and evidence publication.
+- Server tool-policy hook enforcement for fintech strict Automation V2 sessions.
+- Protected fintech tools and unknown external mutation tools are blocked with clear denial reasons until an approval path is used.
+- Denied protected fintech actions emit runtime events and protected audit records.
+- `/audit/stream` maps fintech protected-action denials into admin-readable audit rows.
+
+### Evidence, Citations, And Audit Packages
+
+- Tool effect ledger summaries now preserve safe source identifiers such as `source_id`, `document_id`, `ticket_id`, and `record_id`, while still avoiding raw query text.
+- Connector proof helpers only accept successful source retrieval calls as evidence; connector discovery/listing alone is not enough.
+- Existing context-run ledger summaries now include `fintech_connector_proof` derived from successful source retrieval tool records.
+- Compliance/risk brief validation helpers check required fields, citations, limitations, reviewer status, approval state, and audit IDs.
+- An internal audit package helper can assemble run, tenant, actor, tool calls, connector proof, artifacts, approvals, and policy decisions from Automation V2 run state.
+
+### Boundaries
+
+- No public HTTP API changes were added for fintech strict mode.
+- This is not a production-ready regulated fintech deployment claim.
+- Automatic protected-action approval routing, approved-gate verification before protected execution, persisted fintech audit exports, OIDC, SCIM, SIEM export, SOC2, full RBAC, and private sidecar enforcement remain follow-up work.
+
+### Versioning
+
+- Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles are bumped to `0.5.7`.
+
 ## v0.5.6 (2026-05-14)
 
 ### AI Evaluation Framework

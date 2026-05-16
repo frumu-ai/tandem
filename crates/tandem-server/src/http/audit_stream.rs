@@ -66,6 +66,7 @@ pub(crate) fn audit_event_to_stream_record(event: &EngineEvent) -> Option<Value>
         "tool.effect.recorded" => tool_effect_record(event),
         "approval.decision.recorded" => approval_decision_record(event),
         "channel.capability.changed" => capability_change_record(event),
+        "fintech.protected_action.denied" => fintech_protected_action_record(event),
         _ => None,
     }
 }
@@ -140,6 +141,21 @@ fn capability_change_record(event: &EngineEvent) -> Option<Value> {
     ))
 }
 
+fn fintech_protected_action_record(event: &EngineEvent) -> Option<Value> {
+    Some(base_record(
+        event,
+        "fintech_protected_action_denied",
+        json!({
+            "run_id": event.properties.get("runID"),
+            "automation_id": event.properties.get("automationID"),
+            "tool": event.properties.get("tool"),
+            "classification": event.properties.get("classification"),
+            "category": event.properties.get("category"),
+            "reason": event.properties.get("reason"),
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +194,24 @@ mod tests {
         assert_eq!(row["command"], "capability_change");
         assert_eq!(row["channel"], "telegram");
         assert_eq!(row["result"]["max_tier"], "approve");
+    }
+
+    #[test]
+    fn maps_fintech_protected_action_denial_to_audit_record() {
+        let event = EngineEvent::new(
+            "fintech.protected_action.denied",
+            json!({
+                "runID": "run-1",
+                "automationID": "automation-1",
+                "tool": "mcp.bank.release_funds",
+                "classification": "requires_approval",
+                "category": "money_movement",
+                "reason": "approval required"
+            }),
+        );
+        let row = audit_event_to_stream_record(&event).unwrap();
+        assert_eq!(row["command"], "fintech_protected_action_denied");
+        assert_eq!(row["result"]["run_id"], "run-1");
+        assert_eq!(row["result"]["category"], "money_movement");
     }
 }

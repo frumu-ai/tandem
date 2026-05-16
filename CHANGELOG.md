@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] - 2026-05-16
+
+### Added
+
+- **Enterprise AI runtime infrastructure positioning**: README and public docs now present Tandem as governed AI runtime infrastructure for long-running agentic work. New docs cover the runtime architecture, enterprise readiness status, and a platform-engineering proof walkthrough with clear boundaries between shipped runtime primitives and planned enterprise capabilities.
+- **Fintech strict runtime profile foundation**: Added an internal `fintech_strict` profile marker for Automation V2 metadata. Fintech strict mode reuses Strict execution semantics while adding domain-specific runtime policy for compliance and risk workflows.
+- **Protected fintech action classifier and runtime gate**: The runtime now classifies account actions, customer communications, regulatory filings, system-of-record updates, credit decisions, money movement, and evidence publication as protected fintech actions. Fintech strict automations block protected actions and unknown external mutation tools until an approval path is used.
+- **Connector proof and compliance artifact validation helpers**: Added core helpers for extracting connector proof from successful source retrieval tool records, treating discovery/listing as insufficient evidence, and validating compliance/risk brief artifacts for required fields, citations, limitations, approval state, and audit IDs.
+- **Fintech audit evidence assembly**: Added an internal audit package shape and an Automation V2 helper that assembles run, tenant, actor, tool ledger, artifact, approval, and policy-decision evidence for compliance review.
+
+### Changed
+
+- **Tool effect ledger source identifiers**: Tool ledger summaries now preserve safe source identifiers such as `source_id`, `document_id`, `ticket_id`, and `record_id` while continuing to avoid raw query text.
+- **Context-run ledger fintech proof summary**: Existing context-run ledger summaries now include `fintech_connector_proof` derived from successful source retrieval calls.
+- **Audit stream coverage**: `/audit/stream` now normalizes `fintech.protected_action.denied` events into admin-readable audit rows.
+- **Version bump**: Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles move to `0.5.7`.
+
+### Documentation
+
+- Added `docs/AI_RUNTIME_INFRASTRUCTURE.md`, `docs/ENTERPRISE_READINESS.md`, and `docs/ENTERPRISE_PROOF_WALKTHROUGH.md`.
+
+### Notes
+
+- This release does not add public HTTP API changes for fintech strict mode.
+- OIDC, SCIM, SIEM export, SOC2, full RBAC, private sidecar enforcement, automatic protected-action approval routing, and persisted fintech audit exports remain planned or follow-up work.
+
 ## [0.5.6] - 2026-05-14
 
 ### Added

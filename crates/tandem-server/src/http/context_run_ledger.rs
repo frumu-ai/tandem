@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use tandem_core::ToolEffectLedgerRecord;
+use tandem_core::{
+    build_fintech_audit_package, connector_proof_from_tool_record, ToolEffectLedgerRecord,
+};
 
 #[derive(Debug, Clone, serde::Serialize)]
 struct ContextRunLedgerEventView {
@@ -29,6 +31,64 @@ pub(super) fn context_run_ledger_summary_for_run(state: &AppState, run_id: &str)
     let events = load_context_run_ledger_source_events(state, run_id, None, None);
     let records = context_run_ledger_records(&events);
     context_run_ledger_summary(&records)
+}
+
+pub(super) fn fintech_audit_package_for_automation_v2_run(
+    state: &AppState,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) -> Value {
+    let context_run_id = super::context_runs::automation_v2_context_run_id(&run.run_id);
+    let events = load_context_run_ledger_source_events(state, &context_run_id, None, None);
+    let records = context_run_ledger_records(&events);
+    let tool_calls = records
+        .iter()
+        .map(|record| record.record.clone())
+        .collect::<Vec<_>>();
+    let artifacts = run
+        .checkpoint
+        .node_outputs
+        .iter()
+        .map(|(node_id, output)| {
+            json!({
+                "node_id": node_id,
+                "output": output,
+            })
+        })
+        .collect::<Vec<_>>();
+    let approvals = run
+        .checkpoint
+        .gate_history
+        .iter()
+        .map(|record| serde_json::to_value(record).unwrap_or(Value::Null))
+        .collect::<Vec<_>>();
+    let policy_decisions = records
+        .iter()
+        .filter(|record| {
+            serde_json::to_value(record.record.status)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .as_deref()
+                == Some("blocked")
+        })
+        .map(|record| {
+            json!({
+                "event_id": record.event_id,
+                "tool": record.record.tool,
+                "error": record.record.error,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_value(build_fintech_audit_package(
+        run.run_id.clone(),
+        serde_json::to_value(&run.tenant_context).unwrap_or(Value::Null),
+        run.tenant_context.actor_id.clone(),
+        tool_calls,
+        artifacts,
+        approvals,
+        policy_decisions,
+        Vec::new(),
+    ))
+    .unwrap_or(Value::Null)
 }
 
 fn load_context_run_ledger_source_events(
@@ -82,12 +142,17 @@ fn context_run_ledger_summary(records: &[ContextRunLedgerEventView]) -> Value {
 
     let last_seq = records.last().map(|record| record.seq);
     let last_ts_ms = records.last().map(|record| record.ts_ms);
+    let connector_proof = records
+        .iter()
+        .filter_map(|record| connector_proof_from_tool_record(&record.record))
+        .collect::<Vec<_>>();
 
     json!({
         "record_count": records.len(),
         "by_status": normalize_serialized_enum_counts(by_status),
         "by_phase": normalize_serialized_enum_counts(by_phase),
         "by_tool": by_tool,
+        "fintech_connector_proof": connector_proof,
         "last_seq": last_seq,
         "last_ts_ms": last_ts_ms,
     })
@@ -129,6 +194,18 @@ mod tests {
         }
     }
 
+    fn tool_effect_event_with_args(
+        seq: u64,
+        tool: &str,
+        phase: &str,
+        status: &str,
+        args_summary: Value,
+    ) -> ContextRunEventRecord {
+        let mut event = tool_effect_event(seq, tool, phase, status);
+        event.payload["record"]["args_summary"] = args_summary;
+        event
+    }
+
     #[test]
     fn context_run_ledger_filters_and_summarizes_records() {
         let records = context_run_ledger_records(&[
@@ -160,5 +237,44 @@ mod tests {
         assert_eq!(summary["by_status"]["started"].as_u64(), Some(1));
         assert_eq!(summary["by_status"]["succeeded"].as_u64(), Some(1));
         assert_eq!(summary["last_seq"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn context_run_ledger_summary_includes_fintech_connector_proof() {
+        let records = context_run_ledger_records(&[
+            tool_effect_event_with_args(
+                1,
+                "mcp.regulator.fetch_bulletin",
+                "outcome",
+                "succeeded",
+                json!({
+                    "keys": ["source_id"],
+                    "field_count": 1,
+                    "type": "object",
+                    "source_id": "reg-bulletin-1"
+                }),
+            ),
+            tool_effect_event_with_args(
+                2,
+                "mcp.regulator.list_tools",
+                "outcome",
+                "succeeded",
+                json!({
+                    "keys": ["query"],
+                    "field_count": 1,
+                    "type": "object",
+                    "query_hash": "abc"
+                }),
+            ),
+        ]);
+        let summary = context_run_ledger_summary(&records);
+        assert_eq!(
+            summary["fintech_connector_proof"][0]["source_ids"][0].as_str(),
+            Some("reg-bulletin-1")
+        );
+        assert_eq!(
+            summary["fintech_connector_proof"].as_array().map(Vec::len),
+            Some(1)
+        );
     }
 }

@@ -1,3 +1,7 @@
+use tandem_core::{
+    fintech_policy_decision_payload, fintech_strict_tool_decision, metadata_enables_fintech_strict,
+    FintechToolPolicyClassification,
+};
 use tandem_orchestrator::{
     AgentInstance, AgentInstanceStatus, AgentRole, AgentTemplate, BudgetLimit, SpawnDecision,
     SpawnDenyCode, SpawnPolicy, SpawnRequest, SpawnSource,
@@ -329,6 +333,76 @@ async fn evaluate_automation_read_only_write_deny(
     }
 }
 
+async fn evaluate_fintech_strict_tool_deny(
+    state: &AppState,
+    session_id: &str,
+    message_id: &str,
+    tool: &str,
+) -> Option<String> {
+    let run_id = state
+        .automation_v2_session_runs
+        .read()
+        .await
+        .get(session_id)
+        .cloned()?;
+    let run = state.get_automation_v2_run(&run_id).await?;
+    let automation = run.automation_snapshot.as_ref()?;
+    if !metadata_enables_fintech_strict(automation.metadata.as_ref()) {
+        return None;
+    }
+
+    let decision = fintech_strict_tool_decision(tool);
+    if decision.allowed {
+        return None;
+    }
+    let reason = decision.reason.unwrap_or_else(|| {
+        "fintech strict mode blocked tool execution by runtime policy".to_string()
+    });
+    let payload = fintech_policy_decision_payload(tool, &decision.classification, &reason);
+    if state.is_ready() {
+        state.event_bus.publish(EngineEvent::new(
+            "fintech.protected_action.denied",
+            json!({
+                "sessionID": session_id,
+                "messageID": message_id,
+                "runID": run.run_id,
+                "automationID": automation.automation_id,
+                "tool": tool,
+                "classification": payload.get("classification").cloned().unwrap_or(Value::Null),
+                "category": payload.get("category").cloned().unwrap_or(Value::Null),
+                "reason": reason,
+                "timestampMs": crate::now_ms(),
+            }),
+        ));
+    }
+    let audit_payload = json!({
+        "run_id": run.run_id,
+        "automation_id": automation.automation_id,
+        "session_id": session_id,
+        "message_id": message_id,
+        "tool": tool,
+        "policy": payload,
+    });
+    let _ = crate::audit::append_protected_audit_event(
+        state,
+        "fintech.protected_action.denied",
+        &run.tenant_context,
+        run.tenant_context.actor_id.clone(),
+        audit_payload,
+    )
+    .await;
+
+    Some(match decision.classification {
+        FintechToolPolicyClassification::RequiresApproval(category) => format!(
+            "{} Approval gate required before executing protected fintech action `{}`.",
+            reason,
+            category.as_str()
+        ),
+        FintechToolPolicyClassification::BlockedUnknownMutation => reason,
+        FintechToolPolicyClassification::Safe => reason,
+    })
+}
+
 impl ToolPolicyHook for ServerToolPolicyHook {
     fn evaluate_tool(
         &self,
@@ -382,6 +456,16 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                         "timestampMs": crate::now_ms(),
                     }),
                 ));
+                return Ok(ToolPolicyDecision {
+                    allowed: false,
+                    reason: Some(reason),
+                });
+            }
+
+            if let Some(reason) =
+                evaluate_fintech_strict_tool_deny(&state, &ctx.session_id, &ctx.message_id, &tool)
+                    .await
+            {
                 return Ok(ToolPolicyDecision {
                     allowed: false,
                     reason: Some(reason),
@@ -1931,4 +2015,165 @@ fn extract_session_id(event: &EngineEvent) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|v| v.to_string())
         })
+}
+
+#[cfg(test)]
+mod fintech_policy_tests {
+    use super::*;
+    use serde_json::json;
+    use tandem_types::TenantContext;
+
+    fn fintech_test_automation(metadata: Value) -> crate::AutomationV2Spec {
+        crate::AutomationV2Spec {
+            automation_id: "automation-fintech".to_string(),
+            name: "Fintech Compliance Brief".to_string(),
+            description: None,
+            status: crate::AutomationV2Status::Active,
+            schedule: crate::AutomationV2Schedule {
+                schedule_type: crate::AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+            },
+            knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+            agents: Vec::new(),
+            flow: crate::AutomationFlowSpec { nodes: Vec::new() },
+            execution: crate::AutomationExecutionPolicy {
+                profile: Some(crate::automation_v2::execution_profile::ExecutionProfile::Strict),
+                max_parallel_agents: Some(1),
+                max_total_runtime_ms: None,
+                max_total_tool_calls: None,
+                max_total_tokens: None,
+                max_total_cost_usd: None,
+            },
+            output_targets: Vec::new(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            creator_id: "test".to_string(),
+            workspace_root: Some(".".to_string()),
+            metadata: Some(metadata),
+            next_fire_at_ms: None,
+            last_fired_at_ms: None,
+            scope_policy: None,
+            watch_conditions: Vec::new(),
+            handoff_config: None,
+        }
+    }
+
+    fn fintech_test_run(automation: crate::AutomationV2Spec) -> crate::AutomationV2RunRecord {
+        crate::AutomationV2RunRecord {
+            run_id: "automation-v2-run-fintech".to_string(),
+            automation_id: automation.automation_id.clone(),
+            tenant_context: TenantContext::local_implicit(),
+            trigger_type: "manual".to_string(),
+            status: crate::AutomationRunStatus::Running,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: None,
+            active_session_ids: vec!["session-fintech".to_string()],
+            latest_session_id: Some("session-fintech".to_string()),
+            active_instance_ids: Vec::new(),
+            checkpoint: crate::AutomationRunCheckpoint {
+                completed_nodes: Vec::new(),
+                pending_nodes: Vec::new(),
+                node_outputs: HashMap::new(),
+                node_attempts: HashMap::new(),
+                node_attempt_verdicts: HashMap::new(),
+                blocked_nodes: Vec::new(),
+                awaiting_gate: None,
+                gate_history: Vec::new(),
+                lifecycle_history: Vec::new(),
+                last_failure: None,
+            },
+            runtime_context: None,
+            automation_snapshot: Some(automation),
+            pause_reason: None,
+            resume_reason: None,
+            detail: None,
+            stop_kind: None,
+            stop_reason: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+            scheduler: None,
+            trigger_reason: None,
+            consumed_handoff_id: None,
+            learning_summary: None,
+            effective_execution_profile:
+                crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+            requested_execution_profile: None,
+        }
+    }
+
+    async fn fintech_policy_state(metadata: Value) -> AppState {
+        let state = AppState::new_starting("test".to_string(), true);
+        let automation = fintech_test_automation(metadata);
+        let run = fintech_test_run(automation);
+        state
+            .automation_v2_runs
+            .write()
+            .await
+            .insert(run.run_id.clone(), run);
+        state.automation_v2_session_runs.write().await.insert(
+            "session-fintech".to_string(),
+            "automation-v2-run-fintech".to_string(),
+        );
+        state
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_blocks_protected_action_tools() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+        let hook = ServerToolPolicyHook::new(state);
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-fintech".to_string(),
+                message_id: "message-1".to_string(),
+                tool: "mcp.bank.release_funds".to_string(),
+                args: json!({}),
+            })
+            .await
+            .expect("policy decision");
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("money_movement"));
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_allows_research_tools() {
+        let state = fintech_policy_state(json!({"fintech": {"strict": true}})).await;
+        let hook = ServerToolPolicyHook::new(state);
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-fintech".to_string(),
+                message_id: "message-1".to_string(),
+                tool: "mcp.regulator.fetch_bulletin".to_string(),
+                args: json!({"url": "https://regulator.example/rule-1"}),
+            })
+            .await
+            .expect("policy decision");
+        assert!(decision.allowed, "{:?}", decision.reason);
+    }
+
+    #[tokio::test]
+    async fn non_fintech_automation_is_not_gated_by_fintech_policy() {
+        let state = fintech_policy_state(json!({"runtime_profile": "default"})).await;
+        let hook = ServerToolPolicyHook::new(state);
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-fintech".to_string(),
+                message_id: "message-1".to_string(),
+                tool: "mcp.bank.release_funds".to_string(),
+                args: json!({}),
+            })
+            .await
+            .expect("policy decision");
+        assert!(decision.allowed, "{:?}", decision.reason);
+    }
 }

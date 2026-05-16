@@ -86,6 +86,10 @@ fn summarize_args(args: &Value) -> Value {
 
     let path = first_string_field(object, &["path", "file_path", "target_file"]);
     let url = first_string_field(object, &["url"]);
+    let source_id = first_string_field(object, &["source_id", "sourceID"]);
+    let document_id = first_string_field(object, &["document_id", "documentID", "doc_id"]);
+    let ticket_id = first_string_field(object, &["ticket_id", "ticketID"]);
+    let record_id = first_string_field(object, &["record_id", "recordID"]);
     let cwd = first_string_field(object, &["cwd", "__effective_cwd"]);
     let workspace_root = first_string_field(object, &["__workspace_root"]);
     let query_hash = first_string_field(object, &["query", "q"])
@@ -101,6 +105,10 @@ fn summarize_args(args: &Value) -> Value {
         "field_count": object.len(),
         "path": path,
         "url": url,
+        "source_id": source_id,
+        "document_id": document_id,
+        "ticket_id": ticket_id,
+        "record_id": record_id,
         "cwd": cwd,
         "workspace_root": workspace_root,
         "query_hash": query_hash,
@@ -238,5 +246,37 @@ mod tests {
             event.properties["record"]["args_summary"]["path"].as_str(),
             Some("src/lib.rs")
         );
+    }
+
+    #[test]
+    fn ledger_record_preserves_safe_source_identifiers() {
+        let record = build_tool_effect_ledger_record(
+            "session-1",
+            "message-1",
+            Some("call-1"),
+            "mcp.regulator.fetch_bulletin",
+            ToolEffectLedgerPhase::Outcome,
+            ToolEffectLedgerStatus::Succeeded,
+            &json!({
+                "source_id": "reg-bulletin-1",
+                "document_id": "doc-123",
+                "ticket_id": "case-9",
+                "record_id": "record-7",
+                "query": "sensitive query text"
+            }),
+            None,
+            Some("ok"),
+            None,
+        );
+
+        assert_eq!(
+            record.args_summary["source_id"].as_str(),
+            Some("reg-bulletin-1")
+        );
+        assert_eq!(record.args_summary["document_id"].as_str(), Some("doc-123"));
+        assert_eq!(record.args_summary["ticket_id"].as_str(), Some("case-9"));
+        assert_eq!(record.args_summary["record_id"].as_str(), Some("record-7"));
+        assert!(record.args_summary.get("query").is_none());
+        assert!(record.args_summary["query_hash"].as_str().is_some());
     }
 }
