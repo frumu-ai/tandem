@@ -4,7 +4,7 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.5.7 (2026-05-16)
 
-Tandem 0.5.7 moves the project positioning and first domain-specific runtime hardening toward governed AI infrastructure for enterprise work. The release adds public enterprise runtime docs, a fintech strict-mode foundation for compliance and risk workflows, and the first runtime evidence paths needed to prove that Tandem can govern long-running AI work with scoped tools, citations, approvals, artifacts, audit events, and replayable run records.
+Tandem 0.5.7 moves the project positioning and first domain-specific runtime hardening toward governed AI infrastructure for enterprise work. The release adds public enterprise runtime docs, a fintech strict-mode foundation for compliance and risk workflows, and the first runtime evidence paths needed to prove that Tandem can govern long-running AI work with scoped tools, citations, approvals, artifacts, audit events, and replayable run records. It also restructures the desktop Coder workspace so the live state of running work is visible at a glance.
 
 ### Enterprise Runtime Infrastructure Positioning
 
@@ -40,6 +40,28 @@ What ships now:
 - The assembled fintech audit package can be persisted as a context-run artifact for compliance-review handoff.
 - `eval_datasets/fintech_compliance_risk.yaml` adds proof-sprint fixtures for unsupported claim rejection, connector selected-but-unused rejection, protected-action bypass attempts, cross-tenant source denial, and incomplete evidence surfaced as limitations.
 - Eval runner spec mapping now carries fintech runtime profile, tenant, and artifact-contract metadata into generated Automation V2 specs for stub/live evals.
+
+### Coder Workspace UX
+
+The desktop Coder panel was rebuilt so the state of running work is visible at a glance and the intake flow is no longer dominated by setup chrome. The previous panel showed task status as a tiny outlined pill in the corner of each card, hid awaiting-approval prompts inside a tab, duplicated the project picker between a stat box and a separate card, and kept the GitHub Project intake fully expanded even after a binding was saved. The redesigned layout makes "what's running, what needs me, what failed" the dominant signal and reduces the amount of scrolling needed before a coding swarm is launched or inspected.
+
+- **Live status badges with animated indicators**: New `CoderRunStatusBadge` renders run status as colored chips — `Running` (primary spinner + pulse dot), `Queued` (primary pulse), `Needs approval` (amber + pulse), `Paused` (amber), `Failed` (red), `Cancelled` (muted), `Completed` (emerald). Used on every run card in the list and at the top of the run detail card so the running/queued/awaiting state is the first thing the eye lands on. A run's status tone now also drives the color of the progress bar (amber when paused or awaiting, red on failure, emerald on completion, primary while running).
+
+- **Always-visible runs summary strip**: New `CoderRunsSummary` component at the top of the Runs view tallies Running / Needs approval / Paused / Failed / Completed across the workspace and shows a live "Updated Xs ago" indicator that ticks every 15 seconds (so the relative time stays fresh between sidecar event-driven refreshes). The summary surfaces totals even when individual runs scroll off-screen and emphasizes attention categories so they remain visible at a consistent spot.
+
+- **Step progress on every card and the detail header**: New `CoderRunProgress` component draws a thin progress bar plus `completed / total` (and blocked) counts derived from each run's checkpoint node IDs. The bar appears on each list card under the status banner and at the top of the detail card next to the status badge, so a run's actual position in its workflow is visible without expanding the Context tab.
+
+- **Elevated awaiting-gate prompts**: When a run is waiting on an operator decision, the detail card now shows the prompt title, instructions, and `Approve & continue` / `Request rework` buttons in an amber alert at the very top of the card — above the action toolbar — instead of in the Overview tab's "Gate State" panel. List cards for awaiting runs grow a matching amber "Waiting on you: …" banner so the same signal is visible in the list without selecting the run.
+
+- **Consolidated project context header**: The Coder page header now embeds `ProjectSwitcher` directly and shows the detected git slug / current branch / default branch as a subtitle (with a short "Detecting git repo…" hint while resolution is in flight). The previous "Active Project" stat box, the standalone "Project Context" card, and the four-stat "User Repo Context" card are gone — the same information is in one place, taking ~1/4 the vertical space.
+
+- **Tab pills with attention counts and smart default tab**: The Create / Runs tabs are now accent-pill buttons. The Runs tab shows a badge with the count of active or failed runs and switches to an amber tone when any run needs approval (red when any failed) so the operator can spot work that needs them from the Create tab. On first load, the page auto-defaults to Runs when the workspace has any active runs and stays on Create otherwise, instead of always landing on Create.
+
+- **Collapsing GitHub Project intake**: GitHub Project binding and inbox UX moved into a dedicated `CoderGithubProjectPanel` component. When no project is bound, the connect form (Owner + Project Number + Connect) is the only thing in the card. Once bound, the configuration collapses to a single-line `Connected · owner #N` summary with `Refresh` and `Change` buttons, and status mapping (TODO / In Progress / In Review / Blocked / Done) plus saved/live schema fingerprints move behind an "Advanced" disclosure that is closed by default. Inbox items render in a tighter row layout with linked issue numbers and the primary action reads `Pull into Coder`.
+
+- **Dev-noise sections removed**: The "First Slice" and "Compatibility" stat boxes from the original Coder header card, the "Selected preset … is UI scaffolding in this slice" copy under the Mission Builder, and the always-open `DeveloperRunViewer` ("Legacy Compatibility") at the bottom of the Runs view are all gone. The legacy inspector now lives behind a collapsed "Legacy coder inspector" disclosure so it is one click away when needed but no longer dominates the Runs view.
+
+The Coder restructure is pure UI: no changes to the `tandem-agents` API surface, the Tauri command surface, the Automation V2 contract, the coder metadata schema, or the GitHub Project MCP tools. Saved coder templates, saved GitHub Project bindings, and the existing run detail tabs (Overview, Transcripts, Context, Artifacts, Memory) continue to work unchanged. Internally, new shared helpers (`runStatusTone`, `runIsActive`, `runProgress`, `relativeTimeFromMs`) in `coderRunUtils.ts` let the list, detail, summary, and progress components classify status through one code path.
 
 ### Boundaries
 

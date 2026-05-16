@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fintech audit evidence assembly**: Added an internal audit package shape and an Automation V2 helper that assembles run, tenant, actor, tool ledger, artifact, approval, and policy-decision evidence for compliance review.
 - **Persisted fintech audit package artifact**: Added an internal helper that writes assembled fintech audit packages into the linked context-run artifact store for compliance-review handoff.
 - **Fintech compliance/risk eval dataset**: Added proof-sprint eval fixtures for unsupported claim rejection, connector proof-of-use, protected-action bypass attempts, cross-tenant source denial, and incomplete evidence limitations.
+- **Coder workspace live status badges and progress** (`src/components/coder`): Added shared `CoderRunStatusBadge`, `CoderRunProgress`, and `CoderRunsSummary` components plus `runStatusTone`/`runIsActive`/`runProgress`/`relativeTimeFromMs` helpers in `coderRunUtils.ts`. The Runs view now opens with an always-visible summary strip tallying Running / Needs approval / Paused / Failed / Completed across the workspace with a ticking "Updated Xs ago" indicator. Status renders as colored chips with animated indicators (Running spinner + pulse, Queued pulse, Needs approval amber + pulse, Paused, Failed, Cancelled, Completed) on every run card and the detail header, and each card/detail also shows a tone-tinted progress bar with `completed / total` (and blocked) step counts derived from the run checkpoint.
+- **Extracted `CoderGithubProjectPanel`**: GitHub Project binding and inbox UX moved out of the 1,500-line `CoderWorkspacePage.tsx` into a dedicated component with explicit Not connected / Connected states. Once bound the card collapses to a one-line `Connected · owner #N` summary with Refresh and Change buttons, with status mapping and saved/live schema fingerprints behind an Advanced disclosure.
 
 ### Changed
 
@@ -29,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Eval runner fintech metadata mapping**: Eval specs now carry `runtime_profile`, `tenant_id`, and artifact-contract config into Automation V2 metadata so fintech strict fixtures can exercise the same runtime gates as generated workflows.
 - **Audit stream coverage**: `/audit/stream` now normalizes `fintech.protected_action.denied` and `fintech.protected_action.approved` events into admin-readable audit rows.
 - **Version bump**: Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles move to `0.5.7`.
+- **Coder workspace awaiting-gate prompts elevated**: When a coder run is waiting on an operator decision, the detail card now shows the prompt title, instructions, and Approve & continue / Request rework buttons in an amber alert at the very top of the card instead of in the Overview tab's Gate State panel. Matching list cards grow an amber "Waiting on you: …" banner so the signal is visible without selecting the run.
+- **Coder workspace project header consolidated**: The Coder page header now embeds `ProjectSwitcher` directly and shows the detected git slug / current branch / default branch as a subtitle, replacing the previous duplicate Active Project stat box and separate Project Context card. Tabs became accent pills with badge counts (e.g. `Runs · 3`) that switch to amber/red tones when runs need approval or have failed, and the page auto-defaults to the Runs tab on first load when the workspace has active runs.
+
+### Removed
+
+- **Coder workspace dev-noise sections**: Removed the "First Slice" and "Compatibility" stat boxes from the Coder header, the standalone User Repo Context card (the same info now renders as a subtitle under the project switcher), the duplicate Project Context card, and the "Selected preset … is UI scaffolding in this slice" copy from the Mission Builder. The legacy `DeveloperRunViewer` ("Legacy Compatibility") is no longer pinned open at the bottom of the Runs view — it now lives behind a collapsed "Legacy coder inspector" disclosure so the live coder runs are the default view.
 
 ### Documentation
 
@@ -39,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This release does not add public HTTP API changes for fintech strict mode.
 - `fintech_strict` is an internal profile marker, not mandatory isolation by itself; approval gates are runtime control points, not complete authorization.
 - OIDC, SCIM, SIEM export, SOC2, full RBAC, private sidecar enforcement, automatic protected-action approval routing, enterprise policy authorization, and persisted fintech audit exports remain planned or follow-up work.
+- The Coder workspace restructure is pure UI: no changes to the `tandem-agents` API surface, the Tauri command surface, the Automation V2 contract, the coder metadata schema, or the GitHub Project MCP tools. Saved coder templates, saved GitHub Project bindings, and the existing run detail tabs (Overview, Transcripts, Context, Artifacts, Memory) continue to work unchanged.
 
 ## [0.5.6] - 2026-05-14
 
