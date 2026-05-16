@@ -28,6 +28,10 @@ OPTIONS:
                                 stub:       real engine + scripted stub provider (no API)
                                 live:       real engine + real provider (needs API key)
     --simulation              Legacy alias for --engine-mode simulation
+    --engine-url <URL>        Remote engine HTTP endpoint [default: http://127.0.0.1:39731]
+                                Required for stub/live modes
+    --engine-token <TOKEN>    Engine API token [default: TANDEM_API_TOKEN env var]
+                                Used to authenticate with remote engine
     --num-workers <N>         Parallel workers [default: 1]
     --filter-tag <TAG>        Only run tests with this tag
     --max-duration <SECS>     Max time per test in seconds [default: 300]
@@ -38,8 +42,11 @@ EXAMPLES:
     # Run critical path tests in simulation mode (default)
     eval-runner --dataset eval_datasets/critical_path.yaml
 
-    # Run against the scripted engine stub
-    eval-runner --dataset eval_datasets/critical_path.yaml --engine-mode stub
+    # Run against remote engine in live mode
+    eval-runner --dataset eval_datasets/critical_path.yaml \
+                --engine-mode live \
+                --engine-url http://127.0.0.1:39731 \
+                --engine-token tk_xxxxx
 
     # Run only tests tagged as "regression"
     eval-runner --dataset eval_datasets/critical_path.yaml \
@@ -57,6 +64,8 @@ struct CliArgs {
     provider: String,
     model: String,
     engine_mode: EngineMode,
+    engine_url: String,
+    engine_token: Option<String>,
     num_workers: u32,
     filter_tag: Option<String>,
     max_duration_secs: u64,
@@ -72,6 +81,8 @@ impl CliArgs {
         let mut provider = "anthropic".to_string();
         let mut model = "claude-haiku-4-5-20251001".to_string();
         let mut engine_mode = EngineMode::Simulation;
+        let mut engine_url = "http://127.0.0.1:39731".to_string();
+        let mut engine_token = std::env::var("TANDEM_API_TOKEN").ok();
         let mut num_workers = 1u32;
         let mut filter_tag: Option<String> = None;
         let mut max_duration_secs = 300u64;
@@ -147,6 +158,20 @@ impl CliArgs {
                         .parse()
                         .map_err(|_| "--max-duration must be a number".to_string())?;
                 }
+                "--engine-url" => {
+                    i += 1;
+                    if i >= args.len() {
+                        return Err("--engine-url requires a URL".to_string());
+                    }
+                    engine_url = args[i].clone();
+                }
+                "--engine-token" => {
+                    i += 1;
+                    if i >= args.len() {
+                        return Err("--engine-token requires a token".to_string());
+                    }
+                    engine_token = Some(args[i].clone());
+                }
                 "--verbose" | "-v" => {
                     verbose = true;
                 }
@@ -165,6 +190,8 @@ impl CliArgs {
             provider,
             model,
             engine_mode,
+            engine_url,
+            engine_token,
             num_workers,
             filter_tag,
             max_duration_secs,
@@ -206,6 +233,8 @@ async fn main() -> ExitCode {
         default_model: args.model,
         max_test_duration_secs: args.max_duration_secs,
         engine_mode: args.engine_mode,
+        engine_url: args.engine_url,
+        engine_token: args.engine_token,
         simulation_mode,
         random_seed: None,
     };

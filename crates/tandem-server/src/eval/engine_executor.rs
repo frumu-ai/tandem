@@ -170,6 +170,131 @@ pub fn extract_eval_result(
     }
 }
 
+/// Remote Engine Executor - submits test cases to a remote Tandem engine via HTTP
+///
+/// Uses the same polling logic as EngineExecutor but via HTTP API calls instead of
+/// direct AppState methods. Requires engine URL and authentication token.
+pub struct RemoteEngineExecutor {
+    engine_url: String,
+    engine_token: String,
+    client: reqwest::Client,
+    poll_interval: Duration,
+    max_duration: Duration,
+}
+
+impl RemoteEngineExecutor {
+    pub fn new(engine_url: String, engine_token: String) -> Self {
+        Self {
+            engine_url,
+            engine_token,
+            client: reqwest::Client::new(),
+            poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
+            max_duration: Duration::from_secs(DEFAULT_MAX_DURATION_SECS),
+        }
+    }
+
+    pub fn with_poll_interval(mut self, interval: Duration) -> Self {
+        self.poll_interval = interval;
+        self
+    }
+
+    pub fn with_max_duration(mut self, max_duration: Duration) -> Self {
+        self.max_duration = max_duration;
+        self
+    }
+
+    /// Submit a single eval test case via HTTP, wait for it to reach a terminal status,
+    /// and return the resulting `EvalRunResult`.
+    pub async fn run_test_case(&self, case: &EvalTestCase) -> EvalRunResult {
+        let started = Instant::now();
+        let spec = test_case_to_spec(case);
+
+        let initial_run = match self.submit_spec(&spec).await {
+            Ok(run) => run,
+            Err(err) => {
+                return submission_error(case, started, format!("submit_failed: {err}"));
+            }
+        };
+
+        let final_run = match self.poll_until_terminal(&initial_run.run_id).await {
+            Ok(run) => run,
+            Err(err) => return submission_error(case, started, err),
+        };
+
+        extract_eval_result(case, &final_run, started.elapsed())
+    }
+
+    async fn submit_spec(&self, spec: &crate::automation_v2::types::AutomationV2Spec) -> Result<AutomationV2RunRecord, String> {
+        let url = format!("{}/api/automations/v2/runs/submit", self.engine_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("X-Tandem-Token", self.engine_token.clone())
+            .json(&spec)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("HTTP {}: {}", response.status(), response.text().await.unwrap_or_default()));
+        }
+
+        response
+            .json::<AutomationV2RunRecord>()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))
+    }
+
+    async fn poll_until_terminal(&self, run_id: &str) -> Result<AutomationV2RunRecord, String> {
+        let deadline = Instant::now() + self.max_duration;
+        loop {
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "eval timeout after {}s",
+                    self.max_duration.as_secs()
+                ));
+            }
+
+            let run = match self.get_run(run_id).await {
+                Ok(Some(run)) => run,
+                Ok(None) => return Err(format!("run {} disappeared", run_id)),
+                Err(e) => return Err(e),
+            };
+
+            if is_terminal(&run.status) {
+                return Ok(run);
+            }
+
+            tokio::time::sleep(self.poll_interval).await;
+        }
+    }
+
+    async fn get_run(&self, run_id: &str) -> Result<Option<AutomationV2RunRecord>, String> {
+        let url = format!("{}/api/automations/v2/runs/{}", self.engine_url, run_id);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("X-Tandem-Token", self.engine_token.clone())
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        match response.status() {
+            reqwest::StatusCode::OK => {
+                let run = response
+                    .json::<AutomationV2RunRecord>()
+                    .await
+                    .map_err(|e| format!("Failed to parse response: {}", e))?;
+                Ok(Some(run))
+            }
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            status => Err(format!("HTTP {}: {}", status, response.text().await.unwrap_or_default())),
+        }
+    }
+}
+
 fn is_terminal(status: &AutomationRunStatus) -> bool {
     matches!(
         status,

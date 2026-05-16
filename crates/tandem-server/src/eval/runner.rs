@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use crate::app::state::AppState;
 use crate::eval::dataset::{ArtifactStatus, EvalDataset, EvalTestCase};
-use crate::eval::engine_executor::EngineExecutor;
+use crate::eval::engine_executor::{EngineExecutor, RemoteEngineExecutor};
 use crate::eval::metrics::{EvalMetrics, EvalRunResult};
 use crate::failures::AIFailureMode;
 
@@ -71,6 +71,10 @@ pub struct EvalRunnerConfig {
     pub max_test_duration_secs: u64,
     /// Engine execution mode. Defaults to `Simulation` for safety.
     pub engine_mode: EngineMode,
+    /// Remote engine HTTP endpoint URL (for Stub/Live modes)
+    pub engine_url: String,
+    /// Remote engine API token (for Stub/Live modes)
+    pub engine_token: Option<String>,
     /// Legacy alias for `engine_mode == Simulation`. Kept for backward compatibility
     /// with existing callers and the `--simulation` CLI flag. When `engine_mode` is
     /// set, this is informational only.
@@ -87,6 +91,8 @@ impl Default for EvalRunnerConfig {
             default_model: "claude-haiku-4-5-20251001".to_string(),
             max_test_duration_secs: 300,
             engine_mode: EngineMode::Simulation,
+            engine_url: "http://127.0.0.1:39731".to_string(),
+            engine_token: None,
             simulation_mode: true,
             random_seed: None,
         }
@@ -152,16 +158,38 @@ impl EvalRunner {
 
         match self.effective_engine_mode() {
             EngineMode::Simulation => self.run_simulation(test_case, start_time),
-            EngineMode::Stub | EngineMode::Live => match self.app_state.as_ref() {
-                Some(state) => {
-                    let executor = EngineExecutor::new(state.clone())
+            EngineMode::Stub | EngineMode::Live => {
+                // Prefer remote engine (via HTTP) if URL is configured
+                if !self.config.engine_url.is_empty() {
+                    if let Some(token) = &self.config.engine_token {
+                        let executor = RemoteEngineExecutor::new(
+                            self.config.engine_url.clone(),
+                            token.clone(),
+                        )
                         .with_max_duration(Duration::from_secs(self.config.max_test_duration_secs));
-                    executor.run_test_case(test_case).await
+                        return executor.run_test_case(test_case).await;
+                    } else {
+                        return engine_mode_unavailable_with_message(
+                            test_case,
+                            self.effective_engine_mode(),
+                            start_time,
+                            "engine_url configured but engine_token missing (set TANDEM_API_TOKEN or use --engine-token)".to_string(),
+                        );
+                    }
                 }
-                None => {
-                    engine_mode_unavailable(test_case, self.effective_engine_mode(), start_time)
+
+                // Fall back to local AppState if available
+                match self.app_state.as_ref() {
+                    Some(state) => {
+                        let executor = EngineExecutor::new(state.clone())
+                            .with_max_duration(Duration::from_secs(self.config.max_test_duration_secs));
+                        executor.run_test_case(test_case).await
+                    }
+                    None => {
+                        engine_mode_unavailable(test_case, self.effective_engine_mode(), start_time)
+                    }
                 }
-            },
+            }
         }
     }
 
@@ -301,6 +329,31 @@ fn engine_mode_unavailable(
             feature: format!("eval_runner_mode_{}", mode.as_str()),
         }),
         error_message: Some(error),
+        tags: test_case.tags.clone(),
+    }
+}
+
+fn engine_mode_unavailable_with_message(
+    test_case: &EvalTestCase,
+    mode: EngineMode,
+    start_time: std::time::Instant,
+    message: String,
+) -> EvalRunResult {
+    EvalRunResult {
+        test_id: test_case.id.clone(),
+        description: test_case.description.clone(),
+        passed: false,
+        artifact_status: ArtifactStatus::Failed,
+        repair_iterations: 0,
+        tokens_used: 0,
+        cost_usd: 0.0,
+        duration_ms: start_time.elapsed().as_millis() as u64,
+        validators_passed: Vec::new(),
+        validators_failed: test_case.expected_output.required_validators.clone(),
+        failure_mode: Some(AIFailureMode::FeatureDisabled {
+            feature: format!("eval_runner_mode_{}", mode.as_str()),
+        }),
+        error_message: Some(message),
         tags: test_case.tags.clone(),
     }
 }
