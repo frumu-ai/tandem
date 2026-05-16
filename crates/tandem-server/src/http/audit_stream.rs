@@ -66,7 +66,9 @@ pub(crate) fn audit_event_to_stream_record(event: &EngineEvent) -> Option<Value>
         "tool.effect.recorded" => tool_effect_record(event),
         "approval.decision.recorded" => approval_decision_record(event),
         "channel.capability.changed" => capability_change_record(event),
-        "fintech.protected_action.denied" => fintech_protected_action_record(event),
+        "fintech.protected_action.denied" | "fintech.protected_action.approved" => {
+            fintech_protected_action_record(event)
+        }
         _ => None,
     }
 }
@@ -142,9 +144,13 @@ fn capability_change_record(event: &EngineEvent) -> Option<Value> {
 }
 
 fn fintech_protected_action_record(event: &EngineEvent) -> Option<Value> {
+    let command = match event.event_type.as_str() {
+        "fintech.protected_action.approved" => "fintech_protected_action_approved",
+        _ => "fintech_protected_action_denied",
+    };
     Some(base_record(
         event,
-        "fintech_protected_action_denied",
+        command,
         json!({
             "run_id": event.properties.get("runID"),
             "automation_id": event.properties.get("automationID"),
@@ -152,6 +158,7 @@ fn fintech_protected_action_record(event: &EngineEvent) -> Option<Value> {
             "classification": event.properties.get("classification"),
             "category": event.properties.get("category"),
             "reason": event.properties.get("reason"),
+            "approval": event.properties.get("approval"),
         }),
     ))
 }
@@ -213,5 +220,25 @@ mod tests {
         assert_eq!(row["command"], "fintech_protected_action_denied");
         assert_eq!(row["result"]["run_id"], "run-1");
         assert_eq!(row["result"]["category"], "money_movement");
+    }
+
+    #[test]
+    fn maps_fintech_protected_action_approval_to_audit_record() {
+        let event = EngineEvent::new(
+            "fintech.protected_action.approved",
+            json!({
+                "runID": "run-1",
+                "automationID": "automation-1",
+                "tool": "mcp.bank.release_funds",
+                "category": "money_movement",
+                "approval": {
+                    "gate_node_id": "approve_protected_action",
+                    "action_hash": "hash-1"
+                }
+            }),
+        );
+        let row = audit_event_to_stream_record(&event).unwrap();
+        assert_eq!(row["command"], "fintech_protected_action_approved");
+        assert_eq!(row["result"]["approval"]["action_hash"], "hash-1");
     }
 }

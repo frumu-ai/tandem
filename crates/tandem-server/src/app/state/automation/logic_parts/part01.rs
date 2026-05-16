@@ -1064,6 +1064,12 @@ pub(crate) fn build_automation_pending_gate(
         rework_targets: gate.rework_targets.clone(),
         requested_at_ms: now_ms(),
         upstream_node_ids: node.depends_on.clone(),
+        metadata: node
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("approval"))
+            .and_then(|approval| approval.get("metadata"))
+            .cloned(),
     })
 }
 

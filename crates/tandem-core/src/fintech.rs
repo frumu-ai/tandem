@@ -1,7 +1,8 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     canonical_tool_name, tool_name_matches_profile, ToolCapabilityProfile, ToolEffectLedgerPhase,
@@ -231,6 +232,66 @@ pub fn fintech_strict_tool_decision(tool_name: &str) -> FintechToolPolicyDecisio
             )),
         },
     }
+}
+
+pub fn fintech_protected_action_hash(tool_name: &str, args: &Value) -> String {
+    let payload = json!({
+        "tool": canonical_tool_name(tool_name),
+        "args": canonicalize_json_value(args),
+    });
+    sha256_hex(canonical_json_string(&payload).as_bytes())
+}
+
+fn canonicalize_json_value(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json_value).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), canonicalize_json_value(value)))
+                .collect::<BTreeMap<_, _>>()
+                .into_iter()
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn canonical_json_string(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()),
+        Value::Array(items) => {
+            let body = items
+                .iter()
+                .map(canonical_json_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{body}]")
+        }
+        Value::Object(map) => {
+            let body = map
+                .iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string()),
+                        canonical_json_string(value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{body}}}")
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 fn fintech_action_name(tool_name: &str) -> String {
@@ -542,6 +603,46 @@ mod tests {
             classify_fintech_tool("mcp.vendor.update_widget"),
             FintechToolPolicyClassification::BlockedUnknownMutation
         );
+    }
+
+    #[test]
+    fn protected_action_hash_is_stable_across_arg_order() {
+        let left = fintech_protected_action_hash(
+            "mcp.bank.release_funds",
+            &json!({
+                "amount": 10,
+                "account_id": "acct-1",
+                "nested": {
+                    "b": true,
+                    "a": "first"
+                }
+            }),
+        );
+        let right = fintech_protected_action_hash(
+            "MCP.BANK.RELEASE_FUNDS",
+            &json!({
+                "nested": {
+                    "a": "first",
+                    "b": true
+                },
+                "account_id": "acct-1",
+                "amount": 10
+            }),
+        );
+        let changed = fintech_protected_action_hash(
+            "mcp.bank.release_funds",
+            &json!({
+                "amount": 11,
+                "account_id": "acct-1",
+                "nested": {
+                    "a": "first",
+                    "b": true
+                }
+            }),
+        );
+
+        assert_eq!(left, right);
+        assert_ne!(left, changed);
     }
 
     #[test]

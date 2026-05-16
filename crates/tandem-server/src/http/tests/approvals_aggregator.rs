@@ -31,6 +31,7 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
                 rework_targets: vec!["draft".to_string()],
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec!["draft".to_string()],
+                metadata: None,
             });
         })
         .await
@@ -321,6 +322,7 @@ async fn gate_decide_409_includes_winning_decision_in_body() {
                     decision: "approve".to_string(),
                     reason: Some("looks good".to_string()),
                     decided_at_ms: crate::now_ms(),
+                    metadata: None,
                 });
         })
         .await
@@ -406,6 +408,7 @@ async fn gate_decide_concurrent_race_yields_exactly_one_winner() {
                 rework_targets: vec![],
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec![],
+                metadata: None,
             });
         })
         .await
@@ -536,6 +539,7 @@ async fn approvals_pending_endpoint_filters_by_source_unknown_returns_empty() {
                 rework_targets: vec![],
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec![],
+                metadata: None,
             });
         })
         .await

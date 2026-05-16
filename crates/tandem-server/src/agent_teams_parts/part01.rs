@@ -1,5 +1,6 @@
 use tandem_core::{
-    fintech_policy_decision_payload, fintech_strict_tool_decision, metadata_enables_fintech_strict,
+    fintech_policy_decision_payload, fintech_protected_action_hash, fintech_strict_tool_decision,
+    metadata_enables_fintech_strict, FintechProtectedActionCategory,
     FintechToolPolicyClassification,
 };
 use tandem_orchestrator::{
@@ -333,12 +334,13 @@ async fn evaluate_automation_read_only_write_deny(
     }
 }
 
-async fn evaluate_fintech_strict_tool_deny(
+async fn evaluate_fintech_strict_tool_policy(
     state: &AppState,
     session_id: &str,
     message_id: &str,
     tool: &str,
-) -> Option<String> {
+    args: &Value,
+) -> Option<ToolPolicyDecision> {
     let run_id = state
         .automation_v2_session_runs
         .read()
@@ -359,6 +361,52 @@ async fn evaluate_fintech_strict_tool_deny(
         "fintech strict mode blocked tool execution by runtime policy".to_string()
     });
     let payload = fintech_policy_decision_payload(tool, &decision.classification, &reason);
+    if let FintechToolPolicyClassification::RequiresApproval(category) = decision.classification {
+        if let Some(approval) =
+            matching_fintech_protected_action_approval(&run, tool, args, category)
+        {
+            let audit_payload = json!({
+                "run_id": run.run_id,
+                "automation_id": automation.automation_id,
+                "session_id": session_id,
+                "message_id": message_id,
+                "tool": tool,
+                "policy": payload,
+                "approval_verification": {
+                    "status": "verified",
+                    "effect": "allow",
+                    "approval": approval,
+                },
+            });
+            let _ = crate::audit::append_protected_audit_event(
+                state,
+                "fintech.protected_action.approved",
+                &run.tenant_context,
+                run.tenant_context.actor_id.clone(),
+                audit_payload,
+            )
+            .await;
+            if state.is_ready() {
+                state.event_bus.publish(EngineEvent::new(
+                    "fintech.protected_action.approved",
+                    json!({
+                        "sessionID": session_id,
+                        "messageID": message_id,
+                        "runID": run.run_id,
+                        "automationID": automation.automation_id,
+                        "tool": tool,
+                        "category": category.as_str(),
+                        "approval": approval,
+                        "timestampMs": crate::now_ms(),
+                    }),
+                ));
+            }
+            return Some(ToolPolicyDecision {
+                allowed: true,
+                reason: None,
+            });
+        }
+    }
     if state.is_ready() {
         state.event_bus.publish(EngineEvent::new(
             "fintech.protected_action.denied",
@@ -397,7 +445,9 @@ async fn evaluate_fintech_strict_tool_deny(
     )
     .await;
 
-    Some(match decision.classification {
+    Some(ToolPolicyDecision {
+        allowed: false,
+        reason: Some(match decision.classification {
         FintechToolPolicyClassification::RequiresApproval(category) => format!(
             "{} Runtime denied protected fintech action `{}` fail-closed; approval gates are not treated as authorization until a matching approval/policy record can be verified at the tool call.",
             reason,
@@ -405,7 +455,68 @@ async fn evaluate_fintech_strict_tool_deny(
         ),
         FintechToolPolicyClassification::BlockedUnknownMutation => reason,
         FintechToolPolicyClassification::Safe => reason,
+        }),
     })
+}
+
+fn matching_fintech_protected_action_approval(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    tool: &str,
+    args: &Value,
+    category: FintechProtectedActionCategory,
+) -> Option<Value> {
+    let action_hash = fintech_protected_action_hash(tool, args);
+    let now_ms = crate::now_ms();
+    run.checkpoint
+        .gate_history
+        .iter()
+        .rev()
+        .filter(|record| record.decision.eq_ignore_ascii_case("approve"))
+        .find_map(|record| {
+            let metadata = record.metadata.as_ref()?;
+            let receipt = metadata.get("fintech_protected_action").unwrap_or(metadata);
+            let receipt_category = receipt.get("category").and_then(Value::as_str)?;
+            if receipt_category != category.as_str() {
+                return None;
+            }
+            let receipt_tool = receipt.get("tool").and_then(Value::as_str)?;
+            if !receipt_tool.eq_ignore_ascii_case(tool) {
+                return None;
+            }
+            if receipt.get("action_hash").and_then(Value::as_str) != Some(action_hash.as_str()) {
+                return None;
+            }
+            if !receipt_matches_tenant(receipt, run) {
+                return None;
+            }
+            if receipt
+                .get("expires_at_ms")
+                .and_then(Value::as_u64)
+                .is_some_and(|expires_at_ms| expires_at_ms <= now_ms)
+            {
+                return None;
+            }
+            Some(json!({
+                "gate_node_id": record.node_id,
+                "decided_at_ms": record.decided_at_ms,
+                "category": category.as_str(),
+                "tool": receipt_tool,
+                "action_hash": action_hash,
+                "expires_at_ms": receipt.get("expires_at_ms").cloned().unwrap_or(Value::Null),
+            }))
+        })
+}
+
+fn receipt_matches_tenant(
+    receipt: &Value,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) -> bool {
+    let Some(tenant) = receipt.get("tenant") else {
+        return false;
+    };
+    tenant.get("org_id").and_then(Value::as_str) == Some(run.tenant_context.org_id.as_str())
+        && tenant.get("workspace_id").and_then(Value::as_str)
+            == Some(run.tenant_context.workspace_id.as_str())
 }
 
 impl ToolPolicyHook for ServerToolPolicyHook {
@@ -467,14 +578,16 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 });
             }
 
-            if let Some(reason) =
-                evaluate_fintech_strict_tool_deny(&state, &ctx.session_id, &ctx.message_id, &tool)
-                    .await
+            if let Some(decision) = evaluate_fintech_strict_tool_policy(
+                &state,
+                &ctx.session_id,
+                &ctx.message_id,
+                &tool,
+                &ctx.args,
+            )
+            .await
             {
-                return Ok(ToolPolicyDecision {
-                    allowed: false,
-                    reason: Some(reason),
-                });
+                return Ok(decision);
             }
 
             let Some(instance) = state
@@ -2129,6 +2242,43 @@ mod fintech_policy_tests {
         state
     }
 
+    async fn add_fintech_approval_receipt(
+        state: &AppState,
+        tool: &str,
+        args: &Value,
+        category: &str,
+        tenant_override: Option<Value>,
+        expires_at_ms: Option<u64>,
+    ) {
+        let mut runs = state.automation_v2_runs.write().await;
+        let run = runs
+            .get_mut("automation-v2-run-fintech")
+            .expect("fintech run");
+        let tenant = tenant_override.unwrap_or_else(|| {
+            json!({
+                "org_id": run.tenant_context.org_id,
+                "workspace_id": run.tenant_context.workspace_id,
+            })
+        });
+        run.checkpoint
+            .gate_history
+            .push(crate::AutomationGateDecisionRecord {
+                node_id: "approve_protected_action".to_string(),
+                decision: "approve".to_string(),
+                reason: Some("approved for test".to_string()),
+                decided_at_ms: crate::now_ms(),
+                metadata: Some(json!({
+                    "fintech_protected_action": {
+                        "category": category,
+                        "tool": tool,
+                        "action_hash": tandem_core::fintech_protected_action_hash(tool, args),
+                        "tenant": tenant,
+                        "expires_at_ms": expires_at_ms.unwrap_or_else(|| crate::now_ms() + 60_000),
+                    }
+                })),
+            });
+    }
+
     #[tokio::test]
     async fn fintech_strict_blocks_protected_action_tools() {
         let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
@@ -2158,6 +2308,103 @@ mod fintech_policy_tests {
             .as_deref()
             .unwrap_or_default()
             .contains("approval gates are not treated as authorization"));
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_allows_matching_approved_protected_action_receipt() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+        let args = json!({"account_id": "acct-1", "amount": 10});
+        add_fintech_approval_receipt(
+            &state,
+            "mcp.bank.release_funds",
+            &args,
+            "money_movement",
+            None,
+            None,
+        )
+        .await;
+        let hook = ServerToolPolicyHook::new(state);
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-fintech".to_string(),
+                message_id: "message-1".to_string(),
+                tool: "mcp.bank.release_funds".to_string(),
+                args,
+            })
+            .await
+            .expect("policy decision");
+
+        assert!(decision.allowed, "{:?}", decision.reason);
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_rejects_mismatched_approval_receipts() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+        add_fintech_approval_receipt(
+            &state,
+            "mcp.bank.release_funds",
+            &json!({"account_id": "acct-1", "amount": 10}),
+            "money_movement",
+            None,
+            None,
+        )
+        .await;
+        let hook = ServerToolPolicyHook::new(state);
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-fintech".to_string(),
+                message_id: "message-1".to_string(),
+                tool: "mcp.bank.release_funds".to_string(),
+                args: json!({"account_id": "acct-1", "amount": 11}),
+            })
+            .await
+            .expect("policy decision");
+
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("fail-closed"));
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_rejects_cross_tenant_or_expired_approval_receipts() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+        let args = json!({"account_id": "acct-1", "amount": 10});
+        add_fintech_approval_receipt(
+            &state,
+            "mcp.bank.release_funds",
+            &args,
+            "money_movement",
+            Some(json!({"org_id": "other-org", "workspace_id": "local-workspace"})),
+            None,
+        )
+        .await;
+        add_fintech_approval_receipt(
+            &state,
+            "mcp.bank.release_funds",
+            &args,
+            "money_movement",
+            None,
+            Some(crate::now_ms().saturating_sub(1)),
+        )
+        .await;
+        let hook = ServerToolPolicyHook::new(state);
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-fintech".to_string(),
+                message_id: "message-1".to_string(),
+                tool: "mcp.bank.release_funds".to_string(),
+                args,
+            })
+            .await
+            .expect("policy decision");
+
+        assert!(!decision.allowed);
     }
 
     #[tokio::test]

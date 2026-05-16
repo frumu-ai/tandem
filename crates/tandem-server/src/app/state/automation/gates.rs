@@ -60,6 +60,7 @@ pub(crate) fn apply_automation_gate_decision(
             decision: decision.to_string(),
             reason: reason.clone(),
             decided_at_ms: crate::now_ms(),
+            metadata: gate.metadata.clone(),
         });
     run.checkpoint.awaiting_gate = None;
     match decision {
