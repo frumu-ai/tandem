@@ -30,7 +30,8 @@ What ships now:
 - Tool effect ledger summaries now preserve safe source identifiers such as `source_id`, `document_id`, `ticket_id`, and `record_id`, while still avoiding raw query text.
 - Connector proof helpers only accept successful source retrieval calls as evidence; connector discovery/listing alone is not enough.
 - Existing context-run ledger summaries now include `fintech_connector_proof` derived from successful source retrieval tool records.
-- Compliance/risk brief validation helpers check required fields, citations, limitations, reviewer status, approval state, and audit IDs.
+- Compliance/risk brief validation checks required fields, citations, limitations, reviewer status, approval state, and audit IDs.
+- Explicitly marked fintech brief workflow nodes persist connector proof and validation results in artifact validation metadata, and reject citations that cannot be mapped to connector proof.
 - An internal audit package helper can assemble run, tenant, actor, tool calls, connector proof, artifacts, approvals, and policy decisions from Automation V2 run state.
 
 ### Boundaries

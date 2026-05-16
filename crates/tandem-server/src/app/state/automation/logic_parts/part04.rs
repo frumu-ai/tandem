@@ -1708,6 +1708,59 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             Some("structured handoff was not returned in the final response".to_string());
         rejected_reason = semantic_block_reason.clone();
     }
+    let fintech_compliance_brief_validation =
+        if automation_node_requires_fintech_compliance_brief_validation(automation, node) {
+            let connector_proof = session_fintech_connector_proof(session);
+            let report = accepted_output
+                .as_ref()
+                .map(|(_, text)| {
+                    serde_json::from_str::<Value>(text)
+                        .map(|artifact| {
+                            tandem_core::validate_fintech_compliance_brief_artifact(
+                                &artifact,
+                                &connector_proof,
+                            )
+                        })
+                        .unwrap_or_else(|_| tandem_core::FintechArtifactValidationReport {
+                            passed: false,
+                            issues: vec!["artifact_json_invalid".to_string()],
+                        })
+                })
+                .unwrap_or_else(|| tandem_core::FintechArtifactValidationReport {
+                    passed: false,
+                    issues: vec!["artifact_missing".to_string()],
+                });
+            if let Some(object) = validation_basis.as_object_mut() {
+                object.insert(
+                    "fintech_connector_proof".to_string(),
+                    json!(connector_proof),
+                );
+                object.insert(
+                    "fintech_compliance_brief_validation".to_string(),
+                    serde_json::to_value(&report).unwrap_or_else(|_| Value::Null),
+                );
+            }
+            if !report.passed {
+                accepted_output = None;
+                unmet_requirements.push("fintech_compliance_brief_invalid".to_string());
+                for issue in &report.issues {
+                    unmet_requirements.push(format!("fintech_{issue}"));
+                }
+                unmet_requirements.sort();
+                unmet_requirements.dedup();
+                let reason = format!(
+                    "fintech compliance brief failed validation: {}",
+                    report.issues.join(", ")
+                );
+                semantic_block_reason = Some(reason.clone());
+                if rejected_reason.is_none() {
+                    rejected_reason = Some(reason);
+                }
+            }
+            Some(report)
+        } else {
+            None
+        };
     let active_profile = automation
         .execution
         .profile
@@ -1971,6 +2024,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         "warning_requirements": warning_requirements.clone(),
         "warning_count": warning_requirements.len(),
         "artifact_candidates": artifact_candidates,
+        "fintech_compliance_brief_validation": fintech_compliance_brief_validation,
         "resolved_enforcement": enforcement,
         "structured_handoff_present": structured_handoff.is_some(),
     });
@@ -1985,6 +2039,94 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 .map(str::to_string)
         });
     (accepted_output, metadata, rejected)
+}
+
+fn automation_node_requires_fintech_compliance_brief_validation(
+    automation: &AutomationV2Spec,
+    node: &AutomationFlowNode,
+) -> bool {
+    let fintech_strict = tandem_core::metadata_enables_fintech_strict(automation.metadata.as_ref())
+        || tandem_core::metadata_enables_fintech_strict(node.metadata.as_ref());
+    if !fintech_strict {
+        return false;
+    }
+    node.output_contract
+        .as_ref()
+        .is_some_and(|contract| fintech_compliance_brief_marker(&contract.kind))
+        || node
+            .metadata
+            .as_ref()
+            .is_some_and(metadata_marks_fintech_compliance_brief)
+}
+
+fn metadata_marks_fintech_compliance_brief(metadata: &Value) -> bool {
+    [
+        metadata.get("artifact_contract"),
+        metadata.get("artifact_type"),
+        metadata.pointer("/fintech/artifact_contract"),
+        metadata.pointer("/fintech/artifact_type"),
+        metadata.pointer("/builder/artifact_contract"),
+        metadata.pointer("/builder/artifact_type"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| {
+        value.as_str().is_some_and(fintech_compliance_brief_marker)
+            || value.as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item.as_str().is_some_and(fintech_compliance_brief_marker))
+            })
+    })
+}
+
+fn fintech_compliance_brief_marker(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().replace('-', "_").as_str(),
+        "fintech_compliance_brief"
+            | "fintech_compliance_risk_brief"
+            | "compliance_risk_update_brief"
+            | "compliance_update_brief"
+    )
+}
+
+fn session_fintech_connector_proof(
+    session: &Session,
+) -> Vec<tandem_core::FintechConnectorProofRecord> {
+    let mut proof = Vec::new();
+    for (message_index, message) in session.messages.iter().enumerate() {
+        for (part_index, part) in message.parts.iter().enumerate() {
+            let MessagePart::ToolInvocation {
+                tool,
+                args,
+                result,
+                error,
+            } = part
+            else {
+                continue;
+            };
+            if error.as_ref().is_some_and(|value| !value.trim().is_empty()) || result.is_none() {
+                continue;
+            }
+            let output = result.as_ref().map(Value::to_string);
+            let record = tandem_core::build_tool_effect_ledger_record(
+                "automation_validation",
+                &format!("message-{message_index}-part-{part_index}"),
+                None,
+                tool,
+                tandem_core::ToolEffectLedgerPhase::Outcome,
+                tandem_core::ToolEffectLedgerStatus::Succeeded,
+                args,
+                result.as_ref(),
+                output.as_deref(),
+                None,
+            );
+            if let Some(row) = tandem_core::connector_proof_from_tool_record(&record) {
+                proof.push(row);
+            }
+        }
+    }
+    proof
 }
 
 fn synthesis_overstates_unconfirmed_notion_identity(text: &str) -> bool {

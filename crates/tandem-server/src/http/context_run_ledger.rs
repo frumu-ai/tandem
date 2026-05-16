@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use super::*;
 use tandem_core::{
     build_fintech_audit_package, connector_proof_from_tool_record, ToolEffectLedgerRecord,
+    ToolEffectLedgerStatus,
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -40,6 +41,13 @@ pub(super) fn fintech_audit_package_for_automation_v2_run(
     let context_run_id = super::context_runs::automation_v2_context_run_id(&run.run_id);
     let events = load_context_run_ledger_source_events(state, &context_run_id, None, None);
     let records = context_run_ledger_records(&events);
+    fintech_audit_package_for_automation_v2_run_records(run, &records)
+}
+
+fn fintech_audit_package_for_automation_v2_run_records(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    records: &[ContextRunLedgerEventView],
+) -> Value {
     let tool_calls = records
         .iter()
         .map(|record| record.record.clone())
@@ -63,13 +71,7 @@ pub(super) fn fintech_audit_package_for_automation_v2_run(
         .collect::<Vec<_>>();
     let policy_decisions = records
         .iter()
-        .filter(|record| {
-            serde_json::to_value(record.record.status)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_string))
-                .as_deref()
-                == Some("blocked")
-        })
+        .filter(|record| record.record.status == ToolEffectLedgerStatus::Blocked)
         .map(|record| {
             json!({
                 "event_id": record.event_id,
@@ -168,6 +170,8 @@ fn normalize_serialized_enum_counts(counts: BTreeMap<String, u64>) -> BTreeMap<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use tandem_types::TenantContext;
 
     fn tool_effect_event(seq: u64, tool: &str, phase: &str, status: &str) -> ContextRunEventRecord {
         ContextRunEventRecord {
@@ -275,6 +279,109 @@ mod tests {
         assert_eq!(
             summary["fintech_connector_proof"].as_array().map(Vec::len),
             Some(1)
+        );
+    }
+
+    fn fintech_audit_fixture_run() -> crate::automation_v2::types::AutomationV2RunRecord {
+        crate::automation_v2::types::AutomationV2RunRecord {
+            run_id: "automation-v2-run-fintech".to_string(),
+            automation_id: "automation-fintech".to_string(),
+            tenant_context: TenantContext::local_implicit(),
+            trigger_type: "manual".to_string(),
+            status: crate::AutomationRunStatus::Running,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            started_at_ms: Some(1),
+            finished_at_ms: None,
+            active_session_ids: Vec::new(),
+            latest_session_id: None,
+            active_instance_ids: Vec::new(),
+            checkpoint: crate::AutomationRunCheckpoint {
+                completed_nodes: vec!["draft_compliance_brief".to_string()],
+                pending_nodes: Vec::new(),
+                node_outputs: HashMap::from([(
+                    "draft_compliance_brief".to_string(),
+                    json!({
+                        "artifact_id": "brief-1",
+                        "artifact_validation": {
+                            "validation_outcome": "passed",
+                            "fintech_compliance_brief_validation": {"passed": true}
+                        }
+                    }),
+                )]),
+                node_attempts: HashMap::new(),
+                node_attempt_verdicts: HashMap::new(),
+                blocked_nodes: Vec::new(),
+                awaiting_gate: None,
+                gate_history: Vec::new(),
+                lifecycle_history: Vec::new(),
+                last_failure: None,
+            },
+            runtime_context: None,
+            automation_snapshot: None,
+            pause_reason: None,
+            resume_reason: None,
+            detail: None,
+            stop_kind: None,
+            stop_reason: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+            scheduler: None,
+            trigger_reason: None,
+            consumed_handoff_id: None,
+            learning_summary: None,
+            effective_execution_profile:
+                crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+            requested_execution_profile: None,
+        }
+    }
+
+    #[test]
+    fn fintech_audit_package_fixture_includes_run_evidence() {
+        let records = context_run_ledger_records(&[
+            tool_effect_event_with_args(
+                1,
+                "mcp.regulator.fetch_bulletin",
+                "outcome",
+                "succeeded",
+                json!({
+                    "keys": ["source_id"],
+                    "field_count": 1,
+                    "type": "object",
+                    "source_id": "reg-bulletin-1"
+                }),
+            ),
+            tool_effect_event_with_args(
+                2,
+                "mcp.bank.release_funds",
+                "outcome",
+                "blocked",
+                json!({
+                    "keys": [],
+                    "field_count": 0,
+                    "type": "object"
+                }),
+            ),
+        ]);
+        let package = fintech_audit_package_for_automation_v2_run_records(
+            &fintech_audit_fixture_run(),
+            &records,
+        );
+
+        assert_eq!(package["run_id"], "automation-v2-run-fintech");
+        assert_eq!(
+            package["connector_proof"][0]["source_ids"][0].as_str(),
+            Some("reg-bulletin-1")
+        );
+        assert_eq!(
+            package["artifacts"][0]["node_id"].as_str(),
+            Some("draft_compliance_brief")
+        );
+        assert_eq!(
+            package["policy_decisions"][0]["tool"].as_str(),
+            Some("mcp.bank.release_funds")
         );
     }
 }

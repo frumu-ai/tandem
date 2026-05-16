@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Tool effect ledger source identifiers**: Tool ledger summaries now preserve safe source identifiers such as `source_id`, `document_id`, `ticket_id`, and `record_id` while continuing to avoid raw query text.
 - **Context-run ledger fintech proof summary**: Existing context-run ledger summaries now include `fintech_connector_proof` derived from successful source retrieval calls.
+- **Workflow-level fintech brief validation**: Explicitly marked fintech compliance/risk brief nodes now persist connector proof and validation results in artifact validation metadata, and reject citations that cannot be mapped to recorded connector proof.
 - **Audit stream coverage**: `/audit/stream` now normalizes `fintech.protected_action.denied` events into admin-readable audit rows.
 - **Version bump**: Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles move to `0.5.7`.
 

@@ -819,6 +819,227 @@ fn parse_status_json_accepts_standup_completion_metadata() {
     );
 }
 
+fn fintech_compliance_brief_automation() -> AutomationV2Spec {
+    AutomationV2Spec {
+        automation_id: "fintech-compliance-brief".to_string(),
+        name: "Fintech Compliance Brief".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Draft,
+        schedule: AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: crate::AutomationFlowSpec { nodes: Vec::new() },
+        execution: crate::AutomationExecutionPolicy {
+            profile: Some(crate::automation_v2::execution_profile::ExecutionProfile::Strict),
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: None,
+        metadata: Some(json!({"runtime_profile": "fintech_strict"})),
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    }
+}
+
+fn fintech_compliance_brief_node() -> AutomationFlowNode {
+    let mut node = bare_node();
+    node.node_id = "draft_compliance_risk_update_brief".to_string();
+    node.objective = "Draft a cited compliance/risk update brief".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "fintech_compliance_brief".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/fintech-compliance-brief.json"
+        },
+        "fintech": {
+            "artifact_contract": "compliance_risk_update_brief"
+        }
+    }));
+    node
+}
+
+fn valid_fintech_compliance_brief_artifact() -> Value {
+    json!({
+        "status": "completed",
+        "run_id": "automation-v2-run-fintech",
+        "tenant": {"org_id": "tenant-a"},
+        "source_scope": ["regulator"],
+        "sources_reviewed": ["reg-bulletin-1"],
+        "material_claims": [
+            {"claim": "Rule changed", "source_id": "reg-bulletin-1"}
+        ],
+        "citations": [
+            {"source_id": "reg-bulletin-1"}
+        ],
+        "limitations": ["Not legal advice"],
+        "reviewer_status": "needs_review",
+        "approval_state": {"state": "draft"},
+        "audit_event_ids": ["audit-1"]
+    })
+}
+
+#[test]
+fn fintech_compliance_brief_validation_accepts_connector_proof() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-fintech-brief-validation-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let automation = fintech_compliance_brief_automation();
+    let node = fintech_compliance_brief_node();
+    let artifact = valid_fintech_compliance_brief_artifact();
+    let artifact_text = serde_json::to_string_pretty(&artifact).expect("serialize artifact");
+    let mut session = Session::new(Some("fintech brief validation".to_string()), None);
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![
+            MessagePart::ToolInvocation {
+                tool: "mcp.regulator.fetch_bulletin".to_string(),
+                args: json!({"source_id": "reg-bulletin-1"}),
+                result: Some(json!({"title": "Rule change"})),
+                error: None,
+            },
+            MessagePart::Text {
+                text: artifact_text.clone(),
+            },
+        ],
+    ));
+    let tool_telemetry = json!({
+        "requested_tools": ["mcp.regulator.fetch_bulletin", "write"],
+        "executed_tools": ["mcp.regulator.fetch_bulletin", "write"],
+        "tool_call_counts": {"write": 1},
+        "verified_output_materialized_by_current_attempt": true
+    });
+
+    let (accepted, validation, rejected) =
+        super::logic::validate_automation_artifact_output_with_context(
+            &automation,
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root"),
+            Some("automation-v2-run-fintech"),
+            None,
+            &artifact_text,
+            &tool_telemetry,
+            None,
+            Some((
+                ".tandem/artifacts/fintech-compliance-brief.json".to_string(),
+                artifact_text.clone(),
+            )),
+            &std::collections::BTreeSet::new(),
+            None,
+            None,
+        );
+
+    assert!(accepted.is_some());
+    assert!(rejected.is_none(), "{rejected:?}");
+    assert_eq!(
+        validation
+            .pointer("/fintech_compliance_brief_validation/passed")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        validation
+            .pointer("/validation_basis/fintech_connector_proof/0/source_ids/0")
+            .and_then(Value::as_str),
+        Some("reg-bulletin-1")
+    );
+}
+
+#[test]
+fn fintech_compliance_brief_validation_rejects_unproven_citation() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-fintech-brief-validation-missing-proof-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let automation = fintech_compliance_brief_automation();
+    let node = fintech_compliance_brief_node();
+    let artifact_text = serde_json::to_string_pretty(&valid_fintech_compliance_brief_artifact())
+        .expect("serialize artifact");
+    let mut session = Session::new(Some("fintech brief missing proof".to_string()), None);
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![
+            MessagePart::ToolInvocation {
+                tool: "mcp.regulator.list_tools".to_string(),
+                args: json!({"query": "rules"}),
+                result: Some(json!({"tools": ["fetch_bulletin"]})),
+                error: None,
+            },
+            MessagePart::Text {
+                text: artifact_text.clone(),
+            },
+        ],
+    ));
+    let tool_telemetry = json!({
+        "requested_tools": ["mcp.regulator.fetch_bulletin", "write"],
+        "executed_tools": ["mcp.regulator.list_tools", "write"],
+        "tool_call_counts": {"write": 1},
+        "verified_output_materialized_by_current_attempt": true
+    });
+
+    let (accepted, validation, rejected) =
+        super::logic::validate_automation_artifact_output_with_context(
+            &automation,
+            &node,
+            &session,
+            workspace_root.to_str().expect("workspace root"),
+            Some("automation-v2-run-fintech"),
+            None,
+            &artifact_text,
+            &tool_telemetry,
+            None,
+            Some((
+                ".tandem/artifacts/fintech-compliance-brief.json".to_string(),
+                artifact_text.clone(),
+            )),
+            &std::collections::BTreeSet::new(),
+            None,
+            None,
+        );
+
+    assert!(accepted.is_none());
+    assert!(rejected
+        .as_deref()
+        .unwrap_or_default()
+        .contains("citation_without_connector_proof"));
+    assert_eq!(
+        validation
+            .pointer("/fintech_compliance_brief_validation/passed")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(validation
+        .pointer("/unmet_requirements")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items
+            .iter()
+            .any(|item| { item.as_str() == Some("fintech_compliance_brief_invalid") })));
+}
+
 #[test]
 fn bug_monitor_context_artifacts_do_not_require_workspace_output_paths() {
     let node = AutomationFlowNode {
