@@ -49,6 +49,8 @@ behavior by default.
   `ToolPolicyContext`, so strict protected-tool policy can reject expired signed
   tenant assertions at execution time instead of trusting only the original HTTP
   ingress decision.
+- Added regression coverage proving local/default session creation still works
+  without hosted auth headers or signed context assertions.
 
 ### Boundaries
 
