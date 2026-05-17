@@ -27,6 +27,30 @@ fn load_run_events_jsonl_filters_since_and_tail() {
     let _ = std::fs::remove_dir_all(&test_root);
 }
 
+fn tenant_request(
+    method: &str,
+    uri: impl Into<String>,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+    body: Option<Value>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri.into())
+        .header("x-tandem-org-id", org_id)
+        .header("x-tandem-workspace-id", workspace_id)
+        .header("x-tandem-actor-id", actor_id);
+    let body = match body {
+        Some(value) => {
+            builder = builder.header("content-type", "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    builder.body(body).expect("tenant request")
+}
+
 #[tokio::test]
 async fn context_run_create_append_event_and_get() {
     let state = test_state().await;
@@ -211,11 +235,14 @@ async fn context_run_create_append_event_and_get() {
         Some(4)
     );
 
-    let get_run_req = Request::builder()
-        .method("GET")
-        .uri("/context/runs/ctx-run-1")
-        .body(Body::empty())
-        .expect("get run request");
+    let get_run_req = tenant_request(
+        "GET",
+        "/context/runs/ctx-run-1",
+        "acme",
+        "north",
+        "user-1",
+        None,
+    );
     let get_run_resp = app
         .clone()
         .oneshot(get_run_req)
@@ -334,6 +361,126 @@ async fn context_run_create_append_event_and_get() {
             .and_then(Value::as_str),
         Some("allow_rollback_execution")
     );
+}
+
+#[tokio::test]
+async fn tenant_a_cannot_access_tenant_b_context_run_front_door_routes() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    for (run_id, org, workspace, actor) in [
+        ("ctx-tenant-a", "org-a", "workspace-a", "user-a"),
+        ("ctx-tenant-b", "org-b", "workspace-b", "user-b"),
+    ] {
+        let create_resp = app
+            .clone()
+            .oneshot(tenant_request(
+                "POST",
+                "/context/runs",
+                org,
+                workspace,
+                actor,
+                Some(json!({
+                    "run_id": run_id,
+                    "objective": format!("context run for {org}")
+                })),
+            ))
+            .await
+            .expect("context run create response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+    }
+
+    let list_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            "/context/runs",
+            "org-a",
+            "workspace-a",
+            "user-a",
+            None,
+        ))
+        .await
+        .expect("context run list response");
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_body = to_bytes(list_resp.into_body(), usize::MAX)
+        .await
+        .expect("list body");
+    let list_payload: Value = serde_json::from_slice(&list_body).expect("list json");
+    let visible_run_ids = list_payload
+        .get("runs")
+        .and_then(Value::as_array)
+        .expect("runs array")
+        .iter()
+        .filter_map(|run| run.get("run_id").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert!(visible_run_ids.contains(&"ctx-tenant-a"));
+    assert!(!visible_run_ids.contains(&"ctx-tenant-b"));
+
+    let tenant_b_get_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            "/context/runs/ctx-tenant-b",
+            "org-b",
+            "workspace-b",
+            "user-b",
+            None,
+        ))
+        .await
+        .expect("tenant b get response");
+    assert_eq!(tenant_b_get_resp.status(), StatusCode::OK);
+    let tenant_b_get_body = to_bytes(tenant_b_get_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant b get body");
+    let tenant_b_payload: Value =
+        serde_json::from_slice(&tenant_b_get_body).expect("tenant b get json");
+    let tenant_b_run = tenant_b_payload
+        .get("run")
+        .cloned()
+        .expect("tenant b run payload");
+
+    for (method, uri, body) in [
+        ("GET", "/context/runs/ctx-tenant-b", None),
+        (
+            "PUT",
+            "/context/runs/ctx-tenant-b",
+            Some(tenant_b_run.clone()),
+        ),
+        (
+            "POST",
+            "/context/runs/ctx-tenant-b/driver/next",
+            Some(json!({"dry_run": true})),
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(tenant_request(
+                method,
+                uri,
+                "org-a",
+                "workspace-a",
+                "user-a",
+                body,
+            ))
+            .await
+            .expect("cross-tenant context run response");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+
+    let tenant_b_still_get_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            "/context/runs/ctx-tenant-b",
+            "org-b",
+            "workspace-b",
+            "user-b",
+            None,
+        ))
+        .await
+        .expect("tenant b still get response");
+    assert_eq!(tenant_b_still_get_resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]

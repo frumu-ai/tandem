@@ -79,6 +79,13 @@ fn with_tenant_context(mut properties: Value, tenant_context: &TenantContext) ->
     properties
 }
 
+fn ensure_context_run_tenant(
+    request_tenant: &TenantContext,
+    run: &ContextRunState,
+) -> Result<(), StatusCode> {
+    super::ensure_same_tenant(request_tenant, &run.tenant_context)
+}
+
 fn load_context_run_tenant_context_sync(state: &AppState, run_id: &str) -> Option<TenantContext> {
     load_context_run_state_sync(state, run_id)
         .ok()
@@ -1520,6 +1527,7 @@ pub(super) async fn context_run_create_impl(
 
 pub(super) async fn context_run_list(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<ContextRunListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let workspace_filter = query
@@ -1535,6 +1543,9 @@ pub(super) async fn context_run_list(
     let mut rows = Vec::<ContextRunState>::new();
     for candidate in list_context_run_state_candidates(&state).await? {
         if let Ok(run) = load_context_run_state(&state, &candidate.run_id).await {
+            if !super::tenant_matches(&tenant_context, &run.tenant_context) {
+                continue;
+            }
             if let Some(workspace) = workspace_filter.as_deref() {
                 if run.workspace.canonical_path.trim() != workspace {
                     continue;
@@ -1558,9 +1569,11 @@ pub(super) async fn context_run_list(
 
 pub(super) async fn context_run_get(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     let ledger_summary =
         super::context_run_ledger::context_run_ledger_summary_for_run(&state, &run_id);
     let mutation_checkpoint_summary =
@@ -1596,12 +1609,17 @@ pub(super) async fn context_run_get(
 
 pub(super) async fn context_run_put(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
-    Json(run): Json<ContextRunState>,
+    Json(mut run): Json<ContextRunState>,
 ) -> Result<Json<Value>, StatusCode> {
     if run.run_id != run_id {
         return Err(StatusCode::BAD_REQUEST);
     }
+    if let Ok(existing) = load_context_run_state(&state, &run_id).await {
+        ensure_context_run_tenant(&tenant_context, &existing)?;
+    }
+    run.tenant_context = tenant_context;
     let status = run.status.clone();
     let outcome = context_run_engine()
         .commit_snapshot_with_event(
@@ -1843,10 +1861,12 @@ pub(super) fn context_driver_select_next_step(
 
 pub(super) async fn context_run_driver_next(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Json(input): Json<ContextDriverNextInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let mut run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     let dry_run = input.dry_run.unwrap_or(false);
     let (selected_idx, why_next_step, target_status) = context_driver_select_next_step(&run);
 
