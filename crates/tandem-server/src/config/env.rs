@@ -1,5 +1,6 @@
 use crate::{BugMonitorConfig, BugMonitorLabelMode, BugMonitorProviderPreference};
 use serde_json::json;
+use tandem_types::RuntimeAuthMode;
 
 pub(crate) fn resolve_run_stale_ms() -> u64 {
     std::env::var("TANDEM_RUN_STALE_MS")
@@ -37,6 +38,13 @@ pub(crate) fn resolve_automation_quality_legacy_rollback_enabled() -> bool {
             _ => None,
         })
         .unwrap_or(false)
+}
+
+pub(crate) fn resolve_runtime_auth_mode() -> RuntimeAuthMode {
+    std::env::var("TANDEM_RUNTIME_AUTH_MODE")
+        .ok()
+        .and_then(|value| RuntimeAuthMode::parse(&value).ok())
+        .unwrap_or_default()
 }
 
 pub(crate) fn resolve_automation_execute_node_timeout_ms() -> u64 {

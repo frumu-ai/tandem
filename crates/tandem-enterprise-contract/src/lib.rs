@@ -19,6 +19,59 @@ pub enum RuntimeAuthMode {
     EnterpriseRequired,
 }
 
+impl RuntimeAuthMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalSingleTenant => "local_single_tenant",
+            Self::HostedSingleTenant => "hosted_single_tenant",
+            Self::EnterpriseRequired => "enterprise_required",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, ParseRuntimeAuthModeError> {
+        value.parse()
+    }
+}
+
+impl core::str::FromStr for RuntimeAuthMode {
+    type Err = ParseRuntimeAuthModeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            ""
+            | "local"
+            | "local_single_tenant"
+            | "local-single-tenant"
+            | "single_tenant"
+            | "single-tenant" => Ok(Self::LocalSingleTenant),
+            "hosted" | "hosted_single_tenant" | "hosted-single-tenant" => {
+                Ok(Self::HostedSingleTenant)
+            }
+            "enterprise" | "enterprise_required" | "enterprise-required" | "required" => {
+                Ok(Self::EnterpriseRequired)
+            }
+            _ => Err(ParseRuntimeAuthModeError),
+        }
+    }
+}
+
+impl core::fmt::Display for RuntimeAuthMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseRuntimeAuthModeError;
+
+impl core::fmt::Display for ParseRuntimeAuthModeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("invalid runtime auth mode")
+    }
+}
+
+impl std::error::Error for ParseRuntimeAuthModeError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnterpriseBridgeState {
@@ -461,6 +514,27 @@ mod tests {
             "workspace-a",
             Some("user-a".to_string()),
         )));
+    }
+
+    #[test]
+    fn runtime_auth_mode_parses_operator_aliases() {
+        assert_eq!(
+            RuntimeAuthMode::parse("local"),
+            Ok(RuntimeAuthMode::LocalSingleTenant)
+        );
+        assert_eq!(
+            RuntimeAuthMode::parse("hosted-single-tenant"),
+            Ok(RuntimeAuthMode::HostedSingleTenant)
+        );
+        assert_eq!(
+            RuntimeAuthMode::parse("enterprise_required"),
+            Ok(RuntimeAuthMode::EnterpriseRequired)
+        );
+        assert!(RuntimeAuthMode::parse("definitely-not-a-mode").is_err());
+        assert_eq!(
+            RuntimeAuthMode::EnterpriseRequired.to_string(),
+            "enterprise_required"
+        );
     }
 
     #[test]

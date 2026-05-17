@@ -14,6 +14,9 @@ behavior by default.
 
 - Added explicit runtime auth-mode names for local single-tenant,
   hosted single-tenant, and enterprise-required operation.
+- Added canonical parsing and operator-friendly aliases for the runtime auth
+  modes, with `TANDEM_RUNTIME_AUTH_MODE` resolving to local single-tenant by
+  default.
 - Extended the enterprise contract with human actor metadata, deployment-aware
   tenant context, verified tenant-context assertion metadata, hosted tenant
   constructors, authenticated request principals, and request authority-chain
