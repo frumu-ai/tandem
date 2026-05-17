@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AnimatedPage, Badge, PanelCard, StatusPulse } from "../ui/index.tsx";
+import { AnimatedPage, Badge, LoadingState, PanelCard, StatusPulse } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { useCapabilities } from "../features/system/queries.ts";
 import { subscribeSse } from "../services/sse.js";
@@ -207,6 +207,8 @@ export function CodingWorkflowsPage({
     () => normalizeGithubBoard(projectBoardQuery.data),
     [projectBoardQuery.data]
   );
+  const githubBoardLoading =
+    projectBoardQuery.isLoading || (projectBoardQuery.isFetching && !projectBoardQuery.data);
   const providerOptions = useMemo<PlannerProviderOption[]>(() => {
     return buildPlannerProviderOptions({
       providerCatalog: providersCatalogQuery.data,
@@ -1044,8 +1046,12 @@ export function CodingWorkflowsPage({
                 </select>
               </div>
               {String(selectedProject?.taskSource?.type || "").trim() === "github_project" ? (
-                projectBoardQuery.isLoading ? (
-                  <div className="tcp-subtle text-sm">Loading GitHub Project items...</div>
+                githubBoardLoading ? (
+                  <LoadingState
+                    title="Loading GitHub Project items"
+                    text="Tandem is syncing the intake board through the GitHub connection."
+                    className="min-h-[10rem]"
+                  />
                 ) : projectBoardQuery.isError ? (
                   <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
                     {projectBoardQuery.error instanceof Error
