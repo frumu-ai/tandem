@@ -267,6 +267,8 @@ export function githubBoardItemCanRun(item: any) {
   const statusNameKey = normalizeGithubStatusKey(item?.statusName);
   const statusKey = rawStatusKey && rawStatusKey !== "unknown" ? rawStatusKey : statusNameKey;
   if (!item?.selector) return false;
+  if (item?.isParent === true) return false;
+  if (String(item?.launchState || "").trim()) return item?.actionable === true;
   if (
     [
       "blocked",
@@ -284,7 +286,7 @@ export function githubBoardItemCanRun(item: any) {
   ) {
     return false;
   }
-  return item?.actionable === true || ["ready", "backlog", "todo", "todos"].includes(statusKey);
+  return item?.actionable === true;
 }
 
 export function resolveGithubProjectLaunchStatus(snapshot: any | null) {
