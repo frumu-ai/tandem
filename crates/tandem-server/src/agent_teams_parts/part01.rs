@@ -8,7 +8,7 @@ use tandem_orchestrator::{
     SpawnDenyCode, SpawnPolicy, SpawnRequest, SpawnSource,
 };
 use tandem_skills::SkillService;
-use tandem_types::{EngineEvent, Session};
+use tandem_types::{EngineEvent, Session, TenantContext};
 use tokio::fs;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -338,6 +338,7 @@ async fn evaluate_fintech_strict_tool_policy(
     state: &AppState,
     session_id: &str,
     message_id: &str,
+    tenant_context: Option<&TenantContext>,
     tool: &str,
     args: &Value,
 ) -> Option<ToolPolicyDecision> {
@@ -351,6 +352,20 @@ async fn evaluate_fintech_strict_tool_policy(
     let automation = run.automation_snapshot.as_ref()?;
     if !metadata_enables_fintech_strict(automation.metadata.as_ref()) {
         return None;
+    }
+    if let Some(ctx) = tenant_context {
+        if ctx.org_id != run.tenant_context.org_id
+            || ctx.workspace_id != run.tenant_context.workspace_id
+            || ctx.deployment_id != run.tenant_context.deployment_id
+        {
+            return Some(ToolPolicyDecision {
+                allowed: false,
+                reason: Some(
+                    "tool denied by runtime policy: session tenant context does not match automation run tenant context"
+                        .to_string(),
+                ),
+            });
+        }
     }
 
     let decision = fintech_strict_tool_decision(tool);
@@ -582,6 +597,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 &state,
                 &ctx.session_id,
                 &ctx.message_id,
+                ctx.tenant_context.as_ref(),
                 &tool,
                 &ctx.args,
             )
@@ -2287,6 +2303,7 @@ mod fintech_policy_tests {
             .evaluate_tool(ToolPolicyContext {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
+                tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args: json!({}),
             })
@@ -2329,6 +2346,7 @@ mod fintech_policy_tests {
             .evaluate_tool(ToolPolicyContext {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
+                tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args,
             })
@@ -2336,6 +2354,34 @@ mod fintech_policy_tests {
             .expect("policy decision");
 
         assert!(decision.allowed, "{:?}", decision.reason);
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_rejects_session_tenant_mismatch() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+        let hook = ServerToolPolicyHook::new(state);
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-fintech".to_string(),
+                message_id: "message-1".to_string(),
+                tenant_context: Some(TenantContext::explicit(
+                    "other-org",
+                    "local-workspace",
+                    Some("actor-1".to_string()),
+                )),
+                tool: "mcp.bank.release_funds".to_string(),
+                args: json!({"account_id": "acct-1", "amount": 10}),
+            })
+            .await
+            .expect("policy decision");
+
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("does not match automation run tenant"));
     }
 
     #[tokio::test]
@@ -2356,6 +2402,7 @@ mod fintech_policy_tests {
             .evaluate_tool(ToolPolicyContext {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
+                tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args: json!({"account_id": "acct-1", "amount": 11}),
             })
@@ -2398,6 +2445,7 @@ mod fintech_policy_tests {
             .evaluate_tool(ToolPolicyContext {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
+                tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args,
             })
@@ -2415,6 +2463,7 @@ mod fintech_policy_tests {
             .evaluate_tool(ToolPolicyContext {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
+                tenant_context: None,
                 tool: "mcp.regulator.fetch_bulletin".to_string(),
                 args: json!({"url": "https://regulator.example/rule-1"}),
             })
@@ -2431,6 +2480,7 @@ mod fintech_policy_tests {
             .evaluate_tool(ToolPolicyContext {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
+                tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args: json!({}),
             })

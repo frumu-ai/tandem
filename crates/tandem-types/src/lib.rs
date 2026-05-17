@@ -9,9 +9,10 @@ pub mod tool;
 pub use tandem_enterprise_contract::{
     AuthorityChain, AutomationPrincipal, EnterpriseBridge, EnterpriseBridgeState,
     EnterpriseCapability, EnterpriseMode, EnterpriseStatus, ExecutionPrincipal,
-    HeaderTenantContextResolver, LocalImplicitTenant, NoopEnterpriseBridge,
-    NoopRequestAuthorizationHook, RequestAuthorizationHook, RequestPrincipal, SecretRef,
-    SecretRefError, TenantContext, TenantContextResolver, TenantSource,
+    HeaderTenantContextResolver, HumanActor, LocalImplicitTenant, NoopEnterpriseBridge,
+    NoopRequestAuthorizationHook, RequestAuthorizationHook, RequestPrincipal, RuntimeAuthMode,
+    SecretRef, SecretRefError, TenantContext, TenantContextResolver, TenantSource,
+    VerifiedTenantContext,
 };
 
 pub use approvals::*;

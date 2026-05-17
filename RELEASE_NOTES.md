@@ -2,6 +2,47 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.5.8 (2026-05-17)
+
+Tandem 0.5.8 begins the enterprise auth, tenant context, and execution-time
+verification implementation. This is the first runtime-facing slice: it adds
+provider-agnostic tenant-context contract types and starts carrying tenant
+context into tool policy evaluation, while preserving local and single-tenant
+behavior by default.
+
+### Enterprise Tenant Context Foundation
+
+- Added explicit runtime auth-mode names for local single-tenant,
+  hosted single-tenant, and enterprise-required operation.
+- Extended the enterprise contract with human actor metadata, deployment-aware
+  tenant context, verified tenant-context assertion metadata, hosted tenant
+  constructors, authenticated request principals, and request authority-chain
+  helpers.
+- Re-exported the new contract types through `tandem-types` for runtime and
+  server consumers.
+
+### Runtime Policy Plumbing
+
+- `ToolPolicyContext` now carries the session tenant context into runtime tool
+  policy hooks.
+- The engine loop loads the current session tenant before evaluating policy for
+  a tool call.
+- Fintech strict protected-tool policy now rejects execution when the session
+  tenant context does not match the owning Automation V2 run tenant context.
+
+### Boundaries
+
+- This release does not add Zitadel integration yet.
+- `tandem-agents` still does not depend on Zitadel or raw IdP tokens.
+- Hosted strict auth is not enabled by default.
+- Local, desktop, and single-tenant workflows continue to run without hosted
+  auth, signed context assertions, or approval signing keys.
+
+### Versioning
+
+- Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles
+  are bumped to `0.5.8`.
+
 ## v0.5.7 (2026-05-17)
 
 Tandem 0.5.7 moves the project positioning and first domain-specific runtime hardening toward governed AI infrastructure for enterprise work. The release adds public enterprise runtime docs, a fintech strict-mode foundation for compliance and risk workflows, and the first runtime evidence paths needed to prove that Tandem can govern long-running AI work with scoped tools, citations, approvals, artifacts, audit events, and replayable run records. It also restructures the desktop Coder workspace so the live state of running work is visible at a glance.

@@ -1,7 +1,7 @@
 use futures::future::BoxFuture;
 use serde_json::{Map, Value};
 use tandem_providers::ChatMessage;
-use tandem_types::{EngineEvent, ToolProgressEvent, ToolProgressSink};
+use tandem_types::{EngineEvent, TenantContext, ToolProgressEvent, ToolProgressSink};
 
 use crate::EventBus;
 
@@ -60,6 +60,7 @@ pub struct SpawnAgentToolResult {
 pub struct ToolPolicyContext {
     pub session_id: String,
     pub message_id: String,
+    pub tenant_context: Option<TenantContext>,
     pub tool: String,
     pub args: Value,
 }

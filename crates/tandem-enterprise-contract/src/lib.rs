@@ -10,6 +10,15 @@ pub enum EnterpriseMode {
     Required,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAuthMode {
+    #[default]
+    LocalSingleTenant,
+    HostedSingleTenant,
+    EnterpriseRequired,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnterpriseBridgeState {
@@ -48,6 +57,13 @@ impl RequestPrincipal {
             source: "anonymous".to_string(),
         }
     }
+
+    pub fn authenticated_user(actor_id: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            actor_id: Some(actor_id.into()),
+            source: source.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +97,42 @@ pub struct AuthorityChain {
     pub approved_by: Option<RequestPrincipal>,
 }
 
+impl AuthorityChain {
+    pub fn from_request(principal: RequestPrincipal) -> Self {
+        Self {
+            initiated_by: principal.clone(),
+            owned_by: None,
+            executed_as: ExecutionPrincipal::Request(principal),
+            approved_by: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HumanActor {
+    pub actor_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+impl HumanActor {
+    pub fn tandem_user(actor_id: impl Into<String>) -> Self {
+        Self {
+            actor_id: actor_id.into(),
+            provider: Some("tandem".to_string()),
+            issuer: None,
+            subject: None,
+            email: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LocalImplicitTenant;
 
@@ -93,6 +145,8 @@ impl LocalImplicitTenant {
 pub struct TenantContext {
     pub org_id: String,
     pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_id: Option<String>,
     #[serde(default)]
@@ -110,6 +164,7 @@ impl TenantContext {
         Self {
             org_id: LocalImplicitTenant::ORG_ID.to_string(),
             workspace_id: LocalImplicitTenant::WORKSPACE_ID.to_string(),
+            deployment_id: None,
             actor_id: None,
             source: TenantSource::LocalImplicit,
         }
@@ -123,7 +178,23 @@ impl TenantContext {
         Self {
             org_id: org_id.into(),
             workspace_id: workspace_id.into(),
+            deployment_id: None,
             actor_id,
+            source: TenantSource::Explicit,
+        }
+    }
+
+    pub fn explicit_user_workspace(
+        org_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        deployment_id: Option<String>,
+        actor_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            org_id: org_id.into(),
+            workspace_id: workspace_id.into(),
+            deployment_id,
+            actor_id: Some(actor_id.into()),
             source: TenantSource::Explicit,
         }
     }
@@ -132,7 +203,32 @@ impl TenantContext {
         self.source == TenantSource::LocalImplicit
             && self.org_id == LocalImplicitTenant::ORG_ID
             && self.workspace_id == LocalImplicitTenant::WORKSPACE_ID
+            && self.deployment_id.is_none()
             && self.actor_id.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedTenantContext {
+    pub tenant_context: TenantContext,
+    pub human_actor: HumanActor,
+    pub authority_chain: AuthorityChain,
+    pub issuer: String,
+    pub audience: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub assertion_id: String,
+}
+
+impl VerifiedTenantContext {
+    pub fn is_expired_at(&self, now_ms: u64) -> bool {
+        self.expires_at_ms <= now_ms
+    }
+
+    pub fn tenant_matches(&self, tenant: &TenantContext) -> bool {
+        self.tenant_context.org_id == tenant.org_id
+            && self.tenant_context.workspace_id == tenant.workspace_id
+            && self.tenant_context.deployment_id == tenant.deployment_id
     }
 }
 
@@ -306,6 +402,65 @@ mod tests {
             secret_ref.validate_for_tenant(&wrong_workspace),
             Err(SecretRefError::WorkspaceMismatch)
         ));
+    }
+
+    #[test]
+    fn explicit_user_workspace_preserves_actor_and_deployment() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "user-a",
+        );
+
+        assert_eq!(tenant.org_id, "org-a");
+        assert_eq!(tenant.workspace_id, "workspace-a");
+        assert_eq!(tenant.deployment_id.as_deref(), Some("deployment-a"));
+        assert_eq!(tenant.actor_id.as_deref(), Some("user-a"));
+        assert_eq!(tenant.source, TenantSource::Explicit);
+        assert!(!tenant.is_local_implicit());
+    }
+
+    #[test]
+    fn authority_chain_from_request_executes_as_same_actor() {
+        let principal = RequestPrincipal::authenticated_user("user-a", "tandem_web");
+        let chain = AuthorityChain::from_request(principal.clone());
+
+        assert_eq!(chain.initiated_by, principal);
+        assert!(chain.owned_by.is_none());
+        assert!(chain.approved_by.is_none());
+        assert_eq!(chain.executed_as, ExecutionPrincipal::Request(principal));
+    }
+
+    #[test]
+    fn verified_tenant_context_checks_expiry_and_tenant_match() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "user-a",
+        );
+        let actor = HumanActor::tandem_user("user-a");
+        let principal = RequestPrincipal::authenticated_user("user-a", "tandem_web");
+        let verified = VerifiedTenantContext {
+            tenant_context: tenant.clone(),
+            human_actor: actor,
+            authority_chain: AuthorityChain::from_request(principal),
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            issued_at_ms: 100,
+            expires_at_ms: 200,
+            assertion_id: "assertion-1".to_string(),
+        };
+
+        assert!(!verified.is_expired_at(199));
+        assert!(verified.is_expired_at(200));
+        assert!(verified.tenant_matches(&tenant));
+        assert!(!verified.tenant_matches(&TenantContext::explicit(
+            "org-b",
+            "workspace-a",
+            Some("user-a".to_string()),
+        )));
     }
 
     #[test]

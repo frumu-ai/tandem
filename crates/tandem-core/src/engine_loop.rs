@@ -542,10 +542,16 @@ impl EngineLoop {
             }
         }
         if let Some(hook) = self.tool_policy_hook.read().await.clone() {
+            let tenant_context = self
+                .storage
+                .get_session(session_id)
+                .await
+                .map(|session| session.tenant_context);
             let decision = hook
                 .evaluate_tool(ToolPolicyContext {
                     session_id: session_id.to_string(),
                     message_id: message_id.to_string(),
+                    tenant_context,
                     tool: tool.clone(),
                     args: args.clone(),
                 })
