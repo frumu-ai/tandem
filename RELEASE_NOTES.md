@@ -28,6 +28,9 @@ behavior by default.
 - Added runtime verification for compact Tandem context assertions signed with
   Ed25519, including public-key configuration, issuer/audience checks, expiry
   checks, and tamper rejection in hosted and enterprise auth modes.
+- Added `kid`-based context assertion keyring support through
+  `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS` / `_FILE`, with JSON object keyrings
+  preferred and the existing single-key env vars preserved as fallback.
 
 ### Runtime Policy Plumbing
 

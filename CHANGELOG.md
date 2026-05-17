@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Runtime auth mode parser**: Added canonical parsing and operator-friendly aliases for `local_single_tenant`, `hosted_single_tenant`, and `enterprise_required`, plus a `TANDEM_RUNTIME_AUTH_MODE` resolver for later server enforcement.
 - **Tandem tenant context assertion wire shape**: Added provider-agnostic tenant context assertion header and claims types for the future Tandem-signed JWS passed from `tandem-web` to runtime/ACA.
 - **Runtime Tandem context assertion verification**: Hosted and enterprise runtime ingress can now verify compact Tandem tenant-context assertions signed with Ed25519 before accepting tenant/actor identity.
+- **Context assertion keyring support**: Runtime verification now supports multiple Ed25519 public keys by `kid` through `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS` / `_FILE`, preserving the single-key env vars as legacy fallback for hosted deployments.
 
 ### Changed
 

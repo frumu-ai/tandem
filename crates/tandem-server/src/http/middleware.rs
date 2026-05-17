@@ -7,6 +7,7 @@ use axum::Json;
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use std::collections::BTreeMap;
 use tandem_types::{
     HeaderTenantContextResolver, NoopRequestAuthorizationHook, RequestAuthorizationHook,
     RequestPrincipal, RuntimeAuthMode, TenantContext, TenantContextAssertionClaims,
@@ -276,7 +277,8 @@ fn first_header(headers: &HeaderMap, names: &[&str]) -> Option<String> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TenantContextAssertionVerifier {
-    public_key: [u8; 32],
+    public_keys_by_id: BTreeMap<String, [u8; 32]>,
+    legacy_public_key: Option<[u8; 32]>,
     issuer: String,
     audience: String,
     max_future_skew_ms: u64,
@@ -284,23 +286,11 @@ struct TenantContextAssertionVerifier {
 
 impl TenantContextAssertionVerifier {
     fn from_env() -> Result<Self, TenantContextIngressError> {
-        let raw_key = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .or_else(|| {
-                let path = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE")
-                    .ok()
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())?;
-                std::fs::read_to_string(path)
-                    .ok()
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-            })
-            .ok_or(TenantContextIngressError::ContextAssertionKeyNotConfigured)?;
-        let public_key = decode_context_public_key(&raw_key)
-            .ok_or(TenantContextIngressError::ContextAssertionKeyNotConfigured)?;
+        let public_keys_by_id = read_context_public_keyring_from_env()?;
+        let legacy_public_key = read_legacy_context_public_key_from_env()?;
+        if public_keys_by_id.is_empty() && legacy_public_key.is_none() {
+            return Err(TenantContextIngressError::ContextAssertionKeyNotConfigured);
+        }
         let issuer = std::env::var("TANDEM_CONTEXT_ASSERTION_ISSUER")
             .ok()
             .map(|value| value.trim().to_string())
@@ -313,7 +303,8 @@ impl TenantContextAssertionVerifier {
             .unwrap_or_else(|| "tandem-runtime".to_string());
 
         Ok(Self {
-            public_key,
+            public_keys_by_id,
+            legacy_public_key,
             issuer,
             audience,
             max_future_skew_ms: 60_000,
@@ -359,7 +350,10 @@ impl TenantContextAssertionVerifier {
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
         validate_context_assertion_header(&header)?;
 
-        let verifying_key = VerifyingKey::from_bytes(&self.public_key)
+        let public_key = self
+            .public_key_for_kid(&header.kid)
+            .ok_or(TenantContextIngressError::ContextAssertionUntrusted)?;
+        let verifying_key = VerifyingKey::from_bytes(public_key)
             .map_err(|_| TenantContextIngressError::ContextAssertionKeyNotConfigured)?;
         let signature = Signature::from_bytes(&signature_bytes);
         let signing_input = format!("{encoded_header}.{encoded_claims}");
@@ -371,6 +365,12 @@ impl TenantContextAssertionVerifier {
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
         self.validate_claims(&claims, now_ms)?;
         Ok(claims.into())
+    }
+
+    fn public_key_for_kid(&self, kid: &str) -> Option<&[u8; 32]> {
+        self.public_keys_by_id
+            .get(kid)
+            .or(self.legacy_public_key.as_ref())
     }
 
     fn validate_claims(
@@ -399,6 +399,89 @@ impl TenantContextAssertionVerifier {
         }
         Ok(())
     }
+}
+
+fn read_context_public_keyring_from_env(
+) -> Result<BTreeMap<String, [u8; 32]>, TenantContextIngressError> {
+    let Some(raw_keys) = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let path = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())?;
+            std::fs::read_to_string(path)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+    else {
+        return Ok(BTreeMap::new());
+    };
+    parse_context_public_keyring(&raw_keys)
+        .ok_or(TenantContextIngressError::ContextAssertionKeyNotConfigured)
+}
+
+fn read_legacy_context_public_key_from_env() -> Result<Option<[u8; 32]>, TenantContextIngressError>
+{
+    let Some(raw_key) = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let path = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())?;
+            std::fs::read_to_string(path)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+    else {
+        return Ok(None);
+    };
+    decode_context_public_key(&raw_key)
+        .map(Some)
+        .ok_or(TenantContextIngressError::ContextAssertionKeyNotConfigured)
+}
+
+fn parse_context_public_keyring(raw: &str) -> Option<BTreeMap<String, [u8; 32]>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Some(BTreeMap::new());
+    }
+    if trimmed.starts_with('{') {
+        let parsed = serde_json::from_str::<BTreeMap<String, String>>(trimmed).ok()?;
+        return parse_context_public_keyring_entries(parsed);
+    }
+
+    let mut entries = BTreeMap::new();
+    for entry in trimmed.split([',', '\n', ';']) {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (kid, key) = entry.split_once('=').or_else(|| entry.split_once(':'))?;
+        entries.insert(kid.trim().to_string(), key.trim().to_string());
+    }
+    parse_context_public_keyring_entries(entries)
+}
+
+fn parse_context_public_keyring_entries(
+    entries: BTreeMap<String, String>,
+) -> Option<BTreeMap<String, [u8; 32]>> {
+    let mut decoded = BTreeMap::new();
+    for (kid, raw_key) in entries {
+        let kid = kid.trim();
+        if kid.is_empty() {
+            return None;
+        }
+        decoded.insert(kid.to_string(), decode_context_public_key(&raw_key)?);
+    }
+    Some(decoded)
 }
 
 fn validate_context_assertion_header(
@@ -585,7 +668,8 @@ mod tests {
     #[test]
     fn verifier_accepts_valid_tandem_context_assertion() {
         let (signing_key, verifier) = test_signing_key_and_verifier();
-        let assertion = sign_test_context_assertion(&signing_key, test_claims(1_000, 2_000));
+        let assertion =
+            sign_test_context_assertion(&signing_key, "test-key", test_claims(1_000, 2_000));
 
         let verified = verifier
             .verify_at(&assertion, 1_500)
@@ -605,7 +689,8 @@ mod tests {
     #[test]
     fn verifier_rejects_tampered_tandem_context_assertion() {
         let (signing_key, verifier) = test_signing_key_and_verifier();
-        let assertion = sign_test_context_assertion(&signing_key, test_claims(1_000, 2_000));
+        let assertion =
+            sign_test_context_assertion(&signing_key, "test-key", test_claims(1_000, 2_000));
         let parts = assertion.split('.').collect::<Vec<_>>();
         let encoded_claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&test_claims(1_100, 2_100)).expect("claims json"));
@@ -621,7 +706,8 @@ mod tests {
     #[test]
     fn verifier_rejects_expired_tandem_context_assertion() {
         let (signing_key, verifier) = test_signing_key_and_verifier();
-        let assertion = sign_test_context_assertion(&signing_key, test_claims(1_000, 2_000));
+        let assertion =
+            sign_test_context_assertion(&signing_key, "test-key", test_claims(1_000, 2_000));
 
         let err = verifier
             .verify_at(&assertion, 2_000)
@@ -630,11 +716,85 @@ mod tests {
         assert_eq!(err, TenantContextIngressError::ContextAssertionExpired);
     }
 
+    #[test]
+    fn verifier_selects_context_assertion_key_by_kid() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let other_key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let verifier = TenantContextAssertionVerifier {
+            public_keys_by_id: BTreeMap::from([
+                ("old-key".to_string(), other_key.verifying_key().to_bytes()),
+                (
+                    "active-key".to_string(),
+                    signing_key.verifying_key().to_bytes(),
+                ),
+            ]),
+            legacy_public_key: None,
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            max_future_skew_ms: 60_000,
+        };
+        let assertion =
+            sign_test_context_assertion(&signing_key, "active-key", test_claims(1_000, 2_000));
+
+        let verified = verifier
+            .verify_at(&assertion, 1_500)
+            .expect("kid-selected key should verify");
+
+        assert_eq!(verified.assertion_id, "assertion-a");
+    }
+
+    #[test]
+    fn verifier_rejects_unknown_context_assertion_kid_when_keyring_is_configured() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let other_key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let verifier = TenantContextAssertionVerifier {
+            public_keys_by_id: BTreeMap::from([(
+                "old-key".to_string(),
+                other_key.verifying_key().to_bytes(),
+            )]),
+            legacy_public_key: None,
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            max_future_skew_ms: 60_000,
+        };
+        let assertion =
+            sign_test_context_assertion(&signing_key, "active-key", test_claims(1_000, 2_000));
+
+        let err = verifier
+            .verify_at(&assertion, 1_500)
+            .expect_err("unknown kid should not use the wrong key");
+
+        assert_eq!(err, TenantContextIngressError::ContextAssertionUntrusted);
+    }
+
+    #[test]
+    fn parse_context_public_keyring_accepts_json_and_delimited_forms() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let encoded =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signing_key.verifying_key());
+        let json_keyring = format!(r#"{{"active-key":"{encoded}"}}"#);
+        let delimited_keyring = format!("active-key={encoded};next-key={encoded}");
+
+        assert_eq!(
+            parse_context_public_keyring(&json_keyring)
+                .expect("json keyring")
+                .get("active-key"),
+            Some(&signing_key.verifying_key().to_bytes())
+        );
+        assert_eq!(
+            parse_context_public_keyring(&delimited_keyring)
+                .expect("delimited keyring")
+                .len(),
+            2
+        );
+    }
+
     fn test_signing_key_and_verifier() -> (ed25519_dalek::SigningKey, TenantContextAssertionVerifier)
     {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
         let verifier = TenantContextAssertionVerifier {
-            public_key: signing_key.verifying_key().to_bytes(),
+            public_keys_by_id: BTreeMap::new(),
+            legacy_public_key: Some(signing_key.verifying_key().to_bytes()),
             issuer: "tandem-web".to_string(),
             audience: "tandem-runtime".to_string(),
             max_future_skew_ms: 60_000,
@@ -665,11 +825,12 @@ mod tests {
 
     fn sign_test_context_assertion(
         signing_key: &ed25519_dalek::SigningKey,
+        kid: &str,
         claims: TenantContextAssertionClaims,
     ) -> String {
         use ed25519_dalek::Signer;
 
-        let header = TenantContextAssertionHeader::ed25519("test-key");
+        let header = TenantContextAssertionHeader::ed25519(kid);
         let encoded_header = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&header).expect("header json"));
         let encoded_claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
