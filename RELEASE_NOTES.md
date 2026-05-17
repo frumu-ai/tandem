@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.5.7 (Unreleased)
+## v0.5.7 (2026-05-17)
 
 Tandem 0.5.7 moves the project positioning and first domain-specific runtime hardening toward governed AI infrastructure for enterprise work. The release adds public enterprise runtime docs, a fintech strict-mode foundation for compliance and risk workflows, and the first runtime evidence paths needed to prove that Tandem can govern long-running AI work with scoped tools, citations, approvals, artifacts, audit events, and replayable run records. It also restructures the desktop Coder workspace so the live state of running work is visible at a glance.
 
