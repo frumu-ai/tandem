@@ -351,6 +351,57 @@ export function CodingWorkflowsPage({
       ),
     [actionableGithubItems, activeGithubItemIdentities, launchingGithubItemIdSet]
   );
+  const githubBoardColumns = useMemo(() => {
+    const normalizeStatus = (value: unknown) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    const columnForItem = (item: any) => {
+      const statusKey =
+        normalizeStatus(item?.statusKey) && normalizeStatus(item?.statusKey) !== "unknown"
+          ? normalizeStatus(item?.statusKey)
+          : normalizeStatus(item?.statusName);
+      if (["in_progress", "started", "active", "working"].includes(statusKey)) {
+        return "in_progress";
+      }
+      if (["blocked", "stalled", "on_hold", "failed"].includes(statusKey)) return "blocked";
+      if (["review", "in_review", "ready_for_review"].includes(statusKey)) return "review";
+      if (["done", "complete", "completed", "closed"].includes(statusKey)) return "done";
+      if (["todo", "todos", "ready", "backlog", "open"].includes(statusKey)) return "todos";
+      return "unknown";
+    };
+    const rankItem = (item: any) => {
+      const title = String(item?.title || "").toLowerCase();
+      if (title.includes("[aca slice parent]") || title.includes("slice parent")) return 0;
+      if (title.includes("[tenant isolation]")) return 1;
+      return 2;
+    };
+    const columns = [
+      { key: "todos", label: "TODOS", hint: "Not started", items: [] as any[] },
+      { key: "in_progress", label: "In Progress", hint: "Actively running", items: [] as any[] },
+      { key: "blocked", label: "Blocked", hint: "Needs attention", items: [] as any[] },
+      { key: "review", label: "Review", hint: "Ready to inspect", items: [] as any[] },
+      { key: "done", label: "Done", hint: "Completed", items: [] as any[] },
+      { key: "unknown", label: "Unknown", hint: "Missing status", items: [] as any[] },
+    ];
+    const byKey = new Map(columns.map((column) => [column.key, column]));
+    githubBoard.items.forEach((item: any) => {
+      const column = byKey.get(columnForItem(item)) || byKey.get("unknown");
+      column?.items.push(item);
+    });
+    columns.forEach((column) => {
+      column.items.sort((a, b) => {
+        const rankDelta = rankItem(a) - rankItem(b);
+        if (rankDelta) return rankDelta;
+        const actionableDelta = Number(b?.actionable === true) - Number(a?.actionable === true);
+        if (actionableDelta) return actionableDelta;
+        return String(a?.title || "").localeCompare(String(b?.title || ""));
+      });
+    });
+    return columns.filter((column) => column.key !== "unknown" || column.items.length);
+  }, [githubBoard.items]);
   const selectedRun =
     visibleRuns.find((run: any, index: number) => runId(run, index) === selectedRunId) || null;
   const runSummary = String(runDetailQuery.data?.summary || "").trim();
@@ -1071,85 +1122,120 @@ export function CodingWorkflowsPage({
                     ) : null}
                     {githubBoard.items.length ? (
                       <div className="grid gap-3">
-                        {githubBoard.items.map((item: any) => {
-                          const itemCanRun = githubBoardItemCanRun(item);
-                          const itemId = String(item.id || "");
-                          const itemIsRunning =
-                            itemCanRun &&
-                            activeGithubItemIdentities.has(githubBoardItemIdentity(item));
-                          const itemIsLaunching = launchingGithubItemIdSet.has(itemId);
-                          const itemIsLaunchLocked =
-                            itemIsRunning || itemIsLaunching || batchTriggering;
-                          return (
+                        <div className="grid min-h-[28rem] gap-3 overflow-x-auto pb-2 lg:grid-cols-5">
+                          {githubBoardColumns.map((column) => (
                             <div
-                              key={itemId}
-                              className={`rounded-2xl border px-4 py-3 transition ${
-                                selectedGithubItemIds.includes(itemId)
-                                  ? "border-cyan-400/60 bg-cyan-500/10"
-                                  : "border-white/10 bg-black/20"
-                              }`}
+                              key={column.key}
+                              className="min-w-[18rem] border border-white/10 bg-black/20"
                             >
-                              <div className="flex flex-wrap items-start justify-between gap-3">
-                                <div className="flex min-w-0 flex-1 items-start gap-3">
-                                  <input
-                                    type="checkbox"
-                                    className="mt-1 h-4 w-4 shrink-0"
-                                    checked={selectedGithubItemIds.includes(itemId)}
-                                    disabled={!itemCanRun || itemIsLaunchLocked}
-                                    onChange={() => toggleGithubItemSelection(itemId)}
-                                  />
-                                  <div className="min-w-0">
-                                    <div className="break-words text-sm font-semibold leading-5">
-                                      {String(item.title || "Untitled item")}
-                                    </div>
-                                    <div className="tcp-subtle mt-1 break-words text-xs leading-5">
-                                      {item.repoName ? String(item.repoName) : selectedProjectSlug}
-                                      {item.issueNumber ? ` #${String(item.issueNumber)}` : ""}
-                                    </div>
-                                  </div>
+                              <div className="flex items-start justify-between gap-2 border-b border-white/10 px-3 py-3">
+                                <div>
+                                  <div className="text-sm font-semibold">{column.label}</div>
+                                  <div className="tcp-subtle text-xs">{column.hint}</div>
                                 </div>
-                                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                                  {item.actionable ? <Badge tone="ok">Actionable</Badge> : null}
-                                  <Badge tone="ghost">
-                                    {formatStatus(
-                                      String(item.statusName || item.statusKey || "Unknown")
-                                    )}
-                                  </Badge>
-                                  {itemIsRunning ? <Badge tone="info">Run active</Badge> : null}
-                                  {itemIsLaunching && !itemIsRunning ? (
-                                    <Badge tone="warn">Starting</Badge>
-                                  ) : null}
-                                </div>
+                                <Badge tone={column.items.length ? "info" : "ghost"}>
+                                  {column.items.length}
+                                </Badge>
                               </div>
-                              <div className="mt-3 flex flex-wrap gap-2 pl-7">
-                                {item.issueUrl ? (
-                                  <a
-                                    className="tcp-btn h-8 px-3 text-xs"
-                                    href={item.issueUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    Open in GitHub
-                                  </a>
-                                ) : null}
-                                <button
-                                  type="button"
-                                  className="tcp-btn h-8 px-3 text-xs"
-                                  onClick={() => triggerGithubItems([item])}
-                                  disabled={!itemCanRun || itemIsLaunchLocked}
-                                >
-                                  {!itemCanRun
-                                    ? "Not launchable"
-                                    : itemIsRunning
-                                      ? "Already running"
-                                      : itemIsLaunching
-                                        ? "Starting..."
-                                        : "Run task"}
-                                </button>
+                              <div className="grid max-h-[36rem] content-start gap-2 overflow-y-auto p-2">
+                                {column.items.length ? (
+                                  column.items.map((item: any) => {
+                                    const itemCanRun = githubBoardItemCanRun(item);
+                                    const itemId = String(item.id || "");
+                                    const title = String(item.title || "Untitled item");
+                                    const lowerTitle = title.toLowerCase();
+                                    const itemIsRunning =
+                                      itemCanRun &&
+                                      activeGithubItemIdentities.has(githubBoardItemIdentity(item));
+                                    const itemIsLaunching = launchingGithubItemIdSet.has(itemId);
+                                    const itemIsLaunchLocked =
+                                      itemIsRunning || itemIsLaunching || batchTriggering;
+                                    const selected = selectedGithubItemIds.includes(itemId);
+                                    const isParent =
+                                      lowerTitle.includes("[aca slice parent]") ||
+                                      lowerTitle.includes("slice parent");
+                                    const isDraft = !item.issueNumber && !item.issueUrl;
+                                    return (
+                                      <div
+                                        key={itemId}
+                                        className={`border p-3 transition ${
+                                          selected
+                                            ? "border-cyan-400/70 bg-cyan-500/10"
+                                            : "border-white/10 bg-slate-950/40"
+                                        }`}
+                                      >
+                                        <div className="flex items-start gap-2">
+                                          <input
+                                            type="checkbox"
+                                            className="mt-1 h-4 w-4 shrink-0"
+                                            checked={selected}
+                                            disabled={!itemCanRun || itemIsLaunchLocked}
+                                            onChange={() => toggleGithubItemSelection(itemId)}
+                                            aria-label={`Select ${title}`}
+                                          />
+                                          <div className="min-w-0 flex-1">
+                                            <div className="break-words text-sm font-semibold leading-5">
+                                              {title}
+                                            </div>
+                                            <div className="tcp-subtle mt-1 break-words text-xs leading-5">
+                                              {item.repoName
+                                                ? String(item.repoName)
+                                                : selectedProjectSlug}
+                                              {item.issueNumber
+                                                ? ` #${String(item.issueNumber)}`
+                                                : ""}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                          {isParent ? <Badge tone="info">Parent</Badge> : null}
+                                          {isDraft ? <Badge tone="warn">Draft</Badge> : null}
+                                          {item.actionable ? (
+                                            <Badge tone="ok">Actionable</Badge>
+                                          ) : null}
+                                          {itemIsRunning ? (
+                                            <Badge tone="info">Run active</Badge>
+                                          ) : null}
+                                          {itemIsLaunching && !itemIsRunning ? (
+                                            <Badge tone="warn">Starting</Badge>
+                                          ) : null}
+                                        </div>
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                          {item.issueUrl ? (
+                                            <a
+                                              className="tcp-btn h-8 px-3 text-xs"
+                                              href={item.issueUrl}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                            >
+                                              Open in GitHub
+                                            </a>
+                                          ) : null}
+                                          <button
+                                            type="button"
+                                            className="tcp-btn h-8 px-3 text-xs"
+                                            onClick={() => triggerGithubItems([item])}
+                                            disabled={!itemCanRun || itemIsLaunchLocked}
+                                          >
+                                            {!itemCanRun
+                                              ? "Not launchable"
+                                              : itemIsRunning
+                                                ? "Already running"
+                                                : itemIsLaunching
+                                                  ? "Starting..."
+                                                  : "Run task"}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })
+                                ) : (
+                                  <div className="tcp-subtle px-2 py-4 text-xs">No items</div>
+                                )}
                               </div>
                             </div>
-                          );
-                        })}
+                          ))}
+                        </div>
                       </div>
                     ) : (
                       <EmptyState text="No GitHub Project items returned for this project." />
