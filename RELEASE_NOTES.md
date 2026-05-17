@@ -42,6 +42,9 @@ behavior by default.
   trustworthy identity object to consume in later sprints.
 - Fintech strict protected-tool policy now rejects execution when the session
   tenant context does not match the owning Automation V2 run tenant context.
+- In hosted and enterprise auth modes, fintech strict protected tools now fail
+  closed if execution reaches the policy hook without a non-local tenant context
+  and human actor.
 
 ### Boundaries
 

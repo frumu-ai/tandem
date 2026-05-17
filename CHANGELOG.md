@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hosted/enterprise ingress fail-closed scaffold**: `hosted_single_tenant` and `enterprise_required` runtime auth modes now reject raw tenant/actor headers and fail closed until Tandem signed context assertion verification is implemented, preventing operators from accidentally trusting spoofable hosted identity headers.
 - **Hosted/enterprise ingress trust boundary**: Strict hosted modes now require a configured Tandem context assertion public key, validate assertion issuer/audience/expiry, reject tampered assertions, and attach the verified tenant context to request extensions.
 - **Fintech strict tenant mismatch guard**: Fintech strict protected-tool policy now rejects calls when the session tenant context does not match the owning Automation V2 run tenant context.
+- **Strict protected-tool context guard**: In hosted/enterprise auth modes, fintech strict protected tools now fail closed when tool execution lacks a verified non-local tenant context with a human actor.
 - **Version bump**: Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles move to `0.5.8`.
 
 ### Notes

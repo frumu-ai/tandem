@@ -8,11 +8,12 @@ use tandem_orchestrator::{
     SpawnDenyCode, SpawnPolicy, SpawnRequest, SpawnSource,
 };
 use tandem_skills::SkillService;
-use tandem_types::{EngineEvent, Session, TenantContext};
+use tandem_types::{EngineEvent, RuntimeAuthMode, Session, TenantContext};
 use tokio::fs;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use crate::config::env::resolve_runtime_auth_mode;
 use crate::AppState;
 
 #[derive(Clone, Default)]
@@ -339,6 +340,7 @@ async fn evaluate_fintech_strict_tool_policy(
     session_id: &str,
     message_id: &str,
     tenant_context: Option<&TenantContext>,
+    runtime_auth_mode: RuntimeAuthMode,
     tool: &str,
     args: &Value,
 ) -> Option<ToolPolicyDecision> {
@@ -371,6 +373,14 @@ async fn evaluate_fintech_strict_tool_policy(
     let decision = fintech_strict_tool_decision(tool);
     if decision.allowed {
         return None;
+    }
+    if runtime_auth_mode_requires_verified_tool_context(runtime_auth_mode) {
+        if let Some(reason) = strict_tool_context_deny_reason(tenant_context) {
+            return Some(ToolPolicyDecision {
+                allowed: false,
+                reason: Some(reason),
+            });
+        }
     }
     let reason = decision.reason.unwrap_or_else(|| {
         "fintech strict mode blocked tool execution by runtime policy".to_string()
@@ -472,6 +482,35 @@ async fn evaluate_fintech_strict_tool_policy(
         FintechToolPolicyClassification::Safe => reason,
         }),
     })
+}
+
+fn runtime_auth_mode_requires_verified_tool_context(mode: RuntimeAuthMode) -> bool {
+    matches!(
+        mode,
+        RuntimeAuthMode::HostedSingleTenant | RuntimeAuthMode::EnterpriseRequired
+    )
+}
+
+fn strict_tool_context_deny_reason(tenant_context: Option<&TenantContext>) -> Option<String> {
+    let Some(ctx) = tenant_context else {
+        return Some(
+            "tool denied by runtime policy: strict runtime auth mode requires verified tenant context for protected tools"
+                .to_string(),
+        );
+    };
+    if ctx.is_local_implicit() {
+        return Some(
+            "tool denied by runtime policy: strict runtime auth mode rejects local implicit tenant context for protected tools"
+                .to_string(),
+        );
+    }
+    if ctx.actor_id.as_deref().map_or(true, str::is_empty) {
+        return Some(
+            "tool denied by runtime policy: strict runtime auth mode requires a verified human actor for protected tools"
+                .to_string(),
+        );
+    }
+    None
 }
 
 fn matching_fintech_protected_action_approval(
@@ -598,6 +637,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 &ctx.session_id,
                 &ctx.message_id,
                 ctx.tenant_context.as_ref(),
+                resolve_runtime_auth_mode(),
                 &tool,
                 &ctx.args,
             )
@@ -2382,6 +2422,55 @@ mod fintech_policy_tests {
             .as_deref()
             .unwrap_or_default()
             .contains("does not match automation run tenant"));
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_enterprise_mode_rejects_missing_tenant_context_for_protected_tools() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+
+        let decision = evaluate_fintech_strict_tool_policy(
+            &state,
+            "session-fintech",
+            "message-1",
+            None,
+            RuntimeAuthMode::EnterpriseRequired,
+            "mcp.bank.release_funds",
+            &json!({"account_id": "acct-1", "amount": 10}),
+        )
+        .await
+        .expect("strict policy should decide");
+
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("requires verified tenant context"));
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_enterprise_mode_rejects_local_implicit_context_for_protected_tools() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+
+        let local_context = TenantContext::local_implicit();
+        let decision = evaluate_fintech_strict_tool_policy(
+            &state,
+            "session-fintech",
+            "message-1",
+            Some(&local_context),
+            RuntimeAuthMode::EnterpriseRequired,
+            "mcp.bank.release_funds",
+            &json!({"account_id": "acct-1", "amount": 10}),
+        )
+        .await
+        .expect("strict policy should decide");
+
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("rejects local implicit tenant context"));
     }
 
     #[tokio::test]
