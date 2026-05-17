@@ -11,8 +11,8 @@ pub use tandem_enterprise_contract::{
     EnterpriseCapability, EnterpriseMode, EnterpriseStatus, ExecutionPrincipal,
     HeaderTenantContextResolver, HumanActor, LocalImplicitTenant, NoopEnterpriseBridge,
     NoopRequestAuthorizationHook, RequestAuthorizationHook, RequestPrincipal, RuntimeAuthMode,
-    SecretRef, SecretRefError, TenantContext, TenantContextResolver, TenantSource,
-    VerifiedTenantContext,
+    SecretRef, SecretRefError, TenantContext, TenantContextAssertionClaims,
+    TenantContextAssertionHeader, TenantContextResolver, TenantSource, VerifiedTenantContext,
 };
 
 pub use approvals::*;

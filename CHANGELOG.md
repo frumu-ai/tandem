@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Enterprise tenant context foundation**: Added strict runtime auth-mode and verified tenant-context contract types for the enterprise hosted-auth roadmap, including hosted/single-tenant mode names, human actor metadata, assertion metadata, deployment-aware tenant context, explicit hosted tenant constructors, and request authority-chain helpers.
 - **Runtime auth mode parser**: Added canonical parsing and operator-friendly aliases for `local_single_tenant`, `hosted_single_tenant`, and `enterprise_required`, plus a `TANDEM_RUNTIME_AUTH_MODE` resolver for later server enforcement.
+- **Tandem tenant context assertion wire shape**: Added provider-agnostic tenant context assertion header and claims types for the future Tandem-signed JWS passed from `tandem-web` to runtime/ACA.
 
 ### Changed
 

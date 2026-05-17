@@ -21,6 +21,8 @@ behavior by default.
   tenant context, verified tenant-context assertion metadata, hosted tenant
   constructors, authenticated request principals, and request authority-chain
   helpers.
+- Added provider-agnostic tenant context assertion header and claims types for
+  the future Tandem-signed JWS passed from `tandem-web` to runtime/ACA.
 - Re-exported the new contract types through `tandem-types` for runtime and
   server consumers.
 

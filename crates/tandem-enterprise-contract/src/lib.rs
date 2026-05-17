@@ -273,6 +273,85 @@ pub struct VerifiedTenantContext {
     pub assertion_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantContextAssertionHeader {
+    pub alg: String,
+    pub typ: String,
+    pub kid: String,
+}
+
+impl TenantContextAssertionHeader {
+    pub fn ed25519(key_id: impl Into<String>) -> Self {
+        Self {
+            alg: "EdDSA".to_string(),
+            typ: "tandem-tenant-context+jws".to_string(),
+            kid: key_id.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantContextAssertionClaims {
+    pub version: String,
+    pub issuer: String,
+    pub audience: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub assertion_id: String,
+    pub tenant_context: TenantContext,
+    pub human_actor: HumanActor,
+    pub authority_chain: AuthorityChain,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+}
+
+impl TenantContextAssertionClaims {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_v1(
+        issuer: impl Into<String>,
+        audience: impl Into<String>,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+        assertion_id: impl Into<String>,
+        tenant_context: TenantContext,
+        human_actor: HumanActor,
+        authority_chain: AuthorityChain,
+        roles: Vec<String>,
+    ) -> Self {
+        Self {
+            version: "v1".to_string(),
+            issuer: issuer.into(),
+            audience: audience.into(),
+            issued_at_ms,
+            expires_at_ms,
+            assertion_id: assertion_id.into(),
+            tenant_context,
+            human_actor,
+            authority_chain,
+            roles,
+        }
+    }
+
+    pub fn is_expired_at(&self, now_ms: u64) -> bool {
+        self.expires_at_ms <= now_ms
+    }
+}
+
+impl From<TenantContextAssertionClaims> for VerifiedTenantContext {
+    fn from(claims: TenantContextAssertionClaims) -> Self {
+        Self {
+            tenant_context: claims.tenant_context,
+            human_actor: claims.human_actor,
+            authority_chain: claims.authority_chain,
+            issuer: claims.issuer,
+            audience: claims.audience,
+            issued_at_ms: claims.issued_at_ms,
+            expires_at_ms: claims.expires_at_ms,
+            assertion_id: claims.assertion_id,
+        }
+    }
+}
+
 impl VerifiedTenantContext {
     pub fn is_expired_at(&self, now_ms: u64) -> bool {
         self.expires_at_ms <= now_ms
@@ -535,6 +614,50 @@ mod tests {
             RuntimeAuthMode::EnterpriseRequired.to_string(),
             "enterprise_required"
         );
+    }
+
+    #[test]
+    fn tenant_context_assertion_claims_convert_to_verified_context() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "user-a",
+        );
+        let actor = HumanActor::tandem_user("user-a");
+        let principal = RequestPrincipal::authenticated_user("user-a", "tandem_web");
+        let chain = AuthorityChain::from_request(principal);
+        let claims = TenantContextAssertionClaims::new_v1(
+            "tandem-web",
+            "tandem-runtime",
+            100,
+            200,
+            "assertion-1",
+            tenant.clone(),
+            actor.clone(),
+            chain.clone(),
+            vec!["operator".to_string(), "approver".to_string()],
+        );
+
+        assert_eq!(claims.version, "v1");
+        assert!(!claims.is_expired_at(199));
+        assert!(claims.is_expired_at(200));
+
+        let verified = VerifiedTenantContext::from(claims);
+        assert_eq!(verified.tenant_context, tenant);
+        assert_eq!(verified.human_actor, actor);
+        assert_eq!(verified.authority_chain, chain);
+        assert_eq!(verified.issuer, "tandem-web");
+        assert_eq!(verified.audience, "tandem-runtime");
+        assert_eq!(verified.assertion_id, "assertion-1");
+    }
+
+    #[test]
+    fn tenant_context_assertion_header_uses_eddsa_jws_typ() {
+        let header = TenantContextAssertionHeader::ed25519("key-1");
+        assert_eq!(header.alg, "EdDSA");
+        assert_eq!(header.typ, "tandem-tenant-context+jws");
+        assert_eq!(header.kid, "key-1");
     }
 
     #[test]
