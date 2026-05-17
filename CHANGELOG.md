@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tandem tenant context assertion wire shape**: Added provider-agnostic tenant context assertion header and claims types for the future Tandem-signed JWS passed from `tandem-web` to runtime/ACA.
 - **Runtime Tandem context assertion verification**: Hosted and enterprise runtime ingress can now verify compact Tandem tenant-context assertions signed with Ed25519 before accepting tenant/actor identity.
 - **Context assertion keyring support**: Runtime verification now supports multiple Ed25519 public keys by `kid` through `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS` / `_FILE`, preserving the single-key env vars as legacy fallback for hosted deployments.
+- **Hosted context assertion signer prep**: The hosted control-plane workstream now has a provider-neutral context assertion signer shape, a local Ed25519 test signer, and a Google Cloud KMS Software Ed25519 adapter in `tandem-web`.
 
 ### Changed
 
@@ -30,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - This release starts the enterprise auth and execution-time verification implementation without enabling hosted strict auth by default.
 - Local, desktop, and single-tenant runtime behavior remains unchanged unless a later strict hosted/enterprise mode is explicitly configured.
+- `tandem-web` remains the intended owner of Tandem-signed hosted context assertions; runtime and ACA consume Tandem assertions/public keyrings, not raw Zitadel or Google identity tokens.
 
 ## [0.5.7] - 2026-05-17
 

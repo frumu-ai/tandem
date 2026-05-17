@@ -31,6 +31,9 @@ behavior by default.
 - Added `kid`-based context assertion keyring support through
   `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS` / `_FILE`, with JSON object keyrings
   preferred and the existing single-key env vars preserved as fallback.
+- Added hosted control-plane signer prep in `tandem-web`: a provider-neutral
+  context assertion signer shape, local Ed25519 test signer, and Google Cloud
+  KMS Software Ed25519 adapter for future hosted assertions.
 
 ### Runtime Policy Plumbing
 
@@ -59,6 +62,9 @@ behavior by default.
 
 - This release does not add Zitadel integration yet.
 - `tandem-agents` still does not depend on Zitadel or raw IdP tokens.
+- `tandem-web` is the intended owner of Tandem-signed hosted context
+  assertions; runtime and ACA should consume Tandem assertions/public keyrings,
+  not raw Zitadel or Google identity tokens.
 - Hosted strict auth is not enabled by default.
 - Local, desktop, and single-tenant workflows continue to run without hosted
   auth, signed context assertions, or approval signing keys.
