@@ -7822,6 +7822,7 @@ dependencies = [
  "chrono-tz",
  "cron",
  "dirs 6.0.0",
+ "ed25519-dalek",
  "flate2",
  "futures",
  "ignore",

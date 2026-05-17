@@ -25,6 +25,9 @@ behavior by default.
   the future Tandem-signed JWS passed from `tandem-web` to runtime/ACA.
 - Re-exported the new contract types through `tandem-types` for runtime and
   server consumers.
+- Added runtime verification for compact Tandem context assertions signed with
+  Ed25519, including public-key configuration, issuer/audience checks, expiry
+  checks, and tamper rejection in hosted and enterprise auth modes.
 
 ### Runtime Policy Plumbing
 
@@ -33,7 +36,10 @@ behavior by default.
 - The engine loop loads the current session tenant before evaluating policy for
   a tool call.
 - Hosted and enterprise runtime auth modes now reject raw tenant/actor headers
-  and fail closed until Tandem signed context assertion verification lands.
+  and fail closed unless a configured Tandem-signed context assertion verifies.
+- Verified hosted assertions are attached to request extensions alongside the
+  derived tenant context and request principal, giving downstream runtime code a
+  trustworthy identity object to consume in later sprints.
 - Fintech strict protected-tool policy now rejects execution when the session
   tenant context does not match the owning Automation V2 run tenant context.
 

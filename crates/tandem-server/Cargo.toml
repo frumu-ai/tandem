@@ -19,6 +19,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 cron = "0.12"
 dirs = "6"
+ed25519-dalek = "2"
 flate2 = "1"
 futures = "0.3"
 ignore = "0.4"
@@ -64,4 +65,3 @@ serial_test = "3"
 [[bin]]
 name = "eval-runner"
 path = "src/bin/eval_runner.rs"
-

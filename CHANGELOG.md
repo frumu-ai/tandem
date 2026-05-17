@@ -12,11 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enterprise tenant context foundation**: Added strict runtime auth-mode and verified tenant-context contract types for the enterprise hosted-auth roadmap, including hosted/single-tenant mode names, human actor metadata, assertion metadata, deployment-aware tenant context, explicit hosted tenant constructors, and request authority-chain helpers.
 - **Runtime auth mode parser**: Added canonical parsing and operator-friendly aliases for `local_single_tenant`, `hosted_single_tenant`, and `enterprise_required`, plus a `TANDEM_RUNTIME_AUTH_MODE` resolver for later server enforcement.
 - **Tandem tenant context assertion wire shape**: Added provider-agnostic tenant context assertion header and claims types for the future Tandem-signed JWS passed from `tandem-web` to runtime/ACA.
+- **Runtime Tandem context assertion verification**: Hosted and enterprise runtime ingress can now verify compact Tandem tenant-context assertions signed with Ed25519 before accepting tenant/actor identity.
 
 ### Changed
 
 - **Tool policy context now carries tenant context**: Runtime tool policy hooks now receive the session's tenant context when evaluating tool calls, giving protected execution paths the tenant/actor scope needed for future enterprise authorization and approval-receipt verification.
 - **Hosted/enterprise ingress fail-closed scaffold**: `hosted_single_tenant` and `enterprise_required` runtime auth modes now reject raw tenant/actor headers and fail closed until Tandem signed context assertion verification is implemented, preventing operators from accidentally trusting spoofable hosted identity headers.
+- **Hosted/enterprise ingress trust boundary**: Strict hosted modes now require a configured Tandem context assertion public key, validate assertion issuer/audience/expiry, reject tampered assertions, and attach the verified tenant context to request extensions.
 - **Fintech strict tenant mismatch guard**: Fintech strict protected-tool policy now rejects calls when the session tenant context does not match the owning Automation V2 run tenant context.
 - **Version bump**: Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles move to `0.5.8`.
 
