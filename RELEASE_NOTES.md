@@ -58,6 +58,53 @@ behavior by default.
 - Added regression coverage proving local/default session creation still works
   without hosted auth headers or signed context assertions.
 
+### Coder Reliability Upgrade
+
+Tandem Coder now behaves more like a coding supervisor than a generic prompt
+runner. Issue-fix work is scheduled as real implementation work, runs in a
+managed worktree, requires evidence of code changes and validation, and hands
+off through a PR instead of marking project work as done prematurely.
+
+- Issue-fix worker sessions now use a dedicated coding contract: inspect the
+  repository, read scoped instructions, make a plan, patch files, run
+  validation, repair failures where possible, and report concise evidence.
+- Strict tool/write enforcement is applied to issue-fix workers, including
+  prewrite inspection requirements before mutation. Non-issue-fix worker types
+  such as triage, review, and merge recommendation keep their existing
+  non-writing execution mode.
+- Managed worktrees are preserved until handoff completes, allowing Tandem to
+  collect and expose `git diff`, changed files, validation output, branch name,
+  commit SHA, PR URL, and completion-gate evidence.
+- Completion is now gated: no patch blocks completion, failed validation blocks
+  completion, failed push/PR handoff blocks completion, and successful PR
+  creation moves the GitHub Project item to Review rather than fake Done.
+- Coder run records now include worker/session ids, worker run ids, managed
+  worktree paths, branch/commit/PR metadata, changed files, validation status,
+  handoff status, and completion-gate details.
+- Project policy now defaults to PR-required handoff, native Tandem delegation,
+  max two parallel issue runs, and no manual out-of-order runs unless the
+  project explicitly opts in.
+- GitHub Project intake payloads now include scheduler explanations: parent
+  cards, phase, blockers, scheduler rank, runnable state, active run id, run
+  state, and handoff URL.
+- Parent cards are treated as planning/grouping headers only. The scheduler
+  launches child issues by the lowest open phase and dependency order.
+
+### Coder Control Panel
+
+- The Coder intake view now renders as the primary board: TODO, In Progress,
+  Blocked, Review, and Done columns with parent/phase grouping, next-runnable
+  badges, disabled run buttons with reasons, and handoff links.
+- `Run scheduler next` launches only the lowest open phase's scheduler-approved
+  child issues. `Run selected` stays disabled for out-of-order work unless the
+  project policy enables manual override.
+- The board shows Tandem's spinner while GitHub Project sync is active instead
+  of leaving the intake area visually blank.
+- Active run payloads now carry enough status for the control panel to show the
+  current worker session, latest action/log context, changed files, validation
+  output, branch, PR link, and failure reason using the existing coder routes
+  and event streams.
+
 ### Boundaries
 
 - This release does not add Zitadel integration yet.
@@ -68,6 +115,8 @@ behavior by default.
 - Hosted strict auth is not enabled by default.
 - Local, desktop, and single-tenant workflows continue to run without hosted
   auth, signed context assertions, or approval signing keys.
+- GitHub Project `Done` remains a post-review/merge state. Coder implementation
+  handoff now stops at Review with a PR link and evidence.
 
 ### Versioning
 

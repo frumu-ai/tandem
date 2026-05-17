@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Runtime Tandem context assertion verification**: Hosted and enterprise runtime ingress can now verify compact Tandem tenant-context assertions signed with Ed25519 before accepting tenant/actor identity.
 - **Context assertion keyring support**: Runtime verification now supports multiple Ed25519 public keys by `kid` through `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS` / `_FILE`, preserving the single-key env vars as legacy fallback for hosted deployments.
 - **Hosted context assertion signer prep**: The hosted control-plane workstream now has a provider-neutral context assertion signer shape, a local Ed25519 test signer, and a Google Cloud KMS Software Ed25519 adapter in `tandem-web`.
+- **Coder run handoff artifacts**: Coder run records now expose worker/session ids, managed worktree paths, branch and commit metadata, PR URLs, changed files, validation state, handoff state, and completion-gate evidence so the control panel can show what a coding worker actually did.
+- **Coder project scheduling policy defaults**: Project policy now includes PR-required handoff, native Tandem delegation, a max parallel issue-run limit, and a default ban on manual out-of-order runs.
+- **Coder intake scheduler fields**: GitHub Project intake payloads now include parent-card detection, phase, blockers, scheduler rank, runnable state, active run id, run state, and handoff URL for board-style scheduling.
 
 ### Changed
 
@@ -25,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Strict protected-tool context guard**: In hosted/enterprise auth modes, fintech strict protected tools now fail closed when tool execution lacks a verified non-local tenant context with a human actor.
 - **Tool-time assertion expiry guard**: Sessions now retain verified tenant assertion metadata and pass it into runtime tool policy, allowing hosted/enterprise protected tools to reject expired signed tenant assertions at execution time.
 - **Local auth regression coverage**: Added a local-mode session smoke test proving hosted auth and signed assertions are not required by default.
+- **Coder issue-fix workers use a strict coding contract**: Issue-fix worker sessions now run with required tools, prewrite inspection requirements, and an explicit native Tandem coding contract to inspect the repo, plan, patch files, validate, repair failures, and report evidence.
+- **Coder completion is gated by real handoff evidence**: Issue-fix runs now block when no patch is produced, validation fails, or push/PR handoff fails. Successful implementation handoff moves GitHub Project work to Review instead of claiming Done.
+- **Managed coder worktrees are preserved through handoff**: Coder keeps worker worktrees until handoff completes so diffs, changed files, validation output, branch metadata, commits, and PR artifacts remain inspectable.
+- **Parent cards are planning-only**: Coder scheduling keeps parent Project cards non-runnable and launches scheduler-approved child issues by phase/dependency order.
+- **Coder control panel board-first intake**: The control panel now renders intake as a TODO / In Progress / Blocked / Review / Done board with next-runnable badges, disabled run buttons with reasons, scheduler-only launch controls, handoff links, and a Tandem spinner while GitHub board sync is active.
+- **Coder active-run visibility**: Active coder runs surface worker/session identity, log/transcript tails, changed files, validation state, branch/PR handoff details, and failure reasons in the run payload used by the existing coder routes and streams.
 - **Version bump**: Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles move to `0.5.8`.
 
 ### Notes
@@ -32,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This release starts the enterprise auth and execution-time verification implementation without enabling hosted strict auth by default.
 - Local, desktop, and single-tenant runtime behavior remains unchanged unless a later strict hosted/enterprise mode is explicitly configured.
 - `tandem-web` remains the intended owner of Tandem-signed hosted context assertions; runtime and ACA consume Tandem assertions/public keyrings, not raw Zitadel or Google identity tokens.
+- Coder treats GitHub Project `Done` as post-review/merge state; completed implementation work is handed off as a PR and moved to Review.
 
 ## [0.5.7] - 2026-05-17
 

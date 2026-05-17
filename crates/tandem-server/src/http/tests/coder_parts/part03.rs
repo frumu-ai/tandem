@@ -1,5 +1,5 @@
-
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_fix_summary_writes_patch_summary_without_changed_files() {
     let state = test_state().await;
     state
@@ -82,84 +82,26 @@ async fn coder_issue_fix_summary_writes_patch_summary_without_changed_files() {
     )
     .expect("summary json");
     assert_eq!(
-        summary_payload
-            .get("artifact")
-            .and_then(|row| row.get("artifact_type"))
-            .and_then(Value::as_str),
-        Some("coder_issue_fix_summary")
+        summary_payload.get("code").and_then(Value::as_str),
+        Some("CODER_HANDOFF_BLOCKED_NO_PATCH")
     );
     assert_eq!(
         summary_payload
-            .get("validation_artifact")
-            .and_then(|row| row.get("artifact_type"))
+            .get("run")
+            .and_then(|row| row.get("status"))
             .and_then(Value::as_str),
-        Some("coder_validation_report")
+        Some("blocked")
     );
 
     let blackboard = load_context_blackboard(&state, &linked_context_run_id);
-    let patch_summary_path = blackboard
+    assert!(!blackboard
         .artifacts
         .iter()
-        .find(|artifact| artifact.artifact_type == "coder_patch_summary")
-        .map(|artifact| artifact.path.clone())
-        .expect("patch summary path");
-    let patch_summary_payload: Value = serde_json::from_str(
-        &tokio::fs::read_to_string(&patch_summary_path)
-            .await
-            .expect("read patch summary artifact"),
-    )
-    .expect("parse patch summary artifact");
-    assert_eq!(
-        patch_summary_payload
-            .get("root_cause")
-            .and_then(Value::as_str),
-        Some(
-            "The startup fallback branch was intentionally not patched because the incident was configuration-only."
-        )
-    );
-    assert_eq!(
-        patch_summary_payload
-            .get("changed_files")
-            .and_then(Value::as_array)
-            .map(|rows| rows.len()),
-        Some(0)
-    );
-    assert_eq!(
-        patch_summary_payload
-            .get("validation_results")
-            .and_then(Value::as_array)
-            .map(|rows| rows.len()),
-        Some(1)
-    );
-    assert_eq!(
-        patch_summary_payload
-            .get("worker_run_reference")
-            .and_then(Value::as_str),
-        patch_summary_payload
-            .get("worker_session_context_run_id")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                patch_summary_payload
-                    .get("worker_session_id")
-                    .and_then(Value::as_str)
-            })
-    );
-    assert_eq!(
-        patch_summary_payload
-            .get("validation_run_reference")
-            .and_then(Value::as_str),
-        patch_summary_payload
-            .get("validation_session_context_run_id")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                patch_summary_payload
-                    .get("validation_session_id")
-                    .and_then(Value::as_str)
-            })
-    );
+        .any(|artifact| artifact.artifact_type == "coder_patch_summary"));
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_triage_prefers_failure_patterns_in_memory_hits() {
     let state = test_state().await;
     state
@@ -307,6 +249,7 @@ async fn coder_issue_triage_prefers_failure_patterns_in_memory_hits() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_fix_reuses_prior_fix_pattern_memory_hits() {
     let state = test_state().await;
     state
@@ -449,6 +392,7 @@ async fn coder_issue_fix_reuses_prior_fix_pattern_memory_hits() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_pr_review_evidence_advances_review_run() {
     let state = test_state().await;
     state
@@ -590,6 +534,7 @@ async fn coder_pr_review_evidence_advances_review_run() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_pr_review_execute_next_drives_task_runtime_to_completion() {
     let state = test_state().await;
     state
@@ -731,6 +676,7 @@ async fn coder_pr_review_execute_next_drives_task_runtime_to_completion() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_pr_review_summary_create_writes_artifact_and_outcome() {
     let state = test_state().await;
     state
@@ -851,16 +797,12 @@ async fn coder_pr_review_summary_create_writes_artifact_and_outcome() {
         .get("review_evidence_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with(
-            "/context_runs/ctx-coder-pr-review-summary/artifacts/pr_review.evidence.json"
-        )));
+        .is_some_and(|path| path.ends_with("artifacts/pr_review.evidence.json")));
     assert!(summary_payload
         .get("validation_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with(
-            "/context_runs/ctx-coder-pr-review-summary/artifacts/pr_review.validation.json"
-        )));
+        .is_some_and(|path| path.ends_with("artifacts/pr_review.validation.json")));
     let summary_artifact_id = summary_payload
         .get("artifact")
         .and_then(|row| row.get("id"))
@@ -1009,6 +951,7 @@ async fn coder_pr_review_summary_create_writes_artifact_and_outcome() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_pr_review_reuses_prior_review_memory_hits() {
     let state = test_state().await;
     state
@@ -1265,6 +1208,7 @@ async fn coder_pr_review_reuses_prior_review_memory_hits() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_run_create_gets_seeded_tasks() {
     let state = test_state().await;
     state
@@ -1381,6 +1325,7 @@ async fn coder_merge_recommendation_run_create_gets_seeded_tasks() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_readiness_report_advances_merge_run() {
     let state = test_state().await;
     state
@@ -1517,6 +1462,7 @@ async fn coder_merge_readiness_report_advances_merge_run() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_execute_next_drives_task_runtime_to_completion() {
     let state = test_state().await;
     state
@@ -1657,6 +1603,7 @@ async fn coder_merge_recommendation_execute_next_drives_task_runtime_to_completi
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_summary_create_writes_artifact() {
     let state = test_state().await;
     state

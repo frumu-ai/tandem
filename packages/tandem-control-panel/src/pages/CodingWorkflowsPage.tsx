@@ -299,8 +299,9 @@ export function CodingWorkflowsPage({
     .map((server) => server.name);
   const selectedGithubItems = useMemo(
     () =>
-      githubBoard.items.filter((item: any) =>
-        selectedGithubItemIds.includes(String(item.id || ""))
+      githubBoard.items.filter(
+        (item: any) =>
+          selectedGithubItemIds.includes(String(item.id || "")) && githubBoardItemCanRun(item)
       ),
     [githubBoard.items, selectedGithubItemIds]
   );
@@ -1100,6 +1101,9 @@ export function CodingWorkflowsPage({
                             ? "Cached snapshot"
                             : formatStatus(githubBoard.source || "live")}
                         </Badge>
+                        {projectBoardQuery.isFetching ? (
+                          <StatusPulse tone="live" text="syncing" />
+                        ) : null}
                         <button
                           type="button"
                           className="tcp-btn tcp-btn-secondary"
@@ -1220,7 +1224,10 @@ export function CodingWorkflowsPage({
                                     );
                                     const itemIsRunning =
                                       !!activeGithubRun ||
-                                      activeGithubItemIdentities.has(githubBoardItemIdentity(item));
+                                      activeGithubItemIdentities.has(
+                                        githubBoardItemIdentity(item)
+                                      ) ||
+                                      !!String(item.activeRunId || item.active_run_id || "").trim();
                                     const itemIsLaunching = launchingGithubItemIdSet.has(itemId);
                                     const itemIsLaunchLocked =
                                       itemIsRunning || itemIsLaunching || batchTriggering;
@@ -1283,8 +1290,16 @@ export function CodingWorkflowsPage({
                                           {itemIsRunning ? (
                                             <Badge tone="info">Run active</Badge>
                                           ) : null}
+                                          {item.runState ? (
+                                            <Badge tone="info">
+                                              {formatStatus(String(item.runState))}
+                                            </Badge>
+                                          ) : null}
                                           {activeGithubRun ? (
                                             <Badge tone="info">{String(activeGithubRun.id)}</Badge>
+                                          ) : null}
+                                          {item.handoffUrl || item.handoff_url ? (
+                                            <Badge tone="ok">PR handoff</Badge>
                                           ) : null}
                                           {itemIsLaunching && !itemIsRunning ? (
                                             <Badge tone="warn">Starting</Badge>
@@ -1329,6 +1344,16 @@ export function CodingWorkflowsPage({
                                               <i data-lucide="terminal"></i>
                                               View live run
                                             </button>
+                                          ) : null}
+                                          {item.handoffUrl || item.handoff_url ? (
+                                            <a
+                                              className="tcp-btn tcp-btn-secondary h-8 px-3 text-xs"
+                                              href={String(item.handoffUrl || item.handoff_url)}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                            >
+                                              PR
+                                            </a>
                                           ) : null}
                                         </div>
                                       </div>

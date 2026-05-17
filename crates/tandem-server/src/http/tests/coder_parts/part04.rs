@@ -1,5 +1,5 @@
-
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
     let state = test_state().await;
     state
@@ -372,6 +372,7 @@ async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_submit_real_submit_writes_merge_artifact() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -557,6 +558,7 @@ async fn coder_merge_submit_real_submit_writes_merge_artifact() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_policy_get_and_put_controls_auto_merge_flag() {
     let state = test_state().await;
     let app = app_router(state.clone());
@@ -648,6 +650,7 @@ async fn coder_project_policy_get_and_put_controls_auto_merge_flag() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_list_summarizes_known_repo_bindings_and_policy() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -810,6 +813,7 @@ async fn coder_project_list_summarizes_known_repo_bindings_and_policy() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_binding_get_put_and_project_list_prefers_explicit_binding() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -952,6 +956,7 @@ async fn coder_project_binding_get_put_and_project_list_prefers_explicit_binding
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_binding_put_bootstraps_github_mcp_server_from_auth() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -1014,6 +1019,7 @@ async fn coder_project_binding_put_bootstraps_github_mcp_server_from_auth() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_binding_put_discovers_github_project_schema() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -1085,6 +1091,7 @@ async fn coder_project_binding_put_discovers_github_project_schema() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_github_project_inbox_lists_actionable_and_unsupported_items() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -1166,6 +1173,7 @@ async fn coder_project_github_project_inbox_lists_actionable_and_unsupported_ite
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_github_project_intake_is_idempotent_for_active_item() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -1291,6 +1299,7 @@ async fn coder_project_github_project_intake_is_idempotent_for_active_item() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_get_returns_policy_binding_and_recent_runs() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -1461,6 +1470,7 @@ async fn coder_project_get_returns_policy_binding_and_recent_runs() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_run_create_uses_saved_binding_and_requires_it() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -1585,6 +1595,7 @@ async fn coder_project_run_create_uses_saved_binding_and_requires_it() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_project_run_list_filters_to_project_and_sorts_newest_first() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -1706,6 +1717,7 @@ async fn coder_project_run_list_filters_to_project_and_sorts_newest_first() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_status_summarizes_active_and_approval_runs() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;

@@ -90,21 +90,42 @@ async fn run_issue_fix_worker_session(
             }),
         ));
 
+        let strict_issue_fix_worker =
+            record.workflow_mode == CoderWorkflowMode::IssueFix && worker_kind.starts_with("issue_fix_");
         let request = SendMessageRequest {
             parts: vec![MessagePartInput::Text {
-                text: format!(
-                    "Managed worker workspace: {worker_workspace_root}\nCanonical repo root: {canonical_repo_root}\n\n{}",
-                    prompt
+                text: build_coder_worker_contract_prompt(
+                    &worker_workspace_root,
+                    &canonical_repo_root,
+                    worker_kind,
+                    &prompt,
                 ),
             }],
             model: Some(model.clone()),
             agent: agent_id.clone().or_else(|| Some(worker_kind.to_string())),
-            tool_mode: Some(tandem_types::ToolMode::Auto),
+            tool_mode: Some(if strict_issue_fix_worker {
+                tandem_types::ToolMode::Required
+            } else {
+                tandem_types::ToolMode::Auto
+            }),
             tool_allowlist: None,
             strict_kb_grounding: None,
             context_mode: Some(tandem_types::ContextMode::Full),
             write_required: Some(true),
-            prewrite_requirements: None,
+            prewrite_requirements: strict_issue_fix_worker.then_some(
+                tandem_types::PrewriteRequirements {
+                    workspace_inspection_required: true,
+                    concrete_read_required: true,
+                    web_research_required: false,
+                    successful_web_research_required: false,
+                    repair_on_unmet_requirements: true,
+                    repair_budget: Some(3),
+                    repair_exhaustion_behavior: Some(
+                        tandem_types::PrewriteRepairExhaustionBehavior::FailClosed,
+                    ),
+                    coverage_mode: tandem_types::PrewriteCoverageMode::FilesReviewedBacked,
+                },
+            ),
         };
 
         state
@@ -137,7 +158,7 @@ async fn run_issue_fix_worker_session(
         let assistant_text = latest_assistant_session_text(&session);
         let tool_invocation_count = count_session_tool_invocations(&session);
         let changed_file_entries = extract_session_change_evidence(&session);
-        let changed_files = changed_file_entries
+        let session_changed_files = changed_file_entries
             .iter()
             .filter_map(|row| {
                 row.get("path")
@@ -145,6 +166,22 @@ async fn run_issue_fix_worker_session(
                     .map(ToString::to_string)
             })
             .collect::<Vec<_>>();
+        let git_evidence = collect_git_handoff_evidence(&worker_workspace_root).await;
+        let mut changed_files = git_evidence
+            .get("changed_files")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for path in session_changed_files {
+            if !changed_files.contains(&path) {
+                changed_files.push(path);
+            }
+        }
         let payload = json!({
             "coder_run_id": record.coder_run_id,
             "linked_context_run_id": record.linked_context_run_id,
@@ -158,6 +195,18 @@ async fn run_issue_fix_worker_session(
             "worker_workspace_branch": managed_worktree.as_ref().map(|row| row.record.branch.clone()),
             "worker_workspace_reused": managed_worktree.as_ref().map(|row| row.reused),
             "worker_workspace_cleanup_branch": managed_worktree.as_ref().map(|row| row.record.cleanup_branch),
+            "managed_worktree": managed_worktree.as_ref().map(|row| json!({
+                "key": row.record.key,
+                "path": row.record.path,
+                "repo_root": row.record.repo_root,
+                "branch": row.record.branch,
+                "base": row.record.base,
+                "task_id": row.record.task_id,
+                "owner_run_id": row.record.owner_run_id,
+                "lease_id": row.record.lease_id,
+                "cleanup_branch": row.record.cleanup_branch,
+                "reused": row.reused,
+            })),
             "session_id": session_id,
             "session_run_id": run_id,
             "session_context_run_id": worker_context_run_id,
@@ -170,6 +219,7 @@ async fn run_issue_fix_worker_session(
             "tool_invocation_count": tool_invocation_count,
             "changed_files": changed_files,
             "changed_file_entries": changed_file_entries,
+            "git_evidence": git_evidence,
             "message_count": session.messages.len(),
             "messages": compact_session_messages(&session),
             "error": run_result.as_ref().err().map(|error| crate::truncate_text(&error.to_string(), 500)),
@@ -206,8 +256,12 @@ async fn run_issue_fix_worker_session(
         Ok::<_, StatusCode>((artifact, payload, run_result.is_ok()))
     }
     .await;
-    if let Some(worktree) = managed_worktree.as_ref() {
-        let _ = crate::runtime::worktrees::delete_managed_worktree(state, &worktree.record).await;
+    let preserve_worktree = worker_kind.starts_with("issue_fix_");
+    if !preserve_worktree {
+        if let Some(worktree) = managed_worktree.as_ref() {
+            let _ =
+                crate::runtime::worktrees::delete_managed_worktree(state, &worktree.record).await;
+        }
     }
     let (artifact, payload, run_ok) = result?;
     if !run_ok {
@@ -239,6 +293,188 @@ async fn prepare_coder_worker_workspace(
     )
     .await
     .ok()
+}
+
+fn build_coder_worker_contract_prompt(
+    worker_workspace_root: &str,
+    canonical_repo_root: &str,
+    worker_kind: &str,
+    prompt: &str,
+) -> String {
+    format!(
+        concat!(
+            "Managed worker workspace: {worker_workspace_root}\n",
+            "Canonical repo root: {canonical_repo_root}\n",
+            "Worker kind: {worker_kind}\n\n",
+            "Tandem coder contract:\n",
+            "1. Inspect the repository before deciding what to edit. Prefer fast file search and read concrete files before patching.\n",
+            "2. Check scoped agent instructions such as AGENTS.md when they exist in or above files you touch.\n",
+            "3. For code-change work, produce an actual workspace diff. Use edit/apply_patch/write tools; a prose-only answer is not complete.\n",
+            "4. Keep the change constrained to the issue, run targeted validation, and repair the smallest root cause if validation fails.\n",
+            "5. End with Summary, Changed Files, Validation, Residual Risk, and Handoff headings.\n\n",
+            "{prompt}"
+        ),
+        worker_workspace_root = worker_workspace_root,
+        canonical_repo_root = canonical_repo_root,
+        worker_kind = worker_kind,
+        prompt = prompt,
+    )
+}
+
+async fn collect_git_handoff_evidence(workspace_root: &str) -> Value {
+    let workspace_root = workspace_root.to_string();
+    tokio::task::spawn_blocking(move || {
+        let status = std::process::Command::new("git")
+            .args(["-C", &workspace_root, "status", "--porcelain"])
+            .output();
+        let diff = std::process::Command::new("git")
+            .args(["-C", &workspace_root, "diff", "--", "."])
+            .output();
+        let head = std::process::Command::new("git")
+            .args(["-C", &workspace_root, "rev-parse", "HEAD"])
+            .output();
+        let branch = std::process::Command::new("git")
+            .args(["-C", &workspace_root, "branch", "--show-current"])
+            .output();
+
+        let status_text = status
+            .as_ref()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+            .unwrap_or_default();
+        let mut changed_files = status_text
+            .lines()
+            .filter_map(|line| {
+                let path = line.get(3..).unwrap_or_default().trim();
+                if path.is_empty() {
+                    None
+                } else {
+                    Some(path.trim_matches('"').to_string())
+                }
+            })
+            .collect::<Vec<_>>();
+        changed_files.sort();
+        changed_files.dedup();
+        json!({
+            "workspace_root": workspace_root,
+            "changed_files": changed_files,
+            "status_porcelain": status_text,
+            "diff": diff
+                .as_ref()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| crate::truncate_text(String::from_utf8_lossy(&output.stdout).as_ref(), 48_000))
+                .unwrap_or_default(),
+            "commit_sha": head
+                .as_ref()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
+            "branch_name": branch
+                .as_ref()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
+            "ok": status.as_ref().map(|output| output.status.success()).unwrap_or(false),
+        })
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "ok": false,
+            "error": crate::truncate_text(&error.to_string(), 500),
+            "changed_files": [],
+        })
+    })
+}
+
+async fn update_coder_run_handoff_from_worker(
+    state: &AppState,
+    record: &CoderRunRecord,
+    worker_payload: &Value,
+    validation_status: Option<&str>,
+    handoff_status: Option<&str>,
+    completion_gate: Option<Value>,
+) -> Result<CoderRunRecord, StatusCode> {
+    let mut updated = load_coder_run_record(state, &record.coder_run_id).await?;
+    if let Some(session_id) = worker_payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    {
+        updated.worker_session_id = Some(session_id);
+    }
+    if let Some(run_id) = worker_payload
+        .get("session_run_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    {
+        updated.worker_run_id = Some(run_id);
+    }
+    if let Some(managed_worktree) = worker_payload.get("managed_worktree").cloned() {
+        updated.managed_worktree = Some(managed_worktree);
+    }
+    if let Some(branch_name) = worker_payload
+        .get("git_evidence")
+        .and_then(|row| row.get("branch_name"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            worker_payload
+                .get("worker_workspace_branch")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+    {
+        updated.branch_name = Some(branch_name);
+    }
+    if let Some(commit_sha) = worker_payload
+        .get("git_evidence")
+        .and_then(|row| row.get("commit_sha"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    {
+        updated.commit_sha = Some(commit_sha);
+    }
+    let changed_files = worker_payload
+        .get("changed_files")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|rows| !rows.is_empty());
+    if changed_files.is_some() {
+        updated.changed_files = changed_files;
+    }
+    if let Some(validation_status) = validation_status {
+        updated.validation_status = Some(validation_status.to_string());
+    }
+    if let Some(handoff_status) = handoff_status {
+        updated.handoff_status = Some(handoff_status.to_string());
+    }
+    if let Some(completion_gate) = completion_gate {
+        updated.completion_gate = Some(completion_gate);
+    }
+    updated.updated_at_ms = crate::now_ms();
+    save_coder_run_record(state, &updated).await?;
+    Ok(updated)
+}
+
+fn worker_payload_has_patch(worker_payload: &Value) -> bool {
+    worker_payload
+        .get("changed_files")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty())
+        || worker_payload
+            .get("git_evidence")
+            .and_then(|row| row.get("diff"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|text| !text.is_empty())
 }
 
 async fn run_issue_fix_prepare_worker(
@@ -440,6 +676,16 @@ fn coder_run_payload(record: &CoderRunRecord, context_run: &ContextRunState) -> 
         "origin_policy": record.origin_policy,
         "github_project_ref": record.github_project_ref,
         "remote_sync_state": coder_run_sync_state(record),
+        "worker_session_id": record.worker_session_id,
+        "worker_run_id": record.worker_run_id,
+        "managed_worktree": record.managed_worktree,
+        "branch_name": record.branch_name,
+        "commit_sha": record.commit_sha,
+        "pr_url": record.pr_url,
+        "changed_files": record.changed_files,
+        "validation_status": record.validation_status,
+        "handoff_status": record.handoff_status,
+        "completion_gate": record.completion_gate,
         "status": context_run.status,
         "phase": project_coder_phase(context_run),
         "created_at_ms": record.created_at_ms,
@@ -1024,6 +1270,16 @@ async fn coder_run_create_inner(
         origin_policy: input.origin_policy,
         github_project_ref: None,
         remote_sync_state: None,
+        worker_session_id: None,
+        worker_run_id: None,
+        managed_worktree: None,
+        branch_name: None,
+        commit_sha: None,
+        pr_url: None,
+        changed_files: None,
+        validation_status: None,
+        handoff_status: None,
+        completion_gate: None,
         created_at_ms: now,
         updated_at_ms: now,
     };
@@ -1721,11 +1977,38 @@ pub(super) async fn coder_project_github_project_inbox(
     let mut rows = Vec::new();
     for item in items {
         let linked = find_latest_project_item_run(&state, &item.project_item_id).await?;
+        let title_lower = item.title.to_lowercase();
+        let is_parent =
+            title_lower.contains("[aca slice parent]") || title_lower.contains("slice parent");
+        let phase = item
+            .raw
+            .get("phase")
+            .or_else(|| item.raw.get("Phase"))
+            .and_then(Value::as_u64);
+        let blocked_by = item
+            .raw
+            .get("blocked_by")
+            .or_else(|| item.raw.get("blockedBy"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
         let actionable = item.issue.is_some()
+            && !is_parent
             && status_alias_matches(
                 &item.status_name,
                 &[&github_project_binding.status_mapping.todo.name],
             );
+        let run_state = linked.as_ref().and_then(|(_, run)| {
+            serde_json::to_value(&run.status)
+                .ok()
+                .and_then(|value| value.as_str().map(ToString::to_string))
+        });
+        let active_run_id = linked
+            .as_ref()
+            .filter(|(_, run)| !is_terminal_context_status(&run.status))
+            .map(|(record, _)| record.coder_run_id.clone());
+        let handoff_url = linked
+            .as_ref()
+            .and_then(|(record, _)| record.pr_url.clone());
         let remote_sync_state = if schema_drift {
             CoderRemoteSyncState::SchemaDrift
         } else if let Some((record, run)) = linked.as_ref() {
@@ -1751,6 +2034,17 @@ pub(super) async fn coder_project_github_project_inbox(
             "status_name": item.status_name,
             "status_option_id": item.status_option_id,
             "issue": item.issue,
+            "issue_number": item.issue.as_ref().map(|issue| issue.number),
+            "issue_url": item.issue.as_ref().and_then(|issue| issue.html_url.clone()),
+            "is_parent": is_parent,
+            "phase": phase,
+            "blocked_by": blocked_by,
+            "scheduler_rank": if actionable { Some(0_u64) } else { None },
+            "runnable_now": actionable,
+            "run_state": run_state,
+            "active_run_id": active_run_id,
+            "handoff_url": handoff_url,
+            "launch_state": if actionable { "next" } else if is_parent { "parent" } else { "waiting" },
             "actionable": actionable,
             "unsupported_reason": if item.issue.is_none() { Some("unsupported_item_type") } else { None::<&str> },
             "linked_run": linked.as_ref().map(|(record, run)| json!({

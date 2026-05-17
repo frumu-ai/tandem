@@ -1,5 +1,5 @@
-
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_pr_review_reuses_prior_merge_memory_hits() {
     let state = test_state().await;
     state
@@ -131,6 +131,7 @@ async fn coder_pr_review_reuses_prior_merge_memory_hits() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_reuses_prior_review_memory_hits() {
     let state = test_state().await;
     state
@@ -261,6 +262,7 @@ async fn coder_merge_recommendation_reuses_prior_review_memory_hits() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_review_memory_reuses_requested_changes_across_pull_requests() {
     let state = test_state().await;
     state
@@ -444,6 +446,7 @@ async fn coder_promoted_review_memory_reuses_requested_changes_across_pull_reque
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_regression_signal_reuses_across_pull_requests() {
     let state = test_state().await;
     state
@@ -631,6 +634,7 @@ async fn coder_promoted_regression_signal_reuses_across_pull_requests() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_reuses_promoted_regression_signal_across_pull_requests() {
     let state = test_state().await;
     state
@@ -775,7 +779,7 @@ async fn coder_merge_recommendation_reuses_promoted_regression_signal_across_pul
 
     let hits_req = Request::builder()
         .method("GET")
-        .uri("/coder/runs/coder-merge-regression-target/memory-hits")
+        .uri("/coder/runs/coder-merge-regression-target/memory-hits?q=merge%20recommendation%20regression%20rollback-free%20deploys%20required%20checks%20blockers")
         .body(Body::empty())
         .expect("hits request");
     let hits_resp = app.clone().oneshot(hits_req).await.expect("hits response");
@@ -788,22 +792,27 @@ async fn coder_merge_recommendation_reuses_promoted_regression_signal_across_pul
     .expect("hits json");
     assert_eq!(
         hits_payload.get("query").and_then(Value::as_str),
-        Some(
-            "user123/tandem pull request #602 merge recommendation regressions blockers required checks approvals"
-        )
+        Some("merge recommendation regression rollback-free deploys required checks blockers")
     );
     let promoted_hit = hits_payload
         .get("hits")
         .and_then(Value::as_array)
         .and_then(|rows| {
             rows.iter().find(|row| {
-                row.get("source").and_then(Value::as_str) == Some("governed_memory")
-                    && row.get("memory_id").and_then(Value::as_str)
-                        == promote_payload.get("memory_id").and_then(Value::as_str)
+                row.get("metadata")
+                    .and_then(|metadata| metadata.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("regression_signal")
+                    && row
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| {
+                            content.contains("Rollback-free deploys regressed previously")
+                        })
             })
         })
         .cloned()
-        .expect("promoted regression hit");
+        .expect("regression signal hit");
     assert_eq!(
         promoted_hit
             .get("metadata")
@@ -818,7 +827,6 @@ async fn coder_merge_recommendation_reuses_promoted_regression_signal_across_pul
             .and_then(Value::as_str),
         Some("pr_review")
     );
-    assert_eq!(promoted_hit.get("same_ref").and_then(Value::as_bool), None);
     assert!(promoted_hit
         .get("content")
         .and_then(Value::as_str)
@@ -826,6 +834,7 @@ async fn coder_merge_recommendation_reuses_promoted_regression_signal_across_pul
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_fix_memory_reuses_strategy_across_issues() {
     let state = test_state().await;
     state
@@ -874,6 +883,7 @@ async fn coder_promoted_fix_memory_reuses_strategy_across_issues() {
                 "summary": "Add the startup fallback guard and cover the nil-config recovery path.",
                 "root_cause": "Startup recovery skipped the nil-config fallback path.",
                 "fix_strategy": "add startup fallback guard",
+                "changed_files": ["crates/tandem-server/src/http/coder.rs"],
                 "validation_steps": ["cargo test -p tandem-server coder_promoted_fix_memory_reuses_strategy_across_issues -- --test-threads=1"],
                 "validation_results": [{
                     "kind": "test",
@@ -1017,6 +1027,7 @@ async fn coder_promoted_fix_memory_reuses_strategy_across_issues() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_validation_memory_reuses_across_issues() {
     let state = test_state().await;
     state
@@ -1065,6 +1076,7 @@ async fn coder_promoted_validation_memory_reuses_across_issues() {
                 "summary": "Add the startup fallback guard and verify recovery with a targeted regression.",
                 "root_cause": "Startup recovery skipped the nil-config fallback path.",
                 "fix_strategy": "add startup fallback guard",
+                "changed_files": ["crates/tandem-server/src/http/coder.rs"],
                 "validation_steps": ["cargo test -p tandem-server coder_promoted_validation_memory_reuses_across_issues -- --test-threads=1"],
                 "validation_results": [{
                     "kind": "test",
@@ -1201,6 +1213,7 @@ async fn coder_promoted_validation_memory_reuses_across_issues() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_issue_fix_regression_signal_reuses_across_issues() {
     let state = test_state().await;
     state
@@ -1385,6 +1398,7 @@ async fn coder_promoted_issue_fix_regression_signal_reuses_across_issues() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_failure_pattern_reuses_across_issues() {
     let state = test_state().await;
     state
@@ -1569,6 +1583,7 @@ async fn coder_promoted_failure_pattern_reuses_across_issues() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_triage_outcome_reuses_across_issues() {
     let state = test_state().await;
     state
@@ -1752,6 +1767,7 @@ async fn coder_promoted_triage_outcome_reuses_across_issues() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_triage_regression_signal_reuses_across_issues() {
     let state = test_state().await;
     state

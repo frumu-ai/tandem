@@ -90,6 +90,26 @@ pub(super) struct CoderRunRecord {
     pub(super) github_project_ref: Option<CoderGithubProjectRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) remote_sync_state: Option<CoderRemoteSyncState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) worker_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) worker_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) managed_worktree: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) branch_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) commit_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) changed_files: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) validation_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) handoff_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) completion_gate: Option<Value>,
     pub(super) created_at_ms: u64,
     pub(super) updated_at_ms: u64,
 }
@@ -457,6 +477,14 @@ pub(super) struct CoderProjectPolicy {
     pub(super) project_id: String,
     #[serde(default)]
     pub(super) auto_merge_enabled: bool,
+    #[serde(default = "default_coder_handoff_policy")]
+    pub(super) handoff_policy: String,
+    #[serde(default = "default_coder_delegation_backend")]
+    pub(super) delegation_backend: String,
+    #[serde(default = "default_coder_max_parallel_issue_runs")]
+    pub(super) max_parallel_issue_runs: u32,
+    #[serde(default)]
+    pub(super) allow_manual_out_of_order_run: bool,
     #[serde(default)]
     pub(super) updated_at_ms: u64,
 }
@@ -572,6 +600,14 @@ pub(super) struct CoderProjectSummary {
 pub(super) struct CoderProjectPolicyPutInput {
     #[serde(default)]
     pub(super) auto_merge_enabled: bool,
+    #[serde(default)]
+    pub(super) handoff_policy: Option<String>,
+    #[serde(default)]
+    pub(super) delegation_backend: Option<String>,
+    #[serde(default)]
+    pub(super) max_parallel_issue_runs: Option<u32>,
+    #[serde(default)]
+    pub(super) allow_manual_out_of_order_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -629,6 +665,18 @@ impl<'a> GithubProjectsAdapter<'a> {
     fn new(state: &'a AppState) -> Self {
         Self { state }
     }
+}
+
+fn default_coder_handoff_policy() -> String {
+    "pr_required".to_string()
+}
+
+fn default_coder_delegation_backend() -> String {
+    "native_tandem".to_string()
+}
+
+fn default_coder_max_parallel_issue_runs() -> u32 {
+    2
 }
 
 fn coder_project_intake_lock() -> &'static tokio::sync::Mutex<()> {
@@ -711,6 +759,10 @@ async fn load_coder_project_policy(
         return Ok(CoderProjectPolicy {
             project_id: project_id.to_string(),
             auto_merge_enabled: false,
+            handoff_policy: default_coder_handoff_policy(),
+            delegation_backend: default_coder_delegation_backend(),
+            max_parallel_issue_runs: default_coder_max_parallel_issue_runs(),
+            allow_manual_out_of_order_run: false,
             updated_at_ms: 0,
         });
     }
@@ -721,6 +773,15 @@ async fn load_coder_project_policy(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if policy.project_id.trim().is_empty() {
         policy.project_id = project_id.to_string();
+    }
+    if policy.handoff_policy.trim().is_empty() {
+        policy.handoff_policy = default_coder_handoff_policy();
+    }
+    if policy.delegation_backend.trim().is_empty() {
+        policy.delegation_backend = default_coder_delegation_backend();
+    }
+    if policy.max_parallel_issue_runs == 0 {
+        policy.max_parallel_issue_runs = default_coder_max_parallel_issue_runs();
     }
     Ok(policy)
 }

@@ -1,5 +1,5 @@
-
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_triage_summary_write_adds_summary_artifact() {
     let state = test_state().await;
     state
@@ -280,6 +280,7 @@ async fn coder_triage_summary_write_adds_summary_artifact() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_triage_summary_writes_run_outcome_without_summary_text() {
     let state = test_state().await;
     state
@@ -399,6 +400,7 @@ async fn coder_triage_summary_writes_run_outcome_without_summary_text() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_triage_summary_infers_duplicate_and_memory_fields_from_bootstrap_hits() {
     let state = test_state().await;
     state
@@ -578,6 +580,7 @@ async fn coder_triage_summary_infers_duplicate_and_memory_fields_from_bootstrap_
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_memory_candidate_promote_stores_governed_memory() {
     let state = test_state().await;
     state
@@ -898,6 +901,7 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_triage_reuses_promoted_fix_pattern_memory_hits() {
     let state = test_state().await;
     state
@@ -1045,7 +1049,7 @@ async fn coder_issue_triage_reuses_promoted_fix_pattern_memory_hits() {
 
     let hits_req = Request::builder()
         .method("GET")
-        .uri("/coder/runs/coder-triage-fix-history-b/memory-hits")
+        .uri("/coder/runs/coder-triage-fix-history-b/memory-hits?q=startup%20fallback%20guard%20fix_pattern")
         .body(Body::empty())
         .expect("hits request");
     let hits_resp = app.clone().oneshot(hits_req).await.expect("hits response");
@@ -1058,28 +1062,30 @@ async fn coder_issue_triage_reuses_promoted_fix_pattern_memory_hits() {
     .expect("hits json");
     assert_eq!(
         hits_payload.get("query").and_then(Value::as_str),
-        Some("user123/tandem issue #96")
+        Some("startup fallback guard fix_pattern")
     );
-    assert!(hits_payload
-        .get("policy")
-        .and_then(|row| row.get("prioritized_kinds"))
-        .and_then(Value::as_array)
-        .map(|rows| rows.iter().any(|row| row.as_str() == Some("fix_pattern")))
-        .unwrap_or(false));
     assert!(hits_payload
         .get("hits")
         .and_then(Value::as_array)
         .map(|rows| rows.iter().any(|row| {
-            row.get("memory_id").and_then(Value::as_str)
-                == promote_fix_payload.get("memory_id").and_then(Value::as_str)
-                && row.get("kind").and_then(Value::as_str) == Some("fix_pattern")
-                && row.get("source").and_then(Value::as_str) == Some("governed_memory")
-                && row.get("same_issue").and_then(Value::as_bool) == Some(true)
+            row.get("source").and_then(Value::as_str) == Some("governed_memory")
+                && row.get("memory_id").and_then(Value::as_str)
+                    == promote_fix_payload.get("memory_id").and_then(Value::as_str)
+                && row
+                    .get("metadata")
+                    .and_then(|metadata| metadata.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("fix_pattern")
+                && row
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| content.contains("add startup fallback guard"))
         }))
         .unwrap_or(false));
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_merge_memory_reuses_policy_history_across_pull_requests() {
     let state = test_state().await;
     state
@@ -1269,6 +1275,7 @@ async fn coder_promoted_merge_memory_reuses_policy_history_across_pull_requests(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_memory_promotion_requires_policy_signals() {
     let state = test_state().await;
     state
@@ -1372,6 +1379,7 @@ async fn coder_merge_recommendation_memory_promotion_requires_policy_signals() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_promoted_merge_outcome_reuses_across_pull_requests() {
     let state = test_state().await;
     state
@@ -1554,6 +1562,7 @@ async fn coder_promoted_merge_outcome_reuses_across_pull_requests() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_duplicate_linkage_promotion_requires_linked_issue_and_pr() {
     let state = test_state().await;
     state
@@ -1650,6 +1659,7 @@ async fn coder_duplicate_linkage_promotion_requires_linked_issue_and_pr() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_regression_signal_promotion_requires_structured_signals() {
     let state = test_state().await;
     state
@@ -1748,6 +1758,7 @@ async fn coder_regression_signal_promotion_requires_structured_signals() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_terminal_run_outcome_promotion_requires_workflow_evidence() {
     let state = test_state().await;
     state

@@ -1,4 +1,3 @@
-
 async fn seed_pr_review_tasks(
     state: AppState,
     coder_run: &CoderRunRecord,
@@ -1895,7 +1894,7 @@ fn context_status_to_project_option(
         ContextRunStatus::Queued | ContextRunStatus::Planning => mapping.todo.clone(),
         ContextRunStatus::Running | ContextRunStatus::Paused => mapping.in_progress.clone(),
         ContextRunStatus::AwaitingApproval => mapping.in_review.clone(),
-        ContextRunStatus::Completed => mapping.done.clone(),
+        ContextRunStatus::Completed => mapping.in_review.clone(),
         ContextRunStatus::Blocked | ContextRunStatus::Failed | ContextRunStatus::Cancelled => {
             mapping.blocked.clone()
         }

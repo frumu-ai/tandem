@@ -1,4 +1,3 @@
-
 pub(super) async fn coder_status(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
     ensure_coder_runs_dir(&state).await?;
     let mut total_runs = 0_u64;
@@ -116,9 +115,31 @@ pub(super) async fn coder_project_policy_put(
     if project_id.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let existing = load_coder_project_policy(&state, project_id).await?;
     let policy = CoderProjectPolicy {
         project_id: project_id.to_string(),
         auto_merge_enabled: input.auto_merge_enabled,
+        handoff_policy: input
+            .handoff_policy
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or(existing.handoff_policy),
+        delegation_backend: input
+            .delegation_backend
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or(existing.delegation_backend),
+        max_parallel_issue_runs: input
+            .max_parallel_issue_runs
+            .unwrap_or(existing.max_parallel_issue_runs)
+            .clamp(1, 16),
+        allow_manual_out_of_order_run: input
+            .allow_manual_out_of_order_run
+            .unwrap_or(existing.allow_manual_out_of_order_run),
         updated_at_ms: crate::now_ms(),
     };
     save_coder_project_policy(&state, &policy).await?;
@@ -388,7 +409,7 @@ pub(super) async fn coder_run_approve(
     Path(id): Path<String>,
     Json(input): Json<CoderRunControlInput>,
 ) -> Result<Json<Value>, StatusCode> {
-    let record = load_coder_run_record(&state, &id).await?;
+    let mut record = load_coder_run_record(&state, &id).await?;
     let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
     if !matches!(run.status, ContextRunStatus::AwaitingApproval) {
         return Ok(Json(json!({
@@ -400,6 +421,54 @@ pub(super) async fn coder_run_approve(
     let why = input
         .reason
         .unwrap_or_else(|| "plan approved by operator".to_string());
+    if record.workflow_mode == CoderWorkflowMode::IssueFix {
+        let submission_payload =
+            load_latest_coder_artifact_payload(&state, &record, "coder_pr_submission").await;
+        let submitted = submission_payload
+            .as_ref()
+            .and_then(|payload| payload.get("submitted"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let pr_url = submission_payload
+            .as_ref()
+            .and_then(|payload| payload.get("pull_request"))
+            .and_then(|row| {
+                row.get("html_url")
+                    .or_else(|| row.get("url"))
+                    .and_then(Value::as_str)
+            })
+            .map(ToString::to_string)
+            .or_else(|| record.pr_url.clone());
+        if !submitted || pr_url.is_none() {
+            return Ok(Json(json!({
+                "ok": false,
+                "error": "Issue-fix coder runs require a submitted PR handoff before approval can complete them.",
+                "code": "CODER_PR_HANDOFF_REQUIRED",
+                "coder_run": coder_run_payload(&record, &run),
+                "run": run,
+            })));
+        }
+        record.pr_url = pr_url.clone();
+        record.handoff_status = Some("pr_submitted".to_string());
+        record.completion_gate = Some(json!({
+            "status": "satisfied",
+            "reason": "pr_handoff_submitted",
+            "message": "Issue fix has a submitted PR handoff.",
+            "pr_url": pr_url,
+        }));
+        record.updated_at_ms = crate::now_ms();
+        save_coder_run_record(&state, &record).await?;
+        return Ok(Json(
+            coder_run_transition(
+                &state,
+                &record,
+                "issue_fix_pr_handoff_approved",
+                ContextRunStatus::Completed,
+                Some(why),
+            )
+            .await?,
+        ));
+    }
     if record.workflow_mode == CoderWorkflowMode::MergeRecommendation {
         let summary_artifact =
             latest_coder_artifact(&state, &record, "coder_merge_recommendation_summary");

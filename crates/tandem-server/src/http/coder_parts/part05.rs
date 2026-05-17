@@ -1,4 +1,3 @@
-
 impl<'a> GithubProjectsAdapter<'a> {
     async fn resolve_project_tools(
         &self,
@@ -1137,7 +1136,7 @@ pub(super) async fn coder_issue_fix_pr_submit(
     Path(id): Path<String>,
     Json(input): Json<CoderIssueFixPrSubmitInput>,
 ) -> Result<Json<Value>, StatusCode> {
-    let record = load_coder_run_record(&state, &id).await?;
+    let mut record = load_coder_run_record(&state, &id).await?;
     if !matches!(record.workflow_mode, CoderWorkflowMode::IssueFix) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1522,7 +1521,43 @@ pub(super) async fn coder_issue_fix_pr_submit(
             extra
         });
     }
-    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    let run = if !dry_run {
+        let pr_url = submission_payload
+            .get("pull_request")
+            .and_then(|row| {
+                row.get("html_url")
+                    .or_else(|| row.get("url"))
+                    .and_then(Value::as_str)
+            })
+            .map(ToString::to_string);
+        record.pr_url = pr_url.clone();
+        record.branch_name = Some(head_branch.to_string());
+        record.handoff_status = Some("pr_submitted".to_string());
+        record.completion_gate = Some(json!({
+            "status": "satisfied",
+            "reason": "pr_handoff_submitted",
+            "message": "Issue fix has a pull request handoff and can move to review.",
+            "pr_url": pr_url,
+            "artifact_path": artifact.path,
+        }));
+        record.updated_at_ms = crate::now_ms();
+        save_coder_run_record(&state, &record).await?;
+        let transitioned = coder_run_transition(
+            &state,
+            &record,
+            "run_completed",
+            ContextRunStatus::Completed,
+            Some("PR handoff submitted; moving implementation work to review.".to_string()),
+        )
+        .await?;
+        transitioned
+            .get("run")
+            .cloned()
+            .and_then(|row| serde_json::from_value::<ContextRunState>(row).ok())
+            .unwrap_or(load_context_run_state(&state, &record.linked_context_run_id).await?)
+    } else {
+        load_context_run_state(&state, &record.linked_context_run_id).await?
+    };
     Ok(Json(json!({
         "ok": true,
         "artifact": artifact,

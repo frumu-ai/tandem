@@ -17,6 +17,7 @@ fn age_bug_monitor_triage_run_state(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_post_idempotency_claim_allows_one_pending_create() {
     let state = test_state().await;
@@ -64,6 +65,7 @@ async fn bug_monitor_post_idempotency_claim_allows_one_pending_create() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_publish_reuses_existing_post_on_duplicate_submit() {
     let (endpoint, server) = spawn_fake_bug_monitor_github_mcp_server().await;
@@ -268,6 +270,7 @@ async fn bug_monitor_publish_reuses_existing_post_on_duplicate_submit() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_recovers_overdue_triage_run_after_status_refresh() {
     let (endpoint, server) = spawn_fake_bug_monitor_github_mcp_server().await;
@@ -450,6 +453,7 @@ async fn bug_monitor_recovers_overdue_triage_run_after_status_refresh() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_publish_skips_comment_when_matched_open_commenting_disabled() {
     let (endpoint, server) = spawn_fake_bug_monitor_github_mcp_server_with_issues(vec![json!({
@@ -595,6 +599,7 @@ async fn bug_monitor_publish_skips_comment_when_matched_open_commenting_disabled
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
     let state = test_state().await;
@@ -914,6 +919,7 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_issue_draft_blocks_coder_ready_without_required_evidence() {
     let state = test_state().await;
@@ -1041,6 +1047,7 @@ async fn bug_monitor_issue_draft_blocks_coder_ready_without_required_evidence() 
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_issue_draft_blocks_coder_ready_when_tool_scope_missing() {
     let state = test_state().await;
@@ -1166,6 +1173,7 @@ async fn bug_monitor_issue_draft_blocks_coder_ready_when_tool_scope_missing() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_triage_run_created_from_approved_draft() {
     let state = test_state().await;
@@ -1559,6 +1567,7 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_empty_triage_summary_synthesizes_file_refs_and_fix_points() {
     let state = test_state().await;
@@ -1659,6 +1668,7 @@ async fn bug_monitor_empty_triage_summary_synthesizes_file_refs_and_fix_points()
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
     let state = test_state().await;

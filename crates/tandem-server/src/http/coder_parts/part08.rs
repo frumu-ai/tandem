@@ -1,4 +1,3 @@
-
 pub(super) async fn coder_issue_fix_summary_create(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -7,6 +6,38 @@ pub(super) async fn coder_issue_fix_summary_create(
     let mut record = load_coder_run_record(&state, &id).await?;
     if !matches!(record.workflow_mode, CoderWorkflowMode::IssueFix) {
         return Err(StatusCode::BAD_REQUEST);
+    }
+    let effective_changed_files = if input.changed_files.is_empty() {
+        record.changed_files.clone().unwrap_or_default()
+    } else {
+        input.changed_files.clone()
+    };
+    if effective_changed_files.is_empty() {
+        let detail = "Issue-fix summary cannot complete without changed file evidence.".to_string();
+        record.validation_status = Some("blocked".to_string());
+        record.handoff_status = Some("blocked_no_patch".to_string());
+        record.completion_gate = Some(json!({
+            "status": "blocked",
+            "reason": "missing_changed_files",
+            "message": detail,
+        }));
+        record.updated_at_ms = crate::now_ms();
+        save_coder_run_record(&state, &record).await?;
+        let blocked = coder_run_transition(
+            &state,
+            &record,
+            "run_blocked",
+            ContextRunStatus::Blocked,
+            Some(detail.clone()),
+        )
+        .await?;
+        return Ok(Json(json!({
+            "ok": false,
+            "code": "CODER_HANDOFF_BLOCKED_NO_PATCH",
+            "error": detail,
+            "coder_run": blocked.get("coder_run").cloned().unwrap_or(Value::Null),
+            "run": blocked.get("run").cloned().unwrap_or(Value::Null),
+        })));
     }
     let summary_id = format!("issue-fix-summary-{}", Uuid::new_v4().simple());
     let payload = json!({
@@ -18,7 +49,7 @@ pub(super) async fn coder_issue_fix_summary_create(
         "summary": input.summary,
         "root_cause": input.root_cause,
         "fix_strategy": input.fix_strategy,
-        "changed_files": input.changed_files,
+        "changed_files": effective_changed_files.clone(),
         "validation_steps": input.validation_steps,
         "validation_results": input.validation_results,
         "memory_hits_used": input.memory_hits_used,
@@ -49,7 +80,7 @@ pub(super) async fn coder_issue_fix_summary_create(
         input.summary.as_deref(),
         input.root_cause.as_deref(),
         input.fix_strategy.as_deref(),
-        &input.changed_files,
+        &effective_changed_files,
         &input.validation_steps,
         &input.validation_results,
         &input.memory_hits_used,
@@ -68,7 +99,7 @@ pub(super) async fn coder_issue_fix_summary_create(
         input.summary.as_deref(),
         input.root_cause.as_deref(),
         input.fix_strategy.as_deref(),
-        &input.changed_files,
+        &effective_changed_files,
         &input.validation_results,
         worker_session.as_ref(),
         validation_session.as_ref(),
@@ -101,10 +132,11 @@ pub(super) async fn coder_issue_fix_summary_create(
                 "summary": summary_text,
                 "root_cause": input.root_cause,
                 "fix_strategy": input.fix_strategy,
-                "changed_files": input.changed_files,
-                "validation_steps": input.validation_steps,
-                "validation_results": input.validation_results,
-                "memory_hits_used": input.memory_hits_used,
+                "changed_files": input.changed_files.clone(),
+                "effective_changed_files": effective_changed_files.clone(),
+                "validation_steps": input.validation_steps.clone(),
+                "validation_results": input.validation_results.clone(),
+                "memory_hits_used": input.memory_hits_used.clone(),
                 "summary_artifact_path": artifact.path,
             }),
         )
@@ -127,10 +159,11 @@ pub(super) async fn coder_issue_fix_summary_create(
                 "summary": summary_text,
                 "root_cause": input.root_cause,
                 "fix_strategy": input.fix_strategy,
-                "changed_files": input.changed_files,
-                "validation_steps": input.validation_steps,
-                "validation_results": input.validation_results,
-                "memory_hits_used": input.memory_hits_used,
+                "changed_files": input.changed_files.clone(),
+                "effective_changed_files": effective_changed_files.clone(),
+                "validation_steps": input.validation_steps.clone(),
+                "validation_results": input.validation_results.clone(),
+                "memory_hits_used": input.memory_hits_used.clone(),
                 "summary_artifact_path": artifact.path,
             }),
         )
@@ -142,6 +175,16 @@ pub(super) async fn coder_issue_fix_summary_create(
         }));
     }
 
+    record.validation_status = Some("completed".to_string());
+    record.handoff_status = Some("awaiting_pr_handoff".to_string());
+    record.completion_gate = Some(json!({
+        "status": "awaiting_approval",
+        "reason": "pr_required",
+        "message": "Issue fix has patch evidence and validation artifacts; PR handoff is required before completion.",
+        "changed_files": effective_changed_files.clone(),
+    }));
+    save_coder_run_record(&state, &record).await?;
+
     let final_run = finalize_coder_workflow_run(
         &state,
         &record,
@@ -152,8 +195,8 @@ pub(super) async fn coder_issue_fix_summary_create(
             "validate_fix",
             "write_fix_artifact",
         ],
-        ContextRunStatus::Completed,
-        "Issue fix summary recorded.",
+        ContextRunStatus::AwaitingApproval,
+        "Issue fix summary recorded; PR handoff is required before completion.",
     )
     .await?;
     record.updated_at_ms = final_run.updated_at_ms;
