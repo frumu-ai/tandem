@@ -30,6 +30,8 @@ behavior by default.
   policy hooks.
 - The engine loop loads the current session tenant before evaluating policy for
   a tool call.
+- Hosted and enterprise runtime auth modes now reject raw tenant/actor headers
+  and fail closed until Tandem signed context assertion verification lands.
 - Fintech strict protected-tool policy now rejects execution when the session
   tenant context does not match the owning Automation V2 run tenant context.
 

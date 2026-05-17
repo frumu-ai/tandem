@@ -7,12 +7,13 @@ use axum::Json;
 
 use tandem_types::{
     HeaderTenantContextResolver, NoopRequestAuthorizationHook, RequestAuthorizationHook,
-    RequestPrincipal, TenantContext, TenantContextResolver,
+    RequestPrincipal, RuntimeAuthMode, TenantContext, TenantContextResolver,
 };
 
 use crate::{AppState, StartupStatus};
 
 use super::ErrorEnvelope;
+use crate::config::env::resolve_runtime_auth_mode;
 
 pub(super) async fn auth_gate(
     State(state): State<AppState>,
@@ -73,7 +74,17 @@ pub(super) async fn auth_gate(
 
 fn attach_enterprise_request_context(request: &mut Request) -> bool {
     let headers = request.headers();
-    let (tenant_context, request_principal) = resolve_enterprise_request_context(headers);
+    let (tenant_context, request_principal) =
+        match resolve_enterprise_request_context_for_mode(headers, resolve_runtime_auth_mode()) {
+            Ok(context) => context,
+            Err(reason) => {
+                tracing::warn!(
+                    "Authorization denied: tenant context ingress rejected - reason={}",
+                    reason.as_str()
+                );
+                return false;
+            }
+        };
 
     if !authorize_request(&request_principal, &tenant_context) {
         tracing::warn!(
@@ -122,6 +133,47 @@ fn authorize_request(principal: &RequestPrincipal, tenant: &TenantContext) -> bo
 }
 
 fn resolve_enterprise_request_context(headers: &HeaderMap) -> (TenantContext, RequestPrincipal) {
+    resolve_local_enterprise_request_context(headers)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TenantContextIngressError {
+    MissingVerifiedContext,
+    UnsignedTenantHeaders,
+    UnsupportedContextAssertion,
+}
+
+impl TenantContextIngressError {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingVerifiedContext => "missing_verified_context",
+            Self::UnsignedTenantHeaders => "unsigned_tenant_headers",
+            Self::UnsupportedContextAssertion => "unsupported_context_assertion",
+        }
+    }
+}
+
+fn resolve_enterprise_request_context_for_mode(
+    headers: &HeaderMap,
+    mode: RuntimeAuthMode,
+) -> Result<(TenantContext, RequestPrincipal), TenantContextIngressError> {
+    match mode {
+        RuntimeAuthMode::LocalSingleTenant => Ok(resolve_local_enterprise_request_context(headers)),
+        RuntimeAuthMode::HostedSingleTenant | RuntimeAuthMode::EnterpriseRequired => {
+            if has_tandem_context_assertion(headers) {
+                return Err(TenantContextIngressError::UnsupportedContextAssertion);
+            }
+            if has_raw_tenant_context_headers(headers) {
+                return Err(TenantContextIngressError::UnsignedTenantHeaders);
+            }
+            Err(TenantContextIngressError::MissingVerifiedContext)
+        }
+    }
+}
+
+fn resolve_local_enterprise_request_context(
+    headers: &HeaderMap,
+) -> (TenantContext, RequestPrincipal) {
     let resolver = HeaderTenantContextResolver;
     let tenant_context = resolver.resolve_tenant_context(
         first_header(headers, &["x-tandem-org-id", "x-tenant-org-id"]).as_deref(),
@@ -135,6 +187,33 @@ fn resolve_enterprise_request_context(headers: &HeaderMap) -> (TenantContext, Re
         source: request_source,
     };
     (tenant_context, request_principal)
+}
+
+fn has_tandem_context_assertion(headers: &HeaderMap) -> bool {
+    first_header(
+        headers,
+        &[
+            "x-tandem-context-assertion",
+            "x-tandem-context-jws",
+            "x-tandem-tenant-context-jws",
+        ],
+    )
+    .is_some()
+}
+
+fn has_raw_tenant_context_headers(headers: &HeaderMap) -> bool {
+    first_header(
+        headers,
+        &[
+            "x-tandem-org-id",
+            "x-tenant-org-id",
+            "x-tandem-workspace-id",
+            "x-tenant-workspace-id",
+            "x-tandem-actor-id",
+            "x-user-id",
+        ],
+    )
+    .is_some()
 }
 
 fn first_header(headers: &HeaderMap, names: &[&str]) -> Option<String> {
@@ -223,6 +302,69 @@ mod tests {
         );
         let (_, principal) = resolve_enterprise_request_context(&headers);
         assert_eq!(principal.source, "control_panel");
+    }
+
+    #[test]
+    fn hosted_mode_rejects_unsigned_tenant_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));
+        headers.insert("x-tandem-workspace-id", HeaderValue::from_static("north"));
+
+        let err = resolve_enterprise_request_context_for_mode(
+            &headers,
+            RuntimeAuthMode::HostedSingleTenant,
+        )
+        .expect_err("hosted mode must not trust raw tenant headers");
+
+        assert_eq!(err, TenantContextIngressError::UnsignedTenantHeaders);
+    }
+
+    #[test]
+    fn hosted_mode_requires_verified_context_even_without_raw_headers() {
+        let headers = HeaderMap::new();
+
+        let err = resolve_enterprise_request_context_for_mode(
+            &headers,
+            RuntimeAuthMode::HostedSingleTenant,
+        )
+        .expect_err("hosted mode requires signed context");
+
+        assert_eq!(err, TenantContextIngressError::MissingVerifiedContext);
+    }
+
+    #[test]
+    fn hosted_mode_rejects_context_assertion_until_verifier_exists() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-tandem-context-jws",
+            HeaderValue::from_static("placeholder.assertion.signature"),
+        );
+
+        let err = resolve_enterprise_request_context_for_mode(
+            &headers,
+            RuntimeAuthMode::HostedSingleTenant,
+        )
+        .expect_err("hosted mode must fail closed until assertion verification lands");
+
+        assert_eq!(err, TenantContextIngressError::UnsupportedContextAssertion);
+    }
+
+    #[test]
+    fn local_mode_continues_to_accept_tenant_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));
+        headers.insert("x-tandem-workspace-id", HeaderValue::from_static("north"));
+        headers.insert("x-user-id", HeaderValue::from_static("user-1"));
+
+        let (tenant_context, principal) = resolve_enterprise_request_context_for_mode(
+            &headers,
+            RuntimeAuthMode::LocalSingleTenant,
+        )
+        .expect("local mode keeps legacy header behavior");
+
+        assert_eq!(tenant_context.org_id, "acme");
+        assert_eq!(tenant_context.workspace_id, "north");
+        assert_eq!(principal.actor_id.as_deref(), Some("user-1"));
     }
 }
 

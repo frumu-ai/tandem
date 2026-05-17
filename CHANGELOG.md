@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Tool policy context now carries tenant context**: Runtime tool policy hooks now receive the session's tenant context when evaluating tool calls, giving protected execution paths the tenant/actor scope needed for future enterprise authorization and approval-receipt verification.
+- **Hosted/enterprise ingress fail-closed scaffold**: `hosted_single_tenant` and `enterprise_required` runtime auth modes now reject raw tenant/actor headers and fail closed until Tandem signed context assertion verification is implemented, preventing operators from accidentally trusting spoofable hosted identity headers.
 - **Fintech strict tenant mismatch guard**: Fintech strict protected-tool policy now rejects calls when the session tenant context does not match the owning Automation V2 run tenant context.
 - **Version bump**: Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles move to `0.5.8`.
 
