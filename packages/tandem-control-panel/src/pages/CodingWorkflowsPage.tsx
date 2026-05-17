@@ -22,6 +22,7 @@ import {
   formatStatus,
   githubBoardItemCanRun,
   githubBoardItemIdentity,
+  githubBoardItemLaunchLabel,
   isSafeManagedPath,
   normalizeGithubBoard,
   normalizeProjects,
@@ -351,6 +352,15 @@ export function CodingWorkflowsPage({
       ),
     [actionableGithubItems, activeGithubItemIdentities, launchingGithubItemIdSet]
   );
+  const githubScheduler = githubBoard.scheduler || {};
+  const githubSchedulerActivePhase =
+    githubScheduler?.active_phase ?? githubScheduler?.activePhase ?? null;
+  const githubSchedulerNextIssues = Array.isArray(githubScheduler?.next_issue_numbers)
+    ? githubScheduler.next_issue_numbers
+    : Array.isArray(githubScheduler?.nextIssueNumbers)
+      ? githubScheduler.nextIssueNumbers
+      : [];
+  const githubSchedulerPolicy = String(githubScheduler?.policy || "").trim();
   const githubBoardColumns = useMemo(() => {
     const normalizeStatus = (value: unknown) =>
       String(value || "")
@@ -1069,8 +1079,35 @@ export function CodingWorkflowsPage({
                     </div>
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-3">
                       <div className="tcp-subtle text-xs">
-                        Start ACA runs directly from GitHub Project intake. ACA schedules the next
-                        unblocked child task by phase and dependency order.
+                        ACA runs only scheduler-approved child issues. It works through the lowest
+                        open phase first, then advances to later phases when earlier work is no
+                        longer pending. Parent cards organize the plan and are not launched.
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <Badge tone="info">
+                          Current phase{" "}
+                          {githubSchedulerActivePhase === null ||
+                          githubSchedulerActivePhase === undefined
+                            ? "unknown"
+                            : Number(githubSchedulerActivePhase) === 99
+                              ? "Gate"
+                              : `Phase ${String(githubSchedulerActivePhase)}`}
+                        </Badge>
+                        <Badge tone={launchableGithubItems.length ? "ok" : "ghost"}>
+                          Runnable now {launchableGithubItems.length}
+                        </Badge>
+                        <Badge tone={githubSchedulerNextIssues.length ? "ok" : "ghost"}>
+                          Next{" "}
+                          {githubSchedulerNextIssues.length
+                            ? githubSchedulerNextIssues
+                                .slice(0, 4)
+                                .map((value: any) => `#${String(value)}`)
+                                .join(", ")
+                            : "none"}
+                        </Badge>
+                        {githubSchedulerPolicy ? (
+                          <Badge tone="ghost">{formatStatus(githubSchedulerPolicy)}</Badge>
+                        ) : null}
                       </div>
                       <div className="min-w-[320px] flex-1">
                         {renderAcaModelSelector(batchTriggering)}
@@ -1084,7 +1121,7 @@ export function CodingWorkflowsPage({
                         >
                           {batchTriggering
                             ? "Starting..."
-                            : `Run next${launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}`}
+                            : `Run scheduler next${launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}`}
                         </button>
                         <button
                           type="button"
@@ -1092,7 +1129,7 @@ export function CodingWorkflowsPage({
                           onClick={selectAllActionableGithubItems}
                           disabled={!launchableGithubItems.length || batchTriggering}
                         >
-                          Select next
+                          Select scheduler next
                           {launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}
                         </button>
                         <button
@@ -1141,6 +1178,7 @@ export function CodingWorkflowsPage({
                                 {column.items.length ? (
                                   column.items.map((item: any) => {
                                     const itemCanRun = githubBoardItemCanRun(item);
+                                    const launchLabel = githubBoardItemLaunchLabel(item);
                                     const itemId = String(item.id || "");
                                     const title = String(item.title || "Untitled item");
                                     const lowerTitle = title.toLowerCase();
@@ -1152,6 +1190,7 @@ export function CodingWorkflowsPage({
                                       itemIsRunning || itemIsLaunching || batchTriggering;
                                     const selected = selectedGithubItemIds.includes(itemId);
                                     const isParent =
+                                      item?.isParent === true ||
                                       lowerTitle.includes("[aca slice parent]") ||
                                       lowerTitle.includes("slice parent");
                                     const isDraft = !item.issueNumber && !item.issueUrl;
@@ -1235,7 +1274,7 @@ export function CodingWorkflowsPage({
                                             disabled={!itemCanRun || itemIsLaunchLocked}
                                           >
                                             {!itemCanRun
-                                              ? "Not launchable"
+                                              ? launchLabel
                                               : itemIsRunning
                                                 ? "Already running"
                                                 : itemIsLaunching

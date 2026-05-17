@@ -289,6 +289,16 @@ export function githubBoardItemCanRun(item: any) {
   return item?.actionable === true;
 }
 
+export function githubBoardItemLaunchLabel(item: any) {
+  if (githubBoardItemCanRun(item)) return "Run task";
+  if (!item?.selector) return "Missing GitHub issue";
+  if (item?.isParent === true) return "Parent plan";
+  const launchState = String(item?.launchState || "").trim();
+  if (launchState) return formatStatus(launchState);
+  if (Number(item?.phase) === 99) return "Gate";
+  return "Waiting for scheduler";
+}
+
 export function resolveGithubProjectLaunchStatus(snapshot: any | null) {
   const statusFieldId = Number(snapshot?.status_field_id || snapshot?.statusFieldId || 0);
   const optionMap = snapshot?.status_option_map || snapshot?.statusOptionMap || {};
