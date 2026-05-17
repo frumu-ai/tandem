@@ -1916,8 +1916,12 @@ async fn seed_issue_triage_tasks(
             max_attempts: Some(1),
         },
     ];
+    let tenant_context = load_context_run_state(&state, &run_id)
+        .await?
+        .tenant_context;
     context_run_tasks_create(
         State(state),
+        Extension(tenant_context),
         Path(run_id),
         Json(ContextTaskCreateBatchInput { tasks }),
     )

@@ -100,19 +100,18 @@ async fn context_run_create_append_event_and_get() {
         Some("north")
     );
 
-    let event_req = Request::builder()
-        .method("POST")
-        .uri("/context/runs/ctx-run-1/events")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
+    let event_req = tenant_request(
+        "POST",
+        "/context/runs/ctx-run-1/events",
+        "acme",
+        "north",
+        "user-1",
+        Some(json!({
                 "type": "planning_started",
                 "status": "planning",
                 "payload": {"k":"v"}
-            })
-            .to_string(),
-        ))
-        .expect("event request");
+        })),
+    );
     let event_resp = app
         .clone()
         .oneshot(event_req)
@@ -120,12 +119,13 @@ async fn context_run_create_append_event_and_get() {
         .expect("event response");
     assert_eq!(event_resp.status(), StatusCode::OK);
 
-    let ledger_event_req = Request::builder()
-        .method("POST")
-        .uri("/context/runs/ctx-run-1/events")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
+    let ledger_event_req = tenant_request(
+        "POST",
+        "/context/runs/ctx-run-1/events",
+        "acme",
+        "north",
+        "user-1",
+        Some(json!({
                 "type": "tool_effect_recorded",
                 "status": "running",
                 "payload": {
@@ -138,10 +138,8 @@ async fn context_run_create_append_event_and_get() {
                         "args_summary": {"type":"object","field_count":1,"keys":["path"]},
                     }
                 }
-            })
-            .to_string(),
-        ))
-        .expect("ledger event request");
+        })),
+    );
     let ledger_event_resp = app
         .clone()
         .oneshot(ledger_event_req)
@@ -149,12 +147,13 @@ async fn context_run_create_append_event_and_get() {
         .expect("ledger event response");
     assert_eq!(ledger_event_resp.status(), StatusCode::OK);
 
-    let mutation_event_req = Request::builder()
-        .method("POST")
-        .uri("/context/runs/ctx-run-1/events")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
+    let mutation_event_req = tenant_request(
+        "POST",
+        "/context/runs/ctx-run-1/events",
+        "acme",
+        "north",
+        "user-1",
+        Some(json!({
                 "type": "mutation_checkpoint_recorded",
                 "status": "running",
                 "payload": {
@@ -177,10 +176,8 @@ async fn context_run_create_append_event_and_get() {
                         }]
                     }
                 }
-            })
-            .to_string(),
-        ))
-        .expect("mutation event request");
+        })),
+    );
     let mutation_event_resp = app
         .clone()
         .oneshot(mutation_event_req)
@@ -188,22 +185,21 @@ async fn context_run_create_append_event_and_get() {
         .expect("mutation event response");
     assert_eq!(mutation_event_resp.status(), StatusCode::OK);
 
-    let rollback_blocked_event_req = Request::builder()
-        .method("POST")
-        .uri("/context/runs/ctx-run-1/events")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
+    let rollback_blocked_event_req = tenant_request(
+        "POST",
+        "/context/runs/ctx-run-1/events",
+        "acme",
+        "north",
+        "user-1",
+        Some(json!({
                 "type": "rollback_execution_blocked",
                 "status": "running",
                 "payload": {
                     "reason": "rollback execution is not allowed for the current run status",
                     "selected_event_ids": ["evt-1"]
                 }
-            })
-            .to_string(),
-        ))
-        .expect("rollback blocked event request");
+        })),
+    );
     let rollback_blocked_event_resp = app
         .clone()
         .oneshot(rollback_blocked_event_req)
@@ -211,11 +207,14 @@ async fn context_run_create_append_event_and_get() {
         .expect("rollback blocked event response");
     assert_eq!(rollback_blocked_event_resp.status(), StatusCode::OK);
 
-    let list_events_req = Request::builder()
-        .method("GET")
-        .uri("/context/runs/ctx-run-1/events?since_seq=0")
-        .body(Body::empty())
-        .expect("list events request");
+    let list_events_req = tenant_request(
+        "GET",
+        "/context/runs/ctx-run-1/events?since_seq=0",
+        "acme",
+        "north",
+        "user-1",
+        None,
+    );
     let list_events_resp = app
         .clone()
         .oneshot(list_events_req)
@@ -481,6 +480,172 @@ async fn tenant_a_cannot_access_tenant_b_context_run_front_door_routes() {
         .await
         .expect("tenant b still get response");
     assert_eq!(tenant_b_still_get_resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn tenant_a_cannot_access_tenant_b_context_run_internal_routes() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/context/runs",
+            "org-b",
+            "workspace-b",
+            "user-b",
+            Some(json!({
+                "run_id": "ctx-tenant-b-internal",
+                "objective": "tenant b internal route coverage"
+            })),
+        ))
+        .await
+        .expect("context run create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let append_event_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/events",
+            "org-b",
+            "workspace-b",
+            "user-b",
+            Some(json!({
+                "type": "tool_effect_recorded",
+                "status": "running",
+                "payload": {
+                    "tool_effect": {
+                        "tool_name": "read",
+                        "effect": "read",
+                        "status": "ok"
+                    }
+                }
+            })),
+        ))
+        .await
+        .expect("append event response");
+    assert_eq!(append_event_resp.status(), StatusCode::OK);
+
+    let task_create_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/tasks",
+            "org-b",
+            "workspace-b",
+            "user-b",
+            Some(json!({
+                "tasks": [{
+                    "id": "task-b",
+                    "task_type": "manual",
+                    "payload": {"title": "tenant b task"},
+                    "status": "runnable"
+                }]
+            })),
+        ))
+        .await
+        .expect("task create response");
+    assert_eq!(task_create_resp.status(), StatusCode::OK);
+
+    let checkpoint_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/checkpoints",
+            "org-b",
+            "workspace-b",
+            "user-b",
+            Some(json!({"reason": "tenant b checkpoint"})),
+        ))
+        .await
+        .expect("checkpoint response");
+    assert_eq!(checkpoint_resp.status(), StatusCode::OK);
+
+    for (method, uri, body) in [
+        ("GET", "/context/runs/ctx-tenant-b-internal/events", None),
+        (
+            "GET",
+            "/context/runs/ctx-tenant-b-internal/events/stream",
+            None,
+        ),
+        (
+            "GET",
+            "/context/runs/ctx-tenant-b-internal/blackboard",
+            None,
+        ),
+        (
+            "GET",
+            "/context/runs/ctx-tenant-b-internal/blackboard/patches",
+            None,
+        ),
+        (
+            "GET",
+            "/context/runs/ctx-tenant-b-internal/checkpoints/latest",
+            None,
+        ),
+        ("GET", "/context/runs/ctx-tenant-b-internal/replay", None),
+        ("GET", "/context/runs/ctx-tenant-b-internal/ledger", None),
+        (
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/events",
+            Some(json!({
+                "type": "planning_started",
+                "status": "planning",
+                "payload": {}
+            })),
+        ),
+        (
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/blackboard/patches",
+            Some(json!({
+                "op": "add_fact",
+                "payload": {"text": "tenant a should not write this"}
+            })),
+        ),
+        (
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/tasks",
+            Some(json!({
+                "tasks": [{
+                    "id": "task-cross",
+                    "task_type": "manual",
+                    "payload": {},
+                    "status": "pending"
+                }]
+            })),
+        ),
+        (
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/tasks/claim",
+            Some(json!({"agent_id": "tenant-a-agent"})),
+        ),
+        (
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/tasks/task-b/transition",
+            Some(json!({"action": "start", "agent_id": "tenant-a-agent"})),
+        ),
+        (
+            "POST",
+            "/context/runs/ctx-tenant-b-internal/checkpoints",
+            Some(json!({"reason": "cross tenant checkpoint"})),
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(tenant_request(
+                method,
+                uri,
+                "org-a",
+                "workspace-a",
+                "user-a",
+                body,
+            ))
+            .await
+            .expect("cross-tenant internal response");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
 }
 
 #[tokio::test]

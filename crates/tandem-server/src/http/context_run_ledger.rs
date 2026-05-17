@@ -16,9 +16,12 @@ struct ContextRunLedgerEventView {
 
 pub(super) async fn context_run_ledger(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Query(query): Query<super::RunEventsQuery>,
 ) -> Result<Json<Value>, StatusCode> {
+    let run = super::context_runs::load_context_run_state(&state, &run_id).await?;
+    super::ensure_same_tenant(&tenant_context, &run.tenant_context)?;
     let events =
         load_context_run_ledger_source_events(&state, &run_id, query.since_seq, query.tail);
     let records = context_run_ledger_records(&events);

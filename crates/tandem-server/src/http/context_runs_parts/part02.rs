@@ -186,9 +186,12 @@ pub(super) fn apply_context_event_transition(
 
 pub(super) async fn context_run_event_append(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Json(input): Json<ContextRunEventAppendInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     if input.event_type.trim().starts_with("context.task.") {
         return Ok(Json(json!({
             "ok": false,
@@ -215,9 +218,12 @@ pub(crate) async fn append_context_run_event(
 
 pub(super) async fn context_run_events(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Query(query): Query<super::RunEventsQuery>,
 ) -> Result<Json<Value>, StatusCode> {
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     let rows = load_context_run_events_jsonl(
         &context_run_events_path(&state, &run_id),
         query.since_seq,
@@ -283,11 +289,16 @@ pub(super) fn context_run_events_sse_stream(
 
 pub(super) async fn context_run_events_stream(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Query(query): Query<super::RunEventsQuery>,
-) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    Sse::new(context_run_events_sse_stream(state, run_id, query))
-        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)))
+) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, StatusCode> {
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
+    Ok(
+        Sse::new(context_run_events_sse_stream(state, run_id, query))
+            .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10))),
+    )
 }
 
 pub(super) fn context_runs_events_multiplex_sse_stream(
@@ -407,6 +418,7 @@ pub(super) fn context_runs_events_multiplex_sse_stream(
 
 pub(super) async fn context_runs_events_stream(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<ContextRunsEventsStreamQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, StatusCode> {
     let workspace = query
@@ -419,6 +431,7 @@ pub(super) async fn context_runs_events_stream(
         list_context_runs_for_workspace(&state, &workspace, 1000)
             .await?
             .into_iter()
+            .filter(|run| super::tenant_matches(&tenant_context, &run.tenant_context))
             .map(|run| run.run_id)
             .collect::<Vec<_>>()
     } else {
@@ -430,6 +443,7 @@ pub(super) async fn context_runs_events_stream(
             if run.workspace.canonical_path.trim() != workspace {
                 return Err(StatusCode::BAD_REQUEST);
             }
+            ensure_context_run_tenant(&tenant_context, &run)?;
             accepted.push(run_id);
         }
         accepted.sort();
@@ -514,8 +528,11 @@ pub(super) async fn context_run_lease_validate(
 
 pub(super) async fn context_run_blackboard_get(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     let blackboard = load_projected_context_blackboard(&state, &run_id);
     Ok(Json(json!({ "blackboard": blackboard })))
 }
@@ -535,18 +552,24 @@ pub(super) fn context_run_events_have_command_id(
 
 pub(super) async fn context_run_blackboard_patches_get(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Query(query): Query<ContextBlackboardPatchesQuery>,
 ) -> Result<Json<Value>, StatusCode> {
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     let patches = load_context_blackboard_patches(&state, &run_id, query.since_seq, query.tail);
     Ok(Json(json!({ "patches": patches })))
 }
 
 pub(super) async fn context_run_blackboard_patch(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Json(input): Json<ContextBlackboardPatchInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     if matches!(
         input.op,
         ContextBlackboardPatchOp::AddTask
@@ -571,19 +594,18 @@ pub(super) async fn context_run_blackboard_patch(
 
 pub(super) async fn context_run_tasks_create(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Json(input): Json<ContextTaskCreateBatchInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let lock = context_run_lock_for(&run_id).await;
     let _guard = lock.lock().await;
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     if input.tasks.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let run_status = load_context_run_state(&state, &run_id)
-        .await
-        .ok()
-        .map(|run| run.status)
-        .unwrap_or(ContextRunStatus::Planning);
+    let run_status = run.status;
     let mut created = Vec::<ContextBlackboardTask>::new();
     let mut patches = Vec::<ContextBlackboardPatchRecord>::new();
 
@@ -692,9 +714,12 @@ pub(super) async fn context_run_tasks_create(
 
 pub(super) async fn context_run_tasks_claim(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Json(input): Json<ContextTaskClaimInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     let task = claim_next_context_task(
         &state,
         &run_id,
@@ -887,11 +912,14 @@ pub(super) async fn requeue_context_task_by_id(
 
 pub(super) async fn context_run_task_transition(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path((run_id, task_id)): Path<(String, String)>,
     Json(input): Json<ContextTaskTransitionInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let lock = context_run_lock_for(&run_id).await;
     let _guard = lock.lock().await;
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     let command_id = input.command_id.clone();
     if let Some(command_id) = command_id.as_deref() {
         if context_run_events_have_command_id(&state, &run_id, command_id) {
@@ -910,12 +938,7 @@ pub(super) async fn context_run_task_transition(
             })));
         }
     }
-    let run_status = load_context_run_state(&state, &run_id)
-        .await
-        .ok()
-        .map(|run| run.status)
-        .unwrap_or(ContextRunStatus::Running);
-    let run = load_context_run_state(&state, &run_id).await?;
+    let run_status = run.status.clone();
     let Some(current) = run.tasks.iter().find(|row| row.id == task_id).cloned() else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -1236,10 +1259,12 @@ pub(super) async fn context_run_task_transition(
 
 pub(super) async fn context_run_checkpoint_create(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Json(input): Json<ContextCheckpointCreateInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let run_state = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run_state)?;
     let blackboard = load_projected_context_blackboard(&state, &run_id);
     let events_path = context_run_events_path(&state, &run_id);
     let seq = latest_context_run_event_seq(&events_path);
@@ -1263,8 +1288,11 @@ pub(super) async fn context_run_checkpoint_create(
 
 pub(super) async fn context_run_checkpoint_latest(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    let run = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &run)?;
     let dir = context_run_checkpoints_dir(&state, &run_id);
     if !dir.exists() {
         return Ok(Json(json!({ "checkpoint": null })));
@@ -1488,10 +1516,12 @@ pub(super) fn context_blackboard_replay_materialize(
 
 pub(super) async fn context_run_replay(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Query(query): Query<ContextRunReplayQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let persisted = load_context_run_state(&state, &run_id).await?;
+    ensure_context_run_tenant(&tenant_context, &persisted)?;
     let from_checkpoint = query.from_checkpoint.unwrap_or(true);
     let checkpoint = if from_checkpoint {
         latest_context_checkpoint_record(&state, &run_id)

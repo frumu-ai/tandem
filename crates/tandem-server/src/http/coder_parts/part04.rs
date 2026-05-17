@@ -91,8 +91,12 @@ async fn seed_pr_review_tasks(
             max_attempts: Some(2),
         },
     ];
+    let tenant_context = load_context_run_state(&state, &run_id)
+        .await?
+        .tenant_context;
     context_run_tasks_create(
         State(state),
+        Extension(tenant_context),
         Path(run_id),
         Json(ContextTaskCreateBatchInput { tasks }),
     )
@@ -219,8 +223,12 @@ async fn seed_issue_fix_tasks(
             max_attempts: Some(2),
         },
     ];
+    let tenant_context = load_context_run_state(&state, &run_id)
+        .await?
+        .tenant_context;
     context_run_tasks_create(
         State(state),
+        Extension(tenant_context),
         Path(run_id),
         Json(ContextTaskCreateBatchInput { tasks }),
     )
@@ -321,8 +329,12 @@ async fn seed_merge_recommendation_tasks(
             max_attempts: Some(2),
         },
     ];
+    let tenant_context = load_context_run_state(&state, &run_id)
+        .await?
+        .tenant_context;
     context_run_tasks_create(
         State(state),
+        Extension(tenant_context),
         Path(run_id),
         Json(ContextTaskCreateBatchInput { tasks }),
     )

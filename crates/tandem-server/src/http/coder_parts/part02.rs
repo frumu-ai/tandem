@@ -1,4 +1,3 @@
-
 fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> std::cmp::Ordering {
     let a_same_ref = a.get("same_ref").and_then(Value::as_bool).unwrap_or(false);
     let b_same_ref = b.get("same_ref").and_then(Value::as_bool).unwrap_or(false);
@@ -1228,8 +1227,10 @@ async fn complete_claimed_coder_task(
         .lease_token
         .clone()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let tenant_context = load_context_run_state(state, &run_id).await?.tenant_context;
     let response = context_run_task_transition(
         State(state.clone()),
+        Extension(tenant_context),
         Path((run_id, task.id.clone())),
         Json(ContextTaskTransitionInput {
             action: "complete".to_string(),
@@ -1265,8 +1266,10 @@ async fn fail_claimed_coder_task(
         .lease_token
         .clone()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let tenant_context = load_context_run_state(state, &run_id).await?.tenant_context;
     let response = context_run_task_transition(
         State(state.clone()),
+        Extension(tenant_context),
         Path((run_id, task.id.clone())),
         Json(ContextTaskTransitionInput {
             action: "fail".to_string(),
