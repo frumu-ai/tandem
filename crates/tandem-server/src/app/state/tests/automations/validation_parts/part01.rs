@@ -1547,15 +1547,13 @@ fn analyze_findings_retry_without_artifact_or_required_workspace_file_surfaces_d
     assert!(accepted_output.is_none());
     assert_eq!(
         rejected.as_deref(),
-        Some(
-            "required output `.tandem/runs/run-analyze-findings/artifacts/analyze-findings.json` was not created in the current attempt"
-        )
+        Some("structured handoff was not returned in the final response")
     );
     assert_eq!(
         artifact_validation
             .get("semantic_block_reason")
             .and_then(Value::as_str),
-        Some("required output was not created in the current attempt")
+        Some("structured handoff was not returned in the final response")
     );
     assert!(artifact_validation
         .get("unmet_requirements")

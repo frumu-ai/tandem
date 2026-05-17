@@ -224,7 +224,10 @@ impl RemoteEngineExecutor {
         extract_eval_result(case, &final_run, started.elapsed())
     }
 
-    async fn submit_spec(&self, spec: &crate::automation_v2::types::AutomationV2Spec) -> Result<AutomationV2RunRecord, String> {
+    async fn submit_spec(
+        &self,
+        spec: &crate::automation_v2::types::AutomationV2Spec,
+    ) -> Result<AutomationV2RunRecord, String> {
         let url = format!("{}/api/automations/v2/runs/submit", self.engine_url);
 
         let response = self
@@ -237,7 +240,11 @@ impl RemoteEngineExecutor {
             .map_err(|e| format!("HTTP request failed: {}", e))?;
 
         if !response.status().is_success() {
-            return Err(format!("HTTP {}: {}", response.status(), response.text().await.unwrap_or_default()));
+            return Err(format!(
+                "HTTP {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            ));
         }
 
         response
@@ -290,7 +297,11 @@ impl RemoteEngineExecutor {
                 Ok(Some(run))
             }
             reqwest::StatusCode::NOT_FOUND => Ok(None),
-            status => Err(format!("HTTP {}: {}", status, response.text().await.unwrap_or_default())),
+            status => Err(format!(
+                "HTTP {}: {}",
+                status,
+                response.text().await.unwrap_or_default()
+            )),
         }
     }
 }

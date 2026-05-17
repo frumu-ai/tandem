@@ -81,13 +81,11 @@ export function CodingWorkflowsPage({
   const [selectedGithubItemIds, setSelectedGithubItemIds] = useState<string[]>([]);
   const [launchingGithubItemIds, setLaunchingGithubItemIds] = useState<Record<string, number>>({});
   const [batchTriggering, setBatchTriggering] = useState(false);
-
   const caps = useCapabilities();
   const acaAvailable = caps.data?.aca_integration === true;
   const engineAvailable = caps.data?.engine_healthy === true;
   const hostedManaged = caps.data?.hosted_managed === true;
   const integrationsEnabled = acaAvailable || engineAvailable;
-
   const health = useQuery({
     queryKey: ["coding-workflows", "health"],
     queryFn: () => api("/api/system/health"),
@@ -195,7 +193,6 @@ export function CodingWorkflowsPage({
     refetchInterval: integrationsEnabled ? 30000 : false,
     enabled: integrationsEnabled,
   });
-
   const mcpServers = useMemo(() => normalizeServers(mcpServersQuery.data), [mcpServersQuery.data]);
   const mcpTools = useMemo(() => normalizeTools(mcpToolsQuery.data), [mcpToolsQuery.data]);
   const projects = useMemo(() => normalizeProjects(projectsQuery.data), [projectsQuery.data]);
@@ -224,7 +221,6 @@ export function CodingWorkflowsPage({
     providersConfigQuery.data,
   ]);
   const newRepoRef = useMemo(() => parseGithubRepoRef(newRepoUrl), [newRepoUrl]);
-
   useEffect(() => {
     if (!projects.length) return;
     if (
@@ -234,17 +230,14 @@ export function CodingWorkflowsPage({
       setSelectedProjectSlug(projects[0].slug);
     }
   }, [projects, selectedProjectSlug]);
-
   const filteredRuns = useMemo(() => {
     if (!selectedProjectSlug) return runs;
     return runs.filter(
       (run: any) => String(run?.project_slug || "").trim() === selectedProjectSlug
     );
   }, [runs, selectedProjectSlug]);
-
   const visibleRuns = useMemo(() => dedupeRuns(filteredRuns), [filteredRuns]);
   const activeRuns = useMemo(() => visibleRuns.filter(runIsActive), [visibleRuns]);
-
   useEffect(() => {
     if (!visibleRuns.length) {
       setSelectedRunId("");
@@ -263,9 +256,7 @@ export function CodingWorkflowsPage({
       setSelectedRunId(runId(visibleRuns[0], 0));
     }
   }, [activeRuns, selectedRunId, visibleRuns]);
-
   const logRows = useMemo(() => toArray(runLogsQuery.data, "logs"), [runLogsQuery.data]);
-
   useEffect(() => {
     if (!logRows.length) {
       setSelectedLogName("");
@@ -278,7 +269,6 @@ export function CodingWorkflowsPage({
       setSelectedLogName(String(logRows[0]?.name || ""));
     }
   }, [logRows, selectedLogName]);
-
   const healthy = !!(health.data?.engine?.ready || health.data?.engine?.healthy);
   const githubConnected = mcpServers.some((server) => server.name.toLowerCase().includes("github"));
   const selectedProject =
@@ -451,11 +441,9 @@ export function CodingWorkflowsPage({
   const runDiffStat = String(
     runDetailQuery.data?.diff?.after || runDetailQuery.data?.snapshot?.diff?.after || ""
   ).trim();
-
   useEffect(() => {
     setLastRunEvent("");
   }, [selectedRunId]);
-
   useEffect(() => {
     if (!acaAvailable) return;
     const unsubscribe = subscribeSse("/api/aca/events", (event: MessageEvent) => {
@@ -486,7 +474,6 @@ export function CodingWorkflowsPage({
     });
     return () => unsubscribe();
   }, [acaAvailable, queryClient, selectedProjectSlug, selectedRunId]);
-
   useEffect(() => {
     if (!acaAvailable || !selectedRunId || !selectedRun?.is_running) return;
     const url = `/api/aca/runs/${encodeURIComponent(selectedRunId)}/events`;
@@ -513,27 +500,22 @@ export function CodingWorkflowsPage({
     });
     return () => unsubscribe();
   }, [acaAvailable, queryClient, selectedLogName, selectedRun?.is_running, selectedRunId]);
-
   useEffect(() => {
     if (projectTasksQuery.data) {
       setTaskPreviewRefreshAt(Date.now());
     }
   }, [projectTasksQuery.data]);
-
   useEffect(() => {
     if (projectBoardQuery.data) {
       setGithubBoardRefreshAt(Number(projectBoardQuery.data?.last_synced_at_ms || Date.now()));
     }
   }, [projectBoardQuery.data]);
-
   useEffect(() => {
     setSelectedGithubItemIds([]);
   }, [selectedProjectSlug]);
-
   useEffect(() => {
     setLaunchingGithubItemIds({});
   }, [selectedProjectSlug]);
-
   useEffect(() => {
     const pendingEntries = Object.entries(launchingGithubItemIds);
     if (!pendingEntries.length) return;
@@ -553,7 +535,6 @@ export function CodingWorkflowsPage({
       timers.forEach((timer) => window.clearTimeout(timer));
     };
   }, [launchingGithubItemIds]);
-
   useEffect(() => {
     if (!Object.keys(launchingGithubItemIds).length || !githubBoard.items.length) return;
     setLaunchingGithubItemIds((current) => {
@@ -570,12 +551,10 @@ export function CodingWorkflowsPage({
       return changed ? next : current;
     });
   }, [activeGithubItemIdentities, githubBoard.items, launchingGithubItemIds]);
-
   useEffect(() => {
     const validIds = new Set(githubBoard.items.map((item: any) => String(item.id || "")));
     setSelectedGithubItemIds((current) => current.filter((id) => validIds.has(id)));
   }, [githubBoard.items]);
-
   const tabs: Array<{ id: CodingTab; label: string; icon: string }> = [
     { id: "overview", label: "Overview", icon: "layout-dashboard" },
     { id: "board", label: "Intake", icon: "list-checks" },
@@ -583,7 +562,6 @@ export function CodingWorkflowsPage({
     { id: "manual", label: "Manual tasks", icon: "code" },
     { id: "integrations", label: "Integrations", icon: "plug-zap" },
   ];
-
   async function reconcileCoderRun(runId: string) {
     const id = String(runId || "").trim();
     if (!id) return;
@@ -598,7 +576,6 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
-
   async function cancelCoderRun(runId: string) {
     const id = String(runId || "").trim();
     if (!id) return;
@@ -615,7 +592,6 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
-
   async function registerProject() {
     const repoRef = parseGithubRepoRef(newRepoUrl);
     const slug =
@@ -663,7 +639,6 @@ export function CodingWorkflowsPage({
       toast("warn", "GitHub Project task sources require a repo URL and project number.");
       return;
     }
-
     setRegistering(true);
     try {
       const params = new URLSearchParams({ slug });
@@ -698,7 +673,6 @@ export function CodingWorkflowsPage({
       setRegistering(false);
     }
   }
-
   async function triggerRun() {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before triggering a run.");
@@ -707,7 +681,6 @@ export function CodingWorkflowsPage({
     const overrides: Record<string, string> = {};
     if (overrideProvider.trim()) overrides.ACA_PROVIDER = overrideProvider.trim();
     if (overrideModel.trim()) overrides.ACA_MODEL = overrideModel.trim();
-
     setTriggering(true);
     try {
       const params = new URLSearchParams({ project_slug: selectedProjectSlug });
@@ -731,21 +704,17 @@ export function CodingWorkflowsPage({
       setTriggering(false);
     }
   }
-
   function toggleGithubItemSelection(itemId: string) {
     setSelectedGithubItemIds((current) =>
       current.includes(itemId) ? current.filter((value) => value !== itemId) : [...current, itemId]
     );
   }
-
   function selectAllActionableGithubItems() {
     setSelectedGithubItemIds(launchableGithubItems.map((item: any) => String(item.id || "")));
   }
-
   function clearGithubSelection() {
     setSelectedGithubItemIds([]);
   }
-
   async function triggerGithubItems(items: any[]) {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before starting ACA runs.");
@@ -770,7 +739,6 @@ export function CodingWorkflowsPage({
     const overrides: Record<string, string> = {};
     if (overrideProvider.trim()) overrides.ACA_PROVIDER = overrideProvider.trim();
     if (overrideModel.trim()) overrides.ACA_MODEL = overrideModel.trim();
-
     setLaunchingGithubItemIds((current) => {
       const next = { ...current };
       const launchedAt = Date.now();
@@ -826,7 +794,6 @@ export function CodingWorkflowsPage({
       setBatchTriggering(false);
     }
   }
-
   function inspectAcaRun(runRef: { run: any; id: string } | null | undefined) {
     const id = String(runRef?.id || "").trim();
     if (!id) return;
@@ -840,7 +807,6 @@ export function CodingWorkflowsPage({
       });
     }, 0);
   }
-
   async function refreshTaskPreview() {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before refreshing GitHub intake.");
@@ -854,7 +820,6 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
-
   async function refreshGithubBoard() {
     if (!selectedProjectSlug) {
       toast("warn", "Select a GitHub-backed project before refreshing the board.");
@@ -874,7 +839,6 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
-
   async function syncSelectedRepo() {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before syncing its repository.");
@@ -902,7 +866,6 @@ export function CodingWorkflowsPage({
       setRepoSyncing(false);
     }
   }
-
   if (!acaAvailable) {
     return (
       <AnimatedPage className="grid gap-4">
@@ -937,7 +900,6 @@ export function CodingWorkflowsPage({
       </AnimatedPage>
     );
   }
-
   return (
     <AnimatedPage className="grid gap-4">
       <PanelCard className="overflow-hidden">
@@ -1017,7 +979,6 @@ export function CodingWorkflowsPage({
           </div>
         </div>
       </PanelCard>
-
       <div className="tcp-settings-tabs">
         {tabs.map((item) => (
           <button
@@ -1031,7 +992,6 @@ export function CodingWorkflowsPage({
           </button>
         ))}
       </div>
-
       {tab === "overview" ? (
         <CodingWorkflowsOverviewTab
           projects={projects}
@@ -1052,7 +1012,6 @@ export function CodingWorkflowsPage({
           registeredToolsCount={mcpTools.length}
         />
       ) : null}
-
       {tab === "board" ? (
         <div className="grid gap-4">
           <div className="grid gap-4">
@@ -1376,7 +1335,6 @@ export function CodingWorkflowsPage({
                 <EmptyState text="The selected project is not backed by a GitHub Project task source." />
               )}
             </PanelCard>
-
             <PanelCard
               title="ACA execution history"
               subtitle="Recent runs for the selected project"
@@ -1509,7 +1467,6 @@ export function CodingWorkflowsPage({
                             ) : null}
                           </div>
                         </div>
-
                         <div className="grid gap-3 lg:grid-cols-2">
                           <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                             <div className="mb-3 flex items-center justify-between gap-3">
@@ -1561,7 +1518,6 @@ export function CodingWorkflowsPage({
                               ) : null}
                             </div>
                           </div>
-
                           <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                             <div className="mb-3 text-sm font-semibold">Changed files</div>
                             {runChangedFiles.length ? (
@@ -1587,7 +1543,6 @@ export function CodingWorkflowsPage({
                             )}
                           </div>
                         </div>
-
                         {runEvents.length ? (
                           <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                             <div className="mb-3 text-sm font-semibold">Recent activity</div>
@@ -1624,7 +1579,6 @@ export function CodingWorkflowsPage({
                             </div>
                           </div>
                         ) : null}
-
                         {runDiffStat ? (
                           <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                             <div className="mb-2 text-sm font-semibold">Diff stat</div>
@@ -1633,7 +1587,6 @@ export function CodingWorkflowsPage({
                             </pre>
                           </div>
                         ) : null}
-
                         {runSummary ? (
                           <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                             <div className="mb-2 text-sm font-semibold">Summary</div>
@@ -1642,7 +1595,6 @@ export function CodingWorkflowsPage({
                             </pre>
                           </div>
                         ) : null}
-
                         <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                           <div className="mb-2 text-sm font-semibold">Blackboard</div>
                           <LazyJson
@@ -1659,7 +1611,6 @@ export function CodingWorkflowsPage({
                 ) : null}
               </PanelCard>
             </div>
-
             <PanelCard
               title="Live logs"
               subtitle="Tail ACA worker and manager logs"
@@ -1708,7 +1659,6 @@ export function CodingWorkflowsPage({
           </div>
         </div>
       ) : null}
-
       {tab === "manual" ? (
         <div className="grid gap-4">
           <div className="grid gap-4 xl:grid-cols-2">
@@ -1861,7 +1811,6 @@ export function CodingWorkflowsPage({
                 </button>
               </div>
             </PanelCard>
-
             <PanelCard
               title="Trigger run"
               subtitle="Launch an ACA coding session for the selected project"
@@ -1901,7 +1850,6 @@ export function CodingWorkflowsPage({
           </div>
         </div>
       ) : null}
-
       {tab === "planning" ? (
         <TaskPlanningPanel
           client={client}
@@ -1917,7 +1865,6 @@ export function CodingWorkflowsPage({
           providerStatus={providerStatus}
         />
       ) : null}
-
       {tab === "integrations" ? (
         <div className="grid gap-4 xl:grid-cols-2">
           <PanelCard title="ACA connection" subtitle="Control-plane endpoint the coding page uses">
@@ -1939,7 +1886,6 @@ export function CodingWorkflowsPage({
               </div>
             </div>
           </PanelCard>
-
           <PanelCard title="Workspace guide" subtitle="What the agent should inspect first">
             {workspaceGuideQuery.data ? (
               <div className="grid gap-3">
@@ -1976,7 +1922,6 @@ export function CodingWorkflowsPage({
               <EmptyState text="Workspace guide unavailable yet." />
             )}
           </PanelCard>
-
           <PanelCard
             title="Connected MCP servers"
             subtitle="Engine integrations still available alongside ACA"
