@@ -1,5 +1,5 @@
-
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_memory_events_include_normalized_artifact_fields() {
     let state = test_state().await;
     state

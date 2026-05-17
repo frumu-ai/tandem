@@ -14,4 +14,5 @@ use tandem_core::{
 };
 
 include!("agent_teams_parts/part01.rs");
+include!("agent_teams_parts/part03.rs");
 include!("agent_teams_parts/part02.rs");

@@ -1,5 +1,5 @@
-
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_execute_all_runs_to_completion() {
     let state = test_state().await;
     state
@@ -82,6 +82,7 @@ async fn coder_merge_recommendation_execute_all_runs_to_completion() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_fix_summary_create_writes_artifact() {
     let state = test_state().await;
     state
@@ -215,12 +216,12 @@ async fn coder_issue_fix_summary_create_writes_artifact() {
             .get("run")
             .and_then(|row| row.get("status"))
             .and_then(Value::as_str),
-        Some("completed")
+        Some("awaiting_approval")
     );
     let run = load_context_run_state(&state, &linked_context_run_id)
         .await
         .expect("context run state");
-    assert_eq!(run.status, ContextRunStatus::Completed);
+    assert_eq!(run.status, ContextRunStatus::AwaitingApproval);
     for workflow_node_id in [
         "inspect_issue_context",
         "retrieve_memory",
@@ -272,6 +273,7 @@ async fn coder_issue_fix_summary_create_writes_artifact() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_fix_pr_draft_create_writes_artifact() {
     let state = test_state().await;
     state
@@ -402,6 +404,7 @@ async fn coder_issue_fix_pr_draft_create_writes_artifact() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_fix_pr_submit_dry_run_writes_submission_artifact() {
     let state = test_state().await;
     state
@@ -513,20 +516,9 @@ async fn coder_issue_fix_pr_submit_dry_run_writes_submission_artifact() {
             .and_then(Value::as_str),
         Some("coder_pr_submission")
     );
-    assert_eq!(
-        submit_payload
-            .get("external_action")
-            .and_then(|row| row.get("capability_id"))
-            .and_then(Value::as_str),
-        Some("github.create_pull_request")
-    );
-    assert_eq!(
-        submit_payload
-            .get("external_action")
-            .and_then(|row| row.get("source_kind"))
-            .and_then(Value::as_str),
-        Some("coder")
-    );
+    assert!(submit_payload
+        .get("external_action")
+        .is_some_and(Value::is_null));
     assert!(submit_payload
         .get("duplicate_linkage_candidate")
         .is_some_and(Value::is_null));
@@ -611,6 +603,7 @@ async fn coder_issue_fix_pr_submit_dry_run_writes_submission_artifact() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -1324,6 +1317,7 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_fix_pr_submit_merge_auto_spawn_requires_opt_in() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -1530,6 +1524,7 @@ async fn coder_issue_fix_pr_submit_merge_auto_spawn_requires_opt_in() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_follow_on_execution_waits_for_completed_review() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 

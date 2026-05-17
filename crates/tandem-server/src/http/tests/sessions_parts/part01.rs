@@ -1102,6 +1102,43 @@ async fn create_session_uses_request_tenant_context_and_emits_tenant_scoped_even
 }
 
 #[tokio::test]
+async fn create_session_local_mode_does_not_require_hosted_auth() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/session")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "title": "local-mode",
+                "directory": "."
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let session_id = payload
+        .get("id")
+        .and_then(|value| value.as_str())
+        .expect("session id");
+
+    let stored_session = state
+        .storage
+        .get_session(session_id)
+        .await
+        .expect("session");
+    assert_eq!(stored_session.tenant_context.org_id, "local");
+    assert_eq!(stored_session.tenant_context.workspace_id, "local");
+    assert!(stored_session.tenant_context.actor_id.is_none());
+    assert!(stored_session.verified_tenant_context.is_none());
+}
+
+#[tokio::test]
 async fn post_session_message_returns_wire_message() {
     let state = test_state().await;
     let session = Session::new(Some("post-msg".to_string()), Some(".".to_string()));

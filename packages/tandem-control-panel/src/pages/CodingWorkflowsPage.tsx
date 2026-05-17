@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AnimatedPage, Badge, PanelCard, StatusPulse } from "../ui/index.tsx";
+import { AnimatedPage, Badge, LoadingState, PanelCard, StatusPulse } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { useCapabilities } from "../features/system/queries.ts";
 import { subscribeSse } from "../services/sse.js";
@@ -22,6 +22,7 @@ import {
   formatStatus,
   githubBoardItemCanRun,
   githubBoardItemIdentity,
+  githubBoardItemLaunchLabel,
   isSafeManagedPath,
   normalizeGithubBoard,
   normalizeProjects,
@@ -80,13 +81,11 @@ export function CodingWorkflowsPage({
   const [selectedGithubItemIds, setSelectedGithubItemIds] = useState<string[]>([]);
   const [launchingGithubItemIds, setLaunchingGithubItemIds] = useState<Record<string, number>>({});
   const [batchTriggering, setBatchTriggering] = useState(false);
-
   const caps = useCapabilities();
   const acaAvailable = caps.data?.aca_integration === true;
   const engineAvailable = caps.data?.engine_healthy === true;
   const hostedManaged = caps.data?.hosted_managed === true;
   const integrationsEnabled = acaAvailable || engineAvailable;
-
   const health = useQuery({
     queryKey: ["coding-workflows", "health"],
     queryFn: () => api("/api/system/health"),
@@ -131,7 +130,8 @@ export function CodingWorkflowsPage({
   });
   const projectBoardQuery = useQuery({
     queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug],
-    queryFn: () => api(`/api/aca/projects/${encodeURIComponent(selectedProjectSlug)}/board`),
+    queryFn: () =>
+      api(`/api/aca/projects/${encodeURIComponent(selectedProjectSlug)}/board?refresh=true`),
     enabled:
       acaAvailable &&
       !!selectedProjectSlug &&
@@ -148,7 +148,7 @@ export function CodingWorkflowsPage({
           project.slug === selectedProjectSlug &&
           String(project?.taskSource?.type || "").trim() === "github_project"
       )
-        ? 120000
+        ? 5000
         : false,
   });
   const runDetailQuery = useQuery({
@@ -193,7 +193,6 @@ export function CodingWorkflowsPage({
     refetchInterval: integrationsEnabled ? 30000 : false,
     enabled: integrationsEnabled,
   });
-
   const mcpServers = useMemo(() => normalizeServers(mcpServersQuery.data), [mcpServersQuery.data]);
   const mcpTools = useMemo(() => normalizeTools(mcpToolsQuery.data), [mcpToolsQuery.data]);
   const projects = useMemo(() => normalizeProjects(projectsQuery.data), [projectsQuery.data]);
@@ -206,6 +205,8 @@ export function CodingWorkflowsPage({
     () => normalizeGithubBoard(projectBoardQuery.data),
     [projectBoardQuery.data]
   );
+  const githubBoardLoading =
+    projectBoardQuery.isLoading || (projectBoardQuery.isFetching && !projectBoardQuery.data);
   const providerOptions = useMemo<PlannerProviderOption[]>(() => {
     return buildPlannerProviderOptions({
       providerCatalog: providersCatalogQuery.data,
@@ -220,7 +221,6 @@ export function CodingWorkflowsPage({
     providersConfigQuery.data,
   ]);
   const newRepoRef = useMemo(() => parseGithubRepoRef(newRepoUrl), [newRepoUrl]);
-
   useEffect(() => {
     if (!projects.length) return;
     if (
@@ -230,17 +230,14 @@ export function CodingWorkflowsPage({
       setSelectedProjectSlug(projects[0].slug);
     }
   }, [projects, selectedProjectSlug]);
-
   const filteredRuns = useMemo(() => {
     if (!selectedProjectSlug) return runs;
     return runs.filter(
       (run: any) => String(run?.project_slug || "").trim() === selectedProjectSlug
     );
   }, [runs, selectedProjectSlug]);
-
   const visibleRuns = useMemo(() => dedupeRuns(filteredRuns), [filteredRuns]);
   const activeRuns = useMemo(() => visibleRuns.filter(runIsActive), [visibleRuns]);
-
   useEffect(() => {
     if (!visibleRuns.length) {
       setSelectedRunId("");
@@ -259,9 +256,7 @@ export function CodingWorkflowsPage({
       setSelectedRunId(runId(visibleRuns[0], 0));
     }
   }, [activeRuns, selectedRunId, visibleRuns]);
-
   const logRows = useMemo(() => toArray(runLogsQuery.data, "logs"), [runLogsQuery.data]);
-
   useEffect(() => {
     if (!logRows.length) {
       setSelectedLogName("");
@@ -274,7 +269,6 @@ export function CodingWorkflowsPage({
       setSelectedLogName(String(logRows[0]?.name || ""));
     }
   }, [logRows, selectedLogName]);
-
   const healthy = !!(health.data?.engine?.ready || health.data?.engine?.healthy);
   const githubConnected = mcpServers.some((server) => server.name.toLowerCase().includes("github"));
   const selectedProject =
@@ -295,8 +289,9 @@ export function CodingWorkflowsPage({
     .map((server) => server.name);
   const selectedGithubItems = useMemo(
     () =>
-      githubBoard.items.filter((item: any) =>
-        selectedGithubItemIds.includes(String(item.id || ""))
+      githubBoard.items.filter(
+        (item: any) =>
+          selectedGithubItemIds.includes(String(item.id || "")) && githubBoardItemCanRun(item)
       ),
     [githubBoard.items, selectedGithubItemIds]
   );
@@ -342,6 +337,14 @@ export function CodingWorkflowsPage({
       ),
     [activeRuns]
   );
+  const activeGithubRunByIdentity = useMemo(() => {
+    const rows = new Map<string, any>();
+    activeRuns.forEach((run: any, index: number) => {
+      const identity = runTaskIdentity(run, index);
+      if (identity) rows.set(identity, { run, id: runId(run, index) });
+    });
+    return rows;
+  }, [activeRuns]);
   const launchableGithubItems = useMemo(
     () =>
       actionableGithubItems.filter(
@@ -351,6 +354,66 @@ export function CodingWorkflowsPage({
       ),
     [actionableGithubItems, activeGithubItemIdentities, launchingGithubItemIdSet]
   );
+  const githubScheduler = githubBoard.scheduler || {};
+  const githubSchedulerActivePhase =
+    githubScheduler?.active_phase ?? githubScheduler?.activePhase ?? null;
+  const githubSchedulerNextIssues = Array.isArray(githubScheduler?.next_issue_numbers)
+    ? githubScheduler.next_issue_numbers
+    : Array.isArray(githubScheduler?.nextIssueNumbers)
+      ? githubScheduler.nextIssueNumbers
+      : [];
+  const githubSchedulerPolicy = String(githubScheduler?.policy || "").trim();
+  const githubBoardColumns = useMemo(() => {
+    const normalizeStatus = (value: unknown) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    const columnForItem = (item: any) => {
+      const statusKey =
+        normalizeStatus(item?.statusKey) && normalizeStatus(item?.statusKey) !== "unknown"
+          ? normalizeStatus(item?.statusKey)
+          : normalizeStatus(item?.statusName);
+      if (["in_progress", "started", "active", "working"].includes(statusKey)) {
+        return "in_progress";
+      }
+      if (["blocked", "stalled", "on_hold", "failed"].includes(statusKey)) return "blocked";
+      if (["review", "in_review", "ready_for_review"].includes(statusKey)) return "review";
+      if (["done", "complete", "completed", "closed"].includes(statusKey)) return "done";
+      if (["todo", "todos", "ready", "backlog", "open"].includes(statusKey)) return "todos";
+      return "unknown";
+    };
+    const rankItem = (item: any) => {
+      const title = String(item?.title || "").toLowerCase();
+      if (title.includes("[aca slice parent]") || title.includes("slice parent")) return 0;
+      if (title.includes("[tenant isolation]")) return 1;
+      return 2;
+    };
+    const columns = [
+      { key: "todos", label: "TODOS", hint: "Not started", items: [] as any[] },
+      { key: "in_progress", label: "In Progress", hint: "Actively running", items: [] as any[] },
+      { key: "blocked", label: "Blocked", hint: "Needs attention", items: [] as any[] },
+      { key: "review", label: "Review", hint: "Ready to inspect", items: [] as any[] },
+      { key: "done", label: "Done", hint: "Completed", items: [] as any[] },
+      { key: "unknown", label: "Unknown", hint: "Missing status", items: [] as any[] },
+    ];
+    const byKey = new Map(columns.map((column) => [column.key, column]));
+    githubBoard.items.forEach((item: any) => {
+      const column = byKey.get(columnForItem(item)) || byKey.get("unknown");
+      column?.items.push(item);
+    });
+    columns.forEach((column) => {
+      column.items.sort((a, b) => {
+        const rankDelta = rankItem(a) - rankItem(b);
+        if (rankDelta) return rankDelta;
+        const actionableDelta = Number(b?.actionable === true) - Number(a?.actionable === true);
+        if (actionableDelta) return actionableDelta;
+        return String(a?.title || "").localeCompare(String(b?.title || ""));
+      });
+    });
+    return columns.filter((column) => column.key !== "unknown" || column.items.length);
+  }, [githubBoard.items]);
   const selectedRun =
     visibleRuns.find((run: any, index: number) => runId(run, index) === selectedRunId) || null;
   const runSummary = String(runDetailQuery.data?.summary || "").trim();
@@ -378,11 +441,9 @@ export function CodingWorkflowsPage({
   const runDiffStat = String(
     runDetailQuery.data?.diff?.after || runDetailQuery.data?.snapshot?.diff?.after || ""
   ).trim();
-
   useEffect(() => {
     setLastRunEvent("");
   }, [selectedRunId]);
-
   useEffect(() => {
     if (!acaAvailable) return;
     const unsubscribe = subscribeSse("/api/aca/events", (event: MessageEvent) => {
@@ -413,7 +474,6 @@ export function CodingWorkflowsPage({
     });
     return () => unsubscribe();
   }, [acaAvailable, queryClient, selectedProjectSlug, selectedRunId]);
-
   useEffect(() => {
     if (!acaAvailable || !selectedRunId || !selectedRun?.is_running) return;
     const url = `/api/aca/runs/${encodeURIComponent(selectedRunId)}/events`;
@@ -440,27 +500,22 @@ export function CodingWorkflowsPage({
     });
     return () => unsubscribe();
   }, [acaAvailable, queryClient, selectedLogName, selectedRun?.is_running, selectedRunId]);
-
   useEffect(() => {
     if (projectTasksQuery.data) {
       setTaskPreviewRefreshAt(Date.now());
     }
   }, [projectTasksQuery.data]);
-
   useEffect(() => {
     if (projectBoardQuery.data) {
       setGithubBoardRefreshAt(Number(projectBoardQuery.data?.last_synced_at_ms || Date.now()));
     }
   }, [projectBoardQuery.data]);
-
   useEffect(() => {
     setSelectedGithubItemIds([]);
   }, [selectedProjectSlug]);
-
   useEffect(() => {
     setLaunchingGithubItemIds({});
   }, [selectedProjectSlug]);
-
   useEffect(() => {
     const pendingEntries = Object.entries(launchingGithubItemIds);
     if (!pendingEntries.length) return;
@@ -480,7 +535,6 @@ export function CodingWorkflowsPage({
       timers.forEach((timer) => window.clearTimeout(timer));
     };
   }, [launchingGithubItemIds]);
-
   useEffect(() => {
     if (!Object.keys(launchingGithubItemIds).length || !githubBoard.items.length) return;
     setLaunchingGithubItemIds((current) => {
@@ -497,12 +551,10 @@ export function CodingWorkflowsPage({
       return changed ? next : current;
     });
   }, [activeGithubItemIdentities, githubBoard.items, launchingGithubItemIds]);
-
   useEffect(() => {
     const validIds = new Set(githubBoard.items.map((item: any) => String(item.id || "")));
     setSelectedGithubItemIds((current) => current.filter((id) => validIds.has(id)));
   }, [githubBoard.items]);
-
   const tabs: Array<{ id: CodingTab; label: string; icon: string }> = [
     { id: "overview", label: "Overview", icon: "layout-dashboard" },
     { id: "board", label: "Intake", icon: "list-checks" },
@@ -510,7 +562,6 @@ export function CodingWorkflowsPage({
     { id: "manual", label: "Manual tasks", icon: "code" },
     { id: "integrations", label: "Integrations", icon: "plug-zap" },
   ];
-
   async function reconcileCoderRun(runId: string) {
     const id = String(runId || "").trim();
     if (!id) return;
@@ -525,7 +576,6 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
-
   async function cancelCoderRun(runId: string) {
     const id = String(runId || "").trim();
     if (!id) return;
@@ -542,7 +592,6 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
-
   async function registerProject() {
     const repoRef = parseGithubRepoRef(newRepoUrl);
     const slug =
@@ -590,7 +639,6 @@ export function CodingWorkflowsPage({
       toast("warn", "GitHub Project task sources require a repo URL and project number.");
       return;
     }
-
     setRegistering(true);
     try {
       const params = new URLSearchParams({ slug });
@@ -625,7 +673,6 @@ export function CodingWorkflowsPage({
       setRegistering(false);
     }
   }
-
   async function triggerRun() {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before triggering a run.");
@@ -634,7 +681,6 @@ export function CodingWorkflowsPage({
     const overrides: Record<string, string> = {};
     if (overrideProvider.trim()) overrides.ACA_PROVIDER = overrideProvider.trim();
     if (overrideModel.trim()) overrides.ACA_MODEL = overrideModel.trim();
-
     setTriggering(true);
     try {
       const params = new URLSearchParams({ project_slug: selectedProjectSlug });
@@ -648,6 +694,8 @@ export function CodingWorkflowsPage({
       if (nextRunId) {
         setSelectedRunId(nextRunId);
         setTab("board");
+        setRunDetailOpen(true);
+        setLiveLogsOpen(true);
       }
       toast("ok", `ACA run started${nextRunId ? `: ${nextRunId}` : "."}`);
     } catch (error) {
@@ -656,21 +704,17 @@ export function CodingWorkflowsPage({
       setTriggering(false);
     }
   }
-
   function toggleGithubItemSelection(itemId: string) {
     setSelectedGithubItemIds((current) =>
       current.includes(itemId) ? current.filter((value) => value !== itemId) : [...current, itemId]
     );
   }
-
   function selectAllActionableGithubItems() {
     setSelectedGithubItemIds(launchableGithubItems.map((item: any) => String(item.id || "")));
   }
-
   function clearGithubSelection() {
     setSelectedGithubItemIds([]);
   }
-
   async function triggerGithubItems(items: any[]) {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before starting ACA runs.");
@@ -695,7 +739,6 @@ export function CodingWorkflowsPage({
     const overrides: Record<string, string> = {};
     if (overrideProvider.trim()) overrides.ACA_PROVIDER = overrideProvider.trim();
     if (overrideModel.trim()) overrides.ACA_MODEL = overrideModel.trim();
-
     setLaunchingGithubItemIds((current) => {
       const next = { ...current };
       const launchedAt = Date.now();
@@ -731,6 +774,8 @@ export function CodingWorkflowsPage({
       if (nextRunId) {
         setSelectedRunId(nextRunId);
         setTab("board");
+        setRunDetailOpen(true);
+        setLiveLogsOpen(true);
       }
       toast("ok", `Started ${selectors.length} ACA run${selectors.length === 1 ? "" : "s"}.`);
     } catch (error) {
@@ -749,7 +794,19 @@ export function CodingWorkflowsPage({
       setBatchTriggering(false);
     }
   }
-
+  function inspectAcaRun(runRef: { run: any; id: string } | null | undefined) {
+    const id = String(runRef?.id || "").trim();
+    if (!id) return;
+    setSelectedRunId(id);
+    setRunDetailOpen(true);
+    setLiveLogsOpen(true);
+    window.setTimeout(() => {
+      document.getElementById("aca-run-inspector")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 0);
+  }
   async function refreshTaskPreview() {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before refreshing GitHub intake.");
@@ -763,7 +820,6 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
-
   async function refreshGithubBoard() {
     if (!selectedProjectSlug) {
       toast("warn", "Select a GitHub-backed project before refreshing the board.");
@@ -783,7 +839,6 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
-
   async function syncSelectedRepo() {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before syncing its repository.");
@@ -811,7 +866,6 @@ export function CodingWorkflowsPage({
       setRepoSyncing(false);
     }
   }
-
   if (!acaAvailable) {
     return (
       <AnimatedPage className="grid gap-4">
@@ -846,7 +900,6 @@ export function CodingWorkflowsPage({
       </AnimatedPage>
     );
   }
-
   return (
     <AnimatedPage className="grid gap-4">
       <PanelCard className="overflow-hidden">
@@ -926,7 +979,6 @@ export function CodingWorkflowsPage({
           </div>
         </div>
       </PanelCard>
-
       <div className="tcp-settings-tabs">
         {tabs.map((item) => (
           <button
@@ -940,7 +992,6 @@ export function CodingWorkflowsPage({
           </button>
         ))}
       </div>
-
       {tab === "overview" ? (
         <CodingWorkflowsOverviewTab
           projects={projects}
@@ -961,7 +1012,6 @@ export function CodingWorkflowsPage({
           registeredToolsCount={mcpTools.length}
         />
       ) : null}
-
       {tab === "board" ? (
         <div className="grid gap-4">
           <div className="grid gap-4">
@@ -983,8 +1033,12 @@ export function CodingWorkflowsPage({
                 </select>
               </div>
               {String(selectedProject?.taskSource?.type || "").trim() === "github_project" ? (
-                projectBoardQuery.isLoading ? (
-                  <div className="tcp-subtle text-sm">Loading GitHub Project items...</div>
+                githubBoardLoading ? (
+                  <LoadingState
+                    title="Loading GitHub Project items"
+                    text="Tandem is syncing the intake board through the GitHub connection."
+                    className="min-h-[10rem]"
+                  />
                 ) : projectBoardQuery.isError ? (
                   <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
                     {projectBoardQuery.error instanceof Error
@@ -1006,6 +1060,9 @@ export function CodingWorkflowsPage({
                             ? "Cached snapshot"
                             : formatStatus(githubBoard.source || "live")}
                         </Badge>
+                        {projectBoardQuery.isFetching ? (
+                          <StatusPulse tone="live" text="syncing" />
+                        ) : null}
                         <button
                           type="button"
                           className="tcp-btn tcp-btn-secondary"
@@ -1018,8 +1075,35 @@ export function CodingWorkflowsPage({
                     </div>
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-3">
                       <div className="tcp-subtle text-xs">
-                        Start ACA runs directly from GitHub Project intake. Run all launches every
-                        currently eligible item; selected runs only the checked items.
+                        ACA runs only scheduler-approved child issues. It works through the lowest
+                        open phase first, then advances to later phases when earlier work is no
+                        longer pending. Parent cards organize the plan and are not launched.
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <Badge tone="info">
+                          Current phase{" "}
+                          {githubSchedulerActivePhase === null ||
+                          githubSchedulerActivePhase === undefined
+                            ? "unknown"
+                            : Number(githubSchedulerActivePhase) === 99
+                              ? "Gate"
+                              : `Phase ${String(githubSchedulerActivePhase)}`}
+                        </Badge>
+                        <Badge tone={launchableGithubItems.length ? "ok" : "ghost"}>
+                          Runnable now {launchableGithubItems.length}
+                        </Badge>
+                        <Badge tone={githubSchedulerNextIssues.length ? "ok" : "ghost"}>
+                          Next{" "}
+                          {githubSchedulerNextIssues.length
+                            ? githubSchedulerNextIssues
+                                .slice(0, 4)
+                                .map((value: any) => `#${String(value)}`)
+                                .join(", ")
+                            : "none"}
+                        </Badge>
+                        {githubSchedulerPolicy ? (
+                          <Badge tone="ghost">{formatStatus(githubSchedulerPolicy)}</Badge>
+                        ) : null}
                       </div>
                       <div className="min-w-[320px] flex-1">
                         {renderAcaModelSelector(batchTriggering)}
@@ -1033,7 +1117,7 @@ export function CodingWorkflowsPage({
                         >
                           {batchTriggering
                             ? "Starting..."
-                            : `Run all actionable${launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}`}
+                            : `Run scheduler next${launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}`}
                         </button>
                         <button
                           type="button"
@@ -1041,7 +1125,7 @@ export function CodingWorkflowsPage({
                           onClick={selectAllActionableGithubItems}
                           disabled={!launchableGithubItems.length || batchTriggering}
                         >
-                          Select actionable
+                          Select scheduler next
                           {launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}
                         </button>
                         <button
@@ -1071,85 +1155,176 @@ export function CodingWorkflowsPage({
                     ) : null}
                     {githubBoard.items.length ? (
                       <div className="grid gap-3">
-                        {githubBoard.items.map((item: any) => {
-                          const itemCanRun = githubBoardItemCanRun(item);
-                          const itemId = String(item.id || "");
-                          const itemIsRunning =
-                            itemCanRun &&
-                            activeGithubItemIdentities.has(githubBoardItemIdentity(item));
-                          const itemIsLaunching = launchingGithubItemIdSet.has(itemId);
-                          const itemIsLaunchLocked =
-                            itemIsRunning || itemIsLaunching || batchTriggering;
-                          return (
+                        <div className="grid min-h-[28rem] gap-3 overflow-x-auto pb-2 lg:grid-cols-5">
+                          {githubBoardColumns.map((column) => (
                             <div
-                              key={itemId}
-                              className={`rounded-2xl border px-4 py-3 transition ${
-                                selectedGithubItemIds.includes(itemId)
-                                  ? "border-cyan-400/60 bg-cyan-500/10"
-                                  : "border-white/10 bg-black/20"
-                              }`}
+                              key={column.key}
+                              className="min-w-[18rem] border border-white/10 bg-black/20"
                             >
-                              <div className="flex flex-wrap items-start justify-between gap-3">
-                                <div className="flex min-w-0 flex-1 items-start gap-3">
-                                  <input
-                                    type="checkbox"
-                                    className="mt-1 h-4 w-4 shrink-0"
-                                    checked={selectedGithubItemIds.includes(itemId)}
-                                    disabled={!itemCanRun || itemIsLaunchLocked}
-                                    onChange={() => toggleGithubItemSelection(itemId)}
-                                  />
-                                  <div className="min-w-0">
-                                    <div className="break-words text-sm font-semibold leading-5">
-                                      {String(item.title || "Untitled item")}
-                                    </div>
-                                    <div className="tcp-subtle mt-1 break-words text-xs leading-5">
-                                      {item.repoName ? String(item.repoName) : selectedProjectSlug}
-                                      {item.issueNumber ? ` #${String(item.issueNumber)}` : ""}
-                                    </div>
-                                  </div>
+                              <div className="flex items-start justify-between gap-2 border-b border-white/10 px-3 py-3">
+                                <div>
+                                  <div className="text-sm font-semibold">{column.label}</div>
+                                  <div className="tcp-subtle text-xs">{column.hint}</div>
                                 </div>
-                                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                                  {item.actionable ? <Badge tone="ok">Actionable</Badge> : null}
-                                  <Badge tone="ghost">
-                                    {formatStatus(
-                                      String(item.statusName || item.statusKey || "Unknown")
-                                    )}
-                                  </Badge>
-                                  {itemIsRunning ? <Badge tone="info">Run active</Badge> : null}
-                                  {itemIsLaunching && !itemIsRunning ? (
-                                    <Badge tone="warn">Starting</Badge>
-                                  ) : null}
-                                </div>
+                                <Badge tone={column.items.length ? "info" : "ghost"}>
+                                  {column.items.length}
+                                </Badge>
                               </div>
-                              <div className="mt-3 flex flex-wrap gap-2 pl-7">
-                                {item.issueUrl ? (
-                                  <a
-                                    className="tcp-btn h-8 px-3 text-xs"
-                                    href={item.issueUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    Open in GitHub
-                                  </a>
-                                ) : null}
-                                <button
-                                  type="button"
-                                  className="tcp-btn h-8 px-3 text-xs"
-                                  onClick={() => triggerGithubItems([item])}
-                                  disabled={!itemCanRun || itemIsLaunchLocked}
-                                >
-                                  {!itemCanRun
-                                    ? "Not launchable"
-                                    : itemIsRunning
-                                      ? "Already running"
-                                      : itemIsLaunching
-                                        ? "Starting..."
-                                        : "Run task"}
-                                </button>
+                              <div className="grid max-h-[36rem] content-start gap-2 overflow-y-auto p-2">
+                                {column.items.length ? (
+                                  column.items.map((item: any) => {
+                                    const itemCanRun = githubBoardItemCanRun(item);
+                                    const launchLabel = githubBoardItemLaunchLabel(item);
+                                    const itemId = String(item.id || "");
+                                    const title = String(item.title || "Untitled item");
+                                    const lowerTitle = title.toLowerCase();
+                                    const activeGithubRun = activeGithubRunByIdentity.get(
+                                      githubBoardItemIdentity(item)
+                                    );
+                                    const itemIsRunning =
+                                      !!activeGithubRun ||
+                                      activeGithubItemIdentities.has(
+                                        githubBoardItemIdentity(item)
+                                      ) ||
+                                      !!String(item.activeRunId || item.active_run_id || "").trim();
+                                    const itemIsLaunching = launchingGithubItemIdSet.has(itemId);
+                                    const itemIsLaunchLocked =
+                                      itemIsRunning || itemIsLaunching || batchTriggering;
+                                    const selected = selectedGithubItemIds.includes(itemId);
+                                    const isParent =
+                                      item?.isParent === true ||
+                                      lowerTitle.includes("[aca slice parent]") ||
+                                      lowerTitle.includes("slice parent");
+                                    const isDraft = !item.issueNumber && !item.issueUrl;
+                                    return (
+                                      <div
+                                        key={itemId}
+                                        className={`border p-3 transition ${
+                                          selected
+                                            ? "border-cyan-400/70 bg-cyan-500/10"
+                                            : "border-white/10 bg-slate-950/40"
+                                        }`}
+                                      >
+                                        <div className="flex items-start gap-2">
+                                          <input
+                                            type="checkbox"
+                                            className="mt-1 h-4 w-4 shrink-0"
+                                            checked={selected}
+                                            disabled={!itemCanRun || itemIsLaunchLocked}
+                                            onChange={() => toggleGithubItemSelection(itemId)}
+                                            aria-label={`Select ${title}`}
+                                          />
+                                          <div className="min-w-0 flex-1">
+                                            <div className="break-words text-sm font-semibold leading-5">
+                                              {title}
+                                            </div>
+                                            <div className="tcp-subtle mt-1 break-words text-xs leading-5">
+                                              {item.repoName
+                                                ? String(item.repoName)
+                                                : selectedProjectSlug}
+                                              {item.issueNumber
+                                                ? ` #${String(item.issueNumber)}`
+                                                : ""}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                          {isParent ? <Badge tone="info">Parent</Badge> : null}
+                                          {item.phase !== null && item.phase !== undefined ? (
+                                            <Badge tone="ghost">
+                                              {Number(item.phase) === 99
+                                                ? "Gate"
+                                                : `Phase ${String(item.phase)}`}
+                                            </Badge>
+                                          ) : null}
+                                          {item.launchState ? (
+                                            <Badge tone={item.actionable ? "ok" : "ghost"}>
+                                              {formatStatus(String(item.launchState))}
+                                            </Badge>
+                                          ) : null}
+                                          {isDraft ? <Badge tone="warn">Draft</Badge> : null}
+                                          {item.actionable ? (
+                                            <Badge tone="ok">Actionable</Badge>
+                                          ) : null}
+                                          {itemIsRunning ? (
+                                            <Badge tone="info">Run active</Badge>
+                                          ) : null}
+                                          {item.runState ? (
+                                            <Badge tone="info">
+                                              {formatStatus(String(item.runState))}
+                                            </Badge>
+                                          ) : null}
+                                          {activeGithubRun ? (
+                                            <Badge tone="info">{String(activeGithubRun.id)}</Badge>
+                                          ) : null}
+                                          {item.handoffUrl || item.handoff_url ? (
+                                            <Badge tone="ok">PR handoff</Badge>
+                                          ) : null}
+                                          {itemIsLaunching && !itemIsRunning ? (
+                                            <Badge tone="warn">Starting</Badge>
+                                          ) : null}
+                                        </div>
+                                        {item.blockedBy?.length ? (
+                                          <div className="tcp-subtle mt-2 text-xs">
+                                            Waiting on {item.blockedBy.join(", ")}
+                                          </div>
+                                        ) : null}
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                          {item.issueUrl ? (
+                                            <a
+                                              className="tcp-btn h-8 px-3 text-xs"
+                                              href={item.issueUrl}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                            >
+                                              Open in GitHub
+                                            </a>
+                                          ) : null}
+                                          <button
+                                            type="button"
+                                            className="tcp-btn h-8 px-3 text-xs"
+                                            onClick={() => triggerGithubItems([item])}
+                                            disabled={!itemCanRun || itemIsLaunchLocked}
+                                          >
+                                            {!itemCanRun
+                                              ? launchLabel
+                                              : itemIsRunning
+                                                ? "Already running"
+                                                : itemIsLaunching
+                                                  ? "Starting..."
+                                                  : "Run task"}
+                                          </button>
+                                          {activeGithubRun ? (
+                                            <button
+                                              type="button"
+                                              className="tcp-btn tcp-btn-secondary h-8 px-3 text-xs"
+                                              onClick={() => inspectAcaRun(activeGithubRun)}
+                                            >
+                                              <i data-lucide="terminal"></i>
+                                              View live run
+                                            </button>
+                                          ) : null}
+                                          {item.handoffUrl || item.handoff_url ? (
+                                            <a
+                                              className="tcp-btn tcp-btn-secondary h-8 px-3 text-xs"
+                                              href={String(item.handoffUrl || item.handoff_url)}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                            >
+                                              PR
+                                            </a>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    );
+                                  })
+                                ) : (
+                                  <div className="tcp-subtle px-2 py-4 text-xs">No items</div>
+                                )}
                               </div>
                             </div>
-                          );
-                        })}
+                          ))}
+                        </div>
                       </div>
                     ) : (
                       <EmptyState text="No GitHub Project items returned for this project." />
@@ -1160,7 +1335,6 @@ export function CodingWorkflowsPage({
                 <EmptyState text="The selected project is not backed by a GitHub Project task source." />
               )}
             </PanelCard>
-
             <PanelCard
               title="ACA execution history"
               subtitle="Recent runs for the selected project"
@@ -1207,223 +1381,236 @@ export function CodingWorkflowsPage({
                 <EmptyState text="No ACA runs for this project yet." />
               )}
             </PanelCard>
-            <PanelCard
-              title="Run detail"
-              subtitle={selectedRunId ? `ACA detail for ${selectedRunId}` : "Select a run"}
-              actions={
-                <button
-                  type="button"
-                  className="tcp-btn h-8 px-3 text-xs"
-                  onClick={() => setRunDetailOpen((prev) => !prev)}
-                >
-                  <i data-lucide={runDetailOpen ? "chevron-down" : "chevron-right"}></i>
-                  {runDetailOpen ? "Collapse" : "Expand"}
-                </button>
-              }
-            >
-              {runDetailOpen ? (
-                selectedRunId ? (
-                  runDetailQuery.isLoading ? (
-                    <div className="tcp-subtle text-sm">Loading run detail...</div>
-                  ) : runDetailQuery.isError ? (
-                    <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
-                      {runDetailQuery.error instanceof Error
-                        ? runDetailQuery.error.message
-                        : "Could not load run detail."}
-                    </div>
-                  ) : (
-                    <div className="grid gap-3">
-                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold">
-                              {String(
-                                runDetailQuery.data?.status?.task?.title ||
-                                  selectedRun?.title ||
-                                  selectedRunId
-                              )}
-                            </div>
-                            <div className="tcp-subtle mt-1 text-xs">
-                              {String(
-                                runDetailQuery.data?.project_slug ||
-                                  selectedRun?.project_slug ||
-                                  "unknown"
-                              )}
-                            </div>
-                          </div>
-                          <Badge tone={runDetailQuery.data?.is_running ? "info" : "ok"}>
-                            {formatStatus(
-                              String(
-                                runDetailQuery.data?.status?.run?.status ||
-                                  selectedRun?.status ||
-                                  "unknown"
-                              )
-                            )}
-                          </Badge>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {runDetailQuery.data?.status?.phase?.name ? (
-                            <Badge tone="info">
-                              Phase {formatStatus(String(runDetailQuery.data.status.phase.name))}
-                            </Badge>
-                          ) : null}
-                          {lastRunEvent ? (
-                            <Badge tone="ghost">Latest {formatStatus(lastRunEvent)}</Badge>
-                          ) : null}
-                          {runDetailQuery.data?.snapshot?.summary_available ? (
-                            <Badge tone="ok">Summary ready</Badge>
-                          ) : null}
-                          {runDetailQuery.data?.error ? <Badge tone="warn">Has error</Badge> : null}
-                        </div>
+            <div id="aca-run-inspector">
+              <PanelCard
+                title="Run detail"
+                subtitle={selectedRunId ? `ACA detail for ${selectedRunId}` : "Select a run"}
+                actions={
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="tcp-btn h-8 px-3 text-xs"
+                      onClick={() => {
+                        setRunDetailOpen(true);
+                        setLiveLogsOpen(true);
+                      }}
+                      disabled={!selectedRunId}
+                    >
+                      <i data-lucide="terminal"></i>
+                      Open console view
+                    </button>
+                    <button
+                      type="button"
+                      className="tcp-btn h-8 px-3 text-xs"
+                      onClick={() => setRunDetailOpen((prev) => !prev)}
+                    >
+                      <i data-lucide={runDetailOpen ? "chevron-down" : "chevron-right"}></i>
+                      {runDetailOpen ? "Collapse" : "Expand"}
+                    </button>
+                  </div>
+                }
+              >
+                {runDetailOpen ? (
+                  selectedRunId ? (
+                    runDetailQuery.isLoading ? (
+                      <div className="tcp-subtle text-sm">Loading run detail...</div>
+                    ) : runDetailQuery.isError ? (
+                      <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
+                        {runDetailQuery.error instanceof Error
+                          ? runDetailQuery.error.message
+                          : "Could not load run detail."}
                       </div>
-
-                      <div className="grid gap-3 lg:grid-cols-2">
+                    ) : (
+                      <div className="grid gap-3">
                         <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-3 flex items-center justify-between gap-3">
-                            <div className="text-sm font-semibold">Progress</div>
-                            <Badge tone={runDetailQuery.data?.is_running ? "info" : "ghost"}>
-                              {runDetailQuery.data?.is_running ? "Live" : "Snapshot"}
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold">
+                                {String(
+                                  runDetailQuery.data?.status?.task?.title ||
+                                    selectedRun?.title ||
+                                    selectedRunId
+                                )}
+                              </div>
+                              <div className="tcp-subtle mt-1 text-xs">
+                                {String(
+                                  runDetailQuery.data?.project_slug ||
+                                    selectedRun?.project_slug ||
+                                    "unknown"
+                                )}
+                              </div>
+                            </div>
+                            <Badge tone={runDetailQuery.data?.is_running ? "info" : "ok"}>
+                              {formatStatus(
+                                String(
+                                  runDetailQuery.data?.status?.run?.status ||
+                                    selectedRun?.status ||
+                                    "unknown"
+                                )
+                              )}
                             </Badge>
                           </div>
-                          <div className="grid gap-2 text-xs leading-5">
-                            <div className="flex justify-between gap-3">
-                              <span className="tcp-subtle">Phase</span>
-                              <span className="text-right font-semibold text-slate-100">
-                                {formatStatus(
-                                  String(runDetailQuery.data?.status?.phase?.name || "unknown")
-                                )}
-                              </span>
-                            </div>
-                            {runDetailQuery.data?.status?.phase?.detail ? (
-                              <div className="flex justify-between gap-3">
-                                <span className="tcp-subtle">Detail</span>
-                                <span className="max-w-[70%] text-right text-slate-200">
-                                  {String(runDetailQuery.data.status.phase.detail)}
-                                </span>
-                              </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {runDetailQuery.data?.status?.phase?.name ? (
+                              <Badge tone="info">
+                                Phase {formatStatus(String(runDetailQuery.data.status.phase.name))}
+                              </Badge>
                             ) : null}
-                            <div className="flex justify-between gap-3">
-                              <span className="tcp-subtle">Workers</span>
-                              <span className="text-right text-slate-200">
-                                {runWorkers.length
-                                  ? `${runWorkers.filter((worker: any) => String(worker?.status || "") === "completed").length}/${runWorkers.length} completed`
-                                  : runSubtasks.length
-                                    ? `${runSubtasks.length} planned`
-                                    : "not planned yet"}
-                              </span>
+                            {lastRunEvent ? (
+                              <Badge tone="ghost">Latest {formatStatus(lastRunEvent)}</Badge>
+                            ) : null}
+                            {runDetailQuery.data?.snapshot?.summary_available ? (
+                              <Badge tone="ok">Summary ready</Badge>
+                            ) : null}
+                            {runDetailQuery.data?.error ? (
+                              <Badge tone="warn">Has error</Badge>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="grid gap-3 lg:grid-cols-2">
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <div className="text-sm font-semibold">Progress</div>
+                              <Badge tone={runDetailQuery.data?.is_running ? "info" : "ghost"}>
+                                {runDetailQuery.data?.is_running ? "Live" : "Snapshot"}
+                              </Badge>
                             </div>
-                            {blackboard?.coder_supervision ? (
+                            <div className="grid gap-2 text-xs leading-5">
                               <div className="flex justify-between gap-3">
-                                <span className="tcp-subtle">Coder</span>
-                                <span className="text-right text-slate-200">
+                                <span className="tcp-subtle">Phase</span>
+                                <span className="text-right font-semibold text-slate-100">
                                   {formatStatus(
-                                    String(
-                                      blackboard.coder_supervision?.tandem_status ||
-                                        blackboard.coder_supervision?.status ||
-                                        "watching"
-                                    )
+                                    String(runDetailQuery.data?.status?.phase?.name || "unknown")
                                   )}
                                 </span>
                               </div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-3 text-sm font-semibold">Changed files</div>
-                          {runChangedFiles.length ? (
-                            <div className="grid gap-2">
-                              {runChangedFiles.slice(0, 12).map((path) => (
-                                <code
-                                  key={path}
-                                  className="block truncate rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-slate-200"
-                                >
-                                  {path}
-                                </code>
-                              ))}
-                              {runChangedFiles.length > 12 ? (
-                                <div className="tcp-subtle text-xs">
-                                  +{runChangedFiles.length - 12} more
+                              {runDetailQuery.data?.status?.phase?.detail ? (
+                                <div className="flex justify-between gap-3">
+                                  <span className="tcp-subtle">Detail</span>
+                                  <span className="max-w-[70%] text-right text-slate-200">
+                                    {String(runDetailQuery.data.status.phase.detail)}
+                                  </span>
+                                </div>
+                              ) : null}
+                              <div className="flex justify-between gap-3">
+                                <span className="tcp-subtle">Workers</span>
+                                <span className="text-right text-slate-200">
+                                  {runWorkers.length
+                                    ? `${runWorkers.filter((worker: any) => String(worker?.status || "") === "completed").length}/${runWorkers.length} completed`
+                                    : runSubtasks.length
+                                      ? `${runSubtasks.length} planned`
+                                      : "not planned yet"}
+                                </span>
+                              </div>
+                              {blackboard?.coder_supervision ? (
+                                <div className="flex justify-between gap-3">
+                                  <span className="tcp-subtle">Coder</span>
+                                  <span className="text-right text-slate-200">
+                                    {formatStatus(
+                                      String(
+                                        blackboard.coder_supervision?.tandem_status ||
+                                          blackboard.coder_supervision?.status ||
+                                          "watching"
+                                      )
+                                    )}
+                                  </span>
                                 </div>
                               ) : null}
                             </div>
-                          ) : (
-                            <div className="tcp-subtle text-sm">No file changes reported yet.</div>
-                          )}
-                        </div>
-                      </div>
-
-                      {runEvents.length ? (
-                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-3 text-sm font-semibold">Recent activity</div>
-                          <div className="grid gap-2">
-                            {runEvents.map((event: any) => (
-                              <div
-                                key={`${String(event?.seq || "")}-${String(event?.type || "")}`}
-                                className="grid gap-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs"
-                              >
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <span className="font-semibold text-slate-100">
-                                    {formatStatus(String(event?.type || "event"))}
-                                  </span>
-                                  <span className="tcp-subtle">
-                                    {event?.timestamp
-                                      ? new Date(String(event.timestamp)).toLocaleTimeString()
-                                      : ""}
-                                  </span>
-                                </div>
-                                {event?.payload ? (
-                                  <div className="tcp-subtle truncate">
-                                    {String(
-                                      event.payload?.summary ||
-                                        event.payload?.detail ||
-                                        event.payload?.reason ||
-                                        event.payload?.worker_id ||
-                                        event.payload?.status ||
-                                        ""
-                                    )}
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-3 text-sm font-semibold">Changed files</div>
+                            {runChangedFiles.length ? (
+                              <div className="grid gap-2">
+                                {runChangedFiles.slice(0, 12).map((path) => (
+                                  <code
+                                    key={path}
+                                    className="block truncate rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-slate-200"
+                                  >
+                                    {path}
+                                  </code>
+                                ))}
+                                {runChangedFiles.length > 12 ? (
+                                  <div className="tcp-subtle text-xs">
+                                    +{runChangedFiles.length - 12} more
                                   </div>
                                 ) : null}
                               </div>
-                            ))}
+                            ) : (
+                              <div className="tcp-subtle text-sm">
+                                No file changes reported yet.
+                              </div>
+                            )}
                           </div>
                         </div>
-                      ) : null}
-
-                      {runDiffStat ? (
+                        {runEvents.length ? (
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-3 text-sm font-semibold">Recent activity</div>
+                            <div className="grid gap-2">
+                              {runEvents.map((event: any) => (
+                                <div
+                                  key={`${String(event?.seq || "")}-${String(event?.type || "")}`}
+                                  className="grid gap-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="font-semibold text-slate-100">
+                                      {formatStatus(String(event?.type || "event"))}
+                                    </span>
+                                    <span className="tcp-subtle">
+                                      {event?.timestamp
+                                        ? new Date(String(event.timestamp)).toLocaleTimeString()
+                                        : ""}
+                                    </span>
+                                  </div>
+                                  {event?.payload ? (
+                                    <div className="tcp-subtle truncate">
+                                      {String(
+                                        event.payload?.summary ||
+                                          event.payload?.detail ||
+                                          event.payload?.reason ||
+                                          event.payload?.worker_id ||
+                                          event.payload?.status ||
+                                          ""
+                                      )}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {runDiffStat ? (
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-2 text-sm font-semibold">Diff stat</div>
+                            <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200">
+                              {runDiffStat}
+                            </pre>
+                          </div>
+                        ) : null}
+                        {runSummary ? (
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-2 text-sm font-semibold">Summary</div>
+                            <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200">
+                              {runSummary}
+                            </pre>
+                          </div>
+                        ) : null}
                         <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-2 text-sm font-semibold">Diff stat</div>
-                          <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200">
-                            {runDiffStat}
-                          </pre>
+                          <div className="mb-2 text-sm font-semibold">Blackboard</div>
+                          <LazyJson
+                            value={blackboard || {}}
+                            label="Show blackboard"
+                            preClassName="max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200"
+                          />
                         </div>
-                      ) : null}
-
-                      {runSummary ? (
-                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-2 text-sm font-semibold">Summary</div>
-                          <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200">
-                            {runSummary}
-                          </pre>
-                        </div>
-                      ) : null}
-
-                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                        <div className="mb-2 text-sm font-semibold">Blackboard</div>
-                        <LazyJson
-                          value={blackboard || {}}
-                          label="Show blackboard"
-                          preClassName="max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200"
-                        />
                       </div>
-                    </div>
+                    )
+                  ) : (
+                    <EmptyState text="Select a run from the board to inspect its status, summary, and blackboard." />
                   )
-                ) : (
-                  <EmptyState text="Select a run from the board to inspect its status, summary, and blackboard." />
-                )
-              ) : null}
-            </PanelCard>
-
+                ) : null}
+              </PanelCard>
+            </div>
             <PanelCard
               title="Live logs"
               subtitle="Tail ACA worker and manager logs"
@@ -1472,7 +1659,6 @@ export function CodingWorkflowsPage({
           </div>
         </div>
       ) : null}
-
       {tab === "manual" ? (
         <div className="grid gap-4">
           <div className="grid gap-4 xl:grid-cols-2">
@@ -1625,7 +1811,6 @@ export function CodingWorkflowsPage({
                 </button>
               </div>
             </PanelCard>
-
             <PanelCard
               title="Trigger run"
               subtitle="Launch an ACA coding session for the selected project"
@@ -1665,7 +1850,6 @@ export function CodingWorkflowsPage({
           </div>
         </div>
       ) : null}
-
       {tab === "planning" ? (
         <TaskPlanningPanel
           client={client}
@@ -1681,7 +1865,6 @@ export function CodingWorkflowsPage({
           providerStatus={providerStatus}
         />
       ) : null}
-
       {tab === "integrations" ? (
         <div className="grid gap-4 xl:grid-cols-2">
           <PanelCard title="ACA connection" subtitle="Control-plane endpoint the coding page uses">
@@ -1703,7 +1886,6 @@ export function CodingWorkflowsPage({
               </div>
             </div>
           </PanelCard>
-
           <PanelCard title="Workspace guide" subtitle="What the agent should inspect first">
             {workspaceGuideQuery.data ? (
               <div className="grid gap-3">
@@ -1740,7 +1922,6 @@ export function CodingWorkflowsPage({
               <EmptyState text="Workspace guide unavailable yet." />
             )}
           </PanelCard>
-
           <PanelCard
             title="Connected MCP servers"
             subtitle="Engine integrations still available alongside ACA"

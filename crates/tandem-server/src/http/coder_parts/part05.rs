@@ -1,4 +1,3 @@
-
 impl<'a> GithubProjectsAdapter<'a> {
     async fn resolve_project_tools(
         &self,
@@ -873,36 +872,6 @@ async fn call_create_pull_request(
     }
 }
 
-async fn call_merge_pull_request(
-    state: &AppState,
-    server_name: &str,
-    tool_name: &str,
-    owner: &str,
-    repo: &str,
-    pull_number: u64,
-) -> Result<tandem_types::ToolResult, StatusCode> {
-    let preferred = json!({
-        "owner": owner,
-        "repo": repo,
-        "pull_number": pull_number,
-        "merge_method": "squash",
-    });
-    let fallback = json!({
-        "owner": owner,
-        "repo": repo,
-        "number": pull_number,
-    });
-    let first = state.mcp.call_tool(server_name, tool_name, preferred).await;
-    match first {
-        Ok(result) => Ok(result),
-        Err(_) => state
-            .mcp
-            .call_tool(server_name, tool_name, fallback)
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY),
-    }
-}
-
 async fn record_coder_external_action(
     state: &AppState,
     record: &CoderRunRecord,
@@ -976,16 +945,7 @@ pub(super) async fn coder_issue_fix_pr_draft_create(
         .head_branch
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            format!(
-                "coder/issue-{}-fix",
-                record
-                    .github_ref
-                    .as_ref()
-                    .map(|row| row.number)
-                    .unwrap_or_default()
-            )
-        });
+        .unwrap_or_else(|| default_issue_fix_head_branch(&record));
     let base_branch = input
         .base_branch
         .clone()
@@ -1137,7 +1097,7 @@ pub(super) async fn coder_issue_fix_pr_submit(
     Path(id): Path<String>,
     Json(input): Json<CoderIssueFixPrSubmitInput>,
 ) -> Result<Json<Value>, StatusCode> {
-    let record = load_coder_run_record(&state, &id).await?;
+    let mut record = load_coder_run_record(&state, &id).await?;
     if !matches!(record.workflow_mode, CoderWorkflowMode::IssueFix) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1237,9 +1197,64 @@ pub(super) async fn coder_issue_fix_pr_submit(
         "readiness": readiness,
     });
     if !dry_run {
+        if record.managed_worktree.is_some() {
+            match ensure_issue_fix_handoff_branch_pushed(&record, head_branch).await {
+                Ok(handoff_git) => {
+                    if let Some(obj) = submission_payload.as_object_mut() {
+                        obj.insert("handoff_git".to_string(), handoff_git.clone());
+                    }
+                    if let Some(commit_sha) = handoff_git
+                        .get("commit_sha")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                    {
+                        record.commit_sha = Some(commit_sha);
+                    }
+                    if let Some(branch_name) = handoff_git
+                        .get("branch_name")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                    {
+                        record.branch_name = Some(branch_name);
+                    }
+                }
+                Err(error) => {
+                    let reason = crate::truncate_text(&error, 1_000);
+                    if let Some(obj) = submission_payload.as_object_mut() {
+                        obj.insert(
+                            "handoff_git".to_string(),
+                            json!({
+                                "ok": false,
+                                "error": reason,
+                                "branch_name": head_branch,
+                            }),
+                        );
+                    }
+                    return block_issue_fix_pr_handoff(
+                        &state,
+                        &mut record,
+                        &mut submission_payload,
+                        "CODER_PR_HANDOFF_GIT_FAILED",
+                        &reason,
+                        "blocked_git_handoff",
+                    )
+                    .await;
+                }
+            }
+        } else if let Some(obj) = submission_payload.as_object_mut() {
+            obj.insert(
+                "handoff_git".to_string(),
+                json!({
+                    "ok": true,
+                    "skipped": true,
+                    "reason": "no_managed_worktree",
+                    "branch_name": head_branch,
+                }),
+            );
+        }
         let (server_name, tool_name) =
             resolve_github_create_pr_tool(&state, input.mcp_server.as_deref()).await?;
-        let result = call_create_pull_request(
+        let result = match call_create_pull_request(
             &state,
             &server_name,
             &tool_name,
@@ -1250,11 +1265,43 @@ pub(super) async fn coder_issue_fix_pr_submit(
             base_branch,
             head_branch,
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result,
+            Err(status) => {
+                let reason = format!("failed to create GitHub pull request: {status}");
+                if let Some(obj) = submission_payload.as_object_mut() {
+                    obj.insert(
+                        "pr_handoff".to_string(),
+                        json!({
+                            "ok": false,
+                            "error": reason,
+                            "base_branch": base_branch,
+                            "head_branch": head_branch,
+                        }),
+                    );
+                }
+                return block_issue_fix_pr_handoff(
+                    &state,
+                    &mut record,
+                    &mut submission_payload,
+                    "CODER_PR_HANDOFF_CREATE_FAILED",
+                    &reason,
+                    "blocked_pr_handoff",
+                )
+                .await;
+            }
+        };
         let pull_request = extract_pull_requests_from_tool_result(&result)
             .into_iter()
             .next()
-            .ok_or(StatusCode::BAD_GATEWAY)?;
+            .ok_or_else(|| {
+                tracing::warn!(
+                    "github create pull request returned no pull request for coder run {}",
+                    record.coder_run_id
+                );
+                StatusCode::BAD_GATEWAY
+            })?;
         let submitted_github_ref =
             parse_coder_github_ref(&github_ref_from_pull_request(&pull_request))
                 .ok_or(StatusCode::BAD_GATEWAY)?;
@@ -1522,7 +1569,43 @@ pub(super) async fn coder_issue_fix_pr_submit(
             extra
         });
     }
-    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    let run = if !dry_run {
+        let pr_url = submission_payload
+            .get("pull_request")
+            .and_then(|row| {
+                row.get("html_url")
+                    .or_else(|| row.get("url"))
+                    .and_then(Value::as_str)
+            })
+            .map(ToString::to_string);
+        record.pr_url = pr_url.clone();
+        record.branch_name = Some(head_branch.to_string());
+        record.handoff_status = Some("pr_submitted".to_string());
+        record.completion_gate = Some(json!({
+            "status": "satisfied",
+            "reason": "pr_handoff_submitted",
+            "message": "Issue fix has a pull request handoff and can move to review.",
+            "pr_url": pr_url,
+            "artifact_path": artifact.path,
+        }));
+        record.updated_at_ms = crate::now_ms();
+        save_coder_run_record(&state, &record).await?;
+        let transitioned = coder_run_transition(
+            &state,
+            &record,
+            "run_completed",
+            ContextRunStatus::Completed,
+            Some("PR handoff submitted; moving implementation work to review.".to_string()),
+        )
+        .await?;
+        transitioned
+            .get("run")
+            .cloned()
+            .and_then(|row| serde_json::from_value::<ContextRunState>(row).ok())
+            .unwrap_or(load_context_run_state(&state, &record.linked_context_run_id).await?)
+    } else {
+        load_context_run_state(&state, &record.linked_context_run_id).await?
+    };
     Ok(Json(json!({
         "ok": true,
         "artifact": artifact,

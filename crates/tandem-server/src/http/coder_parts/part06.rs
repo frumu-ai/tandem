@@ -90,21 +90,42 @@ async fn run_issue_fix_worker_session(
             }),
         ));
 
+        let strict_issue_fix_worker =
+            record.workflow_mode == CoderWorkflowMode::IssueFix && worker_kind.starts_with("issue_fix_");
         let request = SendMessageRequest {
             parts: vec![MessagePartInput::Text {
-                text: format!(
-                    "Managed worker workspace: {worker_workspace_root}\nCanonical repo root: {canonical_repo_root}\n\n{}",
-                    prompt
+                text: build_coder_worker_contract_prompt(
+                    &worker_workspace_root,
+                    &canonical_repo_root,
+                    worker_kind,
+                    &prompt,
                 ),
             }],
             model: Some(model.clone()),
             agent: agent_id.clone().or_else(|| Some(worker_kind.to_string())),
-            tool_mode: Some(tandem_types::ToolMode::Auto),
+            tool_mode: Some(if strict_issue_fix_worker {
+                tandem_types::ToolMode::Required
+            } else {
+                tandem_types::ToolMode::Auto
+            }),
             tool_allowlist: None,
             strict_kb_grounding: None,
             context_mode: Some(tandem_types::ContextMode::Full),
             write_required: Some(true),
-            prewrite_requirements: None,
+            prewrite_requirements: strict_issue_fix_worker.then_some(
+                tandem_types::PrewriteRequirements {
+                    workspace_inspection_required: true,
+                    concrete_read_required: true,
+                    web_research_required: false,
+                    successful_web_research_required: false,
+                    repair_on_unmet_requirements: true,
+                    repair_budget: Some(3),
+                    repair_exhaustion_behavior: Some(
+                        tandem_types::PrewriteRepairExhaustionBehavior::FailClosed,
+                    ),
+                    coverage_mode: tandem_types::PrewriteCoverageMode::FilesReviewedBacked,
+                },
+            ),
         };
 
         state
@@ -137,7 +158,7 @@ async fn run_issue_fix_worker_session(
         let assistant_text = latest_assistant_session_text(&session);
         let tool_invocation_count = count_session_tool_invocations(&session);
         let changed_file_entries = extract_session_change_evidence(&session);
-        let changed_files = changed_file_entries
+        let session_changed_files = changed_file_entries
             .iter()
             .filter_map(|row| {
                 row.get("path")
@@ -145,6 +166,22 @@ async fn run_issue_fix_worker_session(
                     .map(ToString::to_string)
             })
             .collect::<Vec<_>>();
+        let git_evidence = collect_git_handoff_evidence(&worker_workspace_root).await;
+        let mut changed_files = git_evidence
+            .get("changed_files")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for path in session_changed_files {
+            if !changed_files.contains(&path) {
+                changed_files.push(path);
+            }
+        }
         let payload = json!({
             "coder_run_id": record.coder_run_id,
             "linked_context_run_id": record.linked_context_run_id,
@@ -158,6 +195,18 @@ async fn run_issue_fix_worker_session(
             "worker_workspace_branch": managed_worktree.as_ref().map(|row| row.record.branch.clone()),
             "worker_workspace_reused": managed_worktree.as_ref().map(|row| row.reused),
             "worker_workspace_cleanup_branch": managed_worktree.as_ref().map(|row| row.record.cleanup_branch),
+            "managed_worktree": managed_worktree.as_ref().map(|row| json!({
+                "key": row.record.key,
+                "path": row.record.path,
+                "repo_root": row.record.repo_root,
+                "branch": row.record.branch,
+                "base": row.record.base,
+                "task_id": row.record.task_id,
+                "owner_run_id": row.record.owner_run_id,
+                "lease_id": row.record.lease_id,
+                "cleanup_branch": row.record.cleanup_branch,
+                "reused": row.reused,
+            })),
             "session_id": session_id,
             "session_run_id": run_id,
             "session_context_run_id": worker_context_run_id,
@@ -170,6 +219,7 @@ async fn run_issue_fix_worker_session(
             "tool_invocation_count": tool_invocation_count,
             "changed_files": changed_files,
             "changed_file_entries": changed_file_entries,
+            "git_evidence": git_evidence,
             "message_count": session.messages.len(),
             "messages": compact_session_messages(&session),
             "error": run_result.as_ref().err().map(|error| crate::truncate_text(&error.to_string(), 500)),
@@ -206,8 +256,12 @@ async fn run_issue_fix_worker_session(
         Ok::<_, StatusCode>((artifact, payload, run_result.is_ok()))
     }
     .await;
-    if let Some(worktree) = managed_worktree.as_ref() {
-        let _ = crate::runtime::worktrees::delete_managed_worktree(state, &worktree.record).await;
+    let preserve_worktree = worker_kind.starts_with("issue_fix_");
+    if !preserve_worktree {
+        if let Some(worktree) = managed_worktree.as_ref() {
+            let _ =
+                crate::runtime::worktrees::delete_managed_worktree(state, &worktree.record).await;
+        }
     }
     let (artifact, payload, run_ok) = result?;
     if !run_ok {
@@ -239,6 +293,188 @@ async fn prepare_coder_worker_workspace(
     )
     .await
     .ok()
+}
+
+fn build_coder_worker_contract_prompt(
+    worker_workspace_root: &str,
+    canonical_repo_root: &str,
+    worker_kind: &str,
+    prompt: &str,
+) -> String {
+    format!(
+        concat!(
+            "Managed worker workspace: {worker_workspace_root}\n",
+            "Canonical repo root: {canonical_repo_root}\n",
+            "Worker kind: {worker_kind}\n\n",
+            "Tandem coder contract:\n",
+            "1. Inspect the repository before deciding what to edit. Prefer fast file search and read concrete files before patching.\n",
+            "2. Check scoped agent instructions such as AGENTS.md when they exist in or above files you touch.\n",
+            "3. For code-change work, produce an actual workspace diff. Use edit/apply_patch/write tools; a prose-only answer is not complete.\n",
+            "4. Keep the change constrained to the issue, run targeted validation, and repair the smallest root cause if validation fails.\n",
+            "5. End with Summary, Changed Files, Validation, Residual Risk, and Handoff headings.\n\n",
+            "{prompt}"
+        ),
+        worker_workspace_root = worker_workspace_root,
+        canonical_repo_root = canonical_repo_root,
+        worker_kind = worker_kind,
+        prompt = prompt,
+    )
+}
+
+async fn collect_git_handoff_evidence(workspace_root: &str) -> Value {
+    let workspace_root = workspace_root.to_string();
+    tokio::task::spawn_blocking(move || {
+        let status = std::process::Command::new("git")
+            .args(["-C", &workspace_root, "status", "--porcelain"])
+            .output();
+        let diff = std::process::Command::new("git")
+            .args(["-C", &workspace_root, "diff", "--", "."])
+            .output();
+        let head = std::process::Command::new("git")
+            .args(["-C", &workspace_root, "rev-parse", "HEAD"])
+            .output();
+        let branch = std::process::Command::new("git")
+            .args(["-C", &workspace_root, "branch", "--show-current"])
+            .output();
+
+        let status_text = status
+            .as_ref()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+            .unwrap_or_default();
+        let mut changed_files = status_text
+            .lines()
+            .filter_map(|line| {
+                let path = line.get(3..).unwrap_or_default().trim();
+                if path.is_empty() {
+                    None
+                } else {
+                    Some(path.trim_matches('"').to_string())
+                }
+            })
+            .collect::<Vec<_>>();
+        changed_files.sort();
+        changed_files.dedup();
+        json!({
+            "workspace_root": workspace_root,
+            "changed_files": changed_files,
+            "status_porcelain": status_text,
+            "diff": diff
+                .as_ref()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| crate::truncate_text(String::from_utf8_lossy(&output.stdout).as_ref(), 48_000))
+                .unwrap_or_default(),
+            "commit_sha": head
+                .as_ref()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
+            "branch_name": branch
+                .as_ref()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
+            "ok": status.as_ref().map(|output| output.status.success()).unwrap_or(false),
+        })
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "ok": false,
+            "error": crate::truncate_text(&error.to_string(), 500),
+            "changed_files": [],
+        })
+    })
+}
+
+async fn update_coder_run_handoff_from_worker(
+    state: &AppState,
+    record: &CoderRunRecord,
+    worker_payload: &Value,
+    validation_status: Option<&str>,
+    handoff_status: Option<&str>,
+    completion_gate: Option<Value>,
+) -> Result<CoderRunRecord, StatusCode> {
+    let mut updated = load_coder_run_record(state, &record.coder_run_id).await?;
+    if let Some(session_id) = worker_payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    {
+        updated.worker_session_id = Some(session_id);
+    }
+    if let Some(run_id) = worker_payload
+        .get("session_run_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    {
+        updated.worker_run_id = Some(run_id);
+    }
+    if let Some(managed_worktree) = worker_payload.get("managed_worktree").cloned() {
+        updated.managed_worktree = Some(managed_worktree);
+    }
+    if let Some(branch_name) = worker_payload
+        .get("git_evidence")
+        .and_then(|row| row.get("branch_name"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            worker_payload
+                .get("worker_workspace_branch")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+    {
+        updated.branch_name = Some(branch_name);
+    }
+    if let Some(commit_sha) = worker_payload
+        .get("git_evidence")
+        .and_then(|row| row.get("commit_sha"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    {
+        updated.commit_sha = Some(commit_sha);
+    }
+    let changed_files = worker_payload
+        .get("changed_files")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|rows| !rows.is_empty());
+    if changed_files.is_some() {
+        updated.changed_files = changed_files;
+    }
+    if let Some(validation_status) = validation_status {
+        updated.validation_status = Some(validation_status.to_string());
+    }
+    if let Some(handoff_status) = handoff_status {
+        updated.handoff_status = Some(handoff_status.to_string());
+    }
+    if let Some(completion_gate) = completion_gate {
+        updated.completion_gate = Some(completion_gate);
+    }
+    updated.updated_at_ms = crate::now_ms();
+    save_coder_run_record(state, &updated).await?;
+    Ok(updated)
+}
+
+fn worker_payload_has_patch(worker_payload: &Value) -> bool {
+    worker_payload
+        .get("changed_files")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty())
+        || worker_payload
+            .get("git_evidence")
+            .and_then(|row| row.get("diff"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|text| !text.is_empty())
 }
 
 async fn run_issue_fix_prepare_worker(
@@ -440,6 +676,16 @@ fn coder_run_payload(record: &CoderRunRecord, context_run: &ContextRunState) -> 
         "origin_policy": record.origin_policy,
         "github_project_ref": record.github_project_ref,
         "remote_sync_state": coder_run_sync_state(record),
+        "worker_session_id": record.worker_session_id,
+        "worker_run_id": record.worker_run_id,
+        "managed_worktree": record.managed_worktree,
+        "branch_name": record.branch_name,
+        "commit_sha": record.commit_sha,
+        "pr_url": record.pr_url,
+        "changed_files": record.changed_files,
+        "validation_status": record.validation_status,
+        "handoff_status": record.handoff_status,
+        "completion_gate": record.completion_gate,
         "status": context_run.status,
         "phase": project_coder_phase(context_run),
         "created_at_ms": record.created_at_ms,
@@ -1024,6 +1270,16 @@ async fn coder_run_create_inner(
         origin_policy: input.origin_policy,
         github_project_ref: None,
         remote_sync_state: None,
+        worker_session_id: None,
+        worker_run_id: None,
+        managed_worktree: None,
+        branch_name: None,
+        commit_sha: None,
+        pr_url: None,
+        changed_files: None,
+        validation_status: None,
+        handoff_status: None,
+        completion_gate: None,
         created_at_ms: now,
         updated_at_ms: now,
     };
@@ -1260,632 +1516,4 @@ pub(super) async fn coder_run_create(
     Json(input): Json<CoderRunCreateInput>,
 ) -> Result<Response, StatusCode> {
     coder_run_create_inner(state, input).await
-}
-
-pub(super) async fn coder_project_run_create(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-    Json(input): Json<CoderProjectRunCreateInput>,
-) -> Result<Response, StatusCode> {
-    let project_id = project_id.trim();
-    if project_id.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let Some(binding) = load_coder_project_binding(&state, project_id).await? else {
-        return Ok((
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "Coder project binding is required before creating a project-scoped run",
-                "code": "CODER_PROJECT_BINDING_REQUIRED",
-                "project_id": project_id,
-            })),
-        )
-            .into_response());
-    };
-    coder_run_create_inner(
-        state,
-        CoderRunCreateInput {
-            coder_run_id: input.coder_run_id,
-            workflow_mode: input.workflow_mode,
-            repo_binding: binding.repo_binding,
-            github_ref: input.github_ref,
-            objective: input.objective,
-            source_client: input.source_client,
-            workspace: input.workspace,
-            model_provider: input.model_provider,
-            model_id: input.model_id,
-            mcp_servers: input.mcp_servers,
-            parent_coder_run_id: input.parent_coder_run_id,
-            origin: input.origin,
-            origin_artifact_type: input.origin_artifact_type,
-            origin_policy: input.origin_policy,
-        },
-    )
-    .await
-}
-
-pub(super) async fn coder_run_list(
-    State(state): State<AppState>,
-    Query(query): Query<CoderRunListQuery>,
-) -> Result<Json<Value>, StatusCode> {
-    ensure_coder_runs_dir(&state).await?;
-    let mut rows = Vec::<Value>::new();
-    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
-    let mut dir = tokio::fs::read_dir(coder_runs_root(&state))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    while let Ok(Some(entry)) = dir.next_entry().await {
-        if !entry
-            .file_type()
-            .await
-            .map(|row| row.is_file())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let raw = tokio::fs::read_to_string(entry.path())
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let Ok(record) = serde_json::from_str::<CoderRunRecord>(&raw) else {
-            continue;
-        };
-        if query
-            .workflow_mode
-            .as_ref()
-            .is_some_and(|mode| mode != &record.workflow_mode)
-        {
-            continue;
-        }
-        if query
-            .repo_slug
-            .as_deref()
-            .map(str::trim)
-            .filter(|row| !row.is_empty())
-            .is_some_and(|repo_slug| repo_slug != record.repo_binding.repo_slug)
-        {
-            continue;
-        }
-        let Ok(run) = load_context_run_state(&state, &record.linked_context_run_id).await else {
-            continue;
-        };
-        let mut row = coder_run_payload(&record, &run);
-        if let Some(obj) = row.as_object_mut() {
-            obj.insert(
-                "execution_policy".to_string(),
-                coder_execution_policy_summary(&state, &record).await?,
-            );
-        }
-        rows.push(row);
-    }
-    rows.sort_by(|a, b| {
-        b.get("updated_at_ms")
-            .and_then(Value::as_u64)
-            .cmp(&a.get("updated_at_ms").and_then(Value::as_u64))
-    });
-    rows.truncate(limit);
-    Ok(Json(json!({ "runs": rows })))
-}
-
-pub(super) async fn coder_run_get(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let record = load_coder_run_record(&state, &id).await?;
-    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
-    let blackboard = load_context_blackboard(&state, &record.linked_context_run_id);
-    let memory_query = default_coder_memory_query(&record);
-    let memory_hits = if matches!(
-        record.workflow_mode,
-        CoderWorkflowMode::IssueTriage
-            | CoderWorkflowMode::IssueFix
-            | CoderWorkflowMode::PrReview
-            | CoderWorkflowMode::MergeRecommendation
-    ) {
-        collect_coder_memory_hits(&state, &record, &memory_query, 8).await?
-    } else {
-        Vec::new()
-    };
-    let memory_candidates = list_repo_memory_candidates(
-        &state,
-        &record.repo_binding.repo_slug,
-        record.github_ref.as_ref(),
-        20,
-    )
-    .await?;
-    let serialized_artifacts = serialize_coder_artifacts(&blackboard.artifacts).await;
-    Ok(Json(json!({
-        "coder_run": coder_run_payload(&record, &run),
-        "execution_policy": coder_execution_policy_summary(&state, &record).await?,
-        "merge_submit_policy": coder_merge_submit_policy_summary(&state, &record).await?,
-        "run": run,
-        "artifacts": blackboard.artifacts,
-        "coder_artifacts": serialized_artifacts,
-        "memory_hits": {
-            "query": memory_query,
-            "retrieval_policy": coder_memory_retrieval_policy(&record, &memory_query, 8),
-            "hits": memory_hits,
-        },
-        "memory_candidates": memory_candidates,
-    })))
-}
-
-pub(super) async fn coder_project_policy_get(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    if project_id.trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let policy = load_coder_project_policy(&state, project_id.trim()).await?;
-    Ok(Json(json!({
-        "project_policy": policy,
-    })))
-}
-
-pub(super) async fn coder_project_get(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let project_id = project_id.trim();
-    if project_id.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    ensure_coder_runs_dir(&state).await?;
-    let project_policy = load_coder_project_policy(&state, project_id).await?;
-    let explicit_binding = load_coder_project_binding(&state, project_id).await?;
-    let mut run_records = Vec::<CoderRunRecord>::new();
-    let mut dir = tokio::fs::read_dir(coder_runs_root(&state))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    while let Ok(Some(entry)) = dir.next_entry().await {
-        if !entry
-            .file_type()
-            .await
-            .map(|row| row.is_file())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let raw = tokio::fs::read_to_string(entry.path())
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let Ok(record) = serde_json::from_str::<CoderRunRecord>(&raw) else {
-            continue;
-        };
-        if record.repo_binding.project_id == project_id {
-            run_records.push(record);
-        }
-    }
-    run_records.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
-    let summary_repo_binding = explicit_binding
-        .as_ref()
-        .map(|row| row.repo_binding.clone())
-        .or_else(|| run_records.first().map(|row| row.repo_binding.clone()));
-    let Some(repo_binding) = summary_repo_binding else {
-        return Ok(Json(json!({
-            "project": null,
-            "binding": explicit_binding,
-            "project_policy": project_policy,
-            "recent_runs": [],
-        })));
-    };
-    let mut workflow_modes = run_records
-        .iter()
-        .map(|row| row.workflow_mode.clone())
-        .collect::<Vec<_>>();
-    workflow_modes.sort_by_key(|mode| match mode {
-        CoderWorkflowMode::IssueFix => 0,
-        CoderWorkflowMode::IssueTriage => 1,
-        CoderWorkflowMode::MergeRecommendation => 2,
-        CoderWorkflowMode::PrReview => 3,
-    });
-    workflow_modes.dedup();
-    let summary = CoderProjectSummary {
-        project_id: project_id.to_string(),
-        repo_binding,
-        latest_coder_run_id: run_records.first().map(|row| row.coder_run_id.clone()),
-        latest_updated_at_ms: run_records
-            .first()
-            .map(|row| row.updated_at_ms)
-            .unwrap_or(0),
-        run_count: run_records.len() as u64,
-        workflow_modes,
-        project_policy: project_policy.clone(),
-    };
-    let mut recent_runs = Vec::new();
-    for record in run_records.iter().take(10) {
-        let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
-        recent_runs.push(json!({
-            "coder_run": coder_run_payload(record, &run),
-            "execution_policy": coder_execution_policy_summary(&state, record).await?,
-            "merge_submit_policy": coder_merge_submit_policy_summary(&state, record).await?,
-        }));
-    }
-    Ok(Json(json!({
-        "project": summary,
-        "binding": explicit_binding,
-        "project_policy": project_policy,
-        "recent_runs": recent_runs,
-    })))
-}
-
-pub(super) async fn coder_project_list(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, StatusCode> {
-    ensure_coder_runs_dir(&state).await?;
-    let mut projects = std::collections::BTreeMap::<String, CoderProjectSummary>::new();
-    let mut dir = tokio::fs::read_dir(coder_runs_root(&state))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    while let Ok(Some(entry)) = dir.next_entry().await {
-        if !entry
-            .file_type()
-            .await
-            .map(|row| row.is_file())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let raw = tokio::fs::read_to_string(entry.path())
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let Ok(record) = serde_json::from_str::<CoderRunRecord>(&raw) else {
-            continue;
-        };
-        let project_id = record.repo_binding.project_id.clone();
-        let project_policy = load_coder_project_policy(&state, &project_id).await?;
-        let explicit_binding = load_coder_project_binding(&state, &project_id).await?;
-        let entry = projects
-            .entry(project_id.clone())
-            .or_insert_with(|| CoderProjectSummary {
-                project_id: project_id.clone(),
-                repo_binding: explicit_binding
-                    .as_ref()
-                    .map(|row| row.repo_binding.clone())
-                    .unwrap_or_else(|| record.repo_binding.clone()),
-                latest_coder_run_id: Some(record.coder_run_id.clone()),
-                latest_updated_at_ms: record.updated_at_ms,
-                run_count: 0,
-                workflow_modes: Vec::new(),
-                project_policy,
-            });
-        entry.run_count += 1;
-        if !entry.workflow_modes.contains(&record.workflow_mode) {
-            entry.workflow_modes.push(record.workflow_mode.clone());
-        }
-        if record.updated_at_ms >= entry.latest_updated_at_ms {
-            entry.latest_updated_at_ms = record.updated_at_ms;
-            entry.latest_coder_run_id = Some(record.coder_run_id.clone());
-            entry.repo_binding = explicit_binding
-                .as_ref()
-                .map(|row| row.repo_binding.clone())
-                .unwrap_or_else(|| record.repo_binding.clone());
-        }
-    }
-    let mut rows = projects.into_values().collect::<Vec<_>>();
-    for row in &mut rows {
-        row.workflow_modes.sort_by_key(|mode| match mode {
-            CoderWorkflowMode::IssueFix => 0,
-            CoderWorkflowMode::IssueTriage => 1,
-            CoderWorkflowMode::MergeRecommendation => 2,
-            CoderWorkflowMode::PrReview => 3,
-        });
-    }
-    rows.sort_by(|a, b| b.latest_updated_at_ms.cmp(&a.latest_updated_at_ms));
-    Ok(Json(json!({
-        "projects": rows,
-    })))
-}
-
-pub(super) async fn coder_project_binding_get(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    if project_id.trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(Json(json!({
-        "binding": load_coder_project_binding(&state, project_id.trim()).await?,
-    })))
-}
-
-pub(super) async fn coder_project_run_list(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-    Query(query): Query<CoderProjectRunListQuery>,
-) -> Result<Json<Value>, StatusCode> {
-    let project_id = project_id.trim();
-    if project_id.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    ensure_coder_runs_dir(&state).await?;
-    let limit = query.limit.unwrap_or(50).clamp(1, 500);
-    let mut rows = Vec::<Value>::new();
-    let mut dir = tokio::fs::read_dir(coder_runs_root(&state))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    while let Ok(Some(entry)) = dir.next_entry().await {
-        if !entry
-            .file_type()
-            .await
-            .map(|row| row.is_file())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let raw = tokio::fs::read_to_string(entry.path())
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let Ok(record) = serde_json::from_str::<CoderRunRecord>(&raw) else {
-            continue;
-        };
-        if record.repo_binding.project_id != project_id {
-            continue;
-        }
-        let Ok(run) = load_context_run_state(&state, &record.linked_context_run_id).await else {
-            continue;
-        };
-        rows.push(json!({
-            "coder_run": coder_run_payload(&record, &run),
-            "execution_policy": coder_execution_policy_summary(&state, &record).await?,
-            "merge_submit_policy": coder_merge_submit_policy_summary(&state, &record).await?,
-            "run": run,
-        }));
-    }
-    rows.sort_by(|a, b| {
-        b.get("coder_run")
-            .and_then(|row| row.get("updated_at_ms"))
-            .and_then(Value::as_u64)
-            .cmp(
-                &a.get("coder_run")
-                    .and_then(|row| row.get("updated_at_ms"))
-                    .and_then(Value::as_u64),
-            )
-    });
-    rows.truncate(limit);
-    Ok(Json(json!({
-        "project_id": project_id,
-        "runs": rows,
-    })))
-}
-
-pub(super) async fn coder_project_binding_put(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, StatusCode> {
-    let project_id = project_id.trim().to_string();
-    if project_id.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let parsed = parse_coder_project_binding_put_input(&project_id, input)?;
-    let existing = load_coder_project_binding(&state, &project_id).await?;
-    let mut repo_binding = parsed
-        .repo_binding
-        .or_else(|| existing.as_ref().map(|row| row.repo_binding.clone()))
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    if repo_binding.workspace_id.trim().is_empty()
-        || repo_binding.workspace_root.trim().is_empty()
-        || repo_binding.repo_slug.trim().is_empty()
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    repo_binding.project_id = project_id.to_string();
-    let github_project_binding = match parsed.github_project_binding {
-        Some(request) => Some(
-            GithubProjectsAdapter::new(&state)
-                .discover_binding(&request)
-                .await?,
-        ),
-        None => existing.and_then(|row| row.github_project_binding),
-    };
-    let binding = CoderProjectBinding {
-        project_id: project_id.to_string(),
-        repo_binding,
-        github_project_binding,
-        updated_at_ms: crate::now_ms(),
-    };
-    save_coder_project_binding(&state, &binding).await?;
-    Ok(Json(json!({
-        "ok": true,
-        "binding": binding,
-    })))
-}
-
-pub(super) async fn coder_project_github_project_inbox(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let project_id = project_id.trim();
-    if project_id.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let binding = load_coder_project_binding(&state, project_id)
-        .await?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let github_project_binding = binding
-        .github_project_binding
-        .clone()
-        .ok_or(StatusCode::CONFLICT)?;
-    let adapter = GithubProjectsAdapter::new(&state);
-    let live_binding = adapter
-        .discover_binding(&CoderGithubProjectBindingRequest {
-            owner: github_project_binding.owner.clone(),
-            project_number: github_project_binding.project_number,
-            repo_slug: github_project_binding.repo_slug.clone(),
-            mcp_server: github_project_binding.mcp_server.clone(),
-        })
-        .await?;
-    let schema_drift = live_binding.schema_fingerprint != github_project_binding.schema_fingerprint;
-    let items = adapter.list_inbox_items(&github_project_binding).await?;
-    let mut rows = Vec::new();
-    for item in items {
-        let linked = find_latest_project_item_run(&state, &item.project_item_id).await?;
-        let actionable = item.issue.is_some()
-            && status_alias_matches(
-                &item.status_name,
-                &[&github_project_binding.status_mapping.todo.name],
-            );
-        let remote_sync_state = if schema_drift {
-            CoderRemoteSyncState::SchemaDrift
-        } else if let Some((record, run)) = linked.as_ref() {
-            let expected = context_status_to_project_option(
-                &record
-                    .github_project_ref
-                    .as_ref()
-                    .map(|row| row.status_mapping.clone())
-                    .unwrap_or_else(|| github_project_binding.status_mapping.clone()),
-                &run.status,
-            );
-            if item.status_option_id.as_deref() == Some(expected.id.as_str()) {
-                coder_run_sync_state(record)
-            } else {
-                CoderRemoteSyncState::RemoteStateDiverged
-            }
-        } else {
-            CoderRemoteSyncState::InSync
-        };
-        rows.push(json!({
-            "project_item_id": item.project_item_id,
-            "title": item.title,
-            "status_name": item.status_name,
-            "status_option_id": item.status_option_id,
-            "issue": item.issue,
-            "actionable": actionable,
-            "unsupported_reason": if item.issue.is_none() { Some("unsupported_item_type") } else { None::<&str> },
-            "linked_run": linked.as_ref().map(|(record, run)| json!({
-                "coder_run": coder_run_payload(record, run),
-                "active": !is_terminal_context_status(&run.status),
-            })),
-            "remote_sync_state": remote_sync_state,
-        }));
-    }
-    Ok(Json(json!({
-        "project_id": project_id,
-        "binding": github_project_binding,
-        "schema_drift": schema_drift,
-        "live_schema_fingerprint": live_binding.schema_fingerprint,
-        "items": rows,
-    })))
-}
-
-pub(super) async fn coder_project_github_project_intake(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-    Json(input): Json<CoderGithubProjectIntakeInput>,
-) -> Result<Response, StatusCode> {
-    let project_id = project_id.trim();
-    if project_id.is_empty() || input.project_item_id.trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let _guard = coder_project_intake_lock().lock().await;
-    let Some(binding) = load_coder_project_binding(&state, project_id).await? else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-    let Some(github_project_binding) = binding.github_project_binding.clone() else {
-        return Ok((
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "GitHub Project binding is required before intake",
-                "code": "CODER_GITHUB_PROJECT_BINDING_REQUIRED",
-            })),
-        )
-            .into_response());
-    };
-    if let Some((record, run)) =
-        find_latest_project_item_run(&state, &input.project_item_id).await?
-    {
-        if !is_terminal_context_status(&run.status) {
-            return Ok(Json(json!({
-                "ok": true,
-                "deduped": true,
-                "coder_run": coder_run_payload(&record, &run),
-                "run": run,
-            }))
-            .into_response());
-        }
-    }
-    let adapter = GithubProjectsAdapter::new(&state);
-    let items = adapter.list_inbox_items(&github_project_binding).await?;
-    let item = items
-        .into_iter()
-        .find(|row| row.project_item_id == input.project_item_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let issue = item.issue.ok_or(StatusCode::CONFLICT)?;
-    if !status_alias_matches(
-        &item.status_name,
-        &[&github_project_binding.status_mapping.todo.name],
-    ) {
-        return Ok((
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "Project item is not in the configured TODO state",
-                "code": "CODER_GITHUB_PROJECT_ITEM_NOT_TODO",
-                "status_name": item.status_name,
-            })),
-        )
-            .into_response());
-    }
-    let response = coder_run_create_inner(
-        state.clone(),
-        CoderRunCreateInput {
-            coder_run_id: input.coder_run_id,
-            workflow_mode: CoderWorkflowMode::IssueTriage,
-            repo_binding: binding.repo_binding.clone(),
-            github_ref: Some(CoderGithubRef {
-                kind: CoderGithubRefKind::Issue,
-                number: issue.number,
-                url: issue.html_url.clone(),
-            }),
-            objective: None,
-            source_client: input.source_client,
-            workspace: input.workspace,
-            model_provider: input.model_provider,
-            model_id: input.model_id,
-            mcp_servers: input.mcp_servers.or_else(|| {
-                github_project_binding
-                    .mcp_server
-                    .clone()
-                    .map(|row| vec![row])
-            }),
-            parent_coder_run_id: None,
-            origin: Some("github_project_intake".to_string()),
-            origin_artifact_type: Some("github_project_item".to_string()),
-            origin_policy: Some(json!({
-                "source": "github_project_intake",
-                "project_item_id": item.project_item_id,
-            })),
-        },
-    )
-    .await?;
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut payload: Value =
-        serde_json::from_slice(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let coder_run_id = payload
-        .get("coder_run")
-        .and_then(|row| row.get("coder_run_id"))
-        .and_then(Value::as_str)
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut record = load_coder_run_record(&state, coder_run_id).await?;
-    record.github_project_ref = Some(CoderGithubProjectRef {
-        owner: github_project_binding.owner.clone(),
-        project_number: github_project_binding.project_number,
-        project_item_id: item.project_item_id.clone(),
-        issue_number: issue.number,
-        issue_url: issue.html_url.clone(),
-        schema_fingerprint: github_project_binding.schema_fingerprint.clone(),
-        status_mapping: github_project_binding.status_mapping.clone(),
-    });
-    record.remote_sync_state = Some(CoderRemoteSyncState::InSync);
-    save_coder_run_record(&state, &record).await?;
-    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
-    maybe_sync_github_project_status(&state, &mut record, &run).await?;
-    if let Some(obj) = payload.as_object_mut() {
-        obj.insert("coder_run".to_string(), coder_run_payload(&record, &run));
-        obj.insert("run".to_string(), json!(run));
-        obj.insert("deduped".to_string(), json!(false));
-    }
-    Ok(Json(payload).into_response())
 }

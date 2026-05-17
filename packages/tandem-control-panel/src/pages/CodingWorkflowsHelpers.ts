@@ -134,6 +134,20 @@ export function normalizeGithubBoard(raw: any) {
           issueNumber: item?.issue_number || item?.issueNumber || null,
           issueUrl: String(item?.issue_url || item?.issueUrl || "").trim(),
           repoName: String(item?.repo_name || item?.repoName || "").trim(),
+          isParent: item?.is_parent === true || item?.isParent === true,
+          parentIssueNumber: item?.parent_issue_number || item?.parentIssueNumber || null,
+          parentTitle: String(item?.parent_title || item?.parentTitle || "").trim(),
+          phase: item?.phase ?? null,
+          order: item?.order ?? null,
+          schedulerRank: item?.scheduler_rank ?? item?.schedulerRank ?? null,
+          runnableNow: item?.runnable_now ?? item?.runnableNow ?? null,
+          runState: String(item?.run_state || item?.runState || "").trim(),
+          activeRunId: String(item?.active_run_id || item?.activeRunId || "").trim(),
+          handoffUrl: String(item?.handoff_url || item?.handoffUrl || "").trim(),
+          launchState: String(item?.launch_state || item?.launchState || "").trim(),
+          blockedBy: Array.isArray(item?.blocked_by)
+            ? item.blocked_by.map((value: any) => String(value || "").trim()).filter(Boolean)
+            : [],
           actionable: item?.actionable === true,
           selector: String(
             item?.project_item_id ||
@@ -152,6 +166,7 @@ export function normalizeGithubBoard(raw: any) {
     warning: String(raw?.warning || "").trim(),
     isStale: raw?.is_stale === true,
     lastSyncedAtMs: Number(raw?.last_synced_at_ms || raw?.lastSyncedAtMs || 0),
+    scheduler: raw?.scheduler || {},
   };
 }
 
@@ -256,7 +271,30 @@ export function githubBoardItemCanRun(item: any) {
   const rawStatusKey = normalizeGithubStatusKey(item?.statusKey);
   const statusNameKey = normalizeGithubStatusKey(item?.statusName);
   const statusKey = rawStatusKey && rawStatusKey !== "unknown" ? rawStatusKey : statusNameKey;
+  const titleKey = String(item?.title || "").toLowerCase();
   if (!item?.selector) return false;
+  if (
+    item?.isParent === true ||
+    item?.is_parent === true ||
+    titleKey.includes("[aca slice parent]") ||
+    titleKey.includes("slice parent")
+  ) {
+    return false;
+  }
+  const runnableNow =
+    item?.runnableNow ?? item?.runnable_now ?? item?.schedulerApproved ?? item?.scheduler_approved;
+  if (runnableNow === false) return false;
+  if (runnableNow === true) return item?.actionable === true;
+  const launchState = String(item?.launchState || item?.launch_state || "").trim();
+  if (launchState) {
+    const launchKey = normalizeGithubStatusKey(launchState);
+    return (
+      item?.actionable === true &&
+      ["next", "next_runnable", "runnable_now", "actionable", "scheduler_approved"].includes(
+        launchKey
+      )
+    );
+  }
   if (
     [
       "blocked",
@@ -274,7 +312,25 @@ export function githubBoardItemCanRun(item: any) {
   ) {
     return false;
   }
-  return item?.actionable === true || ["ready", "backlog", "todo", "todos"].includes(statusKey);
+  return item?.actionable === true;
+}
+
+export function githubBoardItemLaunchLabel(item: any) {
+  if (githubBoardItemCanRun(item)) return "Run task";
+  if (!item?.selector) return "Missing GitHub issue";
+  const titleKey = String(item?.title || "").toLowerCase();
+  if (
+    item?.isParent === true ||
+    item?.is_parent === true ||
+    titleKey.includes("[aca slice parent]") ||
+    titleKey.includes("slice parent")
+  ) {
+    return "Parent plan";
+  }
+  const launchState = String(item?.launchState || item?.launch_state || "").trim();
+  if (launchState) return formatStatus(launchState);
+  if (Number(item?.phase) === 99) return "Gate";
+  return "Waiting for scheduler";
 }
 
 export function resolveGithubProjectLaunchStatus(snapshot: any | null) {

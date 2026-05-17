@@ -1,5 +1,5 @@
-
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_submit_blocks_when_execution_request_is_not_merge_ready() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -173,6 +173,7 @@ async fn coder_merge_submit_blocks_when_execution_request_is_not_merge_ready() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_submit_blocks_auto_mode_without_opt_in() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -310,6 +311,7 @@ async fn coder_merge_submit_blocks_auto_mode_without_opt_in() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_submit_blocks_auto_mode_for_manual_follow_on() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -606,6 +608,7 @@ async fn coder_merge_submit_blocks_auto_mode_for_manual_follow_on() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_policy_reports_auto_execute_eligibility_when_project_enabled() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -876,6 +879,7 @@ async fn coder_merge_policy_reports_auto_execute_eligibility_when_project_enable
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_submit_blocks_without_approved_sibling_pr_review() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -1148,6 +1152,7 @@ async fn coder_merge_submit_blocks_without_approved_sibling_pr_review() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_submit_uses_latest_completed_sibling_pr_review() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
 
@@ -1456,6 +1461,7 @@ async fn coder_merge_submit_uses_latest_completed_sibling_pr_review() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_reuses_prior_memory_hits() {
     let state = test_state().await;
     state
@@ -1663,6 +1669,7 @@ async fn coder_merge_recommendation_reuses_prior_memory_hits() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_run_approve_and_cancel_project_context_run_controls() {
     let state = test_state().await;
     state
@@ -1849,6 +1856,7 @@ async fn coder_run_approve_and_cancel_project_context_run_controls() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_triage_run_replay_matches_persisted_state_and_checkpoint() {
     let state = test_state().await;
     state

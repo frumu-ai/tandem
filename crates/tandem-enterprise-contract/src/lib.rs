@@ -10,6 +10,68 @@ pub enum EnterpriseMode {
     Required,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAuthMode {
+    #[default]
+    LocalSingleTenant,
+    HostedSingleTenant,
+    EnterpriseRequired,
+}
+
+impl RuntimeAuthMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalSingleTenant => "local_single_tenant",
+            Self::HostedSingleTenant => "hosted_single_tenant",
+            Self::EnterpriseRequired => "enterprise_required",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, ParseRuntimeAuthModeError> {
+        value.parse()
+    }
+}
+
+impl core::str::FromStr for RuntimeAuthMode {
+    type Err = ParseRuntimeAuthModeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            ""
+            | "local"
+            | "local_single_tenant"
+            | "local-single-tenant"
+            | "single_tenant"
+            | "single-tenant" => Ok(Self::LocalSingleTenant),
+            "hosted" | "hosted_single_tenant" | "hosted-single-tenant" => {
+                Ok(Self::HostedSingleTenant)
+            }
+            "enterprise" | "enterprise_required" | "enterprise-required" | "required" => {
+                Ok(Self::EnterpriseRequired)
+            }
+            _ => Err(ParseRuntimeAuthModeError),
+        }
+    }
+}
+
+impl core::fmt::Display for RuntimeAuthMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseRuntimeAuthModeError;
+
+impl core::fmt::Display for ParseRuntimeAuthModeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("invalid runtime auth mode")
+    }
+}
+
+impl std::error::Error for ParseRuntimeAuthModeError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnterpriseBridgeState {
@@ -48,6 +110,13 @@ impl RequestPrincipal {
             source: "anonymous".to_string(),
         }
     }
+
+    pub fn authenticated_user(actor_id: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            actor_id: Some(actor_id.into()),
+            source: source.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +150,42 @@ pub struct AuthorityChain {
     pub approved_by: Option<RequestPrincipal>,
 }
 
+impl AuthorityChain {
+    pub fn from_request(principal: RequestPrincipal) -> Self {
+        Self {
+            initiated_by: principal.clone(),
+            owned_by: None,
+            executed_as: ExecutionPrincipal::Request(principal),
+            approved_by: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HumanActor {
+    pub actor_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+impl HumanActor {
+    pub fn tandem_user(actor_id: impl Into<String>) -> Self {
+        Self {
+            actor_id: actor_id.into(),
+            provider: Some("tandem".to_string()),
+            issuer: None,
+            subject: None,
+            email: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LocalImplicitTenant;
 
@@ -93,6 +198,8 @@ impl LocalImplicitTenant {
 pub struct TenantContext {
     pub org_id: String,
     pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_id: Option<String>,
     #[serde(default)]
@@ -110,6 +217,7 @@ impl TenantContext {
         Self {
             org_id: LocalImplicitTenant::ORG_ID.to_string(),
             workspace_id: LocalImplicitTenant::WORKSPACE_ID.to_string(),
+            deployment_id: None,
             actor_id: None,
             source: TenantSource::LocalImplicit,
         }
@@ -123,7 +231,23 @@ impl TenantContext {
         Self {
             org_id: org_id.into(),
             workspace_id: workspace_id.into(),
+            deployment_id: None,
             actor_id,
+            source: TenantSource::Explicit,
+        }
+    }
+
+    pub fn explicit_user_workspace(
+        org_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        deployment_id: Option<String>,
+        actor_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            org_id: org_id.into(),
+            workspace_id: workspace_id.into(),
+            deployment_id,
+            actor_id: Some(actor_id.into()),
             source: TenantSource::Explicit,
         }
     }
@@ -132,7 +256,111 @@ impl TenantContext {
         self.source == TenantSource::LocalImplicit
             && self.org_id == LocalImplicitTenant::ORG_ID
             && self.workspace_id == LocalImplicitTenant::WORKSPACE_ID
+            && self.deployment_id.is_none()
             && self.actor_id.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedTenantContext {
+    pub tenant_context: TenantContext,
+    pub human_actor: HumanActor,
+    pub authority_chain: AuthorityChain,
+    pub issuer: String,
+    pub audience: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub assertion_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantContextAssertionHeader {
+    pub alg: String,
+    pub typ: String,
+    pub kid: String,
+}
+
+impl TenantContextAssertionHeader {
+    pub fn ed25519(key_id: impl Into<String>) -> Self {
+        Self {
+            alg: "EdDSA".to_string(),
+            typ: "tandem-tenant-context+jws".to_string(),
+            kid: key_id.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantContextAssertionClaims {
+    pub version: String,
+    pub issuer: String,
+    pub audience: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub assertion_id: String,
+    pub tenant_context: TenantContext,
+    pub human_actor: HumanActor,
+    pub authority_chain: AuthorityChain,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+}
+
+impl TenantContextAssertionClaims {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_v1(
+        issuer: impl Into<String>,
+        audience: impl Into<String>,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+        assertion_id: impl Into<String>,
+        tenant_context: TenantContext,
+        human_actor: HumanActor,
+        authority_chain: AuthorityChain,
+        roles: Vec<String>,
+    ) -> Self {
+        Self {
+            version: "v1".to_string(),
+            issuer: issuer.into(),
+            audience: audience.into(),
+            issued_at_ms,
+            expires_at_ms,
+            assertion_id: assertion_id.into(),
+            tenant_context,
+            human_actor,
+            authority_chain,
+            roles,
+        }
+    }
+
+    pub fn is_expired_at(&self, now_ms: u64) -> bool {
+        self.expires_at_ms <= now_ms
+    }
+}
+
+impl From<TenantContextAssertionClaims> for VerifiedTenantContext {
+    fn from(claims: TenantContextAssertionClaims) -> Self {
+        Self {
+            tenant_context: claims.tenant_context,
+            human_actor: claims.human_actor,
+            authority_chain: claims.authority_chain,
+            issuer: claims.issuer,
+            audience: claims.audience,
+            issued_at_ms: claims.issued_at_ms,
+            expires_at_ms: claims.expires_at_ms,
+            assertion_id: claims.assertion_id,
+        }
+    }
+}
+
+impl VerifiedTenantContext {
+    pub fn is_expired_at(&self, now_ms: u64) -> bool {
+        self.expires_at_ms <= now_ms
+    }
+
+    pub fn tenant_matches(&self, tenant: &TenantContext) -> bool {
+        self.tenant_context.org_id == tenant.org_id
+            && self.tenant_context.workspace_id == tenant.workspace_id
+            && self.tenant_context.deployment_id == tenant.deployment_id
     }
 }
 
@@ -306,6 +534,130 @@ mod tests {
             secret_ref.validate_for_tenant(&wrong_workspace),
             Err(SecretRefError::WorkspaceMismatch)
         ));
+    }
+
+    #[test]
+    fn explicit_user_workspace_preserves_actor_and_deployment() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "user-a",
+        );
+
+        assert_eq!(tenant.org_id, "org-a");
+        assert_eq!(tenant.workspace_id, "workspace-a");
+        assert_eq!(tenant.deployment_id.as_deref(), Some("deployment-a"));
+        assert_eq!(tenant.actor_id.as_deref(), Some("user-a"));
+        assert_eq!(tenant.source, TenantSource::Explicit);
+        assert!(!tenant.is_local_implicit());
+    }
+
+    #[test]
+    fn authority_chain_from_request_executes_as_same_actor() {
+        let principal = RequestPrincipal::authenticated_user("user-a", "tandem_web");
+        let chain = AuthorityChain::from_request(principal.clone());
+
+        assert_eq!(chain.initiated_by, principal);
+        assert!(chain.owned_by.is_none());
+        assert!(chain.approved_by.is_none());
+        assert_eq!(chain.executed_as, ExecutionPrincipal::Request(principal));
+    }
+
+    #[test]
+    fn verified_tenant_context_checks_expiry_and_tenant_match() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "user-a",
+        );
+        let actor = HumanActor::tandem_user("user-a");
+        let principal = RequestPrincipal::authenticated_user("user-a", "tandem_web");
+        let verified = VerifiedTenantContext {
+            tenant_context: tenant.clone(),
+            human_actor: actor,
+            authority_chain: AuthorityChain::from_request(principal),
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            issued_at_ms: 100,
+            expires_at_ms: 200,
+            assertion_id: "assertion-1".to_string(),
+        };
+
+        assert!(!verified.is_expired_at(199));
+        assert!(verified.is_expired_at(200));
+        assert!(verified.tenant_matches(&tenant));
+        assert!(!verified.tenant_matches(&TenantContext::explicit(
+            "org-b",
+            "workspace-a",
+            Some("user-a".to_string()),
+        )));
+    }
+
+    #[test]
+    fn runtime_auth_mode_parses_operator_aliases() {
+        assert_eq!(
+            RuntimeAuthMode::parse("local"),
+            Ok(RuntimeAuthMode::LocalSingleTenant)
+        );
+        assert_eq!(
+            RuntimeAuthMode::parse("hosted-single-tenant"),
+            Ok(RuntimeAuthMode::HostedSingleTenant)
+        );
+        assert_eq!(
+            RuntimeAuthMode::parse("enterprise_required"),
+            Ok(RuntimeAuthMode::EnterpriseRequired)
+        );
+        assert!(RuntimeAuthMode::parse("definitely-not-a-mode").is_err());
+        assert_eq!(
+            RuntimeAuthMode::EnterpriseRequired.to_string(),
+            "enterprise_required"
+        );
+    }
+
+    #[test]
+    fn tenant_context_assertion_claims_convert_to_verified_context() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "user-a",
+        );
+        let actor = HumanActor::tandem_user("user-a");
+        let principal = RequestPrincipal::authenticated_user("user-a", "tandem_web");
+        let chain = AuthorityChain::from_request(principal);
+        let claims = TenantContextAssertionClaims::new_v1(
+            "tandem-web",
+            "tandem-runtime",
+            100,
+            200,
+            "assertion-1",
+            tenant.clone(),
+            actor.clone(),
+            chain.clone(),
+            vec!["operator".to_string(), "approver".to_string()],
+        );
+
+        assert_eq!(claims.version, "v1");
+        assert!(!claims.is_expired_at(199));
+        assert!(claims.is_expired_at(200));
+
+        let verified = VerifiedTenantContext::from(claims);
+        assert_eq!(verified.tenant_context, tenant);
+        assert_eq!(verified.human_actor, actor);
+        assert_eq!(verified.authority_chain, chain);
+        assert_eq!(verified.issuer, "tandem-web");
+        assert_eq!(verified.audience, "tandem-runtime");
+        assert_eq!(verified.assertion_id, "assertion-1");
+    }
+
+    #[test]
+    fn tenant_context_assertion_header_uses_eddsa_jws_typ() {
+        let header = TenantContextAssertionHeader::ed25519("key-1");
+        assert_eq!(header.alg, "EdDSA");
+        assert_eq!(header.typ, "tandem-tenant-context+jws");
+        assert_eq!(header.kid, "key-1");
     }
 
     #[test]

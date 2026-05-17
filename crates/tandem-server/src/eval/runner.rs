@@ -181,8 +181,9 @@ impl EvalRunner {
                 // Fall back to local AppState if available
                 match self.app_state.as_ref() {
                     Some(state) => {
-                        let executor = EngineExecutor::new(state.clone())
-                            .with_max_duration(Duration::from_secs(self.config.max_test_duration_secs));
+                        let executor = EngineExecutor::new(state.clone()).with_max_duration(
+                            Duration::from_secs(self.config.max_test_duration_secs),
+                        );
                         executor.run_test_case(test_case).await
                     }
                     None => {

@@ -2,6 +2,127 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.5.8 (2026-05-17)
+
+Tandem 0.5.8 begins the enterprise auth, tenant context, and execution-time
+verification implementation. This is the first runtime-facing slice: it adds
+provider-agnostic tenant-context contract types and starts carrying tenant
+context into tool policy evaluation, while preserving local and single-tenant
+behavior by default.
+
+### Enterprise Tenant Context Foundation
+
+- Added explicit runtime auth-mode names for local single-tenant,
+  hosted single-tenant, and enterprise-required operation.
+- Added canonical parsing and operator-friendly aliases for the runtime auth
+  modes, with `TANDEM_RUNTIME_AUTH_MODE` resolving to local single-tenant by
+  default.
+- Extended the enterprise contract with human actor metadata, deployment-aware
+  tenant context, verified tenant-context assertion metadata, hosted tenant
+  constructors, authenticated request principals, and request authority-chain
+  helpers.
+- Added provider-agnostic tenant context assertion header and claims types for
+  the future Tandem-signed JWS passed from `tandem-web` to runtime/ACA.
+- Re-exported the new contract types through `tandem-types` for runtime and
+  server consumers.
+- Added runtime verification for compact Tandem context assertions signed with
+  Ed25519, including public-key configuration, issuer/audience checks, expiry
+  checks, and tamper rejection in hosted and enterprise auth modes.
+- Added `kid`-based context assertion keyring support through
+  `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS` / `_FILE`, with JSON object keyrings
+  preferred and the existing single-key env vars preserved as fallback.
+- Added hosted control-plane signer prep in `tandem-web`: a provider-neutral
+  context assertion signer shape, local Ed25519 test signer, and Google Cloud
+  KMS Software Ed25519 adapter for future hosted assertions.
+
+### Runtime Policy Plumbing
+
+- `ToolPolicyContext` now carries the session tenant context into runtime tool
+  policy hooks.
+- The engine loop loads the current session tenant before evaluating policy for
+  a tool call.
+- Hosted and enterprise runtime auth modes now reject raw tenant/actor headers
+  and fail closed unless a configured Tandem-signed context assertion verifies.
+- Verified hosted assertions are attached to request extensions alongside the
+  derived tenant context and request principal, giving downstream runtime code a
+  trustworthy identity object to consume in later sprints.
+- Fintech strict protected-tool policy now rejects execution when the session
+  tenant context does not match the owning Automation V2 run tenant context.
+- In hosted and enterprise auth modes, fintech strict protected tools now fail
+  closed if execution reaches the policy hook without a non-local tenant context
+  and human actor.
+- Sessions now persist verified tenant assertion metadata and pass it into
+  `ToolPolicyContext`, so strict protected-tool policy can reject expired signed
+  tenant assertions at execution time instead of trusting only the original HTTP
+  ingress decision.
+- Added regression coverage proving local/default session creation still works
+  without hosted auth headers or signed context assertions.
+
+### Coder Reliability Upgrade
+
+Tandem Coder now behaves more like a coding supervisor than a generic prompt
+runner. Issue-fix work is scheduled as real implementation work, runs in a
+managed worktree, requires evidence of code changes and validation, and hands
+off through a PR instead of marking project work as done prematurely.
+
+- Issue-fix worker sessions now use a dedicated coding contract: inspect the
+  repository, read scoped instructions, make a plan, patch files, run
+  validation, repair failures where possible, and report concise evidence.
+- Strict tool/write enforcement is applied to issue-fix workers, including
+  prewrite inspection requirements before mutation. Non-issue-fix worker types
+  such as triage, review, and merge recommendation keep their existing
+  non-writing execution mode.
+- Managed worktrees are preserved until handoff completes, allowing Tandem to
+  collect and expose `git diff`, changed files, validation output, branch name,
+  commit SHA, PR URL, and completion-gate evidence.
+- Completion is now gated: no patch blocks completion, failed validation blocks
+  completion, failed push/PR handoff blocks completion, and successful PR
+  creation moves the GitHub Project item to Review rather than fake Done.
+- Coder run records now include worker/session ids, worker run ids, managed
+  worktree paths, branch/commit/PR metadata, changed files, validation status,
+  handoff status, and completion-gate details.
+- Project policy now defaults to PR-required handoff, native Tandem delegation,
+  max two parallel issue runs, and no manual out-of-order runs unless the
+  project explicitly opts in.
+- GitHub Project intake payloads now include scheduler explanations: parent
+  cards, phase, blockers, scheduler rank, runnable state, active run id, run
+  state, and handoff URL.
+- Parent cards are treated as planning/grouping headers only. The scheduler
+  launches child issues by the lowest open phase and dependency order.
+
+### Coder Control Panel
+
+- The Coder intake view now renders as the primary board: TODO, In Progress,
+  Blocked, Review, and Done columns with parent/phase grouping, next-runnable
+  badges, disabled run buttons with reasons, and handoff links.
+- `Run scheduler next` launches only the lowest open phase's scheduler-approved
+  child issues. `Run selected` stays disabled for out-of-order work unless the
+  project policy enables manual override.
+- The board shows Tandem's spinner while GitHub Project sync is active instead
+  of leaving the intake area visually blank.
+- Active run payloads now carry enough status for the control panel to show the
+  current worker session, latest action/log context, changed files, validation
+  output, branch, PR link, and failure reason using the existing coder routes
+  and event streams.
+
+### Boundaries
+
+- This release does not add Zitadel integration yet.
+- `tandem-agents` still does not depend on Zitadel or raw IdP tokens.
+- `tandem-web` is the intended owner of Tandem-signed hosted context
+  assertions; runtime and ACA should consume Tandem assertions/public keyrings,
+  not raw Zitadel or Google identity tokens.
+- Hosted strict auth is not enabled by default.
+- Local, desktop, and single-tenant workflows continue to run without hosted
+  auth, signed context assertions, or approval signing keys.
+- GitHub Project `Done` remains a post-review/merge state. Coder implementation
+  handoff now stops at Review with a PR link and evidence.
+
+### Versioning
+
+- Rust crates, npm packages, Python client metadata, Tauri config, and lockfiles
+  are bumped to `0.5.8`.
+
 ## v0.5.7 (2026-05-17)
 
 Tandem 0.5.7 moves the project positioning and first domain-specific runtime hardening toward governed AI infrastructure for enterprise work. The release adds public enterprise runtime docs, a fintech strict-mode foundation for compliance and risk workflows, and the first runtime evidence paths needed to prove that Tandem can govern long-running AI work with scoped tools, citations, approvals, artifacts, audit events, and replayable run records. It also restructures the desktop Coder workspace so the live state of running work is visible at a glance.

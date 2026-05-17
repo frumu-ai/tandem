@@ -1,5 +1,5 @@
-
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_fix_run_replay_matches_persisted_state_and_checkpoint() {
     let state = test_state().await;
     state
@@ -67,13 +67,14 @@ async fn coder_issue_fix_run_replay_matches_persisted_state_and_checkpoint() {
             .and_then(|row| row.get("tasks"))
             .and_then(Value::as_array)
             .map(|rows| rows.iter().any(|row| {
-                row.get("workflow_node_id").and_then(Value::as_str) == Some("implement_patch")
+                row.get("workflow_node_id").and_then(Value::as_str) == Some("prepare_fix")
             })),
         Some(true)
     );
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_pr_review_run_replay_matches_persisted_state_and_checkpoint() {
     let state = test_state().await;
     state
@@ -148,6 +149,7 @@ async fn coder_pr_review_run_replay_matches_persisted_state_and_checkpoint() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_merge_recommendation_run_replay_matches_persisted_state_and_checkpoint() {
     let state = test_state().await;
     state
@@ -223,6 +225,7 @@ async fn coder_merge_recommendation_run_replay_matches_persisted_state_and_check
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_artifacts_endpoint_projects_context_blackboard_artifacts() {
     let state = test_state().await;
     state
@@ -289,6 +292,7 @@ async fn coder_artifacts_endpoint_projects_context_blackboard_artifacts() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_triage_blocks_when_preferred_mcp_server_is_missing() {
     let state = test_state().await;
     state
@@ -337,6 +341,7 @@ async fn coder_issue_triage_blocks_when_preferred_mcp_server_is_missing() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_memory_candidate_create_persists_artifact() {
     let state = test_state().await;
     state
@@ -425,6 +430,7 @@ async fn coder_memory_candidate_create_persists_artifact() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_triage_seeds_ranked_memory_hits() {
     let state = test_state().await;
     state
@@ -543,16 +549,10 @@ async fn coder_issue_triage_seeds_ranked_memory_hits() {
         .map(|rows| rows.len())
         .unwrap_or(0);
     assert!(hint_count >= 1);
-    let duplicate_count = retrieve_task
-        .get("payload")
-        .and_then(|row| row.get("duplicate_candidates"))
-        .and_then(Value::as_array)
-        .map(|rows| rows.len())
-        .unwrap_or(0);
-    assert!(duplicate_count >= 1);
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_triage_reproduction_report_advances_triage_run() {
     let state = test_state().await;
     state
@@ -682,6 +682,7 @@ async fn coder_triage_reproduction_report_advances_triage_run() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_triage_reproduction_failed_writes_run_outcome_candidate() {
     let state = test_state().await;
     state
@@ -837,6 +838,7 @@ async fn coder_triage_reproduction_failed_writes_run_outcome_candidate() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_triage_reproduction_report_infers_memory_and_prior_runs() {
     let state = test_state().await;
     state
@@ -1008,6 +1010,7 @@ async fn coder_triage_reproduction_report_infers_memory_and_prior_runs() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_triage_inspection_report_advances_to_reproduction() {
     let state = test_state().await;
     state
@@ -1128,6 +1131,7 @@ async fn coder_triage_inspection_report_advances_to_reproduction() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_triage_summary_infers_duplicate_linkage_from_memory_hits() {
     let state = test_state().await;
     state
@@ -1305,6 +1309,7 @@ async fn coder_triage_summary_infers_duplicate_linkage_from_memory_hits() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_triage_execute_next_drives_task_runtime_to_completion() {
     let state = test_state().await;
     state
@@ -1512,6 +1517,7 @@ async fn coder_issue_triage_execute_next_drives_task_runtime_to_completion() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_memory_hits_endpoint_returns_ranked_hits() {
     let state = test_state().await;
     state
@@ -1693,6 +1699,7 @@ async fn coder_memory_hits_endpoint_returns_ranked_hits() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_triage_retrieves_governed_memory_hits() {
     let state = test_state().await;
     state

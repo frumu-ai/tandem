@@ -1,4 +1,3 @@
-
 async fn dispatch_issue_fix_task(
     state: AppState,
     record: &CoderRunRecord,
@@ -31,8 +30,10 @@ async fn dispatch_issue_fix_task(
         }
         Some("prepare_fix") => {
             let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
+            let stable_task_id = format!("issue-fix-issue-{issue_number}");
             let worker_result =
-                run_issue_fix_prepare_worker(&state, record, &run, Some(task.id.as_str())).await;
+                run_issue_fix_prepare_worker(&state, record, &run, Some(stable_task_id.as_str()))
+                    .await;
             let (worker_artifact, worker_payload) = match worker_result {
                 Ok(result) => result,
                 Err(error) => {
@@ -77,9 +78,69 @@ async fn dispatch_issue_fix_task(
                     }));
                 }
             };
-            let plan_artifact = write_issue_fix_plan_artifact(
+            if !worker_payload_has_patch(&worker_payload) {
+                let detail = "Issue-fix worker completed without producing a workspace diff; blocking before false completion.".to_string();
+                let gate = json!({
+                    "status": "blocked",
+                    "reason": "no_workspace_diff",
+                    "message": detail,
+                    "worker_session_id": worker_payload.get("session_id").cloned(),
+                    "worker_run_id": worker_payload.get("session_run_id").cloned(),
+                    "worker_workspace": worker_payload.get("worker_workspace_root").cloned(),
+                    "branch_name": worker_payload.get("worker_workspace_branch").cloned(),
+                });
+                let updated_record = update_coder_run_handoff_from_worker(
+                    &state,
+                    record,
+                    &worker_payload,
+                    Some("not_run"),
+                    Some("blocked_no_patch"),
+                    Some(gate.clone()),
+                )
+                .await?;
+                fail_claimed_coder_task(
+                    &state,
+                    record.linked_context_run_id.clone(),
+                    task,
+                    agent_id,
+                    &detail,
+                )
+                .await?;
+                let blocked = coder_run_transition(
+                    &state,
+                    &updated_record,
+                    "run_blocked",
+                    ContextRunStatus::Blocked,
+                    Some(detail.clone()),
+                )
+                .await?;
+                return Ok(json!({
+                    "ok": false,
+                    "error": detail,
+                    "code": "CODER_NO_PATCH_PRODUCED",
+                    "completion_gate": gate,
+                    "worker_artifact": worker_artifact,
+                    "worker_session": normalize_session_run_payload(&worker_payload),
+                    "run": blocked.get("run").cloned().unwrap_or(Value::Null),
+                    "coder_run": blocked.get("coder_run").cloned().unwrap_or(Value::Null),
+                }));
+            }
+            let updated_record = update_coder_run_handoff_from_worker(
                 &state,
                 record,
+                &worker_payload,
+                Some("pending"),
+                Some("patch_ready"),
+                Some(json!({
+                    "status": "patch_ready",
+                    "reason": "workspace_diff_detected",
+                    "requires": "validation_and_pr_handoff",
+                })),
+            )
+            .await?;
+            let plan_artifact = write_issue_fix_plan_artifact(
+                &state,
+                &updated_record,
                 &worker_payload,
                 &memory_hits_used,
                 Some("analysis"),
@@ -87,14 +148,14 @@ async fn dispatch_issue_fix_task(
             .await?;
             let changed_file_artifact = write_issue_fix_changed_file_evidence_artifact(
                 &state,
-                record,
+                &updated_record,
                 &worker_payload,
                 Some("analysis"),
             )
             .await?;
             let final_run = advance_coder_workflow_run(
                 &state,
-                record,
+                &updated_record,
                 &["prepare_fix"],
                 &["validate_fix"],
                 "Fix plan prepared; validate the constrained patch.",
@@ -107,7 +168,7 @@ async fn dispatch_issue_fix_task(
                 "changed_file_artifact": changed_file_artifact,
                 "worker_session": normalize_session_run_payload(&worker_payload),
                 "run": final_run,
-                "coder_run": coder_run_payload(record, &final_run),
+                "coder_run": coder_run_payload(&updated_record, &final_run),
                 "dispatched": true,
                 "reason": "prepare_fix completed through a real coder worker session"
             }))
@@ -122,12 +183,13 @@ async fn dispatch_issue_fix_task(
             .await;
             let fix_plan =
                 load_latest_coder_artifact_payload(&state, record, "coder_issue_fix_plan").await;
+            let stable_task_id = format!("issue-fix-issue-{issue_number}");
             let validation_worker = run_issue_fix_validation_worker(
                 &state,
                 record,
                 &run,
                 fix_plan.as_ref(),
-                Some(task.id.as_str()),
+                Some(stable_task_id.as_str()),
             )
             .await;
             let (validation_worker_artifact, validation_worker_payload) = match validation_worker {
@@ -180,9 +242,22 @@ async fn dispatch_issue_fix_task(
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(|text| crate::truncate_text(text, 240));
+            let updated_record = update_coder_run_handoff_from_worker(
+                &state,
+                record,
+                &validation_worker_payload,
+                Some("completed"),
+                Some("validation_ready"),
+                Some(json!({
+                    "status": "validation_ready",
+                    "reason": "validation_worker_completed",
+                    "requires": "pr_handoff",
+                })),
+            )
+            .await?;
             let response = coder_issue_fix_validation_report_create(
                 State(state),
-                Path(record.coder_run_id.clone()),
+                Path(updated_record.coder_run_id.clone()),
                 Json(CoderIssueFixValidationReportCreateInput {
                     summary: fix_plan
                         .as_ref()
