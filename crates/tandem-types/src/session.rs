@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{HostRuntimeContext, LocalImplicitTenant, Message, ModelSpec, TenantContext};
+use crate::{
+    HostRuntimeContext, LocalImplicitTenant, Message, ModelSpec, TenantContext,
+    VerifiedTenantContext,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTime {
@@ -35,6 +38,8 @@ pub struct Session {
     pub attach_reason: Option<String>,
     #[serde(default)]
     pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_tenant_context: Option<VerifiedTenantContext>,
     pub time: SessionTime,
     pub model: Option<ModelSpec>,
     pub provider: Option<String>,
@@ -66,6 +71,7 @@ impl Session {
             attach_timestamp_ms: None,
             attach_reason: None,
             tenant_context: LocalImplicitTenant.into(),
+            verified_tenant_context: None,
             time: SessionTime {
                 created: now,
                 updated: now,

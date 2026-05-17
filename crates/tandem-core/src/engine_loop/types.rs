@@ -1,7 +1,9 @@
 use futures::future::BoxFuture;
 use serde_json::{Map, Value};
 use tandem_providers::ChatMessage;
-use tandem_types::{EngineEvent, TenantContext, ToolProgressEvent, ToolProgressSink};
+use tandem_types::{
+    EngineEvent, TenantContext, ToolProgressEvent, ToolProgressSink, VerifiedTenantContext,
+};
 
 use crate::EventBus;
 
@@ -61,6 +63,7 @@ pub struct ToolPolicyContext {
     pub session_id: String,
     pub message_id: String,
     pub tenant_context: Option<TenantContext>,
+    pub verified_tenant_context: Option<VerifiedTenantContext>,
     pub tool: String,
     pub args: Value,
 }

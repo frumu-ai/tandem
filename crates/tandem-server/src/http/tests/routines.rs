@@ -1603,6 +1603,7 @@ async fn routine_tool_policy_hook_denies_disallowed_tool_for_session_scope() {
             session_id,
             message_id: "msg-1".to_string(),
             tenant_context: None,
+            verified_tenant_context: None,
             tool: "bash".to_string(),
             args: json!({"command":"echo hi"}),
         })
@@ -1684,6 +1685,7 @@ async fn automation_tool_policy_hook_denies_writes_to_read_only_source_truth_fil
             session_id,
             message_id: "msg-automation-1".to_string(),
             tenant_context: None,
+            verified_tenant_context: None,
             tool: "write".to_string(),
             args: json!({
                 "path": "RESUME.md",

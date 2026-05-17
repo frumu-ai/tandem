@@ -45,6 +45,10 @@ behavior by default.
 - In hosted and enterprise auth modes, fintech strict protected tools now fail
   closed if execution reaches the policy hook without a non-local tenant context
   and human actor.
+- Sessions now persist verified tenant assertion metadata and pass it into
+  `ToolPolicyContext`, so strict protected-tool policy can reject expired signed
+  tenant assertions at execution time instead of trusting only the original HTTP
+  ingress decision.
 
 ### Boundaries
 

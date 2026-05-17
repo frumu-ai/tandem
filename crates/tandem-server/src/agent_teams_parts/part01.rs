@@ -8,7 +8,7 @@ use tandem_orchestrator::{
     SpawnDenyCode, SpawnPolicy, SpawnRequest, SpawnSource,
 };
 use tandem_skills::SkillService;
-use tandem_types::{EngineEvent, RuntimeAuthMode, Session, TenantContext};
+use tandem_types::{EngineEvent, RuntimeAuthMode, Session, TenantContext, VerifiedTenantContext};
 use tokio::fs;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -340,6 +340,7 @@ async fn evaluate_fintech_strict_tool_policy(
     session_id: &str,
     message_id: &str,
     tenant_context: Option<&TenantContext>,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     runtime_auth_mode: RuntimeAuthMode,
     tool: &str,
     args: &Value,
@@ -375,7 +376,11 @@ async fn evaluate_fintech_strict_tool_policy(
         return None;
     }
     if runtime_auth_mode_requires_verified_tool_context(runtime_auth_mode) {
-        if let Some(reason) = strict_tool_context_deny_reason(tenant_context) {
+        if let Some(reason) = strict_tool_context_deny_reason(
+            tenant_context,
+            verified_tenant_context,
+            crate::now_ms(),
+        ) {
             return Some(ToolPolicyDecision {
                 allowed: false,
                 reason: Some(reason),
@@ -491,7 +496,11 @@ fn runtime_auth_mode_requires_verified_tool_context(mode: RuntimeAuthMode) -> bo
     )
 }
 
-fn strict_tool_context_deny_reason(tenant_context: Option<&TenantContext>) -> Option<String> {
+fn strict_tool_context_deny_reason(
+    tenant_context: Option<&TenantContext>,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    now_ms: u64,
+) -> Option<String> {
     let Some(ctx) = tenant_context else {
         return Some(
             "tool denied by runtime policy: strict runtime auth mode requires verified tenant context for protected tools"
@@ -507,6 +516,24 @@ fn strict_tool_context_deny_reason(tenant_context: Option<&TenantContext>) -> Op
     if ctx.actor_id.as_deref().map_or(true, str::is_empty) {
         return Some(
             "tool denied by runtime policy: strict runtime auth mode requires a verified human actor for protected tools"
+                .to_string(),
+        );
+    }
+    let Some(verified) = verified_tenant_context else {
+        return Some(
+            "tool denied by runtime policy: strict runtime auth mode requires signed tenant assertion metadata for protected tools"
+                .to_string(),
+        );
+    };
+    if verified.is_expired_at(now_ms) {
+        return Some(
+            "tool denied by runtime policy: strict runtime auth mode rejects expired tenant context assertions for protected tools"
+                .to_string(),
+        );
+    }
+    if !verified.tenant_matches(ctx) {
+        return Some(
+            "tool denied by runtime policy: signed tenant assertion does not match session tenant context for protected tools"
                 .to_string(),
         );
     }
@@ -637,6 +664,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 &ctx.session_id,
                 &ctx.message_id,
                 ctx.tenant_context.as_ref(),
+                ctx.verified_tenant_context.as_ref(),
                 resolve_runtime_auth_mode(),
                 &tool,
                 &ctx.args,
@@ -2195,7 +2223,7 @@ fn extract_session_id(event: &EngineEvent) -> Option<String> {
 mod fintech_policy_tests {
     use super::*;
     use serde_json::json;
-    use tandem_types::TenantContext;
+    use tandem_types::{AuthorityChain, HumanActor, RequestPrincipal, TenantContext};
 
     fn fintech_test_automation(metadata: Value) -> crate::AutomationV2Spec {
         crate::AutomationV2Spec {
@@ -2335,6 +2363,30 @@ mod fintech_policy_tests {
             });
     }
 
+    fn verified_context_for_tenant(
+        tenant_context: TenantContext,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+    ) -> VerifiedTenantContext {
+        let actor_id = tenant_context
+            .actor_id
+            .clone()
+            .unwrap_or_else(|| "actor-1".to_string());
+        VerifiedTenantContext {
+            tenant_context,
+            human_actor: HumanActor::tandem_user(actor_id.clone()),
+            authority_chain: AuthorityChain::from_request(RequestPrincipal::authenticated_user(
+                actor_id,
+                "tandem-web",
+            )),
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            issued_at_ms,
+            expires_at_ms,
+            assertion_id: "assertion-test".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn fintech_strict_blocks_protected_action_tools() {
         let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
@@ -2344,6 +2396,7 @@ mod fintech_policy_tests {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
                 tenant_context: None,
+                verified_tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args: json!({}),
             })
@@ -2387,6 +2440,7 @@ mod fintech_policy_tests {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
                 tenant_context: None,
+                verified_tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args,
             })
@@ -2410,6 +2464,7 @@ mod fintech_policy_tests {
                     "local-workspace",
                     Some("actor-1".to_string()),
                 )),
+                verified_tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args: json!({"account_id": "acct-1", "amount": 10}),
             })
@@ -2432,6 +2487,7 @@ mod fintech_policy_tests {
             &state,
             "session-fintech",
             "message-1",
+            None,
             None,
             RuntimeAuthMode::EnterpriseRequired,
             "mcp.bank.release_funds",
@@ -2458,6 +2514,7 @@ mod fintech_policy_tests {
             "session-fintech",
             "message-1",
             Some(&local_context),
+            None,
             RuntimeAuthMode::EnterpriseRequired,
             "mcp.bank.release_funds",
             &json!({"account_id": "acct-1", "amount": 10}),
@@ -2471,6 +2528,37 @@ mod fintech_policy_tests {
             .as_deref()
             .unwrap_or_default()
             .contains("rejects local implicit tenant context"));
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_enterprise_mode_rejects_expired_verified_context_for_protected_tools() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+        let tenant_context = TenantContext::explicit("local", "local", Some("actor-1".to_string()));
+        let verified = verified_context_for_tenant(
+            tenant_context.clone(),
+            1,
+            crate::now_ms().saturating_sub(1),
+        );
+
+        let decision = evaluate_fintech_strict_tool_policy(
+            &state,
+            "session-fintech",
+            "message-1",
+            Some(&tenant_context),
+            Some(&verified),
+            RuntimeAuthMode::EnterpriseRequired,
+            "mcp.bank.release_funds",
+            &json!({"account_id": "acct-1", "amount": 10}),
+        )
+        .await
+        .expect("strict policy should decide");
+
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("expired tenant context assertions"));
     }
 
     #[tokio::test]
@@ -2492,6 +2580,7 @@ mod fintech_policy_tests {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
                 tenant_context: None,
+                verified_tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args: json!({"account_id": "acct-1", "amount": 11}),
             })
@@ -2535,6 +2624,7 @@ mod fintech_policy_tests {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
                 tenant_context: None,
+                verified_tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args,
             })
@@ -2553,6 +2643,7 @@ mod fintech_policy_tests {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
                 tenant_context: None,
+                verified_tenant_context: None,
                 tool: "mcp.regulator.fetch_bulletin".to_string(),
                 args: json!({"url": "https://regulator.example/rule-1"}),
             })
@@ -2570,6 +2661,7 @@ mod fintech_policy_tests {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
                 tenant_context: None,
+                verified_tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args: json!({}),
             })

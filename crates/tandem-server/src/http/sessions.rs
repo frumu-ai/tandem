@@ -8,7 +8,7 @@ use crate::app::rate_limit::{
     channel_rate_limit_key_from_session_metadata, retry_after_duration, ChannelRateLimitKind,
 };
 use sha2::{Digest, Sha256};
-use tandem_types::{Session, ToolMode};
+use tandem_types::{Session, ToolMode, VerifiedTenantContext};
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -218,11 +218,13 @@ fn tool_allowlist_for_kb_grounding(
 pub(super) async fn create_session(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<WireSession>, StatusCode> {
     let requested_permission_rules = req.permission.clone();
     let mut session = Session::new(req.title, req.directory);
     session.tenant_context = tenant_context.clone();
+    session.verified_tenant_context = verified_tenant_context.map(|Extension(verified)| verified);
     session.project_id = req.project_id.clone();
     let workspace_from_runtime = {
         let snapshot = state.workspace_index.snapshot().await;
