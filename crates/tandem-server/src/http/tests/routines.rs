@@ -1323,6 +1323,16 @@ async fn tenant_a_cannot_access_tenant_b_automation_v2_routes() {
         ),
         (
             "POST",
+            format!("/automations/v2/runs/{run_id}/recover"),
+            Some(json!({"reason": "cross tenant"})),
+        ),
+        (
+            "POST",
+            format!("/automations/v2/runs/{run_id}/repair"),
+            Some(json!({"node_id": "node-1", "reason": "cross tenant"})),
+        ),
+        (
+            "POST",
             format!("/automations/v2/runs/{run_id}/gate"),
             Some(json!({"decision": "approve"})),
         ),
