@@ -132,7 +132,8 @@ export function CodingWorkflowsPage({
   });
   const projectBoardQuery = useQuery({
     queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug],
-    queryFn: () => api(`/api/aca/projects/${encodeURIComponent(selectedProjectSlug)}/board`),
+    queryFn: () =>
+      api(`/api/aca/projects/${encodeURIComponent(selectedProjectSlug)}/board?refresh=true`),
     enabled:
       acaAvailable &&
       !!selectedProjectSlug &&
@@ -149,7 +150,7 @@ export function CodingWorkflowsPage({
           project.slug === selectedProjectSlug &&
           String(project?.taskSource?.type || "").trim() === "github_project"
       )
-        ? 120000
+        ? 5000
         : false,
   });
   const runDetailQuery = useQuery({
