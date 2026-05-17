@@ -345,6 +345,14 @@ export function CodingWorkflowsPage({
       ),
     [activeRuns]
   );
+  const activeGithubRunByIdentity = useMemo(() => {
+    const rows = new Map<string, any>();
+    activeRuns.forEach((run: any, index: number) => {
+      const identity = runTaskIdentity(run, index);
+      if (identity) rows.set(identity, { run, id: runId(run, index) });
+    });
+    return rows;
+  }, [activeRuns]);
   const launchableGithubItems = useMemo(
     () =>
       actionableGithubItems.filter(
@@ -711,6 +719,8 @@ export function CodingWorkflowsPage({
       if (nextRunId) {
         setSelectedRunId(nextRunId);
         setTab("board");
+        setRunDetailOpen(true);
+        setLiveLogsOpen(true);
       }
       toast("ok", `ACA run started${nextRunId ? `: ${nextRunId}` : "."}`);
     } catch (error) {
@@ -794,6 +804,8 @@ export function CodingWorkflowsPage({
       if (nextRunId) {
         setSelectedRunId(nextRunId);
         setTab("board");
+        setRunDetailOpen(true);
+        setLiveLogsOpen(true);
       }
       toast("ok", `Started ${selectors.length} ACA run${selectors.length === 1 ? "" : "s"}.`);
     } catch (error) {
@@ -811,6 +823,20 @@ export function CodingWorkflowsPage({
     } finally {
       setBatchTriggering(false);
     }
+  }
+
+  function inspectAcaRun(runRef: { run: any; id: string } | null | undefined) {
+    const id = String(runRef?.id || "").trim();
+    if (!id) return;
+    setSelectedRunId(id);
+    setRunDetailOpen(true);
+    setLiveLogsOpen(true);
+    window.setTimeout(() => {
+      document.getElementById("aca-run-inspector")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 0);
   }
 
   async function refreshTaskPreview() {
@@ -1188,8 +1214,11 @@ export function CodingWorkflowsPage({
                                     const itemId = String(item.id || "");
                                     const title = String(item.title || "Untitled item");
                                     const lowerTitle = title.toLowerCase();
+                                    const activeGithubRun = activeGithubRunByIdentity.get(
+                                      githubBoardItemIdentity(item)
+                                    );
                                     const itemIsRunning =
-                                      itemCanRun &&
+                                      !!activeGithubRun ||
                                       activeGithubItemIdentities.has(githubBoardItemIdentity(item));
                                     const itemIsLaunching = launchingGithubItemIdSet.has(itemId);
                                     const itemIsLaunchLocked =
@@ -1253,6 +1282,9 @@ export function CodingWorkflowsPage({
                                           {itemIsRunning ? (
                                             <Badge tone="info">Run active</Badge>
                                           ) : null}
+                                          {activeGithubRun ? (
+                                            <Badge tone="info">{String(activeGithubRun.id)}</Badge>
+                                          ) : null}
                                           {itemIsLaunching && !itemIsRunning ? (
                                             <Badge tone="warn">Starting</Badge>
                                           ) : null}
@@ -1287,6 +1319,16 @@ export function CodingWorkflowsPage({
                                                   ? "Starting..."
                                                   : "Run task"}
                                           </button>
+                                          {activeGithubRun ? (
+                                            <button
+                                              type="button"
+                                              className="tcp-btn tcp-btn-secondary h-8 px-3 text-xs"
+                                              onClick={() => inspectAcaRun(activeGithubRun)}
+                                            >
+                                              <i data-lucide="terminal"></i>
+                                              View live run
+                                            </button>
+                                          ) : null}
                                         </div>
                                       </div>
                                     );
@@ -1355,222 +1397,242 @@ export function CodingWorkflowsPage({
                 <EmptyState text="No ACA runs for this project yet." />
               )}
             </PanelCard>
-            <PanelCard
-              title="Run detail"
-              subtitle={selectedRunId ? `ACA detail for ${selectedRunId}` : "Select a run"}
-              actions={
-                <button
-                  type="button"
-                  className="tcp-btn h-8 px-3 text-xs"
-                  onClick={() => setRunDetailOpen((prev) => !prev)}
-                >
-                  <i data-lucide={runDetailOpen ? "chevron-down" : "chevron-right"}></i>
-                  {runDetailOpen ? "Collapse" : "Expand"}
-                </button>
-              }
-            >
-              {runDetailOpen ? (
-                selectedRunId ? (
-                  runDetailQuery.isLoading ? (
-                    <div className="tcp-subtle text-sm">Loading run detail...</div>
-                  ) : runDetailQuery.isError ? (
-                    <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
-                      {runDetailQuery.error instanceof Error
-                        ? runDetailQuery.error.message
-                        : "Could not load run detail."}
-                    </div>
-                  ) : (
-                    <div className="grid gap-3">
-                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold">
-                              {String(
-                                runDetailQuery.data?.status?.task?.title ||
-                                  selectedRun?.title ||
-                                  selectedRunId
-                              )}
-                            </div>
-                            <div className="tcp-subtle mt-1 text-xs">
-                              {String(
-                                runDetailQuery.data?.project_slug ||
-                                  selectedRun?.project_slug ||
-                                  "unknown"
-                              )}
-                            </div>
-                          </div>
-                          <Badge tone={runDetailQuery.data?.is_running ? "info" : "ok"}>
-                            {formatStatus(
-                              String(
-                                runDetailQuery.data?.status?.run?.status ||
-                                  selectedRun?.status ||
-                                  "unknown"
-                              )
-                            )}
-                          </Badge>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {runDetailQuery.data?.status?.phase?.name ? (
-                            <Badge tone="info">
-                              Phase {formatStatus(String(runDetailQuery.data.status.phase.name))}
-                            </Badge>
-                          ) : null}
-                          {lastRunEvent ? (
-                            <Badge tone="ghost">Latest {formatStatus(lastRunEvent)}</Badge>
-                          ) : null}
-                          {runDetailQuery.data?.snapshot?.summary_available ? (
-                            <Badge tone="ok">Summary ready</Badge>
-                          ) : null}
-                          {runDetailQuery.data?.error ? <Badge tone="warn">Has error</Badge> : null}
-                        </div>
+            <div id="aca-run-inspector">
+              <PanelCard
+                title="Run detail"
+                subtitle={selectedRunId ? `ACA detail for ${selectedRunId}` : "Select a run"}
+                actions={
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="tcp-btn h-8 px-3 text-xs"
+                      onClick={() => {
+                        setRunDetailOpen(true);
+                        setLiveLogsOpen(true);
+                      }}
+                      disabled={!selectedRunId}
+                    >
+                      <i data-lucide="terminal"></i>
+                      Open console view
+                    </button>
+                    <button
+                      type="button"
+                      className="tcp-btn h-8 px-3 text-xs"
+                      onClick={() => setRunDetailOpen((prev) => !prev)}
+                    >
+                      <i data-lucide={runDetailOpen ? "chevron-down" : "chevron-right"}></i>
+                      {runDetailOpen ? "Collapse" : "Expand"}
+                    </button>
+                  </div>
+                }
+              >
+                {runDetailOpen ? (
+                  selectedRunId ? (
+                    runDetailQuery.isLoading ? (
+                      <div className="tcp-subtle text-sm">Loading run detail...</div>
+                    ) : runDetailQuery.isError ? (
+                      <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
+                        {runDetailQuery.error instanceof Error
+                          ? runDetailQuery.error.message
+                          : "Could not load run detail."}
                       </div>
-
-                      <div className="grid gap-3 lg:grid-cols-2">
+                    ) : (
+                      <div className="grid gap-3">
                         <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-3 flex items-center justify-between gap-3">
-                            <div className="text-sm font-semibold">Progress</div>
-                            <Badge tone={runDetailQuery.data?.is_running ? "info" : "ghost"}>
-                              {runDetailQuery.data?.is_running ? "Live" : "Snapshot"}
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold">
+                                {String(
+                                  runDetailQuery.data?.status?.task?.title ||
+                                    selectedRun?.title ||
+                                    selectedRunId
+                                )}
+                              </div>
+                              <div className="tcp-subtle mt-1 text-xs">
+                                {String(
+                                  runDetailQuery.data?.project_slug ||
+                                    selectedRun?.project_slug ||
+                                    "unknown"
+                                )}
+                              </div>
+                            </div>
+                            <Badge tone={runDetailQuery.data?.is_running ? "info" : "ok"}>
+                              {formatStatus(
+                                String(
+                                  runDetailQuery.data?.status?.run?.status ||
+                                    selectedRun?.status ||
+                                    "unknown"
+                                )
+                              )}
                             </Badge>
                           </div>
-                          <div className="grid gap-2 text-xs leading-5">
-                            <div className="flex justify-between gap-3">
-                              <span className="tcp-subtle">Phase</span>
-                              <span className="text-right font-semibold text-slate-100">
-                                {formatStatus(
-                                  String(runDetailQuery.data?.status?.phase?.name || "unknown")
-                                )}
-                              </span>
-                            </div>
-                            {runDetailQuery.data?.status?.phase?.detail ? (
-                              <div className="flex justify-between gap-3">
-                                <span className="tcp-subtle">Detail</span>
-                                <span className="max-w-[70%] text-right text-slate-200">
-                                  {String(runDetailQuery.data.status.phase.detail)}
-                                </span>
-                              </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {runDetailQuery.data?.status?.phase?.name ? (
+                              <Badge tone="info">
+                                Phase {formatStatus(String(runDetailQuery.data.status.phase.name))}
+                              </Badge>
                             ) : null}
-                            <div className="flex justify-between gap-3">
-                              <span className="tcp-subtle">Workers</span>
-                              <span className="text-right text-slate-200">
-                                {runWorkers.length
-                                  ? `${runWorkers.filter((worker: any) => String(worker?.status || "") === "completed").length}/${runWorkers.length} completed`
-                                  : runSubtasks.length
-                                    ? `${runSubtasks.length} planned`
-                                    : "not planned yet"}
-                              </span>
+                            {lastRunEvent ? (
+                              <Badge tone="ghost">Latest {formatStatus(lastRunEvent)}</Badge>
+                            ) : null}
+                            {runDetailQuery.data?.snapshot?.summary_available ? (
+                              <Badge tone="ok">Summary ready</Badge>
+                            ) : null}
+                            {runDetailQuery.data?.error ? (
+                              <Badge tone="warn">Has error</Badge>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 lg:grid-cols-2">
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <div className="text-sm font-semibold">Progress</div>
+                              <Badge tone={runDetailQuery.data?.is_running ? "info" : "ghost"}>
+                                {runDetailQuery.data?.is_running ? "Live" : "Snapshot"}
+                              </Badge>
                             </div>
-                            {blackboard?.coder_supervision ? (
+                            <div className="grid gap-2 text-xs leading-5">
                               <div className="flex justify-between gap-3">
-                                <span className="tcp-subtle">Coder</span>
-                                <span className="text-right text-slate-200">
+                                <span className="tcp-subtle">Phase</span>
+                                <span className="text-right font-semibold text-slate-100">
                                   {formatStatus(
-                                    String(
-                                      blackboard.coder_supervision?.tandem_status ||
-                                        blackboard.coder_supervision?.status ||
-                                        "watching"
-                                    )
+                                    String(runDetailQuery.data?.status?.phase?.name || "unknown")
                                   )}
                                 </span>
                               </div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-3 text-sm font-semibold">Changed files</div>
-                          {runChangedFiles.length ? (
-                            <div className="grid gap-2">
-                              {runChangedFiles.slice(0, 12).map((path) => (
-                                <code
-                                  key={path}
-                                  className="block truncate rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-slate-200"
-                                >
-                                  {path}
-                                </code>
-                              ))}
-                              {runChangedFiles.length > 12 ? (
-                                <div className="tcp-subtle text-xs">
-                                  +{runChangedFiles.length - 12} more
+                              {runDetailQuery.data?.status?.phase?.detail ? (
+                                <div className="flex justify-between gap-3">
+                                  <span className="tcp-subtle">Detail</span>
+                                  <span className="max-w-[70%] text-right text-slate-200">
+                                    {String(runDetailQuery.data.status.phase.detail)}
+                                  </span>
+                                </div>
+                              ) : null}
+                              <div className="flex justify-between gap-3">
+                                <span className="tcp-subtle">Workers</span>
+                                <span className="text-right text-slate-200">
+                                  {runWorkers.length
+                                    ? `${runWorkers.filter((worker: any) => String(worker?.status || "") === "completed").length}/${runWorkers.length} completed`
+                                    : runSubtasks.length
+                                      ? `${runSubtasks.length} planned`
+                                      : "not planned yet"}
+                                </span>
+                              </div>
+                              {blackboard?.coder_supervision ? (
+                                <div className="flex justify-between gap-3">
+                                  <span className="tcp-subtle">Coder</span>
+                                  <span className="text-right text-slate-200">
+                                    {formatStatus(
+                                      String(
+                                        blackboard.coder_supervision?.tandem_status ||
+                                          blackboard.coder_supervision?.status ||
+                                          "watching"
+                                      )
+                                    )}
+                                  </span>
                                 </div>
                               ) : null}
                             </div>
-                          ) : (
-                            <div className="tcp-subtle text-sm">No file changes reported yet.</div>
-                          )}
-                        </div>
-                      </div>
+                          </div>
 
-                      {runEvents.length ? (
-                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-3 text-sm font-semibold">Recent activity</div>
-                          <div className="grid gap-2">
-                            {runEvents.map((event: any) => (
-                              <div
-                                key={`${String(event?.seq || "")}-${String(event?.type || "")}`}
-                                className="grid gap-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs"
-                              >
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <span className="font-semibold text-slate-100">
-                                    {formatStatus(String(event?.type || "event"))}
-                                  </span>
-                                  <span className="tcp-subtle">
-                                    {event?.timestamp
-                                      ? new Date(String(event.timestamp)).toLocaleTimeString()
-                                      : ""}
-                                  </span>
-                                </div>
-                                {event?.payload ? (
-                                  <div className="tcp-subtle truncate">
-                                    {String(
-                                      event.payload?.summary ||
-                                        event.payload?.detail ||
-                                        event.payload?.reason ||
-                                        event.payload?.worker_id ||
-                                        event.payload?.status ||
-                                        ""
-                                    )}
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-3 text-sm font-semibold">Changed files</div>
+                            {runChangedFiles.length ? (
+                              <div className="grid gap-2">
+                                {runChangedFiles.slice(0, 12).map((path) => (
+                                  <code
+                                    key={path}
+                                    className="block truncate rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-slate-200"
+                                  >
+                                    {path}
+                                  </code>
+                                ))}
+                                {runChangedFiles.length > 12 ? (
+                                  <div className="tcp-subtle text-xs">
+                                    +{runChangedFiles.length - 12} more
                                   </div>
                                 ) : null}
                               </div>
-                            ))}
+                            ) : (
+                              <div className="tcp-subtle text-sm">
+                                No file changes reported yet.
+                              </div>
+                            )}
                           </div>
                         </div>
-                      ) : null}
 
-                      {runDiffStat ? (
+                        {runEvents.length ? (
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-3 text-sm font-semibold">Recent activity</div>
+                            <div className="grid gap-2">
+                              {runEvents.map((event: any) => (
+                                <div
+                                  key={`${String(event?.seq || "")}-${String(event?.type || "")}`}
+                                  className="grid gap-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="font-semibold text-slate-100">
+                                      {formatStatus(String(event?.type || "event"))}
+                                    </span>
+                                    <span className="tcp-subtle">
+                                      {event?.timestamp
+                                        ? new Date(String(event.timestamp)).toLocaleTimeString()
+                                        : ""}
+                                    </span>
+                                  </div>
+                                  {event?.payload ? (
+                                    <div className="tcp-subtle truncate">
+                                      {String(
+                                        event.payload?.summary ||
+                                          event.payload?.detail ||
+                                          event.payload?.reason ||
+                                          event.payload?.worker_id ||
+                                          event.payload?.status ||
+                                          ""
+                                      )}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {runDiffStat ? (
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-2 text-sm font-semibold">Diff stat</div>
+                            <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200">
+                              {runDiffStat}
+                            </pre>
+                          </div>
+                        ) : null}
+
+                        {runSummary ? (
+                          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <div className="mb-2 text-sm font-semibold">Summary</div>
+                            <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200">
+                              {runSummary}
+                            </pre>
+                          </div>
+                        ) : null}
+
                         <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-2 text-sm font-semibold">Diff stat</div>
-                          <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200">
-                            {runDiffStat}
-                          </pre>
+                          <div className="mb-2 text-sm font-semibold">Blackboard</div>
+                          <LazyJson
+                            value={blackboard || {}}
+                            label="Show blackboard"
+                            preClassName="max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200"
+                          />
                         </div>
-                      ) : null}
-
-                      {runSummary ? (
-                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="mb-2 text-sm font-semibold">Summary</div>
-                          <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200">
-                            {runSummary}
-                          </pre>
-                        </div>
-                      ) : null}
-
-                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                        <div className="mb-2 text-sm font-semibold">Blackboard</div>
-                        <LazyJson
-                          value={blackboard || {}}
-                          label="Show blackboard"
-                          preClassName="max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-200"
-                        />
                       </div>
-                    </div>
+                    )
+                  ) : (
+                    <EmptyState text="Select a run from the board to inspect its status, summary, and blackboard." />
                   )
-                ) : (
-                  <EmptyState text="Select a run from the board to inspect its status, summary, and blackboard." />
-                )
-              ) : null}
-            </PanelCard>
+                ) : null}
+              </PanelCard>
+            </div>
 
             <PanelCard
               title="Live logs"
