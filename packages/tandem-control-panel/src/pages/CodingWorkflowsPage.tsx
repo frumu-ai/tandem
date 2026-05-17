@@ -1069,8 +1069,8 @@ export function CodingWorkflowsPage({
                     </div>
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-3">
                       <div className="tcp-subtle text-xs">
-                        Start ACA runs directly from GitHub Project intake. Run all launches every
-                        currently eligible item; selected runs only the checked items.
+                        Start ACA runs directly from GitHub Project intake. ACA schedules the next
+                        unblocked child task by phase and dependency order.
                       </div>
                       <div className="min-w-[320px] flex-1">
                         {renderAcaModelSelector(batchTriggering)}
@@ -1084,7 +1084,7 @@ export function CodingWorkflowsPage({
                         >
                           {batchTriggering
                             ? "Starting..."
-                            : `Run all actionable${launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}`}
+                            : `Run next${launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}`}
                         </button>
                         <button
                           type="button"
@@ -1092,7 +1092,7 @@ export function CodingWorkflowsPage({
                           onClick={selectAllActionableGithubItems}
                           disabled={!launchableGithubItems.length || batchTriggering}
                         >
-                          Select actionable
+                          Select next
                           {launchableGithubItems.length ? ` (${launchableGithubItems.length})` : ""}
                         </button>
                         <button
@@ -1189,6 +1189,18 @@ export function CodingWorkflowsPage({
                                         </div>
                                         <div className="mt-3 flex flex-wrap gap-2">
                                           {isParent ? <Badge tone="info">Parent</Badge> : null}
+                                          {item.phase !== null && item.phase !== undefined ? (
+                                            <Badge tone="ghost">
+                                              {Number(item.phase) === 99
+                                                ? "Gate"
+                                                : `Phase ${String(item.phase)}`}
+                                            </Badge>
+                                          ) : null}
+                                          {item.launchState ? (
+                                            <Badge tone={item.actionable ? "ok" : "ghost"}>
+                                              {formatStatus(String(item.launchState))}
+                                            </Badge>
+                                          ) : null}
                                           {isDraft ? <Badge tone="warn">Draft</Badge> : null}
                                           {item.actionable ? (
                                             <Badge tone="ok">Actionable</Badge>
@@ -1200,6 +1212,11 @@ export function CodingWorkflowsPage({
                                             <Badge tone="warn">Starting</Badge>
                                           ) : null}
                                         </div>
+                                        {item.blockedBy?.length ? (
+                                          <div className="tcp-subtle mt-2 text-xs">
+                                            Waiting on {item.blockedBy.join(", ")}
+                                          </div>
+                                        ) : null}
                                         <div className="mt-3 flex flex-wrap gap-2">
                                           {item.issueUrl ? (
                                             <a

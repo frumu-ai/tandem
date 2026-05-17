@@ -134,6 +134,15 @@ export function normalizeGithubBoard(raw: any) {
           issueNumber: item?.issue_number || item?.issueNumber || null,
           issueUrl: String(item?.issue_url || item?.issueUrl || "").trim(),
           repoName: String(item?.repo_name || item?.repoName || "").trim(),
+          isParent: item?.is_parent === true || item?.isParent === true,
+          parentIssueNumber: item?.parent_issue_number || item?.parentIssueNumber || null,
+          parentTitle: String(item?.parent_title || item?.parentTitle || "").trim(),
+          phase: item?.phase ?? null,
+          order: item?.order ?? null,
+          launchState: String(item?.launch_state || item?.launchState || "").trim(),
+          blockedBy: Array.isArray(item?.blocked_by)
+            ? item.blocked_by.map((value: any) => String(value || "").trim()).filter(Boolean)
+            : [],
           actionable: item?.actionable === true,
           selector: String(
             item?.project_item_id ||
@@ -152,6 +161,7 @@ export function normalizeGithubBoard(raw: any) {
     warning: String(raw?.warning || "").trim(),
     isStale: raw?.is_stale === true,
     lastSyncedAtMs: Number(raw?.last_synced_at_ms || raw?.lastSyncedAtMs || 0),
+    scheduler: raw?.scheduler || {},
   };
 }
 
