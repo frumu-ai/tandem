@@ -10,8 +10,8 @@ use crate::types::{
     CleanupLogEntry, DirectoryListing, EmbeddingHealth, KnowledgeCoverageRecord,
     KnowledgeItemRecord, KnowledgePromotionRequest, KnowledgePromotionResult, KnowledgeSpaceRecord,
     LayerType, MemoryChunk, MemoryConfig, MemoryContext, MemoryError, MemoryLayer, MemoryNode,
-    MemoryResult, MemoryRetrievalMeta, MemorySearchResult, MemoryStats, MemoryTier, NodeType,
-    StoreMessageRequest, TreeNode,
+    MemoryResult, MemoryRetrievalMeta, MemorySearchResult, MemoryStats, MemoryTenantScope,
+    MemoryTier, NodeType, StoreMessageRequest, TreeNode,
 };
 use chrono::Utc;
 use std::collections::HashSet;
@@ -143,6 +143,7 @@ impl MemoryManager {
                 source_mtime: request.source_mtime,
                 source_size: request.source_size,
                 source_hash: request.source_hash.clone(),
+                tenant_scope: request.tenant_scope.clone(),
                 created_at: Utc::now(),
                 token_count: text_chunk.token_count as i64,
                 metadata: request.metadata.clone(),
@@ -202,6 +203,26 @@ impl MemoryManager {
         session_id: Option<&str>,
         limit: Option<i64>,
     ) -> MemoryResult<Vec<MemorySearchResult>> {
+        self.search_for_tenant(
+            query,
+            tier,
+            project_id,
+            session_id,
+            &MemoryTenantScope::local(),
+            limit,
+        )
+        .await
+    }
+
+    pub async fn search_for_tenant(
+        &self,
+        query: &str,
+        tier: Option<MemoryTier>,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+        limit: Option<i64>,
+    ) -> MemoryResult<Vec<MemorySearchResult>> {
         let effective_limit = limit.unwrap_or(5);
 
         // Generate query embedding
@@ -227,11 +248,12 @@ impl MemoryManager {
         for search_tier in tiers_to_search {
             let tier_results = match self
                 .db
-                .search_similar(
+                .search_similar_for_tenant(
                     &query_embedding,
                     search_tier,
                     project_id,
                     session_id,
+                    tenant_scope,
                     effective_limit,
                 )
                 .await
@@ -256,11 +278,12 @@ impl MemoryManager {
                     if repaired {
                         match self
                             .db
-                            .search_similar(
+                            .search_similar_for_tenant(
                                 &query_embedding,
                                 search_tier,
                                 project_id,
                                 session_id,
+                                tenant_scope,
                                 effective_limit,
                             )
                             .await
@@ -1258,6 +1281,7 @@ impl MemoryManager {
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             metadata: None,
         };
 

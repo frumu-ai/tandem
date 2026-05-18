@@ -437,7 +437,14 @@ pub(super) async fn archive_session_exchange_to_global_memory(state: AppState, s
     let source_hash = archive_source_hash(&session_id, &candidate);
     match manager
         .db()
-        .global_chunk_exists_by_source_hash(&source_hash)
+        .global_chunk_exists_by_source_hash_for_tenant(
+            &source_hash,
+            &tandem_memory::types::MemoryTenantScope {
+                org_id: session.tenant_context.org_id.clone(),
+                workspace_id: session.tenant_context.workspace_id.clone(),
+                deployment_id: session.tenant_context.deployment_id.clone(),
+            },
+        )
         .await
     {
         Ok(true) => return,
@@ -471,6 +478,11 @@ pub(super) async fn archive_session_exchange_to_global_memory(state: AppState, s
         source_mtime: None,
         source_size: None,
         source_hash: Some(source_hash),
+        tenant_scope: tandem_memory::types::MemoryTenantScope {
+            org_id: session.tenant_context.org_id.clone(),
+            workspace_id: session.tenant_context.workspace_id.clone(),
+            deployment_id: session.tenant_context.deployment_id.clone(),
+        },
         metadata: Some(metadata),
     };
 

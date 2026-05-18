@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::memory::manager::MemoryManager;
-use crate::memory::types::{MemoryTier, StoreMessageRequest};
+use crate::memory::types::{MemoryTenantScope, MemoryTier, StoreMessageRequest};
 use ignore::WalkBuilder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -299,6 +299,7 @@ async fn index_workspace_impl(
             source_mtime: Some(mtime),
             source_size: Some(size),
             source_hash: Some(hash.clone()),
+            tenant_scope: MemoryTenantScope::local(),
             metadata: Some(serde_json::json!({
                 "path": relative_path,
                 "filename": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
@@ -532,6 +533,7 @@ mod tests {
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             metadata: None,
         };
         manager.store_message(req).await.unwrap();

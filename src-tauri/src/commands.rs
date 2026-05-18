@@ -6,8 +6,8 @@ use crate::keystore::{validate_api_key, validate_key_type, ApiKeyType, SecureKey
 use crate::logs::{self, LogFileInfo};
 use crate::memory::indexer::{index_workspace, IndexingStats};
 use crate::memory::types::{
-    ClearFileIndexResult, EmbeddingHealth, MemoryRetrievalMeta, MemoryStats, MemoryTier,
-    ProjectMemoryStats, StoreMessageRequest,
+    ClearFileIndexResult, EmbeddingHealth, MemoryRetrievalMeta, MemoryStats, MemoryTenantScope,
+    MemoryTier, ProjectMemoryStats, StoreMessageRequest,
 };
 use crate::modes::{ModeDefinition, ModeResolution, ModeScope, ResolvedMode};
 use crate::orchestrator::{

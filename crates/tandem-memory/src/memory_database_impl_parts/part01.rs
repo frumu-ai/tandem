@@ -135,6 +135,32 @@ impl MemoryDatabase {
                 [],
             )?;
         }
+        if !session_existing_cols.contains("tenant_org_id") {
+            conn.execute(
+                "ALTER TABLE session_memory_chunks ADD COLUMN tenant_org_id TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
+        if !session_existing_cols.contains("tenant_workspace_id") {
+            conn.execute(
+                "ALTER TABLE session_memory_chunks ADD COLUMN tenant_workspace_id TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
+        if !session_existing_cols.contains("tenant_deployment_id") {
+            conn.execute(
+                "ALTER TABLE session_memory_chunks ADD COLUMN tenant_deployment_id TEXT",
+                [],
+            )?;
+        }
+        conn.execute(
+            "UPDATE session_memory_chunks SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE session_memory_chunks SET tenant_workspace_id = 'local' WHERE tenant_workspace_id IS NULL OR tenant_workspace_id = ''",
+            [],
+        )?;
 
         // Session memory vectors (virtual table)
         conn.execute(
@@ -195,6 +221,32 @@ impl MemoryDatabase {
                 [],
             )?;
         }
+        if !existing_cols.contains("tenant_org_id") {
+            conn.execute(
+                "ALTER TABLE project_memory_chunks ADD COLUMN tenant_org_id TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
+        if !existing_cols.contains("tenant_workspace_id") {
+            conn.execute(
+                "ALTER TABLE project_memory_chunks ADD COLUMN tenant_workspace_id TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
+        if !existing_cols.contains("tenant_deployment_id") {
+            conn.execute(
+                "ALTER TABLE project_memory_chunks ADD COLUMN tenant_deployment_id TEXT",
+                [],
+            )?;
+        }
+        conn.execute(
+            "UPDATE project_memory_chunks SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE project_memory_chunks SET tenant_workspace_id = 'local' WHERE tenant_workspace_id IS NULL OR tenant_workspace_id = ''",
+            [],
+        )?;
 
         // Project memory vectors (virtual table)
         conn.execute(
@@ -288,6 +340,32 @@ impl MemoryDatabase {
                 [],
             )?;
         }
+        if !global_existing_cols.contains("tenant_org_id") {
+            conn.execute(
+                "ALTER TABLE global_memory_chunks ADD COLUMN tenant_org_id TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
+        if !global_existing_cols.contains("tenant_workspace_id") {
+            conn.execute(
+                "ALTER TABLE global_memory_chunks ADD COLUMN tenant_workspace_id TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
+        if !global_existing_cols.contains("tenant_deployment_id") {
+            conn.execute(
+                "ALTER TABLE global_memory_chunks ADD COLUMN tenant_deployment_id TEXT",
+                [],
+            )?;
+        }
+        conn.execute(
+            "UPDATE global_memory_chunks SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE global_memory_chunks SET tenant_workspace_id = 'local' WHERE tenant_workspace_id IS NULL OR tenant_workspace_id = ''",
+            [],
+        )?;
 
         // Global memory vectors (virtual table)
         conn.execute(
@@ -338,6 +416,10 @@ impl MemoryDatabase {
             [],
         )?;
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_chunks_tenant_session ON session_memory_chunks(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), session_id)",
+            [],
+        )?;
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_session_chunks_project ON session_memory_chunks(project_id)",
             [],
         )?;
@@ -350,6 +432,10 @@ impl MemoryDatabase {
             [],
         )?;
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_chunks_tenant_project ON project_memory_chunks(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), project_id)",
+            [],
+        )?;
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_project_file_chunks ON project_memory_chunks(project_id, source, source_path)",
             [],
         )?;
@@ -359,6 +445,10 @@ impl MemoryDatabase {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_global_file_chunks ON global_memory_chunks(source, source_path)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_global_chunks_tenant_created ON global_memory_chunks(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), created_at DESC)",
             [],
         )?;
         conn.execute(
@@ -830,8 +920,9 @@ impl MemoryDatabase {
                     &format!(
                         "INSERT INTO {} (
                             id, content, session_id, project_id, source, created_at, token_count, metadata,
-                            source_path, source_mtime, source_size, source_hash
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                            source_path, source_mtime, source_size, source_hash,
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                         chunks_table
                     ),
                     params![
@@ -846,7 +937,10 @@ impl MemoryDatabase {
                         chunk.source_path.clone(),
                         chunk.source_mtime,
                         chunk.source_size,
-                        chunk.source_hash.clone()
+                        chunk.source_hash.clone(),
+                        chunk.tenant_scope.org_id.as_str(),
+                        chunk.tenant_scope.workspace_id.as_str(),
+                        chunk.tenant_scope.deployment_id.as_deref()
                     ],
                 )?;
             }
@@ -855,8 +949,9 @@ impl MemoryDatabase {
                     &format!(
                         "INSERT INTO {} (
                             id, content, project_id, session_id, source, created_at, token_count, metadata,
-                            source_path, source_mtime, source_size, source_hash
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                            source_path, source_mtime, source_size, source_hash,
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                         chunks_table
                     ),
                     params![
@@ -871,7 +966,10 @@ impl MemoryDatabase {
                         chunk.source_path.clone(),
                         chunk.source_mtime,
                         chunk.source_size,
-                        chunk.source_hash.clone()
+                        chunk.source_hash.clone(),
+                        chunk.tenant_scope.org_id.as_str(),
+                        chunk.tenant_scope.workspace_id.as_str(),
+                        chunk.tenant_scope.deployment_id.as_deref()
                     ],
                 )?;
             }
@@ -880,8 +978,9 @@ impl MemoryDatabase {
                     &format!(
                         "INSERT INTO {} (
                             id, content, source, created_at, token_count, metadata,
-                            source_path, source_mtime, source_size, source_hash
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                            source_path, source_mtime, source_size, source_hash,
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                         chunks_table
                     ),
                     params![
@@ -894,7 +993,10 @@ impl MemoryDatabase {
                         chunk.source_path.clone(),
                         chunk.source_mtime,
                         chunk.source_size,
-                        chunk.source_hash.clone()
+                        chunk.source_hash.clone(),
+                        chunk.tenant_scope.org_id.as_str(),
+                        chunk.tenant_scope.workspace_id.as_str(),
+                        chunk.tenant_scope.deployment_id.as_deref()
                     ],
                 )?;
             }
@@ -929,6 +1031,31 @@ impl MemoryDatabase {
         session_id: Option<&str>,
         limit: i64,
     ) -> MemoryResult<Vec<(MemoryChunk, f64)>> {
+        self.search_similar_for_tenant(
+            query_embedding,
+            tier,
+            project_id,
+            session_id,
+            &MemoryTenantScope::local(),
+            limit,
+        )
+        .await
+    }
+
+    /// Search for similar chunks within a tenant partition.
+    ///
+    /// This uses sqlite-vec distance functions over rows already filtered by
+    /// tenant in the chunk table, avoiding global top-k results that could let
+    /// another tenant's closer vectors suppress this tenant's candidates.
+    pub async fn search_similar_for_tenant(
+        &self,
+        query_embedding: &[f32],
+        tier: MemoryTier,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+        limit: i64,
+    ) -> MemoryResult<Vec<(MemoryChunk, f64)>> {
         let conn = self.conn.lock().await;
 
         let (chunks_table, vectors_table) = match tier {
@@ -946,120 +1073,184 @@ impl MemoryDatabase {
                 .join(",")
         );
 
-        // Build query based on tier and filters
+        // Build query based on tier and filters. These are exact per-tenant
+        // top-k scans rather than global ANN followed by post-filtering.
         let results = match tier {
             MemoryTier::Session => {
                 if let Some(sid) = session_id {
+                    let tenant_clause = tenant_scope_matches_sql_clause("c", 2);
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                v.distance
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
-                         WHERE c.session_id = ?1 AND v.embedding MATCH ?2 AND k = ?3
-                         ORDER BY v.distance",
-                        vectors_table, chunks_table
+                         WHERE c.session_id = ?1 AND {}
+                         ORDER BY distance
+                         LIMIT ?6",
+                        vectors_table, chunks_table, tenant_clause
                     );
                     let mut stmt = conn.prepare(&sql)?;
                     let results = stmt
-                        .query_map(params![sid, embedding_json, limit], |row| {
-                            Ok((row_to_chunk(row, tier)?, row.get::<_, f64>(12)?))
-                        })?
+                        .query_map(
+                            params![
+                                sid,
+                                tenant_scope.org_id.as_str(),
+                                tenant_scope.workspace_id.as_str(),
+                                tenant_scope.deployment_id.as_deref(),
+                                embedding_json,
+                                limit
+                            ],
+                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                        )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
                 } else if let Some(pid) = project_id {
+                    let tenant_clause = tenant_scope_matches_sql_clause("c", 2);
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                v.distance
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
-                         WHERE c.project_id = ?1 AND v.embedding MATCH ?2 AND k = ?3
-                         ORDER BY v.distance",
-                        vectors_table, chunks_table
+                         WHERE c.project_id = ?1 AND {}
+                         ORDER BY distance
+                         LIMIT ?6",
+                        vectors_table, chunks_table, tenant_clause
                     );
                     let mut stmt = conn.prepare(&sql)?;
                     let results = stmt
-                        .query_map(params![pid, embedding_json, limit], |row| {
-                            Ok((row_to_chunk(row, tier)?, row.get::<_, f64>(12)?))
-                        })?
+                        .query_map(
+                            params![
+                                pid,
+                                tenant_scope.org_id.as_str(),
+                                tenant_scope.workspace_id.as_str(),
+                                tenant_scope.deployment_id.as_deref(),
+                                embedding_json,
+                                limit
+                            ],
+                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                        )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
                 } else {
+                    let tenant_clause = tenant_scope_matches_sql_clause("c", 1);
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                v.distance
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                vec_distance_cosine(v.embedding, ?4) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
-                         WHERE v.embedding MATCH ?1 AND k = ?2
-                         ORDER BY v.distance",
-                        vectors_table, chunks_table
+                         WHERE {}
+                         ORDER BY distance
+                         LIMIT ?5",
+                        vectors_table, chunks_table, tenant_clause
                     );
                     let mut stmt = conn.prepare(&sql)?;
                     let results = stmt
-                        .query_map(params![embedding_json, limit], |row| {
-                            Ok((row_to_chunk(row, tier)?, row.get::<_, f64>(12)?))
-                        })?
+                        .query_map(
+                            params![
+                                tenant_scope.org_id.as_str(),
+                                tenant_scope.workspace_id.as_str(),
+                                tenant_scope.deployment_id.as_deref(),
+                                embedding_json,
+                                limit
+                            ],
+                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                        )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
                 }
             }
             MemoryTier::Project => {
                 if let Some(pid) = project_id {
+                    let tenant_clause = tenant_scope_matches_sql_clause("c", 2);
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                v.distance
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
-                         WHERE c.project_id = ?1 AND v.embedding MATCH ?2 AND k = ?3
-                         ORDER BY v.distance",
-                        vectors_table, chunks_table
+                         WHERE c.project_id = ?1 AND {}
+                         ORDER BY distance
+                         LIMIT ?6",
+                        vectors_table, chunks_table, tenant_clause
                     );
                     let mut stmt = conn.prepare(&sql)?;
                     let results = stmt
-                        .query_map(params![pid, embedding_json, limit], |row| {
-                            Ok((row_to_chunk(row, tier)?, row.get::<_, f64>(12)?))
-                        })?
+                        .query_map(
+                            params![
+                                pid,
+                                tenant_scope.org_id.as_str(),
+                                tenant_scope.workspace_id.as_str(),
+                                tenant_scope.deployment_id.as_deref(),
+                                embedding_json,
+                                limit
+                            ],
+                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                        )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
                 } else {
+                    let tenant_clause = tenant_scope_matches_sql_clause("c", 1);
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                v.distance
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                vec_distance_cosine(v.embedding, ?4) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
-                         WHERE v.embedding MATCH ?1 AND k = ?2
-                         ORDER BY v.distance",
-                        vectors_table, chunks_table
+                         WHERE {}
+                         ORDER BY distance
+                         LIMIT ?5",
+                        vectors_table, chunks_table, tenant_clause
                     );
                     let mut stmt = conn.prepare(&sql)?;
                     let results = stmt
-                        .query_map(params![embedding_json, limit], |row| {
-                            Ok((row_to_chunk(row, tier)?, row.get::<_, f64>(12)?))
-                        })?
+                        .query_map(
+                            params![
+                                tenant_scope.org_id.as_str(),
+                                tenant_scope.workspace_id.as_str(),
+                                tenant_scope.deployment_id.as_deref(),
+                                embedding_json,
+                                limit
+                            ],
+                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                        )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
                 }
             }
             MemoryTier::Global => {
+                let tenant_clause = tenant_scope_matches_sql_clause("c", 1);
                 let sql = format!(
-                    "SELECT c.id, c.content, NULL as session_id, NULL as project_id, c.source, c.created_at, c.token_count, c.metadata,
+                    "SELECT c.id, c.content, c.source, c.created_at, c.token_count, c.metadata,
                             c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                            v.distance
+                            c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                            vec_distance_cosine(v.embedding, ?4) AS distance
                      FROM {} AS v
                      JOIN {} AS c ON v.chunk_id = c.id
-                     WHERE v.embedding MATCH ?1 AND k = ?2
-                     ORDER BY v.distance",
-                    vectors_table, chunks_table
+                     WHERE {}
+                     ORDER BY distance
+                     LIMIT ?5",
+                    vectors_table, chunks_table, tenant_clause
                 );
                 let mut stmt = conn.prepare(&sql)?;
                 let results = stmt
-                    .query_map(params![embedding_json, limit], |row| {
-                        Ok((row_to_chunk(row, tier)?, row.get::<_, f64>(12)?))
-                    })?
+                    .query_map(
+                        params![
+                            tenant_scope.org_id.as_str(),
+                            tenant_scope.workspace_id.as_str(),
+                            tenant_scope.deployment_id.as_deref(),
+                            embedding_json,
+                            limit
+                        ],
+                        |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                    )?
                     .collect::<Result<Vec<_>, _>>()?;
                 results
             }
@@ -1074,7 +1265,8 @@ impl MemoryDatabase {
 
         let mut stmt = conn.prepare(
             "SELECT id, content, session_id, project_id, source, created_at, token_count, metadata,
-                    source_path, source_mtime, source_size, source_hash
+                    source_path, source_mtime, source_size, source_hash,
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
              FROM session_memory_chunks
              WHERE session_id = ?1
              ORDER BY created_at DESC",
@@ -1089,13 +1281,48 @@ impl MemoryDatabase {
         Ok(chunks)
     }
 
+    pub async fn get_session_chunks_for_tenant(
+        &self,
+        session_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<MemoryChunk>> {
+        let conn = self.conn.lock().await;
+        let tenant_clause = tenant_scope_matches_sql_clause("session_memory_chunks", 2);
+
+        let sql = format!(
+            "SELECT id, content, session_id, project_id, source, created_at, token_count, metadata,
+                    source_path, source_mtime, source_size, source_hash,
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+             FROM session_memory_chunks
+             WHERE session_id = ?1 AND {}
+             ORDER BY created_at DESC",
+            tenant_clause
+        );
+        let mut stmt = conn.prepare(&sql)?;
+
+        let chunks = stmt
+            .query_map(
+                params![
+                    session_id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
+                |row| row_to_chunk(row, MemoryTier::Session),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(chunks)
+    }
+
     /// Get chunks by project ID
     pub async fn get_project_chunks(&self, project_id: &str) -> MemoryResult<Vec<MemoryChunk>> {
         let conn = self.conn.lock().await;
 
         let mut stmt = conn.prepare(
             "SELECT id, content, session_id, project_id, source, created_at, token_count, metadata,
-                    source_path, source_mtime, source_size, source_hash
+                    source_path, source_mtime, source_size, source_hash,
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
              FROM project_memory_chunks
              WHERE project_id = ?1
              ORDER BY created_at DESC",
@@ -1110,13 +1337,48 @@ impl MemoryDatabase {
         Ok(chunks)
     }
 
+    pub async fn get_project_chunks_for_tenant(
+        &self,
+        project_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<MemoryChunk>> {
+        let conn = self.conn.lock().await;
+        let tenant_clause = tenant_scope_matches_sql_clause("project_memory_chunks", 2);
+
+        let sql = format!(
+            "SELECT id, content, session_id, project_id, source, created_at, token_count, metadata,
+                    source_path, source_mtime, source_size, source_hash,
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+             FROM project_memory_chunks
+             WHERE project_id = ?1 AND {}
+             ORDER BY created_at DESC",
+            tenant_clause
+        );
+        let mut stmt = conn.prepare(&sql)?;
+
+        let chunks = stmt
+            .query_map(
+                params![
+                    project_id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
+                |row| row_to_chunk(row, MemoryTier::Project),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(chunks)
+    }
+
     /// Get global chunks
     pub async fn get_global_chunks(&self, limit: i64) -> MemoryResult<Vec<MemoryChunk>> {
         let conn = self.conn.lock().await;
 
         let mut stmt = conn.prepare(
             "SELECT id, content, source, created_at, token_count, metadata,
-                    source_path, source_mtime, source_size, source_hash
+                    source_path, source_mtime, source_size, source_hash,
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
              FROM global_memory_chunks
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -1129,15 +1391,71 @@ impl MemoryDatabase {
         Ok(chunks)
     }
 
+    pub async fn get_global_chunks_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+        limit: i64,
+    ) -> MemoryResult<Vec<MemoryChunk>> {
+        let conn = self.conn.lock().await;
+        let tenant_clause = tenant_scope_matches_sql_clause("global_memory_chunks", 1);
+
+        let sql = format!(
+            "SELECT id, content, source, created_at, token_count, metadata,
+                    source_path, source_mtime, source_size, source_hash,
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+             FROM global_memory_chunks
+             WHERE {}
+             ORDER BY created_at DESC
+             LIMIT ?4",
+            tenant_clause
+        );
+        let mut stmt = conn.prepare(&sql)?;
+
+        let chunks = stmt
+            .query_map(
+                params![
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref(),
+                    limit
+                ],
+                |row| row_to_chunk(row, MemoryTier::Global),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(chunks)
+    }
+
     pub async fn global_chunk_exists_by_source_hash(
         &self,
         source_hash: &str,
     ) -> MemoryResult<bool> {
+        self.global_chunk_exists_by_source_hash_for_tenant(source_hash, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn global_chunk_exists_by_source_hash_for_tenant(
+        &self,
+        source_hash: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<bool> {
         let conn = self.conn.lock().await;
+        let tenant_clause = tenant_scope_matches_sql_clause("global_memory_chunks", 2);
+        let sql = format!(
+            "SELECT 1 FROM global_memory_chunks
+             WHERE source_hash = ?1 AND {}
+             LIMIT 1",
+            tenant_clause
+        );
         let exists = conn
             .query_row(
-                "SELECT 1 FROM global_memory_chunks WHERE source_hash = ?1 LIMIT 1",
-                params![source_hash],
+                &sql,
+                params![
+                    source_hash,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
                 |_row| Ok(()),
             )
             .optional()?
@@ -1235,6 +1553,24 @@ impl MemoryDatabase {
         project_id: Option<&str>,
         session_id: Option<&str>,
     ) -> MemoryResult<u64> {
+        self.delete_chunk_for_tenant(
+            tier,
+            chunk_id,
+            project_id,
+            session_id,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    pub async fn delete_chunk_for_tenant(
+        &self,
+        tier: MemoryTier,
+        chunk_id: &str,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<u64> {
         let conn = self.conn.lock().await;
 
         let deleted = match tier {
@@ -1246,12 +1582,32 @@ impl MemoryDatabase {
                 };
                 conn.execute(
                     "DELETE FROM session_memory_vectors WHERE chunk_id IN
-                     (SELECT id FROM session_memory_chunks WHERE id = ?1 AND session_id = ?2)",
-                    params![chunk_id, session_id],
+                     (SELECT id FROM session_memory_chunks
+                      WHERE id = ?1 AND session_id = ?2
+                        AND tenant_org_id = ?3
+                        AND tenant_workspace_id = ?4
+                        AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, ''))",
+                    params![
+                        chunk_id,
+                        session_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 conn.execute(
-                    "DELETE FROM session_memory_chunks WHERE id = ?1 AND session_id = ?2",
-                    params![chunk_id, session_id],
+                    "DELETE FROM session_memory_chunks
+                     WHERE id = ?1 AND session_id = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        chunk_id,
+                        session_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?
             }
             MemoryTier::Project => {
@@ -1262,23 +1618,61 @@ impl MemoryDatabase {
                 };
                 conn.execute(
                     "DELETE FROM project_memory_vectors WHERE chunk_id IN
-                     (SELECT id FROM project_memory_chunks WHERE id = ?1 AND project_id = ?2)",
-                    params![chunk_id, project_id],
+                     (SELECT id FROM project_memory_chunks
+                      WHERE id = ?1 AND project_id = ?2
+                        AND tenant_org_id = ?3
+                        AND tenant_workspace_id = ?4
+                        AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, ''))",
+                    params![
+                        chunk_id,
+                        project_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 conn.execute(
-                    "DELETE FROM project_memory_chunks WHERE id = ?1 AND project_id = ?2",
-                    params![chunk_id, project_id],
+                    "DELETE FROM project_memory_chunks
+                     WHERE id = ?1 AND project_id = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        chunk_id,
+                        project_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?
             }
             MemoryTier::Global => {
                 conn.execute(
                     "DELETE FROM global_memory_vectors WHERE chunk_id IN
-                     (SELECT id FROM global_memory_chunks WHERE id = ?1)",
-                    params![chunk_id],
+                     (SELECT id FROM global_memory_chunks
+                      WHERE id = ?1
+                        AND tenant_org_id = ?2
+                        AND tenant_workspace_id = ?3
+                        AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, ''))",
+                    params![
+                        chunk_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 conn.execute(
-                    "DELETE FROM global_memory_chunks WHERE id = ?1",
-                    params![chunk_id],
+                    "DELETE FROM global_memory_chunks
+                     WHERE id = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                    params![
+                        chunk_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?
             }
         };

@@ -33,6 +33,7 @@ mod tests {
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             metadata: None,
         };
 
@@ -82,6 +83,7 @@ mod tests {
             source_mtime: Some(now_ms - old_age_ms),
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             metadata: None,
         };
         let new_request = StoreMessageRequest {
@@ -94,6 +96,7 @@ mod tests {
             source_mtime: Some(now_ms),
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             metadata: None,
         };
 
@@ -143,6 +146,7 @@ mod tests {
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             metadata: None,
         };
         match manager.store_message(request).await {
@@ -177,6 +181,7 @@ mod tests {
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             metadata: None,
         };
         match manager.store_message(request).await {

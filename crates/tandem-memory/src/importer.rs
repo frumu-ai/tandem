@@ -1,7 +1,7 @@
 use crate::manager::MemoryManager;
 use crate::types::{
     MemoryError, MemoryImportFormat, MemoryImportProgress, MemoryImportRequest, MemoryImportStats,
-    MemoryTier, StoreMessageRequest,
+    MemoryTenantScope, MemoryTier, StoreMessageRequest,
 };
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
@@ -180,6 +180,7 @@ where
             source_mtime: Some(mtime),
             source_size: Some(size),
             source_hash: Some(hash.clone()),
+            tenant_scope: MemoryTenantScope::local(),
             metadata: Some(request_metadata),
         };
 

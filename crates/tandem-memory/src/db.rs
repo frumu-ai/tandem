@@ -7,7 +7,8 @@ use crate::types::{
     ClearFileIndexResult, GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult,
     KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus, KnowledgePromotionRequest,
     KnowledgePromotionResult, KnowledgeSpaceRecord, MemoryChunk, MemoryConfig, MemoryError,
-    MemoryResult, MemoryStats, MemoryTier, ProjectMemoryStats, DEFAULT_EMBEDDING_DIMENSION,
+    MemoryResult, MemoryStats, MemoryTenantScope, MemoryTier, ProjectMemoryStats,
+    DEFAULT_EMBEDDING_DIMENSION,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{ffi::sqlite3_auto_extension, params, Connection, OptionalExtension, Row};
@@ -80,6 +81,25 @@ fn row_to_chunk(row: &Row, tier: MemoryTier) -> Result<MemoryChunk, rusqlite::Er
     let source_mtime = row.get::<_, Option<i64>>("source_mtime").ok().flatten();
     let source_size = row.get::<_, Option<i64>>("source_size").ok().flatten();
     let source_hash = row.get::<_, Option<String>>("source_hash").ok().flatten();
+    let tenant_scope = MemoryTenantScope {
+        org_id: row
+            .get::<_, Option<String>>("tenant_org_id")
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| LOCAL_TENANT_ORG_ID.to_string()),
+        workspace_id: row
+            .get::<_, Option<String>>("tenant_workspace_id")
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| LOCAL_TENANT_WORKSPACE_ID.to_string()),
+        deployment_id: row
+            .get::<_, Option<String>>("tenant_deployment_id")
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty()),
+    };
 
     Ok(MemoryChunk {
         id,
@@ -92,6 +112,7 @@ fn row_to_chunk(row: &Row, tier: MemoryTier) -> Result<MemoryChunk, rusqlite::Er
         source_mtime,
         source_size,
         source_hash,
+        tenant_scope,
         created_at,
         token_count,
         metadata,
@@ -112,6 +133,14 @@ fn require_scope_id<'a>(tier: MemoryTier, scope: Option<&'a str>) -> MemoryResul
 
 const LOCAL_TENANT_ORG_ID: &str = "local";
 const LOCAL_TENANT_WORKSPACE_ID: &str = "local";
+
+fn tenant_scope_matches_sql_clause(prefix: &str, first_param: usize) -> String {
+    format!(
+        "{prefix}.tenant_org_id = ?{first_param} AND {prefix}.tenant_workspace_id = ?{} AND IFNULL({prefix}.tenant_deployment_id, '') = IFNULL(?{}, '')",
+        first_param + 1,
+        first_param + 2
+    )
+}
 
 fn global_memory_record_tenant_scope(
     record: &GlobalMemoryRecord,
@@ -511,6 +540,46 @@ mod tests {
         (db, temp_dir)
     }
 
+    fn tenant_scope(org_id: &str, workspace_id: &str) -> MemoryTenantScope {
+        MemoryTenantScope {
+            org_id: org_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            deployment_id: Some("deployment-1".to_string()),
+        }
+    }
+
+    fn test_vector_chunk(
+        id: &str,
+        tier: MemoryTier,
+        tenant_scope: MemoryTenantScope,
+        content: &str,
+        source_hash: Option<&str>,
+    ) -> MemoryChunk {
+        MemoryChunk {
+            id: id.to_string(),
+            content: content.to_string(),
+            tier,
+            session_id: Some("shared-session".to_string()),
+            project_id: Some("shared-project".to_string()),
+            source: "test_vector".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: source_hash.map(ToString::to_string),
+            tenant_scope,
+            created_at: Utc::now(),
+            token_count: 4,
+            metadata: None,
+        }
+    }
+
+    fn embedding(first: f32, second: f32) -> Vec<f32> {
+        let mut values = vec![0.0f32; DEFAULT_EMBEDDING_DIMENSION];
+        values[0] = first;
+        values[1] = second;
+        values
+    }
+
     #[tokio::test]
     async fn test_init_schema() {
         let (db, _temp) = setup_test_db().await;
@@ -603,6 +672,7 @@ mod tests {
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             created_at: Utc::now(),
             token_count: 10,
             metadata: None,
@@ -631,6 +701,7 @@ mod tests {
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             created_at: Utc::now(),
             token_count: 7,
             metadata: Some(serde_json::json!({"kind":"test"})),
@@ -662,6 +733,7 @@ mod tests {
             source_mtime: None,
             source_size: None,
             source_hash: Some("hash-123".to_string()),
+            tenant_scope: MemoryTenantScope::local(),
             created_at: Utc::now(),
             token_count: 5,
             metadata: None,
@@ -678,6 +750,209 @@ mod tests {
             .global_chunk_exists_by_source_hash("missing-hash")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_is_tenant_partitioned_before_top_k() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+        let query = embedding(1.0, 0.0);
+
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-vector",
+                MemoryTier::Project,
+                tenant_a.clone(),
+                "tenant a memory",
+                None,
+            ),
+            &embedding(0.8, 0.2),
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-b-vector",
+                MemoryTier::Project,
+                tenant_b.clone(),
+                "tenant b closer memory",
+                None,
+            ),
+            &query,
+        )
+        .await
+        .unwrap();
+
+        let results = db
+            .search_similar_for_tenant(
+                &query,
+                MemoryTier::Project,
+                Some("shared-project"),
+                None,
+                &tenant_a,
+                1,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, "tenant-a-vector");
+        assert_eq!(results[0].0.tenant_scope, tenant_a);
+    }
+
+    #[tokio::test]
+    async fn test_identical_vector_content_only_returns_request_tenant() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+        let vector = embedding(0.4, 0.6);
+
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-identical",
+                MemoryTier::Global,
+                tenant_a.clone(),
+                "identical memory body",
+                Some("same-source-hash"),
+            ),
+            &vector,
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-b-identical",
+                MemoryTier::Global,
+                tenant_b,
+                "identical memory body",
+                Some("same-source-hash"),
+            ),
+            &vector,
+        )
+        .await
+        .unwrap();
+
+        let results = db
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_a, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, "tenant-a-identical");
+    }
+
+    #[tokio::test]
+    async fn test_tenant_delete_does_not_remove_other_tenant_vector_memory() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+        let vector = embedding(0.2, 0.8);
+
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-delete",
+                MemoryTier::Global,
+                tenant_a.clone(),
+                "tenant a delete target",
+                None,
+            ),
+            &vector,
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-b-delete",
+                MemoryTier::Global,
+                tenant_b.clone(),
+                "tenant b delete target",
+                None,
+            ),
+            &vector,
+        )
+        .await
+        .unwrap();
+
+        let cross_delete = db
+            .delete_chunk_for_tenant(MemoryTier::Global, "tenant-b-delete", None, None, &tenant_a)
+            .await
+            .unwrap();
+        assert_eq!(cross_delete, 0);
+
+        let tenant_b_results = db
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_b, 10)
+            .await
+            .unwrap();
+        assert_eq!(tenant_b_results.len(), 1);
+        assert_eq!(tenant_b_results[0].0.id, "tenant-b-delete");
+
+        let own_delete = db
+            .delete_chunk_for_tenant(MemoryTier::Global, "tenant-a-delete", None, None, &tenant_a)
+            .await
+            .unwrap();
+        assert_eq!(own_delete, 1);
+        assert_eq!(
+            db.search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_b, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_same_source_hash_does_not_dedupe_across_tenants() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+        let source_hash = "shared-source-hash";
+
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-hash",
+                MemoryTier::Global,
+                tenant_a.clone(),
+                "same source hash",
+                Some(source_hash),
+            ),
+            &embedding(0.7, 0.1),
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-b-hash",
+                MemoryTier::Global,
+                tenant_b.clone(),
+                "same source hash",
+                Some(source_hash),
+            ),
+            &embedding(0.7, 0.1),
+        )
+        .await
+        .unwrap();
+
+        assert!(db
+            .global_chunk_exists_by_source_hash_for_tenant(source_hash, &tenant_a)
+            .await
+            .unwrap());
+        assert!(db
+            .global_chunk_exists_by_source_hash_for_tenant(source_hash, &tenant_b)
+            .await
+            .unwrap());
+
+        let tenant_a_chunks = db
+            .get_global_chunks_for_tenant(&tenant_a, 10)
+            .await
+            .unwrap();
+        let tenant_b_chunks = db
+            .get_global_chunks_for_tenant(&tenant_b, 10)
+            .await
+            .unwrap();
+        assert_eq!(tenant_a_chunks.len(), 1);
+        assert_eq!(tenant_b_chunks.len(), 1);
+        assert_ne!(tenant_a_chunks[0].id, tenant_b_chunks[0].id);
     }
 
     #[tokio::test]

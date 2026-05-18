@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::memory::types::{MemoryTier, StoreMessageRequest};
+use crate::memory::types::{MemoryTenantScope, MemoryTier, StoreMessageRequest};
 use crate::sidecar::{SidecarManager, StreamEvent};
 use futures::StreamExt;
 use serde::Serialize;
@@ -1479,6 +1479,7 @@ async fn persist_assistant_message_memory(
         source_mtime: None,
         source_size: None,
         source_hash: None,
+        tenant_scope: MemoryTenantScope::local(),
         metadata: Some(metadata.clone()),
     };
     let mut session_chunks_stored = 0usize;
@@ -1523,6 +1524,7 @@ async fn persist_assistant_message_memory(
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
             metadata: Some(metadata),
         };
         match manager.store_message(project_req).await {

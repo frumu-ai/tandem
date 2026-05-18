@@ -370,6 +370,7 @@ impl Tool for MemoryStoreTool {
             source_mtime: None,
             source_size: None,
             source_hash: None,
+            tenant_scope: tandem_memory::types::MemoryTenantScope::local(),
             metadata,
         };
         let chunk_ids = manager.store_message(request).await?;

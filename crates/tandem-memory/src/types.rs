@@ -39,6 +39,30 @@ impl std::fmt::Display for MemoryTier {
     }
 }
 
+/// Tenant partition for vector-backed memory rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryTenantScope {
+    pub org_id: String,
+    pub workspace_id: String,
+    pub deployment_id: Option<String>,
+}
+
+impl MemoryTenantScope {
+    pub fn local() -> Self {
+        Self {
+            org_id: "local".to_string(),
+            workspace_id: "local".to_string(),
+            deployment_id: None,
+        }
+    }
+}
+
+impl Default for MemoryTenantScope {
+    fn default() -> Self {
+        Self::local()
+    }
+}
+
 /// A memory chunk - unit of storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryChunk {
@@ -53,6 +77,8 @@ pub struct MemoryChunk {
     pub source_mtime: Option<i64>,
     pub source_size: Option<i64>,
     pub source_hash: Option<String>,
+    #[serde(default)]
+    pub tenant_scope: MemoryTenantScope,
     pub created_at: DateTime<Utc>,
     pub token_count: i64,
     pub metadata: Option<serde_json::Value>,
@@ -198,6 +224,8 @@ pub struct StoreMessageRequest {
     pub source_mtime: Option<i64>,
     pub source_size: Option<i64>,
     pub source_hash: Option<String>,
+    #[serde(default)]
+    pub tenant_scope: MemoryTenantScope,
     pub metadata: Option<serde_json::Value>,
 }
 
