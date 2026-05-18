@@ -956,6 +956,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_memory_stats_are_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-session-stat",
+                MemoryTier::Session,
+                tenant_a.clone(),
+                "tenant a session stats",
+                None,
+            ),
+            &embedding(0.1, 0.2),
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-project-stat",
+                MemoryTier::Project,
+                tenant_a.clone(),
+                "tenant a project stats",
+                None,
+            ),
+            &embedding(0.2, 0.3),
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-global-stat",
+                MemoryTier::Global,
+                tenant_a.clone(),
+                "tenant a global stats",
+                None,
+            ),
+            &embedding(0.3, 0.4),
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-b-project-stat",
+                MemoryTier::Project,
+                tenant_b.clone(),
+                "tenant b project stats should not count",
+                None,
+            ),
+            &embedding(0.4, 0.5),
+        )
+        .await
+        .unwrap();
+
+        db.log_cleanup_for_tenant(
+            "test",
+            MemoryTier::Project,
+            Some("shared-project"),
+            None,
+            1,
+            10,
+            &tenant_b,
+        )
+        .await
+        .unwrap();
+
+        let tenant_a_stats = db.get_stats_for_tenant(&tenant_a).await.unwrap();
+        assert_eq!(tenant_a_stats.session_chunks, 1);
+        assert_eq!(tenant_a_stats.project_chunks, 1);
+        assert_eq!(tenant_a_stats.global_chunks, 1);
+        assert_eq!(tenant_a_stats.total_chunks, 3);
+        assert!(tenant_a_stats.total_bytes > 0);
+        assert!(tenant_a_stats.last_cleanup.is_none());
+
+        let tenant_b_stats = db.get_stats_for_tenant(&tenant_b).await.unwrap();
+        assert_eq!(tenant_b_stats.session_chunks, 0);
+        assert_eq!(tenant_b_stats.project_chunks, 1);
+        assert_eq!(tenant_b_stats.global_chunks, 0);
+        assert_eq!(tenant_b_stats.total_chunks, 1);
+        assert!(tenant_b_stats.last_cleanup.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_project_stats_are_tenant_scoped_for_vector_chunks() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-project-stat-1",
+                MemoryTier::Project,
+                tenant_a.clone(),
+                "tenant a project stat one",
+                None,
+            ),
+            &embedding(0.5, 0.1),
+        )
+        .await
+        .unwrap();
+        let mut tenant_a_file = test_vector_chunk(
+            "tenant-a-project-file-stat",
+            MemoryTier::Project,
+            tenant_a.clone(),
+            "tenant a file stat",
+            None,
+        );
+        tenant_a_file.source = "file".to_string();
+        db.store_chunk(&tenant_a_file, &embedding(0.6, 0.1))
+            .await
+            .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-b-project-stat-1",
+                MemoryTier::Project,
+                tenant_b,
+                "tenant b project stat",
+                None,
+            ),
+            &embedding(0.7, 0.1),
+        )
+        .await
+        .unwrap();
+
+        let stats = db
+            .get_project_stats_for_tenant("shared-project", &tenant_a)
+            .await
+            .unwrap();
+        assert_eq!(stats.project_chunks, 2);
+        assert_eq!(stats.file_index_chunks, 1);
+        assert!(stats.project_bytes > 0);
+        assert!(stats.file_index_bytes > 0);
+    }
+
+    #[tokio::test]
     async fn test_config_crud() {
         let (db, _temp) = setup_test_db().await;
 

@@ -358,29 +358,76 @@ impl MemoryDatabase {
     }
 
     pub async fn get_project_stats(&self, project_id: &str) -> MemoryResult<ProjectMemoryStats> {
+        self.get_project_stats_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn get_project_stats_for_tenant(
+        &self,
+        project_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<ProjectMemoryStats> {
         let conn = self.conn.lock().await;
 
         let project_chunks: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM project_memory_chunks WHERE project_id = ?1",
-            params![project_id],
+            "SELECT COUNT(*) FROM project_memory_chunks
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         let project_bytes: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks WHERE project_id = ?1",
-            params![project_id],
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         let file_index_chunks: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file'",
-            params![project_id],
+            "SELECT COUNT(*) FROM project_memory_chunks
+             WHERE project_id = ?1
+               AND source = 'file'
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         let file_index_bytes: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file'",
-            params![project_id],
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks
+             WHERE project_id = ?1
+               AND source = 'file'
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 

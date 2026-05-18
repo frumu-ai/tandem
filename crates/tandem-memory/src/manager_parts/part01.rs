@@ -957,6 +957,13 @@ impl MemoryManager {
         self.db.get_stats().await
     }
 
+    pub async fn get_stats_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<MemoryStats> {
+        self.db.get_stats_for_tenant(tenant_scope).await
+    }
+
     /// Get memory configuration for a project
     pub async fn get_config(&self, project_id: &str) -> MemoryResult<MemoryConfig> {
         self.db.get_or_create_config(project_id).await

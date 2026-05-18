@@ -409,6 +409,37 @@ impl MemoryDatabase {
             )",
             [],
         )?;
+        let cleanup_log_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(memory_cleanup_log)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !cleanup_log_cols.contains("tenant_org_id") {
+            conn.execute(
+                "ALTER TABLE memory_cleanup_log ADD COLUMN tenant_org_id TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
+        if !cleanup_log_cols.contains("tenant_workspace_id") {
+            conn.execute(
+                "ALTER TABLE memory_cleanup_log ADD COLUMN tenant_workspace_id TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
+        if !cleanup_log_cols.contains("tenant_deployment_id") {
+            conn.execute(
+                "ALTER TABLE memory_cleanup_log ADD COLUMN tenant_deployment_id TEXT",
+                [],
+            )?;
+        }
+        conn.execute(
+            "UPDATE memory_cleanup_log SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE memory_cleanup_log SET tenant_workspace_id = 'local' WHERE tenant_workspace_id IS NULL OR tenant_workspace_id = ''",
+            [],
+        )?;
 
         // Create indexes for better query performance
         conn.execute(
@@ -453,6 +484,10 @@ impl MemoryDatabase {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_cleanup_log_created ON memory_cleanup_log(created_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cleanup_log_tenant_created ON memory_cleanup_log(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), created_at DESC)",
             [],
         )?;
         conn.execute(
@@ -2170,48 +2205,111 @@ impl MemoryDatabase {
 
     /// Get memory statistics
     pub async fn get_stats(&self) -> MemoryResult<MemoryStats> {
+        let mut stats = self
+            .get_stats_for_tenant(&MemoryTenantScope::local())
+            .await?;
+        stats.file_size = std::fs::metadata(&self.db_path)?.len() as i64;
+        Ok(stats)
+    }
+
+    /// Get memory statistics scoped to a single tenant partition.
+    pub async fn get_stats_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<MemoryStats> {
         let conn = self.conn.lock().await;
 
-        // Count chunks
-        let session_chunks: i64 =
-            conn.query_row("SELECT COUNT(*) FROM session_memory_chunks", [], |row| {
-                row.get(0)
-            })?;
+        let session_chunks: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_memory_chunks
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
+            |row| row.get(0),
+        )?;
 
-        let project_chunks: i64 =
-            conn.query_row("SELECT COUNT(*) FROM project_memory_chunks", [], |row| {
-                row.get(0)
-            })?;
+        let project_chunks: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM project_memory_chunks
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
+            |row| row.get(0),
+        )?;
 
-        let global_chunks: i64 =
-            conn.query_row("SELECT COUNT(*) FROM global_memory_chunks", [], |row| {
-                row.get(0)
-            })?;
+        let global_chunks: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM global_memory_chunks
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
+            |row| row.get(0),
+        )?;
 
-        // Calculate sizes
         let session_bytes: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM session_memory_chunks",
-            [],
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM session_memory_chunks
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         let project_bytes: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks",
-            [],
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         let global_bytes: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM global_memory_chunks",
-            [],
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM global_memory_chunks
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
-        // Get last cleanup
         let last_cleanup: Option<String> = conn
             .query_row(
-                "SELECT created_at FROM memory_cleanup_log ORDER BY created_at DESC LIMIT 1",
-                [],
+                "SELECT created_at FROM memory_cleanup_log
+                 WHERE tenant_org_id = ?1
+                   AND tenant_workspace_id = ?2
+                   AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
+                 ORDER BY created_at DESC
+                 LIMIT 1",
+                params![
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
                 |row| row.get(0),
             )
             .optional()?;
@@ -2222,19 +2320,17 @@ impl MemoryDatabase {
                 .map(|dt| dt.with_timezone(&Utc))
         });
 
-        // Get file size
-        let file_size = std::fs::metadata(&self.db_path)?.len() as i64;
-
+        let total_bytes = session_bytes + project_bytes + global_bytes;
         Ok(MemoryStats {
             total_chunks: session_chunks + project_chunks + global_chunks,
             session_chunks,
             project_chunks,
             global_chunks,
-            total_bytes: session_bytes + project_bytes + global_bytes,
+            total_bytes,
             session_bytes,
             project_bytes,
             global_bytes,
-            file_size,
+            file_size: total_bytes,
             last_cleanup,
         })
     }
@@ -2249,6 +2345,28 @@ impl MemoryDatabase {
         chunks_deleted: i64,
         bytes_reclaimed: i64,
     ) -> MemoryResult<()> {
+        self.log_cleanup_for_tenant(
+            cleanup_type,
+            tier,
+            project_id,
+            session_id,
+            chunks_deleted,
+            bytes_reclaimed,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    pub async fn log_cleanup_for_tenant(
+        &self,
+        cleanup_type: &str,
+        tier: MemoryTier,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        chunks_deleted: i64,
+        bytes_reclaimed: i64,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
 
         let id = uuid::Uuid::new_v4().to_string();
@@ -2256,8 +2374,9 @@ impl MemoryDatabase {
 
         conn.execute(
             "INSERT INTO memory_cleanup_log 
-             (id, cleanup_type, tier, project_id, session_id, chunks_deleted, bytes_reclaimed, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, cleanup_type, tier, project_id, session_id, chunks_deleted, bytes_reclaimed, created_at,
+              tenant_org_id, tenant_workspace_id, tenant_deployment_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 id,
                 cleanup_type,
@@ -2266,7 +2385,10 @@ impl MemoryDatabase {
                 session_id,
                 chunks_deleted,
                 bytes_reclaimed,
-                created_at
+                created_at,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
             ],
         )?;
 
