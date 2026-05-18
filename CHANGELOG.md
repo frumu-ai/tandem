@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tenant-scoped memory stats and cleanup helpers**: Added tenant-aware memory stats, project vector stats, manual clear, and old-session cleanup helpers with tests proving cross-tenant rows are not counted or deleted.
 - **Tenant-scoped memory context retrieval**: Added tenant-aware manager retrieval APIs and coverage proving current-session context injection does not mix same-session chunks across tenants.
 - **Tenant-scoped memory file import/indexes**: Added tenant-aware import index, file chunk deletion, project file-index stats, and project file-index clear paths with regression tests proving same-path imports cannot cross tenants.
+- **Tenant-scoped knowledge memory**: Added tenant-aware knowledge-space indexes and DB/manager APIs for spaces, items, coverage, promotion, and Automation V2 knowledge preflight with denial coverage for cross-tenant reads and mutations.
 
 ### Changed
 
@@ -36,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 
 - Local/default single-tenant behavior remains unchanged.
-- This release continues the hosted tenant-isolation hardening work; artifacts, audit exports, SCIM, Zitadel, private sidecar work, and governed knowledge-memory isolation remain separate follow-up surfaces.
+- This release continues the hosted tenant-isolation hardening work; artifacts, audit exports, SCIM, Zitadel, and private sidecar work remain separate follow-up surfaces.
 
 ## [0.5.8] - 2026-05-17
 

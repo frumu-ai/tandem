@@ -333,11 +333,31 @@ impl MemoryManager {
         self.db.upsert_knowledge_space(space).await
     }
 
+    pub async fn upsert_knowledge_space_for_tenant(
+        &self,
+        space: &KnowledgeSpaceRecord,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
+        self.db
+            .upsert_knowledge_space_for_tenant(space, tenant_scope)
+            .await
+    }
+
     pub async fn get_knowledge_space(
         &self,
         id: &str,
     ) -> MemoryResult<Option<KnowledgeSpaceRecord>> {
         self.db.get_knowledge_space(id).await
+    }
+
+    pub async fn get_knowledge_space_for_tenant(
+        &self,
+        id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<KnowledgeSpaceRecord>> {
+        self.db
+            .get_knowledge_space_for_tenant(id, tenant_scope)
+            .await
     }
 
     pub async fn list_knowledge_spaces(
@@ -347,12 +367,42 @@ impl MemoryManager {
         self.db.list_knowledge_spaces(project_id).await
     }
 
+    pub async fn list_knowledge_spaces_for_tenant(
+        &self,
+        project_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<KnowledgeSpaceRecord>> {
+        self.db
+            .list_knowledge_spaces_for_tenant(project_id, tenant_scope)
+            .await
+    }
+
     pub async fn upsert_knowledge_item(&self, item: &KnowledgeItemRecord) -> MemoryResult<()> {
         self.db.upsert_knowledge_item(item).await
     }
 
+    pub async fn upsert_knowledge_item_for_tenant(
+        &self,
+        item: &KnowledgeItemRecord,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
+        self.db
+            .upsert_knowledge_item_for_tenant(item, tenant_scope)
+            .await
+    }
+
     pub async fn get_knowledge_item(&self, id: &str) -> MemoryResult<Option<KnowledgeItemRecord>> {
         self.db.get_knowledge_item(id).await
+    }
+
+    pub async fn get_knowledge_item_for_tenant(
+        &self,
+        id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<KnowledgeItemRecord>> {
+        self.db
+            .get_knowledge_item_for_tenant(id, tenant_scope)
+            .await
     }
 
     pub async fn list_knowledge_items(
@@ -363,11 +413,32 @@ impl MemoryManager {
         self.db.list_knowledge_items(space_id, coverage_key).await
     }
 
+    pub async fn list_knowledge_items_for_tenant(
+        &self,
+        space_id: &str,
+        coverage_key: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<KnowledgeItemRecord>> {
+        self.db
+            .list_knowledge_items_for_tenant(space_id, coverage_key, tenant_scope)
+            .await
+    }
+
     pub async fn upsert_knowledge_coverage(
         &self,
         coverage: &KnowledgeCoverageRecord,
     ) -> MemoryResult<()> {
         self.db.upsert_knowledge_coverage(coverage).await
+    }
+
+    pub async fn upsert_knowledge_coverage_for_tenant(
+        &self,
+        coverage: &KnowledgeCoverageRecord,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
+        self.db
+            .upsert_knowledge_coverage_for_tenant(coverage, tenant_scope)
+            .await
     }
 
     pub async fn get_knowledge_coverage(
@@ -378,11 +449,32 @@ impl MemoryManager {
         self.db.get_knowledge_coverage(coverage_key, space_id).await
     }
 
+    pub async fn get_knowledge_coverage_for_tenant(
+        &self,
+        coverage_key: &str,
+        space_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<KnowledgeCoverageRecord>> {
+        self.db
+            .get_knowledge_coverage_for_tenant(coverage_key, space_id, tenant_scope)
+            .await
+    }
+
     pub async fn promote_knowledge_item(
         &self,
         request: &KnowledgePromotionRequest,
     ) -> MemoryResult<Option<KnowledgePromotionResult>> {
         self.db.promote_knowledge_item(request).await
+    }
+
+    pub async fn promote_knowledge_item_for_tenant(
+        &self,
+        request: &KnowledgePromotionRequest,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<KnowledgePromotionResult>> {
+        self.db
+            .promote_knowledge_item_for_tenant(request, tenant_scope)
+            .await
     }
 
     fn space_matches_ref(
@@ -473,6 +565,7 @@ impl MemoryManager {
         &self,
         request: &KnowledgePreflightRequest,
         _coverage_key: &str,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Vec<KnowledgeSpaceRecord>> {
         let binding = &request.binding;
         let mut spaces = Vec::new();
@@ -493,7 +586,10 @@ impl MemoryManager {
                 .chain(binding.promote_spaces.iter())
             {
                 if let Some(space_id) = space_ref.space_id.as_deref() {
-                    if let Some(space) = self.get_knowledge_space(space_id).await? {
+                    if let Some(space) = self
+                        .get_knowledge_space_for_tenant(space_id, tenant_scope)
+                        .await?
+                    {
                         push_space(space, &mut spaces, &mut seen_space_ids);
                     }
                     continue;
@@ -507,7 +603,10 @@ impl MemoryManager {
                             .as_deref()
                             .unwrap_or(&request.project_id);
                         let project_spaces = self
-                            .list_knowledge_spaces(Some(candidate_project_id))
+                            .list_knowledge_spaces_for_tenant(
+                                Some(candidate_project_id),
+                                tenant_scope,
+                            )
                             .await?;
                         for space in project_spaces.into_iter().filter(|space| {
                             Self::space_matches_ref(space, space_ref, &request.project_id)
@@ -516,7 +615,9 @@ impl MemoryManager {
                         }
                     }
                     KnowledgeScope::Global => {
-                        let global_spaces = self.list_knowledge_spaces(None).await?;
+                        let global_spaces = self
+                            .list_knowledge_spaces_for_tenant(None, tenant_scope)
+                            .await?;
                         for space in global_spaces.into_iter().filter(|space| {
                             Self::space_matches_ref(space, space_ref, &request.project_id)
                         }) {
@@ -533,7 +634,7 @@ impl MemoryManager {
         }
 
         let project_spaces = self
-            .list_knowledge_spaces(Some(&request.project_id))
+            .list_knowledge_spaces_for_tenant(Some(&request.project_id), tenant_scope)
             .await?;
         let requested_namespace = if binding.namespace.is_some() {
             binding.namespace.clone()
@@ -560,11 +661,20 @@ impl MemoryManager {
         &self,
         request: &KnowledgePreflightRequest,
     ) -> MemoryResult<KnowledgePreflightResult> {
+        self.preflight_knowledge_for_tenant(request, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn preflight_knowledge_for_tenant(
+        &self,
+        request: &KnowledgePreflightRequest,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<KnowledgePreflightResult> {
         let binding = &request.binding;
         let project_spaces = if request.project_id.trim().is_empty() {
             Vec::new()
         } else {
-            self.list_knowledge_spaces(Some(&request.project_id))
+            self.list_knowledge_spaces_for_tenant(Some(&request.project_id), tenant_scope)
                 .await?
         };
         let namespace = binding
@@ -594,7 +704,7 @@ impl MemoryManager {
         }
 
         let spaces = self
-            .resolve_preflight_spaces(request, &coverage_key)
+            .resolve_preflight_spaces(request, &coverage_key, tenant_scope)
             .await?;
         if spaces.is_empty() {
             return Ok(KnowledgePreflightResult {
@@ -618,10 +728,10 @@ impl MemoryManager {
 
         for space in &spaces {
             let items = self
-                .list_knowledge_items(&space.id, Some(&coverage_key))
+                .list_knowledge_items_for_tenant(&space.id, Some(&coverage_key), tenant_scope)
                 .await?;
             let coverage = self
-                .get_knowledge_coverage(&coverage_key, &space.id)
+                .get_knowledge_coverage_for_tenant(&coverage_key, &space.id, tenant_scope)
                 .await?;
             for item in items {
                 if !item.status.is_active() {

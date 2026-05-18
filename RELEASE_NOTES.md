@@ -76,6 +76,10 @@ and MCP credential boundaries, and vector-backed memory partitioning.
 - Memory project/global config rows and old-session hygiene now use tenant
   scope, with tests proving same project ids cannot overwrite retention policy
   or prune another tenant's session memory.
+- Knowledge spaces now include tenant-scoped uniqueness, and knowledge item,
+  coverage, promotion, manager, and Automation V2 preflight paths use
+  tenant-aware lookups so curated knowledge cannot cross hosted tenant
+  boundaries.
 - Existing local memory rows default to `local/local` during migration.
 
 ### Automation V2 MCP Diagnostics

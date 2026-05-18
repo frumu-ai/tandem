@@ -139,13 +139,22 @@ async fn automation_knowledge_preflight(
     let task_family = automation_node_knowledge_task_family(node);
     let paths = resolve_shared_paths().ok()?;
     let manager = MemoryManager::new(&paths.memory_db_path).await.ok()?;
+    let tenant_context = automation.tenant_context();
+    let memory_tenant_scope = tandem_memory::types::MemoryTenantScope {
+        org_id: tenant_context.org_id.clone(),
+        workspace_id: tenant_context.workspace_id.clone(),
+        deployment_id: tenant_context.deployment_id.clone(),
+    };
     let preflight = manager
-        .preflight_knowledge(&tandem_orchestrator::KnowledgePreflightRequest {
-            project_id: project_id.to_string(),
-            task_family: task_family.clone(),
-            subject,
-            binding,
-        })
+        .preflight_knowledge_for_tenant(
+            &tandem_orchestrator::KnowledgePreflightRequest {
+                project_id: project_id.to_string(),
+                task_family: task_family.clone(),
+                subject,
+                binding,
+            },
+            &memory_tenant_scope,
+        )
         .await
         .ok()?;
     if preflight.is_reusable() {

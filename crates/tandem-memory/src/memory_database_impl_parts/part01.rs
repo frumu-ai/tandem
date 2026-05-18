@@ -708,8 +708,54 @@ impl MemoryDatabase {
             [],
         )?;
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_spaces_scope_project_namespace
-                ON knowledge_spaces(scope, IFNULL(project_id, ''), IFNULL(namespace, ''))",
+            "DROP INDEX IF EXISTS idx_knowledge_spaces_scope_project_namespace",
+            [],
+        )?;
+        let knowledge_space_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(knowledge_spaces)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !knowledge_space_cols.contains("tenant_org_id") {
+            conn.execute(
+                "CREATE TABLE knowledge_spaces_new (
+                    id TEXT PRIMARY KEY,
+                    tenant_org_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_workspace_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_deployment_id TEXT NOT NULL DEFAULT '',
+                    scope TEXT NOT NULL,
+                    project_id TEXT,
+                    namespace TEXT,
+                    title TEXT,
+                    description TEXT,
+                    trust_level TEXT NOT NULL,
+                    metadata TEXT,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO knowledge_spaces_new
+                 (id, tenant_org_id, tenant_workspace_id, tenant_deployment_id, scope, project_id, namespace, title, description, trust_level, metadata, created_at_ms, updated_at_ms)
+                 SELECT id, 'local', 'local', '', scope, project_id, namespace, title, description, trust_level, metadata, created_at_ms, updated_at_ms
+                 FROM knowledge_spaces",
+                [],
+            )?;
+            conn.execute("DROP TABLE knowledge_spaces", [])?;
+            conn.execute(
+                "ALTER TABLE knowledge_spaces_new RENAME TO knowledge_spaces",
+                [],
+            )?;
+        }
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_spaces_tenant_scope_project_namespace
+                ON knowledge_spaces(tenant_org_id, tenant_workspace_id, tenant_deployment_id, scope, IFNULL(project_id, ''), IFNULL(namespace, ''))",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_spaces_tenant_project_updated
+                ON knowledge_spaces(tenant_org_id, tenant_workspace_id, tenant_deployment_id, IFNULL(project_id, ''), updated_at_ms DESC)",
             [],
         )?;
         conn.execute(
@@ -2174,13 +2220,39 @@ impl MemoryDatabase {
 
     /// Insert or update a reusable knowledge space.
     pub async fn upsert_knowledge_space(&self, space: &KnowledgeSpaceRecord) -> MemoryResult<()> {
+        self.upsert_knowledge_space_for_tenant(space, &MemoryTenantScope::local())
+            .await
+    }
+
+    /// Insert or update a reusable knowledge space in a tenant scope.
+    pub async fn upsert_knowledge_space_for_tenant(
+        &self,
+        space: &KnowledgeSpaceRecord,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
         conn.execute(
-            "INSERT OR REPLACE INTO knowledge_spaces
-             (id, scope, project_id, namespace, title, description, trust_level, metadata, created_at_ms, updated_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO knowledge_spaces
+             (id, tenant_org_id, tenant_workspace_id, tenant_deployment_id, scope, project_id, namespace, title, description, trust_level, metadata, created_at_ms, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(id) DO UPDATE SET
+                tenant_org_id = excluded.tenant_org_id,
+                tenant_workspace_id = excluded.tenant_workspace_id,
+                tenant_deployment_id = excluded.tenant_deployment_id,
+                scope = excluded.scope,
+                project_id = excluded.project_id,
+                namespace = excluded.namespace,
+                title = excluded.title,
+                description = excluded.description,
+                trust_level = excluded.trust_level,
+                metadata = excluded.metadata,
+                created_at_ms = excluded.created_at_ms,
+                updated_at_ms = excluded.updated_at_ms",
             params![
                 space.id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref().unwrap_or(""),
                 space.scope.to_string(),
                 space.project_id,
                 space.namespace,
@@ -2200,12 +2272,30 @@ impl MemoryDatabase {
         &self,
         id: &str,
     ) -> MemoryResult<Option<KnowledgeSpaceRecord>> {
+        self.get_knowledge_space_for_tenant(id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn get_knowledge_space_for_tenant(
+        &self,
+        id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<KnowledgeSpaceRecord>> {
         let conn = self.conn.lock().await;
         Ok(
             conn.query_row(
                 "SELECT id, scope, project_id, namespace, title, description, trust_level, metadata, created_at_ms, updated_at_ms
-                 FROM knowledge_spaces WHERE id = ?1",
-                params![id],
+                 FROM knowledge_spaces
+                 WHERE id = ?1
+                   AND tenant_org_id = ?2
+                   AND tenant_workspace_id = ?3
+                   AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                params![
+                    id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
                 row_to_knowledge_space,
             )
             .optional()?,
@@ -2217,28 +2307,80 @@ impl MemoryDatabase {
         &self,
         project_id: Option<&str>,
     ) -> MemoryResult<Vec<KnowledgeSpaceRecord>> {
+        self.list_knowledge_spaces_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn list_knowledge_spaces_for_tenant(
+        &self,
+        project_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<KnowledgeSpaceRecord>> {
         let conn = self.conn.lock().await;
         let mut stmt = if project_id.is_some() {
             conn.prepare(
                 "SELECT id, scope, project_id, namespace, title, description, trust_level, metadata, created_at_ms, updated_at_ms
-                 FROM knowledge_spaces WHERE project_id = ?1 ORDER BY updated_at_ms DESC",
+                 FROM knowledge_spaces
+                 WHERE project_id = ?1
+                   AND tenant_org_id = ?2
+                   AND tenant_workspace_id = ?3
+                   AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
+                 ORDER BY updated_at_ms DESC",
             )?
         } else {
             conn.prepare(
                 "SELECT id, scope, project_id, namespace, title, description, trust_level, metadata, created_at_ms, updated_at_ms
-                 FROM knowledge_spaces ORDER BY updated_at_ms DESC",
+                 FROM knowledge_spaces
+                 WHERE tenant_org_id = ?1
+                   AND tenant_workspace_id = ?2
+                   AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
+                 ORDER BY updated_at_ms DESC",
             )?
         };
         let rows = if let Some(project_id) = project_id {
-            stmt.query_map(params![project_id], row_to_knowledge_space)?
+            stmt.query_map(
+                params![
+                    project_id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
+                row_to_knowledge_space,
+            )?
         } else {
-            stmt.query_map([], row_to_knowledge_space)?
+            stmt.query_map(
+                params![
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
+                row_to_knowledge_space,
+            )?
         };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Insert or update a reusable knowledge item.
     pub async fn upsert_knowledge_item(&self, item: &KnowledgeItemRecord) -> MemoryResult<()> {
+        self.upsert_knowledge_item_for_tenant(item, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn upsert_knowledge_item_for_tenant(
+        &self,
+        item: &KnowledgeItemRecord,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
+        if self
+            .get_knowledge_space_for_tenant(&item.space_id, tenant_scope)
+            .await?
+            .is_none()
+        {
+            return Err(crate::types::MemoryError::InvalidConfig(
+                "knowledge item space not found for tenant".to_string(),
+            ));
+        }
+
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT OR REPLACE INTO knowledge_items
@@ -2273,34 +2415,92 @@ impl MemoryDatabase {
         space_id: &str,
         coverage_key: Option<&str>,
     ) -> MemoryResult<Vec<KnowledgeItemRecord>> {
+        self.list_knowledge_items_for_tenant(space_id, coverage_key, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn list_knowledge_items_for_tenant(
+        &self,
+        space_id: &str,
+        coverage_key: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<KnowledgeItemRecord>> {
         let conn = self.conn.lock().await;
         let mut stmt = if coverage_key.is_some() {
             conn.prepare(
-                "SELECT id, space_id, coverage_key, dedupe_key, item_type, title, summary, payload, trust_level, status, run_id, artifact_refs, source_memory_ids, freshness_expires_at_ms, metadata, created_at_ms, updated_at_ms
-                 FROM knowledge_items WHERE space_id = ?1 AND coverage_key = ?2 ORDER BY created_at_ms DESC",
+                "SELECT i.id, i.space_id, i.coverage_key, i.dedupe_key, i.item_type, i.title, i.summary, i.payload, i.trust_level, i.status, i.run_id, i.artifact_refs, i.source_memory_ids, i.freshness_expires_at_ms, i.metadata, i.created_at_ms, i.updated_at_ms
+                 FROM knowledge_items i
+                 JOIN knowledge_spaces s ON s.id = i.space_id
+                 WHERE i.space_id = ?1 AND i.coverage_key = ?2
+                   AND s.tenant_org_id = ?3
+                   AND s.tenant_workspace_id = ?4
+                   AND IFNULL(s.tenant_deployment_id, '') = IFNULL(?5, '')
+                 ORDER BY i.created_at_ms DESC",
             )?
         } else {
             conn.prepare(
-                "SELECT id, space_id, coverage_key, dedupe_key, item_type, title, summary, payload, trust_level, status, run_id, artifact_refs, source_memory_ids, freshness_expires_at_ms, metadata, created_at_ms, updated_at_ms
-                 FROM knowledge_items WHERE space_id = ?1 ORDER BY created_at_ms DESC",
+                "SELECT i.id, i.space_id, i.coverage_key, i.dedupe_key, i.item_type, i.title, i.summary, i.payload, i.trust_level, i.status, i.run_id, i.artifact_refs, i.source_memory_ids, i.freshness_expires_at_ms, i.metadata, i.created_at_ms, i.updated_at_ms
+                 FROM knowledge_items i
+                 JOIN knowledge_spaces s ON s.id = i.space_id
+                 WHERE i.space_id = ?1
+                   AND s.tenant_org_id = ?2
+                   AND s.tenant_workspace_id = ?3
+                   AND IFNULL(s.tenant_deployment_id, '') = IFNULL(?4, '')
+                 ORDER BY i.created_at_ms DESC",
             )?
         };
         let rows = if let Some(coverage_key) = coverage_key {
-            stmt.query_map(params![space_id, coverage_key], row_to_knowledge_item)?
+            stmt.query_map(
+                params![
+                    space_id,
+                    coverage_key,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
+                row_to_knowledge_item,
+            )?
         } else {
-            stmt.query_map(params![space_id], row_to_knowledge_item)?
+            stmt.query_map(
+                params![
+                    space_id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
+                row_to_knowledge_item,
+            )?
         };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Fetch a knowledge item by ID.
     pub async fn get_knowledge_item(&self, id: &str) -> MemoryResult<Option<KnowledgeItemRecord>> {
+        self.get_knowledge_item_for_tenant(id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn get_knowledge_item_for_tenant(
+        &self,
+        id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<KnowledgeItemRecord>> {
         let conn = self.conn.lock().await;
         Ok(
             conn.query_row(
-                "SELECT id, space_id, coverage_key, dedupe_key, item_type, title, summary, payload, trust_level, status, run_id, artifact_refs, source_memory_ids, freshness_expires_at_ms, metadata, created_at_ms, updated_at_ms
-                 FROM knowledge_items WHERE id = ?1",
-                params![id],
+                "SELECT i.id, i.space_id, i.coverage_key, i.dedupe_key, i.item_type, i.title, i.summary, i.payload, i.trust_level, i.status, i.run_id, i.artifact_refs, i.source_memory_ids, i.freshness_expires_at_ms, i.metadata, i.created_at_ms, i.updated_at_ms
+                 FROM knowledge_items i
+                 JOIN knowledge_spaces s ON s.id = i.space_id
+                 WHERE i.id = ?1
+                   AND s.tenant_org_id = ?2
+                   AND s.tenant_workspace_id = ?3
+                   AND IFNULL(s.tenant_deployment_id, '') = IFNULL(?4, '')",
+                params![
+                    id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
                 row_to_knowledge_item,
             )
             .optional()?,
@@ -2312,14 +2512,33 @@ impl MemoryDatabase {
         &self,
         request: &KnowledgePromotionRequest,
     ) -> MemoryResult<Option<KnowledgePromotionResult>> {
+        self.promote_knowledge_item_for_tenant(request, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn promote_knowledge_item_for_tenant(
+        &self,
+        request: &KnowledgePromotionRequest,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<KnowledgePromotionResult>> {
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
 
         let Some(mut item) = tx
             .query_row(
-                "SELECT id, space_id, coverage_key, dedupe_key, item_type, title, summary, payload, trust_level, status, run_id, artifact_refs, source_memory_ids, freshness_expires_at_ms, metadata, created_at_ms, updated_at_ms
-                 FROM knowledge_items WHERE id = ?1",
-                params![request.item_id],
+                "SELECT i.id, i.space_id, i.coverage_key, i.dedupe_key, i.item_type, i.title, i.summary, i.payload, i.trust_level, i.status, i.run_id, i.artifact_refs, i.source_memory_ids, i.freshness_expires_at_ms, i.metadata, i.created_at_ms, i.updated_at_ms
+                 FROM knowledge_items i
+                 JOIN knowledge_spaces s ON s.id = i.space_id
+                 WHERE i.id = ?1
+                   AND s.tenant_org_id = ?2
+                   AND s.tenant_workspace_id = ?3
+                   AND IFNULL(s.tenant_deployment_id, '') = IFNULL(?4, '')",
+                params![
+                    request.item_id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
                 row_to_knowledge_item,
             )
             .optional()? else {
@@ -2512,6 +2731,25 @@ impl MemoryDatabase {
         &self,
         coverage: &KnowledgeCoverageRecord,
     ) -> MemoryResult<()> {
+        self.upsert_knowledge_coverage_for_tenant(coverage, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn upsert_knowledge_coverage_for_tenant(
+        &self,
+        coverage: &KnowledgeCoverageRecord,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
+        if self
+            .get_knowledge_space_for_tenant(&coverage.space_id, tenant_scope)
+            .await?
+            .is_none()
+        {
+            return Err(crate::types::MemoryError::InvalidConfig(
+                "knowledge coverage space not found for tenant".to_string(),
+            ));
+        }
+
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT OR REPLACE INTO knowledge_coverage
@@ -2537,12 +2775,33 @@ impl MemoryDatabase {
         coverage_key: &str,
         space_id: &str,
     ) -> MemoryResult<Option<KnowledgeCoverageRecord>> {
+        self.get_knowledge_coverage_for_tenant(coverage_key, space_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn get_knowledge_coverage_for_tenant(
+        &self,
+        coverage_key: &str,
+        space_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<KnowledgeCoverageRecord>> {
         let conn = self.conn.lock().await;
         Ok(
             conn.query_row(
-                "SELECT coverage_key, space_id, latest_item_id, latest_dedupe_key, last_seen_at_ms, last_promoted_at_ms, freshness_expires_at_ms, metadata
-                 FROM knowledge_coverage WHERE coverage_key = ?1 AND space_id = ?2",
-                params![coverage_key, space_id],
+                "SELECT c.coverage_key, c.space_id, c.latest_item_id, c.latest_dedupe_key, c.last_seen_at_ms, c.last_promoted_at_ms, c.freshness_expires_at_ms, c.metadata
+                 FROM knowledge_coverage c
+                 JOIN knowledge_spaces s ON s.id = c.space_id
+                 WHERE c.coverage_key = ?1 AND c.space_id = ?2
+                   AND s.tenant_org_id = ?3
+                   AND s.tenant_workspace_id = ?4
+                   AND IFNULL(s.tenant_deployment_id, '') = IFNULL(?5, '')",
+                params![
+                    coverage_key,
+                    space_id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
                 row_to_knowledge_coverage,
             )
             .optional()?,

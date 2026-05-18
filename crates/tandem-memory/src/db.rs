@@ -658,6 +658,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_knowledge_registry_is_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        let mut space_a = KnowledgeSpaceRecord {
+            id: "tenant-a-space".to_string(),
+            scope: tandem_orchestrator::KnowledgeScope::Project,
+            project_id: Some("shared-project".to_string()),
+            namespace: Some("shared-namespace".to_string()),
+            title: Some("Tenant A Knowledge".to_string()),
+            description: None,
+            trust_level: tandem_orchestrator::KnowledgeTrustLevel::Promoted,
+            metadata: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        };
+        let mut space_b = space_a.clone();
+        space_b.id = "tenant-b-space".to_string();
+        space_b.title = Some("Tenant B Knowledge".to_string());
+
+        db.upsert_knowledge_space_for_tenant(&space_a, &tenant_a)
+            .await
+            .unwrap();
+        db.upsert_knowledge_space_for_tenant(&space_b, &tenant_b)
+            .await
+            .unwrap();
+
+        let spaces_a = db
+            .list_knowledge_spaces_for_tenant(Some("shared-project"), &tenant_a)
+            .await
+            .unwrap();
+        let spaces_b = db
+            .list_knowledge_spaces_for_tenant(Some("shared-project"), &tenant_b)
+            .await
+            .unwrap();
+        assert_eq!(spaces_a.len(), 1);
+        assert_eq!(spaces_a[0].id, "tenant-a-space");
+        assert_eq!(spaces_b.len(), 1);
+        assert_eq!(spaces_b[0].id, "tenant-b-space");
+        assert!(db
+            .get_knowledge_space_for_tenant("tenant-b-space", &tenant_a)
+            .await
+            .unwrap()
+            .is_none());
+
+        let item_b = KnowledgeItemRecord {
+            id: "tenant-b-item".to_string(),
+            space_id: space_b.id.clone(),
+            coverage_key: "shared-project/topic/debugging".to_string(),
+            dedupe_key: "shared-dedupe".to_string(),
+            item_type: "decision".to_string(),
+            title: "Tenant B item".to_string(),
+            summary: None,
+            payload: serde_json::json!({"tenant": "b"}),
+            trust_level: tandem_orchestrator::KnowledgeTrustLevel::Working,
+            status: KnowledgeItemStatus::Working,
+            run_id: Some("run-b".to_string()),
+            artifact_refs: Vec::new(),
+            source_memory_ids: Vec::new(),
+            freshness_expires_at_ms: None,
+            metadata: None,
+            created_at_ms: 3,
+            updated_at_ms: 4,
+        };
+        db.upsert_knowledge_item_for_tenant(&item_b, &tenant_b)
+            .await
+            .unwrap();
+        assert!(db
+            .upsert_knowledge_item_for_tenant(&item_b, &tenant_a)
+            .await
+            .is_err());
+        assert!(db
+            .get_knowledge_item_for_tenant("tenant-b-item", &tenant_a)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .list_knowledge_items_for_tenant(&space_b.id, None, &tenant_a)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.list_knowledge_items_for_tenant(&space_b.id, None, &tenant_b)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let coverage_b = KnowledgeCoverageRecord {
+            coverage_key: item_b.coverage_key.clone(),
+            space_id: space_b.id.clone(),
+            latest_item_id: Some(item_b.id.clone()),
+            latest_dedupe_key: Some(item_b.dedupe_key.clone()),
+            last_seen_at_ms: 5,
+            last_promoted_at_ms: None,
+            freshness_expires_at_ms: None,
+            metadata: None,
+        };
+        db.upsert_knowledge_coverage_for_tenant(&coverage_b, &tenant_b)
+            .await
+            .unwrap();
+        assert!(db
+            .upsert_knowledge_coverage_for_tenant(&coverage_b, &tenant_a)
+            .await
+            .is_err());
+        assert!(db
+            .get_knowledge_coverage_for_tenant(&coverage_b.coverage_key, &space_b.id, &tenant_a)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .get_knowledge_coverage_for_tenant(&coverage_b.coverage_key, &space_b.id, &tenant_b)
+            .await
+            .unwrap()
+            .is_some());
+
+        let promote = KnowledgePromotionRequest {
+            item_id: item_b.id.clone(),
+            target_status: KnowledgeItemStatus::Promoted,
+            promoted_at_ms: 10,
+            freshness_expires_at_ms: None,
+            reviewer_id: None,
+            approval_id: None,
+            reason: None,
+        };
+        assert!(db
+            .promote_knowledge_item_for_tenant(&promote, &tenant_a)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .promote_knowledge_item_for_tenant(&promote, &tenant_b)
+            .await
+            .unwrap()
+            .is_some());
+
+        space_a.updated_at_ms = 11;
+        db.upsert_knowledge_space_for_tenant(&space_a, &tenant_a)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn test_store_and_retrieve_chunk() {
         let (db, _temp) = setup_test_db().await;
 
