@@ -1091,6 +1091,310 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_import_index_paths_are_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        db.upsert_import_index_entry_for_tenant(
+            MemoryTier::Project,
+            None,
+            Some("shared-project"),
+            "repo/README.md",
+            10,
+            100,
+            "hash-a",
+            &tenant_a,
+        )
+        .await
+        .unwrap();
+        db.upsert_import_index_entry_for_tenant(
+            MemoryTier::Project,
+            None,
+            Some("shared-project"),
+            "repo/README.md",
+            20,
+            200,
+            "hash-b",
+            &tenant_b,
+        )
+        .await
+        .unwrap();
+
+        let tenant_a_paths = db
+            .list_import_index_paths_for_tenant(
+                MemoryTier::Project,
+                None,
+                Some("shared-project"),
+                &tenant_a,
+            )
+            .await
+            .unwrap();
+        assert_eq!(tenant_a_paths, vec!["repo/README.md".to_string()]);
+
+        let tenant_a_entry = db
+            .get_import_index_entry_for_tenant(
+                MemoryTier::Project,
+                None,
+                Some("shared-project"),
+                "repo/README.md",
+                &tenant_a,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let tenant_b_entry = db
+            .get_import_index_entry_for_tenant(
+                MemoryTier::Project,
+                None,
+                Some("shared-project"),
+                "repo/README.md",
+                &tenant_b,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tenant_a_entry.2, "hash-a");
+        assert_eq!(tenant_b_entry.2, "hash-b");
+    }
+
+    #[tokio::test]
+    async fn test_delete_import_index_entry_is_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        for (tenant, hash) in [(&tenant_a, "hash-a"), (&tenant_b, "hash-b")] {
+            db.upsert_import_index_entry_for_tenant(
+                MemoryTier::Global,
+                None,
+                None,
+                "shared/path.md",
+                1,
+                10,
+                hash,
+                tenant,
+            )
+            .await
+            .unwrap();
+        }
+
+        db.delete_import_index_entry_for_tenant(
+            MemoryTier::Global,
+            None,
+            None,
+            "shared/path.md",
+            &tenant_a,
+        )
+        .await
+        .unwrap();
+
+        assert!(db
+            .get_import_index_entry_for_tenant(
+                MemoryTier::Global,
+                None,
+                None,
+                "shared/path.md",
+                &tenant_a
+            )
+            .await
+            .unwrap()
+            .is_none());
+        let tenant_b_entry = db
+            .get_import_index_entry_for_tenant(
+                MemoryTier::Global,
+                None,
+                None,
+                "shared/path.md",
+                &tenant_b,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tenant_b_entry.2, "hash-b");
+    }
+
+    #[tokio::test]
+    async fn test_file_chunk_delete_by_path_is_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        let mut chunk_a = test_vector_chunk(
+            "tenant-a-file-delete",
+            MemoryTier::Project,
+            tenant_a.clone(),
+            "same file content",
+            Some("same-hash"),
+        );
+        chunk_a.source = "file".to_string();
+        chunk_a.source_path = Some("repo/file.md".to_string());
+        let mut chunk_b = test_vector_chunk(
+            "tenant-b-file-delete",
+            MemoryTier::Project,
+            tenant_b.clone(),
+            "same file content",
+            Some("same-hash"),
+        );
+        chunk_b.source = "file".to_string();
+        chunk_b.source_path = Some("repo/file.md".to_string());
+
+        db.store_chunk(&chunk_a, &embedding(0.1, 0.2))
+            .await
+            .unwrap();
+        db.store_chunk(&chunk_b, &embedding(0.1, 0.2))
+            .await
+            .unwrap();
+
+        let (deleted, _) = db
+            .delete_file_chunks_by_path_for_tenant(
+                MemoryTier::Project,
+                None,
+                Some("shared-project"),
+                "repo/file.md",
+                &tenant_a,
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        assert!(db
+            .get_project_chunks_for_tenant("shared-project", &tenant_a)
+            .await
+            .unwrap()
+            .is_empty());
+        let tenant_b_chunks = db
+            .get_project_chunks_for_tenant("shared-project", &tenant_b)
+            .await
+            .unwrap();
+        assert_eq!(tenant_b_chunks.len(), 1);
+        assert_eq!(tenant_b_chunks[0].id, "tenant-b-file-delete");
+    }
+
+    #[tokio::test]
+    async fn test_project_file_index_clear_is_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        for (tenant, id, hash) in [
+            (&tenant_a, "tenant-a-clear-file-index", "hash-a"),
+            (&tenant_b, "tenant-b-clear-file-index", "hash-b"),
+        ] {
+            db.upsert_file_index_entry_for_tenant(
+                "shared-project",
+                "repo/file.md",
+                1,
+                10,
+                hash,
+                tenant,
+            )
+            .await
+            .unwrap();
+            db.upsert_project_index_status_for_tenant("shared-project", 5, 4, 3, 2, 1, tenant)
+                .await
+                .unwrap();
+            let mut chunk = test_vector_chunk(
+                id,
+                MemoryTier::Project,
+                tenant.clone(),
+                "file index clear content",
+                Some(hash),
+            );
+            chunk.source = "file".to_string();
+            chunk.source_path = Some("repo/file.md".to_string());
+            db.store_chunk(&chunk, &embedding(0.4, 0.5)).await.unwrap();
+        }
+
+        let result = db
+            .clear_project_file_index_for_tenant("shared-project", false, &tenant_a)
+            .await
+            .unwrap();
+        assert_eq!(result.chunks_deleted, 1);
+
+        assert_eq!(
+            db.project_file_index_count_for_tenant("shared-project", &tenant_a)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(db
+            .get_project_chunks_for_tenant("shared-project", &tenant_a)
+            .await
+            .unwrap()
+            .is_empty());
+
+        assert_eq!(
+            db.project_file_index_count_for_tenant("shared-project", &tenant_b)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.get_project_chunks_for_tenant("shared-project", &tenant_b)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let tenant_b_stats = db
+            .get_project_stats_for_tenant("shared-project", &tenant_b)
+            .await
+            .unwrap();
+        assert_eq!(tenant_b_stats.last_indexed_files, Some(3));
+    }
+
+    #[tokio::test]
+    async fn test_project_stats_file_index_is_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        db.upsert_file_index_entry_for_tenant(
+            "shared-project",
+            "repo/a.md",
+            1,
+            10,
+            "hash-a",
+            &tenant_a,
+        )
+        .await
+        .unwrap();
+        db.upsert_project_index_status_for_tenant("shared-project", 10, 9, 8, 1, 0, &tenant_a)
+            .await
+            .unwrap();
+        db.upsert_file_index_entry_for_tenant(
+            "shared-project",
+            "repo/b.md",
+            2,
+            20,
+            "hash-b",
+            &tenant_b,
+        )
+        .await
+        .unwrap();
+        db.upsert_project_index_status_for_tenant("shared-project", 3, 2, 1, 1, 0, &tenant_b)
+            .await
+            .unwrap();
+
+        let stats_a = db
+            .get_project_stats_for_tenant("shared-project", &tenant_a)
+            .await
+            .unwrap();
+        let stats_b = db
+            .get_project_stats_for_tenant("shared-project", &tenant_b)
+            .await
+            .unwrap();
+
+        assert_eq!(stats_a.indexed_files, 1);
+        assert_eq!(stats_a.last_total_files, Some(10));
+        assert_eq!(stats_a.last_indexed_files, Some(8));
+        assert_eq!(stats_b.indexed_files, 1);
+        assert_eq!(stats_b.last_total_files, Some(3));
+        assert_eq!(stats_b.last_indexed_files, Some(1));
+    }
+
+    #[tokio::test]
     async fn test_clear_session_and_project_memory_are_tenant_scoped() {
         let (db, _temp) = setup_test_db().await;
         let tenant_a = tenant_scope("org-a", "workspace-a");

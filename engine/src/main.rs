@@ -965,6 +965,7 @@ async fn main() -> anyhow::Result<()> {
                         tier,
                         session_id: session_id.clone(),
                         project_id: project_id.clone(),
+                        tenant_scope: tandem_memory::types::MemoryTenantScope::local(),
                         sync_deletes,
                     },
                     None::<fn(&tandem_memory::types::MemoryImportProgress)>,

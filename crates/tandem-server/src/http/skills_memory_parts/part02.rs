@@ -928,6 +928,11 @@ pub(super) async fn memory_import(
         tier: input.tier,
         session_id: session_id.clone(),
         project_id: project_id.clone(),
+        tenant_scope: MemoryTenantScope {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+        },
         sync_deletes: input.sync_deletes,
     };
 

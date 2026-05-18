@@ -68,6 +68,11 @@ and MCP credential boundaries, and vector-backed memory partitioning.
   stats, project vector stats, manual clear, and old-session cleanup.
 - Memory manager context retrieval now has tenant-aware APIs that scope recent
   session chunks and vector search before prompt context is assembled.
+- Memory file import/index paths now carry tenant scope through import
+  requests, index lookup/update/delete, stale file chunk replacement,
+  sync-delete cleanup, project file-index stats, and project file-index clear.
+- Added denial tests proving same project/path imports, identical file chunks,
+  index deletes, stats, and clears do not cross tenant boundaries.
 - Existing local memory rows default to `local/local` during migration.
 
 ### Automation V2 MCP Diagnostics

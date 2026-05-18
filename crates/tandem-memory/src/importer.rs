@@ -1,7 +1,7 @@
 use crate::manager::MemoryManager;
 use crate::types::{
     MemoryError, MemoryImportFormat, MemoryImportProgress, MemoryImportRequest, MemoryImportStats,
-    MemoryTenantScope, MemoryTier, StoreMessageRequest,
+    MemoryTier, StoreMessageRequest,
 };
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
@@ -46,10 +46,11 @@ where
     let db = memory_manager.db();
 
     let existing_indexed_paths: HashSet<String> = db
-        .list_import_index_paths(
+        .list_import_index_paths_for_tenant(
             request.tier,
             request.session_id.as_deref(),
             request.project_id.as_deref(),
+            &request.tenant_scope,
         )
         .await?
         .into_iter()
@@ -89,11 +90,12 @@ where
         let size = meta.len() as i64;
 
         let existing = db
-            .get_import_index_entry(
+            .get_import_index_entry_for_tenant(
                 request.tier,
                 request.session_id.as_deref(),
                 request.project_id.as_deref(),
                 &indexed_path,
+                &request.tenant_scope,
             )
             .await?;
         if let Some((existing_mtime, existing_size, _)) = &existing {
@@ -125,7 +127,7 @@ where
         let hash = sha256_hex(content.as_bytes());
         if let Some((_, _, existing_hash)) = &existing {
             if existing_hash == &hash {
-                db.upsert_import_index_entry(
+                db.upsert_import_index_entry_for_tenant(
                     request.tier,
                     request.session_id.as_deref(),
                     request.project_id.as_deref(),
@@ -133,6 +135,7 @@ where
                     mtime,
                     size,
                     &hash,
+                    &request.tenant_scope,
                 )
                 .await?;
                 stats.files_processed += 1;
@@ -143,11 +146,12 @@ where
         }
 
         if let Err(err) = db
-            .delete_file_chunks_by_path(
+            .delete_file_chunks_by_path_for_tenant(
                 request.tier,
                 request.session_id.as_deref(),
                 request.project_id.as_deref(),
                 &indexed_path,
+                &request.tenant_scope,
             )
             .await
         {
@@ -180,13 +184,13 @@ where
             source_mtime: Some(mtime),
             source_size: Some(size),
             source_hash: Some(hash.clone()),
-            tenant_scope: MemoryTenantScope::local(),
+            tenant_scope: request.tenant_scope.clone(),
             metadata: Some(request_metadata),
         };
 
         match memory_manager.store_message(store_request).await {
             Ok(chunks) => {
-                db.upsert_import_index_entry(
+                db.upsert_import_index_entry_for_tenant(
                     request.tier,
                     request.session_id.as_deref(),
                     request.project_id.as_deref(),
@@ -194,6 +198,7 @@ where
                     mtime,
                     size,
                     &hash,
+                    &request.tenant_scope,
                 )
                 .await?;
                 stats.files_processed += 1;
@@ -216,11 +221,12 @@ where
             .collect();
         for indexed_path in removed {
             if let Err(err) = db
-                .delete_file_chunks_by_path(
+                .delete_file_chunks_by_path_for_tenant(
                     request.tier,
                     request.session_id.as_deref(),
                     request.project_id.as_deref(),
                     &indexed_path,
+                    &request.tenant_scope,
                 )
                 .await
             {
@@ -234,11 +240,12 @@ where
                 continue;
             }
             if let Err(err) = db
-                .delete_import_index_entry(
+                .delete_import_index_entry_for_tenant(
                     request.tier,
                     request.session_id.as_deref(),
                     request.project_id.as_deref(),
                     &indexed_path,
+                    &request.tenant_scope,
                 )
                 .await
             {
@@ -434,6 +441,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MemoryTenantScope;
     use crate::MemoryManager;
     use tempfile::tempdir;
 
@@ -462,6 +470,7 @@ mod tests {
             tier: MemoryTier::Global,
             session_id: None,
             project_id: None,
+            tenant_scope: MemoryTenantScope::local(),
             sync_deletes: false,
         };
 
@@ -500,6 +509,7 @@ mod tests {
             tier: MemoryTier::Global,
             session_id: None,
             project_id: None,
+            tenant_scope: MemoryTenantScope::local(),
             sync_deletes: false,
         };
         let request_b = MemoryImportRequest {
@@ -508,6 +518,7 @@ mod tests {
             tier: MemoryTier::Global,
             session_id: None,
             project_id: None,
+            tenant_scope: MemoryTenantScope::local(),
             sync_deletes: false,
         };
 

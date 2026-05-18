@@ -7,7 +7,7 @@ use crate::{
 use tandem_memory::import_files;
 use tandem_memory::types::{
     MemoryImportFormat, MemoryImportProgress, MemoryImportRequest as TandemMemoryImportRequest,
-    MemoryImportStats, MemoryTier,
+    MemoryImportStats, MemoryTenantScope, MemoryTier,
 };
 
 include!("skills_memory_parts/part01.rs");

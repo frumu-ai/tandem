@@ -7,34 +7,108 @@ impl MemoryDatabase {
         size: i64,
         hash: &str,
     ) -> MemoryResult<()> {
+        self.upsert_file_index_entry_for_tenant(
+            project_id,
+            path,
+            mtime,
+            size,
+            hash,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    pub async fn upsert_file_index_entry_for_tenant(
+        &self,
+        project_id: &str,
+        path: &str,
+        mtime: i64,
+        size: i64,
+        hash: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
         let indexed_at = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO project_file_index (project_id, path, mtime, size, hash, indexed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(project_id, path) DO UPDATE SET
+            "INSERT INTO project_file_index
+             (tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id, path, mtime, size, hash, indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id, path) DO UPDATE SET
                 mtime = excluded.mtime,
                 size = excluded.size,
                 hash = excluded.hash,
                 indexed_at = excluded.indexed_at",
-            params![project_id, path, mtime, size, hash, indexed_at],
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref().unwrap_or(""),
+                project_id,
+                path,
+                mtime,
+                size,
+                hash,
+                indexed_at
+            ],
         )?;
         Ok(())
     }
 
     pub async fn delete_file_index_entry(&self, project_id: &str, path: &str) -> MemoryResult<()> {
+        self.delete_file_index_entry_for_tenant(project_id, path, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn delete_file_index_entry_for_tenant(
+        &self,
+        project_id: &str,
+        path: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
         conn.execute(
-            "DELETE FROM project_file_index WHERE project_id = ?1 AND path = ?2",
-            params![project_id, path],
+            "DELETE FROM project_file_index
+             WHERE project_id = ?1 AND path = ?2
+               AND tenant_org_id = ?3
+               AND tenant_workspace_id = ?4
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+            params![
+                project_id,
+                path,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
         Ok(())
     }
 
     pub async fn list_file_index_paths(&self, project_id: &str) -> MemoryResult<Vec<String>> {
+        self.list_file_index_paths_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn list_file_index_paths_for_tenant(
+        &self,
+        project_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<String>> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare("SELECT path FROM project_file_index WHERE project_id = ?1")?;
-        let rows = stmt.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT path FROM project_file_index
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -43,32 +117,84 @@ impl MemoryDatabase {
         project_id: &str,
         source_path: &str,
     ) -> MemoryResult<(i64, i64)> {
+        self.delete_project_file_chunks_by_path_for_tenant(
+            project_id,
+            source_path,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    pub async fn delete_project_file_chunks_by_path_for_tenant(
+        &self,
+        project_id: &str,
+        source_path: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<(i64, i64)> {
         let conn = self.conn.lock().await;
 
         let chunks_deleted: i64 = conn.query_row(
             "SELECT COUNT(*) FROM project_memory_chunks
-             WHERE project_id = ?1 AND source = 'file' AND source_path = ?2",
-            params![project_id, source_path],
+             WHERE project_id = ?1 AND source = 'file' AND source_path = ?2
+               AND tenant_org_id = ?3
+               AND tenant_workspace_id = ?4
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+            params![
+                project_id,
+                source_path,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         let bytes_estimated: i64 = conn.query_row(
             "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks
-             WHERE project_id = ?1 AND source = 'file' AND source_path = ?2",
-            params![project_id, source_path],
+             WHERE project_id = ?1 AND source = 'file' AND source_path = ?2
+               AND tenant_org_id = ?3
+               AND tenant_workspace_id = ?4
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+            params![
+                project_id,
+                source_path,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         // Delete vectors first (keep order consistent with other clears)
         conn.execute(
             "DELETE FROM project_memory_vectors WHERE chunk_id IN
-             (SELECT id FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file' AND source_path = ?2)",
-            params![project_id, source_path],
+             (SELECT id FROM project_memory_chunks
+              WHERE project_id = ?1 AND source = 'file' AND source_path = ?2
+                AND tenant_org_id = ?3
+                AND tenant_workspace_id = ?4
+                AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, ''))",
+            params![
+                project_id,
+                source_path,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         conn.execute(
-            "DELETE FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file' AND source_path = ?2",
-            params![project_id, source_path],
+            "DELETE FROM project_memory_chunks
+             WHERE project_id = ?1 AND source = 'file' AND source_path = ?2
+               AND tenant_org_id = ?3
+               AND tenant_workspace_id = ?4
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+            params![
+                project_id,
+                source_path,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         Ok((chunks_deleted, bytes_estimated))
@@ -81,13 +207,41 @@ impl MemoryDatabase {
         project_id: Option<&str>,
         path: &str,
     ) -> MemoryResult<Option<(i64, i64, String)>> {
+        self.get_import_index_entry_for_tenant(
+            tier,
+            session_id,
+            project_id,
+            path,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    pub async fn get_import_index_entry_for_tenant(
+        &self,
+        tier: MemoryTier,
+        session_id: Option<&str>,
+        project_id: Option<&str>,
+        path: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<(i64, i64, String)>> {
         let conn = self.conn.lock().await;
         let row = match tier {
             MemoryTier::Session => {
                 let session_id = require_scope_id(tier, session_id)?;
                 conn.query_row(
-                    "SELECT mtime, size, hash FROM session_file_index WHERE session_id = ?1 AND path = ?2",
-                    params![session_id, path],
+                    "SELECT mtime, size, hash FROM session_file_index
+                     WHERE session_id = ?1 AND path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        session_id,
+                        path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?
@@ -95,16 +249,35 @@ impl MemoryDatabase {
             MemoryTier::Project => {
                 let project_id = require_scope_id(tier, project_id)?;
                 conn.query_row(
-                    "SELECT mtime, size, hash FROM project_file_index WHERE project_id = ?1 AND path = ?2",
-                    params![project_id, path],
+                    "SELECT mtime, size, hash FROM project_file_index
+                     WHERE project_id = ?1 AND path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        project_id,
+                        path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?
             }
             MemoryTier::Global => conn
                 .query_row(
-                    "SELECT mtime, size, hash FROM global_file_index WHERE path = ?1",
-                    params![path],
+                    "SELECT mtime, size, hash FROM global_file_index
+                     WHERE path = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                    params![
+                        path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?,
@@ -122,45 +295,102 @@ impl MemoryDatabase {
         size: i64,
         hash: &str,
     ) -> MemoryResult<()> {
+        self.upsert_import_index_entry_for_tenant(
+            tier,
+            session_id,
+            project_id,
+            path,
+            mtime,
+            size,
+            hash,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_import_index_entry_for_tenant(
+        &self,
+        tier: MemoryTier,
+        session_id: Option<&str>,
+        project_id: Option<&str>,
+        path: &str,
+        mtime: i64,
+        size: i64,
+        hash: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
         let indexed_at = Utc::now().to_rfc3339();
         match tier {
             MemoryTier::Session => {
                 let session_id = require_scope_id(tier, session_id)?;
                 conn.execute(
-                    "INSERT INTO session_file_index (session_id, path, mtime, size, hash, indexed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(session_id, path) DO UPDATE SET
+                    "INSERT INTO session_file_index
+                     (tenant_org_id, tenant_workspace_id, tenant_deployment_id, session_id, path, mtime, size, hash, indexed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(tenant_org_id, tenant_workspace_id, tenant_deployment_id, session_id, path) DO UPDATE SET
                         mtime = excluded.mtime,
                         size = excluded.size,
                         hash = excluded.hash,
                         indexed_at = excluded.indexed_at",
-                    params![session_id, path, mtime, size, hash, indexed_at],
+                    params![
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref().unwrap_or(""),
+                        session_id,
+                        path,
+                        mtime,
+                        size,
+                        hash,
+                        indexed_at
+                    ],
                 )?;
             }
             MemoryTier::Project => {
                 let project_id = require_scope_id(tier, project_id)?;
                 conn.execute(
-                    "INSERT INTO project_file_index (project_id, path, mtime, size, hash, indexed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(project_id, path) DO UPDATE SET
+                    "INSERT INTO project_file_index
+                     (tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id, path, mtime, size, hash, indexed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id, path) DO UPDATE SET
                         mtime = excluded.mtime,
                         size = excluded.size,
                         hash = excluded.hash,
                         indexed_at = excluded.indexed_at",
-                    params![project_id, path, mtime, size, hash, indexed_at],
+                    params![
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref().unwrap_or(""),
+                        project_id,
+                        path,
+                        mtime,
+                        size,
+                        hash,
+                        indexed_at
+                    ],
                 )?;
             }
             MemoryTier::Global => {
                 conn.execute(
-                    "INSERT INTO global_file_index (path, mtime, size, hash, indexed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(path) DO UPDATE SET
+                    "INSERT INTO global_file_index
+                     (tenant_org_id, tenant_workspace_id, tenant_deployment_id, path, mtime, size, hash, indexed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     ON CONFLICT(tenant_org_id, tenant_workspace_id, tenant_deployment_id, path) DO UPDATE SET
                         mtime = excluded.mtime,
                         size = excluded.size,
                         hash = excluded.hash,
                         indexed_at = excluded.indexed_at",
-                    params![path, mtime, size, hash, indexed_at],
+                    params![
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref().unwrap_or(""),
+                        path,
+                        mtime,
+                        size,
+                        hash,
+                        indexed_at
+                    ],
                 )?;
             }
         }
@@ -173,25 +403,79 @@ impl MemoryDatabase {
         session_id: Option<&str>,
         project_id: Option<&str>,
     ) -> MemoryResult<Vec<String>> {
+        self.list_import_index_paths_for_tenant(
+            tier,
+            session_id,
+            project_id,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    pub async fn list_import_index_paths_for_tenant(
+        &self,
+        tier: MemoryTier,
+        session_id: Option<&str>,
+        project_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<String>> {
         let conn = self.conn.lock().await;
         let rows = match tier {
             MemoryTier::Session => {
                 let session_id = require_scope_id(tier, session_id)?;
-                let mut stmt =
-                    conn.prepare("SELECT path FROM session_file_index WHERE session_id = ?1")?;
-                let rows = stmt.query_map(params![session_id], |row| row.get::<_, String>(0))?;
+                let mut stmt = conn.prepare(
+                    "SELECT path FROM session_file_index
+                     WHERE session_id = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                )?;
+                let rows = stmt.query_map(
+                    params![
+                        session_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
             MemoryTier::Project => {
                 let project_id = require_scope_id(tier, project_id)?;
-                let mut stmt =
-                    conn.prepare("SELECT path FROM project_file_index WHERE project_id = ?1")?;
-                let rows = stmt.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+                let mut stmt = conn.prepare(
+                    "SELECT path FROM project_file_index
+                     WHERE project_id = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                )?;
+                let rows = stmt.query_map(
+                    params![
+                        project_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
             MemoryTier::Global => {
-                let mut stmt = conn.prepare("SELECT path FROM global_file_index")?;
-                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                let mut stmt = conn.prepare(
+                    "SELECT path FROM global_file_index
+                     WHERE tenant_org_id = ?1
+                       AND tenant_workspace_id = ?2
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')",
+                )?;
+                let rows = stmt.query_map(
+                    params![
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
         };
@@ -205,26 +489,73 @@ impl MemoryDatabase {
         project_id: Option<&str>,
         path: &str,
     ) -> MemoryResult<()> {
+        self.delete_import_index_entry_for_tenant(
+            tier,
+            session_id,
+            project_id,
+            path,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    pub async fn delete_import_index_entry_for_tenant(
+        &self,
+        tier: MemoryTier,
+        session_id: Option<&str>,
+        project_id: Option<&str>,
+        path: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
         match tier {
             MemoryTier::Session => {
                 let session_id = require_scope_id(tier, session_id)?;
                 conn.execute(
-                    "DELETE FROM session_file_index WHERE session_id = ?1 AND path = ?2",
-                    params![session_id, path],
+                    "DELETE FROM session_file_index
+                     WHERE session_id = ?1 AND path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        session_id,
+                        path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
             }
             MemoryTier::Project => {
                 let project_id = require_scope_id(tier, project_id)?;
                 conn.execute(
-                    "DELETE FROM project_file_index WHERE project_id = ?1 AND path = ?2",
-                    params![project_id, path],
+                    "DELETE FROM project_file_index
+                     WHERE project_id = ?1 AND path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        project_id,
+                        path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
             }
             MemoryTier::Global => {
                 conn.execute(
-                    "DELETE FROM global_file_index WHERE path = ?1",
-                    params![path],
+                    "DELETE FROM global_file_index
+                     WHERE path = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                    params![
+                        path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
             }
         }
@@ -238,31 +569,86 @@ impl MemoryDatabase {
         project_id: Option<&str>,
         source_path: &str,
     ) -> MemoryResult<(i64, i64)> {
+        self.delete_file_chunks_by_path_for_tenant(
+            tier,
+            session_id,
+            project_id,
+            source_path,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    pub async fn delete_file_chunks_by_path_for_tenant(
+        &self,
+        tier: MemoryTier,
+        session_id: Option<&str>,
+        project_id: Option<&str>,
+        source_path: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<(i64, i64)> {
         let conn = self.conn.lock().await;
         let result = match tier {
             MemoryTier::Session => {
                 let session_id = require_scope_id(tier, session_id)?;
                 let chunks_deleted: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM session_memory_chunks
-                     WHERE session_id = ?1 AND source = 'file' AND source_path = ?2",
-                    params![session_id, source_path],
+                     WHERE session_id = ?1 AND source = 'file' AND source_path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        session_id,
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| row.get(0),
                 )?;
                 let bytes_estimated: i64 = conn.query_row(
                     "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM session_memory_chunks
-                     WHERE session_id = ?1 AND source = 'file' AND source_path = ?2",
-                    params![session_id, source_path],
+                     WHERE session_id = ?1 AND source = 'file' AND source_path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        session_id,
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| row.get(0),
                 )?;
                 conn.execute(
                     "DELETE FROM session_memory_vectors WHERE chunk_id IN
-                     (SELECT id FROM session_memory_chunks WHERE session_id = ?1 AND source = 'file' AND source_path = ?2)",
-                    params![session_id, source_path],
+                     (SELECT id FROM session_memory_chunks
+                      WHERE session_id = ?1 AND source = 'file' AND source_path = ?2
+                        AND tenant_org_id = ?3
+                        AND tenant_workspace_id = ?4
+                        AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, ''))",
+                    params![
+                        session_id,
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 conn.execute(
                     "DELETE FROM session_memory_chunks
-                     WHERE session_id = ?1 AND source = 'file' AND source_path = ?2",
-                    params![session_id, source_path],
+                     WHERE session_id = ?1 AND source = 'file' AND source_path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        session_id,
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 (chunks_deleted, bytes_estimated)
             }
@@ -270,50 +656,120 @@ impl MemoryDatabase {
                 let project_id = require_scope_id(tier, project_id)?;
                 let chunks_deleted: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM project_memory_chunks
-                     WHERE project_id = ?1 AND source = 'file' AND source_path = ?2",
-                    params![project_id, source_path],
+                     WHERE project_id = ?1 AND source = 'file' AND source_path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        project_id,
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| row.get(0),
                 )?;
                 let bytes_estimated: i64 = conn.query_row(
                     "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks
-                     WHERE project_id = ?1 AND source = 'file' AND source_path = ?2",
-                    params![project_id, source_path],
+                     WHERE project_id = ?1 AND source = 'file' AND source_path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        project_id,
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| row.get(0),
                 )?;
                 conn.execute(
                     "DELETE FROM project_memory_vectors WHERE chunk_id IN
-                     (SELECT id FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file' AND source_path = ?2)",
-                    params![project_id, source_path],
+                     (SELECT id FROM project_memory_chunks
+                      WHERE project_id = ?1 AND source = 'file' AND source_path = ?2
+                        AND tenant_org_id = ?3
+                        AND tenant_workspace_id = ?4
+                        AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, ''))",
+                    params![
+                        project_id,
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 conn.execute(
                     "DELETE FROM project_memory_chunks
-                     WHERE project_id = ?1 AND source = 'file' AND source_path = ?2",
-                    params![project_id, source_path],
+                     WHERE project_id = ?1 AND source = 'file' AND source_path = ?2
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                    params![
+                        project_id,
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 (chunks_deleted, bytes_estimated)
             }
             MemoryTier::Global => {
                 let chunks_deleted: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM global_memory_chunks
-                     WHERE source = 'file' AND source_path = ?1",
-                    params![source_path],
+                     WHERE source = 'file' AND source_path = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                    params![
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| row.get(0),
                 )?;
                 let bytes_estimated: i64 = conn.query_row(
                     "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM global_memory_chunks
-                     WHERE source = 'file' AND source_path = ?1",
-                    params![source_path],
+                     WHERE source = 'file' AND source_path = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                    params![
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| row.get(0),
                 )?;
                 conn.execute(
                     "DELETE FROM global_memory_vectors WHERE chunk_id IN
-                     (SELECT id FROM global_memory_chunks WHERE source = 'file' AND source_path = ?1)",
-                    params![source_path],
+                     (SELECT id FROM global_memory_chunks
+                      WHERE source = 'file' AND source_path = ?1
+                        AND tenant_org_id = ?2
+                        AND tenant_workspace_id = ?3
+                        AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, ''))",
+                    params![
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 conn.execute(
                     "DELETE FROM global_memory_chunks
-                     WHERE source = 'file' AND source_path = ?1",
-                    params![source_path],
+                     WHERE source = 'file' AND source_path = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                    params![
+                        source_path,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                 )?;
                 (chunks_deleted, bytes_estimated)
             }
@@ -330,14 +786,38 @@ impl MemoryDatabase {
         skipped_files: i64,
         errors: i64,
     ) -> MemoryResult<()> {
+        self.upsert_project_index_status_for_tenant(
+            project_id,
+            total_files,
+            processed_files,
+            indexed_files,
+            skipped_files,
+            errors,
+            &MemoryTenantScope::local(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_project_index_status_for_tenant(
+        &self,
+        project_id: &str,
+        total_files: i64,
+        processed_files: i64,
+        indexed_files: i64,
+        skipped_files: i64,
+        errors: i64,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
         let last_indexed_at = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO project_index_status (
+                tenant_org_id, tenant_workspace_id, tenant_deployment_id,
                 project_id, last_indexed_at, last_total_files, last_processed_files,
                 last_indexed_files, last_skipped_files, last_errors
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(project_id) DO UPDATE SET
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id) DO UPDATE SET
                 last_indexed_at = excluded.last_indexed_at,
                 last_total_files = excluded.last_total_files,
                 last_processed_files = excluded.last_processed_files,
@@ -345,6 +825,9 @@ impl MemoryDatabase {
                 last_skipped_files = excluded.last_skipped_files,
                 last_errors = excluded.last_errors",
             params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref().unwrap_or(""),
                 project_id,
                 last_indexed_at,
                 total_files,
@@ -432,8 +915,17 @@ impl MemoryDatabase {
         )?;
 
         let indexed_files: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM project_file_index WHERE project_id = ?1",
-            params![project_id],
+            "SELECT COUNT(*) FROM project_file_index
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
@@ -441,8 +933,17 @@ impl MemoryDatabase {
             conn
                 .query_row(
                     "SELECT last_indexed_at, last_total_files, last_processed_files, last_indexed_files, last_skipped_files, last_errors
-                     FROM project_index_status WHERE project_id = ?1",
-                    params![project_id],
+                     FROM project_index_status
+                     WHERE project_id = ?1
+                       AND tenant_org_id = ?2
+                       AND tenant_workspace_id = ?3
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+                    params![
+                        project_id,
+                        tenant_scope.org_id.as_str(),
+                        tenant_scope.workspace_id.as_str(),
+                        tenant_scope.deployment_id.as_deref()
+                    ],
                     |row| {
                         Ok((
                             row.get(0)?,
@@ -492,41 +993,105 @@ impl MemoryDatabase {
         project_id: &str,
         vacuum: bool,
     ) -> MemoryResult<ClearFileIndexResult> {
+        self.clear_project_file_index_for_tenant(project_id, vacuum, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn clear_project_file_index_for_tenant(
+        &self,
+        project_id: &str,
+        vacuum: bool,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<ClearFileIndexResult> {
         let conn = self.conn.lock().await;
 
         let chunks_deleted: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file'",
-            params![project_id],
+            "SELECT COUNT(*) FROM project_memory_chunks
+             WHERE project_id = ?1 AND source = 'file'
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         let bytes_estimated: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file'",
-            params![project_id],
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM project_memory_chunks
+             WHERE project_id = ?1 AND source = 'file'
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         // Delete vectors first
         conn.execute(
             "DELETE FROM project_memory_vectors WHERE chunk_id IN
-             (SELECT id FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file')",
-            params![project_id],
+             (SELECT id FROM project_memory_chunks
+              WHERE project_id = ?1 AND source = 'file'
+                AND tenant_org_id = ?2
+                AND tenant_workspace_id = ?3
+                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, ''))",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         // Delete file chunks
         conn.execute(
-            "DELETE FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file'",
-            params![project_id],
+            "DELETE FROM project_memory_chunks
+             WHERE project_id = ?1 AND source = 'file'
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         // Clear file index tracking + status
         conn.execute(
-            "DELETE FROM project_file_index WHERE project_id = ?1",
-            params![project_id],
+            "DELETE FROM project_file_index
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
         conn.execute(
-            "DELETE FROM project_index_status WHERE project_id = ?1",
-            params![project_id],
+            "DELETE FROM project_index_status
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         drop(conn); // release lock before VACUUM (which needs exclusive access)

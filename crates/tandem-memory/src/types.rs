@@ -281,6 +281,8 @@ pub struct MemoryImportRequest {
     pub tier: MemoryTier,
     pub session_id: Option<String>,
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub tenant_scope: MemoryTenantScope,
     pub sync_deletes: bool,
 }
 

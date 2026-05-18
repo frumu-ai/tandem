@@ -273,6 +273,40 @@ impl MemoryDatabase {
             )",
             [],
         )?;
+        let project_file_index_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(project_file_index)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !project_file_index_cols.contains("tenant_org_id") {
+            conn.execute(
+                "CREATE TABLE project_file_index_new (
+                    tenant_org_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_workspace_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_deployment_id TEXT NOT NULL DEFAULT '',
+                    project_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    mtime INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    hash TEXT NOT NULL,
+                    indexed_at TEXT NOT NULL,
+                    PRIMARY KEY(tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id, path)
+                )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO project_file_index_new
+                 (tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id, path, mtime, size, hash, indexed_at)
+                 SELECT 'local', 'local', '', project_id, path, mtime, size, hash, indexed_at
+                 FROM project_file_index",
+                [],
+            )?;
+            conn.execute("DROP TABLE project_file_index", [])?;
+            conn.execute(
+                "ALTER TABLE project_file_index_new RENAME TO project_file_index",
+                [],
+            )?;
+        }
         conn.execute(
             "CREATE TABLE IF NOT EXISTS session_file_index (
                 session_id TEXT NOT NULL,
@@ -285,6 +319,40 @@ impl MemoryDatabase {
             )",
             [],
         )?;
+        let session_file_index_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(session_file_index)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !session_file_index_cols.contains("tenant_org_id") {
+            conn.execute(
+                "CREATE TABLE session_file_index_new (
+                    tenant_org_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_workspace_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_deployment_id TEXT NOT NULL DEFAULT '',
+                    session_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    mtime INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    hash TEXT NOT NULL,
+                    indexed_at TEXT NOT NULL,
+                    PRIMARY KEY(tenant_org_id, tenant_workspace_id, tenant_deployment_id, session_id, path)
+                )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO session_file_index_new
+                 (tenant_org_id, tenant_workspace_id, tenant_deployment_id, session_id, path, mtime, size, hash, indexed_at)
+                 SELECT 'local', 'local', '', session_id, path, mtime, size, hash, indexed_at
+                 FROM session_file_index",
+                [],
+            )?;
+            conn.execute("DROP TABLE session_file_index", [])?;
+            conn.execute(
+                "ALTER TABLE session_file_index_new RENAME TO session_file_index",
+                [],
+            )?;
+        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS project_index_status (
@@ -298,6 +366,41 @@ impl MemoryDatabase {
             )",
             [],
         )?;
+        let project_index_status_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(project_index_status)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !project_index_status_cols.contains("tenant_org_id") {
+            conn.execute(
+                "CREATE TABLE project_index_status_new (
+                    tenant_org_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_workspace_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_deployment_id TEXT NOT NULL DEFAULT '',
+                    project_id TEXT NOT NULL,
+                    last_indexed_at TEXT,
+                    last_total_files INTEGER,
+                    last_processed_files INTEGER,
+                    last_indexed_files INTEGER,
+                    last_skipped_files INTEGER,
+                    last_errors INTEGER,
+                    PRIMARY KEY(tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id)
+                )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO project_index_status_new
+                 (tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id, last_indexed_at, last_total_files, last_processed_files, last_indexed_files, last_skipped_files, last_errors)
+                 SELECT 'local', 'local', '', project_id, last_indexed_at, last_total_files, last_processed_files, last_indexed_files, last_skipped_files, last_errors
+                 FROM project_index_status",
+                [],
+            )?;
+            conn.execute("DROP TABLE project_index_status", [])?;
+            conn.execute(
+                "ALTER TABLE project_index_status_new RENAME TO project_index_status",
+                [],
+            )?;
+        }
 
         // Global memory chunks table
         conn.execute(
@@ -498,6 +601,51 @@ impl MemoryDatabase {
                 hash TEXT NOT NULL,
                 indexed_at TEXT NOT NULL
             )",
+            [],
+        )?;
+        let global_file_index_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(global_file_index)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !global_file_index_cols.contains("tenant_org_id") {
+            conn.execute(
+                "CREATE TABLE global_file_index_new (
+                    tenant_org_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_workspace_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_deployment_id TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL,
+                    mtime INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    hash TEXT NOT NULL,
+                    indexed_at TEXT NOT NULL,
+                    PRIMARY KEY(tenant_org_id, tenant_workspace_id, tenant_deployment_id, path)
+                )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO global_file_index_new
+                 (tenant_org_id, tenant_workspace_id, tenant_deployment_id, path, mtime, size, hash, indexed_at)
+                 SELECT 'local', 'local', '', path, mtime, size, hash, indexed_at
+                 FROM global_file_index",
+                [],
+            )?;
+            conn.execute("DROP TABLE global_file_index", [])?;
+            conn.execute(
+                "ALTER TABLE global_file_index_new RENAME TO global_file_index",
+                [],
+            )?;
+        }
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_file_index_tenant_project ON project_file_index(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), project_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_file_index_tenant_session ON session_file_index(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), session_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_index_status_tenant_project ON project_index_status(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), project_id)",
             [],
         )?;
 
@@ -2515,21 +2663,58 @@ impl MemoryDatabase {
     // ---------------------------------------------------------------------
 
     pub async fn project_file_index_count(&self, project_id: &str) -> MemoryResult<i64> {
+        self.project_file_index_count_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn project_file_index_count_for_tenant(
+        &self,
+        project_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<i64> {
         let conn = self.conn.lock().await;
         let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM project_file_index WHERE project_id = ?1",
-            params![project_id],
+            "SELECT COUNT(*) FROM project_file_index
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
         Ok(n)
     }
 
     pub async fn project_has_file_chunks(&self, project_id: &str) -> MemoryResult<bool> {
+        self.project_has_file_chunks_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn project_has_file_chunks_for_tenant(
+        &self,
+        project_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<bool> {
         let conn = self.conn.lock().await;
         let exists: Option<i64> = conn
             .query_row(
-                "SELECT 1 FROM project_memory_chunks WHERE project_id = ?1 AND source = 'file' LIMIT 1",
-                params![project_id],
+                "SELECT 1 FROM project_memory_chunks
+                 WHERE project_id = ?1 AND source = 'file'
+                   AND tenant_org_id = ?2
+                   AND tenant_workspace_id = ?3
+                   AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
+                 LIMIT 1",
+                params![
+                    project_id,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
                 |row| row.get(0),
             )
             .optional()?;
@@ -2541,11 +2726,31 @@ impl MemoryDatabase {
         project_id: &str,
         path: &str,
     ) -> MemoryResult<Option<(i64, i64, String)>> {
+        self.get_file_index_entry_for_tenant(project_id, path, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn get_file_index_entry_for_tenant(
+        &self,
+        project_id: &str,
+        path: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<(i64, i64, String)>> {
         let conn = self.conn.lock().await;
         let row: Option<(i64, i64, String)> = conn
             .query_row(
-                "SELECT mtime, size, hash FROM project_file_index WHERE project_id = ?1 AND path = ?2",
-                params![project_id, path],
+                "SELECT mtime, size, hash FROM project_file_index
+                 WHERE project_id = ?1 AND path = ?2
+                   AND tenant_org_id = ?3
+                   AND tenant_workspace_id = ?4
+                   AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')",
+                params![
+                    project_id,
+                    path,
+                    tenant_scope.org_id.as_str(),
+                    tenant_scope.workspace_id.as_str(),
+                    tenant_scope.deployment_id.as_deref()
+                ],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
