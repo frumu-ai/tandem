@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Hosted tenant isolation denial coverage**: Added regression tests proving Automation V2 tenant payloads cannot override the request tenant, scheduled/background-created runs retain their owning automation tenant, watch-condition runs keep tenant context, background context-run sync does not fall back to `local_implicit`, and stale recovery preserves explicit tenant context without an active HTTP request.
-- **Automation V2 event tenant coverage**: Added tenant visibility coverage for Automation V2 events so cross-tenant event streams depend on explicit matching `tenantContext`.
+- **Automation V2 event tenant coverage**: Added tenant visibility and finite-body SSE coverage for Automation V2 events so cross-tenant event streams depend on explicit matching `tenantContext`.
 
 ### Changed
 

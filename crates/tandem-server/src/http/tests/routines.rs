@@ -1,5 +1,6 @@
 use super::*;
 use tandem_types::TenantContext;
+use tokio_stream::StreamExt as _;
 
 fn tenant_request(
     method: &str,
@@ -1484,6 +1485,146 @@ fn automation_v2_events_are_visible_only_to_matching_tenant() {
         &event,
         &explicit_tenant("org-b", "workspace-b", "user-b")
     ));
+}
+
+#[tokio::test]
+async fn automation_v2_sse_stream_filters_other_tenant_events_with_finite_body() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    for (automation_id, name, org, workspace, actor) in [
+        (
+            "tenant-a-sse-auto",
+            "Tenant A SSE Automation",
+            "org-a",
+            "workspace-a",
+            "user-a",
+        ),
+        (
+            "tenant-b-sse-auto",
+            "Tenant B SSE Automation",
+            "org-b",
+            "workspace-b",
+            "user-b",
+        ),
+    ] {
+        let create_resp = app
+            .clone()
+            .oneshot(tenant_request(
+                "POST",
+                "/automations/v2",
+                org,
+                workspace,
+                actor,
+                Some(automation_v2_create_payload(automation_id, name)),
+            ))
+            .await
+            .expect("automation create response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+    }
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let stream_app = app.clone();
+    let reader = tokio::spawn(async move {
+        let stream_resp = stream_app
+            .oneshot(tenant_request(
+                "GET",
+                "/automations/v2/events",
+                "org-a",
+                "workspace-a",
+                "user-a",
+                None,
+            ))
+            .await
+            .expect("automation v2 sse response");
+        assert_eq!(stream_resp.status(), StatusCode::OK);
+
+        let mut body = stream_resp.into_body().into_data_stream();
+        let mut captured = String::new();
+        let mut ready_tx = Some(ready_tx);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Ok(Some(chunk)) = tokio::time::timeout(remaining, body.next()).await else {
+                break;
+            };
+            let chunk = chunk.expect("sse chunk");
+            captured.push_str(&String::from_utf8_lossy(&chunk));
+            if captured.contains("\"stream\":\"automations_v2\"") {
+                if let Some(ready_tx) = ready_tx.take() {
+                    let _ = ready_tx.send(());
+                }
+            }
+            if captured.contains("tenant-a-run") {
+                break;
+            }
+        }
+        captured
+    });
+    tokio::time::timeout(Duration::from_secs(2), ready_rx)
+        .await
+        .expect("timed out waiting for automation v2 sse ready frame")
+        .expect("sse reader dropped before ready frame");
+
+    let tenant_b_run_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/automations/v2/tenant-b-sse-auto/run_now",
+            "org-b",
+            "workspace-b",
+            "user-b",
+            Some(json!({})),
+        ))
+        .await
+        .expect("tenant b run_now response");
+    assert_eq!(tenant_b_run_resp.status(), StatusCode::OK);
+    let tenant_b_body = to_bytes(tenant_b_run_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant b run body");
+    let tenant_b_payload: Value =
+        serde_json::from_slice(&tenant_b_body).expect("tenant b run json");
+    let tenant_b_run_id = tenant_b_payload
+        .get("run")
+        .and_then(|run| run.get("run_id"))
+        .and_then(Value::as_str)
+        .expect("tenant b run id")
+        .to_string();
+
+    let tenant_a_run_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/automations/v2/tenant-a-sse-auto/run_now",
+            "org-a",
+            "workspace-a",
+            "user-a",
+            Some(json!({})),
+        ))
+        .await
+        .expect("tenant a run_now response");
+    assert_eq!(tenant_a_run_resp.status(), StatusCode::OK);
+    let tenant_a_body = to_bytes(tenant_a_run_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant a run body");
+    let tenant_a_payload: Value =
+        serde_json::from_slice(&tenant_a_body).expect("tenant a run json");
+    let tenant_a_run_id = tenant_a_payload
+        .get("run")
+        .and_then(|run| run.get("run_id"))
+        .and_then(Value::as_str)
+        .expect("tenant a run id")
+        .to_string();
+
+    let captured = reader.await.expect("finite sse reader task");
+
+    assert!(
+        captured.contains(&tenant_a_run_id),
+        "expected tenant A event in finite SSE body, got: {captured}"
+    );
+    assert!(
+        !captured.contains(&tenant_b_run_id),
+        "tenant B event leaked into tenant A SSE body: {captured}"
+    );
 }
 
 #[tokio::test]

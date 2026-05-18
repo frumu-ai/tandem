@@ -1152,6 +1152,17 @@ pub(super) async fn automations_v2_run_now(
     )
     .await;
     let context_run_id = super::context_runs::automation_v2_context_run_id(&run.run_id);
+    state.event_bus.publish(crate::EngineEvent::new(
+        "automation.v2.run.created",
+        json!({
+            "automationID": id,
+            "runID": run.run_id,
+            "run": run.clone(),
+            "tenantContext": tenant_context,
+            "triggerType": "manual",
+            "dryRun": dry_run,
+        }),
+    ));
     Ok(Json(json!({
         "ok": true,
         "dry_run": dry_run,

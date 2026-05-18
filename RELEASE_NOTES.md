@@ -26,6 +26,8 @@ definitions, and Automation V2 event visibility.
 - Scheduler-published Automation V2 run-created events now include top-level
   `tenantContext`, allowing hosted/global SSE filters to enforce tenant
   visibility.
+- Added finite-body Automation V2 SSE coverage proving a tenant stream receives
+  its own event and does not receive another tenant's event.
 
 ### Compatibility
 
