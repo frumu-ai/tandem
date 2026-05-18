@@ -11,17 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Hosted tenant isolation denial coverage**: Added regression tests proving Automation V2 tenant payloads cannot override the request tenant, scheduled/background-created runs retain their owning automation tenant, watch-condition runs keep tenant context, background context-run sync does not fall back to `local_implicit`, and stale recovery preserves explicit tenant context without an active HTTP request.
 - **Automation V2 event tenant coverage**: Added tenant visibility and finite-body SSE coverage for Automation V2 events so cross-tenant event streams depend on explicit matching `tenantContext`.
+- **Runtime resource tenant denial coverage**: Added denial-driven tests for sessions, event streams, context-run internals, Automation V2 runs/gates, legacy workflow routes, provider credentials, MCP secrets, and memory surfaces.
+- **Tenant-partitioned vector memory**: Added tenant scope to vector-backed memory chunks and regression tests proving tenant A cannot retrieve, suppress, delete, or dedupe against tenant B vector memory, including identical content/source-hash cases.
+- **Tenant-scoped memory stats and cleanup helpers**: Added tenant-aware memory stats, project vector stats, manual clear, and old-session cleanup helpers with tests proving cross-tenant rows are not counted or deleted.
 
 ### Changed
 
 - **Automation V2 background tenant propagation**: Watch-condition run creation now stamps runs from the stored automation tenant instead of `local_implicit`, and Automation V2 context-run blackboard sync now inherits the run tenant.
 - **Applied automation tenant stamping**: Workflow planner apply, mission builder apply, and channel automation draft confirm now stamp persisted Automation V2 definitions from the request `TenantContext`, preventing imported/applied payloads from switching tenant context.
 - **Scheduled/watch event scoping**: Scheduler-published Automation V2 run-created events now include top-level `tenantContext` so hosted/global SSE filters can make tenant decisions without inspecting nested run payloads.
+- **Session, context-run, and automation route isolation**: Hosted tenant checks now hide cross-tenant session/context-run/automation resources with empty results or not-found behavior instead of exposing resource existence.
+- **Provider and MCP secret isolation**: Provider credentials and store-backed MCP secrets now carry tenant scope through request and execution paths so hosted explicit tenants cannot resolve or execute with another tenant's credentials.
+- **Memory route and DB isolation**: Governed memory search/list/read/update/delete/promote/demote paths now use tenant-aware DB methods, while sqlite-vec top-k ranking filters by tenant before calculating the returned candidates.
 
 ### Notes
 
 - Local/default single-tenant behavior remains unchanged.
-- This release continues the hosted tenant-isolation hardening work; memory, provider/MCP secrets, artifacts, audit exports, SCIM, Zitadel, and private sidecar work remain separate follow-up surfaces.
+- This release continues the hosted tenant-isolation hardening work; artifacts, audit exports, SCIM, Zitadel, private sidecar work, file import/index isolation, and governed knowledge-memory isolation remain separate follow-up surfaces.
 
 ## [0.5.8] - 2026-05-17
 

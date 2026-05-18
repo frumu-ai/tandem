@@ -188,7 +188,8 @@ impl MemoryManager {
 
         // Check if cleanup is needed
         if config.auto_cleanup {
-            self.maybe_cleanup(&request.project_id).await?;
+            self.maybe_cleanup(&request.project_id, &request.tenant_scope)
+                .await?;
         }
 
         Ok(chunk_ids)
@@ -916,17 +917,30 @@ impl MemoryManager {
 
     /// Clear session memory
     pub async fn clear_session(&self, session_id: &str) -> MemoryResult<u64> {
-        let count = self.db.clear_session_memory(session_id).await?;
+        self.clear_session_for_tenant(session_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn clear_session_for_tenant(
+        &self,
+        session_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<u64> {
+        let count = self
+            .db
+            .clear_session_memory_for_tenant(session_id, tenant_scope)
+            .await?;
 
         // Log cleanup
         self.db
-            .log_cleanup(
+            .log_cleanup_for_tenant(
                 "manual",
                 MemoryTier::Session,
                 None,
                 Some(session_id),
                 count as i64,
                 0,
+                tenant_scope,
             )
             .await?;
 
@@ -935,17 +949,30 @@ impl MemoryManager {
 
     /// Clear project memory
     pub async fn clear_project(&self, project_id: &str) -> MemoryResult<u64> {
-        let count = self.db.clear_project_memory(project_id).await?;
+        self.clear_project_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn clear_project_for_tenant(
+        &self,
+        project_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<u64> {
+        let count = self
+            .db
+            .clear_project_memory_for_tenant(project_id, tenant_scope)
+            .await?;
 
         // Log cleanup
         self.db
-            .log_cleanup(
+            .log_cleanup_for_tenant(
                 "manual",
                 MemoryTier::Project,
                 Some(project_id),
                 None,
                 count as i64,
                 0,
+                tenant_scope,
             )
             .await?;
 
@@ -1122,6 +1149,15 @@ impl MemoryManager {
 
     /// Run cleanup based on retention policies
     pub async fn run_cleanup(&self, project_id: Option<&str>) -> MemoryResult<u64> {
+        self.run_cleanup_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn run_cleanup_for_tenant(
+        &self,
+        project_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<u64> {
         let mut total_cleaned = 0u64;
 
         if let Some(pid) = project_id {
@@ -1132,19 +1168,20 @@ impl MemoryManager {
                 // Clean up old session memory
                 let cleaned = self
                     .db
-                    .cleanup_old_sessions(config.session_retention_days)
+                    .cleanup_old_sessions_for_tenant(config.session_retention_days, tenant_scope)
                     .await?;
                 total_cleaned += cleaned;
 
                 if cleaned > 0 {
                     self.db
-                        .log_cleanup(
+                        .log_cleanup_for_tenant(
                             "auto",
                             MemoryTier::Session,
                             Some(pid),
                             None,
                             cleaned as i64,
                             0,
+                            tenant_scope,
                         )
                         .await?;
                 }
@@ -1153,7 +1190,10 @@ impl MemoryManager {
             // Clean up all projects with auto_cleanup enabled
             // This would require listing all projects, for now just clean session memory
             // with a default retention period
-            let cleaned = self.db.cleanup_old_sessions(30).await?;
+            let cleaned = self
+                .db
+                .cleanup_old_sessions_for_tenant(30, tenant_scope)
+                .await?;
             total_cleaned += cleaned;
         }
 
@@ -1166,9 +1206,13 @@ impl MemoryManager {
     }
 
     /// Check if cleanup is needed and run it
-    async fn maybe_cleanup(&self, project_id: &Option<String>) -> MemoryResult<()> {
+    async fn maybe_cleanup(
+        &self,
+        project_id: &Option<String>,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
         if let Some(pid) = project_id {
-            let stats = self.db.get_stats().await?;
+            let stats = self.db.get_stats_for_tenant(tenant_scope).await?;
             let config = self.db.get_or_create_config(pid).await?;
 
             // Check if we're over the chunk limit

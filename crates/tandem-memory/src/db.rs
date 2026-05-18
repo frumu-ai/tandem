@@ -1091,6 +1091,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_clear_session_and_project_memory_are_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-clear-session",
+                MemoryTier::Session,
+                tenant_a.clone(),
+                "tenant a session clear target",
+                None,
+            ),
+            &embedding(0.1, 0.9),
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-b-clear-session",
+                MemoryTier::Session,
+                tenant_b.clone(),
+                "tenant b session must remain",
+                None,
+            ),
+            &embedding(0.1, 0.9),
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-clear-project",
+                MemoryTier::Project,
+                tenant_a.clone(),
+                "tenant a project clear target",
+                None,
+            ),
+            &embedding(0.2, 0.8),
+        )
+        .await
+        .unwrap();
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-b-clear-project",
+                MemoryTier::Project,
+                tenant_b.clone(),
+                "tenant b project must remain",
+                None,
+            ),
+            &embedding(0.2, 0.8),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.clear_session_memory_for_tenant("shared-session", &tenant_a)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.clear_project_memory_for_tenant("shared-project", &tenant_a)
+                .await
+                .unwrap(),
+            1
+        );
+
+        let tenant_b_session = db
+            .get_session_chunks_for_tenant("shared-session", &tenant_b)
+            .await
+            .unwrap();
+        let tenant_b_project = db
+            .get_project_chunks_for_tenant("shared-project", &tenant_b)
+            .await
+            .unwrap();
+        assert_eq!(tenant_b_session.len(), 1);
+        assert_eq!(tenant_b_project.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_old_session_cleanup_is_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+        let old = Utc::now() - chrono::Duration::days(90);
+
+        let mut tenant_a_old = test_vector_chunk(
+            "tenant-a-old-session",
+            MemoryTier::Session,
+            tenant_a.clone(),
+            "tenant a old session",
+            None,
+        );
+        tenant_a_old.created_at = old;
+        db.store_chunk(&tenant_a_old, &embedding(0.3, 0.7))
+            .await
+            .unwrap();
+
+        let mut tenant_b_old = test_vector_chunk(
+            "tenant-b-old-session",
+            MemoryTier::Session,
+            tenant_b.clone(),
+            "tenant b old session",
+            None,
+        );
+        tenant_b_old.created_at = old;
+        db.store_chunk(&tenant_b_old, &embedding(0.3, 0.7))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            db.cleanup_old_sessions_for_tenant(30, &tenant_a)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(db
+            .get_session_chunks_for_tenant("shared-session", &tenant_a)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.get_session_chunks_for_tenant("shared-session", &tenant_b)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn test_config_crud() {
         let (db, _temp) = setup_test_db().await;
 

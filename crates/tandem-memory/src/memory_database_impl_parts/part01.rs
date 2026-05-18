@@ -1500,26 +1500,62 @@ impl MemoryDatabase {
 
     /// Clear session memory
     pub async fn clear_session_memory(&self, session_id: &str) -> MemoryResult<u64> {
+        self.clear_session_memory_for_tenant(session_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn clear_session_memory_for_tenant(
+        &self,
+        session_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<u64> {
         let conn = self.conn.lock().await;
 
         // Get count before deletion
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM session_memory_chunks WHERE session_id = ?1",
-            params![session_id],
+            "SELECT COUNT(*) FROM session_memory_chunks
+             WHERE session_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                session_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         // Delete vectors first (foreign key constraint)
         conn.execute(
             "DELETE FROM session_memory_vectors WHERE chunk_id IN 
-             (SELECT id FROM session_memory_chunks WHERE session_id = ?1)",
-            params![session_id],
+             (SELECT id FROM session_memory_chunks
+              WHERE session_id = ?1
+                AND tenant_org_id = ?2
+                AND tenant_workspace_id = ?3
+                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, ''))",
+            params![
+                session_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         // Delete chunks
         conn.execute(
-            "DELETE FROM session_memory_chunks WHERE session_id = ?1",
-            params![session_id],
+            "DELETE FROM session_memory_chunks
+             WHERE session_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                session_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         Ok(count as u64)
@@ -1527,26 +1563,62 @@ impl MemoryDatabase {
 
     /// Clear project memory
     pub async fn clear_project_memory(&self, project_id: &str) -> MemoryResult<u64> {
+        self.clear_project_memory_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn clear_project_memory_for_tenant(
+        &self,
+        project_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<u64> {
         let conn = self.conn.lock().await;
 
         // Get count before deletion
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM project_memory_chunks WHERE project_id = ?1",
-            params![project_id],
+            "SELECT COUNT(*) FROM project_memory_chunks
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         // Delete vectors first
         conn.execute(
             "DELETE FROM project_memory_vectors WHERE chunk_id IN 
-             (SELECT id FROM project_memory_chunks WHERE project_id = ?1)",
-            params![project_id],
+             (SELECT id FROM project_memory_chunks
+              WHERE project_id = ?1
+                AND tenant_org_id = ?2
+                AND tenant_workspace_id = ?3
+                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, ''))",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         // Delete chunks
         conn.execute(
-            "DELETE FROM project_memory_chunks WHERE project_id = ?1",
-            params![project_id],
+            "DELETE FROM project_memory_chunks
+             WHERE project_id = ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                project_id,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         Ok(count as u64)
@@ -1717,6 +1789,15 @@ impl MemoryDatabase {
 
     /// Clear old session memory based on retention policy
     pub async fn cleanup_old_sessions(&self, retention_days: i64) -> MemoryResult<u64> {
+        self.cleanup_old_sessions_for_tenant(retention_days, &MemoryTenantScope::local())
+            .await
+    }
+
+    pub async fn cleanup_old_sessions_for_tenant(
+        &self,
+        retention_days: i64,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<u64> {
         let conn = self.conn.lock().await;
 
         let cutoff = Utc::now() - chrono::Duration::days(retention_days);
@@ -1724,22 +1805,49 @@ impl MemoryDatabase {
 
         // Get count before deletion
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM session_memory_chunks WHERE created_at < ?1",
-            params![cutoff_str],
+            "SELECT COUNT(*) FROM session_memory_chunks
+             WHERE created_at < ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                cutoff_str,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
             |row| row.get(0),
         )?;
 
         // Delete vectors first
         conn.execute(
             "DELETE FROM session_memory_vectors WHERE chunk_id IN 
-             (SELECT id FROM session_memory_chunks WHERE created_at < ?1)",
-            params![cutoff_str],
+             (SELECT id FROM session_memory_chunks
+              WHERE created_at < ?1
+                AND tenant_org_id = ?2
+                AND tenant_workspace_id = ?3
+                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, ''))",
+            params![
+                cutoff_str,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         // Delete chunks
         conn.execute(
-            "DELETE FROM session_memory_chunks WHERE created_at < ?1",
-            params![cutoff_str],
+            "DELETE FROM session_memory_chunks
+             WHERE created_at < ?1
+               AND tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')",
+            params![
+                cutoff_str,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref()
+            ],
         )?;
 
         Ok(count as u64)

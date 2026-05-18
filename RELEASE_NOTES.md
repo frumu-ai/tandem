@@ -7,7 +7,8 @@ This is the canonical release-notes file used by release tooling.
 Tandem 0.5.9 continues the hosted tenant-isolation work for Automation V2. The
 focus is denial-driven hardening for background and applied automation paths:
 scheduled runs, watch-triggered runs, stale recovery, imported/applied
-definitions, and Automation V2 event visibility.
+definitions, Automation V2 event visibility, runtime route isolation, provider
+and MCP credential boundaries, and vector-backed memory partitioning.
 
 ### Automation V2 Tenant Isolation
 
@@ -29,11 +30,51 @@ definitions, and Automation V2 event visibility.
 - Added finite-body Automation V2 SSE coverage proving a tenant stream receives
   its own event and does not receive another tenant's event.
 
+### Runtime Tenant Isolation
+
+- Session routes now enforce tenant ownership for list, get, delete, messages,
+  prompting, attach, and workspace-override flows.
+- Global event streams filter emitted events by tenant context so hosted
+  tenants do not receive unrelated runtime events.
+- Context-run internal routes are hardened by tenant for events/SSE, blackboard
+  access, task claim/transition, checkpoints, replay, and ledger state.
+- Automation V2 run/gate routes reject cross-tenant list, mutation, start,
+  inspect, approve, deny, and rework attempts.
+- Legacy workflow routes gained tenant checks so older governance-light paths
+  cannot become a bypass around Automation V2 isolation.
+
+### Provider And MCP Secrets
+
+- Provider credential records are tenant-scoped for hosted/shared runtime mode.
+- Provider create/list/read/update/delete/refresh paths use the request tenant
+  and fail closed across tenant boundaries.
+- Store-backed MCP secret references validate tenant scope before lookup.
+- MCP tool execution now receives effective request/session/run tenant context
+  so tenant A cannot execute with tenant B's stored MCP secret.
+- Local single-tenant env/store secret behavior is preserved for local mode.
+
+### Memory Isolation
+
+- Governed memory search, list, read, promote, demote, update, and delete paths
+  use tenant-aware DB methods.
+- `memory_records` dedupe and user-created indexes now include tenant scope.
+- Vector-backed session/project/global memory chunks now store tenant
+  org/workspace/deployment scope.
+- sqlite-vec top-k memory search filters the chunk table by tenant before
+  distance ranking, preventing another tenant's closer vectors from suppressing
+  the current tenant's results.
+- Added denial tests for identical vector content, shared source hashes,
+  cross-tenant vector search, cross-tenant vector deletes, tenant-scoped memory
+  stats, project vector stats, manual clear, and old-session cleanup.
+- Existing local memory rows default to `local/local` during migration.
+
 ### Compatibility
 
 - Local/default single-tenant behavior remains unchanged.
-- This release does not start Zitadel/OIDC, SCIM, private sidecar, memory,
-  provider/MCP secret, artifact, or audit-export isolation work.
+- This release does not start Zitadel/OIDC, SCIM, private sidecar, artifact, or
+  audit-export isolation work.
+- File import/index isolation, governed knowledge-memory isolation, and broader
+  memory-derived cache hardening remain follow-up work.
 
 ## v0.5.8 (2026-05-17)
 
