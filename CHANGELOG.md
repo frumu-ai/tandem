@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tenant-scoped memory context retrieval**: Added tenant-aware manager retrieval APIs and coverage proving current-session context injection does not mix same-session chunks across tenants.
 - **Tenant-scoped memory file import/indexes**: Added tenant-aware import index, file chunk deletion, project file-index stats, and project file-index clear paths with regression tests proving same-path imports cannot cross tenants.
 - **Tenant-scoped knowledge memory**: Added tenant-aware knowledge-space indexes and DB/manager APIs for spaces, items, coverage, promotion, and Automation V2 knowledge preflight with denial coverage for cross-tenant reads and mutations.
+- **Coder artifact tenant denial coverage**: Added regression coverage proving tenant B cannot list, get, or read artifacts from a coder run created under tenant A.
 
 ### Changed
 
@@ -28,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Memory route and DB isolation**: Governed memory search/list/read/update/delete/promote/demote paths now use tenant-aware DB methods, while sqlite-vec top-k ranking filters by tenant before calculating the returned candidates.
 - **Memory manager retrieval isolation**: Context retrieval now has tenant-aware wrappers for recent session chunks and vector search, preserving existing local retrieval through local/default wrappers.
 - **Memory config and hygiene isolation**: Memory config rows and old-session hygiene now use tenant-aware project/global config and pruning paths so same project ids cannot overwrite or clean another tenant's memory policy/state.
+- **Coder run tenant propagation**: Coder-created context runs now inherit the request tenant, and coder status/list/get/artifact reads filter through the linked context run tenant.
 
 ### Fixed
 
@@ -37,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 
 - Local/default single-tenant behavior remains unchanged.
-- This release continues the hosted tenant-isolation hardening work; artifacts, audit exports, SCIM, Zitadel, and private sidecar work remain separate follow-up surfaces.
+- This release continues the hosted tenant-isolation hardening work; broader artifact paths, audit exports, SCIM, Zitadel, and private sidecar work remain separate follow-up surfaces.
 
 ## [0.5.8] - 2026-05-17
 

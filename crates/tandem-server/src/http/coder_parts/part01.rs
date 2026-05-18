@@ -862,6 +862,17 @@ async fn load_coder_run_record(
     serde_json::from_str::<CoderRunRecord>(&raw).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+async fn load_coder_run_with_context_for_tenant(
+    state: &AppState,
+    coder_run_id: &str,
+    tenant_context: &tandem_types::TenantContext,
+) -> Result<(CoderRunRecord, ContextRunState), StatusCode> {
+    let record = load_coder_run_record(state, coder_run_id).await?;
+    let run = load_context_run_state(state, &record.linked_context_run_id).await?;
+    super::ensure_same_tenant(tenant_context, &run.tenant_context)?;
+    Ok((record, run))
+}
+
 fn parse_coder_project_binding_put_input(
     project_id: &str,
     value: Value,

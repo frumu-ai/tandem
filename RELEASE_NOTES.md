@@ -8,7 +8,8 @@ Tandem 0.5.9 continues the hosted tenant-isolation work for Automation V2. The
 focus is denial-driven hardening for background and applied automation paths:
 scheduled runs, watch-triggered runs, stale recovery, imported/applied
 definitions, Automation V2 event visibility, runtime route isolation, provider
-and MCP credential boundaries, and vector-backed memory partitioning.
+and MCP credential boundaries, vector-backed memory partitioning, and the first
+coder artifact tenant boundary.
 
 ### Automation V2 Tenant Isolation
 
@@ -42,6 +43,10 @@ and MCP credential boundaries, and vector-backed memory partitioning.
   inspect, approve, deny, and rework attempts.
 - Legacy workflow routes gained tenant checks so older governance-light paths
   cannot become a bypass around Automation V2 isolation.
+- Coder-created context runs now inherit the request tenant, and coder
+  status/list/get/artifact reads are filtered through the linked context run
+  tenant. Added denial coverage proving tenant B cannot list, get, or read
+  artifacts from tenant A's coder run.
 
 ### Provider And MCP Secrets
 
@@ -98,8 +103,8 @@ and MCP credential boundaries, and vector-backed memory partitioning.
 ### Compatibility
 
 - Local/default single-tenant behavior remains unchanged.
-- This release does not start Zitadel/OIDC, SCIM, private sidecar, artifact, or
-  audit-export isolation work.
+- This release does not start Zitadel/OIDC, SCIM, private sidecar, broader
+  artifact isolation, or audit-export isolation work.
 - File import/index isolation, governed knowledge-memory isolation, and broader
   memory-derived cache hardening remain follow-up work.
 

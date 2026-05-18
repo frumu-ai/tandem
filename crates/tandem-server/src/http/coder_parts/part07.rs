@@ -1,4 +1,7 @@
-pub(super) async fn coder_status(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+pub(super) async fn coder_status(
+    State(state): State<AppState>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+) -> Result<Json<Value>, StatusCode> {
     ensure_coder_runs_dir(&state).await?;
     let mut total_runs = 0_u64;
     let mut active_runs = 0_u64;
@@ -28,6 +31,9 @@ pub(super) async fn coder_status(State(state): State<AppState>) -> Result<Json<V
         let Ok(run) = load_context_run_state(&state, &record.linked_context_run_id).await else {
             continue;
         };
+        if !super::tenant_matches(&tenant_context, &run.tenant_context) {
+            continue;
+        }
         total_runs += 1;
         projects.insert(record.repo_binding.project_id.clone());
         let workflow_key = serde_json::to_value(&record.workflow_mode)
@@ -626,9 +632,11 @@ pub(super) async fn coder_run_cancel(
 
 pub(super) async fn coder_run_artifacts(
     State(state): State<AppState>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let record = load_coder_run_record(&state, &id).await?;
+    let (record, _run) =
+        load_coder_run_with_context_for_tenant(&state, &id, &tenant_context).await?;
     let blackboard = load_context_blackboard(&state, &record.linked_context_run_id);
     Ok(Json(json!({
         "coder_run_id": record.coder_run_id,

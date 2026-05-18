@@ -1129,6 +1129,7 @@ fn follow_on_execution_policy_preview(
 
 async fn coder_run_create_inner(
     state: AppState,
+    tenant_context: tandem_types::TenantContext,
     input: CoderRunCreateInput,
 ) -> Result<Response, StatusCode> {
     if input.repo_binding.project_id.trim().is_empty()
@@ -1244,12 +1245,9 @@ async fn coder_run_create_inner(
         model_id: normalize_source_client(input.model_id.as_deref()),
         mcp_servers: input.mcp_servers.clone(),
     };
-    let created = super::context_runs::context_run_create_impl(
-        state.clone(),
-        tandem_types::TenantContext::local_implicit(),
-        create_input,
-    )
-    .await?;
+    let created =
+        super::context_runs::context_run_create_impl(state.clone(), tenant_context, create_input)
+            .await?;
     let _context_run: ContextRunState =
         serde_json::from_value(created.0.get("run").cloned().unwrap_or_default())
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1513,7 +1511,8 @@ async fn coder_run_create_inner(
 
 pub(super) async fn coder_run_create(
     State(state): State<AppState>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
     Json(input): Json<CoderRunCreateInput>,
 ) -> Result<Response, StatusCode> {
-    coder_run_create_inner(state, input).await
+    coder_run_create_inner(state, tenant_context, input).await
 }

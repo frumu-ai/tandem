@@ -293,6 +293,134 @@ async fn coder_artifacts_endpoint_projects_context_blackboard_artifacts() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn coder_run_artifacts_are_tenant_scoped() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "user-a")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-run-tenant-artifacts",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "user123/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 19
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_body = to_bytes(create_resp.into_body(), usize::MAX)
+        .await
+        .expect("create body");
+    let create_payload: Value = serde_json::from_slice(&create_body).expect("create json");
+    assert_eq!(
+        create_payload
+            .get("run")
+            .and_then(|row| row.get("tenant_context"))
+            .and_then(|row| row.get("org_id"))
+            .and_then(Value::as_str),
+        Some("org-a")
+    );
+
+    let tenant_a_artifacts_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-run-tenant-artifacts/artifacts")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "user-a")
+        .body(Body::empty())
+        .expect("tenant a artifacts request");
+    let tenant_a_artifacts_resp = app
+        .clone()
+        .oneshot(tenant_a_artifacts_req)
+        .await
+        .expect("tenant a artifacts response");
+    assert_eq!(tenant_a_artifacts_resp.status(), StatusCode::OK);
+
+    let tenant_b_artifacts_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-run-tenant-artifacts/artifacts")
+        .header("x-tandem-org-id", "org-b")
+        .header("x-tandem-workspace-id", "workspace-b")
+        .header("x-tandem-actor-id", "user-b")
+        .body(Body::empty())
+        .expect("tenant b artifacts request");
+    let tenant_b_artifacts_resp = app
+        .clone()
+        .oneshot(tenant_b_artifacts_req)
+        .await
+        .expect("tenant b artifacts response");
+    assert_eq!(tenant_b_artifacts_resp.status(), StatusCode::NOT_FOUND);
+
+    let tenant_b_get_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-run-tenant-artifacts")
+        .header("x-tandem-org-id", "org-b")
+        .header("x-tandem-workspace-id", "workspace-b")
+        .header("x-tandem-actor-id", "user-b")
+        .body(Body::empty())
+        .expect("tenant b get request");
+    let tenant_b_get_resp = app
+        .clone()
+        .oneshot(tenant_b_get_req)
+        .await
+        .expect("tenant b get response");
+    assert_eq!(tenant_b_get_resp.status(), StatusCode::NOT_FOUND);
+
+    let tenant_b_list_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs")
+        .header("x-tandem-org-id", "org-b")
+        .header("x-tandem-workspace-id", "workspace-b")
+        .header("x-tandem-actor-id", "user-b")
+        .body(Body::empty())
+        .expect("tenant b list request");
+    let tenant_b_list_resp = app
+        .clone()
+        .oneshot(tenant_b_list_req)
+        .await
+        .expect("tenant b list response");
+    assert_eq!(tenant_b_list_resp.status(), StatusCode::OK);
+    let tenant_b_list_body = to_bytes(tenant_b_list_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant b list body");
+    let tenant_b_list_payload: Value =
+        serde_json::from_slice(&tenant_b_list_body).expect("tenant b list json");
+    assert_eq!(
+        tenant_b_list_payload
+            .get("runs")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn coder_issue_triage_blocks_when_preferred_mcp_server_is_missing() {
     let state = test_state().await;
     state

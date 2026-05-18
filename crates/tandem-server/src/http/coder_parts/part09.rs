@@ -1,5 +1,6 @@
 pub(super) async fn coder_project_run_create(
     State(state): State<AppState>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
     Path(project_id): Path<String>,
     Json(input): Json<CoderProjectRunCreateInput>,
 ) -> Result<Response, StatusCode> {
@@ -20,6 +21,7 @@ pub(super) async fn coder_project_run_create(
     };
     coder_run_create_inner(
         state,
+        tenant_context,
         CoderRunCreateInput {
             coder_run_id: input.coder_run_id,
             workflow_mode: input.workflow_mode,
@@ -42,6 +44,7 @@ pub(super) async fn coder_project_run_create(
 
 pub(super) async fn coder_run_list(
     State(state): State<AppState>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
     Query(query): Query<CoderRunListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     ensure_coder_runs_dir(&state).await?;
@@ -84,6 +87,9 @@ pub(super) async fn coder_run_list(
         let Ok(run) = load_context_run_state(&state, &record.linked_context_run_id).await else {
             continue;
         };
+        if !super::tenant_matches(&tenant_context, &run.tenant_context) {
+            continue;
+        }
         let mut row = coder_run_payload(&record, &run);
         if let Some(obj) = row.as_object_mut() {
             obj.insert(
@@ -104,10 +110,11 @@ pub(super) async fn coder_run_list(
 
 pub(super) async fn coder_run_get(
     State(state): State<AppState>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let record = load_coder_run_record(&state, &id).await?;
-    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    let (record, run) =
+        load_coder_run_with_context_for_tenant(&state, &id, &tenant_context).await?;
     let blackboard = load_context_blackboard(&state, &record.linked_context_run_id);
     let memory_query = default_coder_memory_query(&record);
     let memory_hits = if matches!(
@@ -545,6 +552,7 @@ pub(super) async fn coder_project_github_project_inbox(
 
 pub(super) async fn coder_project_github_project_intake(
     State(state): State<AppState>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
     Path(project_id): Path<String>,
     Json(input): Json<CoderGithubProjectIntakeInput>,
 ) -> Result<Response, StatusCode> {
@@ -602,6 +610,7 @@ pub(super) async fn coder_project_github_project_intake(
     }
     let response = coder_run_create_inner(
         state.clone(),
+        tenant_context,
         CoderRunCreateInput {
             coder_run_id: input.coder_run_id,
             workflow_mode: CoderWorkflowMode::IssueTriage,

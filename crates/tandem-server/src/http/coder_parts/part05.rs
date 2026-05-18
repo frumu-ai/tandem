@@ -1379,7 +1379,14 @@ pub(super) async fn coder_issue_fix_pr_submit(
                         "skipped_follow_on_runs": skipped_follow_on_runs,
                     })),
                 );
-                let response = coder_run_create(State(state.clone()), Json(create_input)).await?;
+                let parent_run =
+                    load_context_run_state(&state, &record.linked_context_run_id).await?;
+                let response = coder_run_create(
+                    State(state.clone()),
+                    axum::extract::Extension(parent_run.tenant_context.clone()),
+                    Json(create_input),
+                )
+                .await?;
                 let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1972,5 +1979,11 @@ pub(super) async fn coder_follow_on_run_create(
             })),
         )
     };
-    coder_run_create(State(state), Json(create_input)).await
+    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    coder_run_create(
+        State(state),
+        axum::extract::Extension(run.tenant_context.clone()),
+        Json(create_input),
+    )
+    .await
 }
