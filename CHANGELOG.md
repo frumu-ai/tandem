@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-05-18
+
+### Added
+
+- **Hosted tenant isolation denial coverage**: Added regression tests proving Automation V2 tenant payloads cannot override the request tenant, scheduled/background-created runs retain their owning automation tenant, watch-condition runs keep tenant context, background context-run sync does not fall back to `local_implicit`, and stale recovery preserves explicit tenant context without an active HTTP request.
+- **Automation V2 event tenant coverage**: Added tenant visibility coverage for Automation V2 events so cross-tenant event streams depend on explicit matching `tenantContext`.
+
+### Changed
+
+- **Automation V2 background tenant propagation**: Watch-condition run creation now stamps runs from the stored automation tenant instead of `local_implicit`, and Automation V2 context-run blackboard sync now inherits the run tenant.
+- **Applied automation tenant stamping**: Workflow planner apply, mission builder apply, and channel automation draft confirm now stamp persisted Automation V2 definitions from the request `TenantContext`, preventing imported/applied payloads from switching tenant context.
+- **Scheduled/watch event scoping**: Scheduler-published Automation V2 run-created events now include top-level `tenantContext` so hosted/global SSE filters can make tenant decisions without inspecting nested run payloads.
+
+### Notes
+
+- Local/default single-tenant behavior remains unchanged.
+- This release continues the hosted tenant-isolation hardening work; memory, provider/MCP secrets, artifacts, audit exports, SCIM, Zitadel, and private sidecar work remain separate follow-up surfaces.
+
 ## [0.5.8] - 2026-05-17
 
 ### Added

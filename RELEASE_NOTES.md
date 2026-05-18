@@ -2,6 +2,37 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.5.9 (2026-05-18)
+
+Tandem 0.5.9 continues the hosted tenant-isolation work for Automation V2. The
+focus is denial-driven hardening for background and applied automation paths:
+scheduled runs, watch-triggered runs, stale recovery, imported/applied
+definitions, and Automation V2 event visibility.
+
+### Automation V2 Tenant Isolation
+
+- Workflow planner apply, mission builder apply, and channel automation draft
+  confirm now stamp persisted Automation V2 definitions from the request
+  `TenantContext`.
+- Automation V2 create/apply payloads cannot switch tenant context through
+  embedded metadata.
+- Scheduled/background-created runs inherit the stored automation tenant.
+- Watch-condition runs now inherit the owning automation tenant instead of
+  falling back to `local_implicit`.
+- Automation V2 context-run blackboard sync inherits the run tenant, so
+  background-created context runs do not silently become local implicit.
+- Stale reaping and auto-resume regression coverage now proves explicit run
+  tenant context survives recovery without an active HTTP request.
+- Scheduler-published Automation V2 run-created events now include top-level
+  `tenantContext`, allowing hosted/global SSE filters to enforce tenant
+  visibility.
+
+### Compatibility
+
+- Local/default single-tenant behavior remains unchanged.
+- This release does not start Zitadel/OIDC, SCIM, private sidecar, memory,
+  provider/MCP secret, artifact, or audit-export isolation work.
+
 ## v0.5.8 (2026-05-17)
 
 Tandem 0.5.8 begins the enterprise auth, tenant context, and execution-time

@@ -1464,6 +1464,28 @@ async fn automation_v2_background_runs_preserve_stored_tenant_context() {
     assert_eq!(watch_context_run.tenant_context.org_id, "org-b");
 }
 
+#[test]
+fn automation_v2_events_are_visible_only_to_matching_tenant() {
+    let tenant_a = explicit_tenant("org-a", "workspace-a", "user-a");
+    let tenant_b = explicit_tenant("org-b", "workspace-b", "user-b");
+    let event = crate::EngineEvent::new(
+        "automation.v2.run.created",
+        json!({
+            "automationID": "tenant-b-auto",
+            "runID": "tenant-b-run",
+            "tenantContext": tenant_b,
+        }),
+    );
+
+    assert!(!super::super::global::event_visible_to_tenant(
+        &event, &tenant_a
+    ));
+    assert!(super::super::global::event_visible_to_tenant(
+        &event,
+        &explicit_tenant("org-b", "workspace-b", "user-b")
+    ));
+}
+
 #[tokio::test]
 async fn automation_run_operator_wrappers_expose_context_run_links() {
     let state = test_state().await;

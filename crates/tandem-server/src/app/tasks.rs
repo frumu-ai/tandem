@@ -1239,11 +1239,13 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
                 .create_automation_v2_run(&automation, "scheduled")
                 .await
             {
+                let tenant_context = run.tenant_context.clone();
                 state.event_bus.publish(EngineEvent::new(
                     "automation.v2.run.created",
                     serde_json::json!({
                         "automationID": automation_id,
                         "run": run,
+                        "tenantContext": tenant_context,
                         "triggerType": "scheduled",
                     }),
                 ));
@@ -1308,11 +1310,13 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
                 .await
             {
                 Ok(run) => {
+                    let tenant_context = run.tenant_context.clone();
                     state.event_bus.publish(EngineEvent::new(
                         "automation.v2.run.created",
                         serde_json::json!({
                             "automationID": automation_id,
                             "run": run,
+                            "tenantContext": tenant_context,
                             "triggerType": "watch_condition",
                             "triggerReason": trigger_reason,
                         }),

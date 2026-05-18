@@ -520,7 +520,7 @@ async fn automation_agent_model_falls_back_to_effective_config_default() {
 
 #[tokio::test]
 async fn automation_run_rejects_invalid_activation_validation_snapshot() {
-    let automation = AutomationV2Spec {
+    let mut automation = AutomationV2Spec {
         automation_id: "auto-activation-validation-test".to_string(),
         name: "Activation Validation Test".to_string(),
         description: None,
@@ -603,7 +603,7 @@ async fn automation_run_rejects_invalid_activation_validation_snapshot() {
 
 #[tokio::test]
 async fn stale_running_automation_runs_are_paused_and_release_scheduler_capacity() {
-    let automation = AutomationV2Spec {
+    let mut automation = AutomationV2Spec {
         automation_id: "auto-stale-run-test".to_string(),
         name: "Stale Run Test".to_string(),
         description: None,
@@ -638,6 +638,13 @@ async fn stale_running_automation_runs_are_paused_and_release_scheduler_capacity
         watch_conditions: Vec::new(),
         handoff_config: None,
     };
+    let tenant_context = TenantContext::explicit_user_workspace(
+        "org-stale-recovery".to_string(),
+        "workspace-stale-recovery".to_string(),
+        Some("user-stale-recovery".to_string()),
+        "test-suite".to_string(),
+    );
+    automation.set_tenant_context(&tenant_context);
     let state = ready_test_state().await;
     let run = state
         .create_automation_v2_run(&automation, "manual")
@@ -683,6 +690,11 @@ async fn stale_running_automation_runs_are_paused_and_release_scheduler_capacity
         .get_automation_v2_run(&run_id)
         .await
         .expect("persisted run");
+    assert_eq!(persisted.tenant_context.org_id, "org-stale-recovery");
+    assert_eq!(
+        persisted.tenant_context.workspace_id,
+        "workspace-stale-recovery"
+    );
     assert_eq!(persisted.status, AutomationRunStatus::Paused);
     assert_eq!(
         persisted.pause_reason.as_deref(),
@@ -716,7 +728,7 @@ async fn stale_running_automation_runs_are_paused_and_release_scheduler_capacity
 
 #[tokio::test]
 async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
-    let automation = AutomationV2Spec {
+    let mut automation = AutomationV2Spec {
         automation_id: "auto-stale-run-repairable-test".to_string(),
         name: "Stale Run Repairable Test".to_string(),
         description: None,
@@ -769,6 +781,13 @@ async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
         watch_conditions: Vec::new(),
         handoff_config: None,
     };
+    let tenant_context = TenantContext::explicit_user_workspace(
+        "org-stale-recovery".to_string(),
+        "workspace-stale-recovery".to_string(),
+        Some("user-stale-recovery".to_string()),
+        "test-suite".to_string(),
+    );
+    automation.set_tenant_context(&tenant_context);
     let state = ready_test_state().await;
     let run = state
         .create_automation_v2_run(&automation, "manual")
@@ -857,6 +876,11 @@ async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
         .get_automation_v2_run(&run_id)
         .await
         .expect("resumed run");
+    assert_eq!(resumed_run.tenant_context.org_id, "org-stale-recovery");
+    assert_eq!(
+        resumed_run.tenant_context.workspace_id,
+        "workspace-stale-recovery"
+    );
     assert_eq!(resumed_run.status, AutomationRunStatus::Queued);
     assert_eq!(resumed_run.pause_reason, None);
     assert_eq!(resumed_run.stop_kind, None);
