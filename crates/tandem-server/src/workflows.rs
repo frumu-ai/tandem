@@ -729,7 +729,7 @@ async fn execute_actions(
 ) -> anyhow::Result<WorkflowRunRecord> {
     let run_id = format!("workflow-run-{}", Uuid::new_v4());
     let now = now_ms();
-    let automation = compile_workflow_run_automation(
+    let mut automation = compile_workflow_run_automation(
         workflow_id,
         workflow_name.as_deref(),
         workflow_description.as_deref(),
@@ -738,6 +738,7 @@ async fn execute_actions(
         source.as_ref(),
         trigger_event.as_deref(),
     );
+    automation.set_tenant_context(&tenant_context);
     let automation = state.put_automation_v2(automation).await?;
     let automation_run = state
         .create_automation_v2_run(&automation, trigger_event.as_deref().unwrap_or("workflow"))
@@ -1009,22 +1010,25 @@ async fn execute_action(
         }
         ParsedWorkflowAction::ResourcePut { key } => {
             let record = state
-                .put_shared_resource(
+                .put_shared_resource_for_tenant(
                     key.clone(),
                     action_payload(action_spec, action_row),
                     None,
                     "workflow".to_string(),
                     None,
+                    tenant_context,
                 )
                 .await
                 .map_err(|err| anyhow::anyhow!("{err:?}"))?;
             Ok(json!({ "key": record.key, "rev": record.rev }))
         }
         ParsedWorkflowAction::ResourcePatch { key } => {
-            let current = state.get_shared_resource(&key).await;
+            let current = state
+                .get_shared_resource_for_tenant(&key, tenant_context)
+                .await;
             let next_rev = current.as_ref().map(|row| row.rev);
             let record = state
-                .put_shared_resource(
+                .put_shared_resource_for_tenant(
                     key.clone(),
                     merge_object(
                         current.map(|row| row.value).unwrap_or_else(|| json!({})),
@@ -1033,6 +1037,7 @@ async fn execute_action(
                     next_rev,
                     "workflow".to_string(),
                     None,
+                    tenant_context,
                 )
                 .await
                 .map_err(|err| anyhow::anyhow!("{err:?}"))?;
@@ -1040,14 +1045,17 @@ async fn execute_action(
         }
         ParsedWorkflowAction::ResourceDelete { key } => {
             let deleted = state
-                .delete_shared_resource(&key, None)
+                .delete_shared_resource_for_tenant(&key, None, tenant_context)
                 .await
                 .map_err(|err| anyhow::anyhow!("{err:?}"))?;
             Ok(json!({ "key": key, "deleted": deleted.is_some() }))
         }
         ParsedWorkflowAction::Tool { tool_name } => {
             let payload = action_payload(action_spec, action_row);
-            let result = state.tools.execute(&tool_name, payload.clone()).await?;
+            let result = state
+                .tools
+                .execute_for_tenant(&tool_name, payload.clone(), tenant_context.clone())
+                .await?;
             let mut response = json!({
                 "tool": tool_name,
                 "output": result.output,
@@ -1082,7 +1090,10 @@ async fn execute_action(
                 .map(|binding| binding.tool_name.clone())
                 .unwrap_or_else(|| capability_id.clone());
             let payload = action_payload(action_spec, action_row);
-            let result = state.tools.execute(&tool_name, payload.clone()).await?;
+            let result = state
+                .tools
+                .execute_for_tenant(&tool_name, payload.clone(), tenant_context.clone())
+                .await?;
             let mut response = json!({
                 "capability": capability_id,
                 "tool": tool_name,

@@ -3,16 +3,28 @@ use super::*;
 impl EngineLoop {
     pub(super) async fn execute_tool_with_timeout(
         &self,
+        session_id: &str,
         tool: &str,
         args: Value,
         cancel: CancellationToken,
         progress: Option<SharedToolProgressSink>,
     ) -> anyhow::Result<tandem_types::ToolResult> {
         let timeout_ms = tool_exec_timeout_ms() as u64;
+        let tenant_context = self
+            .storage
+            .get_session(session_id)
+            .await
+            .map(|session| session.tenant_context)
+            .unwrap_or_else(TenantContext::local_implicit);
         match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
-            self.tools
-                .execute_with_cancel_and_progress(tool, args, cancel, progress),
+            self.tools.execute_with_cancel_and_progress_for_tenant(
+                tool,
+                args,
+                tenant_context,
+                cancel,
+                progress,
+            ),
         )
         .await
         {

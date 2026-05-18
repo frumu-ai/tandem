@@ -71,6 +71,85 @@ mod tests {
         (format!("http://{addr}/mcp"), handle)
     }
 
+    async fn spawn_auth_required_http_mcp_server(
+        expected_authorization: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake auth mcp server");
+        let addr = listener.local_addr().expect("fake auth mcp addr");
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0_u8; 8192];
+                    let Ok(n) = socket.read(&mut buf).await else {
+                        return;
+                    };
+                    let request = String::from_utf8_lossy(&buf[..n]);
+                    let request_lower = request.to_ascii_lowercase();
+                    let authorized = request_lower.contains(&format!(
+                        "authorization: {}",
+                        expected_authorization.to_ascii_lowercase()
+                    ));
+                    let body = if request.contains("\"initialize\"") {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "initialize-1",
+                            "result": {
+                                "protocolVersion": MCP_PROTOCOL_VERSION,
+                                "capabilities": {},
+                                "serverInfo": {"name": "fake", "version": "test"}
+                            }
+                        })
+                    } else if request.contains("\"tools/list\"") {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "tools-list-1",
+                            "result": {
+                                "tools": [{
+                                    "name": "get_me",
+                                    "description": "Get authenticated user",
+                                    "inputSchema": {"type": "object", "properties": {}}
+                                }]
+                            }
+                        })
+                    } else if request.contains("\"tools/call\"") && authorized {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "call-1",
+                            "result": {
+                                "content": [{"type": "text", "text": "tenant-authenticated"}]
+                            }
+                        })
+                    } else if request.contains("\"tools/call\"") {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "call-1",
+                            "error": {"code": -32001, "message": "unauthorized"}
+                        })
+                    } else {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "unknown",
+                            "error": {"code": -32601, "message": "unknown method"}
+                        })
+                    };
+                    let payload = body.to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nmcp-session-id: test-session\r\nconnection: close\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (format!("http://{addr}/mcp"), handle)
+    }
+
     #[tokio::test]
     async fn add_connect_disconnect_non_stdio_server() {
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
@@ -527,9 +606,10 @@ mod tests {
     #[test]
     fn store_secret_ref_requires_matching_tenant_context() {
         let secret_id = "mcp_header::tenant::authorization".to_string();
-        tandem_core::set_provider_auth(&secret_id, "tenant-secret").expect("store secret");
 
         let current_tenant = TenantContext::explicit("tenant", "workspace", None);
+        tandem_core::set_provider_auth_for_tenant(&current_tenant, &secret_id, "tenant-secret")
+            .expect("store secret");
         let matching_ref = McpSecretRef::Store {
             secret_id: secret_id.clone(),
             tenant_context: current_tenant.clone(),
@@ -545,6 +625,123 @@ mod tests {
             "tenant mismatch should block secret lookup"
         );
 
-        let _ = tandem_core::delete_provider_auth(&secret_id);
+        let _ = tandem_core::delete_provider_auth_for_tenant(&current_tenant, &secret_id);
+    }
+
+    #[test]
+    fn env_secret_refs_are_local_only() {
+        std::env::set_var("TANDEM_TEST_MCP_SECRET", "env-secret");
+        let secret_ref = McpSecretRef::Env {
+            env: "TANDEM_TEST_MCP_SECRET".to_string(),
+        };
+
+        assert_eq!(
+            resolve_secret_ref_value(&secret_ref, &TenantContext::local_implicit()).as_deref(),
+            Some("env-secret")
+        );
+        assert!(
+            resolve_secret_ref_value(
+                &secret_ref,
+                &TenantContext::explicit("tenant", "workspace", None)
+            )
+            .is_none(),
+            "explicit hosted tenants must not resolve process env-backed MCP secrets"
+        );
+        std::env::remove_var("TANDEM_TEST_MCP_SECRET");
+    }
+
+    #[test]
+    fn explicit_tenant_mcp_secret_headers_are_not_cached_globally() {
+        let current_tenant = TenantContext::explicit("tenant", "workspace", None);
+        let (headers, secret_headers, secret_values) = split_headers_for_storage(
+            "tenant-server",
+            HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer tenant-secret".to_string(),
+            )]),
+            HashMap::new(),
+            &current_tenant,
+        );
+
+        assert!(headers.is_empty());
+        assert!(secret_headers.contains_key("Authorization"));
+        assert!(
+            secret_values.is_empty(),
+            "explicit hosted MCP secrets must not be cached in shared server rows"
+        );
+
+        let _ = tandem_core::delete_provider_auth_for_tenant(
+            &current_tenant,
+            "mcp_header::tenant-server::authorization",
+        );
+    }
+
+    #[tokio::test]
+    async fn call_tool_for_tenant_resolves_matching_tenant_store_secret() {
+        let (endpoint, server) =
+            spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
+        registry
+            .add_or_update_with_secret_refs(
+                "tenant-server".to_string(),
+                endpoint,
+                HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer tenant-a-secret".to_string(),
+                )]),
+                HashMap::new(),
+                &tenant_a,
+                true,
+            )
+            .await;
+
+        assert!(registry.connect("tenant-server").await);
+        let result = registry
+            .call_tool_for_tenant("tenant-server", "get_me", json!({}), &tenant_a)
+            .await
+            .expect("tenant A should execute with tenant A secret");
+        assert!(result.output.contains("tenant-authenticated"));
+        server.abort();
+        let _ = tandem_core::delete_provider_auth_for_tenant(
+            &tenant_a,
+            "mcp_header::tenant-server::authorization",
+        );
+    }
+
+    #[tokio::test]
+    async fn call_tool_for_tenant_rejects_mismatched_tenant_store_secret() {
+        let (endpoint, server) =
+            spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
+        let tenant_b = TenantContext::explicit("tenant-b", "workspace-b", None);
+        registry
+            .add_or_update_with_secret_refs(
+                "tenant-server".to_string(),
+                endpoint,
+                HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer tenant-a-secret".to_string(),
+                )]),
+                HashMap::new(),
+                &tenant_a,
+                true,
+            )
+            .await;
+
+        assert!(registry.connect("tenant-server").await);
+        let err = registry
+            .call_tool_for_tenant("tenant-server", "get_me", json!({}), &tenant_b)
+            .await
+            .expect_err("tenant B must not execute with tenant A secret");
+        assert!(err.contains("unauthorized"));
+        server.abort();
+        let _ = tandem_core::delete_provider_auth_for_tenant(
+            &tenant_a,
+            "mcp_header::tenant-server::authorization",
+        );
     }
 }

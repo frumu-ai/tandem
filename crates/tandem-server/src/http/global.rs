@@ -432,13 +432,18 @@ pub(super) struct ToolExecutionInput {
 
 pub(super) async fn execute_tool(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Json(input): Json<ToolExecutionInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let args = input.args.unwrap_or_else(|| json!({}));
-    let result = state.tools.execute(&input.tool, args).await.map_err(|e| {
-        tracing::error!("Tool execution failed: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let result = state
+        .tools
+        .execute_for_tenant(&input.tool, args, tenant_context)
+        .await
+        .map_err(|e| {
+            tracing::error!("Tool execution failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(Json(json!({
         "output": result.output,
         "metadata": result.metadata

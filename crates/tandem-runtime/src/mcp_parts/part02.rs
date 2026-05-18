@@ -17,17 +17,21 @@ fn resolve_secret_ref_value(
             if secret_ref.validate_for_tenant(current_tenant).is_err() {
                 return None;
             }
-            tandem_core::load_provider_auth()
+            tandem_core::load_provider_auth_for_tenant(current_tenant)
                 .get(&secret_id.trim().to_ascii_lowercase())
                 .cloned()
                 .filter(|value| !value.trim().is_empty())
         }
-        McpSecretRef::Env { env } => std::env::var(env)
-            .ok()
+        McpSecretRef::Env { env } => current_tenant
+            .is_local_implicit()
+            .then(|| std::env::var(env).ok())
+            .flatten()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        McpSecretRef::BearerEnv { env } => std::env::var(env)
-            .ok()
+        McpSecretRef::BearerEnv { env } => current_tenant
+            .is_local_implicit()
+            .then(|| std::env::var(env).ok())
+            .flatten()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(|value| format!("Bearer {value}")),

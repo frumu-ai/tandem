@@ -214,8 +214,15 @@ impl McpRegistry {
         headers: HashMap<String, String>,
         enabled: bool,
     ) {
-        self.add_or_update_with_secret_refs(name, transport, headers, HashMap::new(), enabled)
-            .await;
+        self.add_or_update_with_secret_refs(
+            name,
+            transport,
+            headers,
+            HashMap::new(),
+            &local_tenant_context(),
+            enabled,
+        )
+        .await;
     }
 
     pub async fn add_or_update_with_secret_refs(
@@ -224,12 +231,12 @@ impl McpRegistry {
         transport: String,
         headers: HashMap<String, String>,
         secret_headers: HashMap<String, McpSecretRef>,
+        current_tenant: &TenantContext,
         enabled: bool,
     ) {
         let normalized_name = name.trim().to_string();
-        let tenant_context = local_tenant_context();
         let (persisted_headers, persisted_secret_headers, secret_header_values) =
-            split_headers_for_storage(&normalized_name, headers, secret_headers, &tenant_context);
+            split_headers_for_storage(&normalized_name, headers, secret_headers, current_tenant);
         let mut servers = self.servers.write().await;
         let existing = servers.get(&normalized_name).cloned();
         let preserve_cache = existing.as_ref().is_some_and(|row| {
@@ -759,6 +766,17 @@ impl McpRegistry {
         tool_name: &str,
         args: Value,
     ) -> Result<ToolResult, String> {
+        self.call_tool_for_tenant(server_name, tool_name, args, &local_tenant_context())
+            .await
+    }
+
+    pub async fn call_tool_for_tenant(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        args: Value,
+        current_tenant: &TenantContext,
+    ) -> Result<ToolResult, String> {
         // Single readiness gate (Invariant 2 of `docs/SPINE.md`): one
         // attempt, no backoff — same shape as the previous inline check.
         let server = match self
@@ -813,6 +831,7 @@ impl McpRegistry {
             });
         }
         let normalized_args = normalize_mcp_tool_args(&server, tool_name, args);
+        let request_headers = effective_headers_for_tenant(&server, current_tenant);
 
         {
             let mut servers = self.servers.write().await;
@@ -834,7 +853,7 @@ impl McpRegistry {
         });
         let (response, session_id) = match post_json_rpc_with_session(
             &endpoint,
-            &effective_headers(&server),
+            &request_headers,
             request.clone(),
             server.mcp_session_id.as_deref(),
         )
@@ -854,9 +873,11 @@ impl McpRegistry {
                             .cloned()
                             .ok_or_else(|| format!("MCP server '{server_name}' not found"))?
                     };
+                    let refreshed_headers =
+                        effective_headers_for_tenant(&refreshed_server, current_tenant);
                     post_json_rpc_with_session(
                         &endpoint,
-                        &effective_headers(&refreshed_server),
+                        &refreshed_headers,
                         request,
                         refreshed_server.mcp_session_id.as_deref(),
                     )
@@ -1252,8 +1273,11 @@ fn migrate_server_headers(
 ) {
     let original_effective = effective_headers(server);
     let mut persisted_secret_headers = server.secret_headers.clone();
-    let mut secret_header_values =
-        resolve_secret_header_values(&persisted_secret_headers, current_tenant);
+    let mut secret_header_values = if current_tenant.is_local_implicit() {
+        resolve_secret_header_values(&persisted_secret_headers, current_tenant)
+    } else {
+        HashMap::new()
+    };
     let mut persisted_headers = server.headers.clone();
     let mut migrated = false;
 
@@ -1270,7 +1294,7 @@ fn migrate_server_headers(
             let resolved =
                 resolve_secret_ref_value(&secret_ref, current_tenant).unwrap_or_default();
             persisted_secret_headers.insert(header_name.clone(), secret_ref);
-            if !resolved.is_empty() {
+            if current_tenant.is_local_implicit() && !resolved.is_empty() {
                 secret_header_values.insert(header_name.clone(), resolved);
             }
             migrated = true;
@@ -1278,7 +1302,8 @@ fn migrate_server_headers(
         }
         if header_name_is_sensitive(&header_name) && !value.trim().is_empty() {
             let secret_id = mcp_header_secret_id(server_name, &header_name);
-            if tandem_core::set_provider_auth(&secret_id, &value).is_ok() {
+            if tandem_core::set_provider_auth_for_tenant(current_tenant, &secret_id, &value).is_ok()
+            {
                 persisted_headers.remove(&header_name);
                 persisted_secret_headers.insert(
                     header_name.clone(),
@@ -1287,7 +1312,9 @@ fn migrate_server_headers(
                         tenant_context: current_tenant.clone(),
                     },
                 );
-                secret_header_values.insert(header_name.clone(), value);
+                if current_tenant.is_local_implicit() {
+                    secret_header_values.insert(header_name.clone(), value);
+                }
                 migrated = true;
             }
         }
@@ -1326,15 +1353,18 @@ fn split_headers_for_storage(
             continue;
         }
         if let Some(secret_ref) = parse_secret_header_reference(&value) {
-            if let Some(resolved) = resolve_secret_ref_value(&secret_ref, current_tenant) {
-                secret_header_values.insert(header_name.clone(), resolved);
+            if current_tenant.is_local_implicit() {
+                if let Some(resolved) = resolve_secret_ref_value(&secret_ref, current_tenant) {
+                    secret_header_values.insert(header_name.clone(), resolved);
+                }
             }
             persisted_secret_headers.insert(header_name, secret_ref);
             continue;
         }
         if header_name_is_sensitive(&header_name) {
             let secret_id = mcp_header_secret_id(server_name, &header_name);
-            if tandem_core::set_provider_auth(&secret_id, &value).is_ok() {
+            if tandem_core::set_provider_auth_for_tenant(current_tenant, &secret_id, &value).is_ok()
+            {
                 persisted_secret_headers.insert(
                     header_name.clone(),
                     McpSecretRef::Store {
@@ -1342,7 +1372,9 @@ fn split_headers_for_storage(
                         tenant_context: current_tenant.clone(),
                     },
                 );
-                secret_header_values.insert(header_name, value);
+                if current_tenant.is_local_implicit() {
+                    secret_header_values.insert(header_name, value);
+                }
                 continue;
             }
         }
@@ -1350,8 +1382,10 @@ fn split_headers_for_storage(
     }
 
     for (header_name, secret_ref) in explicit_secret_headers {
-        if let Some(resolved) = resolve_secret_ref_value(&secret_ref, current_tenant) {
-            secret_header_values.insert(header_name.clone(), resolved);
+        if current_tenant.is_local_implicit() {
+            if let Some(resolved) = resolve_secret_ref_value(&secret_ref, current_tenant) {
+                secret_header_values.insert(header_name.clone(), resolved);
+            }
         }
         persisted_headers.remove(&header_name);
         persisted_secret_headers.insert(header_name, secret_ref);
@@ -1379,6 +1413,19 @@ fn combine_headers(
 
 fn effective_headers(server: &McpServer) -> HashMap<String, String> {
     combine_headers(&server.headers, &server.secret_header_values)
+}
+
+fn effective_headers_for_tenant(
+    server: &McpServer,
+    current_tenant: &TenantContext,
+) -> HashMap<String, String> {
+    if current_tenant.is_local_implicit() {
+        return effective_headers(server);
+    }
+    combine_headers(
+        &server.headers,
+        &resolve_secret_header_values(&server.secret_headers, current_tenant),
+    )
 }
 
 fn redacted_server_view(server: &McpServer) -> McpServer {
@@ -1441,7 +1488,7 @@ fn delete_secret_header_refs(
             if tenant_context != current_tenant {
                 continue;
             }
-            let _ = tandem_core::delete_provider_auth(secret_id);
+            let _ = tandem_core::delete_provider_auth_for_tenant(current_tenant, secret_id);
         }
     }
 }
@@ -1456,7 +1503,7 @@ fn delete_oauth_secret_ref(oauth: Option<&McpOAuthConfig>, current_tenant: &Tena
     } = secret_ref
     {
         if tenant_context == current_tenant {
-            let _ = tandem_core::delete_provider_auth(secret_id);
+            let _ = tandem_core::delete_provider_auth_for_tenant(current_tenant, secret_id);
         }
     }
 }

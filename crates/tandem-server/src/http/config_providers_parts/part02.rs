@@ -1,4 +1,3 @@
-
 fn stop_openai_codex_local_callback_server() {
     if let Ok(mut guard) = openai_codex_local_callback_shutdown_slot().lock() {
         if let Some(tx) = guard.take() {
@@ -184,14 +183,22 @@ async fn exchange_openai_codex_api_key(id_token: &str) -> anyhow::Result<String>
     Ok(serde_json::from_str::<OpenAiCodexApiKeyExchangeResponse>(&text)?.access_token)
 }
 
-async fn refresh_openai_codex_oauth_if_needed(state: &AppState) -> anyhow::Result<()> {
-    let Some(mut credential) =
-        tandem_core::load_provider_oauth_credential(OPENAI_CODEX_PROVIDER_ID)
-    else {
+async fn refresh_openai_codex_oauth_if_needed(
+    state: &AppState,
+    tenant_context: &TenantContext,
+) -> anyhow::Result<()> {
+    let Some(mut credential) = tandem_core::load_provider_oauth_credential_for_tenant(
+        tenant_context,
+        OPENAI_CODEX_PROVIDER_ID,
+    ) else {
         return Ok(());
     };
     if credential.managed_by != "tandem" {
-        return refresh_openai_codex_cli_oauth_if_needed(state).await;
+        return if tenant_context.is_local_implicit() {
+            refresh_openai_codex_cli_oauth_if_needed(state).await
+        } else {
+            Ok(())
+        };
     }
     let now = crate::now_ms();
     if credential.expires_at_ms > now.saturating_add(OPENAI_CODEX_OAUTH_REFRESH_SKEW_MS) {
@@ -230,19 +237,27 @@ async fn refresh_openai_codex_oauth_if_needed(state: &AppState) -> anyhow::Resul
     if let Some(id_token) = id_token {
         if let Ok(api_key) = exchange_openai_codex_api_key(id_token).await {
             credential.api_key = Some(api_key.clone());
-            state
-                .auth
-                .write()
-                .await
-                .insert(OPENAI_CODEX_PROVIDER_ID.to_string(), api_key);
+            if tenant_context.is_local_implicit() {
+                state
+                    .auth
+                    .write()
+                    .await
+                    .insert(OPENAI_CODEX_PROVIDER_ID.to_string(), api_key);
+            }
         }
     }
-    let _ = tandem_core::set_provider_oauth_credential(OPENAI_CODEX_PROVIDER_ID, credential)?;
-    ensure_openai_codex_runtime_provider(state).await;
-    state
-        .providers
-        .reload(state.config.get().await.into())
-        .await;
+    let _ = tandem_core::set_provider_oauth_credential_for_tenant(
+        tenant_context,
+        OPENAI_CODEX_PROVIDER_ID,
+        credential,
+    )?;
+    if tenant_context.is_local_implicit() {
+        ensure_openai_codex_runtime_provider(state).await;
+        state
+            .providers
+            .reload(state.config.get().await.into())
+            .await;
+    }
     Ok(())
 }
 
@@ -426,7 +441,9 @@ async fn finish_provider_oauth_callback(
         api_key: api_key.clone(),
     };
 
-    let backend = match tandem_core::set_provider_oauth_credential(
+    let tenant_context = session.tenant_context.clone();
+    let backend = match tandem_core::set_provider_oauth_credential_for_tenant(
+        &tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
         oauth_credential,
     ) {
@@ -435,18 +452,20 @@ async fn finish_provider_oauth_callback(
         Err(error) => return json!({"ok": false, "error": error.to_string()}),
     };
 
-    ensure_openai_codex_runtime_provider(&state).await;
-    if let Some(api_key) = api_key {
+    if tenant_context.is_local_implicit() {
+        ensure_openai_codex_runtime_provider(&state).await;
+        if let Some(api_key) = api_key {
+            state
+                .auth
+                .write()
+                .await
+                .insert(OPENAI_CODEX_PROVIDER_ID.to_string(), api_key);
+        }
         state
-            .auth
-            .write()
-            .await
-            .insert(OPENAI_CODEX_PROVIDER_ID.to_string(), api_key);
+            .providers
+            .reload(state.config.get().await.into())
+            .await;
     }
-    state
-        .providers
-        .reload(state.config.get().await.into())
-        .await;
 
     if let Some(entry) = state
         .provider_oauth_sessions
@@ -462,8 +481,8 @@ async fn finish_provider_oauth_callback(
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "provider.oauth.updated",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        tenant_context.actor_id.clone(),
         json!({
             "providerID": OPENAI_CODEX_PROVIDER_ID,
             "backend": backend,

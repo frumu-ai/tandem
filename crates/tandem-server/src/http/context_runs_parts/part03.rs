@@ -543,7 +543,7 @@ pub(crate) async fn sync_workflow_run_blackboard(
         let context_run = ContextRunState {
             run_id: run_id.clone(),
             run_type: "workflow".to_string(),
-            tenant_context: TenantContext::local_implicit(),
+            tenant_context: run.tenant_context.clone(),
             source_client: Some("workflow_runtime".to_string()),
             model_provider: None,
             model_id: None,

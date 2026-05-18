@@ -10,7 +10,8 @@ use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
 use tandem_tools::{validate_tool_schemas, ToolRegistry};
 use tandem_types::{
     ContextMode, EngineEvent, HostRuntimeContext, Message, MessagePart, MessagePartInput,
-    MessageRole, ModelSpec, SendMessageRequest, SharedToolProgressSink, ToolMode, ToolSchema,
+    MessageRole, ModelSpec, SendMessageRequest, SharedToolProgressSink, TenantContext, ToolMode,
+    ToolSchema,
 };
 use tandem_wire::WireMessagePart;
 use tokio_util::sync::CancellationToken;
@@ -1159,7 +1160,7 @@ impl EngineLoop {
             }
         }
         let result = match self
-            .execute_tool_with_timeout(&tool, args, cancel.clone(), Some(progress_sink))
+            .execute_tool_with_timeout(session_id, &tool, args, cancel.clone(), Some(progress_sink))
             .await
         {
             Ok(result) => result,

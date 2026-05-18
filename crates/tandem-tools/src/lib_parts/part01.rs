@@ -33,12 +33,21 @@ use tandem_agent_teams::{
 };
 use tandem_memory::types::{MemorySearchResult, MemoryTier};
 use tandem_memory::MemoryManager;
-use tandem_types::{SharedToolProgressSink, ToolProgressEvent, ToolResult, ToolSchema};
+use tandem_types::{
+    SharedToolProgressSink, TenantContext, ToolProgressEvent, ToolResult, ToolSchema,
+};
 
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn schema(&self) -> ToolSchema;
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult>;
+    async fn execute_for_tenant(
+        &self,
+        args: Value,
+        _tenant_context: TenantContext,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute(args).await
+    }
     async fn execute_with_cancel(
         &self,
         args: Value,
@@ -54,6 +63,17 @@ pub trait Tool: Send + Sync {
     ) -> anyhow::Result<ToolResult> {
         let _ = progress;
         self.execute_with_cancel(args, cancel).await
+    }
+    async fn execute_with_progress_for_tenant(
+        &self,
+        args: Value,
+        tenant_context: TenantContext,
+        cancel: CancellationToken,
+        progress: Option<SharedToolProgressSink>,
+    ) -> anyhow::Result<ToolResult> {
+        let _ = cancel;
+        let _ = progress;
+        self.execute_for_tenant(args, tenant_context).await
     }
 }
 
@@ -276,6 +296,16 @@ impl ToolRegistry {
     }
 
     pub async fn execute(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
+        self.execute_for_tenant(name, args, TenantContext::local_implicit())
+            .await
+    }
+
+    pub async fn execute_for_tenant(
+        &self,
+        name: &str,
+        args: Value,
+        tenant_context: TenantContext,
+    ) -> anyhow::Result<ToolResult> {
         let tool = {
             let tools = self.tools.read().await;
             resolve_registered_tool(&tools, name)
@@ -286,7 +316,7 @@ impl ToolRegistry {
                 metadata: json!({}),
             });
         };
-        tool.execute(args).await
+        tool.execute_for_tenant(args, tenant_context).await
     }
 
     pub async fn execute_with_cancel(
@@ -306,6 +336,24 @@ impl ToolRegistry {
         cancel: CancellationToken,
         progress: Option<SharedToolProgressSink>,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_with_cancel_and_progress_for_tenant(
+            name,
+            args,
+            TenantContext::local_implicit(),
+            cancel,
+            progress,
+        )
+        .await
+    }
+
+    pub async fn execute_with_cancel_and_progress_for_tenant(
+        &self,
+        name: &str,
+        args: Value,
+        tenant_context: TenantContext,
+        cancel: CancellationToken,
+        progress: Option<SharedToolProgressSink>,
+    ) -> anyhow::Result<ToolResult> {
         let tool = {
             let tools = self.tools.read().await;
             resolve_registered_tool(&tools, name)
@@ -316,7 +364,8 @@ impl ToolRegistry {
                 metadata: json!({}),
             });
         };
-        tool.execute_with_progress(args, cancel, progress).await
+        tool.execute_with_progress_for_tenant(args, tenant_context, cancel, progress)
+            .await
     }
 }
 

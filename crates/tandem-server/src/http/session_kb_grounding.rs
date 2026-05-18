@@ -5,7 +5,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_providers::{ChatMessage, StreamChunk};
-use tandem_types::{MessagePart, MessageRole, ModelSpec, ToolMode};
+use tandem_types::{MessagePart, MessageRole, ModelSpec, TenantContext, ToolMode};
 use tokio_util::sync::CancellationToken;
 
 use super::{sessions::truncate_text, AppState};
@@ -80,7 +80,13 @@ pub(super) async fn apply_strict_kb_grounding_after_run(
     if user_text.trim().is_empty() {
         return Ok(None);
     }
-    let evidence_bundle = collect_kb_evidence(state, &session.messages[user_idx], policy).await;
+    let evidence_bundle = collect_kb_evidence(
+        state,
+        &session.messages[user_idx],
+        policy,
+        &session.tenant_context,
+    )
+    .await;
     let evidence = evidence_bundle.items;
     let (support, mut answer_text, mut sources) = if evidence.is_empty() {
         (
@@ -295,12 +301,13 @@ async fn collect_kb_evidence(
     state: &AppState,
     message: &tandem_types::Message,
     policy: &tandem_core::KnowledgebaseGroundingPolicy,
+    tenant_context: &TenantContext,
 ) -> KbEvidenceBundle {
     let mut bundle = KbEvidenceBundle::default();
     let document_refs = collect_kb_document_refs(message, policy);
     bundle.document_refs_found = !document_refs.is_empty();
     for document_ref in document_refs.iter().take(MAX_FULL_DOCUMENT_FETCHES) {
-        match fetch_kb_full_document(state, document_ref).await {
+        match fetch_kb_full_document(state, document_ref, tenant_context).await {
             Some(items) if !items.is_empty() => {
                 bundle.full_documents_fetched += 1;
                 for item in items {
@@ -451,6 +458,7 @@ fn looks_like_non_evidence_output(output: &str) -> bool {
 async fn fetch_kb_full_document(
     state: &AppState,
     document_ref: &KbDocumentRef,
+    tenant_context: &TenantContext,
 ) -> Option<Vec<KbEvidenceItem>> {
     let mut args = json!({ "doc_id": document_ref.doc_id });
     if let Some(collection_id) = document_ref
@@ -466,7 +474,7 @@ async fn fetch_kb_full_document(
     for server_name in mcp_server_name_candidates(&document_ref.server_name) {
         match state
             .mcp
-            .call_tool(&server_name, "get_document", args.clone())
+            .call_tool_for_tenant(&server_name, "get_document", args.clone(), tenant_context)
             .await
         {
             Ok(value) => {

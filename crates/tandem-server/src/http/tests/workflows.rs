@@ -234,6 +234,10 @@ async fn workflows_list_validate_and_manual_run() {
         .expect("run body");
     let run_payload: Value = serde_json::from_slice(&run_body).expect("run json");
     assert_eq!(run_payload["run"]["status"].as_str(), Some("completed"));
+    let workflow_run_id = run_payload["run"]["run_id"]
+        .as_str()
+        .expect("workflow run id")
+        .to_string();
     assert_eq!(
         run_payload["run"]["tenant_context"]["org_id"].as_str(),
         Some("acme")
@@ -282,6 +286,9 @@ async fn workflows_list_validate_and_manual_run() {
                 .uri(format!(
                     "/context/runs/{workflow_context_run_id}/blackboard"
                 ))
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "north")
+                .header("x-user-id", "user-1")
                 .body(Body::empty())
                 .expect("blackboard request"),
         )
@@ -314,6 +321,76 @@ async fn workflows_list_validate_and_manual_run() {
         executor_calls.lock().await[0]["stage"].as_str(),
         Some("executor")
     );
+
+    let runs_acme_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/workflows/runs")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "north")
+                .header("x-user-id", "user-1")
+                .body(Body::empty())
+                .expect("tenant acme runs request"),
+        )
+        .await
+        .expect("tenant acme runs response");
+    assert_eq!(runs_acme_resp.status(), StatusCode::OK);
+    let runs_acme_body = to_bytes(runs_acme_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant acme runs body");
+    let runs_acme_payload: Value =
+        serde_json::from_slice(&runs_acme_body).expect("tenant acme runs json");
+    assert_eq!(
+        runs_acme_payload
+            .get("count")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+
+    let runs_beta_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/workflows/runs")
+                .header("x-tandem-org-id", "beta")
+                .header("x-tandem-workspace-id", "south")
+                .header("x-user-id", "user-2")
+                .body(Body::empty())
+                .expect("tenant beta runs request"),
+        )
+        .await
+        .expect("tenant beta runs response");
+    assert_eq!(runs_beta_resp.status(), StatusCode::OK);
+    let runs_beta_body = to_bytes(runs_beta_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant beta runs body");
+    let runs_beta_payload: Value =
+        serde_json::from_slice(&runs_beta_body).expect("tenant beta runs json");
+    assert_eq!(
+        runs_beta_payload
+            .get("count")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+
+    let get_beta_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/workflows/runs/{workflow_run_id}"))
+                .header("x-tandem-org-id", "beta")
+                .header("x-tandem-workspace-id", "south")
+                .header("x-user-id", "user-2")
+                .body(Body::empty())
+                .expect("tenant beta get run request"),
+        )
+        .await
+        .expect("tenant beta get run response");
+    assert_eq!(get_beta_resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

@@ -17,6 +17,40 @@ fn is_slug_like(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-')
 }
 
+const TENANT_SCOPED_SHARED_RESOURCE_PREFIX: &str = "__tenant__::";
+
+fn tenant_scope_component(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn tenant_scoped_shared_resource_key(key: &str, tenant_context: &TenantContext) -> String {
+    if tenant_context.is_local_implicit() {
+        return key.to_string();
+    }
+    let deployment = tenant_context.deployment_id.as_deref().unwrap_or("");
+    format!(
+        "{}{}::{}::{}::{}",
+        TENANT_SCOPED_SHARED_RESOURCE_PREFIX,
+        tenant_scope_component(&tenant_context.org_id),
+        tenant_scope_component(&tenant_context.workspace_id),
+        tenant_scope_component(deployment),
+        key
+    )
+}
+
+fn shared_resource_tenant_matches(
+    record: &SharedResourceRecord,
+    tenant_context: &TenantContext,
+) -> bool {
+    record.tenant_context.org_id == tenant_context.org_id
+        && record.tenant_context.workspace_id == tenant_context.workspace_id
+        && record.tenant_context.deployment_id == tenant_context.deployment_id
+}
+
 /// Validate that a file has secure permissions (readable only by owner).
 /// SECURITY: Prevents world-readable secrets in state files.
 /// Logs a warning if permissions are too permissive but does not fail.
@@ -632,6 +666,17 @@ impl AppState {
         self.shared_resources.read().await.get(key).cloned()
     }
 
+    pub async fn get_shared_resource_for_tenant(
+        &self,
+        key: &str,
+        tenant_context: &TenantContext,
+    ) -> Option<SharedResourceRecord> {
+        let storage_key = tenant_scoped_shared_resource_key(key, tenant_context);
+        self.get_shared_resource(&storage_key)
+            .await
+            .filter(|record| shared_resource_tenant_matches(record, tenant_context))
+    }
+
     pub async fn list_shared_resources(
         &self,
         prefix: Option<&str>,
@@ -643,6 +688,34 @@ impl AppState {
             .read()
             .await
             .values()
+            .filter(|record| record.tenant_context.is_local_implicit())
+            .filter(|record| {
+                if let Some(prefix) = prefix {
+                    record.key.starts_with(prefix)
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.key.cmp(&b.key));
+        rows.truncate(limit);
+        rows
+    }
+
+    pub async fn list_shared_resources_for_tenant(
+        &self,
+        prefix: Option<&str>,
+        limit: usize,
+        tenant_context: &TenantContext,
+    ) -> Vec<SharedResourceRecord> {
+        let limit = limit.clamp(1, 500);
+        let mut rows = self
+            .shared_resources
+            .read()
+            .await
+            .values()
+            .filter(|record| shared_resource_tenant_matches(record, tenant_context))
             .filter(|record| {
                 if let Some(prefix) = prefix {
                     record.key.starts_with(prefix)
@@ -665,19 +738,41 @@ impl AppState {
         updated_by: String,
         ttl_ms: Option<u64>,
     ) -> Result<SharedResourceRecord, ResourceStoreError> {
+        self.put_shared_resource_for_tenant(
+            key,
+            value,
+            if_match_rev,
+            updated_by,
+            ttl_ms,
+            &TenantContext::local_implicit(),
+        )
+        .await
+    }
+
+    pub async fn put_shared_resource_for_tenant(
+        &self,
+        key: String,
+        value: Value,
+        if_match_rev: Option<u64>,
+        updated_by: String,
+        ttl_ms: Option<u64>,
+        tenant_context: &TenantContext,
+    ) -> Result<SharedResourceRecord, ResourceStoreError> {
         if !is_valid_resource_key(&key) {
             return Err(ResourceStoreError::InvalidKey { key });
         }
 
+        let public_key = key;
+        let storage_key = tenant_scoped_shared_resource_key(&public_key, tenant_context);
         let now = now_ms();
         let mut guard = self.shared_resources.write().await;
-        let existing = guard.get(&key).cloned();
+        let existing = guard.get(&storage_key).cloned();
 
         if let Some(expected) = if_match_rev {
             let current = existing.as_ref().map(|row| row.rev);
             if current != Some(expected) {
                 return Err(ResourceStoreError::RevisionConflict(ResourceConflict {
-                    key,
+                    key: public_key,
                     expected_rev: Some(expected),
                     current_rev: current,
                 }));
@@ -690,23 +785,24 @@ impl AppState {
             .unwrap_or(1);
 
         let record = SharedResourceRecord {
-            key: key.clone(),
+            key: public_key,
             value,
             rev: next_rev,
             updated_at_ms: now,
             updated_by,
+            tenant_context: tenant_context.clone(),
             ttl_ms,
         };
 
-        let previous = guard.insert(key.clone(), record.clone());
+        let previous = guard.insert(storage_key.clone(), record.clone());
         drop(guard);
 
         if let Err(error) = self.persist_shared_resources().await {
             let mut rollback = self.shared_resources.write().await;
             if let Some(previous) = previous {
-                rollback.insert(key, previous);
+                rollback.insert(storage_key, previous);
             } else {
-                rollback.remove(&key);
+                rollback.remove(&storage_key);
             }
             return Err(ResourceStoreError::PersistFailed {
                 message: error.to_string(),
@@ -721,26 +817,41 @@ impl AppState {
         key: &str,
         if_match_rev: Option<u64>,
     ) -> Result<Option<SharedResourceRecord>, ResourceStoreError> {
+        self.delete_shared_resource_for_tenant(key, if_match_rev, &TenantContext::local_implicit())
+            .await
+    }
+
+    pub async fn delete_shared_resource_for_tenant(
+        &self,
+        key: &str,
+        if_match_rev: Option<u64>,
+        tenant_context: &TenantContext,
+    ) -> Result<Option<SharedResourceRecord>, ResourceStoreError> {
         if !is_valid_resource_key(key) {
             return Err(ResourceStoreError::InvalidKey {
                 key: key.to_string(),
             });
         }
 
+        let storage_key = tenant_scoped_shared_resource_key(key, tenant_context);
         let mut guard = self.shared_resources.write().await;
-        let current = guard.get(key).cloned();
+        let current = guard.get(&storage_key).cloned();
+        let Some(current) =
+            current.filter(|record| shared_resource_tenant_matches(record, tenant_context))
+        else {
+            return Ok(None);
+        };
         if let Some(expected) = if_match_rev {
-            let current_rev = current.as_ref().map(|row| row.rev);
-            if current_rev != Some(expected) {
+            if current.rev != expected {
                 return Err(ResourceStoreError::RevisionConflict(ResourceConflict {
                     key: key.to_string(),
                     expected_rev: Some(expected),
-                    current_rev,
+                    current_rev: Some(current.rev),
                 }));
             }
         }
 
-        let removed = guard.remove(key);
+        let removed = guard.remove(&storage_key);
         drop(guard);
 
         if let Err(error) = self.persist_shared_resources().await {
@@ -748,7 +859,7 @@ impl AppState {
                 self.shared_resources
                     .write()
                     .await
-                    .insert(record.key.clone(), record);
+                    .insert(storage_key, record);
             }
             return Err(ResourceStoreError::PersistFailed {
                 message: error.to_string(),

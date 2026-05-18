@@ -12,7 +12,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::{execute_workflow, simulate_workflow_event};
-use tandem_types::EngineEvent;
+use tandem_types::{EngineEvent, TenantContext};
 
 use super::AppState;
 
@@ -164,28 +164,41 @@ pub(super) async fn workflows_run(
 
 pub(super) async fn workflow_runs_list(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<WorkflowRunsQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(50);
-    let runs = state
+    let mut runs = state
         .list_workflow_runs(query.workflow_id.as_deref(), limit)
         .await;
+    runs.retain(|run| super::tenant_matches(&tenant_context, &run.tenant_context));
     Json(json!({ "runs": runs, "count": runs.len() }))
 }
 
 pub(super) async fn workflow_runs_get(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(WorkflowRunPath { id }): Path<WorkflowRunPath>,
 ) -> Result<Json<Value>, StatusCode> {
     let run = state
         .get_workflow_run(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    super::ensure_same_tenant(&tenant_context, &run.tenant_context)?;
     Ok(Json(json!({ "run": run })))
+}
+
+fn workflow_event_tenant_context(event: &EngineEvent) -> TenantContext {
+    event
+        .properties
+        .get("tenantContext")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_else(TenantContext::local_implicit)
 }
 
 pub(super) fn workflow_events_stream(
     state: AppState,
+    tenant_context: TenantContext,
     workflow_id: Option<String>,
     run_id: Option<String>,
 ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
@@ -201,6 +214,9 @@ pub(super) fn workflow_events_stream(
     let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event) => {
             if !event.event_type.starts_with("workflow.") {
+                return None;
+            }
+            if !super::tenant_matches(&tenant_context, &workflow_event_tenant_context(&event)) {
                 return None;
             }
             if let Some(expected) = workflow_id.as_deref() {
@@ -234,10 +250,12 @@ pub(super) fn workflow_events_stream(
 
 pub(super) async fn workflow_events(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<WorkflowEventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     Sse::new(workflow_events_stream(
         state,
+        tenant_context,
         query.workflow_id,
         query.run_id,
     ))

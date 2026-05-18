@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tandem_types::TenantContext;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SharedResourceRecord {
@@ -8,6 +9,8 @@ pub struct SharedResourceRecord {
     pub rev: u64,
     pub updated_at_ms: u64,
     pub updated_by: String,
+    #[serde(default = "TenantContext::local_implicit")]
+    pub tenant_context: TenantContext,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl_ms: Option<u64>,
 }

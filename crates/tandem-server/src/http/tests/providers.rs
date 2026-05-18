@@ -6,9 +6,47 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 fn make_jwt(payload: Value) -> String {
-    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
+    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).expect("payload json"));
     format!("{header}.{payload}.signature")
+}
+
+fn tenant_request(
+    method: &str,
+    uri: &str,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+    body: Option<Value>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("x-tandem-org-id", org_id)
+        .header("x-tandem-workspace-id", workspace_id)
+        .header("x-tandem-actor-id", actor_id);
+    if body.is_some() {
+        builder = builder.header("content-type", "application/json");
+    }
+    builder
+        .body(
+            body.map(|value| Body::from(value.to_string()))
+                .unwrap_or_else(Body::empty),
+        )
+        .expect("tenant request")
+}
+
+async fn json_body(resp: axum::response::Response) -> Value {
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    serde_json::from_slice(&body).expect("json")
+}
+
+fn provider_status<'a>(payload: &'a Value, provider_id: &str) -> &'a Value {
+    payload
+        .get("providers")
+        .and_then(Value::as_object)
+        .and_then(|providers| providers.get(provider_id))
+        .unwrap_or_else(|| panic!("{provider_id} provider auth"))
 }
 
 #[tokio::test]
@@ -99,6 +137,122 @@ async fn provider_auth_set_writes_protected_audit_record() {
         .expect("protected audit file");
     assert!(audit.contains("\"event_type\":\"provider.secret.updated\""));
     assert!(audit.contains("\"providerID\":\"openai\""));
+}
+
+#[tokio::test]
+async fn tenant_a_cannot_list_update_or_delete_tenant_b_provider_api_key() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let put_b = tenant_request(
+        "PUT",
+        "/auth/openai",
+        "org-b",
+        "workspace-b",
+        "user-b",
+        Some(json!({"token": "sk-tenant-b"})),
+    );
+    let resp = app.clone().oneshot(put_b).await.expect("put b");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(resp).await.get("ok").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    assert!(
+        state.auth.read().await.get("openai").is_none(),
+        "explicit tenant provider auth must not populate shared runtime auth"
+    );
+
+    let auth_a = tenant_request(
+        "GET",
+        "/provider/auth",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        None,
+    );
+    let resp = app.clone().oneshot(auth_a).await.expect("auth a");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let payload = json_body(resp).await;
+    assert!(
+        payload
+            .get("providers")
+            .and_then(Value::as_object)
+            .and_then(|providers| providers.get("openai"))
+            .is_none_or(|openai| openai.get("has_key").and_then(Value::as_bool) == Some(false)),
+        "tenant A must not see tenant B provider credential"
+    );
+
+    let auth_b = tenant_request(
+        "GET",
+        "/provider/auth",
+        "org-b",
+        "workspace-b",
+        "user-b",
+        None,
+    );
+    let resp = app.clone().oneshot(auth_b).await.expect("auth b");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let payload = json_body(resp).await;
+    let openai = provider_status(&payload, "openai");
+    assert_eq!(openai.get("has_key").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        openai.get("source").and_then(Value::as_str),
+        Some("persisted")
+    );
+
+    let put_a = tenant_request(
+        "PUT",
+        "/auth/openai",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        Some(json!({"token": "sk-tenant-a"})),
+    );
+    let resp = app.clone().oneshot(put_a).await.expect("put a");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let tenant_a =
+        tandem_types::TenantContext::explicit("org-a", "workspace-a", Some("user-a".to_string()));
+    let tenant_b =
+        tandem_types::TenantContext::explicit("org-b", "workspace-b", Some("user-b".to_string()));
+    assert_eq!(
+        tandem_core::load_provider_auth_for_tenant(&tenant_a)
+            .get("openai")
+            .map(String::as_str),
+        Some("sk-tenant-a")
+    );
+    assert_eq!(
+        tandem_core::load_provider_auth_for_tenant(&tenant_b)
+            .get("openai")
+            .map(String::as_str),
+        Some("sk-tenant-b")
+    );
+
+    let delete_a = tenant_request(
+        "DELETE",
+        "/auth/openai",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        None,
+    );
+    let resp = app.clone().oneshot(delete_a).await.expect("delete a");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        tandem_core::load_provider_auth_for_tenant(&tenant_a)
+            .get("openai")
+            .is_none(),
+        "tenant A delete only removes tenant A provider credential"
+    );
+    assert_eq!(
+        tandem_core::load_provider_auth_for_tenant(&tenant_b)
+            .get("openai")
+            .map(String::as_str),
+        Some("sk-tenant-b"),
+        "tenant B provider credential survives tenant A delete"
+    );
 }
 
 #[tokio::test]
@@ -224,6 +378,101 @@ async fn provider_oauth_session_import_persists_codex_auth_and_reports_connected
             .get("local_session_available")
             .and_then(Value::as_bool),
         Some(true)
+    );
+}
+
+#[tokio::test]
+async fn tenant_a_cannot_refresh_or_delete_tenant_b_oauth_credential() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let access_token = make_jwt(json!({
+        "exp": 2_000_000_000,
+        "email": "tenant-b@example.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_user_id": "acct_tenant_b"
+        }
+    }));
+    let auth_json = json!({
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": "refresh-token-tenant-b",
+            "account_id": "acct_tenant_b"
+        }
+    });
+
+    let import_b = tenant_request(
+        "POST",
+        "/provider/openai-codex/oauth/session/import",
+        "org-b",
+        "workspace-b",
+        "user-b",
+        Some(json!({ "auth_json": auth_json.to_string() })),
+    );
+    let resp = app.clone().oneshot(import_b).await.expect("import b");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(resp).await.get("ok").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        state.auth.read().await.get("openai-codex").is_none(),
+        "explicit tenant OAuth import must not populate shared runtime auth"
+    );
+
+    let status_a = tenant_request(
+        "GET",
+        "/provider/openai-codex/oauth/status",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        None,
+    );
+    let resp = app.clone().oneshot(status_a).await.expect("status a");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let payload = json_body(resp).await;
+    assert_eq!(
+        payload.get("status").and_then(Value::as_str),
+        Some("missing")
+    );
+    assert_eq!(
+        payload.get("connected").and_then(Value::as_bool),
+        Some(false)
+    );
+
+    let delete_a = tenant_request(
+        "DELETE",
+        "/provider/openai-codex/oauth/session",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        None,
+    );
+    let resp = app.clone().oneshot(delete_a).await.expect("delete a");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let status_b = tenant_request(
+        "GET",
+        "/provider/openai-codex/oauth/status",
+        "org-b",
+        "workspace-b",
+        "user-b",
+        None,
+    );
+    let resp = app.clone().oneshot(status_b).await.expect("status b");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let payload = json_body(resp).await;
+    assert_eq!(
+        payload.get("status").and_then(Value::as_str),
+        Some("connected")
+    );
+    assert_eq!(
+        payload.get("connected").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        payload.get("email").and_then(Value::as_str),
+        Some("tenant-b@example.com")
     );
 }
 

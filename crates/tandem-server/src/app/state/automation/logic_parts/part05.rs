@@ -343,9 +343,13 @@ pub(crate) async fn try_execute_connector_preflight_node(
     let mut invocation_parts = Vec::new();
     let mut call_rows = Vec::new();
     let mut failed_required = Vec::new();
+    let tenant_context = automation.tenant_context();
     for (index, call) in required_calls.iter().enumerate() {
         let args = call.args.clone().unwrap_or_else(|| json!({}));
-        let result = state.tools.execute(&call.tool, args.clone()).await;
+        let result = state
+            .tools
+            .execute_for_tenant(&call.tool, args.clone(), tenant_context.clone())
+            .await;
         match result {
             Ok(result) => {
                 let result_value = json!({

@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tandem_types::TenantContext;
 
 use crate::resolve_shared_paths;
 
@@ -138,6 +139,64 @@ fn credential_keyring_entry(provider_id: &str) -> Option<keyring::Entry> {
         &provider_credential_account(provider_id),
     )
     .ok()
+}
+
+const TENANT_SCOPED_PROVIDER_PREFIX: &str = "__tenant__::";
+
+fn tenant_scope_component(raw: &str) -> String {
+    raw.as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn tenant_scope_prefix(tenant_context: &TenantContext) -> Option<String> {
+    if tenant_context.is_local_implicit() {
+        return None;
+    }
+    Some(format!(
+        "{TENANT_SCOPED_PROVIDER_PREFIX}{}::{}::{}::",
+        tenant_scope_component(&tenant_context.org_id),
+        tenant_scope_component(&tenant_context.workspace_id),
+        tenant_scope_component(tenant_context.deployment_id.as_deref().unwrap_or_default())
+    ))
+}
+
+fn tenant_scoped_provider_id(tenant_context: &TenantContext, provider_id: &str) -> String {
+    let normalized = normalize_provider_id(provider_id);
+    tenant_scope_prefix(tenant_context)
+        .map(|prefix| format!("{prefix}{normalized}"))
+        .unwrap_or(normalized)
+}
+
+fn strip_tenant_scoped_provider_id(
+    tenant_context: &TenantContext,
+    scoped_provider_id: &str,
+) -> Option<String> {
+    let normalized = normalize_provider_id(scoped_provider_id);
+    match tenant_scope_prefix(tenant_context) {
+        Some(prefix) => normalized
+            .strip_prefix(&prefix)
+            .map(str::to_string)
+            .filter(|id| !id.is_empty()),
+        None => (!normalized.starts_with(TENANT_SCOPED_PROVIDER_PREFIX)).then_some(normalized),
+    }
+}
+
+fn credential_with_provider_id(
+    credential: ProviderCredential,
+    provider_id: String,
+) -> ProviderCredential {
+    match credential {
+        ProviderCredential::ApiKey(mut api) => {
+            api.provider_id = provider_id;
+            ProviderCredential::ApiKey(api)
+        }
+        ProviderCredential::OAuth(mut oauth) => {
+            oauth.provider_id = provider_id;
+            ProviderCredential::OAuth(oauth)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -568,7 +627,12 @@ fn read_codex_cli_auth_file(path: &Path) -> Option<CodexCliAuthFile> {
 }
 
 fn load_codex_cli_oauth_credential_at(path: &Path) -> Option<OAuthProviderCredential> {
-    let auth = read_codex_cli_auth_file(path)?;
+    oauth_credential_from_codex_auth_file(read_codex_cli_auth_file(path)?)
+}
+
+fn oauth_credential_from_codex_auth_file(
+    auth: CodexCliAuthFile,
+) -> Option<OAuthProviderCredential> {
     let auth_mode = auth.auth_mode.as_deref().map(str::trim).unwrap_or("");
     if !auth_mode.is_empty() && auth_mode != "chatgpt" && auth_mode != "oauth" {
         return None;
@@ -609,6 +673,11 @@ fn load_codex_cli_oauth_credential_at(path: &Path) -> Option<OAuthProviderCreden
 
 pub fn load_openai_codex_cli_oauth_credential() -> Option<OAuthProviderCredential> {
     load_codex_cli_oauth_credential_at(&resolve_codex_cli_auth_path())
+}
+
+pub fn oauth_credential_from_codex_auth_json(auth_json: &Value) -> Option<OAuthProviderCredential> {
+    let auth = serde_json::from_value::<CodexCliAuthFile>(auth_json.clone()).ok()?;
+    oauth_credential_from_codex_auth_file(auth)
 }
 
 pub fn write_openai_codex_cli_auth_json(auth_json: &Value) -> anyhow::Result<PathBuf> {
@@ -753,6 +822,33 @@ pub fn delete_provider_auth(provider_id: &str) -> anyhow::Result<bool> {
     Ok(removed)
 }
 
+pub fn load_provider_auth_for_tenant(tenant_context: &TenantContext) -> HashMap<String, String> {
+    load_provider_auth()
+        .into_iter()
+        .filter_map(|(provider_id, token)| {
+            strip_tenant_scoped_provider_id(tenant_context, &provider_id)
+                .map(|stripped| (stripped, token))
+        })
+        .collect()
+}
+
+pub fn set_provider_auth_for_tenant(
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    token: &str,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let scoped_provider_id = tenant_scoped_provider_id(tenant_context, provider_id);
+    set_provider_auth(&scoped_provider_id, token)
+}
+
+pub fn delete_provider_auth_for_tenant(
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> anyhow::Result<bool> {
+    let scoped_provider_id = tenant_scoped_provider_id(tenant_context, provider_id);
+    delete_provider_auth(&scoped_provider_id)
+}
+
 pub fn load_provider_credentials() -> HashMap<String, ProviderCredential> {
     let fallback = load_credential_fallback_map();
     let mut known = load_provider_credentials_index();
@@ -779,8 +875,36 @@ pub fn load_provider_credentials() -> HashMap<String, ProviderCredential> {
     out
 }
 
+pub fn load_provider_credentials_for_tenant(
+    tenant_context: &TenantContext,
+) -> HashMap<String, ProviderCredential> {
+    load_provider_credentials()
+        .into_iter()
+        .filter_map(|(provider_id, credential)| {
+            strip_tenant_scoped_provider_id(tenant_context, &provider_id).map(|stripped| {
+                (
+                    stripped.clone(),
+                    credential_with_provider_id(credential, stripped),
+                )
+            })
+        })
+        .collect()
+}
+
 pub fn load_provider_oauth_credential(provider_id: &str) -> Option<OAuthProviderCredential> {
     match load_provider_credentials().remove(&normalize_provider_id(provider_id)) {
+        Some(ProviderCredential::OAuth(credential)) => Some(credential),
+        Some(ProviderCredential::ApiKey(_)) | None => None,
+    }
+}
+
+pub fn load_provider_oauth_credential_for_tenant(
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> Option<OAuthProviderCredential> {
+    match load_provider_credentials_for_tenant(tenant_context)
+        .remove(&normalize_provider_id(provider_id))
+    {
         Some(ProviderCredential::OAuth(credential)) => Some(credential),
         Some(ProviderCredential::ApiKey(_)) | None => None,
     }
@@ -813,6 +937,15 @@ pub fn set_provider_credential(
     Ok(ProviderAuthBackend::File)
 }
 
+pub fn set_provider_credential_for_tenant(
+    tenant_context: &TenantContext,
+    credential: ProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let normalized = normalize_provider_credential(credential)?;
+    let scoped_provider_id = tenant_scoped_provider_id(tenant_context, normalized.provider_id());
+    set_provider_credential(credential_with_provider_id(normalized, scoped_provider_id))
+}
+
 pub fn set_provider_oauth_credential(
     provider_id: &str,
     credential: OAuthProviderCredential,
@@ -820,6 +953,16 @@ pub fn set_provider_oauth_credential(
     let mut credential = credential;
     credential.provider_id = normalize_provider_id(provider_id);
     set_provider_credential(ProviderCredential::OAuth(credential))
+}
+
+pub fn set_provider_oauth_credential_for_tenant(
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    credential: OAuthProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let mut credential = credential;
+    credential.provider_id = normalize_provider_id(provider_id);
+    set_provider_credential_for_tenant(tenant_context, ProviderCredential::OAuth(credential))
 }
 
 pub fn delete_provider_credential(provider_id: &str) -> anyhow::Result<bool> {
@@ -849,6 +992,14 @@ pub fn delete_provider_credential(provider_id: &str) -> anyhow::Result<bool> {
     save_provider_credentials_index(&known)?;
 
     Ok(removed)
+}
+
+pub fn delete_provider_credential_for_tenant(
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> anyhow::Result<bool> {
+    let scoped_provider_id = tenant_scoped_provider_id(tenant_context, provider_id);
+    delete_provider_credential(&scoped_provider_id)
 }
 
 #[cfg(test)]

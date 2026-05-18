@@ -1080,7 +1080,12 @@ pub(super) async fn execute_run(
                 for server_name in &policy.server_names {
                     match state
                         .mcp
-                        .call_tool(server_name, &tool_name, args.clone())
+                        .call_tool_for_tenant(
+                            server_name,
+                            &tool_name,
+                            args.clone(),
+                            &tenant_context,
+                        )
                         .await
                     {
                         Ok(result) => {

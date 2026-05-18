@@ -1,5 +1,30 @@
 use super::*;
 
+fn tenant_request(
+    method: &str,
+    uri: &str,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+    body: Option<Value>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("x-tandem-org-id", org_id)
+        .header("x-tandem-workspace-id", workspace_id)
+        .header("x-tandem-actor-id", actor_id);
+    if body.is_some() {
+        builder = builder.header("content-type", "application/json");
+    }
+    builder
+        .body(
+            body.map(|value| Body::from(value.to_string()))
+                .unwrap_or_else(Body::empty),
+        )
+        .expect("tenant request")
+}
+
 #[tokio::test]
 async fn resource_put_patch_get_and_list_roundtrip() {
     let state = test_state().await;
@@ -87,6 +112,151 @@ async fn resource_put_patch_get_and_list_roundtrip() {
         .expect("list body");
     let list_payload: Value = serde_json::from_slice(&list_body).expect("json");
     assert_eq!(list_payload.get("count").and_then(|v| v.as_u64()), Some(1));
+}
+
+#[tokio::test]
+async fn tenant_a_cannot_access_tenant_b_resource_records() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let put_b = tenant_request(
+        "PUT",
+        "/resource/project/shared/board",
+        "org-b",
+        "workspace-b",
+        "user-b",
+        Some(json!({
+            "value": {"owner":"tenant-b"},
+            "updated_by": "user-b"
+        })),
+    );
+    let put_b_resp = app.clone().oneshot(put_b).await.expect("put b response");
+    assert_eq!(put_b_resp.status(), StatusCode::OK);
+
+    let list_a = tenant_request(
+        "GET",
+        "/resource?prefix=project/shared",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        None,
+    );
+    let list_a_resp = app.clone().oneshot(list_a).await.expect("list a response");
+    assert_eq!(list_a_resp.status(), StatusCode::OK);
+    let list_a_body = to_bytes(list_a_resp.into_body(), usize::MAX)
+        .await
+        .expect("list a body");
+    let list_a_payload: Value = serde_json::from_slice(&list_a_body).expect("list a json");
+    assert_eq!(
+        list_a_payload.get("count").and_then(|v| v.as_u64()),
+        Some(0)
+    );
+
+    let get_a = tenant_request(
+        "GET",
+        "/resource/project/shared/board",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        None,
+    );
+    let get_a_resp = app.clone().oneshot(get_a).await.expect("get a response");
+    assert_eq!(get_a_resp.status(), StatusCode::NOT_FOUND);
+
+    let delete_a = tenant_request(
+        "DELETE",
+        "/resource/project/shared/board",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        Some(json!({ "updated_by": "user-a" })),
+    );
+    let delete_a_resp = app
+        .clone()
+        .oneshot(delete_a)
+        .await
+        .expect("delete a response");
+    assert_eq!(delete_a_resp.status(), StatusCode::NOT_FOUND);
+
+    let put_a = tenant_request(
+        "PUT",
+        "/resource/project/shared/board",
+        "org-a",
+        "workspace-a",
+        "user-a",
+        Some(json!({
+            "value": {"owner":"tenant-a"},
+            "updated_by": "user-a"
+        })),
+    );
+    let put_a_resp = app.clone().oneshot(put_a).await.expect("put a response");
+    assert_eq!(put_a_resp.status(), StatusCode::OK);
+
+    for (org, workspace, actor, expected_owner) in [
+        ("org-a", "workspace-a", "user-a", "tenant-a"),
+        ("org-b", "workspace-b", "user-b", "tenant-b"),
+    ] {
+        let get = tenant_request(
+            "GET",
+            "/resource/project/shared/board",
+            org,
+            workspace,
+            actor,
+            None,
+        );
+        let get_resp = app.clone().oneshot(get).await.expect("get response");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let get_body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("get body");
+        let payload: Value = serde_json::from_slice(&get_body).expect("get json");
+        assert_eq!(
+            payload
+                .get("resource")
+                .and_then(|r| r.get("value"))
+                .and_then(|v| v.get("owner"))
+                .and_then(|v| v.as_str()),
+            Some(expected_owner)
+        );
+    }
+}
+
+#[tokio::test]
+async fn tenant_resource_event_visibility_filters_other_tenant_events() {
+    let tenant_a = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "workspace-a",
+        None,
+        "user-a",
+    );
+    let tenant_a_event = EngineEvent::new(
+        "resource.updated",
+        json!({
+            "key": "project/shared/board",
+            "tenantContext": tenant_a.clone(),
+        }),
+    );
+    let tenant_b_event = EngineEvent::new(
+        "resource.updated",
+        json!({
+            "key": "project/shared/board",
+            "tenantContext": tandem_types::TenantContext::explicit_user_workspace(
+                "org-b",
+                "workspace-b",
+                None,
+                "user-b",
+            ),
+        }),
+    );
+
+    assert!(super::super::resources::resource_event_visible_to_tenant(
+        &tenant_a_event,
+        &tenant_a
+    ));
+    assert!(!super::super::resources::resource_event_visible_to_tenant(
+        &tenant_b_event,
+        &tenant_a
+    ));
 }
 
 #[tokio::test]

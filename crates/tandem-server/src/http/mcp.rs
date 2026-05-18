@@ -3,7 +3,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use tandem_runtime::McpAuthChallenge;
-use tandem_types::RequestPrincipal;
+use tandem_types::{RequestPrincipal, TenantContext};
 use uuid::Uuid;
 
 const BUILTIN_GITHUB_MCP_SERVER_NAME: &str = "github";
@@ -362,8 +362,17 @@ impl Tool for McpBridgeTool {
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        self.execute_for_tenant(args, TenantContext::local_implicit())
+            .await
+    }
+
+    async fn execute_for_tenant(
+        &self,
+        args: Value,
+        tenant_context: TenantContext,
+    ) -> anyhow::Result<ToolResult> {
         self.mcp
-            .call_tool(&self.server_name, &self.tool_name, args)
+            .call_tool_for_tenant(&self.server_name, &self.tool_name, args, &tenant_context)
             .await
             .map_err(anyhow::Error::msg)
     }
@@ -375,6 +384,7 @@ pub(super) async fn list_mcp(State(state): State<AppState>) -> Json<Value> {
 
 pub(super) async fn add_mcp(
     State(state): State<AppState>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
     Json(input): Json<McpAddInput>,
 ) -> Json<Value> {
     let name = input.name.unwrap_or_else(|| "default".to_string());
@@ -388,6 +398,7 @@ pub(super) async fn add_mcp(
             transport,
             input.headers.unwrap_or_default(),
             input.secret_headers.unwrap_or_default(),
+            &tenant_context,
             input.enabled.unwrap_or(true),
         )
         .await;
@@ -415,8 +426,8 @@ pub(super) async fn add_mcp(
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "mcp.server.updated",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        tenant_context.actor_id.clone(),
         json!({
                 "name": name,
                 "transport": audit_transport,

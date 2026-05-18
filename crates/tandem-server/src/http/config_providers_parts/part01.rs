@@ -58,6 +58,8 @@ pub(crate) struct ProviderOAuthSessionRecord {
     pub authorization_url: String,
     pub error: Option<String>,
     pub email: Option<String>,
+    #[serde(default = "TenantContext::local_implicit")]
+    pub tenant_context: TenantContext,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,7 +94,19 @@ const OPENAI_CODEX_LOCAL_CALLBACK_URI: &str = "http://localhost:1455/auth/callba
 
 fn is_internal_secret_id(raw: &str) -> bool {
     let normalized = raw.trim().to_ascii_lowercase();
-    normalized.starts_with("mcp_header::") || normalized.starts_with("channel::")
+    normalized.starts_with("mcp_header::")
+        || normalized.starts_with("channel::")
+        || normalized.starts_with("__tenant__::")
+}
+
+fn request_actor(
+    request_principal: &RequestPrincipal,
+    tenant_context: &TenantContext,
+) -> Option<String> {
+    request_principal
+        .actor_id
+        .clone()
+        .or_else(|| tenant_context.actor_id.clone())
 }
 
 pub(super) async fn get_config(State(state): State<AppState>) -> Json<Value> {
@@ -397,22 +411,30 @@ pub(super) async fn list_providers_legacy(
     Json(providers)
 }
 
-pub(super) async fn provider_auth(State(state): State<AppState>) -> Json<Value> {
-    let _ = refresh_openai_codex_oauth_if_needed(&state).await;
+pub(super) async fn provider_auth(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+) -> Json<Value> {
+    let _ = refresh_openai_codex_oauth_if_needed(&state, &tenant_context).await;
     let cfg = state.config.get_effective_value().await;
     let providers_cfg = cfg
         .get("providers")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let persisted = tandem_core::load_provider_auth();
-    let persisted_credentials = tandem_core::load_provider_credentials();
+    let persisted = tandem_core::load_provider_auth_for_tenant(&tenant_context);
+    let persisted_credentials = tandem_core::load_provider_credentials_for_tenant(&tenant_context);
     let persisted_ids = persisted
         .keys()
         .filter(|id| !is_internal_secret_id(id))
         .map(|id| id.to_ascii_lowercase())
         .collect::<std::collections::HashSet<_>>();
-    let runtime_auth = state.auth.read().await.clone();
+    let local_implicit = tenant_context.is_local_implicit();
+    let runtime_auth = if local_implicit {
+        state.auth.read().await.clone()
+    } else {
+        HashMap::new()
+    };
     let connected = state
         .providers
         .list()
@@ -444,33 +466,40 @@ pub(super) async fn provider_auth(State(state): State<AppState>) -> Json<Value> 
 
     let mut providers = serde_json::Map::new();
     for provider_id in ids {
-        let has_runtime_key = provider_id_aliases(&provider_id).iter().any(|alias| {
-            runtime_auth
-                .get(*alias)
-                .map(|token| !token.trim().is_empty())
-                .unwrap_or(false)
-        });
-        let has_config_key = provider_config_value(&cfg, &provider_id)
-            .and_then(Value::as_object)
-            .map(|entry| {
-                entry
-                    .get("api_key")
-                    .or_else(|| entry.get("apiKey"))
-                    .and_then(Value::as_str)
+        let has_runtime_key = runtime_auth
+            .get(&provider_id)
+            .map(|token| !token.trim().is_empty())
+            .unwrap_or(false)
+            || provider_id_aliases(&provider_id).iter().any(|alias| {
+                runtime_auth
+                    .get(*alias)
                     .map(|token| !token.trim().is_empty())
                     .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        let has_env_key = provider_has_env_secret(&provider_id);
-        let has_persisted_key = provider_id_aliases(&provider_id)
-            .iter()
-            .any(|alias| persisted_ids.contains(*alias));
+            });
+        let has_config_key = local_implicit
+            && provider_config_value(&cfg, &provider_id)
+                .and_then(Value::as_object)
+                .map(|entry| {
+                    entry
+                        .get("api_key")
+                        .or_else(|| entry.get("apiKey"))
+                        .and_then(Value::as_str)
+                        .map(|token| !token.trim().is_empty())
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+        let has_env_key = local_implicit && provider_has_env_secret(&provider_id);
+        let has_persisted_key = persisted_ids.contains(&provider_id)
+            || provider_id_aliases(&provider_id)
+                .iter()
+                .any(|alias| persisted_ids.contains(*alias));
         let oauth_credential = provider_id_aliases(&provider_id)
             .iter()
             .find_map(|alias| persisted_credentials.get(*alias))
             .or_else(|| persisted_credentials.get(&provider_id));
         let has_oauth_credential = oauth_credential.is_some();
-        let local_session_available = provider_id == OPENAI_CODEX_PROVIDER_ID
+        let local_session_available = local_implicit
+            && provider_id == OPENAI_CODEX_PROVIDER_ID
             && tandem_core::load_openai_codex_cli_oauth_credential().is_some();
         let has_key = has_env_key || has_runtime_key || has_config_key || has_persisted_key;
         let source = if has_oauth_credential {
@@ -517,6 +546,7 @@ pub(super) async fn provider_auth(State(state): State<AppState>) -> Json<Value> 
 
 pub(super) async fn provider_oauth_authorize(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Json<Value> {
     let provider_id = canonical_provider_id(&id);
@@ -573,6 +603,7 @@ pub(super) async fn provider_oauth_authorize(
             authorization_url: authorization_url.clone(),
             error: None,
             email: None,
+            tenant_context,
         },
     );
 
@@ -587,6 +618,7 @@ pub(super) async fn provider_oauth_authorize(
 
 pub(super) async fn provider_oauth_status(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
     Query(query): Query<ProviderOAuthStatusQuery>,
 ) -> Json<Value> {
@@ -598,10 +630,19 @@ pub(super) async fn provider_oauth_status(
         }));
     }
 
-    let _ = refresh_openai_codex_oauth_if_needed(&state).await;
+    let _ = refresh_openai_codex_oauth_if_needed(&state, &tenant_context).await;
 
     if let Some(session_id) = query.session_id.as_deref() {
         if let Some(session) = state.provider_oauth_sessions.read().await.get(session_id) {
+            if session.tenant_context != tenant_context {
+                return Json(json!({
+                    "ok": true,
+                    "status": "missing",
+                    "connected": false,
+                    "local_session_available": tenant_context.is_local_implicit()
+                        && tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
+                }));
+            }
             return Json(json!({
                 "ok": true,
                 "session_id": session.session_id,
@@ -614,7 +655,8 @@ pub(super) async fn provider_oauth_status(
     }
 
     if let Some(tandem_core::ProviderCredential::OAuth(oauth)) =
-        tandem_core::load_provider_credentials().remove(OPENAI_CODEX_PROVIDER_ID)
+        tandem_core::load_provider_credentials_for_tenant(&tenant_context)
+            .remove(OPENAI_CODEX_PROVIDER_ID)
     {
         return Json(json!({
             "ok": true,
@@ -625,7 +667,8 @@ pub(super) async fn provider_oauth_status(
             "managed_by": oauth.managed_by,
             "account_id": oauth.account_id,
             "expires_at_ms": oauth.expires_at_ms,
-            "local_session_available": tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
+            "local_session_available": tenant_context.is_local_implicit()
+                && tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
         }));
     }
 
@@ -633,7 +676,8 @@ pub(super) async fn provider_oauth_status(
         "ok": true,
         "status": "missing",
         "connected": false,
-        "local_session_available": tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
+        "local_session_available": tenant_context.is_local_implicit()
+            && tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
     }))
 }
 
@@ -1032,6 +1076,8 @@ async fn openai_codex_local_callback_post(
 
 pub(super) async fn provider_oauth_disconnect(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
 ) -> Json<Value> {
     let provider_id = canonical_provider_id(&id);
@@ -1042,22 +1088,28 @@ pub(super) async fn provider_oauth_disconnect(
         }));
     }
 
-    let persisted_removed =
-        tandem_core::delete_provider_credential(OPENAI_CODEX_PROVIDER_ID).unwrap_or(false);
-    let runtime_removed = state
-        .config
-        .delete_runtime_provider_key(OPENAI_CODEX_PROVIDER_ID)
-        .await
-        .is_ok();
-    state.auth.write().await.remove(OPENAI_CODEX_PROVIDER_ID);
-    stop_openai_codex_local_callback_server();
+    let persisted_removed = tandem_core::delete_provider_credential_for_tenant(
+        &tenant_context,
+        OPENAI_CODEX_PROVIDER_ID,
+    )
+    .unwrap_or(false);
+    let mut runtime_removed = false;
+    if tenant_context.is_local_implicit() {
+        runtime_removed = state
+            .config
+            .delete_runtime_provider_key(OPENAI_CODEX_PROVIDER_ID)
+            .await
+            .is_ok();
+        state.auth.write().await.remove(OPENAI_CODEX_PROVIDER_ID);
+        stop_openai_codex_local_callback_server();
+    }
 
     if persisted_removed || runtime_removed {
         let _ = crate::audit::append_protected_audit_event(
             &state,
             "provider.oauth.deleted",
-            &tandem_types::TenantContext::local_implicit(),
-            None,
+            &tenant_context,
+            request_actor(&request_principal, &tenant_context),
             json!({
                 "providerID": OPENAI_CODEX_PROVIDER_ID,
                 "runtimeRemoved": runtime_removed,
@@ -1079,6 +1131,8 @@ pub(super) async fn provider_oauth_disconnect(
 
 pub(super) async fn provider_oauth_local_session(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
 ) -> Json<Value> {
     let provider_id = canonical_provider_id(&id);
@@ -1096,7 +1150,8 @@ pub(super) async fn provider_oauth_local_session(
         }));
     };
 
-    let backend = match tandem_core::set_provider_oauth_credential(
+    let backend = match tandem_core::set_provider_oauth_credential_for_tenant(
+        &tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
         credential.clone(),
     ) {
@@ -1110,17 +1165,19 @@ pub(super) async fn provider_oauth_local_session(
         }
     };
 
-    ensure_openai_codex_runtime_provider(&state).await;
-    state
-        .providers
-        .reload(state.config.get().await.into())
-        .await;
+    if tenant_context.is_local_implicit() {
+        ensure_openai_codex_runtime_provider(&state).await;
+        state
+            .providers
+            .reload(state.config.get().await.into())
+            .await;
+    }
 
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "provider.oauth.updated",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        request_actor(&request_principal, &tenant_context),
         json!({
             "providerID": OPENAI_CODEX_PROVIDER_ID,
             "backend": backend,
@@ -1143,6 +1200,8 @@ pub(super) async fn provider_oauth_local_session(
 
 pub(super) async fn provider_oauth_session_import(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
     Json(input): Json<ProviderOAuthSessionImportInput>,
 ) -> Json<Value> {
@@ -1173,22 +1232,26 @@ pub(super) async fn provider_oauth_session_import(
         }
     };
 
-    if let Err(error) = tandem_core::write_openai_codex_cli_auth_json(&auth_json) {
-        return Json(json!({
-            "ok": false,
-            "error": format!("failed to persist Codex auth.json: {error}"),
-        }));
+    if tenant_context.is_local_implicit() {
+        if let Err(error) = tandem_core::write_openai_codex_cli_auth_json(&auth_json) {
+            return Json(json!({
+                "ok": false,
+                "error": format!("failed to persist Codex auth.json: {error}"),
+            }));
+        }
     }
 
-    let Some(mut credential) = tandem_core::load_openai_codex_cli_oauth_credential() else {
+    let Some(mut credential) = tandem_core::oauth_credential_from_codex_auth_json(&auth_json)
+    else {
         return Json(json!({
             "ok": false,
-            "error": "The imported Codex auth.json could not be read back on this machine.",
+            "error": "The imported Codex auth.json could not be parsed into a credential.",
         }));
     };
     credential.managed_by = "codex-upload".to_string();
 
-    let backend = match tandem_core::set_provider_oauth_credential(
+    let backend = match tandem_core::set_provider_oauth_credential_for_tenant(
+        &tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
         credential.clone(),
     ) {
@@ -1202,17 +1265,19 @@ pub(super) async fn provider_oauth_session_import(
         }
     };
 
-    ensure_openai_codex_runtime_provider(&state).await;
-    state
-        .providers
-        .reload(state.config.get().await.into())
-        .await;
+    if tenant_context.is_local_implicit() {
+        ensure_openai_codex_runtime_provider(&state).await;
+        state
+            .providers
+            .reload(state.config.get().await.into())
+            .await;
+    }
 
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "provider.oauth.updated",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        request_actor(&request_principal, &tenant_context),
         json!({
             "providerID": OPENAI_CODEX_PROVIDER_ID,
             "backend": backend,
@@ -1235,6 +1300,8 @@ pub(super) async fn provider_oauth_session_import(
 
 pub(super) async fn set_auth(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
     Json(input): Json<AuthInput>,
 ) -> Json<Value> {
@@ -1247,44 +1314,51 @@ pub(super) async fn set_auth(
         return Json(json!({"ok": false, "error": "token cannot be empty"}));
     }
 
-    let backend = match tandem_core::set_provider_auth(&normalized_id, &token) {
-        Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
-        Ok(tandem_core::ProviderAuthBackend::File) => "file",
-        Err(err) => {
-            return Json(json!({
-                "ok": false,
-                "id": normalized_id,
-                "error": format!("failed to persist provider auth: {err}")
-            }));
-        }
-    };
-
-    // Keep legacy in-memory auth map for compatibility while runtime config
-    // becomes the canonical provider-key source.
-    state
-        .auth
-        .write()
-        .await
-        .insert(normalized_id.clone(), token.clone());
-
-    let patch = json!({
-        "providers": {
-            normalized_id.clone(): {
-                "api_key": token
+    let backend =
+        match tandem_core::set_provider_auth_for_tenant(&tenant_context, &normalized_id, &token) {
+            Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
+            Ok(tandem_core::ProviderAuthBackend::File) => "file",
+            Err(err) => {
+                return Json(json!({
+                    "ok": false,
+                    "id": normalized_id,
+                    "error": format!("failed to persist provider auth: {err}")
+                }));
             }
-        }
-    });
-    let ok = state.config.patch_runtime(patch).await.is_ok();
-    if ok {
+        };
+
+    let ok = if tenant_context.is_local_implicit() {
+        // Keep legacy in-memory auth map for compatibility while runtime config
+        // becomes the canonical provider-key source.
         state
-            .providers
-            .reload(state.config.get().await.into())
-            .await;
+            .auth
+            .write()
+            .await
+            .insert(normalized_id.clone(), token.clone());
+
+        let patch = json!({
+            "providers": {
+                normalized_id.clone(): {
+                    "api_key": token
+                }
+            }
+        });
+        state.config.patch_runtime(patch).await.is_ok()
+    } else {
+        true
+    };
+    if ok {
+        if tenant_context.is_local_implicit() {
+            state
+                .providers
+                .reload(state.config.get().await.into())
+                .await;
+        }
         let _ = crate::audit::append_protected_audit_event(
             &state,
             "provider.secret.updated",
-            &tandem_types::TenantContext::local_implicit(),
-            None,
+            &tenant_context,
+            request_actor(&request_principal, &tenant_context),
             json!({
                 "providerID": normalized_id,
                 "backend": backend,
@@ -1297,27 +1371,34 @@ pub(super) async fn set_auth(
 
 pub(super) async fn delete_auth(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
 ) -> Json<Value> {
     let normalized_id = id.trim().to_ascii_lowercase();
     if normalized_id.is_empty() {
         return Json(json!({"ok": false, "error": "provider id cannot be empty"}));
     }
-    let removed = state.auth.write().await.remove(&normalized_id).is_some();
-    let persisted_removed = tandem_core::delete_provider_auth(&normalized_id)
-        .map(|ok| ok)
-        .unwrap_or(false);
-    let runtime_removed = state
-        .config
-        .delete_runtime_provider_key(&normalized_id)
-        .await
-        .is_ok();
+    let mut removed = false;
+    let persisted_removed =
+        tandem_core::delete_provider_auth_for_tenant(&tenant_context, &normalized_id)
+            .map(|ok| ok)
+            .unwrap_or(false);
+    let mut runtime_removed = false;
+    if tenant_context.is_local_implicit() {
+        removed = state.auth.write().await.remove(&normalized_id).is_some();
+        runtime_removed = state
+            .config
+            .delete_runtime_provider_key(&normalized_id)
+            .await
+            .is_ok();
+    }
     if runtime_removed || persisted_removed || removed {
         let _ = crate::audit::append_protected_audit_event(
             &state,
             "provider.secret.deleted",
-            &tandem_types::TenantContext::local_implicit(),
-            None,
+            &tenant_context,
+            request_actor(&request_principal, &tenant_context),
             json!({
                 "providerID": normalized_id,
                 "runtimeRemoved": runtime_removed,
@@ -1638,12 +1719,13 @@ fn validate_provider_url(url_str: &str) -> Result<(), String> {
         .ok_or("invalid provider URL format")?;
 
     // Block localhost-like domains
-    if host.eq_ignore_ascii_case("localhost") ||
-       host == "127.0.0.1" ||
-       host == "::1" ||
-       host.ends_with(".local") ||
-       host.ends_with(".localdomain") ||
-       host.ends_with(".internal") {
+    if host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.ends_with(".local")
+        || host.ends_with(".localdomain")
+        || host.ends_with(".internal")
+    {
         return Err("provider URL cannot use localhost or private hostnames".to_string());
     }
 
@@ -1658,7 +1740,8 @@ fn validate_provider_url(url_str: &str) -> Result<(), String> {
        host.starts_with("192.168.") ||
        host.starts_with("169.254.") || // Link-local
        host.starts_with("224.") || host.starts_with("225.") || host.starts_with("226.") || // Multicast
-       host == "0.0.0.0" {
+       host == "0.0.0.0"
+    {
         return Err("provider URL cannot use private or reserved IP addresses".to_string());
     }
 
