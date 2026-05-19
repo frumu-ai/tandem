@@ -697,6 +697,127 @@ pub(crate) fn automation_node_schema_has_required_fields(
     fields.iter().all(|field| required.contains(field))
 }
 
+fn automation_node_declares_output_fields(node: &AutomationFlowNode, fields: &[&str]) -> bool {
+    if automation_node_schema_has_required_fields(node, fields) {
+        return true;
+    }
+
+    let mut declared = HashSet::new();
+    if let Some(schema) = node
+        .output_contract
+        .as_ref()
+        .and_then(|contract| contract.schema.as_ref())
+    {
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            declared.extend(properties.keys().map(String::as_str));
+        }
+    }
+
+    let prompt = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(|builder| builder.get("prompt"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    fields.iter().all(|field| {
+        declared.contains(field)
+            || prompt.contains(&format!("\"{field}\""))
+            || prompt.contains(field)
+    })
+}
+
+pub(crate) fn automation_empty_upstream_artifact_for_node(
+    node: &AutomationFlowNode,
+    upstream_inputs: &[Value],
+) -> Option<(&'static str, Value)> {
+    let upstream_has_no_work = upstream_inputs
+        .iter()
+        .any(|input| automation_value_contains_false_flag(input, "has_work"));
+    let upstream_has_no_candidates = upstream_inputs
+        .iter()
+        .any(|input| automation_value_contains_false_flag(input, "has_candidates"));
+    let upstream_has_no_high_value_contacts = upstream_inputs
+        .iter()
+        .any(|input| automation_value_contains_false_flag(input, "has_high_value_contacts"));
+    let upstream_has_no_rows_to_write = upstream_inputs
+        .iter()
+        .any(|input| automation_value_contains_false_flag(input, "has_rows_to_write"));
+
+    if upstream_has_no_work
+        && automation_node_declares_output_fields(
+            node,
+            &["candidates_by_company", "has_candidates"],
+        )
+    {
+        return Some((
+            "has_work",
+            json!({
+                "schema_version": "1",
+                "candidates_by_company": [],
+                "has_candidates": false,
+            }),
+        ));
+    }
+
+    if upstream_has_no_candidates
+        && automation_node_declares_output_fields(
+            node,
+            &["scored_by_company", "has_high_value_contacts"],
+        )
+    {
+        return Some((
+            "has_candidates",
+            json!({
+                "schema_version": "1",
+                "scored_by_company": [],
+                "has_high_value_contacts": false,
+            }),
+        ));
+    }
+
+    if upstream_has_no_high_value_contacts
+        && automation_node_declares_output_fields(
+            node,
+            &[
+                "ready_to_write",
+                "duplicates_or_skipped",
+                "has_rows_to_write",
+            ],
+        )
+    {
+        return Some((
+            "has_high_value_contacts",
+            json!({
+                "schema_version": "1",
+                "ready_to_write": [],
+                "duplicates_or_skipped": [],
+                "has_rows_to_write": false,
+            }),
+        ));
+    }
+
+    if upstream_has_no_rows_to_write
+        && automation_node_declares_output_fields(
+            node,
+            &["created_pages", "skipped_count", "summary"],
+        )
+    {
+        return Some((
+            "has_rows_to_write",
+            json!({
+                "artifact_kind": "notion_write_result",
+                "created_pages": [],
+                "skipped_count": 0,
+                "summary": "No contacts were ready to write, so no external Notion write was performed.",
+            }),
+        ));
+    }
+
+    None
+}
+
 pub(crate) async fn try_execute_empty_upstream_structured_short_circuit(
     state: &AppState,
     run_id: &str,
@@ -708,18 +829,11 @@ pub(crate) async fn try_execute_empty_upstream_structured_short_circuit(
     requested_tools: &[String],
     upstream_inputs: &[Value],
 ) -> anyhow::Result<Option<Value>> {
-    if !upstream_inputs
-        .iter()
-        .any(|input| automation_value_contains_false_flag(input, "has_work"))
-    {
+    let Some((empty_flag, artifact)) =
+        automation_empty_upstream_artifact_for_node(node, upstream_inputs)
+    else {
         return Ok(None);
-    }
-    if !automation_node_schema_has_required_fields(
-        node,
-        &["candidates_by_company", "has_candidates"],
-    ) {
-        return Ok(None);
-    }
+    };
     let Some(output_path) = required_output_path else {
         return Ok(None);
     };
@@ -728,11 +842,6 @@ pub(crate) async fn try_execute_empty_upstream_structured_short_circuit(
     if let Some(parent) = resolved_output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let artifact = json!({
-        "schema_version": "1",
-        "candidates_by_company": [],
-        "has_candidates": false,
-    });
     let artifact_text = serde_json::to_string_pretty(&artifact)?;
     std::fs::write(&resolved_output, &artifact_text)?;
     let display_path = resolved_output
@@ -761,7 +870,7 @@ pub(crate) async fn try_execute_empty_upstream_structured_short_circuit(
         MessageRole::Assistant,
         vec![MessagePart::Text {
             text: format!(
-                "Upstream reported `has_work: false`; skipped connector calls for `{}` and wrote `{}`.\n\n{}",
+                "Upstream reported `{empty_flag}: false`; skipped connector calls for `{}` and wrote `{}`.\n\n{}",
                 node.node_id, display_path, artifact_text
             ),
         }],

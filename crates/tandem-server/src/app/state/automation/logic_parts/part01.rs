@@ -133,6 +133,14 @@ fn automation_schema_example_value(schema: &Value) -> Value {
         "integer" | "number" => json!(0),
         "null" => Value::Null,
         "object" => json!({}),
+        "string" => {
+            let min_length = schema.get("minLength").and_then(Value::as_u64).unwrap_or(0);
+            if min_length > 0 {
+                json!("search")
+            } else {
+                json!("")
+            }
+        }
         _ => json!(""),
     }
 }
@@ -192,6 +200,14 @@ fn automation_mcp_contract_for_schema(schema: &ToolSchema) -> Option<Value> {
             && prop.get("oneOf").is_none()
         {
             warnings.push(format!("required field `{field}` has no clear type"));
+        }
+        if automation_schema_type_label(prop) == "string"
+            && prop.get("minLength").and_then(Value::as_u64).unwrap_or(0) > 0
+        {
+            warnings.push(format!(
+                "required string field `{field}` has minLength {}; do not pass an empty string",
+                prop.get("minLength").and_then(Value::as_u64).unwrap_or(0)
+            ));
         }
         required_args.push(json!({
             "name": field,

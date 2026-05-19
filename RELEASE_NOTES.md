@@ -105,9 +105,13 @@ coder artifact tenant boundary.
 - Automation V2 node preflight now derives concise MCP tool contracts from the
   offered tool schemas, including required arguments, minimal examples, and
   non-blocking schema warnings that are injected into prompts and diagnostics.
-- Structured connector nodes with candidate-list output schemas now short-circuit
-  when upstream input reports `has_work: false`, writing the empty schema-shaped
-  artifact instead of spending calls on account or inventory checks.
+- MCP contract examples now respect positive `minLength` constraints for
+  required string fields, preventing invalid empty-string examples for tools
+  such as Notion search.
+- Structured connector nodes now short-circuit across empty batch, empty
+  candidate, empty high-value-contact, and empty write-row handoffs, writing the
+  appropriate empty artifact instead of spending calls on account, inventory,
+  enrichment, or write checks.
 - Automation blocker panels now read checkpoint lifecycle history in addition
   to node outputs and event streams, surfacing node repair and run pause
   reasons that were previously hidden behind generic blocked status.

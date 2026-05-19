@@ -28,6 +28,33 @@ fn mcp_contract_summary_extracts_required_args_and_example() {
 }
 
 #[test]
+fn mcp_contract_summary_does_not_suggest_empty_string_when_min_length_is_positive() {
+    let schema = ToolSchema::new(
+        "mcp.notion.notion_search",
+        "Search Notion",
+        json!({
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string", "minLength": 1}
+            }
+        }),
+    );
+
+    let contracts = automation_mcp_contract_summaries(&[schema]);
+    let contract = contracts["contracts"][0].clone();
+
+    assert_eq!(contract["minimal_args_example"]["query"], "search");
+    assert!(contract["schema_warnings"]
+        .as_array()
+        .expect("schema warnings")
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .is_some_and(|text| text.contains("do not pass an empty string"))));
+}
+
+#[test]
 fn required_tool_call_arg_validation_warns_on_missing_static_args() {
     let schema = ToolSchema::new(
         "mcp.example.search",
@@ -86,6 +113,102 @@ fn empty_upstream_short_circuit_detection_matches_candidate_schema() {
         &node,
         &["candidates_by_company", "has_candidates"]
     ));
+}
+
+#[test]
+fn empty_upstream_short_circuit_builds_scoring_artifact_from_prompt_shape() {
+    let upstream = vec![json!({
+        "candidate_contacts": {
+            "has_candidates": false,
+            "candidates_by_company": []
+        }
+    })];
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "prompt": "REQUIRED OUTPUT JSON: {\"scored_by_company\": [], \"has_high_value_contacts\": boolean}"
+        }
+    }));
+
+    let (flag, artifact) = automation_empty_upstream_artifact_for_node(&node, &upstream)
+        .expect("empty scoring artifact");
+
+    assert_eq!(flag, "has_candidates");
+    assert_eq!(artifact["scored_by_company"], json!([]));
+    assert_eq!(artifact["has_high_value_contacts"], json!(false));
+}
+
+#[test]
+fn empty_upstream_short_circuit_builds_enrichment_artifact_from_schema_shape() {
+    let upstream = vec![json!({
+        "scored_contacts": {
+            "has_high_value_contacts": false,
+            "scored_by_company": []
+        }
+    })];
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: Some(json!({
+            "type": "object",
+            "required": ["schema_version", "ready_to_write", "duplicates_or_skipped", "has_rows_to_write"],
+            "properties": {
+                "schema_version": {"const": "1"},
+                "ready_to_write": {"type": "array"},
+                "duplicates_or_skipped": {"type": "array"},
+                "has_rows_to_write": {"type": "boolean"}
+            }
+        })),
+        summary_guidance: None,
+    });
+
+    let (flag, artifact) = automation_empty_upstream_artifact_for_node(&node, &upstream)
+        .expect("empty enrichment artifact");
+
+    assert_eq!(flag, "has_high_value_contacts");
+    assert_eq!(artifact["ready_to_write"], json!([]));
+    assert_eq!(artifact["duplicates_or_skipped"], json!([]));
+    assert_eq!(artifact["has_rows_to_write"], json!(false));
+}
+
+#[test]
+fn empty_upstream_short_circuit_builds_no_write_artifact() {
+    let upstream = vec![json!({
+        "verified_contacts": {
+            "has_rows_to_write": false,
+            "ready_to_write": []
+        }
+    })];
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "artifact".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "prompt": "REQUIRED OUTPUT: artifact_kind: \"notion_write_result\" created_pages[] skipped_count summary"
+        }
+    }));
+
+    let (flag, artifact) = automation_empty_upstream_artifact_for_node(&node, &upstream)
+        .expect("empty no-write artifact");
+
+    assert_eq!(flag, "has_rows_to_write");
+    assert_eq!(artifact["artifact_kind"], json!("notion_write_result"));
+    assert_eq!(artifact["created_pages"], json!([]));
+    assert_eq!(artifact["skipped_count"], json!(0));
 }
 
 #[test]
