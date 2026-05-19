@@ -1128,7 +1128,7 @@ pub(crate) fn normalize_automation_requested_tools(
             )
         });
     }
-    if !explicit_connector_tool_allowlist && !node.input_refs.is_empty() {
+    if !node.input_refs.is_empty() {
         normalized.push("read".to_string());
     }
     let has_read = normalized.iter().any(|tool| tool == "read");

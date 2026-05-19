@@ -21,6 +21,9 @@ use crate::automation_v2::types::{
     AutomationPendingGate, AutomationRunStatus, AutomationV2RunRecord, AutomationV2Spec,
 };
 use crate::AppState;
+use serde_json::Value;
+use std::fmt::Write as _;
+use std::path::PathBuf;
 
 /// Default cap on returned approvals when no `limit` is supplied.
 const DEFAULT_PENDING_LIMIT: usize = 100;
@@ -66,7 +69,13 @@ pub async fn list_pending_approvals(
             if !tenant_matches(filter, run) {
                 continue;
             }
-            out.push(automation_v2_run_to_approval_request(run, &gate));
+            let action_preview_markdown =
+                automation_v2_approval_preview_markdown(state, run, &gate).await;
+            out.push(automation_v2_run_to_approval_request(
+                run,
+                &gate,
+                action_preview_markdown,
+            ));
         }
     }
 
@@ -123,6 +132,7 @@ fn tenant_matches(filter: &ApprovalListFilter, run: &AutomationV2RunRecord) -> b
 pub(crate) fn automation_v2_run_to_approval_request(
     run: &AutomationV2RunRecord,
     gate: &AutomationPendingGate,
+    action_preview_markdown: Option<String>,
 ) -> ApprovalRequest {
     let workflow_name = run
         .automation_snapshot
@@ -150,7 +160,7 @@ pub(crate) fn automation_v2_run_to_approval_request(
         node_id: Some(gate.node_id.clone()),
         workflow_name,
         action_kind,
-        action_preview_markdown: gate.instructions.clone(),
+        action_preview_markdown,
         surface_payload: Some(serde_json::json!({
             "automation_v2_run_id": run.run_id,
             "automation_id": run.automation_id,
@@ -179,4 +189,191 @@ pub(crate) fn automation_v2_run_to_approval_request(
         decision: None,
         rework_feedback: None,
     }
+}
+
+async fn automation_v2_approval_preview_markdown(
+    state: &AppState,
+    run: &AutomationV2RunRecord,
+    gate: &AutomationPendingGate,
+) -> Option<String> {
+    let automation = run.automation_snapshot.as_ref();
+    let workspace_root = match automation.and_then(|snapshot| snapshot.workspace_root.clone()) {
+        Some(root) => root,
+        None => state.workspace_index.snapshot().await.root,
+    };
+    let workspace_root = PathBuf::from(workspace_root);
+    let mut sections = Vec::new();
+
+    for node_id in &gate.upstream_node_ids {
+        if !is_safe_artifact_node_id(node_id) {
+            continue;
+        }
+        let artifact_path = workspace_root
+            .join(".tandem")
+            .join("runs")
+            .join(&run.run_id)
+            .join("artifacts")
+            .join(format!("{node_id}.json"));
+        let Ok(raw) = tokio::fs::read_to_string(&artifact_path).await else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if let Some(section) = approval_artifact_preview_section(node_id, &value) {
+            sections.push(section);
+        }
+    }
+
+    if sections.is_empty() {
+        return None;
+    }
+
+    let mut markdown = String::from("### Approval Evidence\n\n");
+    markdown.push_str(&sections.join("\n\n"));
+    Some(markdown)
+}
+
+fn is_safe_artifact_node_id(node_id: &str) -> bool {
+    !node_id.is_empty()
+        && node_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+fn approval_artifact_preview_section(node_id: &str, value: &Value) -> Option<String> {
+    let mut section = String::new();
+    let _ = writeln!(section, "#### `{node_id}`");
+
+    if let Some(rows) = value.get("ready_to_write").and_then(Value::as_array) {
+        let has_rows = value
+            .get("has_rows_to_write")
+            .and_then(Value::as_bool)
+            .unwrap_or(!rows.is_empty());
+        let _ = writeln!(
+            section,
+            "- Proposed Notion rows: **{}**{}",
+            rows.len(),
+            if has_rows {
+                ""
+            } else {
+                " (writer should no-op)"
+            }
+        );
+        append_contact_rows_preview(&mut section, rows);
+        return Some(section);
+    }
+
+    if let Some(scored) = value.get("scored_by_company").and_then(Value::as_array) {
+        let selected_count: usize = scored
+            .iter()
+            .map(|company| array_len(company, "selected_contacts") + array_len(company, "contacts"))
+            .sum();
+        let _ = writeln!(
+            section,
+            "- High-value contacts selected: **{}**",
+            selected_count
+        );
+        if selected_count == 0 {
+            let _ = writeln!(
+                section,
+                "- Approval will not write contacts unless later artifacts contain rows."
+            );
+        }
+        return Some(section);
+    }
+
+    if let Some(companies) = value.get("candidates_by_company").and_then(Value::as_array) {
+        let candidate_count: usize = companies
+            .iter()
+            .map(|company| {
+                company
+                    .get("candidate_count")
+                    .and_then(Value::as_u64)
+                    .map(|count| count as usize)
+                    .unwrap_or_else(|| array_len(company, "candidates"))
+            })
+            .sum();
+        let company_names = companies
+            .iter()
+            .filter_map(|company| company.get("company").and_then(Value::as_str))
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            section,
+            "- Candidate contacts found: **{}**",
+            candidate_count
+        );
+        if !company_names.is_empty() {
+            let _ = writeln!(section, "- Companies checked: {company_names}");
+        }
+        return Some(section);
+    }
+
+    if let Some(companies) = value.get("selected_companies").and_then(Value::as_array) {
+        let company_names = companies
+            .iter()
+            .filter_map(|company| company.get("company").and_then(Value::as_str))
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(section, "- Companies in batch: **{}**", companies.len());
+        if !company_names.is_empty() {
+            let _ = writeln!(section, "- Selected: {company_names}");
+        }
+        return Some(section);
+    }
+
+    None
+}
+
+fn append_contact_rows_preview(section: &mut String, rows: &[Value]) {
+    if rows.is_empty() {
+        let _ = writeln!(section, "- No rows are ready to write.");
+        return;
+    }
+
+    section.push_str("\n| Company | Contact | Role | Email | Status |\n");
+    section.push_str("| --- | --- | --- | --- | --- |\n");
+    for row in rows.iter().take(10) {
+        let company = markdown_cell(first_string(row, &["Company", "company"]));
+        let contact = markdown_cell(first_string(
+            row,
+            &["Contact name", "contact_name", "name", "Contact / Lead"],
+        ));
+        let role = markdown_cell(first_string(row, &["Role / Title", "role_title", "title"]));
+        let email = markdown_cell(first_string(row, &["Email", "email"]));
+        let status = markdown_cell(first_string(row, &["Status", "status"]));
+        let _ = writeln!(
+            section,
+            "| {company} | {contact} | {role} | {email} | {status} |"
+        );
+    }
+    if rows.len() > 10 {
+        let _ = writeln!(section, "\n_Showing 10 of {} proposed rows._", rows.len());
+    }
+}
+
+fn first_string<'a>(value: &'a Value, keys: &[&str]) -> &'a str {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+fn markdown_cell(value: &str) -> String {
+    let escaped = value.replace('|', "\\|").replace('\n', " ");
+    if escaped.trim().is_empty() {
+        "-".to_string()
+    } else {
+        escaped
+    }
+}
+
+fn array_len(value: &Value, key: &str) -> usize {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
 }

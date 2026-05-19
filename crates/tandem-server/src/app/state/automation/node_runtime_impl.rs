@@ -418,7 +418,7 @@ pub(crate) fn normalize_automation_requested_tools(
             )
         });
     }
-    if !explicit_connector_tool_allowlist && !node.input_refs.is_empty() {
+    if !node.input_refs.is_empty() {
         normalized.push("read".to_string());
     }
     let has_read = normalized.iter().any(|tool| tool == "read");
@@ -709,7 +709,10 @@ fn connector_source_tool_allowed_for_required_capability(
     tool: &str,
     capability_ids: &[String],
 ) -> bool {
-    if tool == "write" || tool == "mcp_list" || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
+    if tool == "read"
+        || tool == "write"
+        || tool == "mcp_list"
+        || (tool.starts_with("mcp.") && !tool.ends_with(".*"))
     {
         return true;
     }
@@ -776,6 +779,9 @@ pub(crate) fn resolve_automation_node_tool_envelope(
             config::channels::normalize_allowed_tools(explicit_node_tool_allowlist.clone());
         if explicit_allowed.iter().any(|tool| tool.starts_with("mcp.")) {
             explicit_allowed.push("mcp_list".to_string());
+        }
+        if !node.input_refs.is_empty() {
+            explicit_allowed.push("read".to_string());
         }
         explicit_allowed.extend(automation_node_required_tools(node));
         if automation_node_requires_artifact_write_tool(node) {

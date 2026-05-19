@@ -211,128 +211,180 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
         ) : (
           <div className="grid gap-4">
             {approvals.map((request) => (
-              <PanelCard
+              <ApprovalRequestCard
                 key={request.request_id}
-                title={request.workflow_name || request.run_id}
-                subtitle={
-                  request.action_kind
-                    ? `${sourceLabel(request.source)} · ${request.action_kind}`
-                    : sourceLabel(request.source)
+                request={request}
+                showReasonForm={showReasonForm}
+                setShowReasonForm={setShowReasonForm}
+                reason={reasonByRequest[request.request_id] || ""}
+                setReason={(reason) =>
+                  setReasonByRequest((current) => ({
+                    ...current,
+                    [request.request_id]: reason,
+                  }))
                 }
-                actions={
-                  <span className="text-xs text-tcp-text-tertiary">
-                    {formatRelativeTime(request.requested_at_ms)}
-                  </span>
-                }
-              >
-                <div className="grid gap-3 text-sm">
-                  {request.instructions ? (
-                    <div className="text-tcp-text-secondary">{request.instructions}</div>
-                  ) : null}
-                  {request.action_preview_markdown ? (
-                    <div
-                      className="prose prose-invert max-w-none text-sm"
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdownSafe(request.action_preview_markdown),
-                      }}
-                    />
-                  ) : null}
-                  <div className="flex flex-wrap gap-2 text-xs text-tcp-text-tertiary">
-                    <span>
-                      <strong>run:</strong> <code>{request.run_id}</code>
-                    </span>
-                    {request.node_id ? (
-                      <span>
-                        <strong>node:</strong> <code>{request.node_id}</code>
-                      </span>
-                    ) : null}
-                    <span>
-                      <strong>tenant:</strong>{" "}
-                      <code>
-                        {request.tenant.org_id}/{request.tenant.workspace_id}
-                      </code>
-                    </span>
-                  </div>
-
-                  {showReasonForm === request.request_id ? (
-                    <div className="grid gap-2 rounded-md border border-tcp-border-subtle p-3">
-                      <label className="text-xs font-medium">
-                        Rework feedback (sent to the agent so it can revise)
-                      </label>
-                      <textarea
-                        className="tcp-input h-20 w-full rounded text-xs"
-                        placeholder="What should change before this can be approved?"
-                        value={reasonByRequest[request.request_id] || ""}
-                        onChange={(event) =>
-                          setReasonByRequest((current) => ({
-                            ...current,
-                            [request.request_id]: event.target.value,
-                          }))
-                        }
-                      />
-                      <div className="flex justify-end gap-2">
-                        <button
-                          className="tcp-btn h-8 px-3 text-xs"
-                          onClick={() => setShowReasonForm(null)}
-                          disabled={decideMutation.isPending}
-                        >
-                          Dismiss
-                        </button>
-                        <button
-                          className={decisionStyle("rework")}
-                          onClick={() =>
-                            decideMutation.mutate({
-                              request,
-                              decision: "rework",
-                              reason: reasonByRequest[request.request_id] || "",
-                            })
-                          }
-                          disabled={decideMutation.isPending}
-                        >
-                          Send back for rework
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap items-center gap-2 pt-1">
-                      {(request.decisions || ["approve", "rework", "cancel"]).map((raw) => {
-                        const decision = String(raw).toLowerCase() as DecisionKind;
-                        if (!["approve", "rework", "cancel"].includes(decision)) {
-                          return null;
-                        }
-                        if (decision === "rework") {
-                          return (
-                            <button
-                              key={decision}
-                              className={decisionStyle(decision)}
-                              onClick={() => setShowReasonForm(request.request_id)}
-                              disabled={decideMutation.isPending}
-                            >
-                              {decisionLabel(decision)}
-                            </button>
-                          );
-                        }
-                        return (
-                          <button
-                            key={decision}
-                            className={decisionStyle(decision)}
-                            onClick={() => decideMutation.mutate({ request, decision })}
-                            disabled={decideMutation.isPending}
-                          >
-                            {decisionLabel(decision)}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </PanelCard>
+                decideMutation={decideMutation}
+              />
             ))}
           </div>
         )}
       </PageCard>
     </AnimatedPage>
   );
+}
+
+function ApprovalRequestCard({
+  request,
+  showReasonForm,
+  setShowReasonForm,
+  reason,
+  setReason,
+  decideMutation,
+}: {
+  request: ApprovalRequest;
+  showReasonForm: string | null;
+  setShowReasonForm: (requestId: string | null) => void;
+  reason: string;
+  setReason: (reason: string) => void;
+  decideMutation: ReturnType<
+    typeof useMutation<
+      { ok: boolean; alreadyDecidedBy?: string },
+      any,
+      {
+        request: ApprovalRequest;
+        decision: DecisionKind;
+        reason?: string;
+      }
+    >
+  >;
+}) {
+  const previewMarkdown = dedupeMarkdown(request.action_preview_markdown, request.instructions);
+
+  return (
+    <PanelCard
+      title={request.workflow_name || request.run_id}
+      subtitle={
+        request.action_kind
+          ? `${sourceLabel(request.source)} · ${request.action_kind}`
+          : sourceLabel(request.source)
+      }
+      actions={
+        <span className="text-xs text-tcp-text-tertiary">
+          {formatRelativeTime(request.requested_at_ms)}
+        </span>
+      }
+    >
+      <div className="grid gap-3 text-sm">
+        {request.instructions ? (
+          <div className="text-tcp-text-secondary">{request.instructions}</div>
+        ) : null}
+        {previewMarkdown ? (
+          <div
+            className="prose prose-invert max-w-none text-sm"
+            dangerouslySetInnerHTML={{
+              __html: renderMarkdownSafe(previewMarkdown),
+            }}
+          />
+        ) : (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+            No action preview was provided for this approval. Review the run artifacts before
+            approving.
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 text-xs text-tcp-text-tertiary">
+          <span>
+            <strong>run:</strong> <code>{request.run_id}</code>
+          </span>
+          {request.node_id ? (
+            <span>
+              <strong>node:</strong> <code>{request.node_id}</code>
+            </span>
+          ) : null}
+          <span>
+            <strong>tenant:</strong>{" "}
+            <code>
+              {request.tenant.org_id}/{request.tenant.workspace_id}
+            </code>
+          </span>
+        </div>
+
+        {showReasonForm === request.request_id ? (
+          <div className="grid gap-2 rounded-md border border-tcp-border-subtle p-3">
+            <label className="text-xs font-medium">
+              Rework feedback (sent to the agent so it can revise)
+            </label>
+            <textarea
+              className="tcp-input h-20 w-full rounded text-xs"
+              placeholder="What should change before this can be approved?"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                className="tcp-btn h-8 px-3 text-xs"
+                onClick={() => setShowReasonForm(null)}
+                disabled={decideMutation.isPending}
+              >
+                Dismiss
+              </button>
+              <button
+                className={decisionStyle("rework")}
+                onClick={() =>
+                  decideMutation.mutate({
+                    request,
+                    decision: "rework",
+                    reason,
+                  })
+                }
+                disabled={decideMutation.isPending}
+              >
+                Send back for rework
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {(request.decisions || ["approve", "rework", "cancel"]).map((raw) => {
+              const decision = String(raw).toLowerCase() as DecisionKind;
+              if (!["approve", "rework", "cancel"].includes(decision)) {
+                return null;
+              }
+              if (decision === "rework") {
+                return (
+                  <button
+                    key={decision}
+                    className={decisionStyle(decision)}
+                    onClick={() => setShowReasonForm(request.request_id)}
+                    disabled={decideMutation.isPending}
+                  >
+                    {decisionLabel(decision)}
+                  </button>
+                );
+              }
+              return (
+                <button
+                  key={decision}
+                  className={decisionStyle(decision)}
+                  onClick={() => decideMutation.mutate({ request, decision })}
+                  disabled={decideMutation.isPending}
+                >
+                  {decisionLabel(decision)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </PanelCard>
+  );
+}
+
+function dedupeMarkdown(markdown?: string, instructions?: string): string | undefined {
+  const preview = markdown?.trim();
+  if (!preview) return undefined;
+  const instructionText = instructions?.trim();
+  if (instructionText && preview === instructionText) return undefined;
+  return preview;
 }
 
 function sourceLabel(source: string): string {

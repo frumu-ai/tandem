@@ -15,10 +15,37 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
         .create_automation_v2_run(&automation, "manual")
         .await
         .expect("run");
+    let workspace_root =
+        std::env::temp_dir().join(format!("tandem-approval-preview-{}", uuid::Uuid::new_v4()));
+    let artifact_dir = workspace_root
+        .join(".tandem")
+        .join("runs")
+        .join(&run.run_id)
+        .join("artifacts");
+    std::fs::create_dir_all(&artifact_dir).expect("artifact dir");
+    std::fs::write(
+        artifact_dir.join("draft.json"),
+        serde_json::json!({
+            "schema_version": "1",
+            "has_rows_to_write": true,
+            "ready_to_write": [{
+                "Company": "SponsorCo",
+                "Contact name": "Ada Lovelace",
+                "Role / Title": "Partnerships Lead",
+                "Email": "ada@sponsor.example",
+                "Status": "Verified"
+            }]
+        })
+        .to_string(),
+    )
+    .expect("write preview artifact");
 
     state
         .update_automation_v2_run(&run.run_id, |row| {
             row.status = crate::AutomationRunStatus::AwaitingApproval;
+            if let Some(snapshot) = row.automation_snapshot.as_mut() {
+                snapshot.workspace_root = Some(workspace_root.to_string_lossy().to_string());
+            }
             row.checkpoint.awaiting_gate = Some(crate::AutomationPendingGate {
                 node_id: "publish".to_string(),
                 title: "Publish approval".to_string(),
@@ -79,6 +106,23 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
         first.get("node_id").and_then(Value::as_str),
         Some("publish")
     );
+    assert_eq!(
+        first.get("instructions").and_then(Value::as_str),
+        Some("approve final publish step")
+    );
+    let preview = first
+        .get("action_preview_markdown")
+        .and_then(Value::as_str)
+        .expect("approval preview markdown");
+    assert!(
+        preview.contains("Proposed Notion rows: **1**"),
+        "preview should summarize proposed writes: {preview}"
+    );
+    assert!(
+        preview.contains("Ada Lovelace"),
+        "preview should include proposed row details: {preview}"
+    );
+    assert_ne!(preview, "approve final publish step");
     let request_id = first
         .get("request_id")
         .and_then(Value::as_str)
@@ -103,6 +147,7 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
 
     let count = payload.get("count").and_then(Value::as_u64).unwrap_or(0);
     assert!(count >= 1);
+    let _ = std::fs::remove_dir_all(workspace_root);
 }
 
 #[tokio::test]

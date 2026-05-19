@@ -1820,7 +1820,7 @@ pub(crate) async fn automations_v2_run_gate_decide(
     ));
     spawn_channel_approval_decision_update(
         state.clone(),
-        super::approvals::automation_v2_run_to_approval_request(&current, &gate),
+        super::approvals::automation_v2_run_to_approval_request(&current, &gate, None),
         decision.clone(),
         reason.clone(),
     );

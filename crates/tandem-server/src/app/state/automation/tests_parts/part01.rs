@@ -1300,6 +1300,46 @@ fn connector_source_effective_tools_exclude_artifact_patch_tools() {
 }
 
 #[test]
+fn connector_source_with_input_refs_keeps_read_tool() {
+    let mut node = bare_node();
+    node.objective =
+        "Use Hunter MCP to enrich contacts selected by an upstream scoring artifact.".to_string();
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "score-contact-candidates".to_string(),
+        alias: "scored_contacts".to_string(),
+    }];
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/enrich-and-verify-contacts.json"
+        },
+        "tool_allowlist": [
+            "mcp.hunter.email_verifier",
+            "mcp.hunter.person_enrichment"
+        ]
+    }));
+    let available = std::collections::HashSet::from([
+        "mcp_list".to_string(),
+        "mcp.hunter.email_verifier".to_string(),
+        "mcp.hunter.person_enrichment".to_string(),
+        "read".to_string(),
+        "write".to_string(),
+    ]);
+
+    let requested = automation_requested_tools_for_node(
+        &node,
+        "/tmp/tandem-connector-source-with-inputs",
+        vec![],
+        &available,
+    );
+
+    assert!(requested.contains(&"mcp_list".to_string()));
+    assert!(requested.contains(&"mcp.hunter.email_verifier".to_string()));
+    assert!(requested.contains(&"mcp.hunter.person_enrichment".to_string()));
+    assert!(requested.contains(&"read".to_string()));
+    assert!(requested.contains(&"write".to_string()));
+}
+
+#[test]
 fn connector_server_scope_prefers_concrete_mcp_allowlist() {
     let mut node = bare_node();
     node.objective =
