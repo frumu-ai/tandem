@@ -13,6 +13,7 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 ## Technical Documentation
 
 - [Design System](./DESIGN_SYSTEM.md) - Detailed style/system notes.
+- [EU AI Act Readiness](./EU_AI_ACT_COMPLIANCE.md) - CISO-facing control mapping, current Tandem coverage, and roadmap gaps.
 - [Engine Protocol Matrix](./ENGINE_PROTOCOL_MATRIX.md) - Wire contracts and status.
 - [Engine Context-Driving Runtime](./ENGINE_CONTEXT_DRIVING_RUNTIME.md) - Engine source-of-truth runtime for long-running context, replay, and guardrails.
 - [MCP Improvements](./MCP_IMPROVEMENTS.md) - Connector tools, MCP discovery, and allowlist design.
