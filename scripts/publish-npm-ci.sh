@@ -81,6 +81,7 @@ run_npm_publish() {
   local output_file
   output_file="$(mktemp)"
   local status=0
+  LAST_PUBLISH_OUTPUT=""
 
   set +e
   if [[ -n "$userconfig" ]]; then
@@ -91,6 +92,7 @@ run_npm_publish() {
   status=$?
   set -e
 
+  LAST_PUBLISH_OUTPUT="$(cat "$output_file")"
   cat "$output_file" | tee -a "$LOG_FILE"
   rm -f "$output_file"
   return "$status"
@@ -166,31 +168,34 @@ for dir in "${PACKAGES[@]}"; do
   publish_output=""
   publish_status=0
   fallback_userconfig=""
+  LAST_PUBLISH_OUTPUT=""
 
   if [[ "$DRY_RUN" == "true" ]]; then
-    if publish_output="$(run_npm_publish "$dir" "$publish_userconfig" "${publish_cmd[@]}" --dry-run)"; then
+    if run_npm_publish "$dir" "$publish_userconfig" "${publish_cmd[@]}" --dry-run; then
       publish_status=0
     else
       publish_status=$?
     fi
   else
-    if publish_output="$(run_npm_publish "$dir" "$publish_userconfig" "${publish_cmd[@]}")"; then
+    if run_npm_publish "$dir" "$publish_userconfig" "${publish_cmd[@]}"; then
       publish_status=0
     else
       publish_status=$?
     fi
   fi
+  publish_output="$LAST_PUBLISH_OUTPUT"
 
   if [[ "$publish_status" -ne 0 && "$DRY_RUN" != "true" && -n "${NPM_TOKEN:-}" ]]; then
     if auth_error_detected "$publish_output"; then
       echo "Retrying $name@$version with token auth after npm auth failure" | tee -a "$LOG_FILE"
       fallback_userconfig="$(mktemp)"
       write_token_npmrc "$fallback_userconfig"
-      if publish_output="$(run_npm_publish "$dir" "$fallback_userconfig" "${publish_cmd[@]}")"; then
+      if run_npm_publish "$dir" "$fallback_userconfig" "${publish_cmd[@]}"; then
         publish_status=0
       else
         publish_status=$?
       fi
+      publish_output="$LAST_PUBLISH_OUTPUT"
       rm -f "$fallback_userconfig"
     fi
   fi
