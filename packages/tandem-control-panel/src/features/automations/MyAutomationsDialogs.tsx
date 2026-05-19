@@ -1,8 +1,11 @@
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { motion } from "motion/react";
 import { McpToolAllowlistEditor } from "../../components/McpToolAllowlistEditor";
 import { ProviderModelSelector } from "../../components/ProviderModelSelector";
+import { WorkspaceDirectoryPicker } from "../../components/WorkspaceDirectoryPicker";
 import { renderIcons } from "../../app/icons.js";
+import { api } from "../../lib/api";
 import { ScheduleBuilder } from "./ScheduleBuilder";
 import { TimezoneField } from "./TimezoneField";
 import { ScopeInspector } from "./ScopeInspector";
@@ -384,6 +387,40 @@ export function WorkflowAutomationEditDialog({
   onRecreateWorkflowAutomation,
 }: any) {
   const dialogRef = useDialogIconRender(!!workflowEditDraft);
+  const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
+  const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
+  const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
+  const healthQuery = useQuery({
+    queryKey: ["global", "health", "workflow-edit"],
+    enabled: !!workflowEditDraft,
+    queryFn: () => client?.health?.().catch(() => ({})) ?? Promise.resolve({}),
+    refetchInterval: 30000,
+  });
+  const workspaceBrowserQuery = useQuery({
+    queryKey: ["automations", "workflow-edit", "workspace-browser", workspaceBrowserDir],
+    enabled: !!workflowEditDraft && workspaceBrowserOpen && !!workspaceBrowserDir,
+    queryFn: () =>
+      api(`/api/orchestrator/workspaces/list?dir=${encodeURIComponent(workspaceBrowserDir)}`, {
+        method: "GET",
+      }),
+  });
+  const workspaceDirectories = Array.isArray((workspaceBrowserQuery.data as any)?.directories)
+    ? (workspaceBrowserQuery.data as any).directories
+    : [];
+  const workspaceParentDir = String((workspaceBrowserQuery.data as any)?.parent || "").trim();
+  const workspaceCurrentBrowseDir = String(
+    (workspaceBrowserQuery.data as any)?.dir || workspaceBrowserDir || ""
+  ).trim();
+  const workspaceSearchQuery = String(workspaceBrowserSearch || "")
+    .trim()
+    .toLowerCase();
+  const filteredWorkspaceDirectories = workspaceSearchQuery
+    ? workspaceDirectories.filter((entry: any) => {
+        const name = String(entry?.name || entry?.path || "").toLowerCase();
+        return name.includes(workspaceSearchQuery);
+      })
+    : workspaceDirectories;
+
   if (!workflowEditDraft) return null;
 
   const selectedExecutionMode =
@@ -457,29 +494,50 @@ export function WorkflowAutomationEditDialog({
                   placeholder="Add notes, delivery expectations, or operator guidance."
                 />
               </div>
-              <div className="grid gap-1">
-                <label className="text-xs text-slate-400">Workspace root</label>
-                <input
-                  className={`tcp-input ${
-                    validateWorkspaceRootInput(workflowEditDraft.workspaceRoot)
-                      ? "border-red-500/70 text-red-100"
-                      : ""
-                  }`}
-                  value={workflowEditDraft.workspaceRoot}
-                  onInput={(e) =>
-                    setWorkflowEditDraft((current: any) =>
-                      current
-                        ? { ...current, workspaceRoot: (e.target as HTMLInputElement).value }
-                        : current
-                    )
-                  }
-                />
-                {validateWorkspaceRootInput(workflowEditDraft.workspaceRoot) ? (
-                  <div className="text-xs text-red-300">
-                    {validateWorkspaceRootInput(workflowEditDraft.workspaceRoot)}
-                  </div>
-                ) : null}
-              </div>
+              <WorkspaceDirectoryPicker
+                value={workflowEditDraft.workspaceRoot}
+                error={validateWorkspaceRootInput(workflowEditDraft.workspaceRoot)}
+                open={workspaceBrowserOpen}
+                browseDir={workspaceBrowserDir}
+                search={workspaceBrowserSearch}
+                parentDir={workspaceParentDir}
+                currentDir={workspaceCurrentBrowseDir}
+                directories={filteredWorkspaceDirectories}
+                helperText="Tandem will run this automation from this workspace directory."
+                onOpen={() => {
+                  const seed = String(
+                    workflowEditDraft.workspaceRoot ||
+                      (healthQuery.data as any)?.workspaceRoot ||
+                      (healthQuery.data as any)?.workspace_root ||
+                      "/"
+                  ).trim();
+                  setWorkspaceBrowserDir(seed || "/");
+                  setWorkspaceBrowserSearch("");
+                  setWorkspaceBrowserOpen(true);
+                }}
+                onClose={() => {
+                  setWorkspaceBrowserOpen(false);
+                  setWorkspaceBrowserSearch("");
+                }}
+                onClear={() =>
+                  setWorkflowEditDraft((current: any) =>
+                    current ? { ...current, workspaceRoot: "" } : current
+                  )
+                }
+                onSearchChange={setWorkspaceBrowserSearch}
+                onBrowseParent={() => {
+                  if (workspaceParentDir) setWorkspaceBrowserDir(workspaceParentDir);
+                }}
+                onBrowseDirectory={(path) => setWorkspaceBrowserDir(path)}
+                onSelectDirectory={() => {
+                  if (!workspaceCurrentBrowseDir) return;
+                  setWorkflowEditDraft((current: any) =>
+                    current ? { ...current, workspaceRoot: workspaceCurrentBrowseDir } : current
+                  );
+                  setWorkspaceBrowserOpen(false);
+                  setWorkspaceBrowserSearch("");
+                }}
+              />
             </AccordionSection>
 
             <AccordionSection

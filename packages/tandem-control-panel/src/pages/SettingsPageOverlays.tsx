@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
-import { DetailDrawer, Toolbar } from "../ui/index.tsx";
+import { Badge, DetailDrawer, Toolbar } from "../ui/index.tsx";
 import { BugMonitorExternalProjectsPanel } from "../components/BugMonitorExternalProjectsPanel";
 import { EmptyState } from "./ui";
 import {
