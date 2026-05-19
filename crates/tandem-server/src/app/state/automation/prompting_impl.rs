@@ -685,6 +685,14 @@ pub(crate) fn render_automation_v2_prompt_with_options(
             contract.kind, guidance, schema
         ));
     }
+    if let Some(mcp_contract_guidance) = options
+        .mcp_contract_guidance
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(mcp_contract_guidance.to_string());
+    }
     if let Some(builder) = node
         .metadata
         .as_ref()

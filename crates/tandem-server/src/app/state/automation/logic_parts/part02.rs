@@ -1321,6 +1321,8 @@ pub(crate) fn semantic_block_reason_for_requirements(
     let has_unmet = |needle: &str| unmet_requirements.iter().any(|value| value == needle);
     if has_unmet("artifact_status_not_terminal") {
         Some("artifact reported a non-terminal status".to_string())
+    } else if has_unmet("output_schema_invalid") {
+        Some("artifact does not match the declared output contract schema".to_string())
     } else if has_unmet("provider_required_tool_mode_unsatisfied") {
         Some("artifact contains a provider required-tool/write-required failure marker".to_string())
     } else if has_unmet("placeholder_artifact") {

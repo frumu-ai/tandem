@@ -88,6 +88,7 @@ fn knowledge_context_is_injected_into_automation_prompt() {
                 "<knowledge_context>\n- reused evidence\n</knowledge_context>".to_string(),
             ),
             runtime_values: None,
+            mcp_contract_guidance: None,
         },
     );
 
@@ -1368,6 +1369,7 @@ fn prompt_resolves_reserved_runtime_placeholders_for_run() {
             summary_only_upstream: false,
             knowledge_context: None,
             runtime_values: Some(runtime_values("2026-04-09", "0935", "2026-04-09 09:35")),
+            mcp_contract_guidance: None,
         },
     );
 
@@ -1481,6 +1483,7 @@ fn final_prompt_surfaces_automation_output_targets_as_required_workspace_writes(
             summary_only_upstream: false,
             knowledge_context: None,
             runtime_values: Some(runtime_values("2026-04-09", "1304", "2026-04-09 13:04")),
+            mcp_contract_guidance: None,
         },
     );
 
@@ -1592,6 +1595,7 @@ fn structured_json_prompt_surfaces_explicit_output_files_for_analyze_findings() 
             summary_only_upstream: false,
             knowledge_context: None,
             runtime_values: None,
+            mcp_contract_guidance: None,
         },
     );
 

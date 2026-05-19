@@ -659,6 +659,134 @@ fn automation_node_is_workspace_scope_preflight(node: &AutomationFlowNode) -> bo
         })
 }
 
+pub(crate) fn automation_value_contains_false_flag(value: &Value, flag: &str) -> bool {
+    match value {
+        Value::Object(object) => {
+            object.get(flag).and_then(Value::as_bool) == Some(false)
+                || object
+                    .values()
+                    .any(|child| automation_value_contains_false_flag(child, flag))
+        }
+        Value::Array(items) => items
+            .iter()
+            .any(|child| automation_value_contains_false_flag(child, flag)),
+        _ => false,
+    }
+}
+
+pub(crate) fn automation_node_schema_has_required_fields(
+    node: &AutomationFlowNode,
+    fields: &[&str],
+) -> bool {
+    let Some(schema) = node
+        .output_contract
+        .as_ref()
+        .and_then(|contract| contract.schema.as_ref())
+    else {
+        return false;
+    };
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    fields.iter().all(|field| required.contains(field))
+}
+
+pub(crate) async fn try_execute_empty_upstream_structured_short_circuit(
+    state: &AppState,
+    run_id: &str,
+    automation: &AutomationV2Spec,
+    node: &AutomationFlowNode,
+    session_id: &str,
+    workspace_root: &str,
+    required_output_path: Option<&str>,
+    requested_tools: &[String],
+    upstream_inputs: &[Value],
+) -> anyhow::Result<Option<Value>> {
+    if !upstream_inputs
+        .iter()
+        .any(|input| automation_value_contains_false_flag(input, "has_work"))
+    {
+        return Ok(None);
+    }
+    if !automation_node_schema_has_required_fields(
+        node,
+        &["candidates_by_company", "has_candidates"],
+    ) {
+        return Ok(None);
+    }
+    let Some(output_path) = required_output_path else {
+        return Ok(None);
+    };
+    let resolved_output =
+        resolve_automation_output_path_for_run(workspace_root, run_id, output_path)?;
+    if let Some(parent) = resolved_output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let artifact = json!({
+        "schema_version": "1",
+        "candidates_by_company": [],
+        "has_candidates": false,
+    });
+    let artifact_text = serde_json::to_string_pretty(&artifact)?;
+    std::fs::write(&resolved_output, &artifact_text)?;
+    let display_path = resolved_output
+        .strip_prefix(workspace_root)
+        .ok()
+        .and_then(|value| value.to_str().map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| output_path.to_string());
+
+    let mut session = state
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap_or_else(|| {
+            Session::new(
+                Some(format!(
+                    "Automation {} / {}",
+                    automation.automation_id, node.node_id
+                )),
+                Some(workspace_root.to_string()),
+            )
+        });
+    session.project_id = Some(automation_workspace_project_id(workspace_root));
+    session.workspace_root = Some(workspace_root.to_string());
+    session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::Text {
+            text: format!(
+                "Upstream reported `has_work: false`; skipped connector calls for `{}` and wrote `{}`.\n\n{}",
+                node.node_id, display_path, artifact_text
+            ),
+        }],
+    ));
+    state.storage.save_session(session.clone()).await?;
+    let artifact_validation = json!({
+        "accepted_candidate_source": "deterministic_empty_upstream_short_circuit",
+        "validation_outcome": "accepted",
+        "unmet_requirements": [],
+    });
+    Ok(Some(
+        node_output::wrap_automation_node_output_with_automation(
+            automation,
+            node,
+            &session,
+            requested_tools,
+            session_id,
+            Some(run_id),
+            "{\"status\":\"completed\"}",
+            Some((display_path, artifact_text)),
+            Some(artifact_validation),
+        ),
+    ))
+}
+
 fn automation_workspace_scope_path_candidates(node: &AutomationFlowNode) -> Vec<String> {
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
@@ -1624,6 +1752,18 @@ pub(crate) async fn execute_automation_v2_node(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let mcp_contracts = automation_mcp_contract_summaries(&offered_tool_schemas);
+    let required_tool_call_arg_validation = automation_required_tool_call_arg_validation(
+        &automation_node_required_tool_calls(node),
+        &offered_tool_schemas,
+    );
+    if let Some(object) = capability_resolution.as_object_mut() {
+        object.insert("mcp_contracts".to_string(), mcp_contracts.clone());
+        object.insert(
+            "required_tool_call_arg_validation".to_string(),
+            required_tool_call_arg_validation.clone(),
+        );
+    }
     if !missing_capabilities.is_empty() {
         let offered_tools_summary = if effective_offered_tools.is_empty() {
             "none".to_string()
@@ -1720,6 +1860,22 @@ pub(crate) async fn execute_automation_v2_node(
         &workspace_root,
         required_output_path.as_deref(),
         &requested_tools,
+    )
+    .await?
+    {
+        state.clear_automation_v2_session(run_id, &session_id).await;
+        return Ok(output);
+    }
+    if let Some(output) = try_execute_empty_upstream_structured_short_circuit(
+        state,
+        run_id,
+        automation,
+        node,
+        &session_id,
+        &workspace_root,
+        required_output_path.as_deref(),
+        &requested_tools,
+        &upstream_inputs,
     )
     .await?
     {
@@ -1856,6 +2012,7 @@ pub(crate) async fn execute_automation_v2_node(
             (None, None, None) => None,
         }
     };
+    let mcp_contract_guidance = automation_mcp_contract_prompt_guidance(&mcp_contracts);
     if !approved_learning_ids.is_empty() {
         let _ = state
             .record_automation_v2_run_learning_usage(run_id, &approved_learning_ids)
@@ -1884,6 +2041,7 @@ pub(crate) async fn execute_automation_v2_node(
             summary_only_upstream: false,
             knowledge_context: knowledge_context.clone(),
             runtime_values: Some(runtime_values.clone()),
+            mcp_contract_guidance: mcp_contract_guidance.clone(),
         },
     );
     let preserve_full_upstream_inputs = automation_node_preserves_full_upstream_inputs(node);
@@ -1930,6 +2088,7 @@ pub(crate) async fn execute_automation_v2_node(
                     summary_only_upstream: true,
                     knowledge_context: knowledge_context.clone(),
                     runtime_values: Some(runtime_values.clone()),
+                    mcp_contract_guidance: mcp_contract_guidance.clone(),
                 },
             );
             preflight = build_automation_prompt_preflight(

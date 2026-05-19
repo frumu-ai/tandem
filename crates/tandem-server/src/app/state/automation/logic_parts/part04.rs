@@ -65,6 +65,82 @@ fn session_has_notion_database_property_update(session: &Session) -> bool {
     })
 }
 
+fn automation_output_schema_validation_issue(schema: &Value, artifact: &Value) -> Option<String> {
+    fn validate_node(schema: &Value, value: &Value, path: &str) -> Option<String> {
+        if let Some(expected_const) = schema.get("const") {
+            if value != expected_const {
+                return Some(format!("{path} must equal {expected_const}"));
+            }
+        }
+
+        if let Some(type_schema) = schema.get("type") {
+            let type_matches = |expected: &str| match expected {
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                "string" => value.is_string(),
+                "number" => value.is_number(),
+                "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+                "boolean" => value.is_boolean(),
+                "null" => value.is_null(),
+                _ => true,
+            };
+            let matches_type = type_schema
+                .as_str()
+                .map(type_matches)
+                .or_else(|| {
+                    type_schema
+                        .as_array()
+                        .map(|types| types.iter().filter_map(Value::as_str).any(type_matches))
+                })
+                .unwrap_or(true);
+            if !matches_type {
+                return Some(format!("{path} has the wrong JSON type"));
+            }
+        }
+
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            let Some(object) = value.as_object() else {
+                return Some(format!("{path} must be an object"));
+            };
+            for field in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(field) {
+                    return Some(format!("{path}.{field} is required"));
+                }
+            }
+        }
+
+        if let (Some(properties), Some(object)) = (
+            schema.get("properties").and_then(Value::as_object),
+            value.as_object(),
+        ) {
+            for (field, child_schema) in properties {
+                if let Some(child_value) = object.get(field) {
+                    let child_path = if path == "$" {
+                        format!("$.{field}")
+                    } else {
+                        format!("{path}.{field}")
+                    };
+                    if let Some(issue) = validate_node(child_schema, child_value, &child_path) {
+                        return Some(issue);
+                    }
+                }
+            }
+        }
+
+        if let (Some(item_schema), Some(items)) = (schema.get("items"), value.as_array()) {
+            for (index, item) in items.iter().enumerate() {
+                if let Some(issue) = validate_node(item_schema, item, &format!("{path}[{index}]")) {
+                    return Some(issue);
+                }
+            }
+        }
+
+        None
+    }
+
+    validate_node(schema, artifact, "$")
+}
+
 pub(crate) fn validate_automation_artifact_output_with_context(
     automation: &AutomationV2Spec,
     node: &AutomationFlowNode,
@@ -1449,6 +1525,30 @@ pub(crate) fn validate_automation_artifact_output_with_context(
     }
     if accepted_output.is_some() && accepted_candidate_source.is_none() {
         accepted_candidate_source = Some("verified_output".to_string());
+    }
+    if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson {
+        if let (Some((_, text)), Some(schema)) = (
+            accepted_output.as_ref(),
+            node.output_contract
+                .as_ref()
+                .and_then(|contract| contract.schema.as_ref()),
+        ) {
+            let schema_issue = serde_json::from_str::<Value>(text)
+                .map_err(|err| format!("artifact is not valid JSON: {err}"))
+                .and_then(|artifact| {
+                    automation_output_schema_validation_issue(schema, &artifact)
+                        .map(Err)
+                        .unwrap_or(Ok(()))
+                })
+                .err();
+            if let Some(issue) = schema_issue {
+                accepted_output = None;
+                unmet_requirements.push("output_schema_invalid".to_string());
+                let reason = format!("artifact does not match output_contract.schema: {issue}");
+                rejected_reason = Some(reason.clone());
+                semantic_block_reason = Some(reason);
+            }
+        }
     }
     if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson {
         let requested_tools = tool_telemetry

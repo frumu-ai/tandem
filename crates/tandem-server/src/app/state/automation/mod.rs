@@ -111,7 +111,7 @@ use tandem_memory::MemoryManager;
 use tandem_plan_compiler::api as compiler_api;
 use tandem_types::{
     MessagePart, MessagePartInput, MessageRole, ModelSpec, PrewriteCoverageMode,
-    PrewriteRequirements, SendMessageRequest, Session, ToolMode,
+    PrewriteRequirements, SendMessageRequest, Session, ToolMode, ToolSchema,
 };
 
 use super::*;

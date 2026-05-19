@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automation V2 MCP contract diagnostics**: Added MCP input-contract summaries, required-argument examples, schema warnings, and required-tool static-argument diagnostics to node preflight metadata and prompts.
 - **Hosted tenant isolation denial coverage**: Added regression tests proving Automation V2 tenant payloads cannot override the request tenant, scheduled/background-created runs retain their owning automation tenant, watch-condition runs keep tenant context, background context-run sync does not fall back to `local_implicit`, and stale recovery preserves explicit tenant context without an active HTTP request.
 - **Automation V2 event tenant coverage**: Added tenant visibility and finite-body SSE coverage for Automation V2 events so cross-tenant event streams depend on explicit matching `tenantContext`.
 - **Runtime resource tenant denial coverage**: Added denial-driven tests for sessions, event streams, context-run internals, Automation V2 runs/gates, legacy workflow routes, provider credentials, MCP secrets, and memory surfaces.
@@ -34,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Automation V2 MCP required-tool diagnostics**: Required MCP tool validation now records the exact missing `required_tool_calls`, includes them in repair guidance, and reports MCP string errors such as `MCP error -32602` as failed tool results instead of successful connector calls.
+- **Automation V2 structured JSON schema enforcement**: Structured JSON nodes with an `output_contract.schema` now reject artifacts that do not match the declared shape, preventing raw connector responses from passing as valid handoff artifacts.
+- **Automation V2 empty connector batches**: Structured connector nodes with candidate-list schemas now short-circuit when upstream input declares `has_work: false`, writing the empty schema-shaped artifact instead of spending MCP calls on account or inventory checks.
 - **Automation blocker visibility**: Automation debugger blocker panels now include checkpoint lifecycle events, so `node_repair_requested`, `workflow_state_changed`, and `run_paused` reasons surface directly when node outputs or top-level run fields omit the actionable blocker.
 
 ### Notes

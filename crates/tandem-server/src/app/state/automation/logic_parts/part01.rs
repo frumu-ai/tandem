@@ -64,6 +64,282 @@ pub(crate) struct AutomationPromptRenderOptions {
     pub(crate) summary_only_upstream: bool,
     pub(crate) knowledge_context: Option<String>,
     pub(crate) runtime_values: Option<AutomationPromptRuntimeValues>,
+    pub(crate) mcp_contract_guidance: Option<String>,
+}
+
+fn automation_schema_type_label(schema: &Value) -> String {
+    if let Some(value) = schema.get("const") {
+        return format!("const {}", value);
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        let preview = values
+            .iter()
+            .take(4)
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        if !preview.is_empty() {
+            return format!("enum {preview}");
+        }
+    }
+    if let Some(kind) = schema.get("type").and_then(Value::as_str) {
+        return kind.to_string();
+    }
+    if let Some(types) = schema.get("type").and_then(Value::as_array) {
+        let joined = types
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        if !joined.is_empty() {
+            return joined;
+        }
+    }
+    if schema.get("anyOf").is_some() {
+        return "anyOf".to_string();
+    }
+    if schema.get("oneOf").is_some() {
+        return "oneOf".to_string();
+    }
+    "unknown".to_string()
+}
+
+fn automation_schema_example_value(schema: &Value) -> Value {
+    if let Some(value) = schema.get("const") {
+        return value.clone();
+    }
+    if let Some(value) = schema
+        .get("enum")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+    {
+        return value.clone();
+    }
+    let schema_type = schema.get("type");
+    let type_name = schema_type
+        .and_then(Value::as_str)
+        .or_else(|| {
+            schema_type.and_then(Value::as_array).and_then(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .find(|kind| *kind != "null")
+            })
+        })
+        .unwrap_or("string");
+    match type_name {
+        "array" => json!([]),
+        "boolean" => json!(false),
+        "integer" | "number" => json!(0),
+        "null" => Value::Null,
+        "object" => json!({}),
+        _ => json!(""),
+    }
+}
+
+fn automation_mcp_contract_for_schema(schema: &ToolSchema) -> Option<Value> {
+    if !schema.name.starts_with("mcp.") || schema.name == "mcp_list" {
+        return None;
+    }
+    let input = &schema.input_schema;
+    let mut warnings = Vec::<String>::new();
+    let object = input.as_object();
+    if object.is_none() {
+        warnings.push("input_schema is not an object".to_string());
+    }
+    let properties = input
+        .get("properties")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let required = input
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !required.is_empty() && properties.is_empty() {
+        warnings.push("required fields are declared but properties are missing".to_string());
+    }
+    if input.get("anyOf").is_some() || input.get("oneOf").is_some() {
+        warnings.push(
+            "root schema uses anyOf/oneOf; arguments may need tool-specific care".to_string(),
+        );
+    }
+
+    let mut required_args = Vec::<Value>::new();
+    let mut optional_args = Vec::<Value>::new();
+    let mut example = serde_json::Map::new();
+    for field in &required {
+        let Some(prop) = properties.get(field) else {
+            warnings.push(format!(
+                "required field `{field}` is missing from properties"
+            ));
+            continue;
+        };
+        if !prop.is_object() {
+            warnings.push(format!("required field `{field}` schema is not an object"));
+        }
+        if prop.get("type").is_none()
+            && prop.get("enum").is_none()
+            && prop.get("const").is_none()
+            && prop.get("anyOf").is_none()
+            && prop.get("oneOf").is_none()
+        {
+            warnings.push(format!("required field `{field}` has no clear type"));
+        }
+        required_args.push(json!({
+            "name": field,
+            "type": automation_schema_type_label(prop),
+            "description": prop.get("description").and_then(Value::as_str).unwrap_or(""),
+        }));
+        example.insert(field.clone(), automation_schema_example_value(prop));
+    }
+    let required_set = required.iter().cloned().collect::<HashSet<_>>();
+    for (field, prop) in &properties {
+        if required_set.contains(field) {
+            continue;
+        }
+        optional_args.push(json!({
+            "name": field,
+            "type": automation_schema_type_label(prop),
+            "description": prop.get("description").and_then(Value::as_str).unwrap_or(""),
+        }));
+    }
+    Some(json!({
+        "tool": schema.name,
+        "description": schema.description,
+        "required_args": required_args,
+        "optional_args": optional_args,
+        "minimal_args_example": Value::Object(example),
+        "schema_warnings": warnings,
+    }))
+}
+
+pub(crate) fn automation_mcp_contract_summaries(offered_tool_schemas: &[ToolSchema]) -> Value {
+    let contracts = offered_tool_schemas
+        .iter()
+        .filter_map(automation_mcp_contract_for_schema)
+        .collect::<Vec<_>>();
+    let warning_count = contracts
+        .iter()
+        .filter_map(|contract| contract.get("schema_warnings").and_then(Value::as_array))
+        .map(Vec::len)
+        .sum::<usize>();
+    json!({
+        "policy": "warn_then_run",
+        "contract_count": contracts.len(),
+        "warning_count": warning_count,
+        "contracts": contracts,
+    })
+}
+
+pub(crate) fn automation_required_tool_call_arg_validation(
+    required_calls: &[AutomationRequiredToolCall],
+    offered_tool_schemas: &[ToolSchema],
+) -> Value {
+    let mut rows = Vec::new();
+    for call in required_calls {
+        if !call.tool.starts_with("mcp.") || call.tool.ends_with(".*") {
+            continue;
+        }
+        let Some(schema) = offered_tool_schemas
+            .iter()
+            .find(|schema| schema.name == call.tool)
+        else {
+            rows.push(json!({
+                "tool": call.tool,
+                "status": "tool_schema_missing",
+                "warnings": ["required tool schema was not offered"],
+            }));
+            continue;
+        };
+        let contract = automation_mcp_contract_for_schema(schema).unwrap_or_else(|| json!({}));
+        let args = call.args.clone().unwrap_or_else(|| json!({}));
+        let mut warnings = Vec::<String>::new();
+        let required_args = contract
+            .get("required_args")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for arg in required_args {
+            let Some(name) = arg.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !args
+                .as_object()
+                .is_some_and(|object| object.contains_key(name))
+            {
+                warnings.push(format!("static args missing required field `{name}`"));
+            }
+        }
+        rows.push(json!({
+            "tool": call.tool,
+            "status": if warnings.is_empty() { "ok" } else { "warning" },
+            "warnings": warnings,
+            "minimal_args_example": contract.get("minimal_args_example").cloned().unwrap_or_else(|| json!({})),
+        }));
+    }
+    json!(rows)
+}
+
+pub(crate) fn automation_mcp_contract_prompt_guidance(mcp_contracts: &Value) -> Option<String> {
+    let contracts = mcp_contracts
+        .get("contracts")
+        .and_then(Value::as_array)
+        .filter(|rows| !rows.is_empty())?;
+    let mut lines = vec![
+        "MCP Tool Contracts:".to_string(),
+        "- Use these argument contracts before calling MCP tools. If a required field is listed, include it in the tool args; do not omit required string fields when an empty string is the intended value.".to_string(),
+        "- Schema warnings are non-blocking, but treat them as a reason to be conservative and inspect tool errors carefully.".to_string(),
+    ];
+    for contract in contracts.iter().take(8) {
+        let tool = contract.get("tool").and_then(Value::as_str).unwrap_or("");
+        if tool.is_empty() {
+            continue;
+        }
+        let required = contract
+            .get("required_args")
+            .and_then(Value::as_array)
+            .map(|args| {
+                args.iter()
+                    .filter_map(|arg| {
+                        Some(format!(
+                            "{}: {}",
+                            arg.get("name").and_then(Value::as_str)?,
+                            arg.get("type").and_then(Value::as_str).unwrap_or("unknown")
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+        let example = contract
+            .get("minimal_args_example")
+            .map(Value::to_string)
+            .unwrap_or_else(|| "{}".to_string());
+        lines.push(format!(
+            "- `{tool}` required args: {required}; minimal args example: `{example}`"
+        ));
+        if let Some(warnings) = contract.get("schema_warnings").and_then(Value::as_array) {
+            let warning_text = warnings
+                .iter()
+                .filter_map(Value::as_str)
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !warning_text.is_empty() {
+                lines.push(format!("  warnings: {warning_text}"));
+            }
+        }
+    }
+    Some(lines.join("\n"))
 }
 
 pub(crate) fn automation_prompt_runtime_values(

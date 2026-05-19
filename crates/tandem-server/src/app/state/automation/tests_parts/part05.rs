@@ -1,4 +1,168 @@
 #[test]
+fn mcp_contract_summary_extracts_required_args_and_example() {
+    let schema = ToolSchema::new(
+        "mcp.notion.notion_search",
+        "Search a Notion data source",
+        json!({
+            "type": "object",
+            "required": ["query", "data_source_url"],
+            "properties": {
+                "query": {"type": "string"},
+                "data_source_url": {"type": "string"},
+                "page_size": {"type": "integer"}
+            }
+        }),
+    );
+
+    let contracts = automation_mcp_contract_summaries(&[schema]);
+    let contract = contracts["contracts"][0].clone();
+
+    assert_eq!(contract["tool"], "mcp.notion.notion_search");
+    assert!(contract["required_args"]
+        .as_array()
+        .expect("required args")
+        .iter()
+        .any(|arg| arg["name"] == "query" && arg["type"] == "string"));
+    assert_eq!(contract["minimal_args_example"]["query"], "");
+    assert_eq!(contracts["warning_count"], 0);
+}
+
+#[test]
+fn required_tool_call_arg_validation_warns_on_missing_static_args() {
+    let schema = ToolSchema::new(
+        "mcp.example.search",
+        "Search",
+        json!({
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string"}
+            }
+        }),
+    );
+    let calls = vec![AutomationRequiredToolCall {
+        tool: "mcp.example.search".to_string(),
+        args: Some(json!({})),
+        evidence_key: None,
+        required_success: true,
+    }];
+
+    let validation = automation_required_tool_call_arg_validation(&calls, &[schema]);
+
+    assert_eq!(validation[0]["status"], "warning");
+    assert!(validation[0]["warnings"][0]
+        .as_str()
+        .expect("warning")
+        .contains("query"));
+}
+
+#[test]
+fn empty_upstream_short_circuit_detection_matches_candidate_schema() {
+    let upstream = json!({
+        "company_batch": {
+            "has_work": false,
+            "selected_companies": []
+        }
+    });
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: Some(json!({
+            "type": "object",
+            "required": ["schema_version", "candidates_by_company", "has_candidates"],
+            "properties": {
+                "schema_version": {"const": "1"},
+                "candidates_by_company": {"type": "array"},
+                "has_candidates": {"type": "boolean"}
+            }
+        })),
+        summary_guidance: None,
+    });
+
+    assert!(automation_value_contains_false_flag(&upstream, "has_work"));
+    assert!(automation_node_schema_has_required_fields(
+        &node,
+        &["candidates_by_company", "has_candidates"]
+    ));
+}
+
+#[test]
+fn structured_json_output_schema_rejects_wrong_shape() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-structured-json-schema-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "discover_contact_candidates".to_string();
+    node.objective = "Discover candidate contacts.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: Some(json!({
+            "type": "object",
+            "required": ["schema_version", "candidates_by_company", "has_candidates"],
+            "properties": {
+                "schema_version": {"const": "1"},
+                "candidates_by_company": {"type": "array"},
+                "has_candidates": {"type": "boolean"}
+            }
+        })),
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/discover-contact-candidates.json"
+        }
+    }));
+    let session = Session::new(Some("schema mismatch".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+    let raw_hunter_account = json!({
+        "email": "evan@example.com",
+        "calls": {
+            "available": 75,
+            "used": 0
+        }
+    })
+    .to_string();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "{\"status\":\"completed\"}",
+        &json!({
+            "executed_tools": ["mcp.hunter.account", "write"],
+            "requested_tools": ["mcp.hunter.account", "write"],
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/discover-contact-candidates.json".to_string(),
+            raw_hunter_account,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_none());
+    assert_eq!(validation["validation_outcome"], "needs_repair");
+    assert!(validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet requirements")
+        .iter()
+        .any(|value| value.as_str() == Some("output_schema_invalid")));
+    assert!(rejected
+        .as_deref()
+        .expect("rejected reason")
+        .contains("output_contract.schema"));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn validation_accepts_unknown_mcp_server_artifact_from_concrete_tool_receipt() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-dynamic-mcp-artifact-{}",
