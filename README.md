@@ -8,7 +8,7 @@
     <a href="https://github.com/frumu-ai/tandem/releases"><img src="https://img.shields.io/github/v/release/frumu-ai/tandem?label=release&style=for-the-badge" alt="Latest Release"></a>
     <a href="https://www.npmjs.com/package/@frumu/tandem-client"><img src="https://img.shields.io/npm/v/%40frumu%2Ftandem-client?label=npm%20client&style=for-the-badge" alt="npm client"></a>
     <a href="https://pypi.org/project/tandem-client/"><img src="https://img.shields.io/pypi/v/tandem-client?label=PyPI%20client&style=for-the-badge" alt="PyPI client"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge" alt="License: MIT"></a>
+    <a href="docs/LICENSING.md"><img src="https://img.shields.io/badge/License-Mixed%3A%20MIT%2FApache--2.0%20%2B%20BUSL--1.1-blue.svg?style=for-the-badge" alt="License: Mixed MIT/Apache-2.0 + BUSL-1.1"></a>
     <a href="https://github.com/sponsors/frumu-ai"><img src="https://img.shields.io/badge/sponsor-30363D?logo=GitHub-Sponsors&logoColor=%23EA4AAA&style=for-the-badge" alt="Sponsor"></a>
   </p>
 </div>
@@ -22,13 +22,11 @@
   <a href="https://tandem.ac/agents?utm_source=github&utm_medium=readme&utm_campaign=hosted_waitlist&utm_content=top_banner">Join the waitlist</a>
 </p>
 
-Tandem is **governed AI runtime infrastructure** for long-running agentic work.
+Tandem is a source-available, deterministic runtime for Operational AI and Execution Governance.
 
-While the current landscape of AI agents is flooded with "chat-first assistants," chat transcripts are not a safe enterprise control plane. They do not provide durable state, scoped authority, replay, tenant boundaries, or audit-grade receipts by themselves.
+The era of "chat-first" AI assistants is over. As agents move from answering to acting, conversational models inevitably fail due to excessive agency and context bloat. You cannot secure an enterprise workflow with a system prompt.
 
-Tandem treats autonomous execution as a distributed systems problem. The source of truth is the engine: durable runs, scoped tools, approvals, artifacts, validators, audit trails, tenant-aware state, and enterprise sidecar boundaries.
-
-It provides runtime primitives for platform teams that need agentic work to be observable, recoverable, policy-aware, and self-hostable instead of hidden inside a prompt loop.
+Tandem introduces **Spec-Driven Agentic Engineering**. We treat autonomous execution as a zero-trust distributed systems problem. By physically separating Agent Work (researching, drafting) from Runtime Authority (approvals, mutation, state), Tandem ensures that an AI cannot execute a protected tool without a cryptographically isolated, human-verified receipt.
 
 - **Entrypoints are clients, not separate engines:** The Tauri desktop app, TUI, web control panel, channels, and SDKs all talk to the same engine runtime.
 - **Engine-owned orchestration:** Shared task state, replay, approvals, validators, and deterministic workflow projections make long-running work inspectable.
@@ -105,6 +103,16 @@ tandem-engine serve --hostname 127.0.0.1 --port 39731
 - TUI: `npm i -g @frumu/tandem-tui && tandem-tui`
 - SDKs: `npm install @frumu/tandem-client` or `pip install tandem-client`
 
+## Open Core & Source-Available Architecture
+
+Tandem is built for developers first, using an open-core model. We believe that to trust an AI runtime, you must be able to audit the execution router line-by-line.
+
+**Local Development & Internal Use:** The core Rust execution engine, local desktop app, and tandem-agents libraries are free for local development and internal deployment.
+
+**Enterprise Features (Coming Soon):** Advanced features required for scaled organizational deployments—such as strict JWT Identity Provider federation (Zitadel/Okta), BYOK cryptographic signatures, and High Availability clustering—are governed under commercial or source-available terms, including the Business Source License 1.1 (`BUSL-1.1`) where declared.
+
+**The Rule:** You are free to use Tandem to govern your own agents under the license terms for each package. You are restricted from wrapping source-available Tandem components and selling them as a managed competitive SaaS unless your license permits it. See [docs/LICENSING.md](docs/LICENSING.md) for exact details.
+
 ## Architecture
 
 ```mermaid
@@ -152,22 +160,21 @@ flowchart TD
 
 ## Common workflows
 
-| Task                               | What Tandem does                                                               |
-| ---------------------------------- | ------------------------------------------------------------------------------ |
-| Refactor a codebase safely         | Scans files, proposes a staged plan, shows diffs, and applies approved changes |
-| Research and summarize sources     | Reads multiple references and outputs structured summaries                     |
-| Generate recurring reports         | Runs scheduled automations and produces markdown/dashboard artifacts           |
-| Connect external tools through MCP | Uses configured MCP connectors with approval-aware execution                   |
-| Operate AI workflows via API       | Run sessions through local/headless HTTP + SSE endpoints                       |
+| Governed Workflow           | What the Tandem Runtime enforces                                                                                                                            |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Evaluate Vendor Risk Policy | Ingests complex regulatory docs, maps compliance gaps, and drafts an exception brief. Mutation tools are physically locked out during this read-only phase. |
+| Reconcile Ledger Exceptions | Agents propose data reconciliations. The runtime pauses execution, awaiting human authorization before any system-of-record is updated.                     |
+| Execute Code Migrations     | Proposes staged PRs. The engine enforces revision locks and prevents agents from merging code without clearing an explicit approval gate.                   |
+| Govern External MCP Tools   | Connects to external data sources via the Model Context Protocol (MCP) with node-level, strictly scoped tool permissions.                                   |
 
 ## Features
 
-### Engine-Owned Workflow Runtime
+### Execution Governance & Deterministic Runtime
 
-- **Coordinated autonomous work:** Explicit blackboards over conversational thread dumping.
-- **Multi-simultaneous agents:** Manage parallel execution through Git Worktree Isolation and patch streams.
-- **State survival:** Checkpoints, replayable event history, and materialized run states.
-- **Approval gates:** Keep humans in control with supervised tool flows for destructive actions.
+- **Zero-Trust Tool Routing:** The model is not the control system. Tools are scoped to the exact workflow node, ensuring agents cannot "hallucinate" a call to a tool they do not have authority to use.
+- **Durable Audit Receipts:** Every execution generates an immutable, tenant-aware JSON receipt capturing the actor, timestamp, and payload outside of the LLM's context window.
+- **Strict Approval Gates:** Keep humans in control. The runtime physically halts the DAG before destructive actions, awaiting a verified human handshake.
+- **State Survival:** Checkpoints, replayable event history, and materialized run states that survive API timeouts and connector failures.
 
 ### Multi-Agent Orchestration
 
@@ -293,7 +300,7 @@ If Brave is rate-limited and Exa is configured, `auto` can continue with Exa ins
 - **Local-first runtime**: Data and state stay on your machine unless you send prompts/tools to configured providers.
 - **Supervised execution**: AI runs through controlled tools with explicit approvals for write/delete operations.
 - **Provider agnostic**: Route through the model providers you choose.
-- **Open source and auditable**: MIT repo license, `MIT OR Apache-2.0` for most Rust crates, and `BUSL-1.1` for the premium compiler and governance crates as documented in [docs/LICENSING.md](docs/LICENSING.md).
+- **Auditable source with clear license boundaries**: This is a mixed-license repository: permissive `MIT`, `Apache-2.0`, and `MIT OR Apache-2.0` components sit alongside source-available `BUSL-1.1` compiler and governance components, as documented in [docs/LICENSING.md](docs/LICENSING.md).
 
 ## Security and privacy
 
@@ -426,20 +433,21 @@ If Tandem saves you time, consider [sponsoring development](https://github.com/s
 
 ## License
 
-This repository uses a mixed licensing model:
+This repository uses a mixed licensing model. [docs/LICENSING.md](docs/LICENSING.md) is the canonical package-by-package map.
 
 - Core engine crates and tools (e.g. `tandem-core`, `tandem-server`, `tandem-types`, `tandem-orchestrator`, and others in `crates/`):
-  - Licensed under `MIT OR Apache-2.0` (see [LICENSE](LICENSE) and [LICENSE-APACHE](LICENSE-APACHE))
+  - Licensed under `MIT OR Apache-2.0` unless their manifest or local license says otherwise
+  - See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 - Mission compiler crate (`tandem-plan-compiler`):
-  - Licensed under Business Source License 1.1 (`BSL-1.1`)
+  - Licensed under Business Source License 1.1 (`BUSL-1.1`)
   - See `crates/tandem-plan-compiler/LICENSE` for terms
 
 - Governance engine crate (`tandem-governance-engine`):
-  - Licensed under Business Source License 1.1 (`BSL-1.1`)
+  - Licensed under Business Source License 1.1 (`BUSL-1.1`)
   - See `crates/tandem-governance-engine/LICENSE` for terms
 
-In short: the runtime engine is fully open source (MIT/Apache), while the mission/plan compiler and recursive governance engine are source-available under BSL.
+In short: Tandem is open core. The permissive runtime, protocol, SDK, and local tooling surfaces are open source, while the mission/plan compiler and recursive governance engine are source-available under Business Source License terms.
 
 ## Acknowledgments
 

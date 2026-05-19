@@ -1,21 +1,25 @@
-MIT License
+Tandem Mixed License Notice
 
-Copyright (c) 2026 Tandem Contributors
+This repository uses a mixed licensing model. Different directories and
+packages are governed by different license terms.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permissive open-source components are licensed under MIT, Apache-2.0, or
+MIT OR Apache-2.0 as declared in their package manifests.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Source-available components are licensed under the Business Source License
+1.1 (SPDX: BUSL-1.1) as declared in their package manifests and local
+LICENSE files.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Canonical licensing map:
+
+  docs/LICENSING.md
+
+License texts:
+
+  LICENSE-MIT
+  LICENSE-APACHE
+  crates/tandem-plan-compiler/LICENSE
+  crates/tandem-governance-engine/LICENSE
+
+If a package manifest and this summary ever disagree, the package manifest
+and the package-local LICENSE file control for that package.
