@@ -173,6 +173,8 @@ export function createCapabilitiesHandler(deps) {
       hosted_hostname: installProfile?.hosted_hostname || "",
       hosted_public_url: installProfile?.hosted_public_url || "",
       hosted_control_plane_url: installProfile?.hosted_control_plane_url || "",
+      hosted_auth_mode: installProfile?.hosted_auth_mode || "",
+      hosted_panel_login_url: installProfile?.hosted_panel_login_url || "",
       hosted_release_version: installProfile?.hosted_release_version || "",
       hosted_release_channel: installProfile?.hosted_release_channel || "",
       hosted_update_policy: installProfile?.hosted_update_policy || "",

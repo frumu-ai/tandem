@@ -1354,6 +1354,68 @@ function isHostedManagedControlPanel() {
   return summarizeControlPanelConfig(config).hosted?.managed === true;
 }
 
+function getHostedPanelAuthConfig() {
+  const config = readControlPanelConfig(getControlPanelConfigPath());
+  const summary = summarizeControlPanelConfig(config);
+  const hosted = summary.hosted || {};
+  const auth = hosted.auth || {};
+  const controlPlaneUrl = String(auth.control_plane_url || hosted.control_plane_url || "").replace(
+    /\/+$/,
+    ""
+  );
+  const publicUrl = String(hosted.public_url || "").replace(/\/+$/, "");
+  const deploymentId = String(hosted.deployment_id || "").trim();
+  return {
+    managed: hosted.managed === true,
+    deploymentId,
+    publicUrl,
+    controlPlaneUrl,
+    panelLoginUrl: String(auth.panel_login_url || `${controlPlaneUrl}/hosted/panel/authorize`).trim(),
+    panelExchangeUrl: String(
+      auth.panel_exchange_url ||
+        (deploymentId
+          ? `${controlPlaneUrl}/api/v1/hosted/deployments/${deploymentId}/panel/exchange`
+          : "")
+    ).trim(),
+    panelRefreshUrl: String(
+      auth.panel_refresh_url ||
+        (deploymentId
+          ? `${controlPlaneUrl}/api/v1/hosted/deployments/${deploymentId}/panel/refresh`
+          : "")
+    ).trim(),
+    hostAgentTokenFile: String(auth.host_agent_token_file || "/run/secrets/host_agent_token").trim(),
+  };
+}
+
+function hostedPanelReturnUrl() {
+  const auth = getHostedPanelAuthConfig();
+  const base = auth.publicUrl || PANEL_PUBLIC_URL || `http://${PANEL_HOST}:${PORTAL_PORT}`;
+  return `${base.replace(/\/+$/, "")}/`;
+}
+
+function hostedPanelAuthorizeUrl() {
+  const auth = getHostedPanelAuthConfig();
+  if (!auth.managed || !auth.deploymentId || !auth.panelLoginUrl) return "";
+  try {
+    const url = new URL(auth.panelLoginUrl);
+    url.searchParams.set("deployment_id", auth.deploymentId);
+    url.searchParams.set("return_to", hostedPanelReturnUrl());
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function readHostAgentToken() {
+  const tokenFile = getHostedPanelAuthConfig().hostAgentTokenFile;
+  if (!tokenFile) return "";
+  try {
+    return readFileSync(resolve(tokenFile), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 async function getInstallProfile({ acaAvailable = false, acaReason = "" } = {}) {
   const configPath = getControlPanelConfigPath();
   const config = readControlPanelConfig(configPath);
@@ -1379,6 +1441,8 @@ async function getInstallProfile({ acaAvailable = false, acaReason = "" } = {}) 
     hosted_hostname: String(summary.hosted?.hostname || "").trim(),
     hosted_public_url: String(summary.hosted?.public_url || "").trim(),
     hosted_control_plane_url: String(summary.hosted?.control_plane_url || "").trim(),
+    hosted_auth_mode: String(summary.hosted?.auth?.mode || "").trim(),
+    hosted_panel_login_url: hostedPanelAuthorizeUrl(),
     hosted_release_version: String(summary.hosted?.release_version || "").trim(),
     hosted_release_channel: String(summary.hosted?.release_channel || "").trim(),
     hosted_update_policy: String(summary.hosted?.update_policy || "").trim(),
@@ -2387,6 +2451,14 @@ async function handleWorkspaceFilesApi(req, res, _session) {
 }
 
 async function handleAuthLogin(req, res) {
+  if (isHostedManagedControlPanel()) {
+    sendJson(res, 403, {
+      ok: false,
+      error: "Managed hosted panels use Tandem hosted login, not the root engine token.",
+      hosted_login_url: hostedPanelAuthorizeUrl(),
+    });
+    return;
+  }
   try {
     const body = await readJsonBody(req);
     const token = String(body?.token || "").trim();
@@ -2432,6 +2504,117 @@ async function handleAuthLogin(req, res) {
   }
 }
 
+async function exchangeHostedPanelCode(code) {
+  const auth = getHostedPanelAuthConfig();
+  if (!auth.managed || !auth.panelExchangeUrl) {
+    throw new Error("Hosted panel auth is not configured.");
+  }
+  const hostAgentToken = readHostAgentToken();
+  if (!hostAgentToken) {
+    throw new Error("Hosted agent token is not available on this server.");
+  }
+  const upstream = await fetch(auth.panelExchangeUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${hostAgentToken}`,
+    },
+    body: JSON.stringify({ code }),
+  });
+  const text = await upstream.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = {};
+  }
+  if (!upstream.ok) {
+    throw new Error(payload?.error || text || `Hosted panel login failed (${upstream.status})`);
+  }
+  return payload;
+}
+
+async function refreshHostedPanelSession(session) {
+  const auth = getHostedPanelAuthConfig();
+  if (!session?.hosted || !auth.managed || !auth.panelRefreshUrl) return session;
+  const currentExpiry = Date.parse(String(session.context_assertion_expires_at || ""));
+  if (Number.isFinite(currentExpiry) && currentExpiry - Date.now() > 60000) return session;
+  const hostAgentToken = readHostAgentToken();
+  if (!hostAgentToken) throw new Error("Hosted agent token is not available on this server.");
+  const upstream = await fetch(auth.panelRefreshUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${hostAgentToken}`,
+    },
+    body: JSON.stringify({ panel_session_token: session.panel_session_token }),
+  });
+  const text = await upstream.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = {};
+  }
+  if (!upstream.ok) {
+    throw new Error(payload?.error || text || `Hosted panel session refresh failed (${upstream.status})`);
+  }
+  const rec = sessions.get(session.sid);
+  if (!rec) return session;
+  Object.assign(rec, hostedSessionFields(payload));
+  return { sid: session.sid, ...rec };
+}
+
+function hostedSessionFields(payload) {
+  return {
+    hosted: true,
+    panel_session_token: String(payload?.panel_session_token || ""),
+    context_assertion: String(payload?.context_assertion || ""),
+    context_assertion_expires_at: String(payload?.context_assertion_expires_at || ""),
+    session_expires_at: String(payload?.session_expires_at || ""),
+    hosted_role: String(payload?.role || ""),
+    hosted_roles: Array.isArray(payload?.roles) ? payload.roles.map((role) => String(role)) : [],
+    hosted_user: payload?.user || null,
+    principal_id: String(payload?.user?.id || ""),
+    principal_source: "tandem-hosted",
+    principal_scope: String(payload?.deployment_id || ""),
+  };
+}
+
+async function handleHostedAuthExchange(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const code = String(body?.code || "").trim();
+    if (!code) {
+      sendJson(res, 400, { ok: false, error: "Hosted login code required." });
+      return;
+    }
+    const payload = await exchangeHostedPanelCode(code);
+    const engineToken = CONFIGURED_ENGINE_TOKEN || managedEngineToken;
+    if (!engineToken) {
+      sendJson(res, 503, { ok: false, error: "Hosted engine root token is not available." });
+      return;
+    }
+    const sid = randomBytes(24).toString("hex");
+    sessions.set(sid, {
+      token: engineToken,
+      createdAt: Date.now(),
+      lastSeenAt: Date.now(),
+      ...hostedSessionFields(payload),
+    });
+    setSessionCookie(res, sid);
+    sendJson(res, 200, {
+      ok: true,
+      hosted: true,
+      role: payload?.role || "",
+      roles: payload?.roles || [],
+      user: payload?.user || null,
+    });
+  } catch (error) {
+    sendJson(res, 401, { ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function requireSession(req, res) {
   const session = getSession(req);
   if (!session) {
@@ -2441,9 +2624,48 @@ function requireSession(req, res) {
   return session;
 }
 
+function hostedProxyAllowed(session, method, targetPath) {
+  if (session?.hosted !== true) return true;
+  const role = String(session.hosted_role || "").toLowerCase();
+  const verb = String(method || "GET").toUpperCase();
+  const path = String(targetPath || "/").toLowerCase();
+  if (role === "owner" || role === "admin") return true;
+  if (role === "viewer") return verb === "GET" || verb === "HEAD";
+  if (role === "member") {
+    if (verb === "GET" || verb === "HEAD") return true;
+    if (verb === "DELETE" || verb === "PATCH") return false;
+    if (
+      path.startsWith("/config") ||
+      path.startsWith("/providers") ||
+      path.startsWith("/approvals") ||
+      path.startsWith("/mcp") ||
+      path.includes("/settings")
+    ) {
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
 async function proxyEngineRequest(req, res, session) {
+  try {
+    session = await refreshHostedPanelSession(session);
+  } catch (error) {
+    if (session?.sid) sessions.delete(session.sid);
+    clearSessionCookie(res);
+    sendJson(res, 401, {
+      ok: false,
+      error: error instanceof Error ? error.message : "Hosted panel session expired.",
+    });
+    return;
+  }
   const incoming = new URL(req.url, `http://127.0.0.1:${PORTAL_PORT}`);
   const targetPath = incoming.pathname.replace(/^\/api\/engine/, "") || "/";
+  if (!hostedProxyAllowed(session, req.method, targetPath)) {
+    sendJson(res, 403, { ok: false, error: "Your hosted role does not permit this action." });
+    return;
+  }
   const targetUrl = `${ENGINE_URL}${targetPath}${incoming.search}`;
   const forwardedHost = String(req.headers.host || "").trim();
   const forwardedProto =
@@ -2486,6 +2708,9 @@ async function proxyEngineRequest(req, res, session) {
   }
   headers.set("authorization", `Bearer ${session.token}`);
   headers.set("x-tandem-token", session.token);
+  if (session.context_assertion) {
+    headers.set("x-tandem-context-assertion", String(session.context_assertion));
+  }
   headers.set("x-tandem-request-source", requestSource);
   if (agentTestMode && requestedAgentId) {
     headers.set("x-tandem-agent-id", requestedAgentId);
@@ -2614,6 +2839,12 @@ function workspaceExistsAsDirectory(workspaceRoot) {
 }
 
 async function engineRequestJson(session, path, options = {}) {
+  session = await refreshHostedPanelSession(session);
+  if (!hostedProxyAllowed(session, options.method || "GET", path)) {
+    const error = new Error("Your hosted role does not permit this action.");
+    error.status = 403;
+    throw error;
+  }
   const method = String(options.method || "GET").toUpperCase();
   const body = options.body;
   const maxNetworkRetries = options.maxNetworkRetries ?? 2;
@@ -2632,6 +2863,9 @@ async function engineRequestJson(session, path, options = {}) {
         headers: {
           authorization: `Bearer ${session.token}`,
           "x-tandem-token": session.token,
+          ...(session.context_assertion
+            ? { "x-tandem-context-assertion": String(session.context_assertion) }
+            : {}),
           ...(body ? { "content-type": "application/json" } : {}),
           ...(options.headers || {}),
         },
@@ -5662,6 +5896,12 @@ async function handleApi(req, res) {
     return true;
   }
 
+  if (pathname === "/api/auth/hosted/exchange" && req.method === "POST") {
+    res.setHeader("cache-control", "no-store, max-age=0");
+    await handleHostedAuthExchange(req, res);
+    return true;
+  }
+
   if (pathname === "/api/auth/logout" && req.method === "POST") {
     res.setHeader("cache-control", "no-store, max-age=0");
     const current = getSession(req);
@@ -5710,6 +5950,10 @@ async function handleApi(req, res) {
       principal_id: String(session.principal_id || session.principalId || ""),
       principal_source: String(session.principal_source || session.principalSource || "unknown"),
       principal_scope: String(session.principal_scope || session.principalScope || "global"),
+      hosted: session.hosted === true,
+      hosted_role: String(session.hosted_role || ""),
+      hosted_roles: Array.isArray(session.hosted_roles) ? session.hosted_roles : [],
+      hosted_user: session.hosted_user || null,
     });
     return true;
   }

@@ -8,6 +8,8 @@ export function LoginPage({
   controlPanelName,
   controlPanelMode,
   controlPanelModeReason,
+  hostedManaged = false,
+  hostedLoginUrl = "",
 }: {
   loginMutation: any;
   savedToken: string;
@@ -15,6 +17,8 @@ export function LoginPage({
   controlPanelName: string;
   controlPanelMode?: string;
   controlPanelModeReason?: string;
+  hostedManaged?: boolean;
+  hostedLoginUrl?: string;
 }) {
   const [token, setToken] = useState(savedToken);
   const [remember, setRemember] = useState(true);
@@ -33,59 +37,38 @@ export function LoginPage({
           <div className="tcp-page-eyebrow">Tandem Control</div>
           <h1 className="tcp-page-title max-w-3xl">Sign in to continue.</h1>
           <p className="tcp-subtle max-w-2xl text-base">
-            Enter your engine token to access chat, task board, automations, runs, memory, and
-            settings.
+            {hostedManaged
+              ? "Use your Tandem hosted account to access this managed server."
+              : "Enter your engine token to access chat, task board, automations, runs, memory, and settings."}
           </p>
         </section>
 
         <PanelCard
           title={controlPanelName}
           subtitle={
-            controlPanelMode === "aca"
-              ? "ACA install detected. Authenticate against your Tandem engine to continue."
-              : "Standalone install detected. Authenticate against your Tandem engine to continue."
+            hostedManaged
+              ? "Managed hosted server detected. Sign in through Tandem to continue."
+              : controlPanelMode === "aca"
+                ? "ACA install detected. Authenticate against your Tandem engine to continue."
+                : "Standalone install detected. Authenticate against your Tandem engine to continue."
           }
         >
-          <form
-            className="grid gap-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!token.trim()) {
-                setOk(false);
-                setMessage("Token is required.");
-                return;
-              }
-              loginMutation.mutate({ token: token.trim(), remember });
-            }}
-          >
-            <label className="text-sm tcp-subtle">Engine token</label>
-            <input
-              className="tcp-input"
-              type="password"
-              value={token}
-              onInput={(e) => setToken((e.target as HTMLInputElement).value)}
-              placeholder="tk_..."
-              autoComplete="off"
-            />
-
-            <label className="inline-flex items-center gap-2 text-xs tcp-subtle">
-              <input
-                type="checkbox"
-                className="h-4 w-4 accent-slate-400"
-                checked={remember}
-                onChange={(e) => setRemember((e.target as HTMLInputElement).checked)}
-              />
-              Remember token on this browser
-            </label>
-
-            <div className="grid gap-2 sm:grid-cols-2">
+          {hostedManaged ? (
+            <div className="grid gap-3">
+              <p className="tcp-subtle text-sm">
+                Managed hosted panels do not accept the engine token in the browser. Tandem will
+                verify your hosted organization membership and return you here.
+              </p>
               <button
-                disabled={loginMutation.isPending}
-                type="submit"
+                type="button"
                 className="tcp-btn-primary w-full"
+                disabled={!hostedLoginUrl}
+                onClick={() => {
+                  if (hostedLoginUrl) window.location.assign(hostedLoginUrl);
+                }}
               >
-                <i data-lucide="key-round"></i>
-                Sign in
+                <i data-lucide="log-in"></i>
+                Sign in with Tandem
               </button>
               <button
                 type="button"
@@ -104,26 +87,93 @@ export function LoginPage({
                 <i data-lucide="activity"></i>
                 Check engine
               </button>
-            </div>
-
-            <div className={`min-h-[1.2rem] text-sm ${ok ? "text-lime-300" : "text-rose-300"}`}>
-              {loginMutation.error?.message || message}
-            </div>
-
-            <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="font-medium">Readiness</div>
-                <StatusPulse tone={ok ? "ok" : "warn"} text={ok ? "Engine reachable" : "Waiting"} />
+              <div className={`min-h-[1.2rem] text-sm ${ok ? "text-lime-300" : "text-rose-300"}`}>
+                {message}
               </div>
-              <p className="tcp-subtle text-xs">
-                Connectivity checks are non-destructive and help verify the local panel can reach
-                the engine before authentication.
-              </p>
-              {controlPanelModeReason ? (
-                <p className="tcp-subtle mt-2 text-xs">{controlPanelModeReason}</p>
-              ) : null}
             </div>
-          </form>
+          ) : (
+            <form
+              className="grid gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!token.trim()) {
+                  setOk(false);
+                  setMessage("Token is required.");
+                  return;
+                }
+                loginMutation.mutate({ token: token.trim(), remember });
+              }}
+            >
+              <label className="text-sm tcp-subtle">Engine token</label>
+              <input
+                className="tcp-input"
+                type="password"
+                value={token}
+                onInput={(e) => setToken((e.target as HTMLInputElement).value)}
+                placeholder="tk_..."
+                autoComplete="off"
+              />
+
+              <label className="inline-flex items-center gap-2 text-xs tcp-subtle">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-slate-400"
+                  checked={remember}
+                  onChange={(e) => setRemember((e.target as HTMLInputElement).checked)}
+                />
+                Remember token on this browser
+              </label>
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  disabled={loginMutation.isPending}
+                  type="submit"
+                  className="tcp-btn-primary w-full"
+                >
+                  <i data-lucide="key-round"></i>
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  className="tcp-btn w-full"
+                  onClick={async () => {
+                    try {
+                      const result = await onCheckEngine();
+                      setOk(true);
+                      setMessage(result);
+                    } catch (error) {
+                      setOk(false);
+                      setMessage(error instanceof Error ? error.message : String(error));
+                    }
+                  }}
+                >
+                  <i data-lucide="activity"></i>
+                  Check engine
+                </button>
+              </div>
+
+              <div className={`min-h-[1.2rem] text-sm ${ok ? "text-lime-300" : "text-rose-300"}`}>
+                {loginMutation.error?.message || message}
+              </div>
+
+              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="font-medium">Readiness</div>
+                  <StatusPulse
+                    tone={ok ? "ok" : "warn"}
+                    text={ok ? "Engine reachable" : "Waiting"}
+                  />
+                </div>
+                <p className="tcp-subtle text-xs">
+                  Connectivity checks are non-destructive and help verify the local panel can reach
+                  the engine before authentication.
+                </p>
+                {controlPanelModeReason ? (
+                  <p className="tcp-subtle mt-2 text-xs">{controlPanelModeReason}</p>
+                ) : null}
+              </div>
+            </form>
+          )}
         </PanelCard>
       </div>
     </main>

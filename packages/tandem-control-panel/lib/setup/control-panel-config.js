@@ -36,6 +36,15 @@ const DEFAULT_CONTROL_PANEL_CONFIG = {
     control_panel_image: "",
     proxy_image: "",
     update_policy: "manual",
+    auth: {
+      mode: "",
+      control_plane_url: "",
+      management_url: "",
+      panel_login_url: "",
+      panel_exchange_url: "",
+      panel_refresh_url: "",
+      host_agent_token_file: "",
+    },
   },
   task_source: {
     type: "kanban_board",

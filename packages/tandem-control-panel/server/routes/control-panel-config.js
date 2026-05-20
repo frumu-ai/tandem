@@ -71,6 +71,7 @@ export function createControlPanelConfigHandler(deps) {
       hosted_hostname: String(summary.hosted?.hostname || "").trim(),
       hosted_public_url: String(summary.hosted?.public_url || "").trim(),
       hosted_control_plane_url: String(summary.hosted?.control_plane_url || "").trim(),
+      hosted_auth_mode: String(summary.hosted?.auth?.mode || "").trim(),
       hosted_release_version: String(summary.hosted?.release_version || "").trim(),
       hosted_release_channel: String(summary.hosted?.release_channel || "").trim(),
       hosted_update_policy: String(summary.hosted?.update_policy || "").trim(),

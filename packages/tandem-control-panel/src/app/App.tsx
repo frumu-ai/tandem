@@ -289,8 +289,12 @@ function AppBody() {
   if (savedBootstrapTokenRef.current === null) {
     savedBootstrapTokenRef.current = getSavedToken().trim();
   }
+  const hostedCodeRef = useRef<string | null>(null);
+  if (hostedCodeRef.current === null && typeof window !== "undefined") {
+    hostedCodeRef.current = new URLSearchParams(window.location.search).get("hosted_code") || "";
+  }
   const [authBootstrapPending, setAuthBootstrapPending] = useState(
-    () => !!savedBootstrapTokenRef.current
+    () => !!savedBootstrapTokenRef.current || !!hostedCodeRef.current
   );
   const { route, navigate } = useHashRoute({
     canNavigate: useCallback(
@@ -411,7 +415,33 @@ function AppBody() {
   }, [authBootstrapPending, authTransient, authed, loginMutation]);
 
   useEffect(() => {
+    const hostedCode = hostedCodeRef.current || "";
+    if (!hostedCode) return;
+    if (loginMutation.isPending) return;
+    hostedCodeRef.current = "";
+    autoLoginAttempted.current = true;
+    api("/api/auth/hosted/exchange", {
+      method: "POST",
+      body: JSON.stringify({ code: hostedCode }),
+    })
+      .then(() => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("hosted_code");
+        window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+        clearSavedToken();
+        return queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+      })
+      .catch((error) => {
+        toast("err", error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        setAuthBootstrapPending(false);
+      });
+  }, [loginMutation.isPending, queryClient, toast]);
+
+  useEffect(() => {
     if (!authBootstrapPending || loginMutation.isPending) return;
+    if (hostedCodeRef.current) return;
     const savedToken = savedBootstrapTokenRef.current || "";
     autoLoginAttempted.current = true;
     if (!savedToken) {
@@ -643,6 +673,8 @@ function AppBody() {
         controlPanelModeReason={String(
           capabilitiesQuery.data?.control_panel_mode_reason || ""
         ).trim()}
+        hostedManaged={capabilitiesQuery.data?.hosted_managed === true}
+        hostedLoginUrl={String(capabilitiesQuery.data?.hosted_panel_login_url || "")}
         onCheckEngine={async () => {
           const health = await api("/api/system/health");
           const status = health?.engine?.ready || health?.engine?.healthy ? "healthy" : "unhealthy";

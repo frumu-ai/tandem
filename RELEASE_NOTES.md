@@ -54,6 +54,11 @@ and resource grants.
   data-boundary denials, project-scoped agent projections, explicit deny
   precedence, expired grants, narrow delegation, scoped assertion projections,
   and legacy assertion compatibility.
+- Added the first hosted control-panel login exchange: managed hosted panels
+  redirect users through `https://tandem.ac`, Tandem-web authorizes hosted org
+  membership, the VM exchanges a one-time code with its host-agent token, and
+  the browser receives only a panel session while the engine token remains a
+  server-side root transport secret.
 
 ### Hosted Runtime Ingress
 
@@ -65,6 +70,9 @@ and resource grants.
   actor does not match the signed human actor.
 - Request principals derived from signed context now use the verified assertion
   issuer as their source, preserving the Tandem control-plane trust boundary.
+- Managed hosted control panels now forward Tandem-signed context assertions to
+  the engine proxy and hide customer dashboard engine-token reveal for managed
+  deployments.
 
 ### Automation V2 Tenant Isolation
 
