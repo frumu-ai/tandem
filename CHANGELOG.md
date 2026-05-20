@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.9] - 2026-05-18
+## [0.5.9] - Unreleased
 
 ### Added
 
+- **Workspace access-control contract vocabulary**: Added transport-safe enterprise contract types for resource hierarchy, scoped resources, access permissions, data classes, normalized principals, grant sources, and scoped grants. The new contract can model department data access, cross-functional group access, explicit CEO/executive global grants, down-scoped external delegation, repository path scopes, and MCP tool resource targets.
+- **Workspace access-control contract coverage**: Added serde round-trip and modeling tests for Finance data stores, Engineering repository path scopes, CEO org-wide executive access, MCP tool targets, department membership grants, group membership grants, executive/global grants, and expiring delegated grants.
 - **Automation V2 MCP contract diagnostics**: Added MCP input-contract summaries, required-argument examples, schema warnings, and required-tool static-argument diagnostics to node preflight metadata and prompts.
 - **Hosted tenant isolation denial coverage**: Added regression tests proving Automation V2 tenant payloads cannot override the request tenant, scheduled/background-created runs retain their owning automation tenant, watch-condition runs keep tenant context, background context-run sync does not fall back to `local_implicit`, and stale recovery preserves explicit tenant context without an active HTTP request.
 - **Automation V2 event tenant coverage**: Added tenant visibility and finite-body SSE coverage for Automation V2 events so cross-tenant event streams depend on explicit matching `tenantContext`.
@@ -22,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Hosted runtime ingress hardening**: Hosted and enterprise runtime modes now require configured transport-token authentication in addition to verified Tandem context assertions, reject local-implicit or deploymentless hosted assertions, bind authority-chain initiators to the human actor, and derive the request principal source from the verified assertion issuer.
+- **Enterprise contract re-exports**: Re-exported the new workspace access-control vocabulary through `tandem-types` for downstream runtime/server consumers.
 - **Automation V2 background tenant propagation**: Watch-condition run creation now stamps runs from the stored automation tenant instead of `local_implicit`, and Automation V2 context-run blackboard sync now inherits the run tenant.
 - **Applied automation tenant stamping**: Workflow planner apply, mission builder apply, and channel automation draft confirm now stamp persisted Automation V2 definitions from the request `TenantContext`, preventing imported/applied payloads from switching tenant context.
 - **Scheduled/watch event scoping**: Scheduler-published Automation V2 run-created events now include top-level `tenantContext` so hosted/global SSE filters can make tenant decisions without inspecting nested run payloads.

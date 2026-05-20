@@ -2,14 +2,48 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.5.9 (2026-05-18)
+## v0.5.9 (Unreleased)
 
 Tandem 0.5.9 continues the hosted tenant-isolation work for Automation V2. The
 focus is denial-driven hardening for background and applied automation paths:
 scheduled runs, watch-triggered runs, stale recovery, imported/applied
 definitions, Automation V2 event visibility, runtime route isolation, provider
 and MCP credential boundaries, vector-backed memory partitioning, and the first
-coder artifact tenant boundary.
+coder artifact tenant boundary. The current unreleased work also starts the
+workspace access-control contract layer for Google Workspace-style company data
+and resource grants.
+
+### Enterprise Workspace Access Control
+
+- Added public enterprise contract vocabulary for organization/workspace/
+  department/project/resource hierarchies: `ResourceKind`,
+  `ResourcePathSegment`, `ResourceRef`, and `ResourceScope`.
+- Added access-control vocabulary for `View`, `Read`, `Edit`, `Execute`,
+  `Delegate`, and `Admin`, plus data classes such as executive, credential,
+  source-code, customer-data, and financial-record scopes.
+- Added normalized principal references for humans, groups, departments, agent
+  workers, automations, service accounts, external delegates, and support
+  operators.
+- Added `GrantSource` and `ScopedGrant` so access can be attributed to direct
+  assignment, group membership, department membership, inherited grants,
+  explicit executive/global grants, delegated projections, or break-glass
+  authority.
+- Re-exported the new contract vocabulary through `tandem-types`.
+- Added contract tests covering Finance department data access, Engineering
+  repository path scopes, cross-functional group access, CEO org-wide executive
+  grants, MCP tool resource targets, and expiring delegated vendor-agent
+  access.
+
+### Hosted Runtime Ingress
+
+- Hosted and enterprise runtime modes now require a configured deployment
+  transport token before accepting requests.
+- Verified hosted context assertions must carry explicit deployment-scoped
+  tenant context rather than `local_implicit`.
+- Context assertion verification now rejects authority chains whose initiating
+  actor does not match the signed human actor.
+- Request principals derived from signed context now use the verified assertion
+  issuer as their source, preserving the Tandem control-plane trust boundary.
 
 ### Automation V2 Tenant Isolation
 

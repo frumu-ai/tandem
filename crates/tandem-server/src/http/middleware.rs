@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use tandem_types::{
     HeaderTenantContextResolver, NoopRequestAuthorizationHook, RequestAuthorizationHook,
     RequestPrincipal, RuntimeAuthMode, TenantContext, TenantContextAssertionClaims,
-    TenantContextAssertionHeader, TenantContextResolver, VerifiedTenantContext,
+    TenantContextAssertionHeader, TenantContextResolver, TenantSource, VerifiedTenantContext,
 };
 
 use crate::{AppState, StartupStatus};
@@ -34,8 +34,11 @@ pub(super) async fn auth_gate(
     if path == "/global/health" {
         return next.run(request).await;
     }
+    let runtime_auth_mode = resolve_runtime_auth_mode();
     if path == "/bug-monitor/intake/report" || path == "/failure-reporter/intake/report" {
-        if !attach_enterprise_request_context(&mut request) {
+        if !runtime_auth_mode_requires_transport_token(runtime_auth_mode)
+            && !attach_enterprise_request_context_for_mode(&mut request, runtime_auth_mode)
+        {
             return (
                 StatusCode::FORBIDDEN,
                 Json(ErrorEnvelope {
@@ -45,25 +48,28 @@ pub(super) async fn auth_gate(
             )
                 .into_response();
         }
-        return next.run(request).await;
-    }
-
-    let required = state.api_token().await;
-    if let Some(expected) = required {
-        let provided = extract_request_token(request.headers());
-        if provided.as_deref() != Some(expected.as_str()) {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorEnvelope {
-                    error: "Unauthorized: missing or invalid API token".to_string(),
-                    code: Some("AUTH_REQUIRED".to_string()),
-                }),
-            )
-                .into_response();
+        if !runtime_auth_mode_requires_transport_token(runtime_auth_mode) {
+            return next.run(request).await;
         }
     }
 
-    if !attach_enterprise_request_context(&mut request) {
+    let required = state.api_token().await;
+    if !request_transport_token_authorized(
+        request.headers(),
+        required.as_deref(),
+        runtime_auth_mode,
+    ) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorEnvelope {
+                error: "Unauthorized: missing or invalid API token".to_string(),
+                code: Some("AUTH_REQUIRED".to_string()),
+            }),
+        )
+            .into_response();
+    }
+
+    if !attach_enterprise_request_context_for_mode(&mut request, runtime_auth_mode) {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorEnvelope {
@@ -76,19 +82,21 @@ pub(super) async fn auth_gate(
     next.run(request).await
 }
 
-fn attach_enterprise_request_context(request: &mut Request) -> bool {
+fn attach_enterprise_request_context_for_mode(
+    request: &mut Request,
+    mode: RuntimeAuthMode,
+) -> bool {
     let headers = request.headers();
-    let resolved =
-        match resolve_enterprise_request_context_for_mode(headers, resolve_runtime_auth_mode()) {
-            Ok(context) => context,
-            Err(reason) => {
-                tracing::warn!(
-                    "Authorization denied: tenant context ingress rejected - reason={}",
-                    reason.as_str()
-                );
-                return false;
-            }
-        };
+    let resolved = match resolve_enterprise_request_context_for_mode(headers, mode) {
+        Ok(context) => context,
+        Err(reason) => {
+            tracing::warn!(
+                "Authorization denied: tenant context ingress rejected - reason={}",
+                reason.as_str()
+            );
+            return false;
+        }
+    };
 
     if !authorize_request(&resolved.request_principal, &resolved.tenant_context) {
         tracing::warn!(
@@ -106,6 +114,28 @@ fn attach_enterprise_request_context(request: &mut Request) -> bool {
     request.extensions_mut().insert(resolved.tenant_context);
     request.extensions_mut().insert(resolved.request_principal);
     true
+}
+
+fn runtime_auth_mode_requires_transport_token(mode: RuntimeAuthMode) -> bool {
+    matches!(
+        mode,
+        RuntimeAuthMode::HostedSingleTenant | RuntimeAuthMode::EnterpriseRequired
+    )
+}
+
+fn request_transport_token_authorized(
+    headers: &HeaderMap,
+    expected: Option<&str>,
+    mode: RuntimeAuthMode,
+) -> bool {
+    let Some(expected) = expected
+        .map(str::trim)
+        .filter(|expected| !expected.is_empty())
+    else {
+        return !runtime_auth_mode_requires_transport_token(mode);
+    };
+
+    extract_request_token(headers).as_deref() == Some(expected)
 }
 
 fn authorize_request(principal: &RequestPrincipal, tenant: &TenantContext) -> bool {
@@ -159,7 +189,7 @@ impl ResolvedEnterpriseRequestContext {
         let tenant_context = verified_tenant_context.tenant_context.clone();
         let request_principal = RequestPrincipal::authenticated_user(
             verified_tenant_context.human_actor.actor_id.clone(),
-            "tandem_context_assertion",
+            verified_tenant_context.issuer.clone(),
         );
         Self {
             tenant_context,
@@ -394,7 +424,23 @@ impl TenantContextAssertionVerifier {
         {
             return Err(TenantContextIngressError::ContextAssertionMalformed);
         }
+        if claims.tenant_context.source != TenantSource::Explicit
+            || claims
+                .tenant_context
+                .deployment_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|deployment_id| !deployment_id.is_empty())
+                .is_none()
+        {
+            return Err(TenantContextIngressError::ContextAssertionMalformed);
+        }
         if claims.tenant_context.actor_id.as_deref() != Some(claims.human_actor.actor_id.as_str()) {
+            return Err(TenantContextIngressError::ContextAssertionUntrusted);
+        }
+        if claims.authority_chain.initiated_by.actor_id.as_deref()
+            != Some(claims.human_actor.actor_id.as_str())
+        {
             return Err(TenantContextIngressError::ContextAssertionUntrusted);
         }
         Ok(())
@@ -598,6 +644,69 @@ mod tests {
     }
 
     #[test]
+    fn local_mode_transport_token_remains_optional_when_unconfigured() {
+        let headers = HeaderMap::new();
+
+        assert!(request_transport_token_authorized(
+            &headers,
+            None,
+            RuntimeAuthMode::LocalSingleTenant
+        ));
+    }
+
+    #[test]
+    fn local_mode_rejects_missing_transport_token_when_configured() {
+        let headers = HeaderMap::new();
+
+        assert!(!request_transport_token_authorized(
+            &headers,
+            Some("tk_local"),
+            RuntimeAuthMode::LocalSingleTenant
+        ));
+    }
+
+    #[test]
+    fn hosted_mode_requires_configured_transport_token() {
+        let headers = HeaderMap::new();
+
+        assert!(!request_transport_token_authorized(
+            &headers,
+            None,
+            RuntimeAuthMode::HostedSingleTenant
+        ));
+    }
+
+    #[test]
+    fn hosted_mode_rejects_wrong_transport_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong-token"),
+        );
+
+        assert!(!request_transport_token_authorized(
+            &headers,
+            Some("tk_hosted"),
+            RuntimeAuthMode::HostedSingleTenant
+        ));
+    }
+
+    #[test]
+    fn hosted_mode_accepts_matching_transport_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer tk_hosted"),
+        );
+
+        assert!(request_transport_token_authorized(
+            &headers,
+            Some("tk_hosted"),
+            RuntimeAuthMode::HostedSingleTenant
+        ));
+    }
+
+    #[test]
     fn hosted_mode_rejects_unsigned_tenant_headers() {
         let mut headers = HeaderMap::new();
         headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));
@@ -687,6 +796,26 @@ mod tests {
     }
 
     #[test]
+    fn hosted_mode_resolves_verified_context_as_tandem_web_principal() {
+        let (signing_key, verifier) = test_signing_key_and_verifier();
+        let assertion =
+            sign_test_context_assertion(&signing_key, "test-key", test_claims(1_000, 2_000));
+        let verified = verifier
+            .verify_at(&assertion, 1_500)
+            .expect("signed assertion should verify");
+
+        let resolved = ResolvedEnterpriseRequestContext::verified(verified);
+
+        assert_eq!(
+            resolved.request_principal.actor_id.as_deref(),
+            Some("user-a")
+        );
+        assert_eq!(resolved.request_principal.source, "tandem-web");
+        assert_eq!(resolved.tenant_context.org_id, "org-a");
+        assert_eq!(resolved.tenant_context.source, TenantSource::Explicit);
+    }
+
+    #[test]
     fn verifier_rejects_tampered_tandem_context_assertion() {
         let (signing_key, verifier) = test_signing_key_and_verifier();
         let assertion =
@@ -714,6 +843,50 @@ mod tests {
             .expect_err("expired assertion must fail closed");
 
         assert_eq!(err, TenantContextIngressError::ContextAssertionExpired);
+    }
+
+    #[test]
+    fn verifier_rejects_local_implicit_tenant_context_assertion() {
+        let (signing_key, verifier) = test_signing_key_and_verifier();
+        let mut claims = test_claims(1_000, 2_000);
+        claims.tenant_context = TenantContext::local_implicit();
+        let assertion = sign_test_context_assertion(&signing_key, "test-key", claims);
+
+        let err = verifier
+            .verify_at(&assertion, 1_500)
+            .expect_err("hosted assertions must carry explicit deployment tenant context");
+
+        assert_eq!(err, TenantContextIngressError::ContextAssertionMalformed);
+    }
+
+    #[test]
+    fn verifier_rejects_context_assertion_without_deployment_scope() {
+        let (signing_key, verifier) = test_signing_key_and_verifier();
+        let mut claims = test_claims(1_000, 2_000);
+        claims.tenant_context.deployment_id = None;
+        let assertion = sign_test_context_assertion(&signing_key, "test-key", claims);
+
+        let err = verifier
+            .verify_at(&assertion, 1_500)
+            .expect_err("hosted assertions must bind to a deployment audience");
+
+        assert_eq!(err, TenantContextIngressError::ContextAssertionMalformed);
+    }
+
+    #[test]
+    fn verifier_rejects_context_assertion_with_mismatched_authority_actor() {
+        let (signing_key, verifier) = test_signing_key_and_verifier();
+        let mut claims = test_claims(1_000, 2_000);
+        claims.authority_chain = AuthorityChain::from_request(
+            RequestPrincipal::authenticated_user("user-b", "tandem-web"),
+        );
+        let assertion = sign_test_context_assertion(&signing_key, "test-key", claims);
+
+        let err = verifier
+            .verify_at(&assertion, 1_500)
+            .expect_err("hosted assertions must bind authority to the human actor");
+
+        assert_eq!(err, TenantContextIngressError::ContextAssertionUntrusted);
     }
 
     #[test]

@@ -186,6 +186,324 @@ impl HumanActor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    Organization,
+    Workspace,
+    Department,
+    Group,
+    Project,
+    DataRoom,
+    SharedDrive,
+    DocumentCollection,
+    DataStore,
+    Dataset,
+    Document,
+    Repository,
+    Directory,
+    File,
+    Artifact,
+    MemorySpace,
+    KnowledgeSpace,
+    SecretProviderCredential,
+    Automation,
+    Run,
+    Approval,
+    AuditExport,
+    McpServer,
+    McpTool,
+    ExternalIntegrationAccount,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcePathSegment {
+    pub kind: ResourceKind,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl ResourcePathSegment {
+    pub fn new(kind: ResourceKind, id: impl Into<String>) -> Self {
+        Self {
+            kind,
+            id: id.into(),
+            name: None,
+        }
+    }
+
+    pub fn named(kind: ResourceKind, id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            kind,
+            id: id.into(),
+            name: Some(name.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceRef {
+    pub organization_id: String,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub resource_kind: ResourceKind,
+    pub resource_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_path: Vec<ResourcePathSegment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
+}
+
+impl ResourceRef {
+    pub fn new(
+        organization_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        resource_kind: ResourceKind,
+        resource_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            organization_id: organization_id.into(),
+            workspace_id: workspace_id.into(),
+            project_id: None,
+            resource_kind,
+            resource_id: resource_id.into(),
+            parent_path: Vec::new(),
+            branch_id: None,
+            path_prefix: None,
+        }
+    }
+
+    pub fn with_project_id(mut self, project_id: impl Into<String>) -> Self {
+        self.project_id = Some(project_id.into());
+        self
+    }
+
+    pub fn with_parent_path(mut self, parent_path: Vec<ResourcePathSegment>) -> Self {
+        self.parent_path = parent_path;
+        self
+    }
+
+    pub fn with_branch_id(mut self, branch_id: impl Into<String>) -> Self {
+        self.branch_id = Some(branch_id.into());
+        self
+    }
+
+    pub fn with_path_prefix(mut self, path_prefix: impl Into<String>) -> Self {
+        self.path_prefix = Some(path_prefix.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceScope {
+    pub root: ResourceRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_resources: Vec<ResourceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_resources: Vec<ResourceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u32>,
+}
+
+impl ResourceScope {
+    pub fn root(root: ResourceRef) -> Self {
+        Self {
+            root,
+            allowed_resources: Vec::new(),
+            denied_resources: Vec::new(),
+            max_depth: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessPermission {
+    View,
+    Read,
+    Edit,
+    Execute,
+    Delegate,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClass {
+    Public,
+    Internal,
+    Confidential,
+    Restricted,
+    Executive,
+    Credential,
+    Regulated,
+    CustomerData,
+    SourceCode,
+    FinancialRecord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalKind {
+    HumanUser,
+    Group,
+    Department,
+    AgentWorker,
+    Automation,
+    ServiceAccount,
+    ExternalDelegate,
+    SupportOperator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrincipalRef {
+    pub kind: PrincipalKind,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_actor_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+}
+
+impl PrincipalRef {
+    pub fn new(kind: PrincipalKind, id: impl Into<String>) -> Self {
+        Self {
+            kind,
+            id: id.into(),
+            tenant_actor_id: None,
+            issuer: None,
+            subject: None,
+        }
+    }
+
+    pub fn human_user(id: impl Into<String>) -> Self {
+        Self::new(PrincipalKind::HumanUser, id)
+    }
+
+    pub fn agent_worker(id: impl Into<String>) -> Self {
+        Self::new(PrincipalKind::AgentWorker, id)
+    }
+
+    pub fn with_tenant_actor_id(mut self, tenant_actor_id: impl Into<String>) -> Self {
+        self.tenant_actor_id = Some(tenant_actor_id.into());
+        self
+    }
+
+    pub fn with_issuer_subject(
+        mut self,
+        issuer: impl Into<String>,
+        subject: impl Into<String>,
+    ) -> Self {
+        self.issuer = Some(issuer.into());
+        self.subject = Some(subject.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantSource {
+    Direct,
+    GroupMembership,
+    DepartmentMembership,
+    Inherited,
+    ExecutiveGlobal,
+    Delegation,
+    BreakGlass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedGrant {
+    pub grant_id: String,
+    pub principal: PrincipalRef,
+    pub resource: ResourceRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<AccessPermission>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_classes: Vec<DataClass>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_patterns: Vec<String>,
+    pub grant_source: GrantSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_principal: Option<PrincipalRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation_id: Option<String>,
+}
+
+impl ScopedGrant {
+    pub fn new(
+        grant_id: impl Into<String>,
+        principal: PrincipalRef,
+        resource: ResourceRef,
+        grant_source: GrantSource,
+    ) -> Self {
+        Self {
+            grant_id: grant_id.into(),
+            principal,
+            resource,
+            permissions: Vec::new(),
+            data_classes: Vec::new(),
+            tool_patterns: Vec::new(),
+            grant_source,
+            source_principal: None,
+            expires_at_ms: None,
+            delegation_id: None,
+        }
+    }
+
+    pub fn with_permissions(mut self, permissions: Vec<AccessPermission>) -> Self {
+        self.permissions = permissions;
+        self
+    }
+
+    pub fn with_data_classes(mut self, data_classes: Vec<DataClass>) -> Self {
+        self.data_classes = data_classes;
+        self
+    }
+
+    pub fn with_tool_patterns(mut self, tool_patterns: Vec<String>) -> Self {
+        self.tool_patterns = tool_patterns;
+        self
+    }
+
+    pub fn with_source_principal(mut self, source_principal: PrincipalRef) -> Self {
+        self.source_principal = Some(source_principal);
+        self
+    }
+
+    pub fn with_expires_at_ms(mut self, expires_at_ms: u64) -> Self {
+        self.expires_at_ms = Some(expires_at_ms);
+        self
+    }
+
+    pub fn with_delegation_id(mut self, delegation_id: impl Into<String>) -> Self {
+        self.delegation_id = Some(delegation_id.into());
+        self
+    }
+
+    pub fn has_permission(&self, permission: AccessPermission) -> bool {
+        self.permissions.contains(&permission)
+    }
+
+    pub fn allows_data_class(&self, data_class: DataClass) -> bool {
+        self.data_classes.contains(&data_class)
+    }
+
+    pub fn is_expired_at(&self, now_ms: u64) -> bool {
+        self.expires_at_ms
+            .map(|expires_at_ms| expires_at_ms <= now_ms)
+            .unwrap_or(false)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LocalImplicitTenant;
 
@@ -673,5 +991,233 @@ mod tests {
         let principal = RequestPrincipal::anonymous();
         let tenant = TenantContext::local_implicit();
         assert!(hook.authorize(&principal, &tenant));
+    }
+
+    #[test]
+    fn resource_ref_round_trips_finance_workspace_data_store() {
+        let resource =
+            ResourceRef::new("acme", "finance", ResourceKind::DataStore, "finance-ledger")
+                .with_parent_path(vec![
+                    ResourcePathSegment::named(ResourceKind::Department, "finance", "Finance"),
+                    ResourcePathSegment::named(
+                        ResourceKind::SharedDrive,
+                        "finance-drive",
+                        "Finance",
+                    ),
+                ]);
+
+        let encoded = serde_json::to_string(&resource).expect("serialize resource ref");
+        assert!(encoded.contains("\"resource_kind\":\"data_store\""));
+
+        let decoded: ResourceRef =
+            serde_json::from_str(&encoded).expect("deserialize resource ref");
+        assert_eq!(decoded, resource);
+        assert_eq!(decoded.organization_id, "acme");
+        assert_eq!(decoded.workspace_id, "finance");
+        assert_eq!(decoded.resource_kind, ResourceKind::DataStore);
+    }
+
+    #[test]
+    fn resource_scope_models_engineering_repo_path_scope() {
+        let repository =
+            ResourceRef::new("acme", "engineering", ResourceKind::Repository, "tandem")
+                .with_project_id("platform")
+                .with_branch_id("main")
+                .with_path_prefix("crates/tandem-enterprise-contract/");
+
+        let scope = ResourceScope {
+            root: ResourceRef::new("acme", "engineering", ResourceKind::Project, "platform"),
+            allowed_resources: vec![repository.clone()],
+            denied_resources: vec![ResourceRef::new(
+                "acme",
+                "engineering",
+                ResourceKind::Directory,
+                "secrets",
+            )
+            .with_project_id("platform")
+            .with_path_prefix("crates/tandem-enterprise-contract/secrets/")],
+            max_depth: Some(4),
+        };
+
+        let encoded = serde_json::to_value(&scope).expect("serialize resource scope");
+        assert_eq!(
+            encoded["allowed_resources"][0]["resource_kind"],
+            "repository"
+        );
+        assert_eq!(
+            encoded["allowed_resources"][0]["path_prefix"],
+            "crates/tandem-enterprise-contract/"
+        );
+
+        let decoded: ResourceScope =
+            serde_json::from_value(encoded).expect("deserialize resource scope");
+        assert_eq!(decoded, scope);
+        assert_eq!(decoded.allowed_resources, vec![repository]);
+    }
+
+    #[test]
+    fn resource_scope_models_ceo_org_wide_executive_access() {
+        let principal = PrincipalRef::human_user("ceo-user")
+            .with_tenant_actor_id("user-ceo")
+            .with_issuer_subject("https://idp.acme.example", "00uceo");
+        let scope = ResourceScope::root(ResourceRef::new(
+            "acme",
+            "*",
+            ResourceKind::Organization,
+            "acme",
+        ));
+
+        assert_eq!(principal.kind, PrincipalKind::HumanUser);
+        assert_eq!(principal.tenant_actor_id.as_deref(), Some("user-ceo"));
+        assert_eq!(scope.root.resource_kind, ResourceKind::Organization);
+        assert_eq!(scope.root.workspace_id, "*");
+        assert!(scope.allowed_resources.is_empty());
+
+        let encoded = serde_json::to_string(&DataClass::Executive).expect("serialize data class");
+        assert_eq!(encoded, "\"executive\"");
+    }
+
+    #[test]
+    fn mcp_tool_resource_target_and_permissions_are_transport_safe() {
+        let tool = ResourceRef::new(
+            "acme",
+            "security",
+            ResourceKind::McpTool,
+            "mcp:google-drive:files.export",
+        )
+        .with_parent_path(vec![
+            ResourcePathSegment::new(ResourceKind::McpServer, "google-drive"),
+            ResourcePathSegment::new(ResourceKind::DataStore, "security-drive"),
+        ]);
+        let permissions = vec![AccessPermission::View, AccessPermission::Execute];
+        let data_classes = vec![DataClass::Confidential, DataClass::Credential];
+        let worker = PrincipalRef::agent_worker("agent-security-export");
+
+        let payload = serde_json::json!({
+            "principal": worker,
+            "resource": tool,
+            "permissions": permissions,
+            "data_classes": data_classes,
+        });
+
+        assert_eq!(payload["principal"]["kind"], "agent_worker");
+        assert_eq!(payload["resource"]["resource_kind"], "mcp_tool");
+        assert_eq!(payload["permissions"][1], "execute");
+        assert_eq!(payload["data_classes"][1], "credential");
+    }
+
+    #[test]
+    fn scoped_grant_models_department_membership_data_access() {
+        let finance_department = PrincipalRef::new(PrincipalKind::Department, "finance");
+        let finance_user =
+            PrincipalRef::human_user("user-finance").with_tenant_actor_id("actor-finance");
+        let finance_store =
+            ResourceRef::new("acme", "finance", ResourceKind::DataStore, "finance-ledger");
+        let grant = ScopedGrant::new(
+            "grant-finance-ledger-read",
+            finance_user,
+            finance_store,
+            GrantSource::DepartmentMembership,
+        )
+        .with_source_principal(finance_department)
+        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+        .with_data_classes(vec![DataClass::FinancialRecord, DataClass::Confidential]);
+
+        assert_eq!(grant.grant_source, GrantSource::DepartmentMembership);
+        assert!(grant.has_permission(AccessPermission::Read));
+        assert!(!grant.has_permission(AccessPermission::Edit));
+        assert!(grant.allows_data_class(DataClass::FinancialRecord));
+        assert!(!grant.allows_data_class(DataClass::Executive));
+
+        let encoded = serde_json::to_value(&grant).expect("serialize department grant");
+        assert_eq!(encoded["grant_source"], "department_membership");
+        assert_eq!(encoded["source_principal"]["kind"], "department");
+    }
+
+    #[test]
+    fn scoped_grant_models_cross_functional_group_access() {
+        let launch_group = PrincipalRef::new(PrincipalKind::Group, "launch-team");
+        let marketer = PrincipalRef::human_user("user-marketing");
+        let launch_room = ResourceRef::new("acme", "gtm", ResourceKind::DataRoom, "q4-launch-room");
+        let grant = ScopedGrant::new(
+            "grant-launch-room-edit",
+            marketer,
+            launch_room,
+            GrantSource::GroupMembership,
+        )
+        .with_source_principal(launch_group)
+        .with_permissions(vec![
+            AccessPermission::View,
+            AccessPermission::Read,
+            AccessPermission::Edit,
+        ])
+        .with_data_classes(vec![DataClass::Internal, DataClass::CustomerData]);
+
+        let decoded: ScopedGrant =
+            serde_json::from_value(serde_json::to_value(&grant).expect("serialize group grant"))
+                .expect("deserialize group grant");
+        assert_eq!(decoded, grant);
+        assert_eq!(decoded.grant_source, GrantSource::GroupMembership);
+        assert!(decoded.has_permission(AccessPermission::Edit));
+        assert!(decoded.allows_data_class(DataClass::CustomerData));
+    }
+
+    #[test]
+    fn scoped_grant_models_explicit_executive_global_access() {
+        let ceo = PrincipalRef::human_user("ceo-user").with_tenant_actor_id("actor-ceo");
+        let org = ResourceRef::new("acme", "*", ResourceKind::Organization, "acme");
+        let grant = ScopedGrant::new("grant-ceo-global", ceo, org, GrantSource::ExecutiveGlobal)
+            .with_permissions(vec![
+                AccessPermission::View,
+                AccessPermission::Read,
+                AccessPermission::Admin,
+            ])
+            .with_data_classes(vec![
+                DataClass::Internal,
+                DataClass::Confidential,
+                DataClass::Restricted,
+                DataClass::Executive,
+                DataClass::FinancialRecord,
+            ]);
+
+        assert_eq!(grant.grant_source, GrantSource::ExecutiveGlobal);
+        assert_eq!(grant.resource.resource_kind, ResourceKind::Organization);
+        assert_eq!(grant.resource.workspace_id, "*");
+        assert!(grant.has_permission(AccessPermission::Admin));
+        assert!(grant.allows_data_class(DataClass::Executive));
+    }
+
+    #[test]
+    fn scoped_grant_models_down_scoped_delegation_with_expiry() {
+        let delegate = PrincipalRef::new(PrincipalKind::ExternalDelegate, "vendor-agent")
+            .with_issuer_subject("a2a://vendor.example", "vendor-agent-7");
+        let delegator = PrincipalRef::human_user("user-legal");
+        let contract_branch =
+            ResourceRef::new("acme", "legal", ResourceKind::Document, "vendor-contract")
+                .with_project_id("vendor-review")
+                .with_path_prefix("/contracts/vendor-a/");
+        let grant = ScopedGrant::new(
+            "grant-vendor-contract-read",
+            delegate,
+            contract_branch,
+            GrantSource::Delegation,
+        )
+        .with_source_principal(delegator)
+        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+        .with_data_classes(vec![DataClass::Confidential])
+        .with_tool_patterns(vec!["mcp:google-drive:files.get".to_string()])
+        .with_delegation_id("delegation-123")
+        .with_expires_at_ms(2_000);
+
+        assert_eq!(grant.grant_source, GrantSource::Delegation);
+        assert_eq!(grant.delegation_id.as_deref(), Some("delegation-123"));
+        assert!(!grant.is_expired_at(1_999));
+        assert!(grant.is_expired_at(2_000));
+        assert_eq!(grant.tool_patterns, vec!["mcp:google-drive:files.get"]);
+
+        let encoded = serde_json::to_value(&grant).expect("serialize delegation grant");
+        assert_eq!(encoded["principal"]["kind"], "external_delegate");
+        assert_eq!(encoded["grant_source"], "delegation");
+        assert_eq!(encoded["delegation_id"], "delegation-123");
     }
 }
