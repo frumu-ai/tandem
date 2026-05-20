@@ -604,6 +604,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             || (use_upstream_evidence && !discovered_relevant_paths.is_empty());
         if connector_discovery_required
             && !executed_has_mcp_list
+            && !executed_concrete_mcp_tool
             && !enforcement::automation_node_prefers_mcp_servers(node)
         {
             unmet_requirements.push("mcp_discovery_missing".to_string());
@@ -1682,9 +1683,31 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         }
         if connector_discovery_required
             && !executed_has_mcp_list
+            && !executed_has_concrete_mcp
             && !enforcement::automation_node_prefers_mcp_servers(node)
         {
             unmet_requirements.push("mcp_discovery_missing".to_string());
+        }
+        let required_mcp_tools_for_contract = automation_node_required_tool_calls(node)
+            .into_iter()
+            .map(|call| call.tool)
+            .filter(|tool| tool.starts_with("mcp.") && !tool.ends_with(".*"))
+            .collect::<Vec<_>>();
+        let missing_required_mcp_tools_for_contract = required_mcp_tools_for_contract
+            .iter()
+            .filter(|required| {
+                !executed_tools
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|tool_name| tandem_core::tool_name_matches_policy(required, tool_name))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_required_mcp_tools_for_contract.is_empty() {
+            missing_required_concrete_mcp_tools.extend(missing_required_mcp_tools_for_contract);
+            missing_required_concrete_mcp_tools.sort();
+            missing_required_concrete_mcp_tools.dedup();
+            unmet_requirements.push("mcp_required_tool_missing".to_string());
         }
         unmet_requirements.sort();
         unmet_requirements.dedup();

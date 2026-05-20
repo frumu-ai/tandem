@@ -730,6 +730,129 @@ fn validation_requires_read_even_when_connector_source_succeeds() {
 }
 
 #[test]
+fn validation_requires_declared_mcp_tool_without_mcp_list_discovery_block() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-required-domain-search-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "discover_contact_candidates".to_string();
+    node.objective =
+        "Use Hunter MCP domain_search to discover sponsorship contacts for selected companies."
+            .to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: Some(crate::AutomationOutputEnforcement {
+            validation_profile: Some("artifact_only".to_string()),
+            required_tools: vec![
+                "read".to_string(),
+                "websearch".to_string(),
+                "mcp.hunter.domain_search".to_string(),
+            ],
+            required_tool_calls: vec![crate::AutomationRequiredToolCall {
+                tool: "mcp.hunter.domain_search".to_string(),
+                args: None,
+                evidence_key: None,
+                required_success: true,
+            }],
+            required_evidence: Vec::new(),
+            required_sections: Vec::new(),
+            prewrite_gates: Vec::new(),
+            retry_on_missing: Vec::new(),
+            terminal_on: Vec::new(),
+            repair_budget: Some(2),
+            session_text_recovery: Some("allow".to_string()),
+        }),
+        schema: Some(json!({
+            "type": "object",
+            "required": ["schema_version", "candidates_by_company", "has_candidates"],
+            "properties": {
+                "schema_version": {"const": "1"},
+                "candidates_by_company": {"type": "array"},
+                "has_candidates": {"type": "boolean"}
+            }
+        })),
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/discover-contact-candidates.json"
+        },
+        "tool_allowlist": [
+            "read",
+            "websearch",
+            "mcp.hunter.email_count",
+            "mcp.hunter.domain_search",
+            "write"
+        ]
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "schema_version": "1",
+        "candidates_by_company": [{
+            "company": "Pirkka-cola (Kesko)",
+            "domain": "k-ryhma.fi",
+            "candidates": [],
+            "research_notes": "Hunter email_count returned zero.",
+            "candidate_count": 0
+        }],
+        "has_candidates": false
+    }))
+    .expect("serialize artifact");
+    let session = Session::new(Some("email count is not domain search".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, _rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "",
+        &json!({
+            "executed_tools": ["read", "websearch", "mcp.hunter.email_count", "write"],
+            "requested_tools": [
+                "read",
+                "websearch",
+                "mcp.hunter.email_count",
+                "mcp.hunter.domain_search",
+                "write"
+            ],
+            "web_research_succeeded": true,
+            "capability_resolution": {
+                "mcp_tool_diagnostics": {
+                    "selected_servers": ["hunter"]
+                }
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/discover-contact-candidates.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_none());
+    assert!(validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("mcp_required_tool_missing")));
+    assert!(!validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("mcp_discovery_missing")));
+    assert_eq!(
+        validation["missing_required_mcp_tools"],
+        json!(["mcp.hunter.domain_search"])
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn validation_requires_declared_concrete_mcp_tools() {
     let workspace_root =
         std::env::temp_dir().join(format!("tandem-required-mcp-tool-{}", uuid::Uuid::new_v4()));
