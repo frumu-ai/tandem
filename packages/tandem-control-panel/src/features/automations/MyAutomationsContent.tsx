@@ -34,6 +34,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     calendarEvents,
     workflowAutomationCount,
     workflowAutomationVisibleCount,
+    automationsV2ListError,
     workflowAutomationSections,
     legacyAutomationRows,
     totalSavedAutomations,
@@ -671,7 +672,12 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
             </div>
           </div>
 
-          {workflowAutomationSections.length > 0 ? (
+          {automationsV2ListError ? (
+            <div className="tcp-list-item border-red-400/30 bg-red-500/10">
+              <div className="font-medium text-red-100">Workflow library could not load</div>
+              <div className="tcp-subtle mt-1 text-xs">{automationsV2ListError}</div>
+            </div>
+          ) : workflowAutomationSections.length > 0 ? (
             <div className="space-y-5">
               {workflowAutomationSections.map((section: any) => (
                 <section key={section.key} className="space-y-3">

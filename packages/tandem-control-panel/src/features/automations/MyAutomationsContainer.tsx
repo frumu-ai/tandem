@@ -175,10 +175,18 @@ export function MyAutomationsContainer({
   const automationsV2Query = useQuery({
     queryKey: ["automations", "v2", "list"],
     queryFn: () =>
-      client?.automationsV2?.list?.().catch(() => ({ automations: [] })) ??
-      Promise.resolve({ automations: [] }),
+      api("/api/engine/automations/v2?view=summary").catch((error: any) => ({
+        automations: [],
+        error: error?.message || String(error),
+      })) ?? Promise.resolve({ automations: [] }),
     refetchInterval: 20000,
   });
+  const automationsV2ListError =
+    typeof (automationsV2Query.data as any)?.error === "string"
+      ? (automationsV2Query.data as any).error
+      : automationsV2Query.error
+        ? String((automationsV2Query.error as any)?.message || automationsV2Query.error)
+        : "";
   const automationsV2 = useMemo(() => {
     const rows = toArray(automationsV2Query.data, "automations");
     const byId = new Map<string, any>();
@@ -1764,6 +1772,7 @@ export function MyAutomationsContainer({
         calendarEvents,
         workflowAutomationCount,
         workflowAutomationVisibleCount,
+        automationsV2ListError,
         automationsV2,
         workflowAutomationSections,
         legacyAutomationRows,

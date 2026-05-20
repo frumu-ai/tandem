@@ -62,6 +62,33 @@ fn ensure_automation_v2_run_tenant(
         .map_err(|_| automation_v2_run_not_found(&run.run_id))
 }
 
+#[derive(Default, Deserialize)]
+pub(super) struct AutomationsV2ListQuery {
+    #[serde(default)]
+    view: Option<String>,
+}
+
+fn automation_v2_summary_value(automation: &AutomationV2Spec) -> Value {
+    json!({
+        "automation_id": automation.automation_id,
+        "name": automation.name,
+        "description": automation.description,
+        "status": automation.status,
+        "schedule": automation.schedule,
+        "execution": automation.execution,
+        "output_targets": automation.output_targets,
+        "created_at_ms": automation.created_at_ms,
+        "updated_at_ms": automation.updated_at_ms,
+        "creator_id": automation.creator_id,
+        "workspace_root": automation.workspace_root,
+        "metadata": automation.metadata,
+        "next_fire_at_ms": automation.next_fire_at_ms,
+        "last_fired_at_ms": automation.last_fired_at_ms,
+        "agent_count": automation.agents.len(),
+        "node_count": automation.flow.nodes.len(),
+    })
+}
+
 pub(super) async fn automations_patch(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -840,6 +867,7 @@ pub(super) async fn automations_v2_create(
 pub(super) async fn automations_v2_list(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Query(query): Query<AutomationsV2ListQuery>,
 ) -> Json<Value> {
     let rows = state
         .list_automations_v2()
@@ -847,6 +875,21 @@ pub(super) async fn automations_v2_list(
         .into_iter()
         .filter(|automation| super::tenant_matches(&tenant_context, &automation.tenant_context()))
         .collect::<Vec<_>>();
+    if query
+        .view
+        .as_deref()
+        .is_some_and(|view| view.eq_ignore_ascii_case("summary"))
+    {
+        let summaries = rows
+            .iter()
+            .map(automation_v2_summary_value)
+            .collect::<Vec<_>>();
+        return Json(json!({
+            "automations": summaries,
+            "count": summaries.len(),
+            "view": "summary",
+        }));
+    }
     Json(json!({
         "automations": rows,
         "count": rows.len(),

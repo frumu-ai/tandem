@@ -1185,6 +1185,41 @@ async fn tenant_a_cannot_access_tenant_b_automation_v2_routes() {
     assert!(automation_ids.contains(&"tenant-a-auto"));
     assert!(!automation_ids.contains(&"tenant-b-auto"));
 
+    let summary_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            "/automations/v2?view=summary",
+            "org-a",
+            "workspace-a",
+            "user-a",
+            None,
+        ))
+        .await
+        .expect("automation summary list response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+    let summary_body = to_bytes(summary_resp.into_body(), usize::MAX)
+        .await
+        .expect("summary list body");
+    let summary_payload: Value = serde_json::from_slice(&summary_body).expect("summary list json");
+    assert_eq!(
+        summary_payload.get("view").and_then(Value::as_str),
+        Some("summary")
+    );
+    let summary_row = summary_payload
+        .get("automations")
+        .and_then(Value::as_array)
+        .expect("summary automations array")
+        .iter()
+        .find(|row| row.get("automation_id").and_then(Value::as_str) == Some("tenant-a-auto"))
+        .expect("tenant-a summary row");
+    assert_eq!(
+        summary_row.get("node_count").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert!(summary_row.get("flow").is_none());
+    assert!(summary_row.get("agents").is_none());
+
     for (method, uri, body) in [
         ("GET", "/automations/v2/tenant-b-auto", None),
         (
