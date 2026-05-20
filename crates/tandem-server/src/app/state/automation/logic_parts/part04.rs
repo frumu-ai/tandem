@@ -940,17 +940,21 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 rejected_reason = Some(reason);
             }
         }
+        let connector_inventory_only_artifact = connector_discovery_required
+            && !automation_node_is_outbound_action(node)
+            && !connector_action_patterns.is_empty()
+            && artifact_text_is_mcp_inventory_only(selected_text);
         let connector_source_artifact_missing = connector_discovery_required
             && !automation_node_is_outbound_action(node)
             && !connector_action_patterns.is_empty()
-            && executed_concrete_mcp_tool
-            && (artifact_text_is_mcp_inventory_only(selected_text)
-                || !artifact_text_has_receipt_backed_connector_source_evidence(
-                    selected_text,
-                    selected_assessment,
-                    &executed_concrete_mcp_tools,
-                    &selected_mcp_server_names,
-                ));
+            && (connector_inventory_only_artifact
+                || (executed_concrete_mcp_tool
+                    && !artifact_text_has_receipt_backed_connector_source_evidence(
+                        selected_text,
+                        selected_assessment,
+                        &executed_concrete_mcp_tools,
+                        &selected_mcp_server_names,
+                    )));
         if connector_source_artifact_missing {
             unmet_requirements.push("mcp_connector_source_artifact_missing".to_string());
             accepted_output = None;

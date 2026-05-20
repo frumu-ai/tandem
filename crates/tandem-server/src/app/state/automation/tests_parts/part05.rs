@@ -528,6 +528,107 @@ fn validation_rejects_connector_source_inventory_only_artifact() {
 }
 
 #[test]
+fn validation_rejects_mcp_list_inventory_before_schema_repair() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-mcp-list-inventory-artifact-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "select_company_batch".to_string();
+    node.objective =
+        "Use Notion MCP to fetch and search companies from a Notion data source.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: Some(json!({
+            "type": "object",
+            "required": ["schema_version"],
+            "properties": {
+                "schema_version": {"const": "1"}
+            }
+        })),
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/select-company-batch.json"
+        },
+        "tool_allowlist": [
+            "mcp_list",
+            "mcp.notion.notion_fetch",
+            "mcp.notion.notion_search",
+            "write"
+        ]
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "connected_server_names": ["notion"],
+        "enabled_server_names": ["notion"],
+        "inventory_version": 1,
+        "registered_tools": ["mcp.notion.notion_fetch", "mcp.notion.notion_search"],
+        "remote_tools": [],
+        "servers": [{
+            "name": "notion",
+            "connected": true,
+            "registered_tools": ["mcp.notion.notion_fetch", "mcp.notion.notion_search"]
+        }]
+    }))
+    .expect("serialize inventory");
+    let session = Session::new(Some("inventory only connector artifact".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "",
+        &json!({
+            "executed_tools": ["mcp_list", "write"],
+            "requested_tools": [
+                "mcp_list",
+                "mcp.notion.notion_fetch",
+                "mcp.notion.notion_search",
+                "write"
+            ],
+            "capability_resolution": {
+                "mcp_tool_diagnostics": {
+                    "selected_servers": ["notion"]
+                }
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/select-company-batch.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_none());
+    let unmet = validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array");
+    assert!(unmet
+        .iter()
+        .any(|value| value.as_str() == Some("mcp_connector_source_artifact_missing")));
+    assert!(!unmet
+        .iter()
+        .any(|value| value.as_str() == Some("output_schema_invalid")));
+    assert!(validation["semantic_block_reason"]
+        .as_str()
+        .expect("semantic block reason")
+        .contains("connector inventory"));
+    assert!(rejected
+        .as_deref()
+        .unwrap_or_default()
+        .contains("connector inventory"));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn validation_requires_declared_concrete_mcp_tools() {
     let workspace_root =
         std::env::temp_dir().join(format!("tandem-required-mcp-tool-{}", uuid::Uuid::new_v4()));

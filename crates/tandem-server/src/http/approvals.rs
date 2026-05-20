@@ -148,6 +148,8 @@ pub(crate) fn automation_v2_run_to_approval_request(
             .map(|node| node.objective.clone())
     });
 
+    let decisions = approval_decisions_for_gate(gate);
+
     ApprovalRequest {
         request_id: format!("automation_v2:{}:{}", run.run_id, gate.node_id),
         source: ApprovalSourceKind::AutomationV2,
@@ -172,22 +174,34 @@ pub(crate) fn automation_v2_run_to_approval_request(
         })),
         requested_at_ms: gate.requested_at_ms,
         expires_at_ms: None,
-        decisions: gate
-            .decisions
-            .iter()
-            .filter_map(|raw| match raw.to_ascii_lowercase().as_str() {
-                "approve" => Some(ApprovalDecision::Approve),
-                "rework" => Some(ApprovalDecision::Rework),
-                "cancel" => Some(ApprovalDecision::Cancel),
-                _ => None,
-            })
-            .collect(),
+        decisions,
         rework_targets: gate.rework_targets.clone(),
         instructions: gate.instructions.clone(),
         decided_by: None,
         decided_at_ms: None,
         decision: None,
         rework_feedback: None,
+    }
+}
+
+fn approval_decisions_for_gate(gate: &AutomationPendingGate) -> Vec<ApprovalDecision> {
+    let mut decisions = gate
+        .decisions
+        .iter()
+        .filter_map(|raw| approval_decision_from_gate(raw))
+        .collect::<Vec<_>>();
+    if !gate.rework_targets.is_empty() && !decisions.contains(&ApprovalDecision::Rework) {
+        decisions.push(ApprovalDecision::Rework);
+    }
+    decisions
+}
+
+fn approval_decision_from_gate(raw: &str) -> Option<ApprovalDecision> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "approve" => Some(ApprovalDecision::Approve),
+        "rework" | "changes" | "request_changes" | "ask_changes" => Some(ApprovalDecision::Rework),
+        "cancel" | "reject" | "deny" => Some(ApprovalDecision::Cancel),
+        _ => None,
     }
 }
 

@@ -120,7 +120,7 @@ function decisionLabel(decision: DecisionKind): string {
     case "rework":
       return "Rework";
     case "cancel":
-      return "Cancel run";
+      return "Reject";
   }
 }
 
@@ -259,6 +259,7 @@ function ApprovalRequestCard({
   >;
 }) {
   const previewMarkdown = dedupeMarkdown(request.action_preview_markdown, request.instructions);
+  const decisions = approvalDecisionsForRequest(request);
 
   return (
     <PanelCard
@@ -344,11 +345,7 @@ function ApprovalRequestCard({
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            {(request.decisions || ["approve", "rework", "cancel"]).map((raw) => {
-              const decision = String(raw).toLowerCase() as DecisionKind;
-              if (!["approve", "rework", "cancel"].includes(decision)) {
-                return null;
-              }
+            {decisions.map((decision) => {
               if (decision === "rework") {
                 return (
                   <button
@@ -377,6 +374,28 @@ function ApprovalRequestCard({
       </div>
     </PanelCard>
   );
+}
+
+function approvalDecisionsForRequest(request: ApprovalRequest): DecisionKind[] {
+  const seen = new Set<DecisionKind>();
+  const decisions: DecisionKind[] = [];
+  for (const raw of request.decisions || ["approve", "rework", "cancel"]) {
+    const decision = normalizeDecision(raw);
+    if (!["approve", "rework", "cancel"].includes(decision) || seen.has(decision)) continue;
+    seen.add(decision);
+    decisions.push(decision);
+  }
+  if (request.rework_targets?.length && !seen.has("rework")) {
+    decisions.push("rework");
+  }
+  return decisions;
+}
+
+function normalizeDecision(raw: unknown): DecisionKind {
+  const value = String(raw).toLowerCase();
+  if (["reject", "deny"].includes(value)) return "cancel";
+  if (["changes", "request_changes", "ask_changes"].includes(value)) return "rework";
+  return value as DecisionKind;
 }
 
 function dedupeMarkdown(markdown?: string, instructions?: string): string | undefined {

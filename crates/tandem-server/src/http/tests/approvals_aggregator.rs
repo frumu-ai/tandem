@@ -50,11 +50,7 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
                 node_id: "publish".to_string(),
                 title: "Publish approval".to_string(),
                 instructions: Some("approve final publish step".to_string()),
-                decisions: vec![
-                    "approve".to_string(),
-                    "rework".to_string(),
-                    "cancel".to_string(),
-                ],
+                decisions: vec!["approve".to_string(), "reject".to_string()],
                 rework_targets: vec!["draft".to_string()],
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec!["draft".to_string()],
@@ -136,6 +132,11 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
         .and_then(Value::as_array)
         .expect("decisions array");
     assert_eq!(decisions.len(), 3);
+    let decision_values = decisions
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(decision_values, vec!["approve", "cancel", "rework"]);
 
     let surface = first
         .get("surface_payload")
