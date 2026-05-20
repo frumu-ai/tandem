@@ -309,11 +309,40 @@ fn first_header(headers: &HeaderMap, names: &[&str]) -> Option<String> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TenantContextAssertionVerifier {
-    public_keys_by_id: BTreeMap<String, [u8; 32]>,
-    legacy_public_key: Option<[u8; 32]>,
+    public_keys_by_id: BTreeMap<String, ContextAssertionPublicKey>,
+    legacy_public_key: Option<ContextAssertionPublicKey>,
     issuer: String,
     audience: String,
     max_future_skew_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContextAssertionPublicKey {
+    public_key: [u8; 32],
+    purpose: Option<String>,
+    organization_id: Option<String>,
+    deployment_id: Option<String>,
+    allowed_audiences: Vec<String>,
+    allowed_resource_scope_prefixes: Vec<String>,
+    not_before_ms: Option<u64>,
+    not_after_ms: Option<u64>,
+    status: Option<String>,
+}
+
+impl ContextAssertionPublicKey {
+    fn legacy(public_key: [u8; 32]) -> Self {
+        Self {
+            public_key,
+            purpose: None,
+            organization_id: None,
+            deployment_id: None,
+            allowed_audiences: Vec::new(),
+            allowed_resource_scope_prefixes: Vec::new(),
+            not_before_ms: None,
+            not_after_ms: None,
+            status: None,
+        }
+    }
 }
 
 impl TenantContextAssertionVerifier {
@@ -382,10 +411,10 @@ impl TenantContextAssertionVerifier {
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
         validate_context_assertion_header(&header)?;
 
-        let public_key = self
-            .public_key_for_kid(&header.kid)
+        let key = self
+            .key_for_kid(&header.kid)
             .ok_or(TenantContextIngressError::ContextAssertionUntrusted)?;
-        let verifying_key = VerifyingKey::from_bytes(public_key)
+        let verifying_key = VerifyingKey::from_bytes(&key.public_key)
             .map_err(|_| TenantContextIngressError::ContextAssertionKeyNotConfigured)?;
         let signature = Signature::from_bytes(&signature_bytes);
         let signing_input = format!("{encoded_header}.{encoded_claims}");
@@ -396,10 +425,11 @@ impl TenantContextAssertionVerifier {
         let claims: TenantContextAssertionClaims = serde_json::from_slice(&claims_bytes)
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
         self.validate_claims(&claims, now_ms)?;
+        validate_context_assertion_key_metadata(key, &claims, now_ms)?;
         Ok(claims.into())
     }
 
-    fn public_key_for_kid(&self, kid: &str) -> Option<&[u8; 32]> {
+    fn key_for_kid(&self, kid: &str) -> Option<&ContextAssertionPublicKey> {
         self.public_keys_by_id
             .get(kid)
             .or(self.legacy_public_key.as_ref())
@@ -450,7 +480,7 @@ impl TenantContextAssertionVerifier {
 }
 
 fn read_context_public_keyring_from_env(
-) -> Result<BTreeMap<String, [u8; 32]>, TenantContextIngressError> {
+) -> Result<BTreeMap<String, ContextAssertionPublicKey>, TenantContextIngressError> {
     let Some(raw_keys) = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS")
         .ok()
         .map(|value| value.trim().to_string())
@@ -472,8 +502,8 @@ fn read_context_public_keyring_from_env(
         .ok_or(TenantContextIngressError::ContextAssertionKeyNotConfigured)
 }
 
-fn read_legacy_context_public_key_from_env() -> Result<Option<[u8; 32]>, TenantContextIngressError>
-{
+fn read_legacy_context_public_key_from_env(
+) -> Result<Option<ContextAssertionPublicKey>, TenantContextIngressError> {
     let Some(raw_key) = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY")
         .ok()
         .map(|value| value.trim().to_string())
@@ -492,18 +522,19 @@ fn read_legacy_context_public_key_from_env() -> Result<Option<[u8; 32]>, TenantC
         return Ok(None);
     };
     decode_context_public_key(&raw_key)
+        .map(ContextAssertionPublicKey::legacy)
         .map(Some)
         .ok_or(TenantContextIngressError::ContextAssertionKeyNotConfigured)
 }
 
-fn parse_context_public_keyring(raw: &str) -> Option<BTreeMap<String, [u8; 32]>> {
+fn parse_context_public_keyring(raw: &str) -> Option<BTreeMap<String, ContextAssertionPublicKey>> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Some(BTreeMap::new());
     }
     if trimmed.starts_with('{') {
-        let parsed = serde_json::from_str::<BTreeMap<String, String>>(trimmed).ok()?;
-        return parse_context_public_keyring_entries(parsed);
+        let parsed = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(trimmed).ok()?;
+        return parse_context_public_keyring_json_entries(parsed);
     }
 
     let mut entries = BTreeMap::new();
@@ -520,16 +551,124 @@ fn parse_context_public_keyring(raw: &str) -> Option<BTreeMap<String, [u8; 32]>>
 
 fn parse_context_public_keyring_entries(
     entries: BTreeMap<String, String>,
-) -> Option<BTreeMap<String, [u8; 32]>> {
+) -> Option<BTreeMap<String, ContextAssertionPublicKey>> {
     let mut decoded = BTreeMap::new();
     for (kid, raw_key) in entries {
         let kid = kid.trim();
         if kid.is_empty() {
             return None;
         }
-        decoded.insert(kid.to_string(), decode_context_public_key(&raw_key)?);
+        decoded.insert(
+            kid.to_string(),
+            ContextAssertionPublicKey::legacy(decode_context_public_key(&raw_key)?),
+        );
     }
     Some(decoded)
+}
+
+fn parse_context_public_keyring_json_entries(
+    entries: BTreeMap<String, serde_json::Value>,
+) -> Option<BTreeMap<String, ContextAssertionPublicKey>> {
+    let mut decoded = BTreeMap::new();
+    for (kid, value) in entries {
+        let kid = kid.trim();
+        if kid.is_empty() {
+            return None;
+        }
+        let key = match value {
+            serde_json::Value::String(raw_key) => {
+                ContextAssertionPublicKey::legacy(decode_context_public_key(&raw_key)?)
+            }
+            serde_json::Value::Object(mut object) => {
+                let public_key = object
+                    .remove("public_key")
+                    .or_else(|| object.remove("publicKey"))
+                    .and_then(|value| value.as_str().map(ToString::to_string))
+                    .and_then(|raw_key| decode_context_public_key(&raw_key))?;
+                ContextAssertionPublicKey {
+                    public_key,
+                    purpose: optional_string_field(&mut object, "purpose"),
+                    organization_id: optional_string_field(&mut object, "organization_id")
+                        .or_else(|| optional_string_field(&mut object, "organizationId"))
+                        .or_else(|| optional_string_field(&mut object, "org_id"))
+                        .or_else(|| optional_string_field(&mut object, "orgId")),
+                    deployment_id: optional_string_field(&mut object, "deployment_id")
+                        .or_else(|| optional_string_field(&mut object, "deploymentId")),
+                    allowed_audiences: string_vec_field(&mut object, "allowed_audiences")
+                        .or_else(|| string_vec_field(&mut object, "allowedAudiences"))
+                        .unwrap_or_default(),
+                    allowed_resource_scope_prefixes: string_vec_field(
+                        &mut object,
+                        "allowed_resource_scope_prefixes",
+                    )
+                    .or_else(|| string_vec_field(&mut object, "allowedResourceScopePrefixes"))
+                    .unwrap_or_default(),
+                    not_before_ms: optional_u64_field(&mut object, "not_before_ms")
+                        .or_else(|| optional_u64_field(&mut object, "notBeforeMs")),
+                    not_after_ms: optional_u64_field(&mut object, "not_after_ms")
+                        .or_else(|| optional_u64_field(&mut object, "notAfterMs")),
+                    status: optional_string_field(&mut object, "status"),
+                }
+            }
+            _ => return None,
+        };
+        decoded.insert(kid.to_string(), key);
+    }
+    Some(decoded)
+}
+
+fn optional_string_field(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<String> {
+    object.remove(field).and_then(|value| match value {
+        serde_json::Value::String(value) => {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        }
+        _ => None,
+    })
+}
+
+fn optional_u64_field(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<u64> {
+    object.remove(field).and_then(|value| value.as_u64())
+}
+
+fn string_vec_field(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<Vec<String>> {
+    let value = object.remove(field)?;
+    match value {
+        serde_json::Value::Array(values) => Some(
+            values
+                .into_iter()
+                .filter_map(|value| {
+                    value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string)
+                })
+                .collect(),
+        ),
+        serde_json::Value::String(value) => Some(
+            value
+                .split([',', ';', '\n'])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 fn validate_context_assertion_header(
@@ -539,6 +678,184 @@ fn validate_context_assertion_header(
         return Err(TenantContextIngressError::ContextAssertionMalformed);
     }
     Ok(())
+}
+
+fn validate_context_assertion_key_metadata(
+    key: &ContextAssertionPublicKey,
+    claims: &TenantContextAssertionClaims,
+    now_ms: u64,
+) -> Result<(), TenantContextIngressError> {
+    if let Some(status) = key.status.as_deref() {
+        if !status.eq_ignore_ascii_case("active") {
+            return Err(TenantContextIngressError::ContextAssertionUntrusted);
+        }
+    }
+    if let Some(purpose) = key.purpose.as_deref() {
+        if purpose != "context_assertion" {
+            return Err(TenantContextIngressError::ContextAssertionUntrusted);
+        }
+    }
+    if key
+        .not_before_ms
+        .map(|not_before_ms| now_ms < not_before_ms)
+        .unwrap_or(false)
+        || key
+            .not_after_ms
+            .map(|not_after_ms| now_ms >= not_after_ms)
+            .unwrap_or(false)
+    {
+        return Err(TenantContextIngressError::ContextAssertionExpired);
+    }
+    if !key.allowed_audiences.is_empty()
+        && !key
+            .allowed_audiences
+            .iter()
+            .any(|audience| audience == &claims.audience)
+    {
+        return Err(TenantContextIngressError::ContextAssertionUntrusted);
+    }
+    if key
+        .organization_id
+        .as_deref()
+        .map(|organization_id| organization_id != claims.tenant_context.org_id)
+        .unwrap_or(false)
+    {
+        return Err(TenantContextIngressError::ContextAssertionUntrusted);
+    }
+    if key
+        .deployment_id
+        .as_deref()
+        .map(|deployment_id| claims.tenant_context.deployment_id.as_deref() != Some(deployment_id))
+        .unwrap_or(false)
+    {
+        return Err(TenantContextIngressError::ContextAssertionUntrusted);
+    }
+    if !key.allowed_resource_scope_prefixes.is_empty()
+        && !context_assertion_scope_allowed(
+            &key.allowed_resource_scope_prefixes,
+            &context_assertion_scope_prefixes(claims),
+        )
+    {
+        return Err(TenantContextIngressError::ContextAssertionUntrusted);
+    }
+
+    Ok(())
+}
+
+fn context_assertion_scope_allowed(
+    allowed_prefixes: &[String],
+    actual_prefixes: &[String],
+) -> bool {
+    actual_prefixes.iter().any(|actual| {
+        allowed_prefixes.iter().any(|allowed| {
+            let allowed = allowed.trim().trim_matches('/');
+            !allowed.is_empty()
+                && (actual == allowed
+                    || actual
+                        .strip_prefix(allowed)
+                        .map(|suffix| suffix.starts_with('/'))
+                        .unwrap_or(false))
+        })
+    })
+}
+
+fn context_assertion_scope_prefixes(claims: &TenantContextAssertionClaims) -> Vec<String> {
+    let mut prefixes = vec![
+        format!("org/{}", claims.tenant_context.org_id),
+        format!(
+            "org/{}/workspace/{}",
+            claims.tenant_context.org_id, claims.tenant_context.workspace_id
+        ),
+    ];
+    if let Some(resource_scope) = claims.resource_scope.as_ref() {
+        push_resource_ref_prefixes(&mut prefixes, &resource_scope.root);
+        for resource in &resource_scope.allowed_resources {
+            push_resource_ref_prefixes(&mut prefixes, resource);
+        }
+        for resource in &resource_scope.denied_resources {
+            push_resource_ref_prefixes(&mut prefixes, resource);
+        }
+    }
+    for grant in &claims.grants {
+        push_resource_ref_prefixes(&mut prefixes, &grant.resource);
+    }
+    prefixes.sort();
+    prefixes.dedup();
+    prefixes
+}
+
+fn push_resource_ref_prefixes(prefixes: &mut Vec<String>, resource: &ResourceRef) {
+    prefixes.push(format!("org/{}", resource.organization_id));
+    prefixes.push(format!(
+        "org/{}/workspace/{}",
+        resource.organization_id, resource.workspace_id
+    ));
+    let project_id = resource.project_id.as_deref().or_else(|| {
+        (resource.resource_kind == ResourceKind::Project).then_some(resource.resource_id.as_str())
+    });
+    if let Some(project_id) = project_id {
+        prefixes.push(format!(
+            "org/{}/workspace/{}/project/{}",
+            resource.organization_id, resource.workspace_id, project_id
+        ));
+    }
+    let mut resource_prefix = format!(
+        "org/{}/workspace/{}/resource/{}/{}",
+        resource.organization_id,
+        resource.workspace_id,
+        resource_kind_scope_label(resource.resource_kind),
+        resource.resource_id
+    );
+    if let Some(project_id) = project_id {
+        resource_prefix = format!(
+            "org/{}/workspace/{}/project/{}/resource/{}/{}",
+            resource.organization_id,
+            resource.workspace_id,
+            project_id,
+            resource_kind_scope_label(resource.resource_kind),
+            resource.resource_id
+        );
+    }
+    prefixes.push(resource_prefix.clone());
+    if let Some(branch_id) = resource.branch_id.as_deref() {
+        prefixes.push(format!("{resource_prefix}/branch/{branch_id}"));
+    }
+    if let Some(path_prefix) = resource.path_prefix.as_deref() {
+        let path_prefix = path_prefix.trim_matches('/');
+        if !path_prefix.is_empty() {
+            prefixes.push(format!("{resource_prefix}/path/{path_prefix}"));
+        }
+    }
+}
+
+fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Organization => "organization",
+        ResourceKind::Workspace => "workspace",
+        ResourceKind::Department => "department",
+        ResourceKind::Group => "group",
+        ResourceKind::Project => "project",
+        ResourceKind::DataRoom => "data_room",
+        ResourceKind::SharedDrive => "shared_drive",
+        ResourceKind::DocumentCollection => "document_collection",
+        ResourceKind::DataStore => "data_store",
+        ResourceKind::Dataset => "dataset",
+        ResourceKind::Document => "document",
+        ResourceKind::Repository => "repository",
+        ResourceKind::Directory => "directory",
+        ResourceKind::File => "file",
+        ResourceKind::Artifact => "artifact",
+        ResourceKind::MemorySpace => "memory_space",
+        ResourceKind::KnowledgeSpace => "knowledge_space",
+        ResourceKind::SecretProviderCredential => "secret_provider_credential",
+        ResourceKind::Automation => "automation",
+        ResourceKind::Run => "run",
+        ResourceKind::Approval => "approval",
+        ResourceKind::AuditExport => "audit_export",
+        ResourceKind::McpServer => "mcp_server",
+        ResourceKind::McpTool => "mcp_tool",
+        ResourceKind::ExternalIntegrationAccount => "external_integration_account",
+    }
 }
 
 fn decode_context_public_key(raw: &str) -> Option<[u8; 32]> {
@@ -934,10 +1251,13 @@ mod tests {
         let other_key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
         let verifier = TenantContextAssertionVerifier {
             public_keys_by_id: BTreeMap::from([
-                ("old-key".to_string(), other_key.verifying_key().to_bytes()),
+                (
+                    "old-key".to_string(),
+                    ContextAssertionPublicKey::legacy(other_key.verifying_key().to_bytes()),
+                ),
                 (
                     "active-key".to_string(),
-                    signing_key.verifying_key().to_bytes(),
+                    ContextAssertionPublicKey::legacy(signing_key.verifying_key().to_bytes()),
                 ),
             ]),
             legacy_public_key: None,
@@ -962,7 +1282,7 @@ mod tests {
         let verifier = TenantContextAssertionVerifier {
             public_keys_by_id: BTreeMap::from([(
                 "old-key".to_string(),
-                other_key.verifying_key().to_bytes(),
+                ContextAssertionPublicKey::legacy(other_key.verifying_key().to_bytes()),
             )]),
             legacy_public_key: None,
             issuer: "tandem-web".to_string(),
@@ -990,8 +1310,9 @@ mod tests {
         assert_eq!(
             parse_context_public_keyring(&json_keyring)
                 .expect("json keyring")
-                .get("active-key"),
-            Some(&signing_key.verifying_key().to_bytes())
+                .get("active-key")
+                .map(|key| key.public_key),
+            Some(signing_key.verifying_key().to_bytes())
         );
         assert_eq!(
             parse_context_public_keyring(&delimited_keyring)
@@ -1001,12 +1322,164 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_context_public_keyring_accepts_metadata_objects() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let encoded =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signing_key.verifying_key());
+        let json_keyring = format!(
+            r#"{{
+                "active-key": {{
+                    "publicKey": "{encoded}",
+                    "purpose": "context_assertion",
+                    "organizationId": "org-a",
+                    "deploymentId": "dep-a",
+                    "allowedAudiences": ["tandem-runtime"],
+                    "allowedResourceScopePrefixes": ["org/org-a/workspace/workspace-a/project/platform"],
+                    "notBeforeMs": 1,
+                    "notAfterMs": 5000,
+                    "status": "active"
+                }}
+            }}"#
+        );
+
+        let keyring = parse_context_public_keyring(&json_keyring).expect("metadata keyring");
+        let key = keyring.get("active-key").expect("active key metadata");
+
+        assert_eq!(key.public_key, signing_key.verifying_key().to_bytes());
+        assert_eq!(key.purpose.as_deref(), Some("context_assertion"));
+        assert_eq!(key.organization_id.as_deref(), Some("org-a"));
+        assert_eq!(key.deployment_id.as_deref(), Some("dep-a"));
+        assert_eq!(key.allowed_audiences, vec!["tandem-runtime"]);
+        assert_eq!(
+            key.allowed_resource_scope_prefixes,
+            vec!["org/org-a/workspace/workspace-a/project/platform"]
+        );
+        assert_eq!(key.not_before_ms, Some(1));
+        assert_eq!(key.not_after_ms, Some(5000));
+        assert_eq!(key.status.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn verifier_enforces_context_assertion_key_metadata() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let verifier = TenantContextAssertionVerifier {
+            public_keys_by_id: BTreeMap::from([(
+                "active-key".to_string(),
+                ContextAssertionPublicKey {
+                    public_key: signing_key.verifying_key().to_bytes(),
+                    purpose: Some("context_assertion".to_string()),
+                    organization_id: Some("org-a".to_string()),
+                    deployment_id: Some("dep-a".to_string()),
+                    allowed_audiences: vec!["tandem-runtime".to_string()],
+                    allowed_resource_scope_prefixes: vec![
+                        "org/org-a/workspace/workspace-a/project/platform".to_string(),
+                    ],
+                    not_before_ms: Some(1_000),
+                    not_after_ms: Some(2_000),
+                    status: Some("active".to_string()),
+                },
+            )]),
+            legacy_public_key: None,
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            max_future_skew_ms: 60_000,
+        };
+        let claims = test_claims(1_000, 2_000).with_strict_projection(
+            PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-a"),
+            ResourceScope::root(ResourceRef::new(
+                "org-a",
+                "workspace-a",
+                ResourceKind::Project,
+                "platform",
+            )),
+            Vec::new(),
+            DataBoundary::allow(vec![DataClass::SourceCode]),
+        );
+        let assertion = sign_test_context_assertion(&signing_key, "active-key", claims);
+
+        let verified = verifier
+            .verify_at(&assertion, 1_500)
+            .expect("key metadata should match assertion scope");
+
+        assert_eq!(verified.tenant_context.org_id, "org-a");
+    }
+
+    #[test]
+    fn verifier_rejects_context_assertion_key_with_wrong_purpose() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let verifier = TenantContextAssertionVerifier {
+            public_keys_by_id: BTreeMap::from([(
+                "approval-key".to_string(),
+                ContextAssertionPublicKey {
+                    public_key: signing_key.verifying_key().to_bytes(),
+                    purpose: Some("approval_receipt".to_string()),
+                    ..ContextAssertionPublicKey::legacy(signing_key.verifying_key().to_bytes())
+                },
+            )]),
+            legacy_public_key: None,
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            max_future_skew_ms: 60_000,
+        };
+        let assertion =
+            sign_test_context_assertion(&signing_key, "approval-key", test_claims(1_000, 2_000));
+
+        let err = verifier
+            .verify_at(&assertion, 1_500)
+            .expect_err("approval keys must not verify context assertions");
+
+        assert_eq!(err, TenantContextIngressError::ContextAssertionUntrusted);
+    }
+
+    #[test]
+    fn verifier_rejects_context_assertion_outside_key_scope() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let verifier = TenantContextAssertionVerifier {
+            public_keys_by_id: BTreeMap::from([(
+                "active-key".to_string(),
+                ContextAssertionPublicKey {
+                    public_key: signing_key.verifying_key().to_bytes(),
+                    purpose: Some("context_assertion".to_string()),
+                    allowed_resource_scope_prefixes: vec![
+                        "org/org-a/workspace/workspace-a/project/finance".to_string(),
+                    ],
+                    ..ContextAssertionPublicKey::legacy(signing_key.verifying_key().to_bytes())
+                },
+            )]),
+            legacy_public_key: None,
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            max_future_skew_ms: 60_000,
+        };
+        let claims = test_claims(1_000, 2_000).with_strict_projection(
+            PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-a"),
+            ResourceScope::root(ResourceRef::new(
+                "org-a",
+                "workspace-a",
+                ResourceKind::Project,
+                "platform",
+            )),
+            Vec::new(),
+            DataBoundary::allow(vec![DataClass::SourceCode]),
+        );
+        let assertion = sign_test_context_assertion(&signing_key, "active-key", claims);
+
+        let err = verifier
+            .verify_at(&assertion, 1_500)
+            .expect_err("key scope must constrain signed projection scope");
+
+        assert_eq!(err, TenantContextIngressError::ContextAssertionUntrusted);
+    }
+
     fn test_signing_key_and_verifier() -> (ed25519_dalek::SigningKey, TenantContextAssertionVerifier)
     {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
         let verifier = TenantContextAssertionVerifier {
             public_keys_by_id: BTreeMap::new(),
-            legacy_public_key: Some(signing_key.verifying_key().to_bytes()),
+            legacy_public_key: Some(ContextAssertionPublicKey::legacy(
+                signing_key.verifying_key().to_bytes(),
+            )),
             issuer: "tandem-web".to_string(),
             audience: "tandem-runtime".to_string(),
             max_future_skew_ms: 60_000,

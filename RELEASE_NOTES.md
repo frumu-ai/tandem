@@ -40,6 +40,10 @@ and resource grants.
   resource-scope, scoped-grant, and data-boundary projection fields. Existing
   tenant-only v1 assertions remain valid and deserialize without strict
   projection data.
+- Added hosted context assertion key metadata checks so keyring entries can
+  bind a public key to the `context_assertion` purpose, org/deployment,
+  allowed audiences, allowed resource-scope prefixes, activation windows, and
+  active status while preserving legacy string and delimited key formats.
 - Re-exported the new contract vocabulary through `tandem-types`.
 - Added contract tests covering Finance department data access, Engineering
   repository path scopes, cross-functional group access, CEO org-wide executive
