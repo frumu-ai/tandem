@@ -32,11 +32,16 @@ and resource grants.
   additive strict context object for hosted/enterprise projections over tenant
   context, principals, authority chains, resource scopes, grants, data-class
   boundaries, and signed assertion metadata.
+- Added allow/deny grant effects, structured access decisions, and
+  `StrictTenantContext` evaluation helpers so explicit denies win over
+  inherited allows, projected resource scopes bound access, expired grants do
+  not apply, and project grants can authorize path-scoped resources.
 - Re-exported the new contract vocabulary through `tandem-types`.
 - Added contract tests covering Finance department data access, Engineering
   repository path scopes, cross-functional group access, CEO org-wide executive
   grants, MCP tool resource targets, expiring delegated vendor-agent access,
-  data-boundary denials, and project-scoped agent projections.
+  data-boundary denials, project-scoped agent projections, explicit deny
+  precedence, expired grants, and narrow delegation.
 
 ### Hosted Runtime Ingress
 

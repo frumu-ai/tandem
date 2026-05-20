@@ -296,6 +296,51 @@ impl ResourceRef {
         self.path_prefix = Some(path_prefix.into());
         self
     }
+
+    pub fn applies_to(&self, target: &ResourceRef) -> bool {
+        if self.organization_id != target.organization_id {
+            return false;
+        }
+        if self.workspace_id != "*" && self.workspace_id != target.workspace_id {
+            return false;
+        }
+
+        match self.resource_kind {
+            ResourceKind::Organization => self.resource_id == target.organization_id,
+            ResourceKind::Workspace | ResourceKind::Department => {
+                self.resource_id == target.workspace_id
+                    || self.resource_id == "*"
+                    || self.resource_id == target.resource_id
+            }
+            ResourceKind::Project => {
+                target.project_id.as_deref() == Some(self.resource_id.as_str())
+                    || target.resource_id == self.resource_id
+            }
+            _ => self.matches_resource_or_path(target),
+        }
+    }
+
+    fn matches_resource_or_path(&self, target: &ResourceRef) -> bool {
+        if self.project_id.is_some() && self.project_id != target.project_id {
+            return false;
+        }
+        if self.resource_kind == target.resource_kind && self.resource_id == target.resource_id {
+            return self.path_prefix_applies_to(target);
+        }
+        self.path_prefix
+            .as_deref()
+            .zip(target.path_prefix.as_deref())
+            .map(|(prefix, target_prefix)| target_prefix.starts_with(prefix))
+            .unwrap_or(false)
+    }
+
+    fn path_prefix_applies_to(&self, target: &ResourceRef) -> bool {
+        match (self.path_prefix.as_deref(), target.path_prefix.as_deref()) {
+            (Some(prefix), Some(target_prefix)) => target_prefix.starts_with(prefix),
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -317,6 +362,21 @@ impl ResourceScope {
             denied_resources: Vec::new(),
             max_depth: None,
         }
+    }
+
+    pub fn explicitly_denies(&self, resource: &ResourceRef) -> bool {
+        self.denied_resources
+            .iter()
+            .any(|denied| denied.applies_to(resource))
+    }
+
+    pub fn contains(&self, resource: &ResourceRef) -> bool {
+        !self.explicitly_denies(resource)
+            && (self.root.applies_to(resource)
+                || self
+                    .allowed_resources
+                    .iter()
+                    .any(|allowed| allowed.applies_to(resource)))
     }
 }
 
@@ -418,11 +478,21 @@ pub enum GrantSource {
     BreakGlass,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessEffect {
+    #[default]
+    Allow,
+    Deny,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedGrant {
     pub grant_id: String,
     pub principal: PrincipalRef,
     pub resource: ResourceRef,
+    #[serde(default)]
+    pub effect: AccessEffect,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<AccessPermission>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -449,6 +519,7 @@ impl ScopedGrant {
             grant_id: grant_id.into(),
             principal,
             resource,
+            effect: AccessEffect::Allow,
             permissions: Vec::new(),
             data_classes: Vec::new(),
             tool_patterns: Vec::new(),
@@ -461,6 +532,11 @@ impl ScopedGrant {
 
     pub fn with_permissions(mut self, permissions: Vec<AccessPermission>) -> Self {
         self.permissions = permissions;
+        self
+    }
+
+    pub fn with_effect(mut self, effect: AccessEffect) -> Self {
+        self.effect = effect;
         self
     }
 
@@ -501,6 +577,19 @@ impl ScopedGrant {
         self.expires_at_ms
             .map(|expires_at_ms| expires_at_ms <= now_ms)
             .unwrap_or(false)
+    }
+
+    pub fn applies_to(
+        &self,
+        resource: &ResourceRef,
+        permission: AccessPermission,
+        data_class: DataClass,
+        now_ms: u64,
+    ) -> bool {
+        !self.is_expired_at(now_ms)
+            && self.has_permission(permission)
+            && self.allows_data_class(data_class)
+            && self.resource.applies_to(resource)
     }
 }
 
@@ -793,6 +882,48 @@ pub struct StrictTenantContext {
     pub assertion: AssertionMetadata,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessDecision {
+    Allow,
+    Deny,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantEvaluation {
+    pub decision: AccessDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    pub reason: String,
+}
+
+impl GrantEvaluation {
+    pub fn allow(grant_id: impl Into<String>) -> Self {
+        Self {
+            decision: AccessDecision::Allow,
+            grant_id: Some(grant_id.into()),
+            reason: "matching_allow_grant".to_string(),
+        }
+    }
+
+    pub fn deny(reason: impl Into<String>, grant_id: Option<String>) -> Self {
+        Self {
+            decision: AccessDecision::Deny,
+            grant_id,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn not_applicable(reason: impl Into<String>) -> Self {
+        Self {
+            decision: AccessDecision::NotApplicable,
+            grant_id: None,
+            reason: reason.into(),
+        }
+    }
+}
+
 impl StrictTenantContext {
     pub fn new(
         tenant_context: TenantContext,
@@ -838,6 +969,44 @@ impl StrictTenantContext {
         self.grants
             .iter()
             .any(|grant| grant.has_permission(permission))
+    }
+
+    pub fn evaluate_access(
+        &self,
+        resource: &ResourceRef,
+        permission: AccessPermission,
+        data_class: DataClass,
+        now_ms: u64,
+    ) -> GrantEvaluation {
+        if self.is_expired_at(now_ms) {
+            return GrantEvaluation::deny("context_expired", None);
+        }
+        if !self.data_boundary.allows(data_class) {
+            return GrantEvaluation::deny("data_class_denied_by_boundary", None);
+        }
+        if self.resource_scope.explicitly_denies(resource) {
+            return GrantEvaluation::deny("resource_explicitly_denied_by_scope", None);
+        }
+
+        if let Some(grant) = self.grants.iter().find(|grant| {
+            grant.effect == AccessEffect::Deny
+                && grant.applies_to(resource, permission, data_class, now_ms)
+        }) {
+            return GrantEvaluation::deny("matching_deny_grant", Some(grant.grant_id.clone()));
+        }
+
+        if !self.resource_scope.contains(resource) {
+            return GrantEvaluation::not_applicable("resource_outside_projected_scope");
+        }
+
+        if let Some(grant) = self.grants.iter().find(|grant| {
+            grant.effect == AccessEffect::Allow
+                && grant.applies_to(resource, permission, data_class, now_ms)
+        }) {
+            return GrantEvaluation::allow(grant.grant_id.clone());
+        }
+
+        GrantEvaluation::not_applicable("no_matching_allow_grant")
     }
 }
 
@@ -1507,5 +1676,257 @@ mod tests {
             decoded.assertion.key_id.as_deref(),
             Some("deployment-prod-ctx-2026-05-01")
         );
+    }
+
+    #[test]
+    fn grant_evaluation_allows_department_membership_data_access() {
+        let finance_store =
+            ResourceRef::new("acme", "finance", ResourceKind::DataStore, "finance-ledger");
+        let principal = PrincipalRef::human_user("user-finance");
+        let grant = ScopedGrant::new(
+            "grant-finance-read",
+            principal.clone(),
+            ResourceRef::new("acme", "finance", ResourceKind::Department, "finance"),
+            GrantSource::DepartmentMembership,
+        )
+        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+        .with_data_classes(vec![DataClass::FinancialRecord]);
+        let context = test_strict_context(
+            "finance",
+            principal,
+            ResourceScope::root(ResourceRef::new(
+                "acme",
+                "finance",
+                ResourceKind::Department,
+                "finance",
+            )),
+            vec![grant],
+        );
+
+        let evaluation = context.evaluate_access(
+            &finance_store,
+            AccessPermission::Read,
+            DataClass::FinancialRecord,
+            1_500,
+        );
+
+        assert_eq!(evaluation.decision, AccessDecision::Allow);
+        assert_eq!(evaluation.grant_id.as_deref(), Some("grant-finance-read"));
+    }
+
+    #[test]
+    fn grant_evaluation_deny_wins_over_org_wide_allow() {
+        let hr_document =
+            ResourceRef::new("acme", "hr", ResourceKind::Document, "compensation-plan");
+        let principal = PrincipalRef::human_user("user-exec");
+        let org_allow = ScopedGrant::new(
+            "grant-org-read",
+            principal.clone(),
+            ResourceRef::new("acme", "*", ResourceKind::Organization, "acme"),
+            GrantSource::ExecutiveGlobal,
+        )
+        .with_permissions(vec![AccessPermission::Read])
+        .with_data_classes(vec![DataClass::Executive]);
+        let hr_deny = ScopedGrant::new(
+            "deny-hr-comp",
+            principal.clone(),
+            ResourceRef::new("acme", "hr", ResourceKind::Document, "compensation-plan"),
+            GrantSource::Direct,
+        )
+        .with_effect(AccessEffect::Deny)
+        .with_permissions(vec![AccessPermission::Read])
+        .with_data_classes(vec![DataClass::Executive]);
+        let context = test_strict_context(
+            "*",
+            principal,
+            ResourceScope::root(ResourceRef::new(
+                "acme",
+                "*",
+                ResourceKind::Organization,
+                "acme",
+            )),
+            vec![org_allow, hr_deny],
+        )
+        .with_data_boundary(DataBoundary::allow(vec![DataClass::Executive]));
+
+        let evaluation = context.evaluate_access(
+            &hr_document,
+            AccessPermission::Read,
+            DataClass::Executive,
+            1_500,
+        );
+
+        assert_eq!(evaluation.decision, AccessDecision::Deny);
+        assert_eq!(evaluation.grant_id.as_deref(), Some("deny-hr-comp"));
+        assert_eq!(evaluation.reason, "matching_deny_grant");
+    }
+
+    #[test]
+    fn grant_evaluation_project_grant_applies_to_file_path() {
+        let principal = PrincipalRef::agent_worker("agent-platform");
+        let file = ResourceRef::new(
+            "acme",
+            "engineering",
+            ResourceKind::File,
+            "crates/tandem-enterprise-contract/src/lib.rs",
+        )
+        .with_project_id("platform")
+        .with_path_prefix("crates/tandem-enterprise-contract/src/lib.rs");
+        let grant = ScopedGrant::new(
+            "grant-platform-source-edit",
+            principal.clone(),
+            ResourceRef::new("acme", "engineering", ResourceKind::Project, "platform"),
+            GrantSource::Delegation,
+        )
+        .with_permissions(vec![AccessPermission::Read, AccessPermission::Edit])
+        .with_data_classes(vec![DataClass::SourceCode]);
+        let context = test_strict_context(
+            "engineering",
+            principal,
+            ResourceScope::root(ResourceRef::new(
+                "acme",
+                "engineering",
+                ResourceKind::Project,
+                "platform",
+            )),
+            vec![grant],
+        );
+
+        let evaluation =
+            context.evaluate_access(&file, AccessPermission::Edit, DataClass::SourceCode, 1_500);
+
+        assert_eq!(evaluation.decision, AccessDecision::Allow);
+        assert_eq!(
+            evaluation.grant_id.as_deref(),
+            Some("grant-platform-source-edit")
+        );
+    }
+
+    #[test]
+    fn grant_evaluation_expired_grant_does_not_apply() {
+        let principal = PrincipalRef::human_user("user-finance");
+        let finance_store =
+            ResourceRef::new("acme", "finance", ResourceKind::DataStore, "finance-ledger");
+        let grant = ScopedGrant::new(
+            "grant-expired-finance",
+            principal.clone(),
+            finance_store.clone(),
+            GrantSource::Direct,
+        )
+        .with_permissions(vec![AccessPermission::Read])
+        .with_data_classes(vec![DataClass::FinancialRecord])
+        .with_expires_at_ms(1_400);
+        let context = test_strict_context(
+            "finance",
+            principal,
+            ResourceScope::root(ResourceRef::new(
+                "acme",
+                "finance",
+                ResourceKind::Workspace,
+                "finance",
+            )),
+            vec![grant],
+        );
+
+        let evaluation = context.evaluate_access(
+            &finance_store,
+            AccessPermission::Read,
+            DataClass::FinancialRecord,
+            1_500,
+        );
+
+        assert_eq!(evaluation.decision, AccessDecision::NotApplicable);
+        assert_eq!(evaluation.reason, "no_matching_allow_grant");
+    }
+
+    #[test]
+    fn grant_evaluation_delegated_grant_stays_narrower_than_parent_scope() {
+        let principal = PrincipalRef::new(PrincipalKind::ExternalDelegate, "vendor-agent");
+        let allowed_doc =
+            ResourceRef::new("acme", "legal", ResourceKind::Document, "vendor-contract")
+                .with_project_id("vendor-review")
+                .with_path_prefix("/contracts/vendor-a/");
+        let other_doc = ResourceRef::new("acme", "legal", ResourceKind::Document, "board-minutes")
+            .with_project_id("vendor-review")
+            .with_path_prefix("/executive/board-minutes/");
+        let grant = ScopedGrant::new(
+            "grant-vendor-contract",
+            principal.clone(),
+            allowed_doc.clone(),
+            GrantSource::Delegation,
+        )
+        .with_permissions(vec![AccessPermission::Read])
+        .with_data_classes(vec![DataClass::Confidential])
+        .with_delegation_id("delegation-123");
+        let context = test_strict_context(
+            "legal",
+            principal,
+            ResourceScope {
+                root: ResourceRef::new("acme", "legal", ResourceKind::Project, "vendor-review"),
+                allowed_resources: vec![allowed_doc.clone()],
+                denied_resources: vec![ResourceRef::new(
+                    "acme",
+                    "legal",
+                    ResourceKind::Document,
+                    "board-minutes",
+                )],
+                max_depth: Some(2),
+            },
+            vec![grant],
+        );
+
+        let allowed = context.evaluate_access(
+            &allowed_doc,
+            AccessPermission::Read,
+            DataClass::Confidential,
+            1_500,
+        );
+        let denied = context.evaluate_access(
+            &other_doc,
+            AccessPermission::Read,
+            DataClass::Confidential,
+            1_500,
+        );
+
+        assert_eq!(allowed.decision, AccessDecision::Allow);
+        assert_eq!(denied.decision, AccessDecision::Deny);
+        assert_eq!(denied.reason, "resource_explicitly_denied_by_scope");
+    }
+
+    fn test_strict_context(
+        workspace_id: &str,
+        principal: PrincipalRef,
+        resource_scope: ResourceScope,
+        grants: Vec<ScopedGrant>,
+    ) -> StrictTenantContext {
+        StrictTenantContext::new(
+            TenantContext::explicit_user_workspace(
+                "acme",
+                workspace_id,
+                Some("deployment-test".to_string()),
+                principal.id.clone(),
+            ),
+            principal,
+            AuthorityChain::from_request(RequestPrincipal::authenticated_user(
+                "user-test",
+                "tandem-web",
+            )),
+            resource_scope,
+            AssertionMetadata::new(
+                "tandem-web",
+                "tandem-runtime",
+                1_000,
+                2_000,
+                "assertion-test",
+            ),
+        )
+        .with_grants(grants)
+        .with_data_boundary(DataBoundary::allow(vec![
+            DataClass::Internal,
+            DataClass::Confidential,
+            DataClass::Executive,
+            DataClass::FinancialRecord,
+            DataClass::SourceCode,
+        ]))
     }
 }
