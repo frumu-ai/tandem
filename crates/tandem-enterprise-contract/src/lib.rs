@@ -710,6 +710,14 @@ pub struct TenantContextAssertionClaims {
     pub authority_chain: AuthorityChain,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<PrincipalRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_scope: Option<ResourceScope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grants: Vec<ScopedGrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_boundary: Option<DataBoundary>,
 }
 
 impl TenantContextAssertionClaims {
@@ -736,11 +744,64 @@ impl TenantContextAssertionClaims {
             human_actor,
             authority_chain,
             roles,
+            principal: None,
+            resource_scope: None,
+            grants: Vec::new(),
+            data_boundary: None,
         }
     }
 
     pub fn is_expired_at(&self, now_ms: u64) -> bool {
         self.expires_at_ms <= now_ms
+    }
+
+    pub fn with_strict_projection(
+        mut self,
+        principal: PrincipalRef,
+        resource_scope: ResourceScope,
+        grants: Vec<ScopedGrant>,
+        data_boundary: DataBoundary,
+    ) -> Self {
+        self.principal = Some(principal);
+        self.resource_scope = Some(resource_scope);
+        self.grants = grants;
+        self.data_boundary = Some(data_boundary);
+        self
+    }
+
+    pub fn has_strict_projection(&self) -> bool {
+        self.principal.is_some()
+            || self.resource_scope.is_some()
+            || !self.grants.is_empty()
+            || self.data_boundary.is_some()
+    }
+
+    pub fn strict_projection(&self) -> Option<StrictTenantContext> {
+        Some(
+            StrictTenantContext::new(
+                self.tenant_context.clone(),
+                self.principal.clone()?,
+                self.authority_chain.clone(),
+                self.resource_scope.clone()?,
+                AssertionMetadata::from(self),
+            )
+            .with_grants(self.grants.clone())
+            .with_data_boundary(self.data_boundary.clone().unwrap_or_default()),
+        )
+    }
+}
+
+impl From<&TenantContextAssertionClaims> for AssertionMetadata {
+    fn from(claims: &TenantContextAssertionClaims) -> Self {
+        Self {
+            issuer: claims.issuer.clone(),
+            audience: claims.audience.clone(),
+            issued_at_ms: claims.issued_at_ms,
+            expires_at_ms: claims.expires_at_ms,
+            assertion_id: claims.assertion_id.clone(),
+            key_id: None,
+            purpose: Some("context_assertion".to_string()),
+        }
     }
 }
 
@@ -1296,6 +1357,119 @@ mod tests {
         assert_eq!(verified.issuer, "tandem-web");
         assert_eq!(verified.audience, "tandem-runtime");
         assert_eq!(verified.assertion_id, "assertion-1");
+    }
+
+    #[test]
+    fn tenant_context_assertion_claims_can_carry_strict_projection() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "acme",
+            "engineering",
+            Some("deployment-prod".to_string()),
+            "user-eng",
+        );
+        let actor = HumanActor::tandem_user("user-eng");
+        let request_principal = RequestPrincipal::authenticated_user("user-eng", "tandem-web");
+        let authority_chain = AuthorityChain::from_request(request_principal);
+        let principal =
+            PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-eng");
+        let project = ResourceRef::new("acme", "engineering", ResourceKind::Project, "platform");
+        let repo = ResourceRef::new("acme", "engineering", ResourceKind::Repository, "tandem")
+            .with_project_id("platform")
+            .with_path_prefix("crates/tandem-enterprise-contract/");
+        let grant = ScopedGrant::new(
+            "grant-platform-read",
+            principal.clone(),
+            repo.clone(),
+            GrantSource::Delegation,
+        )
+        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+        .with_data_classes(vec![DataClass::SourceCode])
+        .with_delegation_id("delegation-platform");
+
+        let claims = TenantContextAssertionClaims::new_v1(
+            "tandem-web",
+            "tandem-runtime",
+            1_000,
+            2_000,
+            "assertion-platform",
+            tenant.clone(),
+            actor,
+            authority_chain,
+            vec![],
+        )
+        .with_strict_projection(
+            principal.clone(),
+            ResourceScope {
+                root: project,
+                allowed_resources: vec![repo.clone()],
+                denied_resources: Vec::new(),
+                max_depth: Some(4),
+            },
+            vec![grant],
+            DataBoundary::allow(vec![DataClass::SourceCode]),
+        );
+
+        assert!(claims.has_strict_projection());
+        let encoded = serde_json::to_value(&claims).expect("serialize projected claims");
+        assert_eq!(encoded["principal"]["kind"], "agent_worker");
+        assert_eq!(
+            encoded["resource_scope"]["allowed_resources"][0]["resource_kind"],
+            "repository"
+        );
+        assert_eq!(encoded["grants"][0]["delegation_id"], "delegation-platform");
+
+        let decoded: TenantContextAssertionClaims =
+            serde_json::from_value(encoded).expect("deserialize projected claims");
+        let strict = decoded
+            .strict_projection()
+            .expect("strict projection should be present");
+        assert_eq!(strict.tenant_context, tenant);
+        assert_eq!(strict.principal, principal);
+        assert_eq!(strict.grants[0].grant_id, "grant-platform-read");
+        assert_eq!(strict.assertion.assertion_id, "assertion-platform");
+        assert!(strict.allows_data_class(DataClass::SourceCode));
+        assert!(!strict.allows_data_class(DataClass::Executive));
+    }
+
+    #[test]
+    fn tenant_context_assertion_claims_remain_backward_compatible_without_projection() {
+        let legacy = serde_json::json!({
+            "version": "v1",
+            "issuer": "tandem-web",
+            "audience": "tandem-runtime",
+            "issued_at_ms": 1000,
+            "expires_at_ms": 2000,
+            "assertion_id": "assertion-legacy",
+            "tenant_context": {
+                "org_id": "acme",
+                "workspace_id": "engineering",
+                "deployment_id": "deployment-prod",
+                "actor_id": "user-eng",
+                "source": "explicit"
+            },
+            "human_actor": {
+                "actor_id": "user-eng",
+                "provider": "tandem"
+            },
+            "authority_chain": {
+                "initiated_by": {
+                    "actor_id": "user-eng",
+                    "source": "tandem-web"
+                },
+                "executed_as": {
+                    "kind": "request",
+                    "actor_id": "user-eng",
+                    "source": "tandem-web"
+                }
+            }
+        });
+
+        let claims: TenantContextAssertionClaims =
+            serde_json::from_value(legacy).expect("legacy claims should deserialize");
+        assert!(!claims.has_strict_projection());
+        assert!(claims.strict_projection().is_none());
+        assert!(claims.grants.is_empty());
+        assert!(claims.data_boundary.is_none());
     }
 
     #[test]

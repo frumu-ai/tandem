@@ -36,12 +36,17 @@ and resource grants.
   `StrictTenantContext` evaluation helpers so explicit denies win over
   inherited allows, projected resource scopes bound access, expired grants do
   not apply, and project grants can authorize path-scoped resources.
+- Extended Tandem context assertion claims with optional principal,
+  resource-scope, scoped-grant, and data-boundary projection fields. Existing
+  tenant-only v1 assertions remain valid and deserialize without strict
+  projection data.
 - Re-exported the new contract vocabulary through `tandem-types`.
 - Added contract tests covering Finance department data access, Engineering
   repository path scopes, cross-functional group access, CEO org-wide executive
   grants, MCP tool resource targets, expiring delegated vendor-agent access,
   data-boundary denials, project-scoped agent projections, explicit deny
-  precedence, expired grants, and narrow delegation.
+  precedence, expired grants, narrow delegation, scoped assertion projections,
+  and legacy assertion compatibility.
 
 ### Hosted Runtime Ingress
 

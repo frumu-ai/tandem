@@ -9,9 +9,11 @@ use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::collections::BTreeMap;
 use tandem_types::{
-    HeaderTenantContextResolver, NoopRequestAuthorizationHook, RequestAuthorizationHook,
-    RequestPrincipal, RuntimeAuthMode, TenantContext, TenantContextAssertionClaims,
-    TenantContextAssertionHeader, TenantContextResolver, TenantSource, VerifiedTenantContext,
+    AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
+    NoopRequestAuthorizationHook, PrincipalRef, RequestAuthorizationHook, RequestPrincipal,
+    ResourceKind, ResourceRef, ResourceScope, RuntimeAuthMode, ScopedGrant, TenantContext,
+    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantContextResolver,
+    TenantSource, VerifiedTenantContext,
 };
 
 use crate::{AppState, StartupStatus};
@@ -793,6 +795,43 @@ mod tests {
             verified.tenant_context.deployment_id.as_deref(),
             Some("dep-a")
         );
+    }
+
+    #[test]
+    fn verifier_accepts_signed_context_assertion_with_strict_projection() {
+        let (signing_key, verifier) = test_signing_key_and_verifier();
+        let principal = PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-a");
+        let repo = ResourceRef::new("org-a", "workspace-a", ResourceKind::Repository, "tandem")
+            .with_project_id("platform")
+            .with_path_prefix("crates/tandem-enterprise-contract/");
+        let grant = ScopedGrant::new(
+            "grant-platform-read",
+            principal.clone(),
+            repo.clone(),
+            GrantSource::Delegation,
+        )
+        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+        .with_data_classes(vec![DataClass::SourceCode]);
+        let claims = test_claims(1_000, 2_000).with_strict_projection(
+            principal,
+            ResourceScope {
+                root: ResourceRef::new("org-a", "workspace-a", ResourceKind::Project, "platform"),
+                allowed_resources: vec![repo],
+                denied_resources: Vec::new(),
+                max_depth: Some(4),
+            },
+            vec![grant],
+            DataBoundary::allow(vec![DataClass::SourceCode]),
+        );
+        let assertion = sign_test_context_assertion(&signing_key, "test-key", claims);
+
+        let verified = verifier
+            .verify_at(&assertion, 1_500)
+            .expect("signed scoped assertion should verify");
+
+        assert_eq!(verified.issuer, "tandem-web");
+        assert_eq!(verified.tenant_context.org_id, "org-a");
+        assert_eq!(verified.human_actor.actor_id, "user-a");
     }
 
     #[test]
