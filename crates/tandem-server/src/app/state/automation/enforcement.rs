@@ -1167,12 +1167,19 @@ pub(crate) fn automation_node_output_enforcement(
         enforcement.session_text_recovery = Some("allow".to_string());
     }
 
+    let explicitly_requires_read = enforcement.required_tools.iter().any(|tool| tool == "read")
+        || enforcement
+            .required_tool_calls
+            .iter()
+            .any(|call| call.tool == "read");
+
     if concrete_mcp_source_tools
         && enforcement.validation_profile.as_deref() == Some("artifact_only")
     {
-        enforcement
-            .required_tools
-            .retain(|tool| !matches!(tool.as_str(), "glob" | "read"));
+        enforcement.required_tools.retain(|tool| {
+            !matches!(tool.as_str(), "glob")
+                && (explicitly_requires_read || !matches!(tool.as_str(), "read"))
+        });
         enforcement
             .required_evidence
             .retain(|item| item != "local_source_reads");

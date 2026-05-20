@@ -1,4 +1,5 @@
 use super::*;
+use tandem_types::PrewriteRequirements;
 
 pub(super) fn resolve_model_route(
     request_model: Option<&ModelSpec>,
@@ -263,6 +264,13 @@ pub(super) fn has_unattempted_required_mcp_tool(
     tool_call_counts: &HashMap<String, usize>,
 ) -> bool {
     !unattempted_required_mcp_tools(required_tools, tool_call_counts).is_empty()
+}
+
+pub(super) fn prewrite_repair_prerequisites_block_mcp_gate(
+    requirements: &PrewriteRequirements,
+    prewrite_satisfied: bool,
+) -> bool {
+    requirements.repair_on_unmet_requirements && !prewrite_satisfied
 }
 
 pub(super) fn unattempted_required_mcp_tools(

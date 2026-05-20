@@ -1661,11 +1661,10 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         {
             unmet_requirements.push("workspace_inspection_required".to_string());
         }
-        if !optional_workspace_reads
-            && (requires_read || requires_concrete_reads)
-            && !executed_has_read
-            && !connector_source_satisfied
-        {
+        let missing_required_read = requires_read && !executed_has_read;
+        let missing_concrete_reads =
+            requires_concrete_reads && !executed_has_read && !connector_source_satisfied;
+        if !optional_workspace_reads && (missing_required_read || missing_concrete_reads) {
             unmet_requirements.push("no_concrete_reads".to_string());
         }
         if !missing_required_source_read_paths.is_empty() {
@@ -1754,6 +1753,11 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 | "mcp_required_tool_missing"
                 | "mcp_connector_source_missing"
                 | "mcp_connector_source_artifact_missing"
+                | "mcp_discovery_missing"
+                | "no_concrete_reads"
+                | "concrete_read_required"
+                | "required_source_paths_not_read"
+                | "missing_successful_web_research"
                 | "web_research_artifact_contradicts_tool_receipts"
         )
     }) {

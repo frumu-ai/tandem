@@ -1121,6 +1121,58 @@ fn prewrite_repair_after_glob_restricts_to_glob_read_and_websearch() {
 }
 
 #[test]
+fn prewrite_repair_defers_mcp_source_gate_until_read_and_websearch_are_done() {
+    let requirements = PrewriteRequirements {
+        workspace_inspection_required: false,
+        web_research_required: true,
+        concrete_read_required: true,
+        successful_web_research_required: true,
+        repair_on_unmet_requirements: true,
+        repair_budget: Some(4),
+        repair_exhaustion_behavior: None,
+        coverage_mode: PrewriteCoverageMode::None,
+    };
+
+    let blocked = evaluate_prewrite_gate(
+        true,
+        &requirements,
+        PrewriteProgress {
+            productive_write_tool_calls_total: 0,
+            productive_workspace_inspection_total: 0,
+            productive_concrete_read_total: 0,
+            productive_web_research_total: 0,
+            successful_web_research_total: 0,
+            required_write_retry_count: 0,
+            unmet_prewrite_repair_retry_count: 1,
+            prewrite_gate_waived: false,
+        },
+    );
+    assert!(prewrite_repair_prerequisites_block_mcp_gate(
+        &requirements,
+        blocked.prewrite_satisfied
+    ));
+
+    let ready = evaluate_prewrite_gate(
+        true,
+        &requirements,
+        PrewriteProgress {
+            productive_write_tool_calls_total: 0,
+            productive_workspace_inspection_total: 1,
+            productive_concrete_read_total: 1,
+            productive_web_research_total: 1,
+            successful_web_research_total: 1,
+            required_write_retry_count: 0,
+            unmet_prewrite_repair_retry_count: 1,
+            prewrite_gate_waived: false,
+        },
+    );
+    assert!(!prewrite_repair_prerequisites_block_mcp_gate(
+        &requirements,
+        ready.prewrite_satisfied
+    ));
+}
+
+#[test]
 fn prewrite_requirements_exhausted_completion_reports_structured_repair_state() {
     let message = prewrite_requirements_exhausted_completion(
         &["concrete_read_required", "successful_web_research_required"],

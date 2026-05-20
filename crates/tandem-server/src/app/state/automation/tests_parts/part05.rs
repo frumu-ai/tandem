@@ -629,6 +629,107 @@ fn validation_rejects_mcp_list_inventory_before_schema_repair() {
 }
 
 #[test]
+fn validation_requires_read_even_when_connector_source_succeeds() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-required-read-with-connector-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let mut node = bare_node();
+    node.node_id = "discover_contact_candidates".to_string();
+    node.objective =
+        "Read the upstream company batch, then use Hunter MCP to find contact candidates."
+            .to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: Some(crate::AutomationOutputEnforcement {
+            validation_profile: Some("artifact_only".to_string()),
+            required_tools: vec!["read".to_string()],
+            required_tool_calls: Vec::new(),
+            required_evidence: Vec::new(),
+            required_sections: Vec::new(),
+            prewrite_gates: Vec::new(),
+            retry_on_missing: Vec::new(),
+            terminal_on: Vec::new(),
+            repair_budget: Some(2),
+            session_text_recovery: Some("allow".to_string()),
+        }),
+        schema: Some(json!({
+            "type": "object",
+            "required": ["schema_version", "candidates_by_company", "has_candidates"],
+            "properties": {
+                "schema_version": {"const": "1"},
+                "candidates_by_company": {"type": "array"},
+                "has_candidates": {"type": "boolean"}
+            }
+        })),
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "builder": {
+            "output_path": ".tandem/artifacts/discover-contact-candidates.json"
+        },
+        "tool_allowlist": [
+            "read",
+            "mcp.hunter.email_count",
+            "write"
+        ]
+    }));
+    let artifact = serde_json::to_string_pretty(&json!({
+        "schema_version": "1",
+        "candidates_by_company": [{
+            "company": "Novibet",
+            "domain": "novibet.com",
+            "candidates": [],
+            "research_notes": "Hunter email_count returned zero.",
+            "candidate_count": 0
+        }],
+        "has_candidates": false
+    }))
+    .expect("serialize artifact");
+    let session = Session::new(Some("connector source without read".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+
+    let (accepted, validation, rejected) = validate_automation_artifact_output(
+        &node,
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        "",
+        &json!({
+            "executed_tools": ["mcp_list", "mcp.hunter.email_count", "write"],
+            "requested_tools": ["read", "mcp.hunter.email_count", "write"],
+            "capability_resolution": {
+                "mcp_tool_diagnostics": {
+                    "selected_servers": ["hunter"]
+                }
+            },
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/discover-contact-candidates.json".to_string(),
+            artifact,
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_none());
+    assert!(validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet array")
+        .iter()
+        .any(|value| value.as_str() == Some("no_concrete_reads")));
+    assert!(validation["semantic_block_reason"]
+        .as_str()
+        .expect("semantic block reason")
+        .contains("read"));
+    assert!(rejected.as_deref().unwrap_or_default().contains("read"));
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[test]
 fn validation_requires_declared_concrete_mcp_tools() {
     let workspace_root =
         std::env::temp_dir().join(format!("tandem-required-mcp-tool-{}", uuid::Uuid::new_v4()));

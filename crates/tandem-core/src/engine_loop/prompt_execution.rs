@@ -417,15 +417,21 @@ impl EngineLoop {
                         prewrite_gate_waived,
                     },
                 );
-                let _prewrite_satisfied = prewrite_gate.prewrite_satisfied;
+                let prewrite_satisfied = prewrite_gate.prewrite_satisfied;
                 let prewrite_gate_write = prewrite_gate.gate_write;
                 let force_write_only_retry = prewrite_gate.force_write_only_retry;
                 let allow_repair_tools = prewrite_gate.allow_repair_tools;
+                let mcp_gate_blocked_by_prewrite_repair =
+                    prewrite_repair_prerequisites_block_mcp_gate(
+                        &requested_prewrite_requirements,
+                        prewrite_satisfied,
+                    );
                 let pending_required_mcp_tools = unattempted_required_mcp_tools(
                     &required_mcp_tools_before_write,
                     &tool_call_counts,
                 );
-                let required_mcp_tool_pending = !pending_required_mcp_tools.is_empty();
+                let required_mcp_tool_pending =
+                    !mcp_gate_blocked_by_prewrite_repair && !pending_required_mcp_tools.is_empty();
                 let required_mcp_source_available = tool_schemas.iter().any(|schema| {
                     concrete_mcp_tool_matches_wildcard(
                         &schema.name,
@@ -433,6 +439,7 @@ impl EngineLoop {
                     )
                 });
                 let required_mcp_source_pending = requested_write_required
+                    && !mcp_gate_blocked_by_prewrite_repair
                     && !required_mcp_source_wildcards_before_write.is_empty()
                     && required_mcp_source_available
                     && !has_attempted_concrete_mcp_for_wildcard(
