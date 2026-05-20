@@ -40,6 +40,9 @@ and resource grants.
   resource-scope, scoped-grant, and data-boundary projection fields. Existing
   tenant-only v1 assertions remain valid and deserialize without strict
   projection data.
+- Added a typed enterprise signing-key purpose vocabulary for context
+  assertions, approval receipts, delegation projections, A2A peer assertions,
+  and break-glass/admin assertions.
 - Added hosted context assertion key metadata checks so keyring entries can
   bind a public key to the `context_assertion` purpose, org/deployment,
   allowed audiences, allowed resource-scope prefixes, activation windows, and

@@ -13,8 +13,8 @@ pub use tandem_enterprise_contract::{
     GrantSource, HeaderTenantContextResolver, HumanActor, LocalImplicitTenant,
     NoopEnterpriseBridge, NoopRequestAuthorizationHook, PrincipalKind, PrincipalRef,
     RequestAuthorizationHook, RequestPrincipal, ResourceKind, ResourcePathSegment, ResourceRef,
-    ResourceScope, RuntimeAuthMode, ScopedGrant, SecretRef, SecretRefError, StrictTenantContext,
-    TenantContext, TenantContextAssertionClaims, TenantContextAssertionHeader,
+    ResourceScope, RuntimeAuthMode, ScopedGrant, SecretRef, SecretRefError, SigningKeyPurpose,
+    StrictTenantContext, TenantContext, TenantContextAssertionClaims, TenantContextAssertionHeader,
     TenantContextResolver, TenantSource, VerifiedTenantContext,
 };
 

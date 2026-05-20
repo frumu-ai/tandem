@@ -800,7 +800,7 @@ impl From<&TenantContextAssertionClaims> for AssertionMetadata {
             expires_at_ms: claims.expires_at_ms,
             assertion_id: claims.assertion_id.clone(),
             key_id: None,
-            purpose: Some("context_assertion".to_string()),
+            purpose: Some(SigningKeyPurpose::ContextAssertion),
         }
     }
 }
@@ -869,6 +869,73 @@ impl Default for DataBoundary {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigningKeyPurpose {
+    ContextAssertion,
+    ApprovalReceipt,
+    DelegationProjection,
+    A2aPeerAssertion,
+    BreakGlassAdminAssertion,
+}
+
+impl SigningKeyPurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ContextAssertion => "context_assertion",
+            Self::ApprovalReceipt => "approval_receipt",
+            Self::DelegationProjection => "delegation_projection",
+            Self::A2aPeerAssertion => "a2a_peer_assertion",
+            Self::BreakGlassAdminAssertion => "break_glass_admin_assertion",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, ParseSigningKeyPurposeError> {
+        value.parse()
+    }
+}
+
+impl core::str::FromStr for SigningKeyPurpose {
+    type Err = ParseSigningKeyPurposeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "context_assertion"
+            | "context-assertion"
+            | "tenant_context_assertion"
+            | "tenant-context-assertion" => Ok(Self::ContextAssertion),
+            "approval_receipt" | "approval-receipt" => Ok(Self::ApprovalReceipt),
+            "delegation_projection" | "delegation-projection" => Ok(Self::DelegationProjection),
+            "a2a_peer_assertion"
+            | "a2a-peer-assertion"
+            | "agent2agent_peer_assertion"
+            | "agent2agent-peer-assertion" => Ok(Self::A2aPeerAssertion),
+            "break_glass_admin_assertion"
+            | "break-glass-admin-assertion"
+            | "break_glass_admin"
+            | "break-glass-admin" => Ok(Self::BreakGlassAdminAssertion),
+            _ => Err(ParseSigningKeyPurposeError),
+        }
+    }
+}
+
+impl core::fmt::Display for SigningKeyPurpose {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseSigningKeyPurposeError;
+
+impl core::fmt::Display for ParseSigningKeyPurposeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("invalid signing key purpose")
+    }
+}
+
+impl std::error::Error for ParseSigningKeyPurposeError {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssertionMetadata {
     pub issuer: String,
@@ -879,7 +946,7 @@ pub struct AssertionMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
+    pub purpose: Option<SigningKeyPurpose>,
 }
 
 impl AssertionMetadata {
@@ -906,8 +973,8 @@ impl AssertionMetadata {
         self
     }
 
-    pub fn with_purpose(mut self, purpose: impl Into<String>) -> Self {
-        self.purpose = Some(purpose.into());
+    pub fn with_purpose(mut self, purpose: SigningKeyPurpose) -> Self {
+        self.purpose = Some(purpose);
         self
     }
 
@@ -925,7 +992,7 @@ impl From<&VerifiedTenantContext> for AssertionMetadata {
             expires_at_ms: context.expires_at_ms,
             assertion_id: context.assertion_id.clone(),
             key_id: None,
-            purpose: Some("context_assertion".to_string()),
+            purpose: Some(SigningKeyPurpose::ContextAssertion),
         }
     }
 }
@@ -1748,9 +1815,38 @@ mod tests {
         assert_eq!(metadata.issuer, "tandem-web");
         assert_eq!(metadata.audience, "tandem-runtime");
         assert_eq!(metadata.assertion_id, "assertion-123");
-        assert_eq!(metadata.purpose.as_deref(), Some("context_assertion"));
+        assert_eq!(metadata.purpose, Some(SigningKeyPurpose::ContextAssertion));
         assert!(!metadata.is_expired_at(1_999));
         assert!(metadata.is_expired_at(2_000));
+    }
+
+    #[test]
+    fn signing_key_purpose_defines_enterprise_signing_lanes() {
+        let purposes = vec![
+            SigningKeyPurpose::ContextAssertion,
+            SigningKeyPurpose::ApprovalReceipt,
+            SigningKeyPurpose::DelegationProjection,
+            SigningKeyPurpose::A2aPeerAssertion,
+            SigningKeyPurpose::BreakGlassAdminAssertion,
+        ];
+
+        let encoded = serde_json::to_value(&purposes).expect("serialize signing key purposes");
+
+        assert_eq!(
+            encoded,
+            serde_json::json!([
+                "context_assertion",
+                "approval_receipt",
+                "delegation_projection",
+                "a2a_peer_assertion",
+                "break_glass_admin_assertion"
+            ])
+        );
+        assert_eq!(
+            SigningKeyPurpose::parse("break-glass-admin"),
+            Ok(SigningKeyPurpose::BreakGlassAdminAssertion)
+        );
+        assert!(SigningKeyPurpose::parse("arbitrary_header_key").is_err());
     }
 
     #[test]
@@ -1822,7 +1918,7 @@ mod tests {
                 "assertion-platform-fix",
             )
             .with_key_id("deployment-prod-ctx-2026-05-01")
-            .with_purpose("context_assertion"),
+            .with_purpose(SigningKeyPurpose::ContextAssertion),
         )
         .with_grants(vec![grant])
         .with_data_boundary(DataBoundary::allow(vec![

@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use tandem_types::{
     AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
     NoopRequestAuthorizationHook, PrincipalRef, RequestAuthorizationHook, RequestPrincipal,
-    ResourceKind, ResourceRef, ResourceScope, RuntimeAuthMode, ScopedGrant, TenantContext,
-    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantContextResolver,
-    TenantSource, VerifiedTenantContext,
+    ResourceKind, ResourceRef, ResourceScope, RuntimeAuthMode, ScopedGrant, SigningKeyPurpose,
+    TenantContext, TenantContextAssertionClaims, TenantContextAssertionHeader,
+    TenantContextResolver, TenantSource, VerifiedTenantContext,
 };
 
 use crate::{AppState, StartupStatus};
@@ -319,7 +319,7 @@ struct TenantContextAssertionVerifier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContextAssertionPublicKey {
     public_key: [u8; 32],
-    purpose: Option<String>,
+    purpose: Option<SigningKeyPurpose>,
     organization_id: Option<String>,
     deployment_id: Option<String>,
     allowed_audiences: Vec<String>,
@@ -585,9 +585,13 @@ fn parse_context_public_keyring_json_entries(
                     .or_else(|| object.remove("publicKey"))
                     .and_then(|value| value.as_str().map(ToString::to_string))
                     .and_then(|raw_key| decode_context_public_key(&raw_key))?;
+                let purpose = optional_string_field(&mut object, "purpose")
+                    .map(|purpose| SigningKeyPurpose::parse(&purpose))
+                    .transpose()
+                    .ok()?;
                 ContextAssertionPublicKey {
                     public_key,
-                    purpose: optional_string_field(&mut object, "purpose"),
+                    purpose,
                     organization_id: optional_string_field(&mut object, "organization_id")
                         .or_else(|| optional_string_field(&mut object, "organizationId"))
                         .or_else(|| optional_string_field(&mut object, "org_id"))
@@ -690,8 +694,8 @@ fn validate_context_assertion_key_metadata(
             return Err(TenantContextIngressError::ContextAssertionUntrusted);
         }
     }
-    if let Some(purpose) = key.purpose.as_deref() {
-        if purpose != "context_assertion" {
+    if let Some(purpose) = key.purpose {
+        if purpose != SigningKeyPurpose::ContextAssertion {
             return Err(TenantContextIngressError::ContextAssertionUntrusted);
         }
     }
@@ -1347,7 +1351,7 @@ mod tests {
         let key = keyring.get("active-key").expect("active key metadata");
 
         assert_eq!(key.public_key, signing_key.verifying_key().to_bytes());
-        assert_eq!(key.purpose.as_deref(), Some("context_assertion"));
+        assert_eq!(key.purpose, Some(SigningKeyPurpose::ContextAssertion));
         assert_eq!(key.organization_id.as_deref(), Some("org-a"));
         assert_eq!(key.deployment_id.as_deref(), Some("dep-a"));
         assert_eq!(key.allowed_audiences, vec!["tandem-runtime"]);
@@ -1368,7 +1372,7 @@ mod tests {
                 "active-key".to_string(),
                 ContextAssertionPublicKey {
                     public_key: signing_key.verifying_key().to_bytes(),
-                    purpose: Some("context_assertion".to_string()),
+                    purpose: Some(SigningKeyPurpose::ContextAssertion),
                     organization_id: Some("org-a".to_string()),
                     deployment_id: Some("dep-a".to_string()),
                     allowed_audiences: vec!["tandem-runtime".to_string()],
@@ -1413,7 +1417,7 @@ mod tests {
                 "approval-key".to_string(),
                 ContextAssertionPublicKey {
                     public_key: signing_key.verifying_key().to_bytes(),
-                    purpose: Some("approval_receipt".to_string()),
+                    purpose: Some(SigningKeyPurpose::ApprovalReceipt),
                     ..ContextAssertionPublicKey::legacy(signing_key.verifying_key().to_bytes())
                 },
             )]),
@@ -1440,7 +1444,7 @@ mod tests {
                 "active-key".to_string(),
                 ContextAssertionPublicKey {
                     public_key: signing_key.verifying_key().to_bytes(),
-                    purpose: Some("context_assertion".to_string()),
+                    purpose: Some(SigningKeyPurpose::ContextAssertion),
                     allowed_resource_scope_prefixes: vec![
                         "org/org-a/workspace/workspace-a/project/finance".to_string(),
                     ],
