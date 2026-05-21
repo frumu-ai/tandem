@@ -174,45 +174,73 @@ Tandem is built for developers first, using an open-core model. We believe that 
 
 ```mermaid
 flowchart TD
-    %% Clients
-    Desktop[Desktop App<br/>Tauri + React]
-    ControlPanel[Web Control Panel]
-    TUI[Terminal UI]
-    API[SDKs & API Clients]
-    Channels[Slack / Discord / Telegram]
+    Human[Human operator or team]
 
-    subgraph "Tandem Runtime Authority Layer"
-        EngineAPI[HTTP/SSE API<br/>tandem-server]
-        Automations[Workflows, Automations<br/>& Approval Gates]
-        Governance[Authority Projection<br/>& Governance]
-        Runtime[Tools, MCP,<br/>Providers & Browser]
-        State[(Tenant-aware State,<br/>Memory, Artifacts & Audit)]
-        Workspace[Workspace, Resource<br/>& Git Boundaries]
+    subgraph Entrypoints["Entrypoints: clients, not authority boundaries"]
+        Desktop[Desktop app]
+        Panel[Web control panel]
+        TUI[Terminal UI]
+        SDK[TypeScript / Python SDKs]
+        Channels[Slack / Discord / Telegram]
     end
 
-    subgraph "Agents Working Under Projected Authority"
-        Planner[Planner Agent]
-        Builder[Builder Agent]
-        Verifier[Verifier Agent]
+    subgraph Agents["Agents and models: propose, reason, draft"]
+        Workers[Agent workers]
+        Models[OpenAI / Anthropic / OpenRouter<br/>OpenCode Zen / Ollama]
     end
 
-    Desktop <--> EngineAPI
-    ControlPanel <--> EngineAPI
-    TUI <--> EngineAPI
-    API <--> EngineAPI
-    Channels <--> EngineAPI
+    subgraph Tandem["Tandem governed runtime: owns authority"]
+        API[HTTP/SSE API]
+        Tenant[Auth mode, tenant context<br/>and authority chain]
+        Projection[Authority projection<br/>resources, grants, data classes]
+        Runs[Sessions, workflows<br/>automations, context runs]
+        Gates[Human approval gates]
+        Policy[Tool and MCP policy]
+        Memory[Permissioned memory<br/>and company knowledge]
+        Secrets[Provider and MCP secrets]
+        Artifacts[Artifacts, validation<br/>and run evidence]
+        Audit[Audit trail and tool ledger]
+    end
 
-    EngineAPI --> Automations
-    EngineAPI --> Runtime
-    Automations --> Governance
-    Automations --> State
-    Automations --> Workspace
-    Runtime --> State
-    Runtime --> Workspace
+    subgraph Systems["Company systems and data"]
+        Workspace[Workspace files and repos]
+        MCP[MCP servers and connectors]
+        Data[Customer / company data]
+        Browser[Browser and external tools]
+    end
 
-    Automations <--> Planner
-    Automations <--> Builder
-    Automations <--> Verifier
+    Human --> Desktop
+    Human --> Panel
+    Human --> TUI
+    Human --> SDK
+    Human --> Channels
+
+    Desktop --> API
+    Panel --> API
+    TUI --> API
+    SDK --> API
+    Channels --> API
+
+    API --> Tenant
+    Tenant --> Projection
+    Projection --> Runs
+    Runs <--> Workers
+    Workers <--> Models
+
+    Runs --> Gates
+    Runs --> Policy
+    Runs --> Memory
+    Runs --> Artifacts
+    Gates --> Audit
+    Policy --> Audit
+    Artifacts --> Audit
+
+    Policy --> Secrets
+    Policy --> Workspace
+    Policy --> MCP
+    Policy --> Data
+    Policy --> Browser
+    Memory --> Data
 ```
 
 ## Common workflows
