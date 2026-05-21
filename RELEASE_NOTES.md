@@ -11,9 +11,10 @@ connector credentials as secret references, source bindings mapped to
 resource-scoped memory retrieval, and hosted authorization hardening around
 who may bind company data into Tandem.
 
-This unreleased line currently contains the contract and planning foundation
-only. Google Drive, Notion, GitHub, Slack, Gmail, live OAuth, and production
-ingestion flows remain follow-up implementation phases.
+This unreleased line currently contains the contract foundation, enterprise
+admin shell, and first storage-backed organization-unit registry. Google Drive,
+Notion, GitHub, Slack, Gmail, live OAuth, and production ingestion flows remain
+follow-up implementation phases.
 
 ### Enterprise Connector Source Binding
 
@@ -28,9 +29,13 @@ ingestion flows remain follow-up implementation phases.
 - Organization-unit memberships can feed `ScopedGrant` through the new
   organization-unit membership grant source while preserving the existing
   principal/resource/data-class projection model.
-- Added noop enterprise admin endpoints for org-unit and source-binding lists
-  and mutations. These thread tenant/principal context and return explicit
-  `noop` responses until enterprise admin storage is configured.
+- Added enterprise admin endpoints for org-unit and source-binding management.
+  Organization units now have tenant-scoped storage-backed create/list behavior;
+  source bindings remain explicit `noop` placeholders until connector storage
+  and ingestion lifecycle records are implemented.
+- Verified hosted context now preserves signed assertion roles so enterprise
+  admin mutations can fail closed unless the Tandem-signed hosted context
+  carries admin/owner/reconfigure authority.
 - Added a hidden-by-default Enterprise admin page in the control panel. It reads
   the noop org-unit and source-binding endpoints, displays tenant/principal
   context, and keeps the UI explicit that persistence and ingestion are not

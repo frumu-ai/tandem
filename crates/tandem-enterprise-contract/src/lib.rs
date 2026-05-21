@@ -856,6 +856,8 @@ pub struct VerifiedTenantContext {
     pub tenant_context: TenantContext,
     pub human_actor: HumanActor,
     pub authority_chain: AuthorityChain,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
     pub issuer: String,
     pub audience: String,
     pub issued_at_ms: u64,
@@ -994,6 +996,7 @@ impl From<TenantContextAssertionClaims> for VerifiedTenantContext {
             tenant_context: claims.tenant_context,
             human_actor: claims.human_actor,
             authority_chain: claims.authority_chain,
+            roles: claims.roles,
             issuer: claims.issuer,
             audience: claims.audience,
             issued_at_ms: claims.issued_at_ms,
@@ -1894,6 +1897,7 @@ mod tests {
             tenant_context: tenant.clone(),
             human_actor: actor,
             authority_chain: AuthorityChain::from_request(principal),
+            roles: vec!["owner".to_string()],
             issuer: "tandem-web".to_string(),
             audience: "tandem-runtime".to_string(),
             issued_at_ms: 100,
@@ -1963,6 +1967,7 @@ mod tests {
         assert_eq!(verified.tenant_context, tenant);
         assert_eq!(verified.human_actor, actor);
         assert_eq!(verified.authority_chain, chain);
+        assert_eq!(verified.roles, vec!["operator", "approver"]);
         assert_eq!(verified.issuer, "tandem-web");
         assert_eq!(verified.audience, "tandem-runtime");
         assert_eq!(verified.assertion_id, "assertion-1");
@@ -2451,6 +2456,7 @@ mod tests {
             tenant_context: tenant,
             human_actor: HumanActor::tandem_user("user-a"),
             authority_chain: AuthorityChain::from_request(principal),
+            roles: vec!["enterprise:admin".to_string()],
             issuer: "tandem-web".to_string(),
             audience: "tandem-runtime".to_string(),
             issued_at_ms: 1_000,

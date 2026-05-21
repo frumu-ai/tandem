@@ -835,6 +835,7 @@ mod fintech_policy_tests {
                 actor_id,
                 "tandem-web",
             )),
+            roles: Vec::new(),
             issuer: "tandem-web".to_string(),
             audience: "tandem-runtime".to_string(),
             issued_at_ms,

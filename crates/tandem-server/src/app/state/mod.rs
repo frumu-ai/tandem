@@ -12,7 +12,9 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tandem_enterprise_contract::governance::GovernancePolicyEngine;
+use tandem_enterprise_contract::{
+    governance::GovernancePolicyEngine, OrganizationUnit as EnterpriseOrganizationUnit,
+};
 use tandem_memory::types::MemoryTier;
 use tandem_orchestrator::MissionState;
 use tandem_types::{EngineEvent, HostRuntimeContext, MessagePart, ModelSpec, TenantContext};
@@ -75,6 +77,9 @@ pub struct AppState {
     pub memory_audit_log: Arc<RwLock<Vec<MemoryAuditEvent>>>,
     pub memory_audit_path: PathBuf,
     pub protected_audit_path: PathBuf,
+    pub enterprise_org_units:
+        Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnit>>>,
+    pub enterprise_org_units_path: PathBuf,
     pub missions: Arc<RwLock<std::collections::HashMap<String, MissionState>>>,
     pub shared_resources: Arc<RwLock<std::collections::HashMap<String, SharedResourceRecord>>>,
     pub shared_resources_path: PathBuf,

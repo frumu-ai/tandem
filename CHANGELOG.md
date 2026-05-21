@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Enterprise route that reads the noop organization-unit and source-binding
   endpoints, surfaces tenant/principal context, and shows connector governance
   lanes without implying live persistence or ingestion.
+- **Enterprise organization-unit registry**: Added the first storage-backed
+  organization-unit registry for enterprise admin routes, including
+  tenant-scoped create/list behavior and signed hosted assertion role
+  preservation so hosted mutations can distinguish admin/owner/reconfigure
+  authority from ordinary members.
 
 ### Documentation
 

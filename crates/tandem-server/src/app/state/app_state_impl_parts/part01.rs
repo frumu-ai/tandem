@@ -235,6 +235,8 @@ impl AppState {
             memory_audit_log: Arc::new(RwLock::new(Vec::new())),
             memory_audit_path: config::paths::resolve_memory_audit_path(),
             protected_audit_path: config::paths::resolve_protected_audit_path(),
+            enterprise_org_units: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            enterprise_org_units_path: config::paths::resolve_enterprise_org_units_path(),
             missions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources_path: config::paths::resolve_shared_resources_path(),
@@ -473,6 +475,7 @@ impl AppState {
             )))
             .await;
         let _ = self.load_shared_resources().await;
+        let _ = self.load_enterprise_org_units().await;
         self.load_routines().await?;
         let _ = self.load_routine_history().await;
         let _ = self.load_routine_runs().await;
@@ -516,6 +519,20 @@ impl AppState {
                 }
             });
         }
+        Ok(())
+    }
+
+    pub async fn load_enterprise_org_units(&self) -> anyhow::Result<()> {
+        if !self.enterprise_org_units_path.exists() {
+            return Ok(());
+        }
+        check_file_permissions(&self.enterprise_org_units_path);
+        let bytes = fs::read(&self.enterprise_org_units_path).await?;
+        let registry: std::collections::HashMap<
+            String,
+            tandem_enterprise_contract::OrganizationUnit,
+        > = serde_json::from_slice(&bytes)?;
+        *self.enterprise_org_units.write().await = registry;
         Ok(())
     }
 
