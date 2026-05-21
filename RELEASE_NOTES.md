@@ -13,8 +13,10 @@ who may bind company data into Tandem.
 
 This unreleased line currently contains the contract foundation, enterprise
 admin shell, storage-backed organization-unit registry, and storage-backed
-source-binding registry. Google Drive, Notion, GitHub, Slack, Gmail, live
-OAuth, and production ingestion flows remain follow-up implementation phases.
+source-binding registry. Manual memory imports can now optionally target an
+enabled source binding so imported chunks carry resource and data-class
+metadata. Google Drive, Notion, GitHub, Slack, Gmail, live OAuth, and
+production connector ingestion flows remain follow-up implementation phases.
 
 ### Enterprise Connector Source Binding
 
@@ -46,6 +48,10 @@ OAuth, and production ingestion flows remain follow-up implementation phases.
 - Source bindings map external source roots to Tandem `ResourceRef` and
   `DataClass` values, giving manual upload and future external connectors a
   common resource-scoped ingestion contract.
+- Manual memory imports accept an optional `source_binding_id`, fail closed if
+  the binding is outside the tenant or disabled for indexing, and stamp chunks
+  with source-binding, resource, data-class, and source-object metadata while
+  preserving local/default import behavior when unset.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

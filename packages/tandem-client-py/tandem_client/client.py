@@ -1090,6 +1090,7 @@ class _Memory:
         tier: str = "project",
         project_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        source_binding_id: Optional[str] = None,
         sync_deletes: bool = False,
     ) -> MemoryImportResponse:
         payload: dict[str, Any] = {
@@ -1098,6 +1099,7 @@ class _Memory:
             "tier": tier,
             "project_id": project_id,
             "session_id": session_id,
+            "source_binding_id": source_binding_id,
             "sync_deletes": sync_deletes,
         }
         res = await self._http.post("/memory/import", json=payload)

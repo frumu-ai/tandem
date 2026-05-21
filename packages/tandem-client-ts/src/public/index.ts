@@ -525,6 +525,7 @@ export interface MemoryImportPathOptions {
   tier?: MemoryImportTier;
   projectId?: string;
   sessionId?: string;
+  sourceBindingId?: string;
   syncDeletes?: boolean;
 }
 
@@ -538,6 +539,7 @@ export interface MemoryImportResponse {
   tier: MemoryImportTier;
   project_id?: string | null;
   session_id?: string | null;
+  source_binding_id?: string | null;
   sync_deletes: boolean;
   discovered_files: number;
   files_processed: number;

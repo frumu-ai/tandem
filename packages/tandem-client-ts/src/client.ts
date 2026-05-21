@@ -1546,6 +1546,7 @@ class Memory {
       tier: options.tier ?? "project",
       project_id: options.projectId,
       session_id: options.sessionId,
+      source_binding_id: options.sourceBindingId,
       sync_deletes: options.syncDeletes ?? false,
     };
     return this.req<MemoryImportResponse>("/memory/import", {

@@ -283,7 +283,17 @@ pub struct MemoryImportRequest {
     pub project_id: Option<String>,
     #[serde(default)]
     pub tenant_scope: MemoryTenantScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_binding: Option<MemoryImportSourceBinding>,
     pub sync_deletes: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryImportSourceBinding {
+    pub binding_id: String,
+    pub connector_id: String,
+    pub resource_ref: serde_json::Value,
+    pub data_class: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

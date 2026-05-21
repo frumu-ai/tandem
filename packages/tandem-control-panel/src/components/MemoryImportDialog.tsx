@@ -8,6 +8,7 @@ import type {
   TandemClient,
 } from "@frumu/tandem-client";
 import { renderIcons } from "../app/icons.js";
+import { useEnterpriseSourceBindings } from "../features/enterprise/queries";
 import type { ToastKind } from "../pages/pageTypes";
 
 type ImportForm = {
@@ -16,6 +17,7 @@ type ImportForm = {
   tier: MemoryImportTier;
   projectId: string;
   sessionId: string;
+  sourceBindingId: string;
   syncDeletes: boolean;
 };
 
@@ -58,9 +60,19 @@ export function MemoryImportDialog({
     tier: initialTier,
     projectId: initialProjectId,
     sessionId: "",
+    sourceBindingId: "",
     syncDeletes: false,
   });
   const [result, setResult] = useState<MemoryImportResponse | null>(null);
+  const sourceBindings = useEnterpriseSourceBindings(open);
+  const enabledBindings = (sourceBindings.data?.source_bindings || []).filter(
+    (binding) =>
+      (binding.state || "enabled") === "enabled" &&
+      binding.ingestion_policy?.allow_indexing !== false
+  );
+  const selectedBinding = enabledBindings.find(
+    (binding) => binding.binding_id === form.sourceBindingId
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -70,6 +82,7 @@ export function MemoryImportDialog({
       tier: initialTier,
       projectId: initialProjectId,
       sessionId: "",
+      sourceBindingId: "",
       syncDeletes: false,
     });
     setResult(null);
@@ -78,7 +91,7 @@ export function MemoryImportDialog({
   useEffect(() => {
     if (!open || !dialogRef.current) return;
     renderIcons(dialogRef.current);
-  }, [form.format, form.syncDeletes, form.tier, open, result]);
+  }, [form.format, form.sourceBindingId, form.syncDeletes, form.tier, open, result]);
 
   useEffect(() => {
     if (!open || typeof window === "undefined") return undefined;
@@ -99,6 +112,7 @@ export function MemoryImportDialog({
         tier: form.tier,
         projectId: form.projectId.trim() || undefined,
         sessionId: form.sessionId.trim() || undefined,
+        sourceBindingId: form.sourceBindingId.trim() || undefined,
         syncDeletes: form.syncDeletes,
       }),
     onSuccess: async (payload) => {
@@ -218,6 +232,35 @@ export function MemoryImportDialog({
                   />
                 </label>
               </div>
+
+              <label className="grid gap-1">
+                <span className="text-xs uppercase tracking-wide text-slate-500">
+                  Source binding
+                </span>
+                <select
+                  className="tcp-select"
+                  value={form.sourceBindingId}
+                  onChange={(event) => setForm({ ...form, sourceBindingId: event.target.value })}
+                >
+                  <option value="">Local/default behavior</option>
+                  {enabledBindings.map((binding) => (
+                    <option key={binding.binding_id} value={binding.binding_id}>
+                      {binding.source_root_label || binding.binding_id} - {binding.data_class} -{" "}
+                      {binding.resource_ref?.resource_kind}/{binding.resource_ref?.resource_id}
+                    </option>
+                  ))}
+                </select>
+                {selectedBinding ? (
+                  <span className="tcp-subtle text-xs">
+                    Imports will be stamped with {selectedBinding.resource_ref?.resource_kind}/
+                    {selectedBinding.resource_ref?.resource_id} as {selectedBinding.data_class}.
+                  </span>
+                ) : (
+                  <span className="tcp-subtle text-xs">
+                    Leave unset to preserve the current local/manual import behavior.
+                  </span>
+                )}
+              </label>
             </div>
 
             {result ? (

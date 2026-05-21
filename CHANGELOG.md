@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the storage-backed org-unit and source-binding routes with typed create
   forms, readable governance rows, and source-binding enabled/disabled/
   quarantined controls.
+- **Enterprise manual memory import source binding**: Added optional
+  `source_binding_id` support to manual memory imports, validates that the
+  binding belongs to the request tenant and allows indexing before import,
+  stamps imported chunks with source-binding/resource/data-class/source-object
+  metadata, and keeps local/default manual imports unchanged.
 
 ### Documentation
 

@@ -874,6 +874,7 @@ pub(super) async fn memory_import(
 
     let project_id = normalize_optional_memory_import_id(input.project_id);
     let session_id = normalize_optional_memory_import_id(input.session_id);
+    let source_binding_id = normalize_optional_memory_import_id(input.source_binding_id);
     match input.tier {
         MemoryTier::Project if project_id.is_none() => {
             return Err(skill_error(
@@ -889,6 +890,9 @@ pub(super) async fn memory_import(
         }
         _ => {}
     }
+    let source_binding =
+        resolve_memory_import_source_binding(&state, &tenant_context, source_binding_id.as_deref())
+            .await?;
 
     publish_tenant_event(
         &state,
@@ -900,6 +904,7 @@ pub(super) async fn memory_import(
             "tier": input.tier,
             "project_id": project_id.clone(),
             "session_id": session_id.clone(),
+            "source_binding_id": source_binding_id.clone(),
             "sync_deletes": input.sync_deletes,
         }),
     );
@@ -913,6 +918,7 @@ pub(super) async fn memory_import(
                 "source": {"kind": "path", "path": path},
                 "format": input.format,
                 "tier": input.tier,
+                "source_binding_id": source_binding_id.clone(),
                 "error": "failed to open memory manager",
             }),
         );
@@ -933,6 +939,7 @@ pub(super) async fn memory_import(
             workspace_id: tenant_context.workspace_id.clone(),
             deployment_id: tenant_context.deployment_id.clone(),
         },
+        source_binding,
         sync_deletes: input.sync_deletes,
     };
 
@@ -949,6 +956,7 @@ pub(super) async fn memory_import(
                     "tier": input.tier,
                     "project_id": project_id.clone(),
                     "session_id": session_id.clone(),
+                    "source_binding_id": source_binding_id.clone(),
                     "sync_deletes": input.sync_deletes,
                     "error": err.to_string(),
                 }),
@@ -970,6 +978,7 @@ pub(super) async fn memory_import(
             "tier": input.tier,
             "project_id": project_id.clone(),
             "session_id": session_id.clone(),
+            "source_binding_id": source_binding_id.clone(),
             "sync_deletes": input.sync_deletes,
             "stats": {
                 "discovered_files": stats.discovered_files,
@@ -989,9 +998,49 @@ pub(super) async fn memory_import(
         input.tier,
         project_id,
         session_id,
+        source_binding_id,
         input.sync_deletes,
         stats,
     )))
+}
+
+async fn resolve_memory_import_source_binding(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    source_binding_id: Option<&str>,
+) -> Result<Option<MemoryImportSourceBinding>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(source_binding_id) = source_binding_id else {
+        return Ok(None);
+    };
+    let registry = state.enterprise_source_bindings.read().await;
+    let Some(binding) = registry.values().find(|binding| {
+        binding.binding_id == source_binding_id && binding.tenant_matches(tenant_context)
+    }) else {
+        return Err(skill_error(
+            StatusCode::BAD_REQUEST,
+            "source_binding_id does not reference an enabled binding for this tenant",
+        ));
+    };
+    if !binding.state.allows_ingestion() || !binding.ingestion_policy.allow_indexing {
+        return Err(skill_error(
+            StatusCode::BAD_REQUEST,
+            "source binding does not allow memory import indexing",
+        ));
+    }
+    Ok(Some(MemoryImportSourceBinding {
+        binding_id: binding.binding_id.clone(),
+        connector_id: binding.connector_id.clone(),
+        resource_ref: serde_json::to_value(&binding.resource_ref).map_err(|_| {
+            skill_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to serialize source binding resource scope",
+            )
+        })?,
+        data_class: serde_json::to_value(binding.data_class)
+            .ok()
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| format!("{:?}", binding.data_class)),
+    }))
 }
 
 fn memory_import_response(
@@ -1000,6 +1049,7 @@ fn memory_import_response(
     tier: MemoryTier,
     project_id: Option<String>,
     session_id: Option<String>,
+    source_binding_id: Option<String>,
     sync_deletes: bool,
     stats: MemoryImportStats,
 ) -> MemoryImportResponse {
@@ -1010,6 +1060,7 @@ fn memory_import_response(
         tier,
         project_id,
         session_id,
+        source_binding_id,
         sync_deletes,
         discovered_files: stats.discovered_files,
         files_processed: stats.files_processed,

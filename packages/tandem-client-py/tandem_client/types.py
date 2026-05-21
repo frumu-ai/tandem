@@ -492,6 +492,7 @@ class MemoryImportResponse(BaseModel):
     tier: MemoryImportTier = "project"
     project_id: Optional[str] = None
     session_id: Optional[str] = None
+    source_binding_id: Optional[str] = None
     sync_deletes: bool = False
     discovered_files: int = 0
     files_processed: int = 0

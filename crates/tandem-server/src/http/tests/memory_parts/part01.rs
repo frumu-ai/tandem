@@ -71,6 +71,60 @@ async fn memory_import_rejects_invalid_path_source() {
 }
 
 #[tokio::test]
+async fn memory_import_rejects_disabled_source_binding() {
+    let state = test_state().await;
+    let import_root = state.memory_audit_path.parent().unwrap().join("bound-docs");
+    tokio::fs::create_dir_all(&import_root)
+        .await
+        .expect("import root");
+    tokio::fs::write(import_root.join("note.md"), "disabled binding import")
+        .await
+        .expect("import file");
+    let tenant = tandem_types::TenantContext::local_implicit();
+    let binding = tandem_enterprise_contract::SourceBinding::enabled(
+        "disabled-binding",
+        tenant.clone(),
+        "manual_upload",
+        "manual_upload",
+        "local-import-root",
+        tandem_enterprise_contract::ResourceRef::new(
+            tenant.org_id.clone(),
+            tenant.workspace_id.clone(),
+            tandem_enterprise_contract::ResourceKind::DocumentCollection,
+            "manual-imports",
+        ),
+        tandem_enterprise_contract::DataClass::Internal,
+        tandem_enterprise_contract::PrincipalRef::human_user("local-operator"),
+        1,
+    )
+    .with_state(tandem_enterprise_contract::SourceBindingState::Disabled, 2);
+    state
+        .enterprise_source_bindings
+        .write()
+        .await
+        .insert("local::local::local::disabled-binding".to_string(), binding);
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/memory/import")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "source": {"kind": "path", "path": import_root.display().to_string()},
+                "format": "directory",
+                "tier": "global",
+                "source_binding_id": "disabled-binding",
+                "sync_deletes": false
+            })
+            .to_string(),
+        ))
+        .expect("import request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn memory_put_enforces_default_write_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());

@@ -124,7 +124,12 @@ where
             continue;
         }
 
-        let hash = sha256_hex(content.as_bytes());
+        let content_hash = sha256_hex(content.as_bytes());
+        let hash = request
+            .source_binding
+            .as_ref()
+            .map(|binding| scoped_source_hash(&content_hash, &indexed_path, binding))
+            .unwrap_or_else(|| content_hash.clone());
         if let Some((_, _, existing_hash)) = &existing {
             if existing_hash == &hash {
                 db.upsert_import_index_entry_for_tenant(
@@ -167,13 +172,24 @@ where
             continue;
         }
 
-        let request_metadata = serde_json::json!({
+        let mut request_metadata = serde_json::json!({
             "path": relative_path,
             "filename": path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
             "import_format": request.format.to_string(),
             "import_root": canonical_root.display().to_string(),
             "import_namespace": namespace,
         });
+        if let Some(binding) = request.source_binding.as_ref() {
+            request_metadata["enterprise_source_binding"] = serde_json::json!({
+                "binding_id": binding.binding_id,
+                "connector_id": binding.connector_id,
+                "resource_ref": binding.resource_ref,
+                "data_class": binding.data_class,
+                "source_object_id": source_object_id(request, binding, &indexed_path, &hash),
+                "native_object_id": indexed_path,
+                "content_hash": content_hash,
+            });
+        }
         let store_request = StoreMessageRequest {
             content,
             tier: request.tier,
@@ -432,6 +448,57 @@ fn import_namespace(root_path: &Path, request: &MemoryImportRequest) -> String {
     format!("import-{}", &digest[..16])
 }
 
+fn scoped_source_hash(
+    content_hash: &str,
+    indexed_path: &str,
+    binding: &crate::types::MemoryImportSourceBinding,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(binding.binding_id.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(binding.connector_id.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(binding.resource_ref.to_string().as_bytes());
+    hasher.update(b"\n");
+    hasher.update(binding.data_class.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(indexed_path.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(content_hash.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn source_object_id(
+    request: &MemoryImportRequest,
+    binding: &crate::types::MemoryImportSourceBinding,
+    indexed_path: &str,
+    source_hash: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(request.tenant_scope.org_id.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(request.tenant_scope.workspace_id.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(
+        request
+            .tenant_scope
+            .deployment_id
+            .as_deref()
+            .unwrap_or("")
+            .as_bytes(),
+    );
+    hasher.update(b"\n");
+    hasher.update(binding.binding_id.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(indexed_path.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(source_hash.as_bytes());
+    format!(
+        "source-object-{}",
+        &format!("{:x}", hasher.finalize())[..24]
+    )
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -471,6 +538,7 @@ mod tests {
             session_id: None,
             project_id: None,
             tenant_scope: MemoryTenantScope::local(),
+            source_binding: None,
             sync_deletes: false,
         };
 
@@ -510,6 +578,7 @@ mod tests {
             session_id: None,
             project_id: None,
             tenant_scope: MemoryTenantScope::local(),
+            source_binding: None,
             sync_deletes: false,
         };
         let request_b = MemoryImportRequest {
@@ -519,6 +588,7 @@ mod tests {
             session_id: None,
             project_id: None,
             tenant_scope: MemoryTenantScope::local(),
+            source_binding: None,
             sync_deletes: false,
         };
 

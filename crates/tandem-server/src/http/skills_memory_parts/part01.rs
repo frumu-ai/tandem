@@ -136,6 +136,7 @@ pub(super) struct MemoryImportInput {
     tier: MemoryTier,
     project_id: Option<String>,
     session_id: Option<String>,
+    source_binding_id: Option<String>,
     #[serde(default)]
     sync_deletes: bool,
 }
@@ -154,6 +155,7 @@ pub(super) struct MemoryImportResponse {
     tier: MemoryTier,
     project_id: Option<String>,
     session_id: Option<String>,
+    source_binding_id: Option<String>,
     sync_deletes: bool,
     discovered_files: usize,
     files_processed: usize,
