@@ -1646,13 +1646,54 @@ pub struct SourceObject {
     pub native_object_id: String,
     pub resource_ref: ResourceRef,
     pub data_class: DataClass,
+    #[serde(default)]
+    pub lifecycle_state: SourceObjectLifecycleState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_object_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_source_object_id: Option<String>,
+    #[serde(default)]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_changed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by_source_object_id: Option<String>,
 }
 
 impl SourceObject {
+    pub fn tenant_matches(&self, tenant: &TenantContext) -> bool {
+        self.tenant_context.org_id == tenant.org_id
+            && self.tenant_context.workspace_id == tenant.workspace_id
+            && self.tenant_context.deployment_id == tenant.deployment_id
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.lifecycle_state == SourceObjectLifecycleState::Active
+    }
+
+    pub fn allows_prompt_context(&self) -> bool {
+        self.is_active()
+    }
+
+    pub fn with_lifecycle_state(
+        mut self,
+        lifecycle_state: SourceObjectLifecycleState,
+        updated_at_ms: u64,
+    ) -> Self {
+        self.lifecycle_state = lifecycle_state;
+        self.updated_at_ms = updated_at_ms;
+        self.lifecycle_changed_at_ms = Some(updated_at_ms);
+        self
+    }
+
     pub fn dedupe_scope_key(&self) -> String {
         format!(
             "{}:{}:{}:{}:{}:{}",
@@ -1664,6 +1705,33 @@ impl SourceObject {
             self.native_object_id
         )
     }
+
+    pub fn lifecycle_identity_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            self.tenant_context.org_id,
+            self.tenant_context.workspace_id,
+            self.tenant_context.deployment_id.as_deref().unwrap_or(""),
+            self.binding_id,
+            self.connector_id,
+            self.resource_ref.resource_kind as u8,
+            self.resource_ref.resource_id,
+            self.resource_ref.path_prefix.as_deref().unwrap_or(""),
+            self.data_class as u8,
+            self.native_object_id,
+            self.native_object_path.as_deref().unwrap_or("")
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceObjectLifecycleState {
+    #[default]
+    Active,
+    Tombstoned,
+    Deleted,
+    Rescoped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -2963,8 +3031,16 @@ mod tests {
             native_object_id: "drive-file-123".to_string(),
             resource_ref: resource.clone(),
             data_class: DataClass::FinancialRecord,
+            lifecycle_state: SourceObjectLifecycleState::Active,
+            native_object_path: Some("/finance/board-report.md".to_string()),
+            content_hash: Some("content-sha256:abc".to_string()),
             source_hash: Some("sha256:abc".to_string()),
             parent_source_object_id: None,
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+            last_seen_at_ms: Some(1_000),
+            lifecycle_changed_at_ms: None,
+            superseded_by_source_object_id: None,
         };
         let chunk = ScopedMemoryChunkRef {
             chunk_id: "chunk-1".to_string(),
@@ -2977,6 +3053,16 @@ mod tests {
 
         assert!(object.dedupe_scope_key().contains("acme:finance"));
         assert!(object.dedupe_scope_key().contains("binding-finance-drive"));
+        assert!(object.tenant_matches(&tenant));
+        assert!(object.is_active());
+        assert!(object.allows_prompt_context());
+        assert!(object
+            .lifecycle_identity_key()
+            .contains("binding-finance-drive"));
+        assert!(!object
+            .clone()
+            .with_lifecycle_state(SourceObjectLifecycleState::Tombstoned, 2_000)
+            .allows_prompt_context());
         assert_eq!(chunk.tenant_context, tenant);
         assert_eq!(chunk.source_object_id, "source-object-1");
         assert_eq!(chunk.data_class, DataClass::FinancialRecord);

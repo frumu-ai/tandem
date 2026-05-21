@@ -366,6 +366,58 @@ pub struct MemoryImportSourceBinding {
     pub data_class: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceObjectLifecycleState {
+    Active,
+    Tombstoned,
+    Deleted,
+    Rescoped,
+}
+
+impl SourceObjectLifecycleState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Tombstoned => "tombstoned",
+            Self::Deleted => "deleted",
+            Self::Rescoped => "rescoped",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tombstoned" => Self::Tombstoned,
+            "deleted" => Self::Deleted,
+            "rescoped" => Self::Rescoped,
+            _ => Self::Active,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceObjectLifecycleRecord {
+    pub source_object_id: String,
+    pub tenant_scope: MemoryTenantScope,
+    pub source_binding_id: String,
+    pub connector_id: String,
+    pub state: SourceObjectLifecycleState,
+    pub tier: MemoryTier,
+    pub session_id: Option<String>,
+    pub project_id: Option<String>,
+    pub import_namespace: String,
+    pub indexed_path: String,
+    pub native_object_id: String,
+    pub resource_ref: serde_json::Value,
+    pub data_class: String,
+    pub content_hash: Option<String>,
+    pub source_hash: Option<String>,
+    pub first_seen_at_ms: u64,
+    pub last_seen_at_ms: u64,
+    pub tombstoned_at_ms: Option<u64>,
+    pub metadata: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryImportStats {
     pub discovered_files: usize,

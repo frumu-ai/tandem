@@ -18,9 +18,9 @@ pub use tandem_enterprise_contract::{
     PrincipalKind, PrincipalRef, QuarantineDisposition, RequestAuthorizationHook, RequestPrincipal,
     ResourceKind, ResourcePathSegment, ResourceRef, ResourceScope, RuntimeAuthMode, ScopedGrant,
     ScopedMemoryChunkRef, SecretRef, SecretRefError, SigningKeyPurpose, SourceBinding,
-    SourceBindingState, SourceObject, StrictTenantContext, TenantContext,
-    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantContextResolver,
-    TenantSource, VerifiedTenantContext,
+    SourceBindingState, SourceObject, SourceObjectLifecycleState, StrictTenantContext,
+    TenantContext, TenantContextAssertionClaims, TenantContextAssertionHeader,
+    TenantContextResolver, TenantSource, VerifiedTenantContext,
 };
 
 pub use approvals::*;

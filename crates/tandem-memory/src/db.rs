@@ -8,7 +8,7 @@ use crate::types::{
     KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus, KnowledgePromotionRequest,
     KnowledgePromotionResult, KnowledgeSpaceRecord, MemoryChunk, MemoryConfig, MemoryError,
     MemoryResult, MemoryStats, MemoryTenantScope, MemoryTier, ProjectMemoryStats,
-    DEFAULT_EMBEDDING_DIMENSION,
+    SourceObjectLifecycleRecord, SourceObjectLifecycleState, DEFAULT_EMBEDDING_DIMENSION,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{ffi::sqlite3_auto_extension, params, Connection, OptionalExtension, Row};
@@ -201,6 +201,50 @@ fn row_to_global_record(row: &Row) -> Result<GlobalMemoryRecord, rusqlite::Error
         created_at_ms: row.get::<_, i64>(19)? as u64,
         updated_at_ms: row.get::<_, i64>(20)? as u64,
         expires_at_ms: row.get::<_, Option<i64>>(21)?.map(|v| v as u64),
+    })
+}
+
+fn row_to_source_object_lifecycle(
+    row: &Row,
+) -> Result<SourceObjectLifecycleRecord, rusqlite::Error> {
+    let metadata_str: Option<String> = row.get("metadata")?;
+    let resource_ref_str: String = row.get("resource_ref")?;
+    let tenant_scope = MemoryTenantScope {
+        org_id: row.get("tenant_org_id")?,
+        workspace_id: row.get("tenant_workspace_id")?,
+        deployment_id: row
+            .get::<_, Option<String>>("tenant_deployment_id")?
+            .filter(|value| !value.is_empty()),
+    };
+    let tier = match row.get::<_, String>("tier")?.as_str() {
+        "session" => MemoryTier::Session,
+        "project" => MemoryTier::Project,
+        _ => MemoryTier::Global,
+    };
+    Ok(SourceObjectLifecycleRecord {
+        source_object_id: row.get("source_object_id")?,
+        tenant_scope,
+        source_binding_id: row.get("source_binding_id")?,
+        connector_id: row.get("connector_id")?,
+        state: SourceObjectLifecycleState::parse(&row.get::<_, String>("state")?),
+        tier,
+        session_id: row.get("session_id")?,
+        project_id: row.get("project_id")?,
+        import_namespace: row.get("import_namespace")?,
+        indexed_path: row.get("indexed_path")?,
+        native_object_id: row.get("native_object_id")?,
+        resource_ref: serde_json::from_str(&resource_ref_str).unwrap_or(serde_json::Value::Null),
+        data_class: row.get("data_class")?,
+        content_hash: row.get("content_hash")?,
+        source_hash: row.get("source_hash")?,
+        first_seen_at_ms: row.get::<_, i64>("first_seen_at_ms")? as u64,
+        last_seen_at_ms: row.get::<_, i64>("last_seen_at_ms")? as u64,
+        tombstoned_at_ms: row
+            .get::<_, Option<i64>>("tombstoned_at_ms")?
+            .map(|value| value as u64),
+        metadata: metadata_str
+            .filter(|value| !value.is_empty())
+            .and_then(|value| serde_json::from_str(&value).ok()),
     })
 }
 

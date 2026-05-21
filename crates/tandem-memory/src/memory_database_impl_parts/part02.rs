@@ -1,4 +1,125 @@
 impl MemoryDatabase {
+    pub async fn upsert_source_object_active_for_tenant(
+        &self,
+        record: &SourceObjectLifecycleRecord,
+    ) -> MemoryResult<()> {
+        let conn = self.conn.lock().await;
+        let resource_ref = serde_json::to_string(&record.resource_ref)?;
+        let metadata = record
+            .metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        conn.execute(
+            "INSERT INTO source_object_lifecycle
+             (tenant_org_id, tenant_workspace_id, tenant_deployment_id, source_object_id,
+              source_binding_id, connector_id, state, tier, session_id, project_id,
+              import_namespace, indexed_path, native_object_id, resource_ref, data_class,
+              content_hash, source_hash, first_seen_at_ms, last_seen_at_ms, tombstoned_at_ms,
+              metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17, ?18, ?19, NULL, ?20)
+             ON CONFLICT(tenant_org_id, tenant_workspace_id, tenant_deployment_id, source_object_id)
+             DO UPDATE SET
+                source_binding_id = excluded.source_binding_id,
+                connector_id = excluded.connector_id,
+                state = 'active',
+                tier = excluded.tier,
+                session_id = excluded.session_id,
+                project_id = excluded.project_id,
+                import_namespace = excluded.import_namespace,
+                indexed_path = excluded.indexed_path,
+                native_object_id = excluded.native_object_id,
+                resource_ref = excluded.resource_ref,
+                data_class = excluded.data_class,
+                content_hash = COALESCE(excluded.content_hash, content_hash),
+                source_hash = COALESCE(excluded.source_hash, source_hash),
+                last_seen_at_ms = excluded.last_seen_at_ms,
+                tombstoned_at_ms = NULL,
+                metadata = COALESCE(excluded.metadata, metadata)",
+            params![
+                record.tenant_scope.org_id.as_str(),
+                record.tenant_scope.workspace_id.as_str(),
+                record.tenant_scope.deployment_id.as_deref().unwrap_or(""),
+                record.source_object_id.as_str(),
+                record.source_binding_id.as_str(),
+                record.connector_id.as_str(),
+                SourceObjectLifecycleState::Active.as_str(),
+                record.tier.to_string(),
+                record.session_id.as_deref(),
+                record.project_id.as_deref(),
+                record.import_namespace.as_str(),
+                record.indexed_path.as_str(),
+                record.native_object_id.as_str(),
+                resource_ref,
+                record.data_class.as_str(),
+                record.content_hash.as_deref(),
+                record.source_hash.as_deref(),
+                record.first_seen_at_ms as i64,
+                record.last_seen_at_ms as i64,
+                metadata.as_deref(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub async fn tombstone_source_object_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+        source_binding_id: &str,
+        native_object_id: &str,
+        tombstoned_at_ms: u64,
+    ) -> MemoryResult<bool> {
+        let conn = self.conn.lock().await;
+        let affected = conn.execute(
+            "UPDATE source_object_lifecycle
+             SET state = 'tombstoned',
+                 tombstoned_at_ms = ?1,
+                 last_seen_at_ms = ?1
+             WHERE tenant_org_id = ?2
+               AND tenant_workspace_id = ?3
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
+               AND source_binding_id = ?5
+               AND native_object_id = ?6",
+            params![
+                tombstoned_at_ms as i64,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref(),
+                source_binding_id,
+                native_object_id,
+            ],
+        )?;
+        Ok(affected > 0)
+    }
+
+    pub async fn get_source_object_lifecycle_by_native_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+        source_binding_id: &str,
+        native_object_id: &str,
+    ) -> MemoryResult<Option<SourceObjectLifecycleRecord>> {
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT * FROM source_object_lifecycle
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
+               AND source_binding_id = ?4
+               AND native_object_id = ?5",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref(),
+                source_binding_id,
+                native_object_id,
+            ],
+            row_to_source_object_lifecycle,
+        )
+        .optional()
+        .map_err(MemoryError::from)
+    }
+
     pub async fn upsert_file_index_entry(
         &self,
         project_id: &str,

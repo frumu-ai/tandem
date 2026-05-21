@@ -64,6 +64,11 @@ production connector ingestion flows remain follow-up implementation phases.
   and invalidated for a specific binding. Source-binding admin changes emit an
   invalidation-required event so future cache consumers can purge stale answers
   after disable, quarantine, revoke, or permission changes.
+- Source-bound manual uploads now create durable source-object lifecycle
+  records keyed by tenant, source binding, and native object identity. Changed
+  documents keep the same source object ID while their hashes update, and
+  `sync_deletes` tombstones removed uploads so later admin workflows can
+  reindex, delete, or re-scope by binding/resource.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

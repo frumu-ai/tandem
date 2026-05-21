@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and source-binding invalidation APIs. Source-binding admin create/update now
   emits an explicit cache-invalidation-required event for revoke, quarantine,
   permission, or policy changes.
+- **Enterprise source-object lifecycle records**: Added source-bound uploaded
+  document lifecycle records in memory storage so manual imports can track
+  active and tombstoned source objects by tenant, binding, resource, data class,
+  and native object identity. Reimporting changed content preserves the stable
+  source object ID while updating hashes, and `sync_deletes` tombstones removed
+  source-bound uploads for future reindex/delete/re-scope workflows.
 
 ### Documentation
 

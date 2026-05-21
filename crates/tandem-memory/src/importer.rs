@@ -1,13 +1,14 @@
 use crate::manager::MemoryManager;
 use crate::types::{
-    MemoryError, MemoryImportFormat, MemoryImportProgress, MemoryImportRequest, MemoryImportStats,
-    MemoryTier, StoreMessageRequest,
+    MemoryError, MemoryImportFormat, MemoryImportProgress, MemoryImportRequest,
+    MemoryImportSourceBinding, MemoryImportStats, MemoryTier, SourceObjectLifecycleRecord,
+    SourceObjectLifecycleState, StoreMessageRequest,
 };
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_FILE_SIZE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -98,8 +99,19 @@ where
                 &request.tenant_scope,
             )
             .await?;
-        if let Some((existing_mtime, existing_size, _)) = &existing {
+        if let Some((existing_mtime, existing_size, existing_hash)) = &existing {
             if *existing_mtime == mtime && *existing_size == size {
+                if let Some(record) = source_object_lifecycle_record(
+                    request,
+                    request.source_binding.as_ref(),
+                    &namespace,
+                    &indexed_path,
+                    None,
+                    Some(existing_hash.clone()),
+                    now_ms(),
+                ) {
+                    db.upsert_source_object_active_for_tenant(&record).await?;
+                }
                 stats.files_processed += 1;
                 stats.skipped_files += 1;
                 emit_progress(&mut on_progress, &stats, total_files, &relative_path);
@@ -143,6 +155,17 @@ where
                     &request.tenant_scope,
                 )
                 .await?;
+                if let Some(record) = source_object_lifecycle_record(
+                    request,
+                    request.source_binding.as_ref(),
+                    &namespace,
+                    &indexed_path,
+                    Some(content_hash.clone()),
+                    Some(hash.clone()),
+                    now_ms(),
+                ) {
+                    db.upsert_source_object_active_for_tenant(&record).await?;
+                }
                 stats.files_processed += 1;
                 stats.skipped_files += 1;
                 emit_progress(&mut on_progress, &stats, total_files, &relative_path);
@@ -185,7 +208,7 @@ where
                 "connector_id": binding.connector_id,
                 "resource_ref": binding.resource_ref,
                 "data_class": binding.data_class,
-                "source_object_id": source_object_id(request, binding, &indexed_path, &hash),
+                "source_object_id": source_object_id(request, binding, &indexed_path),
                 "native_object_id": indexed_path,
                 "content_hash": content_hash,
             });
@@ -217,6 +240,17 @@ where
                     &request.tenant_scope,
                 )
                 .await?;
+                if let Some(record) = source_object_lifecycle_record(
+                    request,
+                    request.source_binding.as_ref(),
+                    &namespace,
+                    &indexed_path,
+                    Some(content_hash.clone()),
+                    Some(hash.clone()),
+                    now_ms(),
+                ) {
+                    db.upsert_source_object_active_for_tenant(&record).await?;
+                }
                 stats.files_processed += 1;
                 stats.indexed_files += 1;
                 stats.chunks_created += chunks.len();
@@ -272,6 +306,15 @@ where
                 );
                 stats.errors += 1;
                 continue;
+            }
+            if let Some(binding) = request.source_binding.as_ref() {
+                db.tombstone_source_object_for_tenant(
+                    &request.tenant_scope,
+                    &binding.binding_id,
+                    &indexed_path,
+                    now_ms(),
+                )
+                .await?;
             }
             stats.deleted_files += 1;
         }
@@ -451,7 +494,7 @@ fn import_namespace(root_path: &Path, request: &MemoryImportRequest) -> String {
 fn scoped_source_hash(
     content_hash: &str,
     indexed_path: &str,
-    binding: &crate::types::MemoryImportSourceBinding,
+    binding: &MemoryImportSourceBinding,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(binding.binding_id.as_bytes());
@@ -470,9 +513,8 @@ fn scoped_source_hash(
 
 fn source_object_id(
     request: &MemoryImportRequest,
-    binding: &crate::types::MemoryImportSourceBinding,
+    binding: &MemoryImportSourceBinding,
     indexed_path: &str,
-    source_hash: &str,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(request.tenant_scope.org_id.as_bytes());
@@ -491,12 +533,53 @@ fn source_object_id(
     hasher.update(binding.binding_id.as_bytes());
     hasher.update(b"\n");
     hasher.update(indexed_path.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(source_hash.as_bytes());
     format!(
         "source-object-{}",
         &format!("{:x}", hasher.finalize())[..24]
     )
+}
+
+fn source_object_lifecycle_record(
+    request: &MemoryImportRequest,
+    binding: Option<&MemoryImportSourceBinding>,
+    namespace: &str,
+    indexed_path: &str,
+    content_hash: Option<String>,
+    source_hash: Option<String>,
+    observed_at_ms: u64,
+) -> Option<SourceObjectLifecycleRecord> {
+    let binding = binding?;
+    Some(SourceObjectLifecycleRecord {
+        source_object_id: source_object_id(request, binding, indexed_path),
+        tenant_scope: request.tenant_scope.clone(),
+        source_binding_id: binding.binding_id.clone(),
+        connector_id: binding.connector_id.clone(),
+        state: SourceObjectLifecycleState::Active,
+        tier: request.tier,
+        session_id: request.session_id.clone(),
+        project_id: request.project_id.clone(),
+        import_namespace: namespace.to_string(),
+        indexed_path: indexed_path.to_string(),
+        native_object_id: indexed_path.to_string(),
+        resource_ref: binding.resource_ref.clone(),
+        data_class: binding.data_class.clone(),
+        content_hash,
+        source_hash,
+        first_seen_at_ms: observed_at_ms,
+        last_seen_at_ms: observed_at_ms,
+        tombstoned_at_ms: None,
+        metadata: Some(serde_json::json!({
+            "source": "manual_upload",
+            "import_format": request.format.to_string(),
+        })),
+    })
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -624,5 +707,131 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         let remaining = chunks[0].metadata.clone().unwrap();
         assert_eq!(remaining["import_root"], root_b.display().to_string());
+    }
+
+    #[tokio::test]
+    async fn source_bound_import_tracks_source_object_lifecycle() {
+        let (manager, dir) = setup_manager().await;
+        let root = dir.path().join("docs");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.md"), "Alpha lifecycle source").unwrap();
+
+        let request = MemoryImportRequest {
+            root_path: root.display().to_string(),
+            format: MemoryImportFormat::Directory,
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            tenant_scope: MemoryTenantScope {
+                org_id: "acme".to_string(),
+                workspace_id: "finance".to_string(),
+                deployment_id: Some("prod".to_string()),
+            },
+            source_binding: Some(MemoryImportSourceBinding {
+                binding_id: "binding-finance-docs".to_string(),
+                connector_id: "manual-upload".to_string(),
+                resource_ref: serde_json::json!({
+                    "org_id": "acme",
+                    "workspace_id": "finance",
+                    "resource_kind": "project",
+                    "resource_id": "board-pack",
+                    "parent_path": [],
+                    "path_prefix": null
+                }),
+                data_class: "financial_record".to_string(),
+            }),
+            sync_deletes: false,
+        };
+
+        let first = match import_files(&manager, &request, None::<fn(&MemoryImportProgress)>).await
+        {
+            Ok(stats) => stats,
+            Err(err) if is_embeddings_disabled(&err) => return,
+            Err(err) => panic!("import_files failed: {err}"),
+        };
+        assert_eq!(first.indexed_files, 1);
+
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let namespace = import_namespace(&canonical_root, &request);
+        let indexed_path = format!("{namespace}/note.md");
+        let first_record = manager
+            .db()
+            .get_source_object_lifecycle_by_native_for_tenant(
+                &request.tenant_scope,
+                "binding-finance-docs",
+                &indexed_path,
+            )
+            .await
+            .unwrap()
+            .expect("source object lifecycle record");
+        assert_eq!(first_record.state, SourceObjectLifecycleState::Active);
+        assert_eq!(first_record.native_object_id, indexed_path);
+        assert_eq!(first_record.resource_ref["resource_id"], "board-pack");
+        assert_eq!(first_record.data_class, "financial_record");
+        let stable_source_object_id = first_record.source_object_id.clone();
+        let first_source_hash = first_record.source_hash.clone();
+
+        std::fs::write(
+            root.join("note.md"),
+            "Alpha lifecycle source with updated body",
+        )
+        .unwrap();
+        let second = match import_files(&manager, &request, None::<fn(&MemoryImportProgress)>).await
+        {
+            Ok(stats) => stats,
+            Err(err) if is_embeddings_disabled(&err) => return,
+            Err(err) => panic!("import_files failed: {err}"),
+        };
+        assert_eq!(second.indexed_files, 1);
+        let second_record = manager
+            .db()
+            .get_source_object_lifecycle_by_native_for_tenant(
+                &request.tenant_scope,
+                "binding-finance-docs",
+                &format!("{namespace}/note.md"),
+            )
+            .await
+            .unwrap()
+            .expect("source object lifecycle record after update");
+        assert_eq!(second_record.source_object_id, stable_source_object_id);
+        assert_eq!(second_record.state, SourceObjectLifecycleState::Active);
+        assert_ne!(second_record.source_hash, first_source_hash);
+
+        std::fs::remove_file(root.join("note.md")).unwrap();
+        let deleted = match import_files(
+            &manager,
+            &MemoryImportRequest {
+                sync_deletes: true,
+                ..request
+            },
+            None::<fn(&MemoryImportProgress)>,
+        )
+        .await
+        {
+            Ok(stats) => stats,
+            Err(err) if is_embeddings_disabled(&err) => return,
+            Err(err) => panic!("import_files failed: {err}"),
+        };
+        assert_eq!(deleted.deleted_files, 1);
+        let tombstoned_record = manager
+            .db()
+            .get_source_object_lifecycle_by_native_for_tenant(
+                &MemoryTenantScope {
+                    org_id: "acme".to_string(),
+                    workspace_id: "finance".to_string(),
+                    deployment_id: Some("prod".to_string()),
+                },
+                "binding-finance-docs",
+                &format!("{namespace}/note.md"),
+            )
+            .await
+            .unwrap()
+            .expect("source object lifecycle tombstone");
+        assert_eq!(tombstoned_record.source_object_id, stable_source_object_id);
+        assert_eq!(
+            tombstoned_record.state,
+            SourceObjectLifecycleState::Tombstoned
+        );
+        assert!(tombstoned_record.tombstoned_at_ms.is_some());
     }
 }

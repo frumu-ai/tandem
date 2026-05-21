@@ -691,6 +691,44 @@ impl MemoryDatabase {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS source_object_lifecycle (
+                tenant_org_id TEXT NOT NULL,
+                tenant_workspace_id TEXT NOT NULL,
+                tenant_deployment_id TEXT NOT NULL DEFAULT '',
+                source_object_id TEXT NOT NULL,
+                source_binding_id TEXT NOT NULL,
+                connector_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                tier TEXT NOT NULL,
+                session_id TEXT,
+                project_id TEXT,
+                import_namespace TEXT NOT NULL,
+                indexed_path TEXT NOT NULL,
+                native_object_id TEXT NOT NULL,
+                resource_ref TEXT NOT NULL,
+                data_class TEXT NOT NULL,
+                content_hash TEXT,
+                source_hash TEXT,
+                first_seen_at_ms INTEGER NOT NULL,
+                last_seen_at_ms INTEGER NOT NULL,
+                tombstoned_at_ms INTEGER,
+                metadata TEXT,
+                PRIMARY KEY(tenant_org_id, tenant_workspace_id, tenant_deployment_id, source_object_id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_object_lifecycle_binding
+             ON source_object_lifecycle(tenant_org_id, tenant_workspace_id, tenant_deployment_id, source_binding_id, state)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_source_object_lifecycle_native
+             ON source_object_lifecycle(tenant_org_id, tenant_workspace_id, tenant_deployment_id, source_binding_id, native_object_id)",
+            [],
+        )?;
+
         // Knowledge registry tables (scoped reusable knowledge, separate from raw memory)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS knowledge_spaces (
