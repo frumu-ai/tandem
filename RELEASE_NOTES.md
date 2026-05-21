@@ -88,6 +88,9 @@ production connector ingestion flows remain follow-up implementation phases.
   hosted non-admin connector creation denial, source-bound upload
   `ResourceRef` lifecycle stamping, and same native source IDs remaining
   tenant-scoped.
+- Source-bound memory retrieval now has explicit tenant-isolation proof: tenant
+  A cannot retrieve tenant B chunks even when the binding ID, native object
+  path, and search phrase overlap.
 - Managed hosted detection now reports hosted auth availability separately, so
   disconnected local test deployments can still use the engine-token sign-in
   path while connected hosted servers keep Tandem hosted login enforcement.

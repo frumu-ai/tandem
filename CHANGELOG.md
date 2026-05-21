@@ -85,6 +85,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enterprise connector trust-proof tests**: Added explicit denial coverage
   for hosted non-admin connector creation, source-bound upload lifecycle
   `ResourceRef` stamping, and same-native-source-object IDs across tenants.
+- **Enterprise source-bound retrieval tenant proof**: Added memory-manager
+  coverage proving tenant A cannot retrieve tenant B source-bound chunks even
+  when both tenants share the same binding ID, native object path, and query
+  phrase.
 - **Hosted panel auth availability split**: Control-panel capabilities now
   distinguish managed hosted deployments from deployments with usable hosted
   auth exchange credentials, allowing disconnected local test deployments to

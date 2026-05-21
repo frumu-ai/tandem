@@ -213,6 +213,152 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn tenant_a_cannot_search_tenant_b_source_bound_chunks() {
+        let (manager, _temp) = setup_test_manager().await;
+        let tenant_a = MemoryTenantScope {
+            org_id: "org-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            deployment_id: Some("dep-a".to_string()),
+        };
+        let tenant_b = MemoryTenantScope {
+            org_id: "org-b".to_string(),
+            workspace_id: "workspace-b".to_string(),
+            deployment_id: Some("dep-b".to_string()),
+        };
+        let resource_a = tandem_enterprise_contract::ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            tandem_enterprise_contract::ResourceKind::DocumentCollection,
+            "finance-docs",
+        );
+        let resource_b = tandem_enterprise_contract::ResourceRef::new(
+            "org-b",
+            "workspace-b",
+            tandem_enterprise_contract::ResourceKind::DocumentCollection,
+            "finance-docs",
+        );
+        let shared_phrase = "cross tenant payroll source binding needle";
+
+        let tenant_a_request = StoreMessageRequest {
+            content: format!("{shared_phrase} belongs only to tenant A."),
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            source: "file".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: Some("tenant-a-source-hash".to_string()),
+            tenant_scope: tenant_a.clone(),
+            metadata: Some(serde_json::json!({
+                "enterprise_source_binding": {
+                    "binding_id": "binding-finance",
+                    "connector_id": "manual-upload",
+                    "resource_ref": resource_a,
+                    "data_class": "financial_record",
+                    "source_object_id": "source-object-tenant-a",
+                    "native_object_id": "shared-import/payroll.md",
+                    "content_hash": "tenant-a-content-hash"
+                }
+            })),
+        };
+        let tenant_b_request = StoreMessageRequest {
+            content: format!("{shared_phrase} belongs only to tenant B."),
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            source: "file".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: Some("tenant-b-source-hash".to_string()),
+            tenant_scope: tenant_b.clone(),
+            metadata: Some(serde_json::json!({
+                "enterprise_source_binding": {
+                    "binding_id": "binding-finance",
+                    "connector_id": "manual-upload",
+                    "resource_ref": resource_b,
+                    "data_class": "financial_record",
+                    "source_object_id": "source-object-tenant-b",
+                    "native_object_id": "shared-import/payroll.md",
+                    "content_hash": "tenant-b-content-hash"
+                }
+            })),
+        };
+
+        if let Err(err) = manager.store_message(tenant_a_request).await {
+            if is_embeddings_disabled(&err) {
+                return;
+            }
+            panic!("store tenant A message failed: {err}");
+        }
+        if let Err(err) = manager.store_message(tenant_b_request).await {
+            if is_embeddings_disabled(&err) {
+                return;
+            }
+            panic!("store tenant B message failed: {err}");
+        }
+
+        let unfiltered = manager
+            .search_for_tenant(
+                shared_phrase,
+                Some(MemoryTier::Global),
+                None,
+                None,
+                &tenant_a,
+                Some(10),
+            )
+            .await
+            .expect("tenant A unfiltered search");
+        assert!(
+            unfiltered.is_empty(),
+            "source-bound chunks must stay hidden without a strict tenant projection"
+        );
+
+        let tenant_a_filter = crate::types::MemoryAccessFilter::strict(
+            strict_context_for_resource(
+                &tenant_a,
+                tandem_enterprise_contract::ResourceRef::new(
+                    "org-a",
+                    "workspace-a",
+                    tandem_enterprise_contract::ResourceKind::DocumentCollection,
+                    "finance-docs",
+                ),
+                tandem_enterprise_contract::DataClass::FinancialRecord,
+            ),
+            chrono::Utc::now().timestamp_millis() as u64,
+        );
+        let tenant_a_results = manager
+            .search_for_tenant_with_access_filter(
+                shared_phrase,
+                Some(MemoryTier::Global),
+                None,
+                None,
+                &tenant_a,
+                Some(10),
+                Some(&tenant_a_filter),
+            )
+            .await
+            .expect("tenant A filtered search");
+
+        assert!(
+            tenant_a_results
+                .iter()
+                .any(|hit| hit.chunk.content.contains("tenant A")),
+            "tenant A should see its own source-bound chunk with a matching strict grant"
+        );
+        assert!(
+            tenant_a_results
+                .iter()
+                .all(|hit| hit.chunk.tenant_scope.org_id == tenant_a.org_id
+                    && hit.chunk.tenant_scope.workspace_id == tenant_a.workspace_id
+                    && hit.chunk.tenant_scope.deployment_id == tenant_a.deployment_id
+                    && !hit.chunk.content.contains("tenant B")),
+            "tenant A search must not return tenant B source-bound chunks"
+        );
+    }
+
     fn strict_context_for_resource(
         tenant_scope: &MemoryTenantScope,
         resource: tandem_enterprise_contract::ResourceRef,
