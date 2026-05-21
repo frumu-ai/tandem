@@ -855,6 +855,91 @@ async fn memory_search_hides_source_bound_records_without_strict_grant() {
 }
 
 #[tokio::test]
+async fn memory_list_hides_source_bound_citation_metadata_without_strict_grant() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let capability = memory_capability(
+        "source-bound-list-run",
+        "default",
+        "org-1",
+        "ws-1",
+        "proj-1",
+    );
+
+    let put_req = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "source-bound-list-run",
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": "payroll citation metadata must not leak from list",
+                "classification": "restricted",
+                "metadata": {
+                    "enterprise_source_binding": {
+                        "binding_id": "binding-hr-finance",
+                        "connector_id": "manual-upload",
+                        "resource_ref": {
+                            "organization_id": "org-1",
+                            "workspace_id": "ws-1",
+                            "resource_kind": "document_collection",
+                            "resource_id": "hr-payroll"
+                        },
+                        "data_class": "financial_record",
+                        "source_object_id": "source-object-hr-payroll",
+                        "native_object_id": "/imports/hr/payroll.md",
+                        "content_hash": "hash-hr-payroll"
+                    }
+                },
+                "capability": capability
+            })
+            .to_string(),
+        ))
+        .expect("source-bound list put request");
+    let put_resp = app
+        .clone()
+        .oneshot(put_req)
+        .await
+        .expect("source-bound list put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let list_req = Request::builder()
+        .method("GET")
+        .uri("/memory?q=payroll&project_id=proj-1")
+        .body(Body::empty())
+        .expect("source-bound list request");
+    let list_resp = app
+        .clone()
+        .oneshot(list_req)
+        .await
+        .expect("source-bound list response");
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_body = to_bytes(list_resp.into_body(), usize::MAX)
+        .await
+        .expect("source-bound list body");
+    let list_payload: Value = serde_json::from_slice(&list_body).expect("source-bound list json");
+    assert_eq!(
+        list_payload
+            .get("items")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "source-bound list results must not expose citation/source-object metadata without a strict read grant"
+    );
+    let serialized = serde_json::to_string(&list_payload).expect("list payload string");
+    assert!(!serialized.contains("source-object-hr-payroll"));
+    assert!(!serialized.contains("/imports/hr/payroll.md"));
+    assert!(!serialized.contains("binding-hr-finance"));
+}
+
+#[tokio::test]
 async fn memory_search_rejects_expired_capability_and_emits_blocked_audit() {
     let state = test_state().await;
     let app = app_router(state.clone());

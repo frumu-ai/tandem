@@ -308,6 +308,7 @@ pub(super) async fn memory_audit(
 pub(super) async fn memory_list(
     State(_state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<MemoryListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let q = query.q.unwrap_or_default();
@@ -322,6 +323,10 @@ pub(super) async fn memory_list(
         (None, None) => "default".to_string(),
     };
     let page = if let Some(db) = open_global_memory_db().await {
+        let source_access_filter = verified_tenant_context
+            .as_ref()
+            .and_then(|context| context.strict_projection.clone())
+            .map(|strict_context| MemoryAccessFilter::strict(strict_context, crate::now_ms()));
         db.list_global_memory_for_tenant(
             &tenant_context.org_id,
             &tenant_context.workspace_id,
@@ -336,6 +341,9 @@ pub(super) async fn memory_list(
         .await
         .unwrap_or_default()
         .into_iter()
+        .filter(|row| {
+            global_memory_record_visible_to_access_filter(row, source_access_filter.as_ref())
+        })
         .map(|row| {
             json!({
                 "id": row.id,

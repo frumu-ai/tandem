@@ -97,6 +97,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coverage proving source-bound current-session and history chunks are filtered
   before prompt assembly unless a strict tenant projection grants read access to
   the bound resource/data class.
+- **Enterprise memory citation visibility guard**: Applied source-bound access
+  filtering to governed memory list responses and added coverage proving list
+  views cannot expose source-object IDs, native object paths, or binding IDs
+  without a strict read grant.
 - **Hosted panel auth availability split**: Control-panel capabilities now
   distinguish managed hosted deployments from deployments with usable hosted
   auth exchange credentials, allowing disconnected local test deployments to

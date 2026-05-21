@@ -98,6 +98,10 @@ production connector ingestion flows remain follow-up implementation phases.
   source-bound current-session and history chunks are excluded from assembled
   prompt context unless a strict tenant projection grants read access to the
   bound `ResourceRef` and `DataClass`.
+- Governed memory list responses now apply the source-bound visibility guard
+  before returning metadata, preventing list/citation browser surfaces from
+  exposing source-object IDs, native object paths, or binding IDs without a
+  strict read grant.
 - Managed hosted detection now reports hosted auth availability separately, so
   disconnected local test deployments can still use the engine-token sign-in
   path while connected hosted servers keep Tandem hosted login enforcement.
