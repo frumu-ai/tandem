@@ -111,6 +111,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Session KB source-bound citation guard**: Strict KB grounding now ignores
   source-bound internal identifiers when extracting source labels and document
   refs, preventing KB citation renderers from exposing source-object metadata.
+- **Enterprise binding disable purge**: Disabling or quarantining a source
+  binding now purges indexed content for its lifecycle records and tombstones
+  affected source objects so stale grants cannot retrieve old chunks.
 - **Hosted panel auth availability split**: Control-panel capabilities now
   distinguish managed hosted deployments from deployments with usable hosted
   auth exchange credentials, allowing disconnected local test deployments to

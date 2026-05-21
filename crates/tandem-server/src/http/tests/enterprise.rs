@@ -1208,3 +1208,155 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
     let payload: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(payload.get("count").and_then(Value::as_u64), Some(0));
 }
+
+#[tokio::test]
+async fn enterprise_source_binding_disable_purges_indexed_source_objects() {
+    let state = test_state().await;
+    let mut rx = state.event_bus.subscribe();
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/source-bindings")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(source_binding_body(
+            "finance-drive",
+            "acme",
+            "finance",
+        )))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = next_event_of_type(
+        &mut rx,
+        "enterprise.source_binding.cache_invalidation_required",
+    )
+    .await;
+
+    let tenant_scope = MemoryTenantScope {
+        org_id: "acme".to_string(),
+        workspace_id: "finance".to_string(),
+        deployment_id: None,
+    };
+    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
+    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+        .await
+        .expect("memory db");
+    db.upsert_source_object_active_for_tenant(&SourceObjectLifecycleRecord {
+        source_object_id: "source-object-binding-disable".to_string(),
+        tenant_scope: tenant_scope.clone(),
+        source_binding_id: "finance-drive".to_string(),
+        connector_id: "manual-upload".to_string(),
+        state: SourceObjectLifecycleState::Active,
+        tier: MemoryTier::Global,
+        session_id: None,
+        project_id: None,
+        import_namespace: "binding-disable".to_string(),
+        indexed_path: "binding-disable/note.md".to_string(),
+        native_object_id: "binding-disable/note.md".to_string(),
+        resource_ref: json!({
+            "organization_id": "acme",
+            "workspace_id": "finance",
+            "resource_kind": "document_collection",
+            "resource_id": "finance-drive"
+        }),
+        data_class: "financial_record".to_string(),
+        content_hash: Some("content-binding-disable".to_string()),
+        source_hash: Some("source-binding-disable".to_string()),
+        first_seen_at_ms: 1_000,
+        last_seen_at_ms: 1_000,
+        tombstoned_at_ms: None,
+        metadata: None,
+    })
+    .await
+    .expect("seed lifecycle");
+    db.store_chunk(
+        &MemoryChunk {
+            id: "chunk-binding-disable".to_string(),
+            content: "binding disable stale content must be purged".to_string(),
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            source: "file".to_string(),
+            source_path: Some("binding-disable/note.md".to_string()),
+            source_mtime: None,
+            source_size: Some(45),
+            source_hash: Some("source-binding-disable".to_string()),
+            tenant_scope: tenant_scope.clone(),
+            created_at: chrono::Utc::now(),
+            token_count: 7,
+            metadata: Some(json!({
+                "enterprise_source_binding": {
+                    "binding_id": "finance-drive",
+                    "connector_id": "manual-upload",
+                    "resource_ref": {
+                        "organization_id": "acme",
+                        "workspace_id": "finance",
+                        "resource_kind": "document_collection",
+                        "resource_id": "finance-drive"
+                    },
+                    "data_class": "financial_record",
+                    "source_object_id": "source-object-binding-disable",
+                    "native_object_id": "binding-disable/note.md",
+                    "content_hash": "content-binding-disable"
+                }
+            })),
+        },
+        &vec![0.1; DEFAULT_EMBEDDING_DIMENSION],
+    )
+    .await
+    .expect("seed indexed chunk before binding disable");
+    assert!(db
+        .get_global_chunks_for_tenant(&tenant_scope, 10)
+        .await
+        .expect("global chunks before binding disable")
+        .iter()
+        .any(|chunk| chunk.id == "chunk-binding-disable"));
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/enterprise/source-bindings/finance-drive")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::from(json!({"state": "disabled"}).to_string()))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let update_event = next_event_of_type(
+        &mut rx,
+        "enterprise.source_binding.cache_invalidation_required",
+    )
+    .await;
+    assert_eq!(
+        update_event
+            .properties
+            .get("reason")
+            .and_then(Value::as_str),
+        Some("source_binding_updated")
+    );
+
+    assert!(
+        !db.get_global_chunks_for_tenant(&tenant_scope, 10)
+            .await
+            .expect("global chunks after binding disable")
+            .iter()
+            .any(|chunk| chunk.id == "chunk-binding-disable"
+                || chunk.content.contains("binding disable stale content")),
+        "binding disable must purge indexed chunks so stale source grants cannot retrieve them"
+    );
+    let source_object = db
+        .get_source_object_lifecycle_by_id_for_tenant(
+            &tenant_scope,
+            "finance-drive",
+            "source-object-binding-disable",
+        )
+        .await
+        .expect("source object lookup")
+        .expect("source object after binding disable");
+    assert_eq!(source_object.state, SourceObjectLifecycleState::Tombstoned);
+    assert!(source_object.tombstoned_at_ms.is_some());
+}

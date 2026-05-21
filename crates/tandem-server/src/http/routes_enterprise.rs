@@ -896,6 +896,17 @@ async fn update_source_binding(
         &updated_binding.binding_id,
         "source_binding_updated",
     );
+    if source_binding_update_requires_index_purge(&updated_binding) {
+        let db = open_enterprise_memory_db().await?;
+        let tenant_scope = memory_tenant_scope(&tenant_context);
+        let _ = purge_source_binding_indexed_content(
+            &db,
+            &tenant_scope,
+            &updated_binding.binding_id,
+            source_object_state_for_binding_update(&updated_binding),
+        )
+        .await?;
+    }
 
     Ok(Json(EnterpriseAdminResponseBase {
         message: "enterprise source binding updated",
@@ -1151,6 +1162,49 @@ async fn purge_source_object_indexed_content(
     .await
     .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_PURGE_FAILED"))?;
     Ok(result)
+}
+
+async fn purge_source_binding_indexed_content(
+    db: &MemoryDatabase,
+    tenant_scope: &MemoryTenantScope,
+    binding_id: &str,
+    lifecycle_state: SourceObjectLifecycleState,
+) -> Result<(i64, i64), (StatusCode, Json<Value>)> {
+    let source_objects = db
+        .list_source_object_lifecycle_for_binding_for_tenant(tenant_scope, binding_id)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_BINDING_PURGE_FAILED"))?;
+    let mut chunks_deleted = 0;
+    let mut bytes_estimated = 0;
+    for record in source_objects {
+        let (deleted, bytes) = purge_source_object_indexed_content(db, &record).await?;
+        chunks_deleted += deleted;
+        bytes_estimated += bytes;
+        db.mark_source_object_lifecycle_state_for_tenant(
+            tenant_scope,
+            binding_id,
+            &record.source_object_id,
+            lifecycle_state,
+            now_ms(),
+        )
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_BINDING_PURGE_FAILED"))?;
+    }
+    Ok((chunks_deleted, bytes_estimated))
+}
+
+fn source_binding_update_requires_index_purge(binding: &SourceBinding) -> bool {
+    !binding.state.allows_ingestion()
+        || !binding.ingestion_policy.allow_indexing
+        || !binding.ingestion_policy.allow_prompt_context
+}
+
+fn source_object_state_for_binding_update(binding: &SourceBinding) -> SourceObjectLifecycleState {
+    if matches!(binding.state, SourceBindingState::Quarantined) {
+        SourceObjectLifecycleState::Quarantined
+    } else {
+        SourceObjectLifecycleState::Tombstoned
+    }
 }
 
 async fn open_enterprise_memory_db() -> Result<MemoryDatabase, (StatusCode, Json<Value>)> {

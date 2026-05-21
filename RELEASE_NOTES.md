@@ -111,6 +111,9 @@ production connector ingestion flows remain follow-up implementation phases.
 - Strict session KB grounding now ignores source-bound internal identifiers
   when extracting source labels and document refs, preventing KB citation
   renderers from exposing source-object metadata.
+- Disabling or quarantining a source binding now purges indexed content for its
+  lifecycle records and tombstones affected source objects, closing the
+  binding-level stale prompt-context path after permission changes.
 - Managed hosted detection now reports hosted auth availability separately, so
   disconnected local test deployments can still use the engine-token sign-in
   path while connected hosted servers keep Tandem hosted login enforcement.
