@@ -364,12 +364,15 @@ pub struct MemoryImportSourceBinding {
     pub connector_id: String,
     pub resource_ref: serde_json::Value,
     pub data_class: String,
+    #[serde(default)]
+    pub require_review: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceObjectLifecycleState {
     Active,
+    Quarantined,
     Tombstoned,
     Deleted,
     Rescoped,
@@ -379,6 +382,7 @@ impl SourceObjectLifecycleState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Quarantined => "quarantined",
             Self::Tombstoned => "tombstoned",
             Self::Deleted => "deleted",
             Self::Rescoped => "rescoped",
@@ -387,6 +391,7 @@ impl SourceObjectLifecycleState {
 
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
+            "quarantined" => Self::Quarantined,
             "tombstoned" => Self::Tombstoned,
             "deleted" => Self::Deleted,
             "rescoped" => Self::Rescoped,

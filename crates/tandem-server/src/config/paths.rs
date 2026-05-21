@@ -85,6 +85,10 @@ pub(crate) fn resolve_enterprise_ingestion_jobs_path() -> PathBuf {
     resolve_canonical_data_file_path("enterprise/ingestion_jobs.json")
 }
 
+pub(crate) fn resolve_enterprise_ingestion_quarantines_path() -> PathBuf {
+    resolve_canonical_data_file_path("enterprise/ingestion_quarantines.json")
+}
+
 pub(crate) fn resolve_memory_audit_path() -> PathBuf {
     if let Ok(dir) = std::env::var("TANDEM_STATE_DIR") {
         if let Some(base) = validate_env_path(&dir, "TANDEM_STATE_DIR") {

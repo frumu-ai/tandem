@@ -97,6 +97,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completed, and failed states with connector/binding scope and source-object
   references. Enterprise admins can list ingestion jobs from the runtime and
   inspect them in the hidden control-panel admin page.
+- **Enterprise ingestion quarantine review**: Review-required source bindings
+  now quarantine source-bound manual import output by purging indexed chunks,
+  marking source objects quarantined, recording `IngestionQuarantine` records,
+  and exposing admin review dispositions for release, delete, or reindex in the
+  runtime and hidden control-panel admin page.
 
 ### Documentation
 

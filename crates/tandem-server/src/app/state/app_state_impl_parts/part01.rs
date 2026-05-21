@@ -244,6 +244,11 @@ impl AppState {
             enterprise_connectors_path: config::paths::resolve_enterprise_connectors_path(),
             enterprise_ingestion_jobs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             enterprise_ingestion_jobs_path: config::paths::resolve_enterprise_ingestion_jobs_path(),
+            enterprise_ingestion_quarantines: Arc::new(RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            enterprise_ingestion_quarantines_path:
+                config::paths::resolve_enterprise_ingestion_quarantines_path(),
             missions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources_path: config::paths::resolve_shared_resources_path(),
@@ -486,6 +491,7 @@ impl AppState {
         let _ = self.load_enterprise_source_bindings().await;
         let _ = self.load_enterprise_connectors().await;
         let _ = self.load_enterprise_ingestion_jobs().await;
+        let _ = self.load_enterprise_ingestion_quarantines().await;
         self.load_routines().await?;
         let _ = self.load_routine_history().await;
         let _ = self.load_routine_runs().await;
@@ -581,6 +587,20 @@ impl AppState {
         let registry: std::collections::HashMap<String, tandem_enterprise_contract::IngestionJob> =
             serde_json::from_slice(&bytes)?;
         *self.enterprise_ingestion_jobs.write().await = registry;
+        Ok(())
+    }
+
+    pub async fn load_enterprise_ingestion_quarantines(&self) -> anyhow::Result<()> {
+        if !self.enterprise_ingestion_quarantines_path.exists() {
+            return Ok(());
+        }
+        check_file_permissions(&self.enterprise_ingestion_quarantines_path);
+        let bytes = fs::read(&self.enterprise_ingestion_quarantines_path).await?;
+        let registry: std::collections::HashMap<
+            String,
+            tandem_enterprise_contract::IngestionQuarantine,
+        > = serde_json::from_slice(&bytes)?;
+        *self.enterprise_ingestion_quarantines.write().await = registry;
         Ok(())
     }
 

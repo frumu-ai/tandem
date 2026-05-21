@@ -739,6 +739,7 @@ mod tests {
                     "path_prefix": null
                 }),
                 data_class: "financial_record".to_string(),
+                require_review: false,
             }),
             sync_deletes: false,
         };

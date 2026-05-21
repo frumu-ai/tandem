@@ -8,11 +8,12 @@ use tandem_memory::import_files;
 use tandem_memory::types::{
     MemoryAccessFilter, MemoryImportFormat, MemoryImportProgress,
     MemoryImportRequest as TandemMemoryImportRequest, MemoryImportSourceBinding, MemoryImportStats,
-    MemorySourceAccessTarget, MemoryTenantScope, MemoryTier,
+    MemorySourceAccessTarget, MemoryTenantScope, MemoryTier, SourceObjectLifecycleRecord,
+    SourceObjectLifecycleState,
 };
 use tandem_types::{
-    ConnectorLifecycleState, IngestionJob, IngestionJobState, RequestPrincipal,
-    VerifiedTenantContext,
+    ConnectorLifecycleState, IngestionJob, IngestionJobState, IngestionQuarantine,
+    RequestPrincipal, VerifiedTenantContext,
 };
 
 include!("skills_memory_parts/part01.rs");

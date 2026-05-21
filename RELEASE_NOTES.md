@@ -95,6 +95,10 @@ production connector ingestion flows remain follow-up implementation phases.
   job audit records with connector/binding scope, job state, timing, and
   touched source-object IDs. The hidden Enterprise admin page can inspect these
   records for a selected binding.
+- Review-required source bindings now create persisted quarantine records and
+  remove newly indexed chunks before they can be retrieved. Enterprise admins
+  can review quarantines from the runtime or hidden admin page and mark a
+  release, delete, or reindex disposition.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

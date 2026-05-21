@@ -1729,6 +1729,7 @@ impl SourceObject {
 pub enum SourceObjectLifecycleState {
     #[default]
     Active,
+    Quarantined,
     Tombstoned,
     Deleted,
     Rescoped,

@@ -17,10 +17,12 @@ import {
   useDeleteEnterpriseSourceObject,
   useEnterpriseConnectors,
   useEnterpriseIngestionJobs,
+  useEnterpriseIngestionQuarantines,
   useEnterpriseOrgUnits,
   useEnterpriseSourceBindings,
   useEnterpriseSourceObjects,
   useReindexEnterpriseSourceObject,
+  useReviewEnterpriseIngestionQuarantine,
   useRescopeEnterpriseSourceObject,
   useRotateEnterpriseConnectorCredentialRef,
   useUpdateEnterpriseConnector,
@@ -32,6 +34,7 @@ import {
   type RotateEnterpriseConnectorCredentialRefInput,
   type EnterpriseConnectorInstance,
   type EnterpriseIngestionJob,
+  type EnterpriseIngestionQuarantine,
   type EnterpriseNoopBase,
   type EnterpriseOrganizationUnit,
   type EnterpriseSourceBinding,
@@ -1246,6 +1249,85 @@ function IngestionJobsPanel({
   );
 }
 
+function IngestionQuarantinesPanel({
+  binding,
+  rows,
+  loading,
+  error,
+  onReview,
+  busyQuarantineId,
+}: {
+  binding?: EnterpriseSourceBinding | null;
+  rows: EnterpriseIngestionQuarantine[];
+  loading: boolean;
+  error: unknown;
+  onReview: (quarantineId: string, disposition: "release" | "delete" | "reindex") => void;
+  busyQuarantineId?: string | null;
+}) {
+  return (
+    <PanelCard
+      title="Ingestion quarantine"
+      subtitle={binding ? binding.source_root_label || binding.binding_id : "All bindings"}
+      actions={<Badge tone={error ? "err" : rows.length ? "warn" : "ghost"}>{rows.length}</Badge>}
+      fullHeight
+    >
+      {loading ? (
+        <LoadingState title="Loading" text="Reading quarantine records" />
+      ) : error ? (
+        <EmptyState title="Unavailable" text={errorText(error, "Quarantine could not load.")} />
+      ) : rows.length ? (
+        <div className="grid gap-2">
+          {rows.map((row) => {
+            const reviewed = Boolean(row.disposition);
+            const busy = busyQuarantineId === row.quarantine_id;
+            return (
+              <div
+                key={row.quarantine_id}
+                className="rounded-lg border border-white/8 bg-black/20 p-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="break-all font-medium text-tcp-text-primary">
+                      {row.quarantine_id}
+                    </div>
+                    <div className="tcp-subtle text-xs">
+                      {row.connector_id} / {row.binding_id}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge tone={reviewed ? "ok" : "warn"}>{row.disposition || "pending"}</Badge>
+                    <Badge tone="info">{row.source_object_ids?.length || 0} objects</Badge>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 text-xs text-tcp-text-secondary md:grid-cols-2">
+                  <div>Created: {formatLifecycleTime(row.created_at_ms)}</div>
+                  <div>Reviewed: {formatLifecycleTime(row.reviewed_at_ms)}</div>
+                  <div className="break-all md:col-span-2">Reason: {row.reason}</div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(["release", "delete", "reindex"] as const).map((disposition) => (
+                    <button
+                      key={disposition}
+                      className="tcp-btn"
+                      type="button"
+                      disabled={busy || row.disposition === disposition}
+                      onClick={() => onReview(row.quarantine_id, disposition)}
+                    >
+                      {disposition}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState title="No quarantine" text="Review-required imports will appear here." />
+      )}
+    </PanelCard>
+  );
+}
+
 export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const orgUnits = useEnterpriseOrgUnits();
   const connectors = useEnterpriseConnectors();
@@ -1260,7 +1342,9 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const updateSourceBinding = useUpdateEnterpriseSourceBinding();
   const sourceObjects = useEnterpriseSourceObjects(selectedBindingId);
   const ingestionJobs = useEnterpriseIngestionJobs(selectedBindingId);
+  const ingestionQuarantines = useEnterpriseIngestionQuarantines(selectedBindingId);
   const reindexSourceObject = useReindexEnterpriseSourceObject();
+  const reviewIngestionQuarantine = useReviewEnterpriseIngestionQuarantine();
   const deleteSourceObject = useDeleteEnterpriseSourceObject();
   const rescopeSourceObject = useRescopeEnterpriseSourceObject();
   const orgRows = useMemo(() => orgUnits.data?.org_units || [], [orgUnits.data]);
@@ -1273,6 +1357,10 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const ingestionJobRows = useMemo(
     () => ingestionJobs.data?.ingestion_jobs || [],
     [ingestionJobs.data]
+  );
+  const quarantineRows = useMemo(
+    () => ingestionQuarantines.data?.quarantines || [],
+    [ingestionQuarantines.data]
   );
   const selectedBinding =
     bindingRows.find((binding) => binding.binding_id === selectedBindingId) || null;
@@ -1298,6 +1386,7 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
       sourceObjects.refetch();
     }
     ingestionJobs.refetch();
+    ingestionQuarantines.refetch();
   };
 
   return (
@@ -1483,6 +1572,26 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
             error={ingestionJobs.error}
           />
         </div>
+
+        <IngestionQuarantinesPanel
+          binding={selectedBinding}
+          rows={quarantineRows}
+          loading={ingestionQuarantines.isLoading}
+          error={ingestionQuarantines.error}
+          busyQuarantineId={
+            reviewIngestionQuarantine.isPending
+              ? reviewIngestionQuarantine.variables?.quarantine_id || null
+              : null
+          }
+          onReview={(quarantineId, disposition) => {
+            reviewIngestionQuarantine
+              .mutateAsync({ quarantine_id: quarantineId, disposition })
+              .then(() => toast("ok", `Quarantine marked ${disposition}.`))
+              .catch((error) =>
+                toast("err", errorText(error, "Quarantine could not be reviewed."))
+              );
+          }}
+        />
       </StaggerGroup>
     </AnimatedPage>
   );

@@ -144,6 +144,19 @@ export type EnterpriseIngestionJob = {
   quarantine_id?: string | null;
 };
 
+export type EnterpriseIngestionQuarantine = {
+  quarantine_id: string;
+  tenant_context?: EnterpriseTenantContext;
+  connector_id: string;
+  binding_id: string;
+  source_object_ids?: string[];
+  reason: string;
+  created_at_ms: number;
+  reviewed_by?: unknown;
+  reviewed_at_ms?: number | null;
+  disposition?: string | null;
+};
+
 export type EnterpriseSourceObjectsResponse = EnterpriseNoopBase & {
   source_objects?: EnterpriseSourceObjectLifecycle[];
   count?: number;
@@ -151,6 +164,11 @@ export type EnterpriseSourceObjectsResponse = EnterpriseNoopBase & {
 
 export type EnterpriseIngestionJobsResponse = EnterpriseNoopBase & {
   ingestion_jobs?: EnterpriseIngestionJob[];
+  count?: number;
+};
+
+export type EnterpriseIngestionQuarantinesResponse = EnterpriseNoopBase & {
+  quarantines?: EnterpriseIngestionQuarantine[];
   count?: number;
 };
 
@@ -231,6 +249,11 @@ export type RescopeEnterpriseSourceObjectInput = EnterpriseSourceObjectActionInp
   data_class: string;
 };
 
+export type ReviewEnterpriseIngestionQuarantineInput = {
+  quarantine_id: string;
+  disposition: "release" | "delete" | "reindex";
+};
+
 const retryEnterpriseQuery = (failureCount: number, error: unknown) =>
   isTransientEngineError(error) ? failureCount < 6 : failureCount < 2;
 
@@ -299,6 +322,20 @@ export function useEnterpriseIngestionJobs(bindingId?: string | null, enabled = 
       api(`/api/engine/enterprise/ingestion-jobs${params}`, {
         method: "GET",
       }) as Promise<EnterpriseIngestionJobsResponse>,
+    enabled,
+    staleTime: 15000,
+    retry: retryEnterpriseQuery,
+  });
+}
+
+export function useEnterpriseIngestionQuarantines(bindingId?: string | null, enabled = true) {
+  const params = bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : "";
+  return useQuery({
+    queryKey: ["enterprise", "ingestion-quarantines", bindingId || ""],
+    queryFn: () =>
+      api(`/api/engine/enterprise/ingestion-quarantines${params}`, {
+        method: "GET",
+      }) as Promise<EnterpriseIngestionQuarantinesResponse>,
     enabled,
     staleTime: 15000,
     retry: retryEnterpriseQuery,
@@ -386,6 +423,25 @@ export function useRotateEnterpriseConnectorCredentialRef() {
       ) as Promise<EnterpriseConnectorsResponse>,
     onSuccess: () => {
       invalidateConnectorQueries(queryClient);
+    },
+  });
+}
+
+export function useReviewEnterpriseIngestionQuarantine() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ quarantine_id, disposition }: ReviewEnterpriseIngestionQuarantineInput) =>
+      api(
+        `/api/engine/enterprise/ingestion-quarantines/${encodeURIComponent(quarantine_id)}/review`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ disposition }),
+        }
+      ) as Promise<EnterpriseIngestionQuarantinesResponse>,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "ingestion-quarantines"] });
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "ingestion-jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "source-objects"] });
     },
   });
 }

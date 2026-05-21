@@ -1058,7 +1058,7 @@ pub(super) async fn memory_import(
     };
 
     if let (Some(job_id), Some(binding)) = (&ingestion_job_id, source_binding_for_job.as_ref()) {
-        let source_object_ids = source_object_ids_seen_since(
+        let source_objects = source_objects_seen_since(
             &manager,
             &request.tenant_scope,
             &binding.binding_id,
@@ -1066,6 +1066,60 @@ pub(super) async fn memory_import(
         )
         .await
         .unwrap_or_default();
+        let source_object_ids = source_objects
+            .iter()
+            .map(|record| record.source_object_id.clone())
+            .collect::<Vec<_>>();
+        let quarantine_id = if binding.require_review {
+            let quarantine_id =
+                format!("quarantine-{}-{}", job_started_at_ms, uuid::Uuid::new_v4());
+            if let Err(err) = quarantine_source_bound_import(
+                &manager,
+                &request.tenant_scope,
+                &binding.binding_id,
+                &source_objects,
+                job_started_at_ms,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    "failed to quarantine enterprise source-bound import output"
+                );
+            }
+            if let Err(err) = record_enterprise_ingestion_quarantine(
+                &state,
+                IngestionQuarantine {
+                    quarantine_id: quarantine_id.clone(),
+                    tenant_context: tenant_context.clone(),
+                    connector_id: binding.connector_id.clone(),
+                    binding_id: binding.binding_id.clone(),
+                    source_object_ids: source_object_ids.clone(),
+                    reason: "source binding requires ingestion review".to_string(),
+                    created_at_ms: crate::util::time::now_ms(),
+                    reviewed_by: None,
+                    reviewed_at_ms: None,
+                    disposition: None,
+                },
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    "failed to record enterprise ingestion quarantine"
+                );
+            }
+            Some(quarantine_id)
+        } else {
+            None
+        };
+        let job_state = if binding.require_review {
+            IngestionJobState::Quarantined
+        } else if stats.errors > 0 {
+            IngestionJobState::Failed
+        } else {
+            IngestionJobState::Completed
+        };
         if let Err(err) = record_enterprise_ingestion_job(
             &state,
             IngestionJob {
@@ -1073,15 +1127,11 @@ pub(super) async fn memory_import(
                 tenant_context: tenant_context.clone(),
                 connector_id: binding.connector_id.clone(),
                 binding_id: binding.binding_id.clone(),
-                state: if stats.errors > 0 {
-                    IngestionJobState::Failed
-                } else {
-                    IngestionJobState::Completed
-                },
+                state: job_state,
                 source_object_ids,
                 started_at_ms: Some(job_started_at_ms),
                 finished_at_ms: Some(crate::util::time::now_ms()),
-                quarantine_id: None,
+                quarantine_id,
             },
         )
         .await
@@ -1195,6 +1245,7 @@ async fn resolve_memory_import_source_binding(
             .ok()
             .and_then(|value| value.as_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| format!("{:?}", binding.data_class)),
+        require_review: binding.ingestion_policy.require_review,
     }))
 }
 
@@ -1206,6 +1257,20 @@ async fn record_enterprise_ingestion_job(
     let key = enterprise_ingestion_job_key(&job);
     registry.insert(key, job);
     persist_enterprise_ingestion_jobs(&state.enterprise_ingestion_jobs_path, &registry).await
+}
+
+async fn record_enterprise_ingestion_quarantine(
+    state: &AppState,
+    quarantine: IngestionQuarantine,
+) -> Result<(), std::io::Error> {
+    let mut registry = state.enterprise_ingestion_quarantines.write().await;
+    let key = enterprise_ingestion_quarantine_key(&quarantine);
+    registry.insert(key, quarantine);
+    persist_enterprise_ingestion_quarantines(
+        &state.enterprise_ingestion_quarantines_path,
+        &registry,
+    )
+    .await
 }
 
 fn enterprise_ingestion_job_key(job: &IngestionJob) -> String {
@@ -1220,6 +1285,21 @@ fn enterprise_ingestion_job_key(job: &IngestionJob) -> String {
     )
 }
 
+fn enterprise_ingestion_quarantine_key(quarantine: &IngestionQuarantine) -> String {
+    let deployment = quarantine
+        .tenant_context
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local");
+    format!(
+        "{}::{}::{}::{}",
+        quarantine.tenant_context.org_id,
+        quarantine.tenant_context.workspace_id,
+        deployment,
+        quarantine.quarantine_id
+    )
+}
+
 async fn persist_enterprise_ingestion_jobs(
     path: &std::path::Path,
     registry: &std::collections::HashMap<String, IngestionJob>,
@@ -1231,23 +1311,75 @@ async fn persist_enterprise_ingestion_jobs(
     tokio::fs::write(path, payload).await
 }
 
-async fn source_object_ids_seen_since(
+async fn persist_enterprise_ingestion_quarantines(
+    path: &std::path::Path,
+    registry: &std::collections::HashMap<String, IngestionQuarantine>,
+) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let payload = serde_json::to_vec_pretty(registry).map_err(std::io::Error::other)?;
+    tokio::fs::write(path, payload).await
+}
+
+async fn source_objects_seen_since(
     manager: &tandem_memory::MemoryManager,
     tenant_scope: &MemoryTenantScope,
     binding_id: &str,
     started_at_ms: u64,
-) -> Result<Vec<String>, tandem_memory::types::MemoryError> {
-    let mut source_object_ids: Vec<_> = manager
+) -> Result<Vec<SourceObjectLifecycleRecord>, tandem_memory::types::MemoryError> {
+    let mut records: Vec<_> = manager
         .db()
         .list_source_object_lifecycle_for_binding_for_tenant(tenant_scope, binding_id)
         .await?
         .into_iter()
         .filter(|record| record.last_seen_at_ms >= started_at_ms)
-        .map(|record| record.source_object_id)
         .collect();
-    source_object_ids.sort();
-    source_object_ids.dedup();
-    Ok(source_object_ids)
+    records.sort_by(|left, right| left.source_object_id.cmp(&right.source_object_id));
+    records.dedup_by(|left, right| left.source_object_id == right.source_object_id);
+    Ok(records)
+}
+
+async fn quarantine_source_bound_import(
+    manager: &tandem_memory::MemoryManager,
+    tenant_scope: &MemoryTenantScope,
+    binding_id: &str,
+    source_objects: &[SourceObjectLifecycleRecord],
+    changed_at_ms: u64,
+) -> Result<(), tandem_memory::types::MemoryError> {
+    for record in source_objects {
+        manager
+            .db()
+            .delete_file_chunks_by_path_for_tenant(
+                record.tier,
+                record.session_id.as_deref(),
+                record.project_id.as_deref(),
+                &record.indexed_path,
+                tenant_scope,
+            )
+            .await?;
+        manager
+            .db()
+            .delete_import_index_entry_for_tenant(
+                record.tier,
+                record.session_id.as_deref(),
+                record.project_id.as_deref(),
+                &record.indexed_path,
+                tenant_scope,
+            )
+            .await?;
+        manager
+            .db()
+            .mark_source_object_lifecycle_state_for_tenant(
+                tenant_scope,
+                binding_id,
+                &record.source_object_id,
+                SourceObjectLifecycleState::Quarantined,
+                changed_at_ms,
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 fn connector_lifecycle_state_label(state: ConnectorLifecycleState) -> &'static str {

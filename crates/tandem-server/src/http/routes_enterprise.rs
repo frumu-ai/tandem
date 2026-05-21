@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_enterprise_contract::{
     ConnectorCredentialClass, ConnectorCredentialRef, ConnectorInstance, ConnectorLifecycleState,
-    DataClass, IngestionJob, IngestionPolicy, OrganizationUnit, OrganizationUnitKind,
-    OrganizationUnitState, PrincipalRef, RequestPrincipal, ResourceRef, SecretRef, SourceBinding,
+    DataClass, IngestionJob, IngestionJobState, IngestionPolicy, IngestionQuarantine,
+    OrganizationUnit, OrganizationUnitKind, OrganizationUnitState, PrincipalRef,
+    QuarantineDisposition, RequestPrincipal, ResourceRef, SecretRef, SourceBinding,
     SourceBindingState, TenantContext, VerifiedTenantContext,
 };
 use tandem_memory::db::MemoryDatabase;
@@ -81,12 +82,25 @@ struct EnterpriseIngestionJobsResponse {
     count: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct EnterpriseIngestionQuarantinesResponse {
+    #[serde(flatten)]
+    base: EnterpriseAdminResponseBase,
+    quarantines: Vec<IngestionQuarantine>,
+    count: usize,
+}
+
 #[derive(Debug, Deserialize)]
 struct ListIngestionJobsQuery {
     #[serde(default)]
     binding_id: Option<String>,
     #[serde(default)]
     connector_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewIngestionQuarantineRequest {
+    disposition: QuarantineDisposition,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,6 +225,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             patch(rotate_connector_credential_ref),
         )
         .route("/enterprise/ingestion-jobs", get(list_ingestion_jobs))
+        .route(
+            "/enterprise/ingestion-quarantines",
+            get(list_ingestion_quarantines),
+        )
+        .route(
+            "/enterprise/ingestion-quarantines/{quarantine_id}/review",
+            patch(review_ingestion_quarantine),
+        )
         .route(
             "/enterprise/source-bindings/{binding_id}",
             patch(update_source_binding),
@@ -473,6 +495,103 @@ async fn list_ingestion_jobs(
     Ok(Json(EnterpriseIngestionJobsResponse {
         count: ingestion_jobs.len(),
         ingestion_jobs,
+        base: storage_base(tenant_context, request_principal),
+    }))
+}
+
+async fn list_ingestion_quarantines(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Query(query): Query<ListIngestionJobsQuery>,
+) -> EnterpriseResult<EnterpriseIngestionQuarantinesResponse> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let binding_id = query
+        .binding_id
+        .as_deref()
+        .and_then(|value| validate_enterprise_id("binding_id", value).ok());
+    let connector_id = query
+        .connector_id
+        .as_deref()
+        .and_then(|value| validate_enterprise_id("connector_id", value).ok());
+    let mut quarantines: Vec<_> = state
+        .enterprise_ingestion_quarantines
+        .read()
+        .await
+        .values()
+        .filter(|quarantine| ingestion_quarantine_tenant_matches(quarantine, &tenant_context))
+        .filter(|quarantine| {
+            binding_id
+                .as_ref()
+                .is_none_or(|binding_id| quarantine.binding_id == *binding_id)
+        })
+        .filter(|quarantine| {
+            connector_id
+                .as_ref()
+                .is_none_or(|connector_id| quarantine.connector_id == *connector_id)
+        })
+        .cloned()
+        .collect();
+    quarantines.sort_by(|left, right| {
+        right
+            .created_at_ms
+            .cmp(&left.created_at_ms)
+            .then_with(|| right.quarantine_id.cmp(&left.quarantine_id))
+    });
+
+    Ok(Json(EnterpriseIngestionQuarantinesResponse {
+        count: quarantines.len(),
+        quarantines,
+        base: storage_base(tenant_context, request_principal),
+    }))
+}
+
+async fn review_ingestion_quarantine(
+    State(state): State<AppState>,
+    Path(quarantine_id): Path<String>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Json(input): Json<ReviewIngestionQuarantineRequest>,
+) -> EnterpriseResult<EnterpriseIngestionQuarantinesResponse> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let quarantine_id = validate_enterprise_id("quarantine_id", &quarantine_id)?;
+    let actor_id = request_principal
+        .actor_id
+        .clone()
+        .unwrap_or_else(|| request_principal.source.clone());
+    let reviewed = {
+        let mut registry = state.enterprise_ingestion_quarantines.write().await;
+        let Some(quarantine) = registry.values_mut().find(|quarantine| {
+            quarantine.quarantine_id == quarantine_id
+                && ingestion_quarantine_tenant_matches(quarantine, &tenant_context)
+        }) else {
+            return Err(not_found("ENTERPRISE_INGESTION_QUARANTINE_NOT_FOUND"));
+        };
+        quarantine.disposition = Some(input.disposition);
+        quarantine.reviewed_by = Some(PrincipalRef::human_user(actor_id));
+        quarantine.reviewed_at_ms = Some(now_ms());
+        let reviewed = quarantine.clone();
+        persist_enterprise_ingestion_quarantines(
+            &state.enterprise_ingestion_quarantines_path,
+            &registry,
+        )
+        .await?;
+        reviewed
+    };
+
+    update_ingestion_job_after_quarantine_review(&state, &tenant_context, &reviewed).await?;
+    emit_source_binding_cache_invalidation_required(
+        &state,
+        &tenant_context,
+        &reviewed.binding_id,
+        "ingestion_quarantine_reviewed",
+    );
+
+    Ok(Json(EnterpriseIngestionQuarantinesResponse {
+        count: 1,
+        quarantines: vec![reviewed],
         base: storage_base(tenant_context, request_principal),
     }))
 }
@@ -1282,6 +1401,37 @@ fn ingestion_job_tenant_matches(job: &IngestionJob, tenant_context: &TenantConte
         && job.tenant_context.deployment_id == tenant_context.deployment_id
 }
 
+fn ingestion_quarantine_tenant_matches(
+    quarantine: &IngestionQuarantine,
+    tenant_context: &TenantContext,
+) -> bool {
+    quarantine.tenant_context.org_id == tenant_context.org_id
+        && quarantine.tenant_context.workspace_id == tenant_context.workspace_id
+        && quarantine.tenant_context.deployment_id == tenant_context.deployment_id
+}
+
+async fn update_ingestion_job_after_quarantine_review(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    quarantine: &IngestionQuarantine,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let mut registry = state.enterprise_ingestion_jobs.write().await;
+    if let Some(job) = registry.values_mut().find(|job| {
+        ingestion_job_tenant_matches(job, tenant_context)
+            && job.quarantine_id.as_deref() == Some(quarantine.quarantine_id.as_str())
+    }) {
+        job.state = match quarantine.disposition {
+            Some(QuarantineDisposition::Release) => IngestionJobState::Completed,
+            Some(QuarantineDisposition::Delete) => IngestionJobState::Skipped,
+            Some(QuarantineDisposition::Reindex) => IngestionJobState::Queued,
+            None => job.state,
+        };
+        job.finished_at_ms = Some(now_ms());
+        persist_enterprise_ingestion_jobs(&state.enterprise_ingestion_jobs_path, &registry).await?;
+    }
+    Ok(())
+}
+
 async fn persist_enterprise_source_bindings(
     path: &std::path::Path,
     registry: &HashMap<String, SourceBinding>,
@@ -1330,6 +1480,23 @@ async fn persist_enterprise_ingestion_jobs(
     tokio::fs::write(path, payload)
         .await
         .map_err(|_| internal_error("ENTERPRISE_INGESTION_JOBS_PERSIST_FAILED"))?;
+    Ok(())
+}
+
+async fn persist_enterprise_ingestion_quarantines(
+    path: &std::path::Path,
+    registry: &HashMap<String, IngestionQuarantine>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_INGESTION_QUARANTINES_PERSIST_FAILED"))?;
+    }
+    let payload = serde_json::to_vec_pretty(registry)
+        .map_err(|_| internal_error("ENTERPRISE_INGESTION_QUARANTINES_PERSIST_FAILED"))?;
+    tokio::fs::write(path, payload)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_INGESTION_QUARANTINES_PERSIST_FAILED"))?;
     Ok(())
 }
 
