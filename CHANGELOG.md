@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ingestion jobs, ingestion quarantine, and scoped memory chunk references.
   This starts the 0.5.10 connector-ingestion governance track without enabling
   live external connector ingestion.
+- **Generic company taxonomy contract foundation**: Added additive enterprise
+  contract vocabulary for admin-defined organization units and memberships so
+  companies can model HR, Doctors, Consultants, Claims Adjusters, Board Members,
+  or other custom domains without Tandem hardcoding role names.
+- **Enterprise admin placeholder endpoints**: Added noop enterprise admin
+  endpoints for organization units and source bindings that thread verified
+  request tenant/principal context without claiming persistence or live
+  connector ingestion.
 
 ### Documentation
 

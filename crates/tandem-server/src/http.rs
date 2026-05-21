@@ -93,6 +93,7 @@ mod routes_channel_automation_drafts;
 mod routes_coder;
 mod routes_config_providers;
 mod routes_context;
+mod routes_enterprise;
 mod routes_external_actions;
 mod routes_global;
 mod routes_governance;

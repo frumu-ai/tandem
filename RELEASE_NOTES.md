@@ -22,6 +22,15 @@ ingestion flows remain follow-up implementation phases.
   classes, source binding state, ingestion policy, source objects, ingestion
   jobs, ingestion quarantine, quarantine dispositions, and scoped memory chunk
   references.
+- Added generic organization-unit taxonomy contract types so admins can model
+  company-specific domains such as HR, Doctors, Consultants, Claims Adjusters,
+  Board Members, or Platform Oncall without hardcoded Tandem roles.
+- Organization-unit memberships can feed `ScopedGrant` through the new
+  organization-unit membership grant source while preserving the existing
+  principal/resource/data-class projection model.
+- Added noop enterprise admin endpoints for org-unit and source-binding lists
+  and mutations. These thread tenant/principal context and return explicit
+  `noop` responses until enterprise admin storage is configured.
 - Connector credential references carry only `SecretRef` metadata and default
   to read-only credentials. They intentionally do not model raw credential
   values.

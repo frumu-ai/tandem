@@ -13,12 +13,14 @@ pub use tandem_enterprise_contract::{
     EnterpriseCapability, EnterpriseMode, EnterpriseStatus, ExecutionPrincipal, GrantEvaluation,
     GrantSource, HeaderTenantContextResolver, HumanActor, IngestionJob, IngestionJobState,
     IngestionPolicy, IngestionQuarantine, LocalImplicitTenant, NoopEnterpriseBridge,
-    NoopRequestAuthorizationHook, PrincipalKind, PrincipalRef, QuarantineDisposition,
-    RequestAuthorizationHook, RequestPrincipal, ResourceKind, ResourcePathSegment, ResourceRef,
-    ResourceScope, RuntimeAuthMode, ScopedGrant, ScopedMemoryChunkRef, SecretRef, SecretRefError,
-    SigningKeyPurpose, SourceBinding, SourceBindingState, SourceObject, StrictTenantContext,
-    TenantContext, TenantContextAssertionClaims, TenantContextAssertionHeader,
-    TenantContextResolver, TenantSource, VerifiedTenantContext,
+    NoopRequestAuthorizationHook, OrganizationUnit, OrganizationUnitKind,
+    OrganizationUnitMembership, OrganizationUnitMembershipSource, OrganizationUnitState,
+    PrincipalKind, PrincipalRef, QuarantineDisposition, RequestAuthorizationHook, RequestPrincipal,
+    ResourceKind, ResourcePathSegment, ResourceRef, ResourceScope, RuntimeAuthMode, ScopedGrant,
+    ScopedMemoryChunkRef, SecretRef, SecretRefError, SigningKeyPurpose, SourceBinding,
+    SourceBindingState, SourceObject, StrictTenantContext, TenantContext,
+    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantContextResolver,
+    TenantSource, VerifiedTenantContext,
 };
 
 pub use approvals::*;

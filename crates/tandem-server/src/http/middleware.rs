@@ -836,6 +836,7 @@ fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::Organization => "organization",
         ResourceKind::Workspace => "workspace",
+        ResourceKind::OrganizationUnit => "organization_unit",
         ResourceKind::Department => "department",
         ResourceKind::Group => "group",
         ResourceKind::Project => "project",
@@ -858,6 +859,10 @@ fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
         ResourceKind::AuditExport => "audit_export",
         ResourceKind::McpServer => "mcp_server",
         ResourceKind::McpTool => "mcp_tool",
+        ResourceKind::ConnectorInstance => "connector_instance",
+        ResourceKind::SourceBinding => "source_binding",
+        ResourceKind::SourceObject => "source_object",
+        ResourceKind::IngestionJob => "ingestion_job",
         ResourceKind::ExternalIntegrationAccount => "external_integration_account",
     }
 }

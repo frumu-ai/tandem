@@ -191,6 +191,7 @@ impl HumanActor {
 pub enum ResourceKind {
     Organization,
     Workspace,
+    OrganizationUnit,
     Department,
     Group,
     Project,
@@ -414,6 +415,7 @@ pub enum DataClass {
 #[serde(rename_all = "snake_case")]
 pub enum PrincipalKind {
     HumanUser,
+    OrganizationUnit,
     Group,
     Department,
     AgentWorker,
@@ -454,6 +456,10 @@ impl PrincipalRef {
         Self::new(PrincipalKind::AgentWorker, id)
     }
 
+    pub fn organization_unit(id: impl Into<String>) -> Self {
+        Self::new(PrincipalKind::OrganizationUnit, id)
+    }
+
     pub fn with_tenant_actor_id(mut self, tenant_actor_id: impl Into<String>) -> Self {
         self.tenant_actor_id = Some(tenant_actor_id.into());
         self
@@ -474,6 +480,7 @@ impl PrincipalRef {
 #[serde(rename_all = "snake_case")]
 pub enum GrantSource {
     Direct,
+    OrganizationUnitMembership,
     GroupMembership,
     DepartmentMembership,
     Inherited,
@@ -510,6 +517,178 @@ pub struct ScopedGrant {
     pub expires_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OrganizationUnitKind {
+    Department,
+    Team,
+    RoleDomain,
+    ContractorGroup,
+    ExecutiveGroup,
+    ClinicalGroup,
+    OperationalGroup,
+    Custom,
+    #[default]
+    Unspecified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OrganizationUnitState {
+    #[default]
+    Active,
+    Disabled,
+}
+
+impl OrganizationUnitState {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizationUnit {
+    pub unit_id: String,
+    pub tenant_context: TenantContext,
+    #[serde(default = "default_taxonomy_id")]
+    pub taxonomy_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub kind: OrganizationUnitKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_unit_id: Option<String>,
+    #[serde(default)]
+    pub state: OrganizationUnitState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    pub created_by: PrincipalRef,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+impl OrganizationUnit {
+    pub fn active(
+        unit_id: impl Into<String>,
+        tenant_context: TenantContext,
+        display_name: impl Into<String>,
+        kind: OrganizationUnitKind,
+        created_by: PrincipalRef,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            unit_id: unit_id.into(),
+            tenant_context,
+            taxonomy_id: default_taxonomy_id(),
+            display_name: display_name.into(),
+            kind,
+            parent_unit_id: None,
+            state: OrganizationUnitState::Active,
+            description: None,
+            labels: Vec::new(),
+            created_by,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        }
+    }
+
+    pub fn with_parent_unit_id(mut self, parent_unit_id: impl Into<String>) -> Self {
+        self.parent_unit_id = Some(parent_unit_id.into());
+        self
+    }
+
+    pub fn with_taxonomy_id(mut self, taxonomy_id: impl Into<String>) -> Self {
+        self.taxonomy_id = taxonomy_id.into();
+        self
+    }
+
+    pub fn with_state(mut self, state: OrganizationUnitState, updated_at_ms: u64) -> Self {
+        self.state = state;
+        self.updated_at_ms = updated_at_ms;
+        self
+    }
+
+    pub fn principal_ref(&self) -> PrincipalRef {
+        PrincipalRef::organization_unit(format!("{}/{}", self.taxonomy_id, self.unit_id))
+    }
+
+    pub fn resource_ref(&self) -> ResourceRef {
+        ResourceRef::new(
+            self.tenant_context.org_id.clone(),
+            self.tenant_context.workspace_id.clone(),
+            ResourceKind::OrganizationUnit,
+            format!("{}/{}", self.taxonomy_id, self.unit_id),
+        )
+    }
+}
+
+fn default_taxonomy_id() -> String {
+    "organization_unit".to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OrganizationUnitMembershipSource {
+    #[default]
+    Direct,
+    HostedControlPlane,
+    Scim,
+    GoogleWorkspace,
+    Okta,
+    ManualImport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizationUnitMembership {
+    pub membership_id: String,
+    pub tenant_context: TenantContext,
+    pub unit: PrincipalRef,
+    pub member: PrincipalRef,
+    #[serde(default)]
+    pub source: OrganizationUnitMembershipSource,
+    #[serde(default)]
+    pub state: OrganizationUnitState,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+impl OrganizationUnitMembership {
+    pub fn active(
+        membership_id: impl Into<String>,
+        tenant_context: TenantContext,
+        unit: PrincipalRef,
+        member: PrincipalRef,
+        source: OrganizationUnitMembershipSource,
+        created_at_ms: u64,
+    ) -> Self {
+        Self {
+            membership_id: membership_id.into(),
+            tenant_context,
+            unit,
+            member,
+            source,
+            state: OrganizationUnitState::Active,
+            created_at_ms,
+            expires_at_ms: None,
+        }
+    }
+
+    pub fn with_expires_at_ms(mut self, expires_at_ms: u64) -> Self {
+        self.expires_at_ms = Some(expires_at_ms);
+        self
+    }
+
+    pub fn is_active_at(&self, now_ms: u64) -> bool {
+        self.state.is_active()
+            && self
+                .expires_at_ms
+                .map(|expires_at_ms| expires_at_ms > now_ms)
+                .unwrap_or(true)
+    }
 }
 
 impl ScopedGrant {
@@ -2092,6 +2271,112 @@ mod tests {
         assert_eq!(decoded.grant_source, GrantSource::GroupMembership);
         assert!(decoded.has_permission(AccessPermission::Edit));
         assert!(decoded.allows_data_class(DataClass::CustomerData));
+    }
+
+    #[test]
+    fn organization_unit_taxonomy_models_company_specific_domains() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "clinic-co",
+            "care-delivery",
+            Some("deployment-prod".to_string()),
+            "admin-user",
+        );
+        let admin = PrincipalRef::human_user("admin-user");
+        let doctors = OrganizationUnit::active(
+            "doctors",
+            tenant.clone(),
+            "Doctors",
+            OrganizationUnitKind::ClinicalGroup,
+            admin.clone(),
+            1_000,
+        )
+        .with_taxonomy_id("clinical_role")
+        .with_parent_unit_id("clinical");
+        let consultants = OrganizationUnit::active(
+            "consultants",
+            tenant.clone(),
+            "Consultants",
+            OrganizationUnitKind::ContractorGroup,
+            admin,
+            1_000,
+        );
+
+        assert_eq!(
+            doctors.principal_ref().kind,
+            PrincipalKind::OrganizationUnit
+        );
+        assert_eq!(doctors.principal_ref().id, "clinical_role/doctors");
+        assert_eq!(
+            doctors.resource_ref().resource_kind,
+            ResourceKind::OrganizationUnit
+        );
+        assert_eq!(doctors.resource_ref().resource_id, "clinical_role/doctors");
+        assert_eq!(doctors.parent_unit_id.as_deref(), Some("clinical"));
+        assert_eq!(consultants.kind, OrganizationUnitKind::ContractorGroup);
+
+        let encoded = serde_json::to_value(&doctors).expect("serialize organization unit");
+        assert_eq!(encoded["taxonomy_id"], "clinical_role");
+        assert_eq!(encoded["kind"], "clinical_group");
+        assert_eq!(encoded["state"], "active");
+        assert_eq!(encoded["unit_id"], "doctors");
+
+        let decoded: OrganizationUnit =
+            serde_json::from_value(encoded).expect("deserialize organization unit");
+        assert_eq!(decoded, doctors);
+    }
+
+    #[test]
+    fn organization_unit_membership_feeds_scoped_grants_without_hardcoded_roles() {
+        let tenant = TenantContext::explicit_user_workspace(
+            "clinic-co",
+            "care-delivery",
+            Some("deployment-prod".to_string()),
+            "doctor-user",
+        );
+        let doctors = PrincipalRef::organization_unit("clinical_role/doctors");
+        let doctor = PrincipalRef::human_user("doctor-user");
+        let membership = OrganizationUnitMembership::active(
+            "membership-doctor-user",
+            tenant,
+            doctors.clone(),
+            doctor.clone(),
+            OrganizationUnitMembershipSource::HostedControlPlane,
+            1_000,
+        )
+        .with_expires_at_ms(2_000);
+        let patient_cases = ResourceRef::new(
+            "clinic-co",
+            "care-delivery",
+            ResourceKind::DataStore,
+            "patient-cases",
+        );
+        let grant = ScopedGrant::new(
+            "grant-doctors-patient-cases",
+            doctor,
+            patient_cases.clone(),
+            GrantSource::OrganizationUnitMembership,
+        )
+        .with_source_principal(doctors)
+        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+        .with_data_classes(vec![DataClass::Regulated, DataClass::CustomerData]);
+
+        assert!(membership.is_active_at(1_999));
+        assert!(!membership.is_active_at(2_000));
+        assert_eq!(grant.grant_source, GrantSource::OrganizationUnitMembership);
+        assert_eq!(
+            grant.source_principal.as_ref().map(|source| source.kind),
+            Some(PrincipalKind::OrganizationUnit)
+        );
+        assert!(grant.applies_to(
+            &patient_cases,
+            AccessPermission::Read,
+            DataClass::Regulated,
+            1_500
+        ));
+
+        let encoded = serde_json::to_value(&grant).expect("serialize org unit grant");
+        assert_eq!(encoded["grant_source"], "organization_unit_membership");
+        assert_eq!(encoded["source_principal"]["kind"], "organization_unit");
     }
 
     #[test]
