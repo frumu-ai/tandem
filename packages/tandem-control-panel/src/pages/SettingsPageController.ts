@@ -246,6 +246,7 @@ type InstallProfileResponse = {
   hosted_hostname?: string;
   hosted_public_url?: string;
   hosted_control_plane_url?: string;
+  hosted_auth_available?: boolean;
   hosted_release_version?: string;
   hosted_release_channel?: string;
   hosted_update_policy?: string;

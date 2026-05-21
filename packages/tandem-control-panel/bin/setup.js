@@ -1365,11 +1365,13 @@ function getHostedPanelAuthConfig() {
   );
   const publicUrl = String(hosted.public_url || "").replace(/\/+$/, "");
   const deploymentId = String(hosted.deployment_id || "").trim();
+  const authMode = String(auth.mode || "").trim().toLowerCase();
   return {
     managed: hosted.managed === true,
     deploymentId,
     publicUrl,
     controlPlaneUrl,
+    authMode,
     panelLoginUrl: String(auth.panel_login_url || `${controlPlaneUrl}/hosted/panel/authorize`).trim(),
     panelExchangeUrl: String(
       auth.panel_exchange_url ||
@@ -1385,6 +1387,23 @@ function getHostedPanelAuthConfig() {
     ).trim(),
     hostAgentTokenFile: String(auth.host_agent_token_file || "/run/secrets/host_agent_token").trim(),
   };
+}
+
+function hostedPanelAuthAvailable() {
+  const auth = getHostedPanelAuthConfig();
+  if (!auth.managed) return false;
+  if (["disabled", "none", "local", "local_test", "engine_token"].includes(auth.authMode)) {
+    return false;
+  }
+  if (!auth.deploymentId || !auth.controlPlaneUrl || !auth.panelLoginUrl || !auth.panelExchangeUrl) {
+    return false;
+  }
+  if (!auth.hostAgentTokenFile) return false;
+  try {
+    return !!readFileSync(resolve(auth.hostAgentTokenFile), "utf8").trim();
+  } catch {
+    return false;
+  }
 }
 
 function hostedPanelReturnUrl() {
@@ -1426,6 +1445,7 @@ async function getInstallProfile({ acaAvailable = false, acaReason = "" } = {}) 
   });
   const summary = summarizeControlPanelConfig(config);
   const workspaceFilesRoot = resolveWorkspaceFilesRoot();
+  const hostedAuthAvailable = hostedPanelAuthAvailable();
   return {
     control_panel_mode: mode.mode,
     control_panel_mode_source: mode.source,
@@ -1441,7 +1461,8 @@ async function getInstallProfile({ acaAvailable = false, acaReason = "" } = {}) 
     hosted_hostname: String(summary.hosted?.hostname || "").trim(),
     hosted_public_url: String(summary.hosted?.public_url || "").trim(),
     hosted_control_plane_url: String(summary.hosted?.control_plane_url || "").trim(),
-    hosted_auth_mode: String(summary.hosted?.auth?.mode || "").trim(),
+    hosted_auth_mode: String(summary.hosted?.auth?.mode || (hostedAuthAvailable ? "hosted" : "")).trim(),
+    hosted_auth_available: hostedAuthAvailable,
     hosted_panel_login_url: hostedPanelAuthorizeUrl(),
     hosted_release_version: String(summary.hosted?.release_version || "").trim(),
     hosted_release_channel: String(summary.hosted?.release_channel || "").trim(),
@@ -2451,7 +2472,7 @@ async function handleWorkspaceFilesApi(req, res, _session) {
 }
 
 async function handleAuthLogin(req, res) {
-  if (isHostedManagedControlPanel()) {
+  if (hostedPanelAuthAvailable()) {
     sendJson(res, 403, {
       ok: false,
       error: "Managed hosted panels use Tandem hosted login, not the root engine token.",

@@ -174,6 +174,29 @@ test("Engine unhealthy returns all coding features false", async () => {
   assert.equal(body.aca_integration, false);
 });
 
+test("hosted auth availability is reported separately from hosted managed", async () => {
+  let body = null;
+  const handler = createCapabilitiesHandler({
+    ACA_BASE_URL: "",
+    engineHealth: async () => ({ engine: { ready: true, healthy: true } }),
+    getInstallProfile: async () => ({
+      hosted_managed: true,
+      hosted_auth_available: false,
+      hosted_panel_login_url: "https://tandem.ac/hosted/panel/authorize",
+    }),
+    sendJson: (_, __, b) => {
+      body = b;
+    },
+  });
+
+  const fakeRes = { statusCode: 0, end: () => {}, destroy: () => {} };
+  await handler({}, fakeRes);
+
+  assert.equal(body.hosted_managed, true);
+  assert.equal(body.hosted_auth_available, false);
+  assert.equal(body.hosted_panel_login_url, "https://tandem.ac/hosted/panel/authorize");
+});
+
 test("Cached response is returned without re-probing within TTL", async () => {
   let probeCount = 0;
   const handler = createCapabilitiesHandler({

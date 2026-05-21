@@ -329,6 +329,7 @@ test("Hosted install profile exposes hosted-managed config to the control panel"
   assert.equal(body.hosted_control_plane_url, "https://tandem.ac");
   assert.equal(body.hosted_public_url, "https://t-12345.hosted.tandem.ac");
   assert.equal(body.hosted_deployment_slug, "t-12345");
+  assert.equal(body.hosted_auth_available, false);
   assert.equal(body.control_panel_config_ready, true);
 
   const caps = await request(baseUrl, "/api/capabilities");
@@ -337,6 +338,7 @@ test("Hosted install profile exposes hosted-managed config to the control panel"
   assert.equal(capsBody.hosted_managed, true);
   assert.equal(capsBody.hosted_control_plane_url, "https://tandem.ac");
   assert.equal(capsBody.hosted_public_url, "https://t-12345.hosted.tandem.ac");
+  assert.equal(capsBody.hosted_auth_available, false);
 });
 
 test("Hosted install profile enables search and scheduler settings without a local engine URL", async (t) => {

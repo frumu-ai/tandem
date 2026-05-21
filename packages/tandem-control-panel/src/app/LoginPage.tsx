@@ -9,6 +9,7 @@ export function LoginPage({
   controlPanelMode,
   controlPanelModeReason,
   hostedManaged = false,
+  hostedAuthAvailable = false,
   hostedLoginUrl = "",
 }: {
   loginMutation: any;
@@ -18,12 +19,14 @@ export function LoginPage({
   controlPanelMode?: string;
   controlPanelModeReason?: string;
   hostedManaged?: boolean;
+  hostedAuthAvailable?: boolean;
   hostedLoginUrl?: string;
 }) {
   const [token, setToken] = useState(savedToken);
   const [remember, setRemember] = useState(true);
   const [message, setMessage] = useState("");
   const [ok, setOk] = useState(false);
+  const requireHostedLogin = hostedManaged && hostedAuthAvailable;
 
   return (
     <main className="relative min-h-screen overflow-hidden px-5 py-8">
@@ -37,7 +40,7 @@ export function LoginPage({
           <div className="tcp-page-eyebrow">Tandem Control</div>
           <h1 className="tcp-page-title max-w-3xl">Sign in to continue.</h1>
           <p className="tcp-subtle max-w-2xl text-base">
-            {hostedManaged
+            {requireHostedLogin
               ? "Use your Tandem hosted account to access this managed server."
               : "Enter your engine token to access chat, task board, automations, runs, memory, and settings."}
           </p>
@@ -46,14 +49,16 @@ export function LoginPage({
         <PanelCard
           title={controlPanelName}
           subtitle={
-            hostedManaged
+            requireHostedLogin
               ? "Managed hosted server detected. Sign in through Tandem to continue."
-              : controlPanelMode === "aca"
-                ? "ACA install detected. Authenticate against your Tandem engine to continue."
-                : "Standalone install detected. Authenticate against your Tandem engine to continue."
+              : hostedManaged
+                ? "Managed local test server detected. Authenticate against your Tandem engine to continue."
+                : controlPanelMode === "aca"
+                  ? "ACA install detected. Authenticate against your Tandem engine to continue."
+                  : "Standalone install detected. Authenticate against your Tandem engine to continue."
           }
         >
-          {hostedManaged ? (
+          {requireHostedLogin ? (
             <div className="grid gap-3">
               <p className="tcp-subtle text-sm">
                 Managed hosted panels do not accept the engine token in the browser. Tandem will
@@ -155,6 +160,13 @@ export function LoginPage({
               <div className={`min-h-[1.2rem] text-sm ${ok ? "text-lime-300" : "text-rose-300"}`}>
                 {loginMutation.error?.message || message}
               </div>
+
+              {hostedManaged ? (
+                <div className="rounded-xl border border-amber-500/25 bg-amber-950/20 p-3 text-xs text-amber-100">
+                  Hosted Tandem login is not connected for this deployment, so this panel is using
+                  the engine-token flow for local testing.
+                </div>
+              ) : null}
 
               <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
                 <div className="mb-2 flex items-center justify-between gap-3">

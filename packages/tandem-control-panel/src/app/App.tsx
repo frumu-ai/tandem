@@ -337,6 +337,11 @@ function AppBody() {
       capabilitiesQuery.data?.control_panel_mode ||
         (capabilitiesQuery.data?.aca_integration ? "aca" : "standalone")
     ).trim() || "standalone";
+  const hostedManaged = capabilitiesQuery.data?.hosted_managed === true;
+  const hostedAuthAvailable =
+    hostedManaged &&
+    capabilitiesQuery.data?.hosted_auth_available !== false &&
+    !!String(capabilitiesQuery.data?.hosted_panel_login_url || "").trim();
   const acaMode = controlPanelMode === "aca";
   const navVisibilityHydrated = useRef(false);
   const [navVisibility, setNavVisibility] = useState<NavigationVisibility>(() =>
@@ -673,7 +678,8 @@ function AppBody() {
         controlPanelModeReason={String(
           capabilitiesQuery.data?.control_panel_mode_reason || ""
         ).trim()}
-        hostedManaged={capabilitiesQuery.data?.hosted_managed === true}
+        hostedManaged={hostedManaged}
+        hostedAuthAvailable={hostedAuthAvailable}
         hostedLoginUrl={String(capabilitiesQuery.data?.hosted_panel_login_url || "")}
         onCheckEngine={async () => {
           const health = await api("/api/system/health");

@@ -325,6 +325,14 @@ export function SettingsPageNavigationProvidersSections({
                     <span>{installProfileQuery.data?.hosted_deployment_slug || "—"}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
+                    <span className="tcp-subtle">Hosted auth</span>
+                    <span>
+                      {installProfileQuery.data?.hosted_auth_available
+                        ? "connected"
+                        : "not connected"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
                     <span className="tcp-subtle">Release</span>
                     <span>
                       {installProfileQuery.data?.hosted_release_version || "—"}

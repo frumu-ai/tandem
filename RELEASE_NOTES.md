@@ -88,6 +88,9 @@ production connector ingestion flows remain follow-up implementation phases.
   hosted non-admin connector creation denial, source-bound upload
   `ResourceRef` lifecycle stamping, and same native source IDs remaining
   tenant-scoped.
+- Managed hosted detection now reports hosted auth availability separately, so
+  disconnected local test deployments can still use the engine-token sign-in
+  path while connected hosted servers keep Tandem hosted login enforcement.
 - Connector instances now have storage-backed tenant-scoped admin endpoints for
   lifecycle management. Source-bound imports require the referenced connector
   to exist and be active, so paused, revoked, or quarantined connectors block
