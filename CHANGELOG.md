@@ -70,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uploaded objects, request reindex by purging stale chunk/index rows, hard
   delete a source object and its indexed content, and re-scope lifecycle
   resource/data-class metadata while invalidating source-binding cache scope.
+- **Enterprise source-object lifecycle UI**: Wired the hidden Enterprise admin
+  control-panel page to inspect source-object lifecycle records for a selected
+  source binding and trigger reindex, delete, or re-scope actions from the
+  tenant-scoped admin surface.
 
 ### Documentation
 

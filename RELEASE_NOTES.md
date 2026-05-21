@@ -74,6 +74,9 @@ production connector ingestion flows remain follow-up implementation phases.
   delete a source object and indexed content, or re-scope its resource/data
   class metadata. Each mutation reuses enterprise admin authorization and emits
   source-binding cache invalidation.
+- The hidden Enterprise admin page now exposes those source-object lifecycle
+  rows for a selected source binding and provides reindex, delete, and re-scope
+  controls from the hosted admin UI.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

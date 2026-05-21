@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, isTransientEngineError } from "../../lib/api";
 
 export type EnterpriseTenantContext = {
@@ -74,6 +74,40 @@ export type EnterpriseSourceBindingsResponse = EnterpriseNoopBase & {
   count?: number;
 };
 
+export type EnterpriseSourceObjectLifecycle = {
+  source_object_id: string;
+  source_binding_id: string;
+  connector_id: string;
+  state: string;
+  tier: string;
+  session_id?: string | null;
+  project_id?: string | null;
+  import_namespace: string;
+  indexed_path: string;
+  native_object_id: string;
+  resource_ref: EnterpriseResourceRef;
+  data_class: string;
+  content_hash?: string | null;
+  source_hash?: string | null;
+  first_seen_at_ms: number;
+  last_seen_at_ms: number;
+  tombstoned_at_ms?: number | null;
+  metadata?: unknown;
+};
+
+export type EnterpriseSourceObjectsResponse = EnterpriseNoopBase & {
+  source_objects?: EnterpriseSourceObjectLifecycle[];
+  count?: number;
+};
+
+export type EnterpriseSourceObjectActionResponse = EnterpriseNoopBase & {
+  action?: string;
+  source_object?: EnterpriseSourceObjectLifecycle | null;
+  chunks_deleted?: number;
+  bytes_estimated?: number;
+  import_index_deleted?: boolean;
+};
+
 export type CreateEnterpriseOrganizationUnitInput = {
   unit_id: string;
   display_name: string;
@@ -102,6 +136,16 @@ export type UpdateEnterpriseSourceBindingInput = {
   source_root_label?: string;
   credential_ref_id?: string;
   ingestion_policy?: EnterpriseIngestionPolicy;
+};
+
+export type EnterpriseSourceObjectActionInput = {
+  binding_id: string;
+  source_object_id: string;
+};
+
+export type RescopeEnterpriseSourceObjectInput = EnterpriseSourceObjectActionInput & {
+  resource_ref: EnterpriseResourceRef;
+  data_class: string;
 };
 
 const retryEnterpriseQuery = (failureCount: number, error: unknown) =>
@@ -133,6 +177,24 @@ export function useEnterpriseSourceBindings(enabled = true) {
   });
 }
 
+export function useEnterpriseSourceObjects(bindingId?: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["enterprise", "source-objects", bindingId || ""],
+    queryFn: () =>
+      api(
+        `/api/engine/enterprise/source-bindings/${encodeURIComponent(
+          bindingId || ""
+        )}/source-objects`,
+        {
+          method: "GET",
+        }
+      ) as Promise<EnterpriseSourceObjectsResponse>,
+    enabled: enabled && Boolean(bindingId),
+    staleTime: 15000,
+    retry: retryEnterpriseQuery,
+  });
+}
+
 export function useCreateEnterpriseOrgUnit() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -145,6 +207,11 @@ export function useCreateEnterpriseOrgUnit() {
       queryClient.invalidateQueries({ queryKey: ["enterprise", "org-units"] });
     },
   });
+}
+
+function invalidateSourceObjectQueries(queryClient: QueryClient, bindingId: string) {
+  queryClient.invalidateQueries({ queryKey: ["enterprise", "source-objects", bindingId] });
+  queryClient.invalidateQueries({ queryKey: ["enterprise", "source-bindings"] });
 }
 
 export function useCreateEnterpriseSourceBinding() {
@@ -171,6 +238,66 @@ export function useUpdateEnterpriseSourceBinding() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["enterprise", "source-bindings"] });
+    },
+  });
+}
+
+export function useReindexEnterpriseSourceObject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ binding_id, source_object_id }: EnterpriseSourceObjectActionInput) =>
+      api(
+        `/api/engine/enterprise/source-bindings/${encodeURIComponent(
+          binding_id
+        )}/source-objects/${encodeURIComponent(source_object_id)}/reindex`,
+        {
+          method: "POST",
+        }
+      ) as Promise<EnterpriseSourceObjectActionResponse>,
+    onSuccess: (_data, variables) => {
+      invalidateSourceObjectQueries(queryClient, variables.binding_id);
+    },
+  });
+}
+
+export function useDeleteEnterpriseSourceObject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ binding_id, source_object_id }: EnterpriseSourceObjectActionInput) =>
+      api(
+        `/api/engine/enterprise/source-bindings/${encodeURIComponent(
+          binding_id
+        )}/source-objects/${encodeURIComponent(source_object_id)}`,
+        {
+          method: "DELETE",
+        }
+      ) as Promise<EnterpriseSourceObjectActionResponse>,
+    onSuccess: (_data, variables) => {
+      invalidateSourceObjectQueries(queryClient, variables.binding_id);
+    },
+  });
+}
+
+export function useRescopeEnterpriseSourceObject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      binding_id,
+      source_object_id,
+      resource_ref,
+      data_class,
+    }: RescopeEnterpriseSourceObjectInput) =>
+      api(
+        `/api/engine/enterprise/source-bindings/${encodeURIComponent(
+          binding_id
+        )}/source-objects/${encodeURIComponent(source_object_id)}/scope`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ resource_ref, data_class }),
+        }
+      ) as Promise<EnterpriseSourceObjectActionResponse>,
+    onSuccess: (_data, variables) => {
+      invalidateSourceObjectQueries(queryClient, variables.binding_id);
     },
   });
 }

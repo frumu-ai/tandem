@@ -12,14 +12,19 @@ import {
 import {
   useCreateEnterpriseOrgUnit,
   useCreateEnterpriseSourceBinding,
+  useDeleteEnterpriseSourceObject,
   useEnterpriseOrgUnits,
   useEnterpriseSourceBindings,
+  useEnterpriseSourceObjects,
+  useReindexEnterpriseSourceObject,
+  useRescopeEnterpriseSourceObject,
   useUpdateEnterpriseSourceBinding,
   type CreateEnterpriseOrganizationUnitInput,
   type CreateEnterpriseSourceBindingInput,
   type EnterpriseNoopBase,
   type EnterpriseOrganizationUnit,
   type EnterpriseSourceBinding,
+  type EnterpriseSourceObjectLifecycle,
 } from "../features/enterprise/queries";
 import type { AppPageProps } from "./pageTypes";
 
@@ -483,12 +488,16 @@ function SourceBindingsPanel({
   loading,
   error,
   onSetState,
+  selectedBindingId,
+  onSelectBinding,
   busyBindingId,
 }: {
   rows: EnterpriseSourceBinding[];
   loading: boolean;
   error: unknown;
   onSetState: (bindingId: string, state: string) => void;
+  selectedBindingId?: string | null;
+  onSelectBinding: (bindingId: string) => void;
   busyBindingId?: string | null;
 }) {
   return (
@@ -554,6 +563,15 @@ function SourceBindingsPanel({
                       {state}
                     </button>
                   ))}
+                  <button
+                    className="tcp-btn"
+                    type="button"
+                    onClick={() => onSelectBinding(binding.binding_id)}
+                    disabled={selectedBindingId === binding.binding_id}
+                  >
+                    <i data-lucide="list-tree"></i>
+                    Objects
+                  </button>
                 </div>
               </div>
             );
@@ -569,17 +587,226 @@ function SourceBindingsPanel({
   );
 }
 
+function formatLifecycleTime(value?: number | null) {
+  if (!value) return "never";
+  return new Date(value).toLocaleString();
+}
+
+function SourceObjectLifecyclePanel({
+  binding,
+  rows,
+  loading,
+  error,
+  onReindex,
+  onDelete,
+  onRescope,
+  busyObjectId,
+}: {
+  binding?: EnterpriseSourceBinding | null;
+  rows: EnterpriseSourceObjectLifecycle[];
+  loading: boolean;
+  error: unknown;
+  onReindex: (sourceObjectId: string) => void;
+  onDelete: (sourceObjectId: string) => void;
+  onRescope: (
+    sourceObjectId: string,
+    resourceKind: string,
+    resourceId: string,
+    dataClass: string
+  ) => void;
+  busyObjectId?: string | null;
+}) {
+  const [rescopeTarget, setRescopeTarget] = useState<string | null>(null);
+  const selectedObject = rows.find((row) => row.source_object_id === rescopeTarget) || rows[0];
+  const [resourceKind, setResourceKind] = useState("document_collection");
+  const [resourceId, setResourceId] = useState("");
+  const [dataClass, setDataClass] = useState("internal");
+
+  const beginRescope = (object: EnterpriseSourceObjectLifecycle) => {
+    setRescopeTarget(object.source_object_id);
+    setResourceKind(object.resource_ref?.resource_kind || "document_collection");
+    setResourceId(object.resource_ref?.resource_id || "");
+    setDataClass(object.data_class || "internal");
+  };
+
+  return (
+    <PanelCard
+      title="Source objects"
+      subtitle={binding ? binding.source_root_label || binding.binding_id : "Select a binding"}
+      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      fullHeight
+    >
+      {!binding ? (
+        <EmptyState
+          title="No binding selected"
+          text="Choose a source binding to inspect objects."
+        />
+      ) : loading ? (
+        <LoadingState title="Loading" text="Reading source-object lifecycle records" />
+      ) : error ? (
+        <EmptyState title="Unavailable" text={errorText(error, "Source objects could not load.")} />
+      ) : rows.length ? (
+        <div className="grid gap-3">
+          <div className="grid gap-2">
+            {rows.map((object) => {
+              const isBusy = busyObjectId === object.source_object_id;
+              return (
+                <div
+                  key={object.source_object_id}
+                  className="rounded-lg border border-white/8 bg-black/20 p-3"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="break-all font-medium text-tcp-text-primary">
+                        {object.native_object_id || object.indexed_path}
+                      </div>
+                      <div className="tcp-subtle break-all text-xs">{object.source_object_id}</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge tone={object.state === "active" ? "ok" : "warn"}>{object.state}</Badge>
+                      <Badge tone="info">{object.data_class}</Badge>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-xs text-tcp-text-secondary md:grid-cols-2">
+                    <div>
+                      Resource: {object.resource_ref?.resource_kind} /{" "}
+                      {object.resource_ref?.resource_id}
+                    </div>
+                    <div>Last seen: {formatLifecycleTime(object.last_seen_at_ms)}</div>
+                    <div className="break-all">Indexed path: {object.indexed_path}</div>
+                    <div>Tier: {object.tier}</div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      className="tcp-btn"
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => onReindex(object.source_object_id)}
+                    >
+                      <i data-lucide="refresh-cw"></i>
+                      Reindex
+                    </button>
+                    <button
+                      className="tcp-btn"
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => beginRescope(object)}
+                    >
+                      <i data-lucide="move-horizontal"></i>
+                      Re-scope
+                    </button>
+                    <button
+                      className="tcp-btn tcp-btn-danger"
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => onDelete(object.source_object_id)}
+                    >
+                      <i data-lucide="trash-2"></i>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {selectedObject ? (
+            <form
+              className="grid gap-3 rounded-lg border border-white/8 bg-black/20 p-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onRescope(
+                  selectedObject.source_object_id,
+                  resourceKind,
+                  resourceId.trim(),
+                  dataClass
+                );
+              }}
+            >
+              <div className="font-medium text-tcp-text-primary">Re-scope selected object</div>
+              <div className="tcp-subtle break-all text-xs">{selectedObject.source_object_id}</div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <Field label="Resource Kind">
+                  <select
+                    className="tcp-select"
+                    value={resourceKind}
+                    onChange={(event) => setResourceKind(event.currentTarget.value)}
+                  >
+                    {RESOURCE_KINDS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Resource ID">
+                  <input
+                    className="tcp-input"
+                    value={resourceId}
+                    onInput={(event) => setResourceId(event.currentTarget.value)}
+                    required
+                  />
+                </Field>
+                <Field label="Data Class">
+                  <select
+                    className="tcp-select"
+                    value={dataClass}
+                    onChange={(event) => setDataClass(event.currentTarget.value)}
+                  >
+                    {DATA_CLASSES.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div className="flex justify-end">
+                <button
+                  className="tcp-btn tcp-btn-primary"
+                  type="submit"
+                  disabled={busyObjectId === selectedObject.source_object_id}
+                >
+                  <i data-lucide="shield-check"></i>
+                  Apply scope
+                </button>
+              </div>
+            </form>
+          ) : null}
+        </div>
+      ) : (
+        <EmptyState title="No source objects" text="Source-bound imports will appear here." />
+      )}
+    </PanelCard>
+  );
+}
+
 export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const orgUnits = useEnterpriseOrgUnits();
   const sourceBindings = useEnterpriseSourceBindings();
+  const [selectedBindingId, setSelectedBindingId] = useState<string | null>(null);
   const createOrgUnit = useCreateEnterpriseOrgUnit();
   const createSourceBinding = useCreateEnterpriseSourceBinding();
   const updateSourceBinding = useUpdateEnterpriseSourceBinding();
+  const sourceObjects = useEnterpriseSourceObjects(selectedBindingId);
+  const reindexSourceObject = useReindexEnterpriseSourceObject();
+  const deleteSourceObject = useDeleteEnterpriseSourceObject();
+  const rescopeSourceObject = useRescopeEnterpriseSourceObject();
   const orgRows = useMemo(() => orgUnits.data?.org_units || [], [orgUnits.data]);
   const bindingRows = useMemo(
     () => sourceBindings.data?.source_bindings || [],
     [sourceBindings.data]
   );
+  const objectRows = useMemo(() => sourceObjects.data?.source_objects || [], [sourceObjects.data]);
+  const selectedBinding =
+    bindingRows.find((binding) => binding.binding_id === selectedBindingId) || null;
+  const busyObjectId =
+    reindexSourceObject.isPending || deleteSourceObject.isPending || rescopeSourceObject.isPending
+      ? reindexSourceObject.variables?.source_object_id ||
+        deleteSourceObject.variables?.source_object_id ||
+        rescopeSourceObject.variables?.source_object_id ||
+        null
+      : null;
   const payload = orgUnits.data || sourceBindings.data;
   const headerBadges = (
     <>
@@ -590,6 +817,9 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const refreshEnterpriseState = () => {
     orgUnits.refetch();
     sourceBindings.refetch();
+    if (selectedBindingId) {
+      sourceObjects.refetch();
+    }
   };
 
   return (
@@ -651,6 +881,8 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
             rows={bindingRows}
             loading={sourceBindings.isLoading}
             error={sourceBindings.error}
+            selectedBindingId={selectedBindingId}
+            onSelectBinding={setSelectedBindingId}
             busyBindingId={
               updateSourceBinding.isPending
                 ? updateSourceBinding.variables?.binding_id || null
@@ -666,6 +898,56 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
             }}
           />
         </div>
+
+        <SourceObjectLifecyclePanel
+          binding={selectedBinding}
+          rows={objectRows}
+          loading={sourceObjects.isLoading}
+          error={sourceObjects.error}
+          busyObjectId={busyObjectId}
+          onReindex={(sourceObjectId) => {
+            if (!selectedBindingId) return;
+            reindexSourceObject
+              .mutateAsync({
+                binding_id: selectedBindingId,
+                source_object_id: sourceObjectId,
+              })
+              .then(() => toast("ok", "Source object reindex requested."))
+              .catch((error) =>
+                toast("err", errorText(error, "Source object could not be reindexed."))
+              );
+          }}
+          onDelete={(sourceObjectId) => {
+            if (!selectedBindingId) return;
+            deleteSourceObject
+              .mutateAsync({
+                binding_id: selectedBindingId,
+                source_object_id: sourceObjectId,
+              })
+              .then(() => toast("ok", "Source object deleted."))
+              .catch((error) =>
+                toast("err", errorText(error, "Source object could not be deleted."))
+              );
+          }}
+          onRescope={(sourceObjectId, resourceKind, resourceId, dataClass) => {
+            if (!selectedBindingId || !selectedBinding || !resourceId) return;
+            rescopeSourceObject
+              .mutateAsync({
+                binding_id: selectedBindingId,
+                source_object_id: sourceObjectId,
+                resource_ref: {
+                  ...selectedBinding.resource_ref,
+                  resource_kind: resourceKind,
+                  resource_id: resourceId,
+                },
+                data_class: dataClass,
+              })
+              .then(() => toast("ok", "Source object scope updated."))
+              .catch((error) =>
+                toast("err", errorText(error, "Source object scope could not be updated."))
+              );
+          }}
+        />
       </StaggerGroup>
     </AnimatedPage>
   );
