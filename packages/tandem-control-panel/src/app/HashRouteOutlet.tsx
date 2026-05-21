@@ -19,6 +19,10 @@ const WorkflowStudioPage = lazyNamed(
 );
 const AutomationsPage = lazyNamed(() => import("../pages/AutomationsPage"), "AutomationsPage");
 const ExperimentsPage = lazyNamed(() => import("../pages/ExperimentsPage"), "ExperimentsPage");
+const EnterpriseAdminPage = lazyNamed(
+  () => import("../pages/EnterpriseAdminPage"),
+  "EnterpriseAdminPage"
+);
 const CodingWorkflowsPage = lazyNamed(
   () => import("../pages/CodingWorkflowsPage"),
   "CodingWorkflowsPage"
@@ -93,6 +97,8 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
       return <AutomationsPage {...pageProps} />;
     case "experiments":
       return <ExperimentsPage {...pageProps} />;
+    case "enterprise-admin":
+      return <EnterpriseAdminPage {...pageProps} />;
     case "coding":
       return <CodingWorkflowsPage {...pageProps} />;
     case "agents":

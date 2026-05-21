@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoints for organization units and source bindings that thread verified
   request tenant/principal context without claiming persistence or live
   connector ingestion.
+- **Enterprise admin UI shell**: Added a hidden-by-default control-panel
+  Enterprise route that reads the noop organization-unit and source-binding
+  endpoints, surfaces tenant/principal context, and shows connector governance
+  lanes without implying live persistence or ingestion.
 
 ### Documentation
 

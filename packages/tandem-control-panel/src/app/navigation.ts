@@ -25,6 +25,7 @@ export function getDefaultNavigationVisibility(acaMode: boolean): NavigationVisi
     "marketplace",
     "orchestrator",
     "experiments",
+    "enterprise-admin",
     "teams",
   ]);
 

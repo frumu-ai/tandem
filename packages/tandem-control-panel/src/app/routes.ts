@@ -12,6 +12,7 @@ export type RouteId =
   | "studio"
   | "automations"
   | "experiments"
+  | "enterprise-admin"
   | "coding"
   | "orchestrator"
   | "agents"

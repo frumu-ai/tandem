@@ -31,6 +31,10 @@ ingestion flows remain follow-up implementation phases.
 - Added noop enterprise admin endpoints for org-unit and source-binding lists
   and mutations. These thread tenant/principal context and return explicit
   `noop` responses until enterprise admin storage is configured.
+- Added a hidden-by-default Enterprise admin page in the control panel. It reads
+  the noop org-unit and source-binding endpoints, displays tenant/principal
+  context, and keeps the UI explicit that persistence and ingestion are not
+  configured yet.
 - Connector credential references carry only `SecretRef` metadata and default
   to read-only credentials. They intentionally do not model raw credential
   values.
