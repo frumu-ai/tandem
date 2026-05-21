@@ -287,6 +287,31 @@ fn connector_credential_ref_body(credential_id: &str, secret_id: &str) -> String
 }
 
 #[tokio::test]
+async fn enterprise_connectors_reject_hosted_member_without_admin_role() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/connectors")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-member")
+        .header("x-tandem-request-source", "tandem-web")
+        .body(Body::from(connector_body("google_drive", "google_drive")))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("ENTERPRISE_ADMIN_REQUIRED")
+    );
+}
+
+#[tokio::test]
 async fn enterprise_connectors_create_and_update_persist_under_request_tenant() {
     let state = test_state().await;
     let storage_path = state.enterprise_connectors_path.clone();

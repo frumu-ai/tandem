@@ -338,6 +338,34 @@ async fn memory_import_records_enterprise_ingestion_job_audit() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(storage_path.exists());
 
+    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
+    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+        .await
+        .expect("memory db");
+    let rows = db
+        .list_source_object_lifecycle_for_binding_for_tenant(
+            &tandem_memory::types::MemoryTenantScope::local(),
+            "audited-binding",
+        )
+        .await
+        .expect("source objects");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]
+            .resource_ref
+            .get("resource_id")
+            .and_then(Value::as_str),
+        Some("manual-imports")
+    );
+    assert_eq!(
+        rows[0]
+            .resource_ref
+            .get("resource_kind")
+            .and_then(Value::as_str),
+        Some("document_collection")
+    );
+    assert_eq!(rows[0].data_class, "internal");
+
     let req = Request::builder()
         .method("GET")
         .uri("/enterprise/ingestion-jobs?binding_id=audited-binding")

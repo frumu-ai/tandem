@@ -624,12 +624,87 @@ mod tests {
         values
     }
 
+    fn source_object_record(
+        source_object_id: &str,
+        tenant_scope: MemoryTenantScope,
+    ) -> SourceObjectLifecycleRecord {
+        SourceObjectLifecycleRecord {
+            source_object_id: source_object_id.to_string(),
+            tenant_scope,
+            source_binding_id: "shared-binding".to_string(),
+            connector_id: "manual_upload".to_string(),
+            state: SourceObjectLifecycleState::Active,
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            import_namespace: "shared-import".to_string(),
+            indexed_path: "shared-import/note.md".to_string(),
+            native_object_id: "shared-import/note.md".to_string(),
+            resource_ref: serde_json::json!({
+                "organization_id": "org-a",
+                "workspace_id": "workspace-a",
+                "resource_kind": "document_collection",
+                "resource_id": "shared-docs"
+            }),
+            data_class: "internal".to_string(),
+            content_hash: Some("content-hash".to_string()),
+            source_hash: Some("source-hash".to_string()),
+            first_seen_at_ms: 1_000,
+            last_seen_at_ms: 1_000,
+            tombstoned_at_ms: None,
+            metadata: None,
+        }
+    }
+
     #[tokio::test]
     async fn test_init_schema() {
         let (db, _temp) = setup_test_db().await;
         // If we get here, schema was initialized successfully
         let stats = db.get_stats().await.unwrap();
         assert_eq!(stats.total_chunks, 0);
+    }
+
+    #[tokio::test]
+    async fn source_object_lifecycle_native_ids_are_tenant_scoped() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+
+        db.upsert_source_object_active_for_tenant(&source_object_record(
+            "source-object-a",
+            tenant_a.clone(),
+        ))
+        .await
+        .unwrap();
+        db.upsert_source_object_active_for_tenant(&source_object_record(
+            "source-object-b",
+            tenant_b.clone(),
+        ))
+        .await
+        .unwrap();
+
+        let object_a = db
+            .get_source_object_lifecycle_by_native_for_tenant(
+                &tenant_a,
+                "shared-binding",
+                "shared-import/note.md",
+            )
+            .await
+            .unwrap()
+            .expect("tenant A source object");
+        let object_b = db
+            .get_source_object_lifecycle_by_native_for_tenant(
+                &tenant_b,
+                "shared-binding",
+                "shared-import/note.md",
+            )
+            .await
+            .unwrap()
+            .expect("tenant B source object");
+
+        assert_eq!(object_a.source_object_id, "source-object-a");
+        assert_eq!(object_b.source_object_id, "source-object-b");
+        assert_ne!(object_a.source_object_id, object_b.source_object_id);
     }
 
     #[tokio::test]

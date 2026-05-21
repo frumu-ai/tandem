@@ -82,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   imports can opt into a generated `local_manual_upload` binding that stamps
   source-object lifecycle records with an internal `document_collection`
   resource scope, while leaving the empty/unbound legacy import path available.
+- **Enterprise connector trust-proof tests**: Added explicit denial coverage
+  for hosted non-admin connector creation, source-bound upload lifecycle
+  `ResourceRef` stamping, and same-native-source-object IDs across tenants.
 - **Enterprise connector lifecycle registry**: Added storage-backed connector
   instance admin endpoints for tenant-scoped create/list/update and lifecycle
   states (`active`, `paused`, `revoked`, `quarantined`). Source-bound memory

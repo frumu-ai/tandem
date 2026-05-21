@@ -84,6 +84,10 @@ production connector ingestion flows remain follow-up implementation phases.
   `local_manual_upload` binding. This gives local installs source-object
   lifecycle tracking under an internal `document_collection` scope without
   forcing legacy unbound imports to migrate immediately.
+- The enterprise connector trust-proof matrix now has explicit coverage for
+  hosted non-admin connector creation denial, source-bound upload
+  `ResourceRef` lifecycle stamping, and same native source IDs remaining
+  tenant-scoped.
 - Connector instances now have storage-backed tenant-scoped admin endpoints for
   lifecycle management. Source-bound imports require the referenced connector
   to exist and be active, so paused, revoked, or quarantined connectors block
