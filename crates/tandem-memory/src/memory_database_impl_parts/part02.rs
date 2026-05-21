@@ -120,6 +120,159 @@ impl MemoryDatabase {
         .map_err(MemoryError::from)
     }
 
+    pub async fn list_source_object_lifecycle_for_binding_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+        source_binding_id: &str,
+    ) -> MemoryResult<Vec<SourceObjectLifecycleRecord>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT * FROM source_object_lifecycle
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
+               AND source_binding_id = ?4
+             ORDER BY import_namespace, indexed_path",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref(),
+                source_binding_id,
+            ],
+            row_to_source_object_lifecycle,
+        )?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub async fn get_source_object_lifecycle_by_id_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+        source_binding_id: &str,
+        source_object_id: &str,
+    ) -> MemoryResult<Option<SourceObjectLifecycleRecord>> {
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT * FROM source_object_lifecycle
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
+               AND source_binding_id = ?4
+               AND source_object_id = ?5",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref(),
+                source_binding_id,
+                source_object_id,
+            ],
+            row_to_source_object_lifecycle,
+        )
+        .optional()
+        .map_err(MemoryError::from)
+    }
+
+    pub async fn mark_source_object_lifecycle_state_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+        source_binding_id: &str,
+        source_object_id: &str,
+        state: SourceObjectLifecycleState,
+        changed_at_ms: u64,
+    ) -> MemoryResult<bool> {
+        let conn = self.conn.lock().await;
+        let tombstoned_at_ms = if state == SourceObjectLifecycleState::Tombstoned {
+            Some(changed_at_ms as i64)
+        } else {
+            None
+        };
+        let affected = conn.execute(
+            "UPDATE source_object_lifecycle
+             SET state = ?1,
+                 last_seen_at_ms = ?2,
+                 tombstoned_at_ms = ?3
+             WHERE tenant_org_id = ?4
+               AND tenant_workspace_id = ?5
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?6, '')
+               AND source_binding_id = ?7
+               AND source_object_id = ?8",
+            params![
+                state.as_str(),
+                changed_at_ms as i64,
+                tombstoned_at_ms,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref(),
+                source_binding_id,
+                source_object_id,
+            ],
+        )?;
+        Ok(affected > 0)
+    }
+
+    pub async fn rescope_source_object_lifecycle_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+        source_binding_id: &str,
+        source_object_id: &str,
+        resource_ref: &serde_json::Value,
+        data_class: &str,
+        changed_at_ms: u64,
+    ) -> MemoryResult<bool> {
+        let conn = self.conn.lock().await;
+        let resource_ref = serde_json::to_string(resource_ref)?;
+        let affected = conn.execute(
+            "UPDATE source_object_lifecycle
+             SET state = 'rescoped',
+                 resource_ref = ?1,
+                 data_class = ?2,
+                 last_seen_at_ms = ?3,
+                 tombstoned_at_ms = NULL
+             WHERE tenant_org_id = ?4
+               AND tenant_workspace_id = ?5
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?6, '')
+               AND source_binding_id = ?7
+               AND source_object_id = ?8",
+            params![
+                resource_ref,
+                data_class,
+                changed_at_ms as i64,
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref(),
+                source_binding_id,
+                source_object_id,
+            ],
+        )?;
+        Ok(affected > 0)
+    }
+
+    pub async fn delete_source_object_lifecycle_for_tenant(
+        &self,
+        tenant_scope: &MemoryTenantScope,
+        source_binding_id: &str,
+        source_object_id: &str,
+    ) -> MemoryResult<bool> {
+        let conn = self.conn.lock().await;
+        let affected = conn.execute(
+            "DELETE FROM source_object_lifecycle
+             WHERE tenant_org_id = ?1
+               AND tenant_workspace_id = ?2
+               AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
+               AND source_binding_id = ?4
+               AND source_object_id = ?5",
+            params![
+                tenant_scope.org_id.as_str(),
+                tenant_scope.workspace_id.as_str(),
+                tenant_scope.deployment_id.as_deref(),
+                source_binding_id,
+                source_object_id,
+            ],
+        )?;
+        Ok(affected > 0)
+    }
+
     pub async fn upsert_file_index_entry(
         &self,
         project_id: &str,

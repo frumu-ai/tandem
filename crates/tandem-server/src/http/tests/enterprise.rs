@@ -1,4 +1,7 @@
 use super::*;
+use tandem_memory::types::{
+    MemoryTenantScope, MemoryTier, SourceObjectLifecycleRecord, SourceObjectLifecycleState,
+};
 
 #[tokio::test]
 async fn enterprise_status_returns_public_safe_summary() {
@@ -446,4 +449,204 @@ async fn enterprise_source_bindings_do_not_cross_tenant_boundaries() {
         .expect("request");
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_scoped() {
+    let state = test_state().await;
+    let mut rx = state.event_bus.subscribe();
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/source-bindings")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(source_binding_body(
+            "finance-drive",
+            "acme",
+            "finance",
+        )))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = next_event_of_type(
+        &mut rx,
+        "enterprise.source_binding.cache_invalidation_required",
+    )
+    .await;
+
+    let tenant_scope = MemoryTenantScope {
+        org_id: "acme".to_string(),
+        workspace_id: "finance".to_string(),
+        deployment_id: None,
+    };
+    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
+    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+        .await
+        .expect("memory db");
+    db.upsert_source_object_active_for_tenant(&SourceObjectLifecycleRecord {
+        source_object_id: "source-object-finance-note".to_string(),
+        tenant_scope: tenant_scope.clone(),
+        source_binding_id: "finance-drive".to_string(),
+        connector_id: "manual-upload".to_string(),
+        state: SourceObjectLifecycleState::Active,
+        tier: MemoryTier::Global,
+        session_id: None,
+        project_id: None,
+        import_namespace: "import-test".to_string(),
+        indexed_path: "import-test/note.md".to_string(),
+        native_object_id: "import-test/note.md".to_string(),
+        resource_ref: json!({
+            "organization_id": "acme",
+            "workspace_id": "finance",
+            "resource_kind": "document_collection",
+            "resource_id": "finance-drive"
+        }),
+        data_class: "financial_record".to_string(),
+        content_hash: Some("content-1".to_string()),
+        source_hash: Some("source-1".to_string()),
+        first_seen_at_ms: 1_000,
+        last_seen_at_ms: 1_000,
+        tombstoned_at_ms: None,
+        metadata: None,
+    })
+    .await
+    .expect("seed lifecycle");
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/source-bindings/finance-drive/source-objects")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/enterprise/source-bindings/finance-drive/source-objects/source-object-finance-note")
+        .header("x-tandem-org-id", "other-co")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/source-bindings/finance-drive/source-objects/source-object-finance-note/reindex")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("action").and_then(Value::as_str),
+        Some("reindex_requested")
+    );
+    let reindex_event = next_event_of_type(
+        &mut rx,
+        "enterprise.source_binding.cache_invalidation_required",
+    )
+    .await;
+    assert_eq!(
+        reindex_event
+            .properties
+            .get("reason")
+            .and_then(Value::as_str),
+        Some("source_object_reindex_requested")
+    );
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/enterprise/source-bindings/finance-drive/source-objects/source-object-finance-note/scope")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::from(
+            json!({
+                "resource_ref": {
+                    "organization_id": "acme",
+                    "workspace_id": "finance",
+                    "resource_kind": "document_collection",
+                    "resource_id": "finance-archive"
+                },
+                "data_class": "internal"
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("action").and_then(Value::as_str),
+        Some("rescoped")
+    );
+    assert_eq!(
+        payload
+            .get("source_object")
+            .and_then(|object| object.get("state"))
+            .and_then(Value::as_str),
+        Some("rescoped")
+    );
+    assert_eq!(
+        payload
+            .get("source_object")
+            .and_then(|object| object.get("data_class"))
+            .and_then(Value::as_str),
+        Some("internal")
+    );
+    let rescope_event = next_event_of_type(
+        &mut rx,
+        "enterprise.source_binding.cache_invalidation_required",
+    )
+    .await;
+    assert_eq!(
+        rescope_event
+            .properties
+            .get("reason")
+            .and_then(Value::as_str),
+        Some("source_object_rescoped")
+    );
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/enterprise/source-bindings/finance-drive/source-objects/source-object-finance-note")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("action").and_then(Value::as_str),
+        Some("deleted")
+    );
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/source-bindings/finance-drive/source-objects")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(0));
 }

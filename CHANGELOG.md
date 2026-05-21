@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and native object identity. Reimporting changed content preserves the stable
   source object ID while updating hashes, and `sync_deletes` tombstones removed
   source-bound uploads for future reindex/delete/re-scope workflows.
+- **Enterprise source-object lifecycle admin actions**: Added admin-gated
+  source-object lifecycle endpoints under source bindings to list tracked
+  uploaded objects, request reindex by purging stale chunk/index rows, hard
+  delete a source object and its indexed content, and re-scope lifecycle
+  resource/data-class metadata while invalidating source-binding cache scope.
 
 ### Documentation
 

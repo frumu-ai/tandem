@@ -69,6 +69,11 @@ production connector ingestion flows remain follow-up implementation phases.
   documents keep the same source object ID while their hashes update, and
   `sync_deletes` tombstones removed uploads so later admin workflows can
   reindex, delete, or re-scope by binding/resource.
+- Enterprise admins can now list source-object lifecycle records for a source
+  binding, request reindex by purging stale chunks/import index rows, hard
+  delete a source object and indexed content, or re-scope its resource/data
+  class metadata. Each mutation reuses enterprise admin authorization and emits
+  source-binding cache invalidation.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

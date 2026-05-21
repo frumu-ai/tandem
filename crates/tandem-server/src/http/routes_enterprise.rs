@@ -11,6 +11,10 @@ use tandem_enterprise_contract::{
     PrincipalRef, RequestPrincipal, ResourceRef, SourceBinding, SourceBindingState, TenantContext,
     VerifiedTenantContext,
 };
+use tandem_memory::db::MemoryDatabase;
+use tandem_memory::types::{
+    MemoryTenantScope, SourceObjectLifecycleRecord, SourceObjectLifecycleState,
+};
 
 use crate::{util::time::now_ms, AppState, EngineEvent};
 
@@ -39,6 +43,25 @@ struct EnterpriseSourceBindingsResponse {
     base: EnterpriseAdminResponseBase,
     source_bindings: Vec<SourceBinding>,
     count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct EnterpriseSourceObjectsResponse {
+    #[serde(flatten)]
+    base: EnterpriseAdminResponseBase,
+    source_objects: Vec<SourceObjectLifecycleRecord>,
+    count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct EnterpriseSourceObjectActionResponse {
+    #[serde(flatten)]
+    base: EnterpriseAdminResponseBase,
+    action: &'static str,
+    source_object: Option<SourceObjectLifecycleRecord>,
+    chunks_deleted: i64,
+    bytes_estimated: i64,
+    import_index_deleted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +112,12 @@ struct UpdateSourceBindingRequest {
     ingestion_policy: Option<IngestionPolicy>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RescopeSourceObjectRequest {
+    resource_ref: ResourceRef,
+    data_class: DataClass,
+}
+
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
         .route(
@@ -102,6 +131,22 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route(
             "/enterprise/source-bindings/{binding_id}",
             patch(update_source_binding),
+        )
+        .route(
+            "/enterprise/source-bindings/{binding_id}/source-objects",
+            get(list_source_objects),
+        )
+        .route(
+            "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}/reindex",
+            post(reindex_source_object),
+        )
+        .route(
+            "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}",
+            axum::routing::delete(delete_source_object),
+        )
+        .route(
+            "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}/scope",
+            patch(rescope_source_object),
         )
 }
 
@@ -330,6 +375,174 @@ async fn update_source_binding(
     }))
 }
 
+async fn list_source_objects(
+    State(state): State<AppState>,
+    Path(binding_id): Path<String>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+) -> EnterpriseResult<EnterpriseSourceObjectsResponse> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
+    ensure_source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
+    let db = open_enterprise_memory_db().await?;
+    let mut source_objects = db
+        .list_source_object_lifecycle_for_binding_for_tenant(
+            &memory_tenant_scope(&tenant_context),
+            &binding_id,
+        )
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECTS_LIST_FAILED"))?;
+    source_objects.sort_by(|left, right| {
+        left.resource_ref
+            .to_string()
+            .cmp(&right.resource_ref.to_string())
+            .then_with(|| left.indexed_path.cmp(&right.indexed_path))
+    });
+
+    Ok(Json(EnterpriseSourceObjectsResponse {
+        base: storage_base(tenant_context, request_principal),
+        count: source_objects.len(),
+        source_objects,
+    }))
+}
+
+async fn reindex_source_object(
+    State(state): State<AppState>,
+    Path((binding_id, source_object_id)): Path<(String, String)>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+) -> EnterpriseResult<EnterpriseSourceObjectActionResponse> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
+    let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
+    ensure_source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
+    let db = open_enterprise_memory_db().await?;
+    let tenant_scope = memory_tenant_scope(&tenant_context);
+    let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
+    let (chunks_deleted, bytes_estimated) =
+        purge_source_object_indexed_content(&db, &record).await?;
+    db.mark_source_object_lifecycle_state_for_tenant(
+        &tenant_scope,
+        &binding_id,
+        &source_object_id,
+        SourceObjectLifecycleState::Active,
+        now_ms(),
+    )
+    .await
+    .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_REINDEX_FAILED"))?;
+    emit_source_binding_cache_invalidation_required(
+        &state,
+        &tenant_context,
+        &binding_id,
+        "source_object_reindex_requested",
+    );
+    let source_object = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id)
+        .await
+        .ok();
+
+    Ok(Json(EnterpriseSourceObjectActionResponse {
+        base: storage_base(tenant_context, request_principal),
+        action: "reindex_requested",
+        source_object,
+        chunks_deleted,
+        bytes_estimated,
+        import_index_deleted: true,
+    }))
+}
+
+async fn delete_source_object(
+    State(state): State<AppState>,
+    Path((binding_id, source_object_id)): Path<(String, String)>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+) -> EnterpriseResult<EnterpriseSourceObjectActionResponse> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
+    let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
+    ensure_source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
+    let db = open_enterprise_memory_db().await?;
+    let tenant_scope = memory_tenant_scope(&tenant_context);
+    let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
+    let (chunks_deleted, bytes_estimated) =
+        purge_source_object_indexed_content(&db, &record).await?;
+    db.delete_source_object_lifecycle_for_tenant(&tenant_scope, &binding_id, &source_object_id)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_DELETE_FAILED"))?;
+    emit_source_binding_cache_invalidation_required(
+        &state,
+        &tenant_context,
+        &binding_id,
+        "source_object_deleted",
+    );
+
+    Ok(Json(EnterpriseSourceObjectActionResponse {
+        base: storage_base(tenant_context, request_principal),
+        action: "deleted",
+        source_object: Some(record),
+        chunks_deleted,
+        bytes_estimated,
+        import_index_deleted: true,
+    }))
+}
+
+async fn rescope_source_object(
+    State(state): State<AppState>,
+    Path((binding_id, source_object_id)): Path<(String, String)>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Json(input): Json<RescopeSourceObjectRequest>,
+) -> EnterpriseResult<EnterpriseSourceObjectActionResponse> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
+    let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
+    validate_resource_ref_matches_tenant(&input.resource_ref, &tenant_context)?;
+    ensure_source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
+    let db = open_enterprise_memory_db().await?;
+    let tenant_scope = memory_tenant_scope(&tenant_context);
+    let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
+    let (chunks_deleted, bytes_estimated) =
+        purge_source_object_indexed_content(&db, &record).await?;
+    let resource_ref = serde_json::to_value(input.resource_ref)
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_RESCOPE_FAILED"))?;
+    let data_class = serialize_data_class(input.data_class)?;
+    let updated = db
+        .rescope_source_object_lifecycle_for_tenant(
+            &tenant_scope,
+            &binding_id,
+            &source_object_id,
+            &resource_ref,
+            &data_class,
+            now_ms(),
+        )
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_RESCOPE_FAILED"))?;
+    if !updated {
+        return Err(not_found("ENTERPRISE_SOURCE_OBJECT_NOT_FOUND"));
+    }
+    emit_source_binding_cache_invalidation_required(
+        &state,
+        &tenant_context,
+        &binding_id,
+        "source_object_rescoped",
+    );
+    let source_object = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id)
+        .await
+        .ok();
+
+    Ok(Json(EnterpriseSourceObjectActionResponse {
+        base: storage_base(tenant_context, request_principal),
+        action: "rescoped",
+        source_object,
+        chunks_deleted,
+        bytes_estimated,
+        import_index_deleted: true,
+    }))
+}
+
 fn emit_source_binding_cache_invalidation_required(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -350,6 +563,87 @@ fn emit_source_binding_cache_invalidation_required(
             }
         }),
     ));
+}
+
+async fn source_object_by_id(
+    db: &MemoryDatabase,
+    tenant_scope: &MemoryTenantScope,
+    binding_id: &str,
+    source_object_id: &str,
+) -> Result<SourceObjectLifecycleRecord, (StatusCode, Json<Value>)> {
+    db.get_source_object_lifecycle_by_id_for_tenant(tenant_scope, binding_id, source_object_id)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_READ_FAILED"))?
+        .ok_or_else(|| not_found("ENTERPRISE_SOURCE_OBJECT_NOT_FOUND"))
+}
+
+async fn purge_source_object_indexed_content(
+    db: &MemoryDatabase,
+    record: &SourceObjectLifecycleRecord,
+) -> Result<(i64, i64), (StatusCode, Json<Value>)> {
+    let result = db
+        .delete_file_chunks_by_path_for_tenant(
+            record.tier,
+            record.session_id.as_deref(),
+            record.project_id.as_deref(),
+            &record.indexed_path,
+            &record.tenant_scope,
+        )
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_PURGE_FAILED"))?;
+    db.delete_import_index_entry_for_tenant(
+        record.tier,
+        record.session_id.as_deref(),
+        record.project_id.as_deref(),
+        &record.indexed_path,
+        &record.tenant_scope,
+    )
+    .await
+    .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_PURGE_FAILED"))?;
+    Ok(result)
+}
+
+async fn open_enterprise_memory_db() -> Result<MemoryDatabase, (StatusCode, Json<Value>)> {
+    let paths = tandem_core::resolve_shared_paths()
+        .map_err(|_| internal_error("ENTERPRISE_MEMORY_DB_OPEN_FAILED"))?;
+    if let Some(parent) = paths.memory_db_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_MEMORY_DB_OPEN_FAILED"))?;
+    }
+    MemoryDatabase::new(&paths.memory_db_path)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_MEMORY_DB_OPEN_FAILED"))
+}
+
+fn memory_tenant_scope(tenant_context: &TenantContext) -> MemoryTenantScope {
+    MemoryTenantScope {
+        org_id: tenant_context.org_id.clone(),
+        workspace_id: tenant_context.workspace_id.clone(),
+        deployment_id: tenant_context.deployment_id.clone(),
+    }
+}
+
+fn serialize_data_class(data_class: DataClass) -> Result<String, (StatusCode, Json<Value>)> {
+    serde_json::to_value(data_class)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or_else(|| internal_error("ENTERPRISE_DATA_CLASS_SERIALIZE_FAILED"))
+}
+
+async fn ensure_source_binding_for_tenant(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    binding_id: &str,
+) -> Result<SourceBinding, (StatusCode, Json<Value>)> {
+    state
+        .enterprise_source_bindings
+        .read()
+        .await
+        .values()
+        .find(|binding| binding.binding_id == binding_id && binding.tenant_matches(tenant_context))
+        .cloned()
+        .ok_or_else(|| not_found("ENTERPRISE_SOURCE_BINDING_NOT_FOUND"))
 }
 
 fn storage_base(
