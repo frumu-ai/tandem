@@ -60,6 +60,10 @@ production connector ingestion flows remain follow-up implementation phases.
   Records with enterprise source-binding metadata are filtered out unless the
   verified tenant assertion carries a strict projection with matching
   resource/data-class read authority.
+- Response-cache entries can now be partitioned by tenant and source binding,
+  and invalidated for a specific binding. Source-binding admin changes emit an
+  invalidation-required event so future cache consumers can purge stale answers
+  after disable, quarantine, revoke, or permission changes.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

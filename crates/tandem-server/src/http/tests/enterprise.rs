@@ -257,6 +257,7 @@ fn source_binding_body(binding_id: &str, org_id: &str, workspace_id: &str) -> St
 async fn enterprise_source_bindings_create_and_update_persist_under_request_tenant() {
     let state = test_state().await;
     let storage_path = state.enterprise_source_bindings_path.clone();
+    let mut rx = state.event_bus.subscribe();
     let app = app_router(state);
     let req = Request::builder()
         .method("POST")
@@ -274,6 +275,25 @@ async fn enterprise_source_bindings_create_and_update_persist_under_request_tena
     let resp = app.clone().oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(storage_path.exists());
+    let create_event = next_event_of_type(
+        &mut rx,
+        "enterprise.source_binding.cache_invalidation_required",
+    )
+    .await;
+    assert_eq!(
+        create_event
+            .properties
+            .get("binding_id")
+            .and_then(Value::as_str),
+        Some("finance-drive")
+    );
+    assert_eq!(
+        create_event
+            .properties
+            .get("reason")
+            .and_then(Value::as_str),
+        Some("source_binding_created")
+    );
 
     let req = Request::builder()
         .method("PATCH")
@@ -296,6 +316,33 @@ async fn enterprise_source_bindings_create_and_update_persist_under_request_tena
         .expect("request");
     let resp = app.clone().oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
+    let update_event = next_event_of_type(
+        &mut rx,
+        "enterprise.source_binding.cache_invalidation_required",
+    )
+    .await;
+    assert_eq!(
+        update_event
+            .properties
+            .get("binding_id")
+            .and_then(Value::as_str),
+        Some("finance-drive")
+    );
+    assert_eq!(
+        update_event
+            .properties
+            .get("reason")
+            .and_then(Value::as_str),
+        Some("source_binding_updated")
+    );
+    assert_eq!(
+        update_event
+            .properties
+            .get("cache_scope")
+            .and_then(|scope| scope.get("tenant_org_id"))
+            .and_then(Value::as_str),
+        Some("acme")
+    );
 
     let req = Request::builder()
         .method("GET")

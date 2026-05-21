@@ -12,7 +12,7 @@ use tandem_enterprise_contract::{
     VerifiedTenantContext,
 };
 
-use crate::{util::time::now_ms, AppState};
+use crate::{util::time::now_ms, AppState, EngineEvent};
 
 type EnterpriseResult<T> = Result<Json<T>, (StatusCode, Json<Value>)>;
 
@@ -265,6 +265,12 @@ async fn create_source_binding(
         persist_enterprise_source_bindings(&state.enterprise_source_bindings_path, &registry)
             .await?;
     }
+    emit_source_binding_cache_invalidation_required(
+        &state,
+        &tenant_context,
+        &input.binding_id,
+        "source_binding_created",
+    );
 
     Ok(Json(EnterpriseAdminResponseBase {
         message: "enterprise source binding saved",
@@ -283,7 +289,7 @@ async fn update_source_binding(
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
 
-    {
+    let updated_binding = {
         let mut registry = state.enterprise_source_bindings.write().await;
         let Some(binding) = registry.values_mut().find(|binding| {
             binding.binding_id == binding_id && binding.tenant_matches(&tenant_context)
@@ -306,14 +312,44 @@ async fn update_source_binding(
             binding.ingestion_policy = ingestion_policy;
         }
         binding.updated_at_ms = now_ms();
+        let updated_binding = binding.clone();
         persist_enterprise_source_bindings(&state.enterprise_source_bindings_path, &registry)
             .await?;
-    }
+        updated_binding
+    };
+    emit_source_binding_cache_invalidation_required(
+        &state,
+        &tenant_context,
+        &updated_binding.binding_id,
+        "source_binding_updated",
+    );
 
     Ok(Json(EnterpriseAdminResponseBase {
         message: "enterprise source binding updated",
         ..storage_base(tenant_context, request_principal)
     }))
+}
+
+fn emit_source_binding_cache_invalidation_required(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    binding_id: &str,
+    reason: &str,
+) {
+    state.event_bus.publish(EngineEvent::new(
+        "enterprise.source_binding.cache_invalidation_required",
+        json!({
+            "reason": reason,
+            "tenant_context": tenant_context,
+            "binding_id": binding_id,
+            "cache_scope": {
+                "tenant_org_id": tenant_context.org_id,
+                "tenant_workspace_id": tenant_context.workspace_id,
+                "tenant_deployment_id": tenant_context.deployment_id,
+                "source_binding_id": binding_id,
+            }
+        }),
+    ));
 }
 
 fn storage_base(

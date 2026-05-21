@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resource/data-class enforcement to governed global memory search so records
   carrying source-binding metadata are hidden unless the signed strict tenant
   projection grants `Read` on that bound resource and data class.
+- **Enterprise response-cache source-binding partitioning**: Added tenant and
+  source-binding scope metadata to the response cache, scoped cache-key helpers,
+  and source-binding invalidation APIs. Source-binding admin create/update now
+  emits an explicit cache-invalidation-required event for revoke, quarantine,
+  permission, or policy changes.
 
 ### Documentation
 
