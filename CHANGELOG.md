@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binding belongs to the request tenant and allows indexing before import,
   stamps imported chunks with source-binding/resource/data-class/source-object
   metadata, and keeps local/default manual imports unchanged.
+- **Enterprise source-bound memory retrieval guard**: Added memory access
+  filtering for source-bound chunks so bound enterprise memory is hidden by
+  default and can only participate in vector ranking when an explicit strict
+  tenant projection grants `Read` on the bound `ResourceRef` and `DataClass`.
 
 ### Documentation
 

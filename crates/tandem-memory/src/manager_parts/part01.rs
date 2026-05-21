@@ -36,6 +36,7 @@ const MAX_KNOWLEDGE_PACK_ITEMS: usize = 3;
 const GUIDE_DOC_SOURCE_PREFIX: &str = "guide_docs:";
 const GUIDE_DOC_RECENCY_HALFLIFE_MS: f64 = 30.0 * 24.0 * 60.0 * 60.0 * 1000.0;
 const GUIDE_DOC_RECENCY_WEIGHT: f64 = 0.12;
+const ACCESS_FILTER_CANDIDATE_MULTIPLIER: i64 = 5;
 
 impl MemoryManager {
     fn guide_doc_similarity(similarity: f64, chunk: &MemoryChunk, now_ms: i64) -> f64 {
@@ -226,7 +227,34 @@ impl MemoryManager {
         tenant_scope: &MemoryTenantScope,
         limit: Option<i64>,
     ) -> MemoryResult<Vec<MemorySearchResult>> {
+        self.search_for_tenant_with_access_filter(
+            query,
+            tier,
+            project_id,
+            session_id,
+            tenant_scope,
+            limit,
+            None,
+        )
+        .await
+    }
+
+    pub async fn search_for_tenant_with_access_filter(
+        &self,
+        query: &str,
+        tier: Option<MemoryTier>,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+        limit: Option<i64>,
+        access_filter: Option<&crate::types::MemoryAccessFilter>,
+    ) -> MemoryResult<Vec<MemorySearchResult>> {
         let effective_limit = limit.unwrap_or(5);
+        let candidate_limit = if access_filter.is_some() {
+            effective_limit.saturating_mul(ACCESS_FILTER_CANDIDATE_MULTIPLIER)
+        } else {
+            effective_limit
+        };
 
         // Generate query embedding
         let embedding_service = self.embedding_service.lock().await;
@@ -257,7 +285,7 @@ impl MemoryManager {
                     project_id,
                     session_id,
                     tenant_scope,
-                    effective_limit,
+                    candidate_limit,
                 )
                 .await
             {
@@ -287,7 +315,7 @@ impl MemoryManager {
                                 project_id,
                                 session_id,
                                 tenant_scope,
-                                effective_limit,
+                                candidate_limit,
                             )
                             .await
                         {
@@ -308,6 +336,9 @@ impl MemoryManager {
             };
 
             for (chunk, distance) in tier_results {
+                if !memory_chunk_visible_to_access_filter(&chunk, access_filter) {
+                    continue;
+                }
                 // Convert distance to similarity (cosine similarity)
                 // sqlite-vec returns distance, where lower is more similar
                 // Cosine similarity ranges from -1 to 1, but for normalized vectors it's 0 to 1
@@ -941,6 +972,26 @@ impl MemoryManager {
         tenant_scope: &MemoryTenantScope,
         token_budget: Option<i64>,
     ) -> MemoryResult<(MemoryContext, MemoryRetrievalMeta)> {
+        self.retrieve_context_with_meta_for_tenant_with_access_filter(
+            query,
+            project_id,
+            session_id,
+            tenant_scope,
+            token_budget,
+            None,
+        )
+        .await
+    }
+
+    pub async fn retrieve_context_with_meta_for_tenant_with_access_filter(
+        &self,
+        query: &str,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
+        token_budget: Option<i64>,
+        access_filter: Option<&crate::types::MemoryAccessFilter>,
+    ) -> MemoryResult<(MemoryContext, MemoryRetrievalMeta)> {
         let config = if let Some(pid) = project_id {
             self.db
                 .get_or_create_config_for_tenant(pid, tenant_scope)
@@ -956,19 +1007,23 @@ impl MemoryManager {
             self.db
                 .get_session_chunks_for_tenant(sid, tenant_scope)
                 .await?
+                .into_iter()
+                .filter(|chunk| memory_chunk_visible_to_access_filter(chunk, access_filter))
+                .collect()
         } else {
             Vec::new()
         };
 
         // Search for relevant history
         let search_results = self
-            .search_for_tenant(
+            .search_for_tenant_with_access_filter(
                 query,
                 None,
                 project_id,
                 session_id,
                 tenant_scope,
                 Some(retrieval_limit),
+                access_filter,
             )
             .await?;
 
@@ -1539,6 +1594,18 @@ impl MemoryManager {
 
         Ok(Some(summary_text))
     }
+}
+
+fn memory_chunk_visible_to_access_filter(
+    chunk: &MemoryChunk,
+    access_filter: Option<&crate::types::MemoryAccessFilter>,
+) -> bool {
+    if crate::types::MemorySourceAccessTarget::from_chunk(chunk).is_none() {
+        return true;
+    }
+    access_filter
+        .map(|filter| filter.allows_chunk(chunk))
+        .unwrap_or(false)
 }
 
 /// Create memory manager with default database path

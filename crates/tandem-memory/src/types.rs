@@ -3,6 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tandem_enterprise_contract::{
+    AccessDecision, AccessPermission, DataClass, ResourceRef, StrictTenantContext,
+};
 use tandem_orchestrator::{KnowledgeScope, KnowledgeTrustLevel};
 use thiserror::Error;
 
@@ -89,6 +92,65 @@ pub struct MemoryChunk {
 pub struct MemorySearchResult {
     pub chunk: MemoryChunk,
     pub similarity: f64,
+}
+
+/// Optional enterprise access projection applied before memory ranking.
+#[derive(Debug, Clone)]
+pub struct MemoryAccessFilter {
+    pub strict_context: StrictTenantContext,
+    pub now_ms: u64,
+}
+
+impl MemoryAccessFilter {
+    pub fn strict(strict_context: StrictTenantContext, now_ms: u64) -> Self {
+        Self {
+            strict_context,
+            now_ms,
+        }
+    }
+
+    pub fn allows_chunk(&self, chunk: &MemoryChunk) -> bool {
+        let Some(target) = MemorySourceAccessTarget::from_chunk(chunk) else {
+            return true;
+        };
+        self.strict_context
+            .evaluate_access(
+                &target.resource_ref,
+                AccessPermission::Read,
+                target.data_class,
+                self.now_ms,
+            )
+            .decision
+            == AccessDecision::Allow
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySourceAccessTarget {
+    pub resource_ref: ResourceRef,
+    pub data_class: DataClass,
+    pub source_binding_id: Option<String>,
+    pub source_object_id: Option<String>,
+}
+
+impl MemorySourceAccessTarget {
+    pub fn from_chunk(chunk: &MemoryChunk) -> Option<Self> {
+        let binding = chunk.metadata.as_ref()?.get("enterprise_source_binding")?;
+        let resource_ref = serde_json::from_value(binding.get("resource_ref")?.clone()).ok()?;
+        let data_class = serde_json::from_value(binding.get("data_class")?.clone()).ok()?;
+        Some(Self {
+            resource_ref,
+            data_class,
+            source_binding_id: binding
+                .get("binding_id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            source_object_id: binding
+                .get("source_object_id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+        })
+    }
 }
 
 /// Memory configuration for a project

@@ -7726,6 +7726,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlite-vec",
+ "tandem-enterprise-contract",
  "tandem-orchestrator",
  "tandem-providers",
  "tempfile",

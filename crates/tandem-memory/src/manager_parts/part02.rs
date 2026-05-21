@@ -67,6 +67,194 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_source_bound_search_requires_matching_resource_grant() {
+        let (manager, _temp) = setup_test_manager().await;
+        let tenant_scope = MemoryTenantScope {
+            org_id: "acme".to_string(),
+            workspace_id: "hq".to_string(),
+            deployment_id: Some("dep-1".to_string()),
+        };
+        let hr_resource = tandem_enterprise_contract::ResourceRef::new(
+            "acme",
+            "hq",
+            tandem_enterprise_contract::ResourceKind::DocumentCollection,
+            "hr-handbook",
+        );
+        let engineering_resource = tandem_enterprise_contract::ResourceRef::new(
+            "acme",
+            "hq",
+            tandem_enterprise_contract::ResourceKind::DocumentCollection,
+            "engineering-handbook",
+        );
+        let source_bound_metadata = serde_json::json!({
+            "enterprise_source_binding": {
+                "binding_id": "binding-hr",
+                "connector_id": "manual-upload",
+                "resource_ref": hr_resource,
+                "data_class": "financial_record",
+                "source_object_id": "source-object-hr",
+                "native_object_id": "/imports/hr/payroll.md",
+                "content_hash": "hash-hr"
+            }
+        });
+
+        let unbound_request = StoreMessageRequest {
+            content: "General onboarding has cafeteria hours and building access notes."
+                .to_string(),
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            source: "file".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: Some("hash-general".to_string()),
+            tenant_scope: tenant_scope.clone(),
+            metadata: None,
+        };
+        let bound_request = StoreMessageRequest {
+            content: "Payroll compensation bands are restricted to the HR finance process."
+                .to_string(),
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            source: "file".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: Some("hash-hr".to_string()),
+            tenant_scope: tenant_scope.clone(),
+            metadata: Some(source_bound_metadata),
+        };
+
+        if let Err(err) = manager.store_message(unbound_request).await {
+            if is_embeddings_disabled(&err) {
+                return;
+            }
+            panic!("store unbound message failed: {err}");
+        }
+        if let Err(err) = manager.store_message(bound_request).await {
+            if is_embeddings_disabled(&err) {
+                return;
+            }
+            panic!("store bound message failed: {err}");
+        }
+
+        let unfiltered = manager
+            .search_for_tenant(
+                "payroll compensation cafeteria",
+                Some(MemoryTier::Global),
+                None,
+                None,
+                &tenant_scope,
+                Some(10),
+            )
+            .await
+            .expect("unfiltered search");
+        assert!(
+            unfiltered
+                .iter()
+                .all(|hit| !hit.chunk.content.contains("Payroll compensation")),
+            "source-bound chunks must be hidden without an enterprise access filter"
+        );
+
+        let engineering_filter = crate::types::MemoryAccessFilter::strict(
+            strict_context_for_resource(
+                &tenant_scope,
+                engineering_resource,
+                tandem_enterprise_contract::DataClass::FinancialRecord,
+            ),
+            chrono::Utc::now().timestamp_millis() as u64,
+        );
+        let denied = manager
+            .search_for_tenant_with_access_filter(
+                "payroll compensation",
+                Some(MemoryTier::Global),
+                None,
+                None,
+                &tenant_scope,
+                Some(10),
+                Some(&engineering_filter),
+            )
+            .await
+            .expect("denied filtered search");
+        assert!(
+            denied
+                .iter()
+                .all(|hit| !hit.chunk.content.contains("Payroll compensation")),
+            "a grant for a different resource must not reveal the bound chunk"
+        );
+
+        let hr_filter = crate::types::MemoryAccessFilter::strict(
+            strict_context_for_resource(
+                &tenant_scope,
+                hr_resource,
+                tandem_enterprise_contract::DataClass::FinancialRecord,
+            ),
+            chrono::Utc::now().timestamp_millis() as u64,
+        );
+        let allowed = manager
+            .search_for_tenant_with_access_filter(
+                "payroll compensation",
+                Some(MemoryTier::Global),
+                None,
+                None,
+                &tenant_scope,
+                Some(10),
+                Some(&hr_filter),
+            )
+            .await
+            .expect("allowed filtered search");
+        assert!(
+            allowed
+                .iter()
+                .any(|hit| hit.chunk.content.contains("Payroll compensation")),
+            "a matching resource/data-class grant should reveal the source-bound chunk"
+        );
+    }
+
+    fn strict_context_for_resource(
+        tenant_scope: &MemoryTenantScope,
+        resource: tandem_enterprise_contract::ResourceRef,
+        data_class: tandem_enterprise_contract::DataClass,
+    ) -> tandem_enterprise_contract::StrictTenantContext {
+        let tenant_context = tandem_enterprise_contract::TenantContext::explicit_user_workspace(
+            tenant_scope.org_id.clone(),
+            tenant_scope.workspace_id.clone(),
+            tenant_scope.deployment_id.clone(),
+            "user-a",
+        );
+        let principal = tandem_enterprise_contract::PrincipalRef::human_user("user-a");
+        let request_principal =
+            tandem_enterprise_contract::RequestPrincipal::authenticated_user("user-a", "test");
+        let grant = tandem_enterprise_contract::ScopedGrant::new(
+            "grant-read",
+            principal.clone(),
+            resource.clone(),
+            tandem_enterprise_contract::GrantSource::Direct,
+        )
+        .with_permissions(vec![tandem_enterprise_contract::AccessPermission::Read])
+        .with_data_classes(vec![data_class]);
+        tandem_enterprise_contract::StrictTenantContext::new(
+            tenant_context,
+            principal,
+            tandem_enterprise_contract::AuthorityChain::from_request(request_principal),
+            tandem_enterprise_contract::ResourceScope::root(resource),
+            tandem_enterprise_contract::AssertionMetadata::new(
+                "test",
+                "tandem-runtime",
+                1,
+                u64::MAX,
+                "assertion-test",
+            ),
+        )
+        .with_grants(vec![grant])
+        .with_data_boundary(tandem_enterprise_contract::DataBoundary::allow(vec![
+            data_class,
+        ]))
+    }
+
+    #[tokio::test]
     async fn test_search_global_guide_docs_reranks_newer_doc_by_mtime() {
         let (manager, _temp) = setup_test_manager().await;
 

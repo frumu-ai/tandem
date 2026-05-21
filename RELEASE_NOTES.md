@@ -52,6 +52,10 @@ production connector ingestion flows remain follow-up implementation phases.
   the binding is outside the tenant or disabled for indexing, and stamp chunks
   with source-binding, resource, data-class, and source-object metadata while
   preserving local/default import behavior when unset.
+- Source-bound vector memory now fails closed before ranking. Chunks stamped
+  with enterprise source-binding metadata are hidden unless the caller supplies
+  a strict tenant access projection with a matching `Read` grant for the bound
+  `ResourceRef` and `DataClass`.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.
