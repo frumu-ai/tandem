@@ -105,6 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now skip source-bound records unless a future strict grant path is plumbed,
   preventing coder retrieval surfaces from exposing source-object metadata by
   default.
+- **Automation evidence source-bound guard**: Automation upstream evidence
+  collection now filters source-bound internal identifiers from read paths,
+  discovered paths, and citations before later nodes can reuse them.
 - **Hosted panel auth availability split**: Control-panel capabilities now
   distinguish managed hosted deployments from deployments with usable hosted
   auth exchange credentials, allowing disconnected local test deployments to

@@ -1089,6 +1089,32 @@ pub(crate) struct AutomationUpstreamEvidence {
     pub(crate) external_citations_missing: bool,
 }
 
+pub(crate) fn automation_evidence_entry_visible_without_source_grant(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    !lowered.contains("enterprise_source_binding")
+        && !lowered.contains("source_object_id")
+        && !lowered.contains("source-object-")
+        && !lowered.contains("source_binding")
+        && !lowered.contains("binding_id")
+        && !lowered.contains("connector_id")
+        && !lowered.contains("native_object_id")
+        && !lowered.starts_with("/imports/")
+        && !lowered.starts_with("imports/")
+}
+
+fn visible_automation_evidence_strings<'a>(
+    rows: impl Iterator<Item = &'a Value> + 'a,
+) -> impl Iterator<Item = String> + 'a {
+    rows.filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| automation_evidence_entry_visible_without_source_grant(value))
+        .map(str::to_string)
+}
+
 fn automation_output_contains_unconfirmed_notion_identity(output: &Value) -> bool {
     let text = serde_json::to_string(output)
         .unwrap_or_default()
@@ -1148,7 +1174,7 @@ async fn collect_automation_upstream_research_evidence(
             if let Some(rows) = validation.get("read_paths").and_then(Value::as_array) {
                 evidence
                     .read_paths
-                    .extend(rows.iter().filter_map(Value::as_str).map(str::to_string));
+                    .extend(visible_automation_evidence_strings(rows.iter()));
             }
             if let Some(rows) = validation
                 .get("discovered_relevant_paths")
@@ -1156,7 +1182,7 @@ async fn collect_automation_upstream_research_evidence(
             {
                 evidence
                     .discovered_relevant_paths
-                    .extend(rows.iter().filter_map(Value::as_str).map(str::to_string));
+                    .extend(visible_automation_evidence_strings(rows.iter()));
             }
             evidence.web_research_attempted |= validation
                 .get("web_research_attempted")
@@ -1172,7 +1198,7 @@ async fn collect_automation_upstream_research_evidence(
             if let Some(rows) = validation.get("citations").and_then(Value::as_array) {
                 evidence
                     .citations
-                    .extend(rows.iter().filter_map(Value::as_str).map(str::to_string));
+                    .extend(visible_automation_evidence_strings(rows.iter()));
             }
         }
         if let Some(tool_telemetry) = output.get("tool_telemetry") {

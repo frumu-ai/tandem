@@ -65,6 +65,31 @@ async fn reconcile_verified_output_path_unwraps_json_handoff_wrapper_from_sessio
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
 
+#[test]
+fn automation_evidence_entries_hide_source_bound_identifiers_without_grant() {
+    assert!(automation_evidence_entry_visible_without_source_grant(
+        "docs/internal/enterprise/architecture.md"
+    ));
+    assert!(automation_evidence_entry_visible_without_source_grant(
+        "https://docs.tandem.ac/start-here/"
+    ));
+
+    for value in [
+        "source-object-hr-payroll",
+        "binding_id=binding-hr-finance",
+        "enterprise_source_binding.resource_ref",
+        "native_object_id=/imports/hr/payroll.md",
+        "/imports/hr/payroll.md",
+        "imports/hr/payroll.md",
+        "connector_id=manual-upload",
+    ] {
+        assert!(
+            !automation_evidence_entry_visible_without_source_grant(value),
+            "{value} should not be reusable upstream evidence without a strict source grant"
+        );
+    }
+}
+
 #[tokio::test]
 async fn reconcile_verified_output_path_promotes_legacy_workspace_artifact_into_run_scope() {
     let workspace_root = std::env::temp_dir().join(format!(
