@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_enterprise_contract::{
-    OrganizationUnit, OrganizationUnitKind, OrganizationUnitState, PrincipalRef, RequestPrincipal,
-    TenantContext, VerifiedTenantContext,
+    DataClass, IngestionPolicy, OrganizationUnit, OrganizationUnitKind, OrganizationUnitState,
+    PrincipalRef, RequestPrincipal, ResourceRef, SourceBinding, SourceBindingState, TenantContext,
+    VerifiedTenantContext,
 };
 
 use crate::{util::time::now_ms, AppState};
@@ -36,7 +37,7 @@ struct EnterpriseOrgUnitsResponse {
 struct EnterpriseSourceBindingsResponse {
     #[serde(flatten)]
     base: EnterpriseAdminResponseBase,
-    source_bindings: Vec<serde_json::Value>,
+    source_bindings: Vec<SourceBinding>,
     count: usize,
 }
 
@@ -56,6 +57,36 @@ struct CreateOrganizationUnitRequest {
     description: Option<String>,
     #[serde(default)]
     labels: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSourceBindingRequest {
+    binding_id: String,
+    connector_id: String,
+    source_type: String,
+    native_source_id: String,
+    #[serde(default)]
+    source_root_label: Option<String>,
+    resource_ref: ResourceRef,
+    data_class: DataClass,
+    #[serde(default)]
+    state: SourceBindingState,
+    #[serde(default)]
+    credential_ref_id: Option<String>,
+    #[serde(default)]
+    ingestion_policy: IngestionPolicy,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateSourceBindingRequest {
+    #[serde(default)]
+    state: Option<SourceBindingState>,
+    #[serde(default)]
+    source_root_label: Option<String>,
+    #[serde(default)]
+    credential_ref_id: Option<String>,
+    #[serde(default)]
+    ingestion_policy: Option<IngestionPolicy>,
 }
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
@@ -166,32 +197,123 @@ async fn create_org_unit(
 }
 
 async fn list_source_bindings(
+    State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
 ) -> Json<EnterpriseSourceBindingsResponse> {
+    let mut source_bindings: Vec<_> = state
+        .enterprise_source_bindings
+        .read()
+        .await
+        .values()
+        .filter(|binding| binding.tenant_matches(&tenant_context))
+        .cloned()
+        .collect();
+    source_bindings.sort_by(|left, right| left.binding_id.cmp(&right.binding_id));
+
     Json(EnterpriseSourceBindingsResponse {
-        base: noop_base(tenant_context, request_principal),
-        source_bindings: Vec::new(),
-        count: 0,
+        base: storage_base(tenant_context, request_principal),
+        count: source_bindings.len(),
+        source_bindings,
     })
 }
 
 async fn create_source_binding(
+    State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Json(input): Json<CreateSourceBindingRequest>,
 ) -> EnterpriseResult<EnterpriseAdminResponseBase> {
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    Ok(Json(noop_base(tenant_context, request_principal)))
+
+    let binding_id = validate_enterprise_id("binding_id", &input.binding_id)?;
+    let connector_id = validate_enterprise_id("connector_id", &input.connector_id)?;
+    let source_type = validate_enterprise_id("source_type", &input.source_type)?;
+    let native_source_id = validate_external_id("native_source_id", &input.native_source_id)?;
+    validate_resource_ref_matches_tenant(&input.resource_ref, &tenant_context)?;
+    let credential_ref_id = input
+        .credential_ref_id
+        .as_deref()
+        .map(|value| validate_enterprise_id("credential_ref_id", value))
+        .transpose()?;
+    let actor_id = request_principal
+        .actor_id
+        .clone()
+        .unwrap_or_else(|| request_principal.source.clone());
+    let mut binding = SourceBinding::enabled(
+        binding_id,
+        tenant_context.clone(),
+        connector_id,
+        source_type,
+        native_source_id,
+        input.resource_ref,
+        input.data_class,
+        PrincipalRef::human_user(actor_id),
+        now_ms(),
+    )
+    .with_state(input.state, now_ms())
+    .with_ingestion_policy(input.ingestion_policy);
+    binding.source_root_label = normalized_optional_label(input.source_root_label);
+    if let Some(credential_ref_id) = credential_ref_id {
+        binding = binding.with_credential_ref_id(credential_ref_id);
+    }
+
+    {
+        let mut registry = state.enterprise_source_bindings.write().await;
+        registry.insert(enterprise_source_binding_key(&binding), binding);
+        persist_enterprise_source_bindings(&state.enterprise_source_bindings_path, &registry)
+            .await?;
+    }
+
+    Ok(Json(EnterpriseAdminResponseBase {
+        message: "enterprise source binding saved",
+        ..storage_base(tenant_context, request_principal)
+    }))
 }
 
 async fn update_source_binding(
+    State(state): State<AppState>,
+    Path(binding_id): Path<String>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Json(input): Json<UpdateSourceBindingRequest>,
 ) -> EnterpriseResult<EnterpriseAdminResponseBase> {
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    Ok(Json(noop_base(tenant_context, request_principal)))
+    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
+
+    {
+        let mut registry = state.enterprise_source_bindings.write().await;
+        let Some(binding) = registry.values_mut().find(|binding| {
+            binding.binding_id == binding_id && binding.tenant_matches(&tenant_context)
+        }) else {
+            return Err(not_found("ENTERPRISE_SOURCE_BINDING_NOT_FOUND"));
+        };
+        if let Some(state) = input.state {
+            binding.state = state;
+        }
+        if let Some(label) = input.source_root_label {
+            binding.source_root_label = normalized_optional_label(Some(label));
+        }
+        if let Some(credential_ref_id) = input.credential_ref_id {
+            binding.credential_ref_id = Some(validate_enterprise_id(
+                "credential_ref_id",
+                &credential_ref_id,
+            )?);
+        }
+        if let Some(ingestion_policy) = input.ingestion_policy {
+            binding.ingestion_policy = ingestion_policy;
+        }
+        binding.updated_at_ms = now_ms();
+        persist_enterprise_source_bindings(&state.enterprise_source_bindings_path, &registry)
+            .await?;
+    }
+
+    Ok(Json(EnterpriseAdminResponseBase {
+        message: "enterprise source binding updated",
+        ..storage_base(tenant_context, request_principal)
+    }))
 }
 
 fn storage_base(
@@ -280,6 +402,36 @@ fn validate_enterprise_id(field: &str, value: &str) -> Result<String, (StatusCod
     Ok(value.to_string())
 }
 
+fn validate_external_id(field: &str, value: &str) -> Result<String, (StatusCode, Json<Value>)> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+        return Err(bad_request(format!("ENTERPRISE_{field}_INVALID")));
+    }
+    Ok(value.to_string())
+}
+
+fn validate_resource_ref_matches_tenant(
+    resource_ref: &ResourceRef,
+    tenant_context: &TenantContext,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if resource_ref.organization_id != tenant_context.org_id
+        || resource_ref.workspace_id != tenant_context.workspace_id
+    {
+        return Err(bad_request(
+            "ENTERPRISE_SOURCE_BINDING_RESOURCE_TENANT_MISMATCH",
+        ));
+    }
+    Ok(())
+}
+
+fn normalized_optional_label(label: Option<String>) -> Option<String> {
+    label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn bad_request(code: impl Into<String>) -> (StatusCode, Json<Value>) {
     let code = code.into();
     (
@@ -331,6 +483,49 @@ async fn persist_enterprise_org_units(
         .await
         .map_err(|_| internal_error("ENTERPRISE_ORG_UNITS_PERSIST_FAILED"))?;
     Ok(())
+}
+
+fn enterprise_source_binding_key(binding: &SourceBinding) -> String {
+    let deployment = binding
+        .tenant_context
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local");
+    format!(
+        "{}::{}::{}::{}",
+        binding.tenant_context.org_id,
+        binding.tenant_context.workspace_id,
+        deployment,
+        binding.binding_id
+    )
+}
+
+async fn persist_enterprise_source_bindings(
+    path: &std::path::Path,
+    registry: &HashMap<String, SourceBinding>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_SOURCE_BINDINGS_PERSIST_FAILED"))?;
+    }
+    let payload = serde_json::to_vec_pretty(registry)
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_BINDINGS_PERSIST_FAILED"))?;
+    tokio::fs::write(path, payload)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_SOURCE_BINDINGS_PERSIST_FAILED"))?;
+    Ok(())
+}
+
+fn not_found(code: impl Into<String>) -> (StatusCode, Json<Value>) {
+    let code = code.into();
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "code": code,
+            "message": "enterprise resource was not found"
+        })),
+    )
 }
 
 fn internal_error(code: impl Into<String>) -> (StatusCode, Json<Value>) {

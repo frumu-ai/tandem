@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tenant-scoped create/list behavior and signed hosted assertion role
   preservation so hosted mutations can distinguish admin/owner/reconfigure
   authority from ordinary members.
+- **Enterprise source-binding registry**: Added storage-backed source-binding
+  create/list/update behavior with admin-gated mutations, request-tenant
+  isolation, and `ResourceRef` tenant validation. This records which external
+  source root may feed which Tandem resource/data class without enabling live
+  OAuth or ingestion.
 
 ### Documentation
 

@@ -12,9 +12,9 @@ resource-scoped memory retrieval, and hosted authorization hardening around
 who may bind company data into Tandem.
 
 This unreleased line currently contains the contract foundation, enterprise
-admin shell, and first storage-backed organization-unit registry. Google Drive,
-Notion, GitHub, Slack, Gmail, live OAuth, and production ingestion flows remain
-follow-up implementation phases.
+admin shell, storage-backed organization-unit registry, and storage-backed
+source-binding registry. Google Drive, Notion, GitHub, Slack, Gmail, live
+OAuth, and production ingestion flows remain follow-up implementation phases.
 
 ### Enterprise Connector Source Binding
 
@@ -31,8 +31,8 @@ follow-up implementation phases.
   principal/resource/data-class projection model.
 - Added enterprise admin endpoints for org-unit and source-binding management.
   Organization units now have tenant-scoped storage-backed create/list behavior;
-  source bindings remain explicit `noop` placeholders until connector storage
-  and ingestion lifecycle records are implemented.
+  source bindings now have tenant-scoped storage-backed create/list/update
+  behavior with `ResourceRef` tenant validation and admin-gated mutations.
 - Verified hosted context now preserves signed assertion roles so enterprise
   admin mutations can fail closed unless the Tandem-signed hosted context
   carries admin/owner/reconfigure authority.

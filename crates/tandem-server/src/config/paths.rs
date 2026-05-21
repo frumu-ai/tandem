@@ -73,6 +73,10 @@ pub(crate) fn resolve_enterprise_org_units_path() -> PathBuf {
     resolve_canonical_data_file_path("enterprise/org_units.json")
 }
 
+pub(crate) fn resolve_enterprise_source_bindings_path() -> PathBuf {
+    resolve_canonical_data_file_path("enterprise/source_bindings.json")
+}
+
 pub(crate) fn resolve_memory_audit_path() -> PathBuf {
     if let Ok(dir) = std::env::var("TANDEM_STATE_DIR") {
         if let Some(base) = validate_env_path(&dir, "TANDEM_STATE_DIR") {
