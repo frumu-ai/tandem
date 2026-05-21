@@ -73,6 +73,9 @@ export function MemoryImportDialog({
   const selectedBinding = enabledBindings.find(
     (binding) => binding.binding_id === form.sourceBindingId
   );
+  const sourceBindingRequired =
+    Boolean(sourceBindings.data?.tenant_context?.deployment_id) ||
+    sourceBindings.data?.request_principal?.source === "tandem-web";
 
   useEffect(() => {
     if (!open) return;
@@ -133,6 +136,7 @@ export function MemoryImportDialog({
   const pathMissing = !form.path.trim();
   const scopeMissing =
     (projectRequired && !form.projectId.trim()) || (sessionRequired && !form.sessionId.trim());
+  const sourceBindingMissing = sourceBindingRequired && !form.sourceBindingId.trim();
 
   return (
     <AnimatePresence>
@@ -242,7 +246,9 @@ export function MemoryImportDialog({
                   value={form.sourceBindingId}
                   onChange={(event) => setForm({ ...form, sourceBindingId: event.target.value })}
                 >
-                  <option value="">Local/default behavior</option>
+                  <option value="">
+                    {sourceBindingRequired ? "Select a source binding" : "Local/default behavior"}
+                  </option>
                   {enabledBindings.map((binding) => (
                     <option key={binding.binding_id} value={binding.binding_id}>
                       {binding.source_root_label || binding.binding_id} - {binding.data_class} -{" "}
@@ -257,7 +263,9 @@ export function MemoryImportDialog({
                   </span>
                 ) : (
                   <span className="tcp-subtle text-xs">
-                    Leave unset to preserve the current local/manual import behavior.
+                    {sourceBindingRequired
+                      ? "Hosted imports require a source binding so data is scoped before indexing."
+                      : "Leave unset to preserve the current local/manual import behavior."}
                   </span>
                 )}
               </label>
@@ -287,7 +295,9 @@ export function MemoryImportDialog({
               <button
                 type="button"
                 className="tcp-btn-primary"
-                disabled={pathMissing || scopeMissing || importMutation.isPending}
+                disabled={
+                  pathMissing || scopeMissing || sourceBindingMissing || importMutation.isPending
+                }
                 onClick={() => importMutation.mutate()}
               >
                 <i data-lucide="database-zap"></i>

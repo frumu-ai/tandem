@@ -852,6 +852,8 @@ pub(super) async fn memory_put(
 pub(super) async fn memory_import(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<MemoryImportInput>,
 ) -> Result<Json<MemoryImportResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let source_kind = input.source.kind.trim().to_ascii_lowercase();
@@ -890,9 +892,14 @@ pub(super) async fn memory_import(
         }
         _ => {}
     }
-    let source_binding =
-        resolve_memory_import_source_binding(&state, &tenant_context, source_binding_id.as_deref())
-            .await?;
+    let source_binding = resolve_memory_import_source_binding(
+        &state,
+        &tenant_context,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+        source_binding_id.as_deref(),
+    )
+    .await?;
 
     publish_tenant_event(
         &state,
@@ -1007,9 +1014,21 @@ pub(super) async fn memory_import(
 async fn resolve_memory_import_source_binding(
     state: &AppState,
     tenant_context: &TenantContext,
+    request_principal: &RequestPrincipal,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     source_binding_id: Option<&str>,
 ) -> Result<Option<MemoryImportSourceBinding>, (StatusCode, Json<ErrorEnvelope>)> {
     let Some(source_binding_id) = source_binding_id else {
+        if memory_import_requires_source_binding(
+            tenant_context,
+            request_principal,
+            verified_tenant_context,
+        ) {
+            return Err(skill_error(
+                StatusCode::BAD_REQUEST,
+                "hosted/enterprise memory imports require source_binding_id",
+            ));
+        }
         return Ok(None);
     };
     let registry = state.enterprise_source_bindings.read().await;
@@ -1041,6 +1060,16 @@ async fn resolve_memory_import_source_binding(
             .and_then(|value| value.as_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| format!("{:?}", binding.data_class)),
     }))
+}
+
+fn memory_import_requires_source_binding(
+    tenant_context: &TenantContext,
+    request_principal: &RequestPrincipal,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+) -> bool {
+    verified_tenant_context.is_some()
+        || tenant_context.deployment_id.is_some()
+        || request_principal.source == "tandem-web"
 }
 
 fn memory_import_response(

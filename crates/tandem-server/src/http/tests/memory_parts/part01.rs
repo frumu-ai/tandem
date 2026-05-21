@@ -125,6 +125,49 @@ async fn memory_import_rejects_disabled_source_binding() {
 }
 
 #[tokio::test]
+async fn memory_import_requires_source_binding_for_hosted_control_panel() {
+    let state = test_state().await;
+    let import_root = state
+        .memory_audit_path
+        .parent()
+        .unwrap()
+        .join("hosted-bound-docs");
+    tokio::fs::create_dir_all(&import_root)
+        .await
+        .expect("import root");
+    tokio::fs::write(import_root.join("note.md"), "hosted binding import")
+        .await
+        .expect("import file");
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/memory/import")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-request-source", "tandem-web")
+        .body(Body::from(
+            json!({
+                "source": {"kind": "path", "path": import_root.display().to_string()},
+                "format": "directory",
+                "tier": "global",
+                "sync_deletes": false
+            })
+            .to_string(),
+        ))
+        .expect("import request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("error").and_then(Value::as_str),
+        Some("hosted/enterprise memory imports require source_binding_id")
+    );
+}
+
+#[tokio::test]
 async fn memory_put_enforces_default_write_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());

@@ -77,6 +77,9 @@ production connector ingestion flows remain follow-up implementation phases.
 - The hidden Enterprise admin page now exposes those source-object lifecycle
   rows for a selected source binding and provides reindex, delete, and re-scope
   controls from the hosted admin UI.
+- Hosted/enterprise manual memory imports now require `source_binding_id` so
+  company data is scoped to a `ResourceRef` and `DataClass` before indexing.
+  Local/default imports can still remain unbound for non-enterprise installs.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

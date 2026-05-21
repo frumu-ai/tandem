@@ -74,6 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control-panel page to inspect source-object lifecycle records for a selected
   source binding and trigger reindex, delete, or re-scope actions from the
   tenant-scoped admin surface.
+- **Hosted manual import source-binding enforcement**: Hosted/enterprise memory
+  imports now fail closed unless a valid `source_binding_id` is supplied, while
+  local/default imports can remain explicitly unbound. The control-panel import
+  dialog also requires a source binding when opened from a hosted principal.
 
 ### Documentation
 
