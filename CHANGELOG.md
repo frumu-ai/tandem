@@ -114,6 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enterprise binding disable purge**: Disabling or quarantining a source
   binding now purges indexed content for its lifecycle records and tombstones
   affected source objects so stale grants cannot retrieve old chunks.
+- **Memory caller source-bound audit**: Prompt-context injection and coder
+  duplicate-memory scans now skip source-bound governed records by default,
+  closing remaining local/default memory caller gaps without a strict grant.
 - **Hosted panel auth availability split**: Control-panel capabilities now
   distinguish managed hosted deployments from deployments with usable hosted
   auth exchange credentials, allowing disconnected local test deployments to

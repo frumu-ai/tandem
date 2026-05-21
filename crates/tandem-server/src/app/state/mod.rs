@@ -17,7 +17,7 @@ use tandem_enterprise_contract::{
     IngestionJob as EnterpriseIngestionJob, IngestionQuarantine as EnterpriseIngestionQuarantine,
     OrganizationUnit as EnterpriseOrganizationUnit, SourceBinding as EnterpriseSourceBinding,
 };
-use tandem_memory::types::MemoryTier;
+use tandem_memory::types::{MemorySourceAccessTarget, MemoryTier};
 use tandem_orchestrator::MissionState;
 use tandem_types::{EngineEvent, HostRuntimeContext, MessagePart, ModelSpec, TenantContext};
 use tokio::fs;
@@ -1204,6 +1204,12 @@ impl ServerPromptContextHook {
         out.join("\n")
     }
 
+    fn governed_memory_visible_without_source_grant(
+        record: &tandem_memory::types::GlobalMemoryRecord,
+    ) -> bool {
+        MemorySourceAccessTarget::from_metadata(record.metadata.as_ref()).is_none()
+    }
+
     fn extract_docs_source_url(chunk: &tandem_memory::types::MemoryChunk) -> Option<String> {
         chunk
             .metadata
@@ -1624,7 +1630,10 @@ impl PromptContextHook for ServerPromptContextHook {
             let hits = db
                 .search_global_memory(&user_id, &query, 8, None, None, None)
                 .await
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
+                .collect::<Vec<_>>();
             let latency_ms = now_ms().saturating_sub(started);
             let scores = hits.iter().map(|h| h.score).collect::<Vec<_>>();
             this.state.event_bus.publish(EngineEvent::new(

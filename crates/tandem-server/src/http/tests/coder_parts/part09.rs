@@ -153,3 +153,25 @@ async fn coder_memory_events_include_normalized_artifact_fields() {
         .and_then(Value::as_str)
         .is_some());
 }
+
+#[test]
+fn coder_governed_memory_metadata_hides_source_bound_records_without_grant() {
+    let metadata = json!({
+        "enterprise_source_binding": {
+            "binding_id": "binding-finance",
+            "connector_id": "manual-upload",
+            "resource_ref": {
+                "organization_id": "acme",
+                "workspace_id": "finance",
+                "resource_kind": "document_collection",
+                "resource_id": "finance-drive"
+            },
+            "data_class": "financial_record",
+            "source_object_id": "source-object-finance-note"
+        }
+    });
+    assert!(
+        !crate::http::coder::governed_memory_metadata_visible_without_source_grant(Some(&metadata))
+    );
+    assert!(crate::http::coder::governed_memory_metadata_visible_without_source_grant(None));
+}

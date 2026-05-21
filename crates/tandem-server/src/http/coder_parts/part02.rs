@@ -232,6 +232,12 @@ fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> s
         .then_with(score_order)
 }
 
+pub(crate) fn governed_memory_metadata_visible_without_source_grant(
+    metadata: Option<&Value>,
+) -> bool {
+    tandem_memory::types::MemorySourceAccessTarget::from_metadata(metadata).is_none()
+}
+
 fn memory_hit_workflow_mode(hit: &Value) -> Option<String> {
     value_string(
         hit.get("payload")
@@ -542,6 +548,11 @@ pub(crate) async fn find_failure_pattern_duplicates(
                 continue;
             };
             for hit in results {
+                if !governed_memory_metadata_visible_without_source_grant(
+                    hit.record.metadata.as_ref(),
+                ) {
+                    continue;
+                }
                 if !seen_memory_ids.insert(hit.record.id.clone()) {
                     continue;
                 }
@@ -571,6 +582,11 @@ pub(crate) async fn find_failure_pattern_duplicates(
                     continue;
                 };
                 for record in records {
+                    if !governed_memory_metadata_visible_without_source_grant(
+                        record.metadata.as_ref(),
+                    ) {
+                        continue;
+                    }
                     if !seen_memory_ids.insert(record.id.clone()) {
                         continue;
                     }

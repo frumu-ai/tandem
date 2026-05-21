@@ -114,6 +114,9 @@ production connector ingestion flows remain follow-up implementation phases.
 - Disabling or quarantining a source binding now purges indexed content for its
   lifecycle records and tombstones affected source objects, closing the
   binding-level stale prompt-context path after permission changes.
+- Prompt-context injection and coder duplicate-memory scans now skip
+  source-bound governed records by default, closing remaining local/default
+  memory caller gaps when no strict grant projection is available.
 - Managed hosted detection now reports hosted auth availability separately, so
   disconnected local test deployments can still use the engine-token sign-in
   path while connected hosted servers keep Tandem hosted login enforcement.

@@ -408,6 +408,51 @@ fn kb_grounding_block_directs_factual_questions_to_enabled_kb_mcp() {
     assert!(block.contains("before using model knowledge, memory, or general chat"));
 }
 
+#[test]
+fn prompt_context_hook_hides_source_bound_governed_memory_without_grant() {
+    let mut record = tandem_memory::types::GlobalMemoryRecord {
+        id: "memory-source-bound".to_string(),
+        user_id: "default".to_string(),
+        source_type: "manual_upload".to_string(),
+        content: "restricted memory".to_string(),
+        content_hash: String::new(),
+        run_id: "run-source-bound".to_string(),
+        session_id: None,
+        message_id: None,
+        tool_name: None,
+        project_tag: None,
+        channel_tag: None,
+        host_tag: None,
+        metadata: Some(json!({
+            "enterprise_source_binding": {
+                "binding_id": "binding-finance",
+                "connector_id": "manual-upload",
+                "resource_ref": {
+                    "organization_id": "acme",
+                    "workspace_id": "finance",
+                    "resource_kind": "document_collection",
+                    "resource_id": "finance-drive"
+                },
+                "data_class": "financial_record",
+                "source_object_id": "source-object-finance-note"
+            }
+        })),
+        provenance: None,
+        redaction_status: "passed".to_string(),
+        redaction_count: 0,
+        visibility: "private".to_string(),
+        demoted: false,
+        score_boost: 0.0,
+        created_at_ms: 1_000,
+        updated_at_ms: 1_000,
+        expires_at_ms: None,
+    };
+    assert!(!ServerPromptContextHook::governed_memory_visible_without_source_grant(&record));
+
+    record.metadata = None;
+    assert!(ServerPromptContextHook::governed_memory_visible_without_source_grant(&record));
+}
+
 mod automations;
 mod bug_monitor_recovery;
 mod handoff;
