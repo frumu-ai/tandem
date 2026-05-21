@@ -91,6 +91,10 @@ production connector ingestion flows remain follow-up implementation phases.
   `SecretRef` records without accepting raw credential values. Credential refs
   are tenant-validated, can be source-bound to a resource, and are visible in
   the hidden Enterprise admin page as metadata only.
+- Source-bound manual memory imports now write persisted enterprise ingestion
+  job audit records with connector/binding scope, job state, timing, and
+  touched source-object IDs. The hidden Enterprise admin page can inspect these
+  records for a selected binding.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

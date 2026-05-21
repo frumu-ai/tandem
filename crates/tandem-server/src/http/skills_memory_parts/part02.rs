@@ -900,6 +900,39 @@ pub(super) async fn memory_import(
         source_binding_id.as_deref(),
     )
     .await?;
+    let source_binding_for_job = source_binding.clone();
+    let job_started_at_ms = crate::util::time::now_ms();
+    let ingestion_job_id = source_binding_for_job.as_ref().map(|binding| {
+        format!(
+            "manual-import-{}-{}",
+            job_started_at_ms,
+            uuid::Uuid::new_v4()
+        )
+    });
+
+    if let (Some(job_id), Some(binding)) = (&ingestion_job_id, source_binding_for_job.as_ref()) {
+        if let Err(err) = record_enterprise_ingestion_job(
+            &state,
+            IngestionJob {
+                job_id: job_id.clone(),
+                tenant_context: tenant_context.clone(),
+                connector_id: binding.connector_id.clone(),
+                binding_id: binding.binding_id.clone(),
+                state: IngestionJobState::Running,
+                source_object_ids: Vec::new(),
+                started_at_ms: Some(job_started_at_ms),
+                finished_at_ms: None,
+                quarantine_id: None,
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %err,
+                "failed to record enterprise ingestion job start"
+            );
+        }
+    }
 
     publish_tenant_event(
         &state,
@@ -917,6 +950,30 @@ pub(super) async fn memory_import(
     );
 
     let Some(manager) = open_memory_manager().await else {
+        if let (Some(job_id), Some(binding)) = (&ingestion_job_id, source_binding_for_job.as_ref())
+        {
+            if let Err(err) = record_enterprise_ingestion_job(
+                &state,
+                IngestionJob {
+                    job_id: job_id.clone(),
+                    tenant_context: tenant_context.clone(),
+                    connector_id: binding.connector_id.clone(),
+                    binding_id: binding.binding_id.clone(),
+                    state: IngestionJobState::Failed,
+                    source_object_ids: Vec::new(),
+                    started_at_ms: Some(job_started_at_ms),
+                    finished_at_ms: Some(crate::util::time::now_ms()),
+                    quarantine_id: None,
+                },
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    "failed to record enterprise ingestion job failure"
+                );
+            }
+        }
         publish_tenant_event(
             &state,
             &tenant_context,
@@ -953,6 +1010,31 @@ pub(super) async fn memory_import(
     let stats = match import_files(&manager, &request, None::<fn(&MemoryImportProgress)>).await {
         Ok(stats) => stats,
         Err(err) => {
+            if let (Some(job_id), Some(binding)) =
+                (&ingestion_job_id, source_binding_for_job.as_ref())
+            {
+                if let Err(record_err) = record_enterprise_ingestion_job(
+                    &state,
+                    IngestionJob {
+                        job_id: job_id.clone(),
+                        tenant_context: tenant_context.clone(),
+                        connector_id: binding.connector_id.clone(),
+                        binding_id: binding.binding_id.clone(),
+                        state: IngestionJobState::Failed,
+                        source_object_ids: Vec::new(),
+                        started_at_ms: Some(job_started_at_ms),
+                        finished_at_ms: Some(crate::util::time::now_ms()),
+                        quarantine_id: None,
+                    },
+                )
+                .await
+                {
+                    tracing::warn!(
+                        error = %record_err,
+                        "failed to record enterprise ingestion job failure"
+                    );
+                }
+            }
             publish_tenant_event(
                 &state,
                 &tenant_context,
@@ -974,6 +1056,42 @@ pub(super) async fn memory_import(
             ));
         }
     };
+
+    if let (Some(job_id), Some(binding)) = (&ingestion_job_id, source_binding_for_job.as_ref()) {
+        let source_object_ids = source_object_ids_seen_since(
+            &manager,
+            &request.tenant_scope,
+            &binding.binding_id,
+            job_started_at_ms,
+        )
+        .await
+        .unwrap_or_default();
+        if let Err(err) = record_enterprise_ingestion_job(
+            &state,
+            IngestionJob {
+                job_id: job_id.clone(),
+                tenant_context: tenant_context.clone(),
+                connector_id: binding.connector_id.clone(),
+                binding_id: binding.binding_id.clone(),
+                state: if stats.errors > 0 {
+                    IngestionJobState::Failed
+                } else {
+                    IngestionJobState::Completed
+                },
+                source_object_ids,
+                started_at_ms: Some(job_started_at_ms),
+                finished_at_ms: Some(crate::util::time::now_ms()),
+                quarantine_id: None,
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %err,
+                "failed to record enterprise ingestion job completion"
+            );
+        }
+    }
 
     publish_tenant_event(
         &state,
@@ -1078,6 +1196,58 @@ async fn resolve_memory_import_source_binding(
             .and_then(|value| value.as_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| format!("{:?}", binding.data_class)),
     }))
+}
+
+async fn record_enterprise_ingestion_job(
+    state: &AppState,
+    job: IngestionJob,
+) -> Result<(), std::io::Error> {
+    let mut registry = state.enterprise_ingestion_jobs.write().await;
+    let key = enterprise_ingestion_job_key(&job);
+    registry.insert(key, job);
+    persist_enterprise_ingestion_jobs(&state.enterprise_ingestion_jobs_path, &registry).await
+}
+
+fn enterprise_ingestion_job_key(job: &IngestionJob) -> String {
+    let deployment = job
+        .tenant_context
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local");
+    format!(
+        "{}::{}::{}::{}",
+        job.tenant_context.org_id, job.tenant_context.workspace_id, deployment, job.job_id
+    )
+}
+
+async fn persist_enterprise_ingestion_jobs(
+    path: &std::path::Path,
+    registry: &std::collections::HashMap<String, IngestionJob>,
+) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let payload = serde_json::to_vec_pretty(registry).map_err(std::io::Error::other)?;
+    tokio::fs::write(path, payload).await
+}
+
+async fn source_object_ids_seen_since(
+    manager: &tandem_memory::MemoryManager,
+    tenant_scope: &MemoryTenantScope,
+    binding_id: &str,
+    started_at_ms: u64,
+) -> Result<Vec<String>, tandem_memory::types::MemoryError> {
+    let mut source_object_ids: Vec<_> = manager
+        .db()
+        .list_source_object_lifecycle_for_binding_for_tenant(tenant_scope, binding_id)
+        .await?
+        .into_iter()
+        .filter(|record| record.last_seen_at_ms >= started_at_ms)
+        .map(|record| record.source_object_id)
+        .collect();
+    source_object_ids.sort();
+    source_object_ids.dedup();
+    Ok(source_object_ids)
 }
 
 fn connector_lifecycle_state_label(state: ConnectorLifecycleState) -> &'static str {

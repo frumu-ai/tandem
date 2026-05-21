@@ -203,6 +203,107 @@ async fn memory_import_rejects_inactive_source_binding_connector() {
 }
 
 #[tokio::test]
+async fn memory_import_records_enterprise_ingestion_job_audit() {
+    let state = test_state().await;
+    let storage_path = state.enterprise_ingestion_jobs_path.clone();
+    let import_root = state
+        .memory_audit_path
+        .parent()
+        .unwrap()
+        .join("audited-bound-docs");
+    tokio::fs::create_dir_all(&import_root)
+        .await
+        .expect("import root");
+    tokio::fs::write(import_root.join("note.md"), "audited connector import")
+        .await
+        .expect("import file");
+    let tenant = tandem_types::TenantContext::local_implicit();
+    let connector = tandem_enterprise_contract::ConnectorInstance::active(
+        "manual_upload",
+        tenant.clone(),
+        "manual_upload",
+        tandem_enterprise_contract::PrincipalRef::human_user("local-operator"),
+        1,
+    );
+    let binding = tandem_enterprise_contract::SourceBinding::enabled(
+        "audited-binding",
+        tenant.clone(),
+        "manual_upload",
+        "manual_upload",
+        "local-import-root",
+        tandem_enterprise_contract::ResourceRef::new(
+            tenant.org_id.clone(),
+            tenant.workspace_id.clone(),
+            tandem_enterprise_contract::ResourceKind::DocumentCollection,
+            "manual-imports",
+        ),
+        tandem_enterprise_contract::DataClass::Internal,
+        tandem_enterprise_contract::PrincipalRef::human_user("local-operator"),
+        1,
+    );
+    state
+        .enterprise_connectors
+        .write()
+        .await
+        .insert("local::local::local::manual_upload".to_string(), connector);
+    state
+        .enterprise_source_bindings
+        .write()
+        .await
+        .insert("local::local::local::audited-binding".to_string(), binding);
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/memory/import")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "source": {"kind": "path", "path": import_root.display().to_string()},
+                "format": "directory",
+                "tier": "global",
+                "source_binding_id": "audited-binding",
+                "sync_deletes": false
+            })
+            .to_string(),
+        ))
+        .expect("import request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(storage_path.exists());
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/ingestion-jobs?binding_id=audited-binding")
+        .header("x-tandem-request-source", "local_control_panel")
+        .body(Body::empty())
+        .expect("jobs request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
+    let job = payload
+        .get("ingestion_jobs")
+        .and_then(Value::as_array)
+        .and_then(|jobs| jobs.first())
+        .expect("ingestion job");
+    assert_eq!(
+        job.get("connector_id").and_then(Value::as_str),
+        Some("manual_upload")
+    );
+    assert_eq!(
+        job.get("binding_id").and_then(Value::as_str),
+        Some("audited-binding")
+    );
+    assert_eq!(job.get("state").and_then(Value::as_str), Some("completed"));
+    assert!(job
+        .get("source_object_ids")
+        .and_then(Value::as_array)
+        .is_some_and(|source_objects| !source_objects.is_empty()));
+}
+
+#[tokio::test]
 async fn memory_import_requires_source_binding_for_hosted_control_panel() {
     let state = test_state().await;
     let import_root = state

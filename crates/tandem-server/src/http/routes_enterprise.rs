@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_enterprise_contract::{
     ConnectorCredentialClass, ConnectorCredentialRef, ConnectorInstance, ConnectorLifecycleState,
-    DataClass, IngestionPolicy, OrganizationUnit, OrganizationUnitKind, OrganizationUnitState,
-    PrincipalRef, RequestPrincipal, ResourceRef, SecretRef, SourceBinding, SourceBindingState,
-    TenantContext, VerifiedTenantContext,
+    DataClass, IngestionJob, IngestionPolicy, OrganizationUnit, OrganizationUnitKind,
+    OrganizationUnitState, PrincipalRef, RequestPrincipal, ResourceRef, SecretRef, SourceBinding,
+    SourceBindingState, TenantContext, VerifiedTenantContext,
 };
 use tandem_memory::db::MemoryDatabase;
 use tandem_memory::types::{
@@ -71,6 +71,22 @@ struct EnterpriseSourceObjectActionResponse {
     chunks_deleted: i64,
     bytes_estimated: i64,
     import_index_deleted: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct EnterpriseIngestionJobsResponse {
+    #[serde(flatten)]
+    base: EnterpriseAdminResponseBase,
+    ingestion_jobs: Vec<IngestionJob>,
+    count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListIngestionJobsQuery {
+    #[serde(default)]
+    binding_id: Option<String>,
+    #[serde(default)]
+    connector_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,6 +210,7 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             "/enterprise/connectors/{connector_id}/credential-refs/{credential_id}/rotate",
             patch(rotate_connector_credential_ref),
         )
+        .route("/enterprise/ingestion-jobs", get(list_ingestion_jobs))
         .route(
             "/enterprise/source-bindings/{binding_id}",
             patch(update_source_binding),
@@ -409,6 +426,55 @@ async fn list_connectors(
         count: connectors.len(),
         connectors,
     })
+}
+
+async fn list_ingestion_jobs(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Query(query): Query<ListIngestionJobsQuery>,
+) -> EnterpriseResult<EnterpriseIngestionJobsResponse> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let binding_id = query
+        .binding_id
+        .as_deref()
+        .and_then(|value| validate_enterprise_id("binding_id", value).ok());
+    let connector_id = query
+        .connector_id
+        .as_deref()
+        .and_then(|value| validate_enterprise_id("connector_id", value).ok());
+    let mut ingestion_jobs: Vec<_> = state
+        .enterprise_ingestion_jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| ingestion_job_tenant_matches(job, &tenant_context))
+        .filter(|job| {
+            binding_id
+                .as_ref()
+                .is_none_or(|binding_id| job.binding_id == *binding_id)
+        })
+        .filter(|job| {
+            connector_id
+                .as_ref()
+                .is_none_or(|connector_id| job.connector_id == *connector_id)
+        })
+        .cloned()
+        .collect();
+    ingestion_jobs.sort_by(|left, right| {
+        right
+            .started_at_ms
+            .unwrap_or_default()
+            .cmp(&left.started_at_ms.unwrap_or_default())
+            .then_with(|| right.job_id.cmp(&left.job_id))
+    });
+
+    Ok(Json(EnterpriseIngestionJobsResponse {
+        count: ingestion_jobs.len(),
+        ingestion_jobs,
+        base: storage_base(tenant_context, request_principal),
+    }))
 }
 
 async fn create_connector(
@@ -1198,6 +1264,24 @@ fn enterprise_connector_key(connector: &ConnectorInstance) -> String {
     )
 }
 
+fn enterprise_ingestion_job_key(job: &IngestionJob) -> String {
+    let deployment = job
+        .tenant_context
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local");
+    format!(
+        "{}::{}::{}::{}",
+        job.tenant_context.org_id, job.tenant_context.workspace_id, deployment, job.job_id
+    )
+}
+
+fn ingestion_job_tenant_matches(job: &IngestionJob, tenant_context: &TenantContext) -> bool {
+    job.tenant_context.org_id == tenant_context.org_id
+        && job.tenant_context.workspace_id == tenant_context.workspace_id
+        && job.tenant_context.deployment_id == tenant_context.deployment_id
+}
+
 async fn persist_enterprise_source_bindings(
     path: &std::path::Path,
     registry: &HashMap<String, SourceBinding>,
@@ -1229,6 +1313,23 @@ async fn persist_enterprise_connectors(
     tokio::fs::write(path, payload)
         .await
         .map_err(|_| internal_error("ENTERPRISE_CONNECTORS_PERSIST_FAILED"))?;
+    Ok(())
+}
+
+async fn persist_enterprise_ingestion_jobs(
+    path: &std::path::Path,
+    registry: &HashMap<String, IngestionJob>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_INGESTION_JOBS_PERSIST_FAILED"))?;
+    }
+    let payload = serde_json::to_vec_pretty(registry)
+        .map_err(|_| internal_error("ENTERPRISE_INGESTION_JOBS_PERSIST_FAILED"))?;
+    tokio::fs::write(path, payload)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_INGESTION_JOBS_PERSIST_FAILED"))?;
     Ok(())
 }
 

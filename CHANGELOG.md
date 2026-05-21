@@ -92,6 +92,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scope, and return credential metadata without credential material. The hidden
   Enterprise admin page can attach read-only/read-write/admin refs and rotate
   existing refs.
+- **Enterprise ingestion job audit records**: Added persisted tenant-scoped
+  ingestion job records for source-bound manual imports, including running,
+  completed, and failed states with connector/binding scope and source-object
+  references. Enterprise admins can list ingestion jobs from the runtime and
+  inspect them in the hidden control-panel admin page.
 
 ### Documentation
 

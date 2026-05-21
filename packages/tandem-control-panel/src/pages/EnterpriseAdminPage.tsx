@@ -16,6 +16,7 @@ import {
   useCreateEnterpriseSourceBinding,
   useDeleteEnterpriseSourceObject,
   useEnterpriseConnectors,
+  useEnterpriseIngestionJobs,
   useEnterpriseOrgUnits,
   useEnterpriseSourceBindings,
   useEnterpriseSourceObjects,
@@ -30,6 +31,7 @@ import {
   type CreateEnterpriseSourceBindingInput,
   type RotateEnterpriseConnectorCredentialRefInput,
   type EnterpriseConnectorInstance,
+  type EnterpriseIngestionJob,
   type EnterpriseNoopBase,
   type EnterpriseOrganizationUnit,
   type EnterpriseSourceBinding,
@@ -1179,6 +1181,71 @@ function SourceObjectLifecyclePanel({
   );
 }
 
+function IngestionJobsPanel({
+  binding,
+  rows,
+  loading,
+  error,
+}: {
+  binding?: EnterpriseSourceBinding | null;
+  rows: EnterpriseIngestionJob[];
+  loading: boolean;
+  error: unknown;
+}) {
+  return (
+    <PanelCard
+      title="Ingestion jobs"
+      subtitle={binding ? binding.source_root_label || binding.binding_id : "All bindings"}
+      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      fullHeight
+    >
+      {loading ? (
+        <LoadingState title="Loading" text="Reading ingestion audit records" />
+      ) : error ? (
+        <EmptyState title="Unavailable" text={errorText(error, "Ingestion jobs could not load.")} />
+      ) : rows.length ? (
+        <div className="grid gap-2">
+          {rows.map((job) => (
+            <div key={job.job_id} className="rounded-lg border border-white/8 bg-black/20 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <div className="break-all font-medium text-tcp-text-primary">{job.job_id}</div>
+                  <div className="tcp-subtle text-xs">
+                    {job.connector_id} / {job.binding_id}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge
+                    tone={
+                      job.state === "completed"
+                        ? "ok"
+                        : job.state === "failed" || job.state === "quarantined"
+                          ? "err"
+                          : "warn"
+                    }
+                  >
+                    {job.state || "queued"}
+                  </Badge>
+                  <Badge tone="info">{job.source_object_ids?.length || 0} objects</Badge>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-tcp-text-secondary md:grid-cols-2">
+                <div>Started: {formatLifecycleTime(job.started_at_ms)}</div>
+                <div>Finished: {formatLifecycleTime(job.finished_at_ms)}</div>
+                {job.quarantine_id ? (
+                  <div className="break-all md:col-span-2">Quarantine: {job.quarantine_id}</div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyState title="No jobs" text="Source-bound imports will create audit records here." />
+      )}
+    </PanelCard>
+  );
+}
+
 export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const orgUnits = useEnterpriseOrgUnits();
   const connectors = useEnterpriseConnectors();
@@ -1192,6 +1259,7 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const rotateConnectorCredentialRef = useRotateEnterpriseConnectorCredentialRef();
   const updateSourceBinding = useUpdateEnterpriseSourceBinding();
   const sourceObjects = useEnterpriseSourceObjects(selectedBindingId);
+  const ingestionJobs = useEnterpriseIngestionJobs(selectedBindingId);
   const reindexSourceObject = useReindexEnterpriseSourceObject();
   const deleteSourceObject = useDeleteEnterpriseSourceObject();
   const rescopeSourceObject = useRescopeEnterpriseSourceObject();
@@ -1202,6 +1270,10 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
     [sourceBindings.data]
   );
   const objectRows = useMemo(() => sourceObjects.data?.source_objects || [], [sourceObjects.data]);
+  const ingestionJobRows = useMemo(
+    () => ingestionJobs.data?.ingestion_jobs || [],
+    [ingestionJobs.data]
+  );
   const selectedBinding =
     bindingRows.find((binding) => binding.binding_id === selectedBindingId) || null;
   const busyObjectId =
@@ -1225,6 +1297,7 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
     if (selectedBindingId) {
       sourceObjects.refetch();
     }
+    ingestionJobs.refetch();
   };
 
   return (
@@ -1353,55 +1426,63 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
           />
         </div>
 
-        <SourceObjectLifecyclePanel
-          binding={selectedBinding}
-          rows={objectRows}
-          loading={sourceObjects.isLoading}
-          error={sourceObjects.error}
-          busyObjectId={busyObjectId}
-          onReindex={(sourceObjectId) => {
-            if (!selectedBindingId) return;
-            reindexSourceObject
-              .mutateAsync({
-                binding_id: selectedBindingId,
-                source_object_id: sourceObjectId,
-              })
-              .then(() => toast("ok", "Source object reindex requested."))
-              .catch((error) =>
-                toast("err", errorText(error, "Source object could not be reindexed."))
-              );
-          }}
-          onDelete={(sourceObjectId) => {
-            if (!selectedBindingId) return;
-            deleteSourceObject
-              .mutateAsync({
-                binding_id: selectedBindingId,
-                source_object_id: sourceObjectId,
-              })
-              .then(() => toast("ok", "Source object deleted."))
-              .catch((error) =>
-                toast("err", errorText(error, "Source object could not be deleted."))
-              );
-          }}
-          onRescope={(sourceObjectId, resourceKind, resourceId, dataClass) => {
-            if (!selectedBindingId || !selectedBinding || !resourceId) return;
-            rescopeSourceObject
-              .mutateAsync({
-                binding_id: selectedBindingId,
-                source_object_id: sourceObjectId,
-                resource_ref: {
-                  ...selectedBinding.resource_ref,
-                  resource_kind: resourceKind,
-                  resource_id: resourceId,
-                },
-                data_class: dataClass,
-              })
-              .then(() => toast("ok", "Source object scope updated."))
-              .catch((error) =>
-                toast("err", errorText(error, "Source object scope could not be updated."))
-              );
-          }}
-        />
+        <div className="grid gap-4 xl:grid-cols-2">
+          <SourceObjectLifecyclePanel
+            binding={selectedBinding}
+            rows={objectRows}
+            loading={sourceObjects.isLoading}
+            error={sourceObjects.error}
+            busyObjectId={busyObjectId}
+            onReindex={(sourceObjectId) => {
+              if (!selectedBindingId) return;
+              reindexSourceObject
+                .mutateAsync({
+                  binding_id: selectedBindingId,
+                  source_object_id: sourceObjectId,
+                })
+                .then(() => toast("ok", "Source object reindex requested."))
+                .catch((error) =>
+                  toast("err", errorText(error, "Source object could not be reindexed."))
+                );
+            }}
+            onDelete={(sourceObjectId) => {
+              if (!selectedBindingId) return;
+              deleteSourceObject
+                .mutateAsync({
+                  binding_id: selectedBindingId,
+                  source_object_id: sourceObjectId,
+                })
+                .then(() => toast("ok", "Source object deleted."))
+                .catch((error) =>
+                  toast("err", errorText(error, "Source object could not be deleted."))
+                );
+            }}
+            onRescope={(sourceObjectId, resourceKind, resourceId, dataClass) => {
+              if (!selectedBindingId || !selectedBinding || !resourceId) return;
+              rescopeSourceObject
+                .mutateAsync({
+                  binding_id: selectedBindingId,
+                  source_object_id: sourceObjectId,
+                  resource_ref: {
+                    ...selectedBinding.resource_ref,
+                    resource_kind: resourceKind,
+                    resource_id: resourceId,
+                  },
+                  data_class: dataClass,
+                })
+                .then(() => toast("ok", "Source object scope updated."))
+                .catch((error) =>
+                  toast("err", errorText(error, "Source object scope could not be updated."))
+                );
+            }}
+          />
+          <IngestionJobsPanel
+            binding={selectedBinding}
+            rows={ingestionJobRows}
+            loading={ingestionJobs.isLoading}
+            error={ingestionJobs.error}
+          />
+        </div>
       </StaggerGroup>
     </AnimatedPage>
   );

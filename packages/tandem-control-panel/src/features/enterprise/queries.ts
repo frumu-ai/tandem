@@ -132,8 +132,25 @@ export type EnterpriseSourceObjectLifecycle = {
   metadata?: unknown;
 };
 
+export type EnterpriseIngestionJob = {
+  job_id: string;
+  tenant_context?: EnterpriseTenantContext;
+  connector_id: string;
+  binding_id: string;
+  state?: string;
+  source_object_ids?: string[];
+  started_at_ms?: number | null;
+  finished_at_ms?: number | null;
+  quarantine_id?: string | null;
+};
+
 export type EnterpriseSourceObjectsResponse = EnterpriseNoopBase & {
   source_objects?: EnterpriseSourceObjectLifecycle[];
+  count?: number;
+};
+
+export type EnterpriseIngestionJobsResponse = EnterpriseNoopBase & {
+  ingestion_jobs?: EnterpriseIngestionJob[];
   count?: number;
 };
 
@@ -269,6 +286,20 @@ export function useEnterpriseSourceObjects(bindingId?: string | null, enabled = 
         }
       ) as Promise<EnterpriseSourceObjectsResponse>,
     enabled: enabled && Boolean(bindingId),
+    staleTime: 15000,
+    retry: retryEnterpriseQuery,
+  });
+}
+
+export function useEnterpriseIngestionJobs(bindingId?: string | null, enabled = true) {
+  const params = bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : "";
+  return useQuery({
+    queryKey: ["enterprise", "ingestion-jobs", bindingId || ""],
+    queryFn: () =>
+      api(`/api/engine/enterprise/ingestion-jobs${params}`, {
+        method: "GET",
+      }) as Promise<EnterpriseIngestionJobsResponse>,
+    enabled,
     staleTime: 15000,
     retry: retryEnterpriseQuery,
   });
