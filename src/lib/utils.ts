@@ -40,3 +40,41 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+
+/**
+ * Finds the element in an array that has the maximum value according to the provided mapping function.
+ * This operates in O(N) time and O(1) space, avoiding the O(N log N) overhead of `[...arr].sort(...)[0]`.
+ * Returns `undefined` if the array is empty.
+ */
+export function maxBy<T>(array: T[], mapper: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let maxElement = array[0] as T;
+  let maxVal = mapper(maxElement);
+  for (let i = 1; i < array.length; i++) {
+    const val = mapper(array[i] as T);
+    if (val > maxVal) {
+      maxVal = val;
+      maxElement = array[i] as T;
+    }
+  }
+  return maxElement;
+}
+
+/**
+ * Finds the element in an array that has the minimum value according to the provided mapping function.
+ * This operates in O(N) time and O(1) space, avoiding the O(N log N) overhead of `[...arr].sort(...)[0]`.
+ * Returns `undefined` if the array is empty.
+ */
+export function minBy<T>(array: T[], mapper: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let minElement = array[0] as T;
+  let minVal = mapper(minElement);
+  for (let i = 1; i < array.length; i++) {
+    const val = mapper(array[i] as T);
+    if (val < minVal) {
+      minVal = val;
+      minElement = array[i] as T;
+    }
+  }
+  return minElement;
+}
