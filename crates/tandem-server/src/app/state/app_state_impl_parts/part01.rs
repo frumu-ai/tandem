@@ -240,6 +240,8 @@ impl AppState {
             enterprise_source_bindings: Arc::new(RwLock::new(std::collections::HashMap::new())),
             enterprise_source_bindings_path: config::paths::resolve_enterprise_source_bindings_path(
             ),
+            enterprise_connectors: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            enterprise_connectors_path: config::paths::resolve_enterprise_connectors_path(),
             missions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources_path: config::paths::resolve_shared_resources_path(),
@@ -480,6 +482,7 @@ impl AppState {
         let _ = self.load_shared_resources().await;
         let _ = self.load_enterprise_org_units().await;
         let _ = self.load_enterprise_source_bindings().await;
+        let _ = self.load_enterprise_connectors().await;
         self.load_routines().await?;
         let _ = self.load_routine_history().await;
         let _ = self.load_routine_runs().await;
@@ -549,6 +552,20 @@ impl AppState {
         let registry: std::collections::HashMap<String, tandem_enterprise_contract::SourceBinding> =
             serde_json::from_slice(&bytes)?;
         *self.enterprise_source_bindings.write().await = registry;
+        Ok(())
+    }
+
+    pub async fn load_enterprise_connectors(&self) -> anyhow::Result<()> {
+        if !self.enterprise_connectors_path.exists() {
+            return Ok(());
+        }
+        check_file_permissions(&self.enterprise_connectors_path);
+        let bytes = fs::read(&self.enterprise_connectors_path).await?;
+        let registry: std::collections::HashMap<
+            String,
+            tandem_enterprise_contract::ConnectorInstance,
+        > = serde_json::from_slice(&bytes)?;
+        *self.enterprise_connectors.write().await = registry;
         Ok(())
     }
 

@@ -125,6 +125,84 @@ async fn memory_import_rejects_disabled_source_binding() {
 }
 
 #[tokio::test]
+async fn memory_import_rejects_inactive_source_binding_connector() {
+    let state = test_state().await;
+    let import_root = state
+        .memory_audit_path
+        .parent()
+        .unwrap()
+        .join("paused-docs");
+    tokio::fs::create_dir_all(&import_root)
+        .await
+        .expect("import root");
+    tokio::fs::write(import_root.join("note.md"), "paused connector import")
+        .await
+        .expect("import file");
+    let tenant = tandem_types::TenantContext::local_implicit();
+    let connector = tandem_enterprise_contract::ConnectorInstance::active(
+        "manual_upload",
+        tenant.clone(),
+        "manual_upload",
+        tandem_enterprise_contract::PrincipalRef::human_user("local-operator"),
+        1,
+    )
+    .with_state(
+        tandem_enterprise_contract::ConnectorLifecycleState::Paused,
+        2,
+    );
+    let binding = tandem_enterprise_contract::SourceBinding::enabled(
+        "paused-connector-binding",
+        tenant.clone(),
+        "manual_upload",
+        "manual_upload",
+        "local-import-root",
+        tandem_enterprise_contract::ResourceRef::new(
+            tenant.org_id.clone(),
+            tenant.workspace_id.clone(),
+            tandem_enterprise_contract::ResourceKind::DocumentCollection,
+            "manual-imports",
+        ),
+        tandem_enterprise_contract::DataClass::Internal,
+        tandem_enterprise_contract::PrincipalRef::human_user("local-operator"),
+        1,
+    );
+    state
+        .enterprise_connectors
+        .write()
+        .await
+        .insert("local::local::local::manual_upload".to_string(), connector);
+    state.enterprise_source_bindings.write().await.insert(
+        "local::local::local::paused-connector-binding".to_string(),
+        binding,
+    );
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/memory/import")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "source": {"kind": "path", "path": import_root.display().to_string()},
+                "format": "directory",
+                "tier": "global",
+                "source_binding_id": "paused-connector-binding",
+                "sync_deletes": false
+            })
+            .to_string(),
+        ))
+        .expect("import request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("error").and_then(Value::as_str),
+        Some("source binding connector does not allow memory import indexing: paused")
+    );
+}
+
+#[tokio::test]
 async fn memory_import_requires_source_binding_for_hosted_control_panel() {
     let state = test_state().await;
     let import_root = state

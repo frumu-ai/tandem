@@ -256,6 +256,118 @@ fn source_binding_body(binding_id: &str, org_id: &str, workspace_id: &str) -> St
     .to_string()
 }
 
+fn connector_body(connector_id: &str, provider: &str) -> String {
+    json!({
+        "connector_id": connector_id,
+        "provider": provider,
+        "display_name": "Finance Drive Connector"
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn enterprise_connectors_create_and_update_persist_under_request_tenant() {
+    let state = test_state().await;
+    let storage_path = state.enterprise_connectors_path.clone();
+    let mut rx = state.event_bus.subscribe();
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/connectors")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(connector_body("google_drive", "google_drive")))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(storage_path.exists());
+    let create_event =
+        next_event_of_type(&mut rx, "enterprise.connector.cache_invalidation_required").await;
+    assert_eq!(
+        create_event
+            .properties
+            .get("connector_id")
+            .and_then(Value::as_str),
+        Some("google_drive")
+    );
+    assert_eq!(
+        create_event
+            .properties
+            .get("reason")
+            .and_then(Value::as_str),
+        Some("connector_created")
+    );
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/enterprise/connectors/google_drive")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::from(json!({"state": "paused"}).to_string()))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let update_event =
+        next_event_of_type(&mut rx, "enterprise.connector.cache_invalidation_required").await;
+    assert_eq!(
+        update_event
+            .properties
+            .get("reason")
+            .and_then(Value::as_str),
+        Some("connector_updated")
+    );
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/connectors")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        payload
+            .get("connectors")
+            .and_then(Value::as_array)
+            .and_then(|connectors| connectors.first())
+            .and_then(|connector| connector.get("state"))
+            .and_then(Value::as_str),
+        Some("paused")
+    );
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/connectors")
+        .header("x-tandem-org-id", "other-co")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(0));
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/enterprise/connectors/google_drive")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "other-co")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::from(json!({"state": "active"}).to_string()))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn enterprise_source_bindings_create_and_update_persist_under_request_tenant() {
     let state = test_state().await;

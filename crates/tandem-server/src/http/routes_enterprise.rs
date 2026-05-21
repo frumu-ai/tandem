@@ -7,9 +7,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_enterprise_contract::{
-    DataClass, IngestionPolicy, OrganizationUnit, OrganizationUnitKind, OrganizationUnitState,
-    PrincipalRef, RequestPrincipal, ResourceRef, SourceBinding, SourceBindingState, TenantContext,
-    VerifiedTenantContext,
+    ConnectorInstance, ConnectorLifecycleState, DataClass, IngestionPolicy, OrganizationUnit,
+    OrganizationUnitKind, OrganizationUnitState, PrincipalRef, RequestPrincipal, ResourceRef,
+    SourceBinding, SourceBindingState, TenantContext, VerifiedTenantContext,
 };
 use tandem_memory::db::MemoryDatabase;
 use tandem_memory::types::{
@@ -42,6 +42,14 @@ struct EnterpriseSourceBindingsResponse {
     #[serde(flatten)]
     base: EnterpriseAdminResponseBase,
     source_bindings: Vec<SourceBinding>,
+    count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct EnterpriseConnectorsResponse {
+    #[serde(flatten)]
+    base: EnterpriseAdminResponseBase,
+    connectors: Vec<ConnectorInstance>,
     count: usize,
 }
 
@@ -101,6 +109,24 @@ struct CreateSourceBindingRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct CreateConnectorRequest {
+    connector_id: String,
+    provider: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    state: ConnectorLifecycleState,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateConnectorRequest {
+    #[serde(default)]
+    state: Option<ConnectorLifecycleState>,
+    #[serde(default)]
+    display_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UpdateSourceBindingRequest {
     #[serde(default)]
     state: Option<SourceBindingState>,
@@ -127,6 +153,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route(
             "/enterprise/source-bindings",
             get(list_source_bindings).post(create_source_binding),
+        )
+        .route(
+            "/enterprise/connectors",
+            get(list_connectors).post(create_connector),
+        )
+        .route(
+            "/enterprise/connectors/{connector_id}",
+            patch(update_connector),
         )
         .route(
             "/enterprise/source-bindings/{binding_id}",
@@ -319,6 +353,113 @@ async fn create_source_binding(
 
     Ok(Json(EnterpriseAdminResponseBase {
         message: "enterprise source binding saved",
+        ..storage_base(tenant_context, request_principal)
+    }))
+}
+
+async fn list_connectors(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+) -> Json<EnterpriseConnectorsResponse> {
+    let mut connectors: Vec<_> = state
+        .enterprise_connectors
+        .read()
+        .await
+        .values()
+        .filter(|connector| connector.tenant_matches(&tenant_context))
+        .cloned()
+        .collect();
+    connectors.sort_by(|left, right| left.connector_id.cmp(&right.connector_id));
+
+    Json(EnterpriseConnectorsResponse {
+        base: storage_base(tenant_context, request_principal),
+        count: connectors.len(),
+        connectors,
+    })
+}
+
+async fn create_connector(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Json(input): Json<CreateConnectorRequest>,
+) -> EnterpriseResult<EnterpriseAdminResponseBase> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+
+    let connector_id = validate_enterprise_id("connector_id", &input.connector_id)?;
+    let provider = validate_enterprise_id("provider", &input.provider)?;
+    let actor_id = request_principal
+        .actor_id
+        .clone()
+        .unwrap_or_else(|| request_principal.source.clone());
+    let mut connector = ConnectorInstance::active(
+        connector_id,
+        tenant_context.clone(),
+        provider,
+        PrincipalRef::human_user(actor_id),
+        now_ms(),
+    )
+    .with_state(input.state, now_ms());
+    connector.display_name = normalized_optional_label(input.display_name);
+
+    {
+        let mut registry = state.enterprise_connectors.write().await;
+        registry.insert(enterprise_connector_key(&connector), connector);
+        persist_enterprise_connectors(&state.enterprise_connectors_path, &registry).await?;
+    }
+    emit_connector_invalidation_required(
+        &state,
+        &tenant_context,
+        &input.connector_id,
+        "connector_created",
+    );
+
+    Ok(Json(EnterpriseAdminResponseBase {
+        message: "enterprise connector saved",
+        ..storage_base(tenant_context, request_principal)
+    }))
+}
+
+async fn update_connector(
+    State(state): State<AppState>,
+    Path(connector_id): Path<String>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Json(input): Json<UpdateConnectorRequest>,
+) -> EnterpriseResult<EnterpriseAdminResponseBase> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let connector_id = validate_enterprise_id("connector_id", &connector_id)?;
+
+    let updated_connector = {
+        let mut registry = state.enterprise_connectors.write().await;
+        let Some(connector) = registry.values_mut().find(|connector| {
+            connector.connector_id == connector_id && connector.tenant_matches(&tenant_context)
+        }) else {
+            return Err(not_found("ENTERPRISE_CONNECTOR_NOT_FOUND"));
+        };
+        if let Some(state) = input.state {
+            connector.state = state;
+        }
+        if let Some(display_name) = input.display_name {
+            connector.display_name = normalized_optional_label(Some(display_name));
+        }
+        connector.updated_at_ms = now_ms();
+        let updated_connector = connector.clone();
+        persist_enterprise_connectors(&state.enterprise_connectors_path, &registry).await?;
+        updated_connector
+    };
+    emit_connector_invalidation_required(
+        &state,
+        &tenant_context,
+        &updated_connector.connector_id,
+        "connector_updated",
+    );
+
+    Ok(Json(EnterpriseAdminResponseBase {
+        message: "enterprise connector updated",
         ..storage_base(tenant_context, request_principal)
     }))
 }
@@ -560,6 +701,28 @@ fn emit_source_binding_cache_invalidation_required(
                 "tenant_workspace_id": tenant_context.workspace_id,
                 "tenant_deployment_id": tenant_context.deployment_id,
                 "source_binding_id": binding_id,
+            }
+        }),
+    ));
+}
+
+fn emit_connector_invalidation_required(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    connector_id: &str,
+    reason: &str,
+) {
+    state.event_bus.publish(EngineEvent::new(
+        "enterprise.connector.cache_invalidation_required",
+        json!({
+            "reason": reason,
+            "tenant_context": tenant_context,
+            "connector_id": connector_id,
+            "cache_scope": {
+                "tenant_org_id": tenant_context.org_id,
+                "tenant_workspace_id": tenant_context.workspace_id,
+                "tenant_deployment_id": tenant_context.deployment_id,
+                "connector_id": connector_id,
             }
         }),
     ));
@@ -830,6 +993,21 @@ fn enterprise_source_binding_key(binding: &SourceBinding) -> String {
     )
 }
 
+fn enterprise_connector_key(connector: &ConnectorInstance) -> String {
+    let deployment = connector
+        .tenant_context
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local");
+    format!(
+        "{}::{}::{}::{}",
+        connector.tenant_context.org_id,
+        connector.tenant_context.workspace_id,
+        deployment,
+        connector.connector_id
+    )
+}
+
 async fn persist_enterprise_source_bindings(
     path: &std::path::Path,
     registry: &HashMap<String, SourceBinding>,
@@ -844,6 +1022,23 @@ async fn persist_enterprise_source_bindings(
     tokio::fs::write(path, payload)
         .await
         .map_err(|_| internal_error("ENTERPRISE_SOURCE_BINDINGS_PERSIST_FAILED"))?;
+    Ok(())
+}
+
+async fn persist_enterprise_connectors(
+    path: &std::path::Path,
+    registry: &HashMap<String, ConnectorInstance>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_CONNECTORS_PERSIST_FAILED"))?;
+    }
+    let payload = serde_json::to_vec_pretty(registry)
+        .map_err(|_| internal_error("ENTERPRISE_CONNECTORS_PERSIST_FAILED"))?;
+    tokio::fs::write(path, payload)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_CONNECTORS_PERSIST_FAILED"))?;
     Ok(())
 }
 

@@ -80,6 +80,10 @@ production connector ingestion flows remain follow-up implementation phases.
 - Hosted/enterprise manual memory imports now require `source_binding_id` so
   company data is scoped to a `ResourceRef` and `DataClass` before indexing.
   Local/default imports can still remain unbound for non-enterprise installs.
+- Connector instances now have storage-backed tenant-scoped admin endpoints for
+  lifecycle management. Source-bound imports require the referenced connector
+  to exist and be active, so paused, revoked, or quarantined connectors block
+  ingestion before data reaches memory.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

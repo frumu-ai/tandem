@@ -1046,6 +1046,24 @@ async fn resolve_memory_import_source_binding(
             "source binding does not allow memory import indexing",
         ));
     }
+    let registry = state.enterprise_connectors.read().await;
+    let Some(connector) = registry.values().find(|connector| {
+        connector.connector_id == binding.connector_id && connector.tenant_matches(tenant_context)
+    }) else {
+        return Err(skill_error(
+            StatusCode::BAD_REQUEST,
+            "source binding connector is not registered for this tenant",
+        ));
+    };
+    if !connector.state.allows_ingestion() {
+        return Err(skill_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "source binding connector does not allow memory import indexing: {}",
+                connector_lifecycle_state_label(connector.state)
+            ),
+        ));
+    }
     Ok(Some(MemoryImportSourceBinding {
         binding_id: binding.binding_id.clone(),
         connector_id: binding.connector_id.clone(),
@@ -1060,6 +1078,15 @@ async fn resolve_memory_import_source_binding(
             .and_then(|value| value.as_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| format!("{:?}", binding.data_class)),
     }))
+}
+
+fn connector_lifecycle_state_label(state: ConnectorLifecycleState) -> &'static str {
+    match state {
+        ConnectorLifecycleState::Active => "active",
+        ConnectorLifecycleState::Paused => "paused",
+        ConnectorLifecycleState::Revoked => "revoked",
+        ConnectorLifecycleState::Quarantined => "quarantined",
+    }
 }
 
 fn memory_import_requires_source_binding(

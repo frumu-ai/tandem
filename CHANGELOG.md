@@ -78,6 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   imports now fail closed unless a valid `source_binding_id` is supplied, while
   local/default imports can remain explicitly unbound. The control-panel import
   dialog also requires a source binding when opened from a hosted principal.
+- **Enterprise connector lifecycle registry**: Added storage-backed connector
+  instance admin endpoints for tenant-scoped create/list/update and lifecycle
+  states (`active`, `paused`, `revoked`, `quarantined`). Source-bound memory
+  imports now require the referenced connector to exist and allow ingestion.
 
 ### Documentation
 

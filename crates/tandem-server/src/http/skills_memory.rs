@@ -10,7 +10,7 @@ use tandem_memory::types::{
     MemoryImportRequest as TandemMemoryImportRequest, MemoryImportSourceBinding, MemoryImportStats,
     MemorySourceAccessTarget, MemoryTenantScope, MemoryTier,
 };
-use tandem_types::{RequestPrincipal, VerifiedTenantContext};
+use tandem_types::{ConnectorLifecycleState, RequestPrincipal, VerifiedTenantContext};
 
 include!("skills_memory_parts/part01.rs");
 include!("skills_memory_parts/part02.rs");
