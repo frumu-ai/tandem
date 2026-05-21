@@ -40,3 +40,39 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+
+/**
+ * Returns the element in an array that evaluates to the maximum value by the provided getter.
+ * This is a performance optimization over `[...arr].sort((a, b) => getter(b) - getter(a))[0]`.
+ */
+export function maxBy<T>(array: T[], getter: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let maxItem = array[0];
+  let maxVal = getter(maxItem);
+  for (let i = 1; i < array.length; i++) {
+    const val = getter(array[i]);
+    if (val > maxVal) {
+      maxVal = val;
+      maxItem = array[i];
+    }
+  }
+  return maxItem;
+}
+
+/**
+ * Returns the element in an array that evaluates to the minimum value by the provided getter.
+ * This is a performance optimization over `[...arr].sort((a, b) => getter(a) - getter(b))[0]`.
+ */
+export function minBy<T>(array: T[], getter: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let minItem = array[0];
+  let minVal = getter(minItem);
+  for (let i = 1; i < array.length; i++) {
+    const val = getter(array[i]);
+    if (val < minVal) {
+      minVal = val;
+      minItem = array[i];
+    }
+  }
+  return minItem;
+}
