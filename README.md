@@ -33,7 +33,7 @@ Tandem is not another chat wrapper, and it is not just an agent framework. It is
 - **Entrypoints are clients, not separate engines:** The Tauri desktop app, TUI, web control panel, channels, and SDKs all talk to the same engine runtime.
 - **Runtime-owned authority:** Runs, sessions, memory, context, provider secrets, MCP tools, approvals, artifacts, and audit records live below the model.
 - **Governed tool execution:** Built-in tools and MCP connectors can be scoped per workflow step, with approval gates for consequential actions.
-- **Tenant-aware runtime path:** Hosted and enterprise modes now carry tenant/principal context through sessions, runs, context runs, memory, provider credentials, MCP secrets, and events.
+- **Tenant-aware runtime:** Hosted and enterprise modes carry tenant/principal context through sessions, runs, context runs, memory, provider credentials, MCP secrets, and events.
 - **Deployable where the data lives:** Tandem can run locally, headlessly, hosted, or inside customer infrastructure.
 - **Provider agnostic:** Use OpenRouter, Anthropic, OpenAI, OpenCode Zen, or local Ollama endpoints.
 
@@ -51,12 +51,12 @@ Companies also need central AI context without flat access. A permissioned compa
 
 ## What Tandem Governs
 
-- **Company knowledge and memory:** Runtime-owned memory, knowledge spaces, and retrieval paths that are being hardened around tenant and workspace boundaries.
-- **Tool and MCP visibility:** Step-scoped built-in tools and MCP connector tools, with full tool-discovery masking an enterprise roadmap item.
+- **Company knowledge and memory:** Runtime-owned memory, knowledge spaces, and retrieval paths designed around tenant and workspace boundaries.
+- **Tool and MCP visibility:** Step-scoped built-in tools and MCP connector tools, with broader pre-invocation masking planned for enterprise deployments.
 - **Workflow execution:** Durable automation and context-run state instead of fragile transcript-only execution.
 - **Human approvals:** Runtime gates pause runs, collect approve/rework/cancel decisions, and leave evidence.
 - **Tenant and workspace boundaries:** Tenant-aware sessions, runs, context runs, events, provider credentials, MCP secrets, memory, and contract vocabulary for resource scopes and grants.
-- **Connector credentials and secrets:** Provider and MCP secret references are runtime-owned; connector source binding and scoped ingestion are in active development.
+- **Connector credentials and secrets:** Provider and MCP secret references are runtime-owned; connector source binding gives scoped ingestion a shared contract as that layer matures.
 - **Artifacts and audit trails:** Outputs, validations, tool ledger events, approval decisions, and protected audit records survive outside the model context window.
 
 ## Core Use Cases
@@ -64,7 +64,7 @@ Companies also need central AI context without flat access. A permissioned compa
 | Use case                           | What Tandem adds                                                                                       |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Approval-gated email and workflows | Agent proposes work, Tandem pauses before the action, a human approves or requests rework.             |
-| Permissioned company knowledgebase | Company memory and knowledge spaces with tenant-aware retrieval and a path toward resource grants.     |
+| Permissioned company knowledgebase | Company memory and knowledge spaces with tenant-aware retrieval and resource-grant vocabulary.         |
 | Governed coding agents             | Coder runs, worktree context, handoff artifacts, approval points, and auditable implementation state.  |
 | Project, sprint, and event brain   | Long-running context, tasks, artifacts, and memory that survive across sessions and teams.             |
 | Tenant-isolated hosted automations | Hosted runtime records, event streams, provider credentials, MCP secrets, and memory scoped by tenant. |
@@ -76,9 +76,9 @@ Tandem is designed for teams that need to run AI work under real operational con
 
 - **Runtime authority, not prompt authority:** The model can request context or a tool call; the runtime decides what is visible and executable.
 - **Tenant-aware records:** Sessions, automation runs, context runs, event streams, provider credentials, MCP secrets, and memory paths carry tenant context in hosted/shared modes.
-- **Resource and grant model foundation:** The enterprise contract includes `ResourceRef`, `ResourceKind`, `ResourceScope`, `AccessPermission`, `DataClass`, `PrincipalRef`, `ScopedGrant`, `StrictTenantContext`, and `DataBoundary`.
-- **Permissioned memory:** Memory and knowledge paths are being partitioned by tenant so company knowledge can become useful without becoming globally flat.
-- **Deployable/private runtime:** The same runtime can run on a laptop, as a headless engine, hosted, or inside customer infrastructure as the enterprise path matures.
+- **Resource and grant model:** The enterprise contract includes `ResourceRef`, `ResourceKind`, `ResourceScope`, `AccessPermission`, `DataClass`, `PrincipalRef`, `ScopedGrant`, `StrictTenantContext`, and `DataBoundary`.
+- **Permissioned memory:** Memory and knowledge paths carry tenant boundaries so company knowledge can become useful without becoming globally flat.
+- **Deployable runtime:** The same runtime can run on a laptop, as a headless engine, hosted, or inside customer infrastructure as the enterprise layer matures.
 - **Auditability:** Approval decisions, policy denials, provider secret changes, MCP activity, tool ledger events, artifacts, and protected audit records can be inspected outside chat transcripts.
 
 ## Deployment Model
@@ -87,20 +87,20 @@ Tandem is useful locally and grows toward stricter company deployments:
 
 - **Local desktop:** Single-user desktop runtime with local workspace scope, provider setup, and approval-gated tools.
 - **Headless engine:** `tandem-engine serve` for SDKs, control panels, automations, and CI/dev environments.
-- **Hosted/private managed:** Hosted deployments with transport-token and signed context-assertion foundations for tenant-aware access.
-- **Customer infrastructure:** A runtime path designed to run where company data, connector credentials, and operational evidence need to live.
+- **Hosted/private managed:** Hosted deployments with transport-token and signed context assertions for tenant-aware access.
+- **Customer infrastructure:** A deployment model for running where company data, connector credentials, and operational evidence need to live.
 
 ## Current Status
 
-| Implemented today / landing now                                                                      | Still in progress / enterprise roadmap                                                         |
-| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Runtime auth modes: `local_single_tenant`, `hosted_single_tenant`, `enterprise_required` foundations | Full RBAC, OIDC, SCIM, SIEM integrations, SOC2 package, and enterprise identity policy bridge  |
-| Tenant context and signed context assertion foundation for hosted/enterprise ingress                 | Private enterprise sidecar with complete fail-closed policy authorization                      |
-| Tenant-aware sessions, automation runs, context runs, events, coder routes, and memory APIs          | Complete artifact/export isolation across every path                                           |
-| Provider credential and MCP secret tenant-boundary hardening                                         | Full tool-discovery masking before model invocation                                            |
-| Memory tenant partitioning, tenant-scoped knowledge spaces, and resource-scoped retrieval work       | Complete connector ingestion admin platform with live external source ingestion                |
-| Resource access-control contract types and strict context projection vocabulary                      | Signed approval receipts and auditor-grade immutable receipt chains                            |
-| Approval gates, pending approval inbox, channel approvals, tool ledger events, and audit records     | Advanced connector quarantine/revoke/rotate operations wired to production ingestion workflows |
+| Current capabilities                                                                             | Enterprise roadmap                                                                             |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| Runtime auth modes: `local_single_tenant`, `hosted_single_tenant`, `enterprise_required`         | Full RBAC, OIDC, SCIM, SIEM integrations, SOC2 package, and enterprise identity policy bridge  |
+| Tenant context and signed context assertions for hosted/enterprise ingress                       | Private enterprise sidecar with fail-closed policy authorization                               |
+| Tenant-aware sessions, automation runs, context runs, events, coder routes, and memory APIs      | Complete artifact/export isolation across every path                                           |
+| Provider credential and MCP secret tenant boundaries                                             | Full tool-discovery masking before model invocation                                            |
+| Memory tenant partitioning, tenant-scoped knowledge spaces, and resource-scoped retrieval APIs   | Production connector ingestion admin platform with live external source ingestion              |
+| Resource access-control contract types and strict context projection vocabulary                  | Signed approval receipts and auditor-grade immutable receipt chains                            |
+| Approval gates, pending approval inbox, channel approvals, tool ledger events, and audit records | Advanced connector quarantine/revoke/rotate operations wired to production ingestion workflows |
 
 ## Compliance and AI Act readiness
 
@@ -160,15 +160,20 @@ tandem-engine serve --hostname 127.0.0.1 --port 39731
 - TUI: `npm i -g @frumu/tandem-tui && tandem-tui`
 - SDKs: `npm install @frumu/tandem-client` or `pip install tandem-client`
 
+### Codex And Docker Setup
+
+- Codex users can connect Tandem through the [tandem-codex-plugin](https://github.com/frumu-ai/tandem-codex-plugin) repository.
+- For a Docker-based Tandem agents setup, see [tandem-agents](https://github.com/frumu-ai/tandem-agents).
+
 ## Open Core & Source-Available Architecture
 
 Tandem is built for developers first, using an open-core model. We believe that to trust an AI runtime, you must be able to audit the execution router line-by-line.
 
 **Local Development & Internal Use:** The core Rust execution engine, local desktop app, and tandem-agents libraries are free for local development and internal deployment.
 
-**Enterprise Path:** Advanced features required for scaled organizational deployments, such as enterprise identity federation, richer policy enforcement, signed receipt chains, private sidecar enforcement, SIEM export, and HA packaging, are active roadmap work and may be governed under commercial or source-available terms, including the Business Source License 1.1 (`BUSL-1.1`) where declared.
+**Enterprise Path:** Advanced features for scaled organizational deployments, such as enterprise identity federation, richer policy enforcement, signed receipt chains, private sidecar enforcement, SIEM export, and HA packaging, are planned enterprise capabilities and may be governed under commercial or source-available terms, including the Business Source License 1.1 (`BUSL-1.1`) where declared.
 
-**The Rule:** You are free to use Tandem to govern your own agents under the license terms for each package. You are restricted from wrapping source-available Tandem components and selling them as a managed competitive SaaS unless your license permits it. See [docs/LICENSING.md](docs/LICENSING.md) for exact details.
+**License Boundary:** You are free to use Tandem to govern your own agents under the license terms for each package. Source-available Tandem components cannot be wrapped and sold as a managed competitive SaaS unless your license permits it. See [docs/LICENSING.md](docs/LICENSING.md) for exact details.
 
 ## Architecture
 
@@ -265,27 +270,27 @@ flowchart TD
 
 ### Permissioned memory and company knowledge
 
-- **Tenant-partitioned memory path:** Vector-backed session, project, global, and file-import memory paths include tenant scope in the current hardening work.
+- **Tenant-partitioned memory:** Vector-backed session, project, global, and file-import memory paths carry tenant scope.
 - **Knowledge spaces:** Curated knowledge spaces and items can be managed through tenant-aware APIs.
 - **Runtime retrieval:** Agents retrieve context through the runtime, creating a path toward permissioned company memory instead of flat transcript stuffing.
 
 ### Tenant and workspace isolation
 
-- **Tenant-aware records:** Sessions, automation definitions/runs, context runs, event streams, provider credentials, MCP secret references, memory, and coder routes are being hardened around tenant context.
-- **Strict context contract foundation:** Resource refs, scoped grants, data classes, principals, and data boundaries are modeled in the enterprise contract.
+- **Tenant-aware records:** Sessions, automation definitions/runs, context runs, event streams, provider credentials, MCP secret references, memory, and coder routes carry tenant context.
+- **Strict context contract:** Resource refs, scoped grants, data classes, principals, and data boundaries are modeled in the enterprise contract.
 - **Local behavior preserved:** Local/default single-tenant usage remains the default for desktop and developer workflows.
 
 ### MCP and tool governance
 
 - **MCP connector support:** Tandem can connect to MCP servers, sync tools, and scope selected connector tools to workflow nodes.
-- **Secret isolation path:** Store-backed MCP secret references validate tenant scope before resolution in hosted/shared paths.
-- **Security surface awareness:** Tool discovery and MCP visibility are treated as authority surfaces; full masking of unauthorized tools before model invocation remains enterprise roadmap work.
+- **Secret isolation:** Store-backed MCP secret references validate tenant scope before resolution in hosted/shared paths.
+- **Tool discovery as an authority surface:** Tool discovery and MCP visibility are governed by runtime policy; full masking of unauthorized tools before model invocation remains enterprise roadmap work.
 
 ### Human approval gates and audit
 
 - **Approvals inbox and channel approvals:** Operators can approve, request rework, or cancel from runtime-owned approval surfaces.
 - **Durable evidence:** Tool ledger events, gate history, artifacts, validation metadata, and protected audit events can survive outside the model context window.
-- **Audit stream foundation:** Admin-facing audit streams and protected audit envelopes exist; immutable receipt chains and signed approval receipts remain roadmap work.
+- **Audit stream:** Admin-facing audit streams and protected audit envelopes exist; immutable receipt chains and signed approval receipts remain roadmap work.
 
 ### Multi-agent orchestration
 
@@ -314,17 +319,17 @@ flowchart TD
 
 ## Enterprise Path And Roadmap
 
-Tandem already includes the runtime foundations for governed AI work in hosted and self-managed environments. The next enterprise work is about hardening identity, policy, audit export, and administration around those foundations.
+Tandem already includes the runtime building blocks for governed AI work in hosted and self-managed environments. The next enterprise capabilities strengthen identity, policy, audit export, and administration around those building blocks.
 
-Current foundation:
+Available now:
 
 - Runtime auth modes and hosted/enterprise signed context assertion verification.
-- Tenant-aware sessions, runs, context runs, event streams, provider credentials, MCP secrets, memory, and coder route hardening.
+- Tenant-aware sessions, runs, context runs, event streams, provider credentials, MCP secrets, memory, and coder routes.
 - Resource access-control contract vocabulary for resources, scopes, principals, grants, data classes, and data boundaries.
-- Approval gates, protected audit records, audit stream foundation, tool ledger events, and runtime artifacts.
-- Connector source-binding contract foundation using secret references, resource refs, data classes, quarantine/revoke/rotate vocabulary, and scoped memory chunk references.
+- Approval gates, protected audit records, audit streams, tool ledger events, and runtime artifacts.
+- Connector source-binding contracts using secret references, resource refs, data classes, quarantine/revoke/rotate vocabulary, and scoped memory chunk references.
 
-Roadmap and active development:
+Planned enterprise capabilities:
 
 - Full RBAC, OIDC/SSO, SCIM, SIEM export, SOC2 package, and enterprise admin workflows.
 - Private enterprise sidecar and policy bridge with required-mode fail-closed enforcement.

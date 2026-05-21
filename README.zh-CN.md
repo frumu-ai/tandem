@@ -7,8 +7,8 @@
     <a href="https://github.com/frumu-ai/tandem/actions/workflows/publish-registries.yml"><img src="https://img.shields.io/github/actions/workflow/status/frumu-ai/tandem/publish-registries.yml?branch=main&label=Publish%20Registries&style=for-the-badge" alt="Registry Publish"></a>
     <a href="https://github.com/frumu-ai/tandem/releases"><img src="https://img.shields.io/github/v/release/frumu-ai/tandem?label=release&style=for-the-badge" alt="Latest Release"></a>
     <a href="https://www.npmjs.com/package/@frumu/tandem-client"><img src="https://img.shields.io/npm/v/%40frumu%2Ftandem-client?label=npm%20client&style=for-the-badge" alt="npm client"></a>
-    <!-- <a href="https://pypi.org/project/tandem-client/"><img src="https://img.shields.io/pypi/v/tandem-client?label=PyPI%20client&style=for-the-badge" alt="PyPI client"></a> -->
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge" alt="License: MIT"></a>
+    <a href="https://pypi.org/project/tandem-client/"><img src="https://img.shields.io/pypi/v/tandem-client?label=PyPI%20client&style=for-the-badge" alt="PyPI client"></a>
+    <a href="docs/LICENSING.md"><img src="https://img.shields.io/badge/License-Mixed%3A%20MIT%2FApache--2.0%20%2B%20BUSL--1.1-blue.svg?style=for-the-badge" alt="License: Mixed MIT/Apache-2.0 + BUSL-1.1"></a>
     <a href="https://github.com/sponsors/frumu-ai"><img src="https://img.shields.io/badge/sponsor-30363D?logo=GitHub-Sponsors&logoColor=%23EA4AAA&style=for-the-badge" alt="Sponsor"></a>
   </p>
 </div>
@@ -17,72 +17,356 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-**Tandem 是一个面向协调自治工作流的引擎主导型（engine-owned）运行时。**
+<p align="center">
+  <strong>对 Tandem Hosted 感兴趣？</strong>
+  <a href="https://tandem.ac/agents?utm_source=github&utm_medium=readme&utm_campaign=hosted_waitlist&utm_content=top_banner">加入等待名单</a>
+</p>
 
-当前 AI Agent 领域充斥着“对话优先助手（chat-first assistants）”，但这些基于对话流由的模型在处理复杂任务时，不可避免地会遭遇上下文膨胀与并发盲区的瓶颈。**对话作为一种交互界面（UI）是极好的，但作为并行、持久的工程工作流的权威协调底座（coordination substrate）则是脆弱的。**
+<h1 align="center">面向 AI-first 公司的受治理运行时</h1>
 
-Tandem 采取了截然不同的方法来应对工程化 Agent 的复杂现实。**我们将自治执行视为一个分布式系统问题**，优先维护稳健的引擎状态，而不是脆弱的对话记录。
+Tandem 是一个 source-available 的 AI 工作治理运行时。它为独立开发者、创业团队和平台团队提供可部署的权限层：控制 agent 能看到什么、能发现哪些工具、能执行哪些动作、什么时候必须由人审批，以及哪些证据会被保留下来。
 
-它提供了持久化、坚固的协调原语——例如黑板（blackboards）、工作板（workboards）、显式任务认领、操作性记忆积累和检查点（checkpoints）——允许多个 Agent 并发地执行复杂且长时间运行的工程或自动化任务，彻底阻绝冲突碰撞。
+模型不是访问控制边界。Tandem 在模型之下执行权限控制：通过作用域化执行、租户感知状态、权限化记忆、审批门和审计轨迹来约束 agent。Agent 在被投影的权限范围内工作；运行时拥有状态、工具、审批、记忆、产物和证据。
 
-- **多客户端，单一引擎：** 桌面端应用、TUI 以及无头 API 全部基于完全一致的具象化状态真相运作。
-- **引擎主导的编排机制：** 共享的任务状态、全局流重放（replay）、审核流以及确定性的工作流投影，从原生层面解决了协调失效问题。
-- **提供商无绑定：** 支持 OpenRouter、Anthropic、OpenAI、OpenCode Zen，或通过 Ollama 本地轻松运行模型。
+Tandem 不是另一个聊天壳，也不只是一个 agent framework。它是 agent 从“回答问题”走向“代表公司执行工作”时，位于 agent 之下的执行运行时。
 
-`持久状态 → 工作板 → 智能体 Swarm → 结构化产物`
+- **入口只是客户端，不是独立引擎：** Tauri 桌面端、TUI、Web 控制面板、渠道和 SDK 都连接同一个 engine runtime。
+- **运行时拥有权限：** runs、sessions、memory、context、provider secrets、MCP tools、approvals、artifacts 和 audit records 都位于模型之下。
+- **受治理的工具执行：** 内置工具和 MCP connectors 可以按工作流步骤设定作用域，并为关键动作设置审批门。
+- **租户感知运行时：** Hosted 和 enterprise 模式会把 tenant/principal context 带入 sessions、runs、context runs、memory、provider credentials、MCP secrets 和 events。
+- **部署在数据所在之处：** Tandem 可以本地运行、无头运行、托管运行，也可以部署到客户自己的基础设施中。
+- **模型提供商无绑定：** 支持 OpenRouter、Anthropic、OpenAI、OpenCode Zen 或本地 Ollama endpoint。
 
-可作为桌面应用运行，或以无头服务运行，也可以通过 HTTP + SSE API 从任意语言接入。
+`Intent -> Authority Projection -> Scoped Execution -> Approval Gates -> Artifacts -> Audit Trail`
 
-如果你想让已有的 agent 帮你安装或配置 Tandem，先把它连接到 Tandem 的 MCP 接口。这样它就可以协助你完成安装、配置和后续操作：
+**-> [AI runtime infrastructure](docs/AI_RUNTIME_INFRASTRUCTURE.md) | [Enterprise readiness](docs/ENTERPRISE_READINESS.md) | [EU AI Act readiness](docs/EU_AI_ACT_COMPLIANCE.md) | [Compliance starter pack](docs/compliance/README.md) | [通过 MCP 连接 agent](https://tandem.ac/docs-mcp)**
 
-- [Tandem MCP 文档](https://tandem.ac/docs-mcp)
+## 为什么需要 Tandem
+
+Agent 正在变成 worker。它们会读取公司上下文、调用工具、创建 pull request、起草客户沟通、操作项目看板，并准备过去只存在于人类系统里的决策。
+
+Prompt 不是权限。System prompt 可以要求模型不要调用某个工具、不要读取某个目录、或者等待审批，但模型本身不应该成为安全边界。Tandem 把这些控制放进运行时，让 agent 只能在被投影的权限范围内工作，并拒绝越权动作。
+
+公司也需要集中 AI 上下文，但不能把访问权限做成一张平面大网。权限化公司记忆应该知道公司知道什么，但某个 team、tenant、project 或 user 名下运行的 agent 只能检索它被允许使用的那一部分。
+
+## Tandem 治理什么
+
+- **公司知识和记忆：** 运行时拥有 memory、knowledge spaces 和 retrieval paths，并围绕 tenant/workspace boundary 设计。
+- **工具和 MCP 可见性：** 内置工具和 MCP connector tools 可以按步骤设定作用域；面向企业部署的更完整 pre-invocation masking 已在规划中。
+- **工作流执行：** 持久化 automation 和 context-run state，而不是只依赖脆弱的聊天记录。
+- **人工审批：** 运行时 gates 会暂停 run，收集 approve/rework/cancel 决策，并留下证据。
+- **租户和工作区边界：** sessions、runs、context runs、events、provider credentials、MCP secrets、memory，以及 resource scope/grant contract vocabulary 都带有边界语义。
+- **Connector 凭证和 secrets：** Provider 和 MCP secret references 由运行时拥有；connector source binding 为 scoped ingestion 提供共享契约。
+- **产物和审计轨迹：** Outputs、validations、tool ledger events、approval decisions 和 protected audit records 会保存在模型上下文窗口之外。
+
+## 核心用例
+
+| 用例                          | Tandem 增加的能力                                                                                   |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| 审批门控的邮件和工作流        | Agent 提议动作，Tandem 在执行前暂停，由人审批或要求返工。                                           |
+| 权限化公司知识库              | 公司 memory 和 knowledge spaces，带 tenant-aware retrieval 和 resource-grant vocabulary。           |
+| 受治理的 coding agents        | Coder runs、worktree context、handoff artifacts、approval points 和可审计实现状态。                 |
+| 项目、sprint、event brain     | 跨 session 和团队存活的长期 context、tasks、artifacts 和 memory。                                   |
+| 租户隔离的 hosted automations | Hosted runtime records、event streams、provider credentials、MCP secrets 和 memory 按 tenant 隔离。 |
+| 内部 agent 和工具治理         | 控制 agent 能看到哪些工具、能执行哪些动作，以及留下哪些证据。                                       |
+
+## 为什么平台和安全团队会关心
+
+Tandem 面向需要在真实运营控制下运行 AI 工作的团队：
+
+- **运行时权限，而不是 prompt 权限：** 模型可以请求上下文或工具调用；运行时决定什么可见、什么可执行。
+- **租户感知记录：** Sessions、automation runs、context runs、event streams、provider credentials、MCP secrets 和 memory paths 在 hosted/shared 模式中携带 tenant context。
+- **Resource 和 grant 模型：** Enterprise contract 包含 `ResourceRef`、`ResourceKind`、`ResourceScope`、`AccessPermission`、`DataClass`、`PrincipalRef`、`ScopedGrant`、`StrictTenantContext` 和 `DataBoundary`。
+- **权限化记忆：** Memory 和 knowledge paths 携带 tenant boundaries，让公司知识有用但不变成全员可见的平面上下文。
+- **可部署运行时：** 同一个 runtime 可以运行在 laptop、headless engine、hosted deployment 或客户基础设施里。
+- **可审计性：** Approval decisions、policy denials、provider secret changes、MCP activity、tool ledger events、artifacts 和 protected audit records 都能在聊天记录之外被检查。
+
+## 部署模型
+
+Tandem 对本地使用有价值，也能向更严格的公司部署演进：
+
+- **本地桌面端：** 单用户 desktop runtime，带本地 workspace scope、provider setup 和 approval-gated tools。
+- **无头 engine：** `tandem-engine serve` 可供 SDK、control panels、automations 和 CI/dev 环境使用。
+- **Hosted/private managed：** Hosted deployments 使用 transport-token 和 signed context assertions 实现 tenant-aware access。
+- **客户基础设施：** 适合把运行时部署在公司数据、connector credentials 和运营证据所在的位置。
+
+## 当前状态
+
+| 当前能力                                                                                       | 企业路线图                                                                                  |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Runtime auth modes: `local_single_tenant`, `hosted_single_tenant`, `enterprise_required`       | Full RBAC、OIDC、SCIM、SIEM integrations、SOC2 package 和 enterprise identity policy bridge |
+| Hosted/enterprise ingress 的 tenant context 和 signed context assertions                       | 带 fail-closed policy authorization 的 private enterprise sidecar                           |
+| Tenant-aware sessions、automation runs、context runs、events、coder routes 和 memory APIs      | 覆盖所有路径的完整 artifact/export isolation                                                |
+| Provider credential 和 MCP secret tenant boundaries                                            | 模型调用前的完整 tool-discovery masking                                                     |
+| Memory tenant partitioning、tenant-scoped knowledge spaces 和 resource-scoped retrieval APIs   | 带 live external source ingestion 的 production connector ingestion admin platform          |
+| Resource access-control contract types 和 strict context projection vocabulary                 | Signed approval receipts 和 auditor-grade immutable receipt chains                          |
+| Approval gates、pending approval inbox、channel approvals、tool ledger events 和 audit records | 接入 production ingestion flows 的 advanced connector quarantine/revoke/rotate operations   |
+
+## 合规和 EU AI Act readiness
+
+Tandem 帮助团队用 human oversight、scoped tools、durable execution evidence 和 protected-action controls 运行 AI 工作流。对于受监管或安全敏感部署，请先阅读 [EU AI Act readiness brief](docs/EU_AI_ACT_COMPLIANCE.md)，再使用 [Compliance Starter Pack](docs/compliance/README.md) 做 control mapping、Article 50 transparency guidance、deployer instructions、Annex IV documentation template 和 limitations/responsibility matrix。
+
+## 30 秒快速开始
+
+### Web 控制面板
+
+安装主 CLI，然后初始化控制面板和 engine service：
 
 ```bash
-# 选项 1：快速运行（无需全局安装与源码）：
-npx @frumu/tandem-panel
+npm i -g @frumu/tandem
+tandem install panel
+tandem panel init
+tandem panel open
 ```
+
+当你需要由 engine 支撑的浏览器控制中心时，使用这个入口。
+
+本地安装时，可以在 **Settings -> Providers -> openai-codex** 中选择 **Connect Codex Account**，通过浏览器登录，而不是粘贴 OpenAI API key。
+
+### Desktop
+
+1. 下载并启动 Tandem：[tandem.ac](https://tandem.ac/)
+2. 打开 **Settings** 添加 provider API key，或在本地控制面板中为 `openai-codex` 连接 Codex account。
+3. 选择 workspace folder。
+4. 输入 task prompt，并选择 **Immediate** 或 **Plan Mode**。
+
+### 可编辑 App Scaffold
+
+在你自己的目录生成完全可编辑的 control panel app：
+
+```bash
+npm create tandem-panel@latest my-panel
+cd my-panel
+npm install
+npm run dev
+```
+
+当你需要自定义 routes、pages、themes、styles 或 runtime behavior，但不想编辑 `node_modules` 时使用它。
+
+### MCP-assisted setup
+
+如果你想让已有 agent 帮你安装或配置 Tandem，先把该 agent 连接到 Tandem 的 MCP interface。MCP 文档说明了如何把你自己的 agent 接入 Tandem，让它协助 setup、configuration 和后续任务：
+
+- [Tandem MCP docs](https://tandem.ac/docs-mcp)
+
+如果你只需要 engine runtime，可以前台运行：
+
+```bash
+tandem-engine serve --hostname 127.0.0.1 --port 39731
+```
+
+### 其他入口
+
+- TUI: `npm i -g @frumu/tandem-tui && tandem-tui`
+- SDKs: `npm install @frumu/tandem-client` 或 `pip install tandem-client`
+
+### Codex 和 Docker setup
+
+- Codex 用户可以通过 [tandem-codex-plugin](https://github.com/frumu-ai/tandem-codex-plugin) 连接 Tandem。
+- 如果想使用 Docker-based Tandem agents setup，请参考 [tandem-agents](https://github.com/frumu-ai/tandem-agents)。
+
+## Open Core 和 Source-Available 架构
+
+Tandem 首先面向开发者构建，并采用 open-core model。我们认为，要信任一个 AI runtime，你必须能够逐行审计 execution router。
+
+**本地开发和内部使用：** Core Rust execution engine、本地 desktop app 和 tandem-agents libraries 可按各 package 许可用于本地开发和内部部署。
+
+**企业路径：** 面向规模化组织部署的高级能力，例如 enterprise identity federation、更丰富的 policy enforcement、signed receipt chains、private sidecar enforcement、SIEM export 和 HA packaging，是规划中的企业能力，并可能受商业或 source-available 条款约束，包括在声明处使用 Business Source License 1.1 (`BUSL-1.1`)。
+
+**许可边界：** 你可以在各 package 许可条款下使用 Tandem 治理自己的 agents。除非许可允许，否则不能把 source-available Tandem components 包装后作为竞争性 managed SaaS 销售。准确条款见 [docs/LICENSING.md](docs/LICENSING.md)。
+
+## 架构
 
 ```mermaid
 flowchart TD
-    %% Clients
-    Desktop[桌面应用<br/>Tauri + React]
-    ControlPanel[Web 控制面板]
-    TUI[终端 UI]
-    API[SDK 与 API 客户端]
-    Channels[Slack / Discord / Telegram]
+    Human[Human operator or team]
 
-    subgraph "Tandem Engine（事实来源）"
-        EngineAPI[HTTP/SSE API<br/>tandem-server]
-        Automations[工作流、自动化<br/>与审批门]
-        Governance[计划编译器<br/>与治理]
-        Runtime[运行时：工具、MCP、<br/>Provider 与浏览器]
-        State[(记忆、检查点、<br/>审计与共享状态)]
-        Workspace[工作区与 Git 隔离]
+    subgraph Entrypoints["Entrypoints: clients, not authority boundaries"]
+        Desktop[Desktop app]
+        Panel[Web control panel]
+        TUI[Terminal UI]
+        SDK[TypeScript / Python SDKs]
+        Channels[Slack / Discord / Telegram]
     end
 
-    subgraph "Agent Runtime"
-        Planner[Planner]
-        Builder[Builder]
-        Verifier[Verifier]
+    subgraph Agents["Agents and models: propose, reason, draft"]
+        Workers[Agent workers]
+        Models[OpenAI / Anthropic / OpenRouter<br/>OpenCode Zen / Ollama]
     end
 
-    Desktop <--> EngineAPI
-    ControlPanel <--> EngineAPI
-    TUI <--> EngineAPI
-    API <--> EngineAPI
-    Channels <--> EngineAPI
+    subgraph Tandem["Tandem governed runtime: owns authority"]
+        API[HTTP/SSE API]
+        Tenant[Auth mode, tenant context<br/>and authority chain]
+        Projection[Authority projection<br/>resources, grants, data classes]
+        Runs[Sessions, workflows<br/>automations, context runs]
+        Gates[Human approval gates]
+        Policy[Tool and MCP policy]
+        Memory[Permissioned memory<br/>and company knowledge]
+        Secrets[Provider and MCP secrets]
+        Artifacts[Artifacts, validation<br/>and run evidence]
+        Audit[Audit trail and tool ledger]
+    end
 
-    EngineAPI --> Automations
-    EngineAPI --> Runtime
-    Automations --> Governance
-    Automations --> State
-    Automations --> Workspace
-    Runtime --> State
-    Runtime --> Workspace
+    subgraph Systems["Company systems and data"]
+        Workspace[Workspace files and repos]
+        MCP[MCP servers and connectors]
+        Data[Customer / company data]
+        Browser[Browser and external tools]
+    end
 
-    Automations <--> Planner
-    Automations <--> Builder
-    Automations <--> Verifier
+    Human --> Desktop
+    Human --> Panel
+    Human --> TUI
+    Human --> SDK
+    Human --> Channels
+
+    Desktop --> API
+    Panel --> API
+    TUI --> API
+    SDK --> API
+    Channels --> API
+
+    API --> Tenant
+    Tenant --> Projection
+    Projection --> Runs
+    Runs <--> Workers
+    Workers <--> Models
+
+    Runs --> Gates
+    Runs --> Policy
+    Runs --> Memory
+    Runs --> Artifacts
+    Gates --> Audit
+    Policy --> Audit
+    Artifacts --> Audit
+
+    Policy --> Secrets
+    Policy --> Workspace
+    Policy --> MCP
+    Policy --> Data
+    Policy --> Browser
+    Memory --> Data
+```
+
+## 常见工作流
+
+| Governed workflow          | Tandem runtime 控制什么                                                                              |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Vendor 或 policy risk 评估 | 读取选定来源、起草带引用的 artifact、验证限制，并让 mutation tools 留在只读步骤之外。                |
+| 审批门控的邮件或更新       | Agent 起草动作，runtime 在 human gate 暂停，记录 approve/rework/cancel 证据后继续。                  |
+| 代码迁移                   | 追踪 coder runs、worktree state、changed files、validation、handoff artifacts 和 approval points。   |
+| 外部 MCP tools 治理        | 按 workflow step 约束 connector tools，要求具体 tool evidence，并按 tenant path 隔离 MCP secrets。   |
+| 权限化公司记忆             | 通过 runtime-owned memory 和 knowledge spaces 检索公司上下文，而不是把所有内容塞进 chat。            |
+| 租户隔离 hosted workflows  | 在 hosted/shared modes 下按 tenant 隔离 sessions、runs、events、credentials、MCP secrets 和 memory。 |
+
+## 功能
+
+### 受治理的执行
+
+- **模型不是控制系统：** 模型可以提出工作；Tandem 拥有 allowed tools、context、state transitions、approvals 和 audit evidence。
+- **作用域化工作流执行：** Automation V2 nodes 可以携带 built-in tool 和 MCP connector policy，让不同步骤看到不同能力。
+- **审批门控动作：** Runs 可以在关键工作前暂停，等待 approve/rework/cancel，并用 gate history 继续执行。
+- **状态存活：** Checkpoints、replayable event history 和 materialized run states 能跨 API timeout 和 connector failure 存活。
+
+### 权限化记忆和公司知识
+
+- **Tenant-partitioned memory：** Vector-backed session、project、global 和 file-import memory paths 携带 tenant scope。
+- **Knowledge spaces：** Curated knowledge spaces 和 items 可通过 tenant-aware APIs 管理。
+- **运行时检索：** Agents 通过 runtime 检索 context，为 permissioned company memory 提供路径，而不是把所有内容塞进 transcript。
+
+### Tenant 和 workspace isolation
+
+- **Tenant-aware records：** Sessions、automation definitions/runs、context runs、event streams、provider credentials、MCP secret references、memory 和 coder routes 都携带 tenant context。
+- **Strict context contract：** Resource refs、scoped grants、data classes、principals 和 data boundaries 在 enterprise contract 中建模。
+- **保留本地行为：** Desktop 和 developer workflows 默认仍使用 local/default single-tenant 行为。
+
+### MCP 和 tool governance
+
+- **MCP connector support：** Tandem 可以连接 MCP servers、同步 tools，并把选定 connector tools 约束到 workflow nodes。
+- **Secret isolation：** Store-backed MCP secret references 在 hosted/shared paths 中解析前会验证 tenant scope。
+- **Tool discovery 是权限面：** Tool discovery 和 MCP visibility 由 runtime policy 治理；模型调用前完整隐藏 unauthorized tools 仍是 enterprise roadmap。
+
+### 人工审批和审计
+
+- **Approvals inbox 和 channel approvals：** Operators 可以从 runtime-owned approval surfaces approve、request rework 或 cancel。
+- **持久证据：** Tool ledger events、gate history、artifacts、validation metadata 和 protected audit events 可以保存在模型上下文窗口之外。
+- **Audit stream：** 已有 admin-facing audit streams 和 protected audit envelopes；immutable receipt chains 和 signed approval receipts 仍在路线图中。
+
+### Multi-agent orchestration
+
+- **Kanban-driven execution：** Agents 认领任务、报告 blocker，并通过确定性状态交接工作。
+- **Memory-aware workers：** Agents 可以通过 runtime paths 使用 prior run context、project memory 和 knowledge spaces。
+- **Revisioned coordination：** Engine-enforced locks 防止多个 agents 同时踩踏同一代码库。
+
+### 本地和 self-hosted controls
+
+- MCP tool connectors
+- Scheduled automations 和 routines
+- Headless runtime with HTTP + SSE APIs
+- Windows、macOS 和 Linux desktop runtime
+- API keys 使用 local SecureKeyStore 加密（AES-256-GCM）
+- Local Codex OAuth credentials 由 engine 拥有；browser UI 只发起登录，不持久化 refresh tokens
+- Workspace access 仅限你明确授权的 folders
+- Write/delete operations 通过 supervised tool flow 要求审批
+- 默认拒绝敏感路径（`.env`、`.ssh/*`、`*.pem`、`*.key`、secrets folders）
+- Tandem 本身没有 analytics 或 call-home telemetry
+
+### Outputs 和 artifacts
+
+- Markdown reports
+- HTML dashboards
+- PowerPoint (`.pptx`) generation
+
+## Enterprise Path 和 Roadmap
+
+Tandem 已经包含用于 hosted 和 self-managed 环境中治理 AI 工作的 runtime building blocks。下一阶段企业能力会围绕这些 building blocks 强化 identity、policy、audit export 和 administration。
+
+Available now:
+
+- Runtime auth modes 和 hosted/enterprise signed context assertion verification。
+- Tenant-aware sessions、runs、context runs、event streams、provider credentials、MCP secrets、memory 和 coder routes。
+- Resource access-control contract vocabulary：resources、scopes、principals、grants、data classes 和 data boundaries。
+- Approval gates、protected audit records、audit streams、tool ledger events 和 runtime artifacts。
+- Connector source-binding contracts：secret references、resource refs、data classes、quarantine/revoke/rotate vocabulary 和 scoped memory chunk references。
+
+Planned enterprise capabilities:
+
+- Full RBAC、OIDC/SSO、SCIM、SIEM export、SOC2 package 和 enterprise admin workflows。
+- Private enterprise sidecar 和 policy bridge，并支持 required-mode fail-closed enforcement。
+- Signed approval receipts、immutable receipt chains 和更广泛的 audit/export isolation。
+- 模型调用前完整 tool-discovery masking。
+- Production external connector ingestion admin platform 和 production ingestion flows。
+
+## Programmatic API
+
+SDK 是 API client。它们**不**内置 `tandem-engine`。
+你需要先运行 Tandem runtime（desktop sidecar 或 headless engine），然后用 SDK 创建 sessions、触发 runs、流式读取 events。
+
+Runtime options:
+
+- 本地 desktop app（会启动 sidecar runtime）
+- 通过 npm 启动 headless engine：
+
+  ```bash
+  npm install -g @frumu/tandem
+  tandem-engine serve --hostname 127.0.0.1 --port 39731
+  ```
+
+- TypeScript SDK: [@frumu/tandem-client](https://www.npmjs.com/package/@frumu/tandem-client)
+- Python SDK: [tandem-client](https://pypi.org/project/tandem-client/)
+- Engine package: [@frumu/tandem](https://www.npmjs.com/package/@frumu/tandem)
+
+```typescript
+// npm install @frumu/tandem-client
+import { TandemClient } from "@frumu/tandem-client";
+
+const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "..." });
+const sessionId = await client.sessions.create({ title: "My agent" });
+const { runId } = await client.sessions.promptAsync(sessionId, "Summarize README.md");
+
+for await (const event of client.stream(sessionId, runId)) {
+  if (event.type === "session.response") process.stdout.write(event.properties.delta ?? "");
+}
 ```
 
 ```python
@@ -97,335 +381,135 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
             print(event.properties.get("delta", ""), end="", flush=True)
 ```
 
-**→ [下载桌面版](https://tandem.ac/) · [通过 MCP 连接你的 agent](https://tandem.ac/docs-mcp) · [阅读文档](https://docs.tandem.ac/)**
+## Provider setup
 
-灵感来自早期 AI 协作研究预览，但 Tandem 是开源且与模型提供商无绑定的。
+在 **Settings** 中配置 providers。
 
-## 为什么选择 Tandem？
+| Provider                 | Description                                      | Get API key                                                          |
+| ------------------------ | ------------------------------------------------ | -------------------------------------------------------------------- |
+| **OpenAI Codex Account** | Browser sign-in for local Codex-account usage    | Local control panel: **Settings -> Providers -> openai-codex**       |
+| **OpenRouter** ⭐        | Access many models through one API               | [openrouter.ai/keys](https://openrouter.ai/keys)                     |
+| **OpenCode Zen**         | Fast, cost-effective models optimized for coding | [opencode.ai/zen](https://opencode.ai/zen)                           |
+| **Anthropic**            | Anthropic models (Sonnet, Opus, Haiku)           | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
+| **OpenAI**               | GPT models and OpenAI endpoints                  | [platform.openai.com](https://platform.openai.com/api-keys)          |
+| **Ollama**               | Local models (no remote API key required)        | [Setup Guide](docs/OLLAMA_GUIDE.md)                                  |
+| **Custom**               | OpenAI-compatible API endpoint                   | Configure endpoint URL                                               |
 
-**🔒 隐私优先**：不同于云端 AI 工具，Tandem 运行在你的机器上。你的代码、文档和 API 密钥不会发送到我们的服务器，因为我们没有这类服务器。
+Notes:
 
-**💰 提供商无绑定**：可使用任意 LLM 提供商，不被单一厂商锁定。可在 OpenRouter、Anthropic、OpenAI 之间切换，或通过 Ollama 本地运行模型。
+- `openai-codex` 当前面向 local engine-backed Tandem setups。
+- 标准 OpenAI API keys 仍可用于普通 `openai` provider。
 
-**🛡️ 零信任**：每次文件操作都需要明确审批。AI agent 功能很强，但 Tandem 将其视为“需受监督的不受信任承包方”。
+## Web search setup
 
-**🌐 真正跨平台**：Windows、macOS（Intel 与 Apple Silicon）和 Linux 原生应用。不是 Electron 套壳，基于 Tauri，性能更高、占用更低。
+`websearch` 可直接在以下位置配置：
 
-**📖 开源**：采用宽松开源许可。Rust crates 使用 MIT OR Apache-2.0 双许可。
+- Desktop: **Settings -> Web Search**
+- Control panel: 连接 local managed engine 时使用 **Settings -> Web Search**
 
-**🛠️ 现代技术栈**：基于 **Rust**、**Tauri**、**React** 和 **sqlite-vec** 构建，面向消费级硬件优化高性能与低内存占用。
+Recommended default:
 
-## 适合谁使用？
+- `Backend = auto`
+- 添加 Brave key、Exa key，或二者都添加
 
-Tandem 将自治 AI 工具带给所有需要处理文件的人，而不只是开发者：
+`auto` 会优先使用已配置 providers，并可在 backends 之间 fallback，而不是把 engine 固定到单一 hosted search path。Headless installs 仍可通过 env vars 配置：
 
-| 角色            | Tandem 能做什么                                    |
-| --------------- | -------------------------------------------------- |
-| **开发者**      | 分析代码库、自动化重构、定时产出 CI 摘要           |
-| **研究者**      | 综合论文、交叉引用笔记、提取结构化数据             |
-| **写作者**      | 保持长文一致性、生成结构化大纲                     |
-| **运维 / 管理** | 定时处理文档、连接 Slack/Telegram 机器人、监控日志 |
+```env
+TANDEM_SEARCH_BACKEND=auto
+TANDEM_BRAVE_SEARCH_API_KEY=...
+TANDEM_EXA_API_KEY=...
+TANDEM_SEARXNG_URL=http://127.0.0.1:8080
+TANDEM_SEARCH_URL=https://search.tandem.ac
+```
 
-## 功能特性
+如果 Brave 被 rate-limit 且 Exa 已配置，`auto` 可以继续使用 Exa，而不是立即把 search 标记为 unavailable。
 
-### 核心能力
+## 设计原则
 
-- **🔒 零遥测**：除你自行选择的 LLM 提供商外，不会有数据离开本机
-- **🔄 提供商自由切换**：支持 OpenRouter、Anthropic、OpenAI、Ollama，或任意 OpenAI 兼容 API
-- **🛡️ 安全设计优先**：API 密钥使用 AES-256-GCM 存储在加密保险库中，绝不明文保存
-- **🌐 跨平台**：Windows、macOS（Intel 与 Apple Silicon）和 Linux 原生安装包
-- **👁️ 可视化权限控制**：对每次文件访问与操作进行细粒度审批
-- **⏪ 完整撤销**：通过完整操作日志回滚任意 AI 操作
-- **🧠 全局记忆（默认开启）**：基于持久化 `memory.sqlite` 的全局记忆，自动写入与检索，跨会话/跨项目学习（按用户与标签隔离）
-- **🧩 Skills 系统**：导入并管理自定义 AI 能力与指令
-- **🏷️ Skill 运行时提示**：入门 skill 卡片显示可选运行时要求（Python/Node/Bash）
-- **📎 文档文本提取**：支持从 PDF/DOCX/PPTX/XLSX/RTF 提取文本用于 skills 与对话上下文
-- **🐍 工作区 Python venv**：引导式创建 `.tandem/.venv`，并强制工具仅使用 venv
-- **🎨 丰富主题**：增强背景视觉，并在应用中保持一致渐变渲染
-- **📋 执行计划**：执行前先审查并批量批准多步骤 AI 操作
-- **🔄 自动更新**：使用安装包时支持签名发布的无缝更新
+- **Local-first runtime**：数据和状态留在你的机器上，除非你把 prompt/tool 内容发送给已配置 providers。
+- **Supervised execution**：AI 通过受控工具运行，write/delete operations 需要显式审批。
+- **Provider agnostic**：使用你选择的 model providers。
+- **可审计源码和清晰许可边界**：本仓库是 mixed-license：permissive `MIT`、`Apache-2.0`、`MIT OR Apache-2.0` components 与 source-available `BUSL-1.1` compiler/governance components 并存，详见 [docs/LICENSING.md](docs/LICENSING.md)。
 
-### 引擎主导的工作流运行时
+## 安全和隐私
 
-- **协调的自治工作流：** 显式的黑板机制优于单纯的对话历史文本堆积。
-- **多 Agent 并发运行：** 通过 Git 工作树隔离（Worktree Isolation）和补丁流安全管理并发执行。
-- **状态持久与恢复：** 拥有检查点、可重放的事件历史、以及具象化的运行状态。
-- **安全审批门控：** 对破坏性操作采用受监督的工具流以保持“人在回路”。
+- **Telemetry**：Tandem 不包含 analytics/tracking 或 call-home telemetry。
+- **Provider traffic**：AI request content 只会发送到你配置的 endpoints（cloud providers 或 local Ollama/custom endpoints）。
+- **Network scope**：Desktop runtime 与 local sidecar (`127.0.0.1`) 和已配置 endpoints 通信。
+- **Updater/release checks**：App update 和 release metadata flows 可能联系 GitHub endpoints。
+- **Credential storage**：Provider keys 使用 AES-256-GCM 加密存储。
+- **Filesystem safety**：Access 限于已授权 folders；sensitive paths 默认拒绝。
 
-### 多智能体编排（Multi-Agent Orchestration）
+完整 threat model 和 reporting process 见 [SECURITY.md](SECURITY.md)。
 
-- **Kanban 驱动的执行模式：** Agents 认领任务，报告堵塞状态，并通过确定性的状态流而不是聊天交接工作。
-- **具备记忆的 Swarm 集群：** Agent 会从历史运行中学习，自动提取修复策略以及错误模式。
-- **版本控制级别协同：** 引擎强制加锁机制，防止多个 Agent 同时踩踏修改同一代码库。
+## Learn more
 
-### 🎼 多智能体编排（Multi-Agent Orchestration）
+- Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Engine runtime + CLI reference: [docs/ENGINE_CLI.md](docs/ENGINE_CLI.md)
+- Desktop/runtime communication contract: [docs/ENGINE_COMMUNICATION.md](docs/ENGINE_COMMUNICATION.md)
+- Engine testing and smoke checks: [docs/ENGINE_TESTING.md](docs/ENGINE_TESTING.md)
+- Docs portal: [docs.tandem.ac](https://docs.tandem.ac/)
 
-Tandem 内置强大的编排模式，可协调专职子 agent 解决复杂问题。
+Advanced MCP behavior（包括 OAuth/auth-required flows 和 retries）见 [docs/ENGINE_CLI.md](docs/ENGINE_CLI.md)。
 
-<div align="center">
-  <img src=".github/assets/app11.png" alt="Tandem Orchestration Mode" width="90%">
-</div>
+## Advanced setup（从源码构建）
 
-Tandem 不让单一 AI 独自处理全部事务，而是构建任务依赖图并将工作分派给：
-
-- **Planner**：设计你的解决方案
-- **Builder**：编写代码
-- **Validator**：验证结果
-
-这种受监督闭环确保复杂功能在关键步骤都有“人在回路”的审批把关。
-
-### 🤖 Agent Automation + MCP Connectors
-
-- **Agent Automation**：创建定时自动化任务，配置明确的 `allowed_tools`，并保留运行历史与产物输出
-- **MCP Connectors**：注册/连接 MCP 服务器，自动发现工具，使用如 `mcp.arcade.search` 这类命名空间工具 ID
-- **自动化策略门控**：通过 `requires_approval` 与 `external_integrations_allowed` 控制外部副作用
-- **可无头运行**：完整支持 HTTP + SSE 运行时，示例见 `examples/headless/`
-
-#### MCP OAuth 使用说明（Arcade 等）
-
-- 某些 MCP 工具在首次调用前会返回授权挑战。Tandem 会显式提示“需要授权”并提供授权 URL。
-- 在浏览器完成 OAuth 后，请在新一轮对话中重试该工具请求。
-- Arcade 的 headers 模式建议同时配置：
-  - `Authorization: Bearer <arcade-api-key>`
-  - `Arcade-User-ID: <稳定且固定的用户 ID>`（必须稳定，才能复用授权）
-- 如果 `Arcade-User-ID` 在不同请求间变化，通常会反复触发授权。
-- 若反复提示授权失败，请先检查 MCP URL、API key 与 `Arcade-User-ID` 是否正确。
-
-### 项目管理
-
-- **📁 多项目支持**：管理多个工作区，并保持各自上下文隔离
-- **🔐 项目级权限**：细粒度文件访问控制
-- **📊 项目切换**：快速在不同代码库之间切换
-- **💾 持久化历史**：对话历史按项目保存
-
-### 产物与输出
-
-- **📊 HTML/Canvas**：生成安全、交互式的 HTML 仪表盘与报告
-- **📽️ 演示引擎**：导出高保真 PPTX 幻灯片并支持主题
-- **📑 Markdown 报告**：输出清晰、格式化的文档与计划
-
-## 快速开始
-
-### 前置要求
+### Prerequisites
 
 - [Node.js](https://nodejs.org/) 20+
-- [Rust](https://rustup.rs/) 1.75+（包含 `cargo`，通过 `rustup` 安装）
+- [Rust](https://rustup.rs/) 1.75+（包含 `cargo`）
 - [pnpm](https://pnpm.io/)（推荐）或 npm
 
-**平台特定依赖：**
-
-| Platform | Additional Requirements                                                                          |
+| Platform | Additional requirements                                                                          |
 | -------- | ------------------------------------------------------------------------------------------------ |
 | Windows  | [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/)                   |
 | macOS    | Xcode Command Line Tools: `xcode-select --install`                                               |
 | Linux    | `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `build-essential`, `pkg-config` |
 
-> 说明：上面的 Linux 软件包用于桌面版/Tauri 构建。  
-> 它们不会安装 Rust/Cargo；Rust 需要通过 `rustup` 单独安装。
-
-### 安装
-
-1. **克隆仓库**
-
-   ```bash
-   git clone https://github.com/frumu-ai/tandem.git
-   cd tandem
-   ```
-
-2. **安装依赖**
-
-   ```bash
-   pnpm install
-   ```
-
-3. **构建引擎二进制**
-
-   ```bash
-   cargo build -p tandem-ai
-   ```
-
-   该命令会为你的平台构建原生 Rust `tandem-engine` 二进制。
-
-4. **以开发模式运行**
-   ```bash
-   pnpm tauri dev
-   ```
-
-### 生产构建
-
-如果要构建可分发安装包，请执行：
+### Local development
 
 ```bash
-# Build for current platform
+git clone https://github.com/frumu-ai/tandem.git
+cd tandem
+pnpm install
+cargo build -p tandem-ai
+pnpm tauri dev
+```
+
+### Production build and signing notes
+
+```bash
 pnpm tauri build
 ```
 
-**代码签名说明：**
-Tandem 使用 Tauri 的安全更新机制。如果你要自行构建应用，需要生成自己的签名密钥：
+如果你要构建自己的 updater artifacts，请生成自己的 signing keys 并配置：
 
-1. 生成密钥：`pnpm tauri signer generate -w ./src-tauri/tandem.key`
-2. 设置环境变量：
-   - `TAURI_SIGNING_PRIVATE_KEY`: `.key` 文件内容
-   - `TAURI_SIGNING_PASSWORD`: 生成密钥时设置的密码
-3. 将 `src-tauri/tauri.conf.json` 中的 `pubkey` 更新为你的新公钥。
+1. `pnpm tauri signer generate -w ./src-tauri/tandem.key`
+2. `TAURI_SIGNING_PRIVATE_KEY`
+3. `TAURI_SIGNING_PASSWORD`
+4. `src-tauri/tauri.conf.json` 中的 `pubkey`
 
-更多细节见 [Tauri 签名文档](https://tauri.app/v1/guides/distribution/updater/#signing-updates)。
+参考：[Tauri signing documentation](https://tauri.app/v1/guides/distribution/updater/#signing-updates)
 
-### macOS 安装故障排查
-
-如果 macOS 用户从 GitHub Releases 下载 `.dmg` 后系统提示应用**“已损坏”**或**“无法打开”**，通常是 Gatekeeper 拒绝了**未做 Developer ID 签名与公证（notarization）**的应用包/DMG。
-
-可检查：
-
-1. 下载与机型匹配的 DMG：
-   - Apple Silicon (M1/M2/M3): `aarch64-apple-darwin` / `arm64`
-   - Intel: `x86_64-apple-darwin` / `x64`
-2. 通过 Finder 尝试打开：
-   - 右键应用 -> `Open`（或 `System Settings -> Privacy & Security` -> `Open Anyway`）
-
-面向非技术用户发布时，真正的解决方案是提供**已签名 + 已公证**的 macOS 制品。完成 Apple 签名/公证相关 secrets 配置后，发布工作流（`.github/workflows/release.yml`）即可支持。
+Output paths:
 
 ```bash
-# Output locations:
 # Windows: src-tauri/target/release/bundle/msi/
 # macOS:   src-tauri/target/release/bundle/dmg/
 # Linux:   src-tauri/target/release/bundle/appimage/
 ```
 
-## 配置
+### macOS install troubleshooting
 
-### 配置你的 LLM 提供商
+如果下载的 `.dmg` 显示 “damaged” 或 “corrupted”，通常是 Gatekeeper 拒绝了未 Developer ID signed 和 notarized 的 app bundle/DMG。
 
-Tandem 支持多个 LLM 提供商，可在设置页中配置：
+1. 确认架构正确（`aarch64/arm64` vs `x86_64/x64`）。
+2. 尝试通过 Finder 打开（`Right click -> Open` 或 `System Settings -> Privacy & Security -> Open Anyway`）。
+3. 面向非技术分发时，请从 release automation 发布 signed + notarized artifacts。
 
-1. 启动 Tandem
-2. 点击侧边栏的 **Settings** 图标（齿轮）
-3. 选择并配置你的提供商
+## Contributing
 
-**支持的提供商：**
-
-| Provider          | Description                                      | Get API Key                                                          |
-| ----------------- | ------------------------------------------------ | -------------------------------------------------------------------- |
-| **OpenRouter** ⭐ | Access 100+ models through one API (recommended) | [openrouter.ai/keys](https://openrouter.ai/keys)                     |
-| **OpenCode Zen**  | Fast, cost-effective models optimized for coding | [opencode.ai/zen](https://opencode.ai/zen)                           |
-| **Anthropic**     | Anthropic models (Sonnet, Opus, Haiku)           | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
-| **OpenAI**        | GPT-4, GPT-3.5 and other OpenAI models           | [platform.openai.com](https://platform.openai.com/api-keys)          |
-| **Ollama**        | Run models locally (no API key needed)           | [Setup Guide](docs/OLLAMA_GUIDE.md)                                  |
-| **Custom**        | Any OpenAI-compatible API endpoint               | Configure endpoint URL                                               |
-
-4. 输入 API key（会使用 AES-256-GCM 加密并安全保存在本地保险库）
-5. （可选）配置模型偏好与端点
-
-### 授予文件夹访问权限
-
-Tandem 采用**零信任模型**，仅可访问你明确授权的文件夹：
-
-1. 点击侧边栏 **Projects**
-2. 点击 **+ New Project** 或 **Select Workspace**
-3. 通过原生文件选择器选择文件夹
-4. Tandem 现在可以读写该文件夹（写入仍需你的审批）
-
-你可以管理多个项目并快速切换。每个项目都维护独立的：
-
-- 对话历史
-- 权限设置
-- 文件访问范围
-
-## 架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Tandem Desktop App                        │
-├─────────────────┬───────────────────┬───────────────────────┤
-│  React Frontend │   Tauri Core      │  Tandem Engine Sidecar│
-│  (TypeScript)   │   (Rust)          │  (AI Agent Runtime)   │
-│  - Modern UI    │   - Security      │  - Multi-mode agents  │
-│  - File browser │   - Permissions   │  - Tool execution     │
-│  - Chat interface│  - State mgmt    │  - Context awareness  │
-├─────────────────┴───────────────────┴───────────────────────┤
-│                SecureKeyStore (AES-256-GCM)                  │
-│              Encrypted API keys • Secure vault               │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**技术栈：**
-
-- **前端**: React 18、TypeScript、Tailwind CSS、Framer Motion
-- **后端**: Rust、Tauri 2.0
-- **Agent 运行时**: Tandem Engine（Rust、HTTP + SSE）
-- **加密**: 使用 AES-256-GCM 存储 API 密钥
-- **IPC**: Tauri 的安全命令系统
-
-### 受监督的 Agent 模式
-
-Tandem 将 AI 视为“需受监督的不受信任承包方”：
-
-- 所有操作都通过 **Tool Proxy**
-- 写操作需要 **用户审批**
-- 完整 **操作日志**，支持撤销
-- **熔断机制（Circuit breaker）** 提升稳定性
-- **Execution Planning**：在执行前以批次方式审阅全部变更
-
-#### Plan 模式 vs Immediate 模式
-
-Tandem 提供两种 AI 操作处理模式：
-
-**Immediate 模式**（默认）：
-
-- 通过 toast 通知逐个批准文件变更
-- 适合快速、小规模修改
-- 传统 AI 助手体验
-
-**Plan 模式**（复杂任务推荐）：
-
-- 通过聊天头部的 **"Plan Mode"** 按钮切换
-- 使用 Tandem 原生 Plan 模式运行时
-- AI 提出的文件操作会进入待审状态
-- 所有变更会显示在 **Execution Plan panel**（右下角）
-- 可并排审阅 diff 后再执行
-- 可移除不需要的操作
-- 一键执行全部已批准变更
-
-**Plan 模式使用方式：**
-
-1. 在顶部将 "Immediate" 切换为 "Plan Mode"
-2. 让 AI 执行修改（例如："Refactor the auth system"）
-3. AI 提出操作 -> 出现在 Execution Plan 面板
-4. 审阅 diff 与操作
-5. 点击面板中的 **"Execute Plan"**
-6. 变更将整体应用 + AI 继续执行
-
-当 AI 在 Plan 模式提出文件变更时，Execution Plan 面板会自动出现。
-
-- 支持整批操作的完整撤销
-
-可通过聊天头部按钮在两种模式之间切换。
-
-## 安全
-
-Tandem 以安全与隐私为核心原则：
-
-- **🔐 API keys**：在 SecureKeyStore 中使用 AES-256-GCM 加密，绝不明文存储
-- **📁 文件访问**：仅限用户选择目录，零信任默认
-- **🌐 网络**：仅连接 localhost（sidecar）与用户配置的 LLM 端点
-- **🚫 无遥测**：零分析、零追踪、零“回传”
-- **✅ 签名发布**：安装包均进行安全签名（Windows、macOS）
-- **🔒 沙箱化**：Tauri 安全模型 + CSP + 权限系统
-- **💾 本地优先**：除发送至你选择的 LLM 提供商外，数据都留在本机
-
-**默认拒绝：**
-
-- `.env` 文件与环境变量
-- `.pem`、`.key` 文件
-- SSH 密钥（`.ssh/*`）
-- Secrets 文件夹
-- 密码数据库
-
-完整安全模型与威胁分析见 [SECURITY.md](SECURITY.md)。
-
-## 贡献
-
-欢迎贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎贡献。请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ```bash
 # Run lints
@@ -440,19 +524,19 @@ pnpm format
 cargo fmt
 ```
 
-引擎专项构建/运行/冒烟测试说明（含 `pnpm tauri dev` sidecar 配置）: 见 `docs/ENGINE_TESTING.md`。
-Engine CLI 使用参考（命令、参数、示例）: 见 `docs/ENGINE_CLI.md`。
-Engine 运行时通信契约（desktop/TUI <-> engine）: 见 `docs/ENGINE_COMMUNICATION.md`。
+Engine-specific build/run/smoke instructions: `docs/ENGINE_TESTING.md`
+Engine CLI usage reference: `docs/ENGINE_CLI.md`
+Engine runtime communication contract: `docs/ENGINE_COMMUNICATION.md`
 
-### 维护者发布说明
+### Maintainer release note
 
-- Desktop 二进制/应用发布：`.github/workflows/release.yml`（tag 规则 `v*`）。
-- Registry 发布（crates.io + npm wrappers）：`.github/workflows/publish-registries.yml`（手动触发或 tag 规则 `publish-v*`）。
-- 这两个工作流是有意拆分的。
+- Desktop binary/app release: `.github/workflows/release.yml`（tag pattern `v*`）
+- Registry publish（crates.io + npm wrappers）：`.github/workflows/publish-registries.yml`（manual trigger 或 `publish-v*`）
+- 这两个 workflows 有意拆分
 
-## 项目结构
+## Project structure
 
-```
+```text
 tandem/
 ├── src/                    # React frontend
 │   ├── components/         # UI components
@@ -466,57 +550,36 @@ tandem/
 └── docs/                   # Documentation
 ```
 
-非技术用户专用 AI 助手思路见 [docs/todo_specialists.md](docs/todo_specialists.md)。
-
-## 为什么选择 Tandem？
-
-面向想要以下能力的开发者与团队：
-
-- **控制力**：你的数据、你的密钥、你的规则
-- **灵活性**：任意 LLM 提供商、任意模型
-- **安全性**：加密存储、沙箱执行、零遥测
-- **透明性**：开源、可审计代码
-
-想深入了解 Tandem 的理念以及它与其他工具的差异，可查看 [Marketing Guide](docs/marketing.md)。
-
 ## 支持这个项目
 
-如果 Tandem 帮你节省了时间，或让你在使用 AI 时更好地保护数据隐私，欢迎 [赞助项目开发](https://github.com/sponsors/frumu-ai)。你的支持将用于：
-
-- 跨平台打包与代码签名
-- 安全加固与隐私能力
-- 体验优化与 bug 修复
-- 文档与示例完善
+如果 Tandem 帮你节省了时间，欢迎 [赞助开发](https://github.com/sponsors/frumu-ai)。
 
 [❤️ 成为赞助者](https://github.com/sponsors/frumu-ai)
 
-## Star History
+## Star history
 
 [![Star History Chart](https://api.star-history.com/svg?repos=frumu-ai/tandem&type=date&logscale&legend=top-left)](https://www.star-history.com/#frumu-ai/tandem&type=date&logscale&legend=top-left)
 
-## 许可证
+## License
 
-本仓库使用混合许可模式：
+本仓库使用 mixed licensing model。[docs/LICENSING.md](docs/LICENSING.md) 是 canonical package-by-package map。
 
-- 核心引擎 crates 与工具 (例如 `tandem-core`、`tandem-server`、`tandem-types`、`tandem-orchestrator` 以及 `crates/` 下的其他组件):
-  - 基于 `MIT OR Apache-2.0` 许可 (见 [LICENSE](LICENSE) 与 [LICENSE-APACHE](LICENSE-APACHE))
+- Core engine crates and tools（例如 `tandem-core`、`tandem-server`、`tandem-types`、`tandem-orchestrator` 以及 `crates/` 中的其他组件）：
+  - 除非 manifest 或 local license 另有说明，否则使用 `MIT OR Apache-2.0`
+  - 见 [LICENSE-MIT](LICENSE-MIT) 和 [LICENSE-APACHE](LICENSE-APACHE)
 
-- 任务编译 crate (`tandem-plan-compiler`):
-  - 基于 Business Source License 1.1 (`BSL-1.1`) 许可
-  - 详情见 `crates/tandem-plan-compiler/LICENSE`
+- Mission compiler crate（`tandem-plan-compiler`）：
+  - 使用 Business Source License 1.1 (`BUSL-1.1`)
+  - 见 `crates/tandem-plan-compiler/LICENSE`
 
-简而言之：运行时引擎完全开源 (MIT/Apache)，任务/计划编译器在 BSL 许可下提供源码。
+- Governance engine crate（`tandem-governance-engine`）：
+  - 使用 Business Source License 1.1 (`BUSL-1.1`)
+  - 见 `crates/tandem-governance-engine/LICENSE`
+
+简而言之：Tandem 是 open core。Permissive runtime、protocol、SDK 和 local tooling surfaces 是 open source；mission/plan compiler 和 recursive governance engine 在 Business Source License 条款下 source-available。
 
 ## 致谢
 
 - [Anthropic](https://anthropic.com) 提供 Cowork 方向的启发
 - [Tauri](https://tauri.app) 提供安全的桌面应用框架
 - 开源社区
-
----
-
-**Tandem** - 你的本地优先 AI 协作者。
-
----
-
-_注：本代码库通过原生 `tandem-engine` sidecar 二进制提供 AI agent 能力，并路由到不同 LLM 提供商（OpenRouter、Anthropic、OpenAI、Ollama 或自定义 API）。除 LLM 提供商 API 调用外，其余通信均保持本地。_
