@@ -145,6 +145,9 @@ production connector ingestion flows remain follow-up implementation phases.
   recommended response actions for a connector. Compromise-window timing includes
   source-object lifecycle timestamps so uploaded/indexed content bounds the
   audit window.
+- Source-binding, source-object, quarantine-review, connector lifecycle, and
+  connector credential changes now invalidate matching source-bound response
+  cache entries when the response cache is present.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

@@ -1,4 +1,5 @@
 use super::*;
+use tandem_memory::response_cache::ResponseCacheScope;
 use tandem_memory::types::{
     MemoryChunk, MemoryTenantScope, MemoryTier, SourceObjectLifecycleRecord,
     SourceObjectLifecycleState, DEFAULT_EMBEDDING_DIMENSION,
@@ -805,6 +806,48 @@ async fn enterprise_source_bindings_create_and_update_persist_under_request_tena
         Some("source_binding_created")
     );
 
+    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
+    let cache_dir = paths.memory_db_path.parent().expect("memory parent");
+    let response_cache = tandem_memory::ResponseCache::new(cache_dir, 60, 1000)
+        .await
+        .expect("response cache");
+    let finance_scope = ResponseCacheScope::tenant("acme", "finance", None)
+        .with_source_bindings(vec!["finance-drive".to_string()]);
+    let hr_scope = ResponseCacheScope::tenant("acme", "finance", None)
+        .with_source_bindings(vec!["hr-drive".to_string()]);
+    let finance_cache_key = tandem_memory::ResponseCache::cache_key_scoped(
+        "test-model",
+        None,
+        "finance source-bound prompt",
+        &finance_scope,
+    );
+    let hr_cache_key = tandem_memory::ResponseCache::cache_key_scoped(
+        "test-model",
+        None,
+        "hr source-bound prompt",
+        &hr_scope,
+    );
+    response_cache
+        .put_scoped(
+            &finance_cache_key,
+            "test-model",
+            "finance cached response",
+            12,
+            &finance_scope,
+        )
+        .await
+        .expect("seed finance cache");
+    response_cache
+        .put_scoped(
+            &hr_cache_key,
+            "test-model",
+            "hr cached response",
+            12,
+            &hr_scope,
+        )
+        .await
+        .expect("seed hr cache");
+
     let req = Request::builder()
         .method("PATCH")
         .uri("/enterprise/source-bindings/finance-drive")
@@ -853,6 +896,16 @@ async fn enterprise_source_bindings_create_and_update_persist_under_request_tena
             .and_then(Value::as_str),
         Some("acme")
     );
+    assert!(response_cache
+        .get(&finance_cache_key)
+        .await
+        .expect("read finance cache")
+        .is_none());
+    assert!(response_cache
+        .get(&hr_cache_key)
+        .await
+        .expect("read hr cache")
+        .is_some());
 
     let req = Request::builder()
         .method("GET")

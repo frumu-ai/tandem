@@ -14,6 +14,7 @@ use tandem_enterprise_contract::{
     SourceBindingState, TenantContext, VerifiedTenantContext,
 };
 use tandem_memory::db::MemoryDatabase;
+use tandem_memory::response_cache::ResponseCache;
 use tandem_memory::types::{
     MemoryTenantScope, SourceObjectLifecycleRecord, SourceObjectLifecycleState,
 };
@@ -440,6 +441,8 @@ async fn create_source_binding(
         &input.binding_id,
         "source_binding_created",
     );
+    let _ =
+        invalidate_response_cache_for_source_binding(&tenant_context, &input.binding_id).await?;
 
     Ok(Json(EnterpriseAdminResponseBase {
         message: "enterprise source binding saved",
@@ -633,6 +636,8 @@ async fn review_ingestion_quarantine(
         &reviewed.binding_id,
         "ingestion_quarantine_reviewed",
     );
+    let _ =
+        invalidate_response_cache_for_source_binding(&tenant_context, &reviewed.binding_id).await?;
 
     Ok(Json(EnterpriseIngestionQuarantinesResponse {
         count: 1,
@@ -719,6 +724,12 @@ async fn update_connector(
         &updated_connector.connector_id,
         "connector_updated",
     );
+    let _ = invalidate_response_cache_for_connector(
+        &state,
+        &tenant_context,
+        &updated_connector.connector_id,
+    )
+    .await?;
 
     Ok(Json(EnterpriseAdminResponseBase {
         message: "enterprise connector updated",
@@ -788,6 +799,12 @@ async fn create_connector_credential_ref(
         &updated_connector.connector_id,
         "connector_credential_ref_created",
     );
+    let _ = invalidate_response_cache_for_connector(
+        &state,
+        &tenant_context,
+        &updated_connector.connector_id,
+    )
+    .await?;
 
     Ok(Json(EnterpriseConnectorsResponse {
         count: 1,
@@ -843,6 +860,12 @@ async fn rotate_connector_credential_ref(
         &updated_connector.connector_id,
         "connector_credential_ref_rotated",
     );
+    let _ = invalidate_response_cache_for_connector(
+        &state,
+        &tenant_context,
+        &updated_connector.connector_id,
+    )
+    .await?;
 
     Ok(Json(EnterpriseConnectorsResponse {
         count: 1,
@@ -896,6 +919,9 @@ async fn update_source_binding(
         &updated_binding.binding_id,
         "source_binding_updated",
     );
+    let _ =
+        invalidate_response_cache_for_source_binding(&tenant_context, &updated_binding.binding_id)
+            .await?;
     if source_binding_update_requires_index_purge(&updated_binding) {
         let db = open_enterprise_memory_db().await?;
         let tenant_scope = memory_tenant_scope(&tenant_context);
@@ -977,6 +1003,7 @@ async fn reindex_source_object(
         &binding_id,
         "source_object_reindex_requested",
     );
+    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
     let source_object = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id)
         .await
         .ok();
@@ -1016,6 +1043,7 @@ async fn delete_source_object(
         &binding_id,
         "source_object_deleted",
     );
+    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
 
     Ok(Json(EnterpriseSourceObjectActionResponse {
         base: storage_base(tenant_context, request_principal),
@@ -1068,6 +1096,7 @@ async fn rescope_source_object(
         &binding_id,
         "source_object_rescoped",
     );
+    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
     let source_object = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id)
         .await
         .ok();
@@ -1124,6 +1153,55 @@ fn emit_connector_invalidation_required(
             }
         }),
     ));
+}
+
+async fn invalidate_response_cache_for_connector(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    connector_id: &str,
+) -> Result<usize, (StatusCode, Json<Value>)> {
+    let binding_ids: Vec<String> = state
+        .enterprise_source_bindings
+        .read()
+        .await
+        .values()
+        .filter(|binding| {
+            binding.connector_id == connector_id && binding.tenant_matches(tenant_context)
+        })
+        .map(|binding| binding.binding_id.clone())
+        .collect();
+    let mut removed = 0;
+    for binding_id in binding_ids {
+        removed +=
+            invalidate_response_cache_for_source_binding(tenant_context, &binding_id).await?;
+    }
+    Ok(removed)
+}
+
+async fn invalidate_response_cache_for_source_binding(
+    tenant_context: &TenantContext,
+    binding_id: &str,
+) -> Result<usize, (StatusCode, Json<Value>)> {
+    let paths = tandem_core::resolve_shared_paths()
+        .map_err(|_| internal_error("ENTERPRISE_RESPONSE_CACHE_INVALIDATION_FAILED"))?;
+    let Some(parent) = paths.memory_db_path.parent() else {
+        return Ok(0);
+    };
+    if !parent.join("response_cache.db").exists() {
+        return Ok(0);
+    }
+    let cache = ResponseCache::new(parent, 60, 10_000)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_RESPONSE_CACHE_INVALIDATION_FAILED"))?;
+    cache
+        .invalidate_source_binding(
+            &tenant_context.org_id,
+            &tenant_context.workspace_id,
+            tenant_context.deployment_id.as_deref(),
+            binding_id,
+        )
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_RESPONSE_CACHE_INVALIDATION_FAILED"))
 }
 
 async fn source_object_by_id(

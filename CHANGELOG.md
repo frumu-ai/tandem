@@ -152,6 +152,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recommended response actions for a connector. The compromise window now uses
   source-object lifecycle timestamps as well as ingestion and quarantine audit
   records.
+- **Enterprise response-cache invalidation**: Source-binding, source-object,
+  quarantine-review, connector lifecycle, and connector credential changes now
+  evict matching source-bound response-cache entries when the response cache is
+  present, while keeping unrelated tenant/source-binding entries intact.
 
 ### Documentation
 
