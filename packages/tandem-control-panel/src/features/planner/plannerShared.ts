@@ -1,3 +1,4 @@
+import { findLast } from "../../lib/utils";
 import type { ChatInterfaceMessage } from "../../components/ChatInterfacePanel";
 
 export type PlannerProviderOption = {
@@ -153,11 +154,12 @@ export function normalizePlannerSessionPreview(input: {
   const draft = input.draft || null;
   const conversation = draft?.conversation || session?.draft?.conversation || null;
   const messages = plannerSessionMessages(conversation);
-  const reversed = [...messages].reverse();
-  const lastAssistant = reversed.find(
+  const lastAssistant = findLast(
+    messages,
     (message: any) => safeString(message?.role).toLowerCase() === "assistant"
   );
-  const lastUser = reversed.find(
+  const lastUser = findLast(
+    messages,
     (message: any) => safeString(message?.role).toLowerCase() === "user"
   );
   if (input.clarificationState?.status === "waiting") {
