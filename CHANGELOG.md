@@ -166,6 +166,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enterprise secret-ref resolver**: Added a runtime-only secret resolver
   abstraction with an `env://...` bearer-token resolver for local Google Drive
   testing. Resolved token values stay in memory and redact from debug output.
+- **Enterprise Google Drive preflight orchestration**: Added a source-binding
+  preflight layer that validates active Google Drive connectors, enabled source
+  bindings, source-bound read-only credentials, and resolver-backed folder
+  listing before any live indexing worker is enabled.
 
 ### Documentation
 

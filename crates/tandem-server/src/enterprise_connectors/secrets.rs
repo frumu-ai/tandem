@@ -22,6 +22,13 @@ impl ResolvedBearerToken {
     }
 }
 
+impl ResolvedBearerToken {
+    #[cfg(test)]
+    pub(crate) fn from_test_token(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
 impl fmt::Debug for ResolvedBearerToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ResolvedBearerToken(<redacted>)")

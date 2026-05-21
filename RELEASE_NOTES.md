@@ -152,8 +152,9 @@ production connector ingestion flows remain follow-up implementation phases.
   provider with v1 read-only/source-bound credential policy guardrails. The
   runtime now includes a read-only Drive client for folder listing, stored-file
   download, and Google Workspace export, plus a runtime-only `env://...`
-  secret-ref resolver for local bearer-token testing. Live Drive ingestion
-  remains disabled until the source-binding fetcher worker lands.
+  secret-ref resolver and source-binding preflight orchestration for local
+  bearer-token testing. Live Drive indexing remains disabled until the fetcher
+  worker lands.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.
