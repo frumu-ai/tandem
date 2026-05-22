@@ -77,6 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-tool security metadata in inventory snapshots and redacts unauthorized
   tool names when a signed strict tenant projection is present, while preserving
   legacy/local unscoped discovery behavior.
+- **Provider tool-schema authorization filtering**: Provider/model invocations
+  now filter advertised tool schemas through the signed strict tenant
+  projection before the model call. Unauthorized admin, credential, execute, or
+  resource-scoped tools are omitted from the provider-visible tool list, while
+  legacy/local unscoped sessions preserve their existing behavior.
 - **Enterprise source-object lifecycle records**: Added source-bound uploaded
   document lifecycle records in memory storage so manual imports can track
   active and tombstoned source objects by tenant, binding, resource, data class,

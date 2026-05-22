@@ -7,11 +7,14 @@ impl EngineLoop {
         req: SendMessageRequest,
         correlation_id: Option<String>,
     ) -> anyhow::Result<()> {
-        let session_model = self
-            .storage
-            .get_session(&session_id)
-            .await
-            .and_then(|s| s.model);
+        let session_record = self.storage.get_session(&session_id).await;
+        let session_model = session_record
+            .as_ref()
+            .and_then(|session| session.model.clone());
+        let strict_tool_context = session_record
+            .as_ref()
+            .and_then(|session| session.verified_tenant_context.as_ref())
+            .and_then(|verified| verified.strict_projection.clone());
         let (provider_id, model_id_value) =
             resolve_model_route(req.model.as_ref(), session_model.as_ref()).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -510,6 +513,16 @@ impl EngineLoop {
                             )
                         });
                     }
+                }
+                if let Some(strict_context) = strict_tool_context.as_ref() {
+                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
+                    tool_schemas.retain(|schema| {
+                        crate::tool_capabilities::tool_schema_visible_to_strict_context(
+                            schema,
+                            strict_context,
+                            now_ms,
+                        )
+                    });
                 }
                 if force_structured_handoff_final_response {
                     tool_schemas.clear();

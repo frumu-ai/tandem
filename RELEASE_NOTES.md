@@ -83,6 +83,10 @@ automation remain follow-up implementation phases.
   projection is present. Unauthorized MCP tools are removed from the discovery
   inventory before the model can see them; local/unscoped discovery remains
   unchanged.
+- Provider/model calls now apply the same strict projection to advertised tool
+  schemas before invocation. Unauthorized admin, credential, execute, or
+  resource-scoped tools are omitted from the provider-visible tool list while
+  local/unscoped sessions remain compatible.
 - Source-bound manual uploads now create durable source-object lifecycle
   records keyed by tenant, source binding, and native object identity. Changed
   documents keep the same source object ID while their hashes update, and

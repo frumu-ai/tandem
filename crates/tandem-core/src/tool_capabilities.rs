@@ -1,6 +1,7 @@
 use tandem_types::{
-    AccessPermission, DataClass, ResourceKind, ToolCapabilities, ToolDomain, ToolEffect,
-    ToolSchema, ToolSecurityDescriptor,
+    AccessDecision, AccessPermission, DataClass, ResourceKind, ResourceRef, StrictTenantContext,
+    ToolCapabilities, ToolDefaultVisibility, ToolDomain, ToolEffect, ToolSchema,
+    ToolSecurityDescriptor,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,6 +28,116 @@ pub fn tool_schema_security_descriptor(schema: &ToolSchema) -> ToolSecurityDescr
 
 pub fn tool_name_security_descriptor(tool_name: &str) -> ToolSecurityDescriptor {
     tool_security_descriptor_from_name_and_capabilities(tool_name, &ToolCapabilities::default())
+}
+
+pub fn tool_schema_visible_to_strict_context(
+    schema: &ToolSchema,
+    strict_context: &StrictTenantContext,
+    now_ms: u64,
+) -> bool {
+    let descriptor = tool_schema_security_descriptor(schema);
+    tool_security_descriptor_visible_to_strict_context(
+        &schema.name,
+        &descriptor,
+        strict_context,
+        now_ms,
+    )
+}
+
+pub fn tool_security_descriptor_visible_to_strict_context(
+    tool_name: &str,
+    descriptor: &ToolSecurityDescriptor,
+    strict_context: &StrictTenantContext,
+    now_ms: u64,
+) -> bool {
+    if descriptor.is_empty() {
+        return true;
+    }
+    if strict_context.is_expired_at(now_ms) {
+        return false;
+    }
+
+    let required_permissions = if descriptor.required_permissions.is_empty() {
+        vec![AccessPermission::View]
+    } else {
+        descriptor.required_permissions.clone()
+    };
+    let data_classes = if descriptor.data_classes.is_empty() {
+        vec![DataClass::Internal]
+    } else {
+        descriptor.data_classes.clone()
+    };
+    let resource_kinds = if descriptor.resource_kinds.is_empty() {
+        vec![ResourceKind::McpTool]
+    } else {
+        descriptor.resource_kinds.clone()
+    };
+
+    let all_permissions_allowed = required_permissions.iter().all(|permission| {
+        resource_kinds.iter().any(|resource_kind| {
+            let resource = tool_resource_ref(strict_context, *resource_kind, tool_name);
+            data_classes.iter().any(|data_class| {
+                matches!(
+                    strict_context
+                        .evaluate_access(&resource, *permission, *data_class, now_ms)
+                        .decision,
+                    AccessDecision::Allow
+                )
+            })
+        })
+    });
+    if all_permissions_allowed {
+        return true;
+    }
+
+    let hidden_by_default = matches!(descriptor.default_visibility, ToolDefaultVisibility::Hidden)
+        || descriptor.admin_surface
+        || descriptor.credential_access;
+    !hidden_by_default
+        && required_permissions
+            .iter()
+            .all(|permission| matches!(permission, AccessPermission::View | AccessPermission::Read))
+        && resource_kinds.iter().any(|resource_kind| {
+            let resource = tool_resource_ref(strict_context, *resource_kind, tool_name);
+            data_classes.iter().any(|data_class| {
+                matches!(
+                    strict_context
+                        .evaluate_access(&resource, AccessPermission::Read, *data_class, now_ms)
+                        .decision,
+                    AccessDecision::Allow
+                ) || matches!(
+                    strict_context
+                        .evaluate_access(&resource, AccessPermission::View, *data_class, now_ms)
+                        .decision,
+                    AccessDecision::Allow
+                )
+            })
+        })
+}
+
+fn tool_resource_ref(
+    strict_context: &StrictTenantContext,
+    resource_kind: ResourceKind,
+    tool_name: &str,
+) -> ResourceRef {
+    let resource_id = match resource_kind {
+        ResourceKind::McpServer => mcp_server_segment_from_tool_name(tool_name),
+        _ => tool_name.to_string(),
+    };
+    ResourceRef::new(
+        strict_context.tenant_context.org_id.clone(),
+        strict_context.tenant_context.workspace_id.clone(),
+        resource_kind,
+        resource_id,
+    )
+}
+
+fn mcp_server_segment_from_tool_name(tool_name: &str) -> String {
+    let mut parts = tool_name.split('.');
+    match (parts.next(), parts.next()) {
+        (Some("mcp"), Some(server)) if !server.trim().is_empty() => server.to_string(),
+        _ => "mcp".to_string(),
+    }
 }
 
 pub fn canonical_tool_name(name: &str) -> String {
@@ -463,8 +574,9 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tandem_types::{
-        AccessPermission, DataClass, ResourceKind, ToolCapabilities, ToolDomain, ToolEffect,
-        ToolSecurityDescriptor,
+        AccessPermission, AuthorityChain, DataBoundary, DataClass, GrantSource, PrincipalRef,
+        RequestPrincipal, ResourceKind, ResourceRef, ResourceScope, ScopedGrant,
+        StrictTenantContext, ToolCapabilities, ToolDomain, ToolEffect, ToolSecurityDescriptor,
     };
 
     #[test]
@@ -629,5 +741,95 @@ mod tests {
             descriptor.default_visibility,
             tandem_types::ToolDefaultVisibility::Hidden
         ));
+    }
+
+    #[test]
+    fn strict_context_filters_provider_tool_schemas_by_descriptor() {
+        let strict = strict_context_with_grant(
+            vec![AccessPermission::View, AccessPermission::Read],
+            vec![DataClass::Internal, DataClass::SourceCode],
+        );
+        let read_schema = ToolSchema::new("mcp.github.list_repository_issues", "", json!({}))
+            .with_security(
+                ToolSecurityDescriptor::new()
+                    .permission(AccessPermission::Read)
+                    .resource_kind(ResourceKind::McpTool)
+                    .data_class(DataClass::SourceCode),
+            );
+        let execute_schema = ToolSchema::new("mcp.github.create_pull_request", "", json!({}))
+            .with_security(
+                ToolSecurityDescriptor::new()
+                    .permission(AccessPermission::Execute)
+                    .resource_kind(ResourceKind::McpTool)
+                    .data_class(DataClass::SourceCode)
+                    .external_side_effect(),
+            );
+        let hidden_schema = ToolSchema::new("mcp.admin.rotate_credential", "", json!({}))
+            .with_security(
+                ToolSecurityDescriptor::new()
+                    .permission(AccessPermission::Admin)
+                    .resource_kind(ResourceKind::SecretProviderCredential)
+                    .data_class(DataClass::Credential)
+                    .admin_surface()
+                    .credential_access()
+                    .hidden_by_default(),
+            );
+
+        assert!(tool_schema_visible_to_strict_context(
+            &read_schema,
+            &strict,
+            2_000
+        ));
+        assert!(!tool_schema_visible_to_strict_context(
+            &execute_schema,
+            &strict,
+            2_000
+        ));
+        assert!(!tool_schema_visible_to_strict_context(
+            &hidden_schema,
+            &strict,
+            2_000
+        ));
+    }
+
+    fn strict_context_with_grant(
+        permissions: Vec<AccessPermission>,
+        data_classes: Vec<DataClass>,
+    ) -> StrictTenantContext {
+        let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
+            "acme",
+            "dev",
+            Some("deployment-test".to_string()),
+            "user-1",
+        );
+        let principal = PrincipalRef::human_user("user-1");
+        let root = ResourceRef::new("acme", "*", ResourceKind::Organization, "acme");
+        let grant = ScopedGrant::new(
+            "grant-tool-filter",
+            principal.clone(),
+            root.clone(),
+            GrantSource::Direct,
+        )
+        .with_permissions(permissions)
+        .with_data_classes(data_classes.clone());
+
+        StrictTenantContext::new(
+            tenant_context,
+            principal.clone(),
+            AuthorityChain::from_request(RequestPrincipal::authenticated_user(
+                principal.id,
+                "test",
+            )),
+            ResourceScope::root(root),
+            tandem_types::AssertionMetadata::new(
+                "test",
+                "tandem-runtime",
+                1_000,
+                9_999_999_999_999,
+                "assertion-tool-filter",
+            ),
+        )
+        .with_grants(vec![grant])
+        .with_data_boundary(DataBoundary::allow(data_classes))
     }
 }
