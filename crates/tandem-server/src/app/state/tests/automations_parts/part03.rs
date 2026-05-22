@@ -1930,6 +1930,7 @@ async fn connector_preflight_executes_declared_required_tool_calls_generically()
                 description: "test connector preflight tool".to_string(),
                 input_schema: json!({"type": "object"}),
                 capabilities: Default::default(),
+                security: Default::default(),
             }
         }
 

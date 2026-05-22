@@ -75,6 +75,10 @@ automation remain follow-up implementation phases.
   cataloged tools. Catalog-provided overrides can mark sensitive tools as
   admin/credential/hidden, while unannotated tools receive conservative
   descriptors from catalog context and action classification.
+- Operators can provide JSON/YAML MCP tool-security overrides with
+  `TANDEM_MCP_TOOL_SECURITY_OVERRIDES_PATH`, allowing enterprise deployments to
+  tune server and per-tool security descriptors without rebuilding the embedded
+  catalog.
 - Source-bound manual uploads now create durable source-object lifecycle
   records keyed by tenant, source binding, and native object identity. Changed
   documents keep the same source object ID while their hashes update, and

@@ -1,7 +1,11 @@
 use serde_json::{json, Value};
+use std::fs;
+use std::path::Path;
 use std::sync::OnceLock;
 use tandem_core::tool_name_security_descriptor;
 use tandem_types::{AccessPermission, DataClass, ResourceKind, ToolSecurityDescriptor};
+
+const MCP_TOOL_SECURITY_OVERRIDES_PATH_ENV: &str = "TANDEM_MCP_TOOL_SECURITY_OVERRIDES_PATH";
 
 mod generated {
     include!("mcp_catalog_generated.rs");
@@ -29,6 +33,7 @@ pub fn index() -> Option<&'static Value> {
         .get_or_init(|| {
             serde_json::from_str::<Value>(generated::INDEX_JSON)
                 .ok()
+                .map(apply_operator_security_overrides)
                 .map(augment_catalog_security)
         })
         .as_ref()
@@ -43,6 +48,136 @@ pub fn toml_for_slug(slug: &str) -> Option<&'static str> {
         .iter()
         .find(|(entry_slug, _)| *entry_slug == normalized)
         .map(|(_, toml)| *toml)
+}
+
+fn apply_operator_security_overrides(mut catalog: Value) -> Value {
+    let Some(overrides) = load_operator_security_overrides() else {
+        return catalog;
+    };
+    apply_operator_security_overrides_value(&mut catalog, &overrides);
+    catalog
+}
+
+fn load_operator_security_overrides() -> Option<Value> {
+    let path = std::env::var(MCP_TOOL_SECURITY_OVERRIDES_PATH_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    let path = Path::new(&path);
+    let raw = fs::read_to_string(path).ok()?;
+    parse_operator_security_overrides(&raw)
+}
+
+fn parse_operator_security_overrides(raw: &str) -> Option<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<Value>(trimmed)
+        .ok()
+        .or_else(|| serde_yaml::from_str::<Value>(trimmed).ok())
+        .filter(Value::is_object)
+}
+
+fn apply_operator_security_overrides_value(catalog: &mut Value, overrides: &Value) {
+    let Some(servers) = catalog.get_mut("servers").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let server_overrides = overrides
+        .get("servers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let namespaced_tool_overrides = overrides
+        .get("tools")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    for server in servers {
+        let server_keys = catalog_entry_match_keys(server);
+        let matched_server_override = server_keys
+            .iter()
+            .find_map(|key| server_overrides.get(key).cloned());
+        if let Some(server_override) = matched_server_override {
+            apply_server_security_override(server, &server_override);
+        }
+        apply_namespaced_tool_security_overrides(server, &namespaced_tool_overrides);
+    }
+}
+
+fn apply_server_security_override(server: &mut Value, server_override: &Value) {
+    let Some(server_obj) = server.as_object_mut() else {
+        return;
+    };
+    if let Some(security) = server_override.get("security") {
+        server_obj.insert("security".to_string(), security.clone());
+    }
+
+    let mut tool_overrides = server_obj
+        .get("tool_security_overrides")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(tools) = server_override
+        .get("tools")
+        .or_else(|| server_override.get("tool_security_overrides"))
+        .and_then(Value::as_object)
+    {
+        for (tool_name, descriptor) in tools {
+            tool_overrides.insert(tool_name.clone(), descriptor.clone());
+        }
+    }
+    if !tool_overrides.is_empty() {
+        server_obj.insert(
+            "tool_security_overrides".to_string(),
+            Value::Object(tool_overrides),
+        );
+    }
+}
+
+fn apply_namespaced_tool_security_overrides(
+    server: &mut Value,
+    namespaced_tool_overrides: &serde_json::Map<String, Value>,
+) {
+    if namespaced_tool_overrides.is_empty() {
+        return;
+    }
+    let Some(server_obj) = server.as_object_mut() else {
+        return;
+    };
+    let server_segment = server_namespace_segment_from_obj(server_obj);
+    let tool_names = server_obj
+        .get("tool_names")
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|tool_name| !tool_name.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut tool_overrides = server_obj
+        .get("tool_security_overrides")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for tool_name in tool_names {
+        let namespaced_name = format!("mcp.{server_segment}.{tool_name}");
+        if let Some(descriptor) = namespaced_tool_overrides.get(&namespaced_name) {
+            tool_overrides.insert(tool_name, descriptor.clone());
+        }
+    }
+    if !tool_overrides.is_empty() {
+        server_obj.insert(
+            "tool_security_overrides".to_string(),
+            Value::Object(tool_overrides),
+        );
+    }
 }
 
 fn augment_catalog_security(mut catalog: Value) -> Value {
@@ -215,6 +350,13 @@ fn merge_server_tool_security(
 }
 
 fn server_namespace_segment(server: &Value) -> String {
+    if let Some(obj) = server.as_object() {
+        return server_namespace_segment_from_obj(obj);
+    }
+    "mcp".to_string()
+}
+
+fn server_namespace_segment_from_obj(server: &serde_json::Map<String, Value>) -> String {
     for field in ["server_config_name", "slug", "name"] {
         if let Some(value) = server.get(field).and_then(Value::as_str) {
             let normalized = normalize_namespace_segment(value);
@@ -224,6 +366,27 @@ fn server_namespace_segment(server: &Value) -> String {
         }
     }
     "mcp".to_string()
+}
+
+fn catalog_entry_match_keys(entry: &Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    for field in [
+        "slug",
+        "name",
+        "server_name",
+        "server_config_name",
+        "pack_id",
+    ] {
+        if let Some(value) = entry.get(field).and_then(Value::as_str) {
+            let normalized = normalize_slug(value);
+            if !normalized.is_empty() {
+                keys.push(normalized);
+            }
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 fn normalize_namespace_segment(raw: &str) -> String {
@@ -345,5 +508,97 @@ mod tests {
         assert_eq!(security["admin_surface"], true);
         assert_eq!(security["credential_access"], true);
         assert_eq!(security["default_visibility"], "hidden");
+    }
+
+    #[test]
+    fn operator_security_overrides_apply_by_server_and_namespaced_tool() {
+        let mut catalog = json!({
+            "servers": [
+                {
+                    "slug": "slack",
+                    "name": "Slack",
+                    "server_config_name": "slack",
+                    "tool_names": ["slack_send_message", "slack_search_public_and_private"]
+                },
+                {
+                    "slug": "notion",
+                    "name": "Notion",
+                    "server_config_name": "notion",
+                    "tool_names": ["search"]
+                }
+            ]
+        });
+        let overrides = json!({
+            "servers": {
+                "slack": {
+                    "security": {
+                        "required_permissions": ["read"],
+                        "resource_kinds": ["document_collection"],
+                        "data_classes": ["confidential"]
+                    },
+                    "tools": {
+                        "slack_send_message": {
+                            "required_permissions": ["admin", "execute"],
+                            "resource_kinds": ["mcp_tool"],
+                            "data_classes": ["confidential"],
+                            "admin_surface": true,
+                            "default_visibility": "hidden"
+                        }
+                    }
+                }
+            },
+            "tools": {
+                "mcp.notion.search": {
+                    "required_permissions": ["read"],
+                    "resource_kinds": ["knowledge_space"],
+                    "data_classes": ["internal"]
+                }
+            }
+        });
+
+        apply_operator_security_overrides_value(&mut catalog, &overrides);
+        let catalog = augment_catalog_security(catalog);
+
+        let slack_security = &catalog["servers"][0]["security"];
+        assert_eq!(slack_security["data_classes"], json!(["confidential"]));
+        let send_security =
+            &catalog["servers"][0]["tool_security"]["slack_send_message"]["security"];
+        assert_eq!(
+            send_security["required_permissions"],
+            json!(["admin", "execute"])
+        );
+        assert_eq!(send_security["admin_surface"], true);
+        assert_eq!(send_security["default_visibility"], "hidden");
+
+        let notion_security = &catalog["servers"][1]["tool_security"]["search"]["security"];
+        assert_eq!(
+            notion_security["resource_kinds"],
+            json!(["knowledge_space"])
+        );
+        assert_eq!(notion_security["data_classes"], json!(["internal"]));
+    }
+
+    #[test]
+    fn operator_security_overrides_parse_json_and_yaml() {
+        let json_payload = r#"{
+            "servers": {
+                "slack": {
+                    "security": {
+                        "required_permissions": ["read"]
+                    }
+                }
+            }
+        }"#;
+        let yaml_payload = r#"
+servers:
+  slack:
+    security:
+      required_permissions:
+        - read
+"#;
+
+        assert!(parse_operator_security_overrides(json_payload).is_some());
+        assert!(parse_operator_security_overrides(yaml_payload).is_some());
+        assert!(parse_operator_security_overrides("").is_none());
     }
 }

@@ -69,6 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server and per-tool security metadata, honors explicit catalog
   `tool_security_overrides`, and derives conservative descriptors from catalog
   server context plus tool action classification when no override is present.
+- **Operator MCP tool-security overrides**: Added a JSON/YAML override format
+  via `TANDEM_MCP_TOOL_SECURITY_OVERRIDES_PATH` so hosted/self-hosted operators
+  can override server and per-tool MCP security descriptors without editing the
+  embedded catalog.
 - **Enterprise source-object lifecycle records**: Added source-bound uploaded
   document lifecycle records in memory storage so manual imports can track
   active and tombstoned source objects by tenant, binding, resource, data class,
