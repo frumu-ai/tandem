@@ -140,6 +140,12 @@ automation remain follow-up implementation phases.
   `ScopedGrant` projection for a member, and disable grants before the global
   signing middleware begins appending those projections to verified strict
   contexts.
+- Signed hosted/enterprise request ingress now appends active
+  organization-unit membership grants into existing verified strict contexts.
+  This makes company-defined units such as departments, clinical groups, or
+  consultant groups available to strict runtime access checks while preserving
+  fail-closed behavior for assertions that do not already carry a strict
+  projection.
 - Connector credential-reference admin endpoints now accept and rotate
   `SecretRef` records without accepting raw credential values. Credential refs
   are tenant-validated, can be source-bound to a resource, and are visible in

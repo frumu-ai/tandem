@@ -7,13 +7,14 @@ use axum::Json;
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tandem_types::{
     AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
-    NoopRequestAuthorizationHook, PrincipalRef, RequestAuthorizationHook, RequestPrincipal,
-    ResourceKind, ResourceRef, ResourceScope, RuntimeAuthMode, ScopedGrant, SigningKeyPurpose,
-    TenantContext, TenantContextAssertionClaims, TenantContextAssertionHeader,
-    TenantContextResolver, TenantSource, VerifiedTenantContext,
+    NoopRequestAuthorizationHook, OrganizationUnitAccessGrant, OrganizationUnitMembership,
+    PrincipalRef, RequestAuthorizationHook, RequestPrincipal, ResourceKind, ResourceRef,
+    ResourceScope, RuntimeAuthMode, ScopedGrant, SigningKeyPurpose, TenantContext,
+    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantContextResolver,
+    TenantSource, VerifiedTenantContext,
 };
 
 use crate::{AppState, StartupStatus};
@@ -39,7 +40,8 @@ pub(super) async fn auth_gate(
     let runtime_auth_mode = resolve_runtime_auth_mode();
     if path == "/bug-monitor/intake/report" || path == "/failure-reporter/intake/report" {
         if !runtime_auth_mode_requires_transport_token(runtime_auth_mode)
-            && !attach_enterprise_request_context_for_mode(&mut request, runtime_auth_mode)
+            && !attach_enterprise_request_context_for_mode(&state, &mut request, runtime_auth_mode)
+                .await
         {
             return (
                 StatusCode::FORBIDDEN,
@@ -71,7 +73,7 @@ pub(super) async fn auth_gate(
             .into_response();
     }
 
-    if !attach_enterprise_request_context_for_mode(&mut request, runtime_auth_mode) {
+    if !attach_enterprise_request_context_for_mode(&state, &mut request, runtime_auth_mode).await {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorEnvelope {
@@ -84,7 +86,8 @@ pub(super) async fn auth_gate(
     next.run(request).await
 }
 
-fn attach_enterprise_request_context_for_mode(
+async fn attach_enterprise_request_context_for_mode(
+    state: &AppState,
     request: &mut Request,
     mode: RuntimeAuthMode,
 ) -> bool {
@@ -110,12 +113,136 @@ fn attach_enterprise_request_context_for_mode(
         return false;
     }
 
-    if let Some(verified_tenant_context) = resolved.verified_tenant_context {
+    if let Some(mut verified_tenant_context) = resolved.verified_tenant_context {
+        enrich_verified_context_with_org_unit_grants(state, &mut verified_tenant_context).await;
         request.extensions_mut().insert(verified_tenant_context);
     }
     request.extensions_mut().insert(resolved.tenant_context);
     request.extensions_mut().insert(resolved.request_principal);
     true
+}
+
+async fn enrich_verified_context_with_org_unit_grants(
+    state: &AppState,
+    verified: &mut VerifiedTenantContext,
+) {
+    if verified.strict_projection.is_none() {
+        return;
+    }
+    let memberships = state
+        .enterprise_org_unit_memberships
+        .read()
+        .await
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let access_grants = state
+        .enterprise_org_unit_access_grants
+        .read()
+        .await
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    project_org_unit_grants_into_verified_context(
+        verified,
+        memberships.iter(),
+        access_grants.iter(),
+        crate::util::time::now_ms(),
+    );
+}
+
+fn project_org_unit_grants_into_verified_context<'a>(
+    verified: &mut VerifiedTenantContext,
+    memberships: impl Iterator<Item = &'a OrganizationUnitMembership>,
+    access_grants: impl Iterator<Item = &'a OrganizationUnitAccessGrant>,
+    now_ms: u64,
+) {
+    let Some(strict_principal) = verified
+        .strict_projection
+        .as_ref()
+        .map(|projection| projection.principal.clone())
+    else {
+        return;
+    };
+    let candidate_principals = org_unit_grant_candidate_principals(verified, &strict_principal);
+    let memberships = memberships
+        .filter(|membership| {
+            organization_unit_membership_matches_verified_context(membership, verified)
+                && membership.is_active_at(now_ms)
+                && candidate_principals.contains(&membership.member)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if memberships.is_empty() {
+        return;
+    }
+    let access_grants = access_grants
+        .filter(|grant| {
+            organization_unit_access_grant_matches_verified_context(grant, verified)
+                && grant.is_active_at(now_ms)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let Some(strict_projection) = verified.strict_projection.as_mut() else {
+        return;
+    };
+    let mut existing_grant_ids = strict_projection
+        .grants
+        .iter()
+        .map(|grant| grant.grant_id.clone())
+        .collect::<BTreeSet<_>>();
+    for access_grant in &access_grants {
+        for membership in &memberships {
+            let Some(scoped_grant) =
+                access_grant.to_scoped_grant_for_membership(membership, now_ms)
+            else {
+                continue;
+            };
+            if existing_grant_ids.insert(scoped_grant.grant_id.clone()) {
+                strict_projection.grants.push(scoped_grant);
+            }
+        }
+    }
+}
+
+fn org_unit_grant_candidate_principals(
+    verified: &VerifiedTenantContext,
+    strict_principal: &PrincipalRef,
+) -> Vec<PrincipalRef> {
+    let mut principals = vec![strict_principal.clone()];
+    principals.push(PrincipalRef::human_user(
+        verified.human_actor.actor_id.clone(),
+    ));
+    if let Some(actor_id) = verified.tenant_context.actor_id.as_ref() {
+        principals.push(PrincipalRef::human_user(actor_id.clone()));
+    }
+    if let Some(tenant_actor_id) = strict_principal.tenant_actor_id.as_ref() {
+        principals.push(PrincipalRef::human_user(tenant_actor_id.clone()));
+    }
+    principals.sort_by(|left, right| {
+        format!("{:?}:{}", left.kind, left.id).cmp(&format!("{:?}:{}", right.kind, right.id))
+    });
+    principals.dedup();
+    principals
+}
+
+fn organization_unit_membership_matches_verified_context(
+    membership: &OrganizationUnitMembership,
+    verified: &VerifiedTenantContext,
+) -> bool {
+    membership.tenant_context.org_id == verified.tenant_context.org_id
+        && membership.tenant_context.workspace_id == verified.tenant_context.workspace_id
+        && membership.tenant_context.deployment_id == verified.tenant_context.deployment_id
+}
+
+fn organization_unit_access_grant_matches_verified_context(
+    grant: &OrganizationUnitAccessGrant,
+    verified: &VerifiedTenantContext,
+) -> bool {
+    grant.tenant_context.org_id == verified.tenant_context.org_id
+        && grant.tenant_context.workspace_id == verified.tenant_context.workspace_id
+        && grant.tenant_context.deployment_id == verified.tenant_context.deployment_id
 }
 
 fn runtime_auth_mode_requires_transport_token(mode: RuntimeAuthMode) -> bool {
@@ -928,7 +1055,7 @@ fn extract_request_token(headers: &HeaderMap) -> Option<String> {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-    use tandem_types::{AuthorityChain, HumanActor, TenantSource};
+    use tandem_types::{AuthorityChain, HumanActor, OrganizationUnitState, TenantSource};
 
     #[test]
     fn resolve_enterprise_request_context_defaults_to_local_tenant() {
@@ -1158,6 +1285,129 @@ mod tests {
         assert_eq!(verified.issuer, "tandem-web");
         assert_eq!(verified.tenant_context.org_id, "org-a");
         assert_eq!(verified.human_actor.actor_id, "user-a");
+    }
+
+    #[test]
+    fn signed_strict_context_projects_active_org_unit_membership_grants() {
+        let principal = PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-a");
+        let patient_cases = ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            ResourceKind::DataStore,
+            "patient-cases",
+        );
+        let mut verified =
+            VerifiedTenantContext::from(test_claims(1_000, 4_000).with_strict_projection(
+                principal,
+                ResourceScope::root(ResourceRef::new(
+                    "org-a",
+                    "workspace-a",
+                    ResourceKind::Workspace,
+                    "workspace-a",
+                )),
+                Vec::new(),
+                DataBoundary::allow(vec![DataClass::Regulated, DataClass::CustomerData]),
+            ));
+        let tenant = verified.tenant_context.clone();
+        let doctors = PrincipalRef::organization_unit("clinical_role/doctors");
+        let membership = OrganizationUnitMembership::active(
+            "membership-doctor-user",
+            tenant.clone(),
+            doctors.clone(),
+            PrincipalRef::human_user("user-a"),
+            tandem_types::OrganizationUnitMembershipSource::HostedControlPlane,
+            1_000,
+        );
+        let disabled_membership = OrganizationUnitMembership {
+            membership_id: "membership-disabled".to_string(),
+            state: OrganizationUnitState::Disabled,
+            member: PrincipalRef::human_user("user-b"),
+            ..membership.clone()
+        };
+        let access_grant = OrganizationUnitAccessGrant::active(
+            "grant-doctors-patient-cases",
+            tenant,
+            doctors,
+            patient_cases.clone(),
+            1_000,
+        )
+        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+        .with_data_classes(vec![DataClass::Regulated, DataClass::CustomerData]);
+
+        project_org_unit_grants_into_verified_context(
+            &mut verified,
+            [&membership, &disabled_membership].into_iter(),
+            [&access_grant].into_iter(),
+            1_500,
+        );
+
+        let strict = verified
+            .strict_projection
+            .as_ref()
+            .expect("strict projection remains present");
+        assert_eq!(strict.grants.len(), 1);
+        assert_eq!(
+            strict.grants[0].grant_source,
+            GrantSource::OrganizationUnitMembership
+        );
+        assert_eq!(
+            strict.grants[0].source_principal.as_ref(),
+            Some(&access_grant.unit)
+        );
+        assert!(
+            strict
+                .evaluate_access(
+                    &patient_cases,
+                    AccessPermission::Read,
+                    DataClass::Regulated,
+                    1_500,
+                )
+                .decision
+                == tandem_types::AccessDecision::Allow
+        );
+    }
+
+    #[test]
+    fn org_unit_projection_does_not_create_strict_context_or_cross_tenants() {
+        let mut verified = VerifiedTenantContext::from(test_claims(1_000, 4_000));
+        let other_tenant = TenantContext::explicit_user_workspace(
+            "other-org",
+            "workspace-a",
+            Some("dep-a".to_string()),
+            "user-a",
+        );
+        let doctors = PrincipalRef::organization_unit("clinical_role/doctors");
+        let membership = OrganizationUnitMembership::active(
+            "membership-doctor-user",
+            other_tenant.clone(),
+            doctors.clone(),
+            PrincipalRef::human_user("user-a"),
+            tandem_types::OrganizationUnitMembershipSource::HostedControlPlane,
+            1_000,
+        );
+        let access_grant = OrganizationUnitAccessGrant::active(
+            "grant-doctors-patient-cases",
+            other_tenant,
+            doctors,
+            ResourceRef::new(
+                "other-org",
+                "workspace-a",
+                ResourceKind::DataStore,
+                "patient-cases",
+            ),
+            1_000,
+        )
+        .with_permissions(vec![AccessPermission::Read])
+        .with_data_classes(vec![DataClass::Regulated]);
+
+        project_org_unit_grants_into_verified_context(
+            &mut verified,
+            [&membership].into_iter(),
+            [&access_grant].into_iter(),
+            1_500,
+        );
+
+        assert!(verified.strict_projection.is_none());
     }
 
     #[test]

@@ -208,6 +208,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Enterprise admins can define tenant-scoped org-unit access grants, preview
   effective `ScopedGrant` projections for a member, and disable grants before
   the signing middleware begins injecting these projections globally.
+- **Enterprise org-unit grant ingress projection**: Verified signed strict
+  contexts now receive active organization-unit membership grants at HTTP
+  ingress. The runtime appends matching tenant-scoped `ScopedGrant`
+  projections from stored org-unit memberships and access grants without
+  creating strict context for assertions that did not already carry one.
 
 ### Documentation
 
