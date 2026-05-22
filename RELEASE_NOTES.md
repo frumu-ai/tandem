@@ -175,6 +175,11 @@ automation remain follow-up implementation phases.
 - Organization-unit and ingestion/source-object lifecycle endpoints also now
   live in focused enterprise HTTP modules, keeping the primary enterprise admin
   route file under the source-size guideline before the next connector work.
+- Google Drive source bindings now have an explicit admin re-fetch/reindex
+  operation. It reuses the read-only source-bound credential checks and stable
+  binding namespace, records ingestion jobs, honors quarantine policy, evicts
+  source-bound cache entries, and keeps resolved credential material out of
+  responses.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

@@ -305,6 +305,10 @@ export type ImportEnterpriseGoogleDriveBindingInput = {
   sync_deletes?: boolean;
 };
 
+export type ReindexEnterpriseGoogleDriveBindingInput = ImportEnterpriseGoogleDriveBindingInput & {
+  source_object_id?: string;
+};
+
 const retryEnterpriseQuery = (failureCount: number, error: unknown) =>
   isTransientEngineError(error) ? failureCount < 6 : failureCount < 2;
 
@@ -540,6 +544,25 @@ export function useImportEnterpriseGoogleDriveBinding() {
         `/api/engine/enterprise/source-bindings/${encodeURIComponent(
           binding_id
         )}/google-drive/import`,
+        {
+          method: "POST",
+          body: JSON.stringify(input),
+        }
+      ) as Promise<EnterpriseGoogleDriveImportResponse>,
+    onSuccess: (_data, variables) => {
+      invalidateIngestionQueries(queryClient, variables.binding_id);
+    },
+  });
+}
+
+export function useReindexEnterpriseGoogleDriveBinding() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ binding_id, ...input }: ReindexEnterpriseGoogleDriveBindingInput) =>
+      api(
+        `/api/engine/enterprise/source-bindings/${encodeURIComponent(
+          binding_id
+        )}/google-drive/reindex`,
         {
           method: "POST",
           body: JSON.stringify(input),

@@ -24,6 +24,7 @@ import {
   useEnterpriseSourceObjects,
   useImportEnterpriseGoogleDriveBinding,
   usePreflightEnterpriseGoogleDriveBinding,
+  useReindexEnterpriseGoogleDriveBinding,
   useReindexEnterpriseSourceObject,
   useReviewEnterpriseIngestionQuarantine,
   useRescopeEnterpriseSourceObject,
@@ -1118,22 +1119,35 @@ function GoogleDriveOperationsPanel({
   binding,
   preflightPayload,
   importPayload,
+  reindexPayload,
   preflightBusy,
   importBusy,
+  reindexBusy,
   preflightError,
   importError,
+  reindexError,
   onPreflight,
   onImport,
+  onReindexBinding,
 }: {
   binding?: EnterpriseSourceBinding | null;
   preflightPayload?: EnterpriseGoogleDrivePreflightResponse | null;
   importPayload?: EnterpriseGoogleDriveImportResponse | null;
+  reindexPayload?: EnterpriseGoogleDriveImportResponse | null;
   preflightBusy: boolean;
   importBusy: boolean;
+  reindexBusy: boolean;
   preflightError: unknown;
   importError: unknown;
+  reindexError: unknown;
   onPreflight: () => void;
   onImport: (input: {
+    tier: string;
+    project_id?: string;
+    session_id?: string;
+    sync_deletes: boolean;
+  }) => void;
+  onReindexBinding: (input: {
     tier: string;
     project_id?: string;
     session_id?: string;
@@ -1146,7 +1160,8 @@ function GoogleDriveOperationsPanel({
   const [syncDeletes, setSyncDeletes] = useState(false);
   const isGoogleDrive = binding?.source_type === "google_drive";
   const preflight = preflightPayload?.preflight;
-  const stats = importPayload?.stats || {};
+  const latestPayload = reindexPayload || importPayload;
+  const stats = latestPayload?.stats || {};
   const scopeMissing =
     (tier === "project" && !projectId.trim()) || (tier === "session" && !sessionId.trim());
 
@@ -1170,7 +1185,7 @@ function GoogleDriveOperationsPanel({
             <button
               className="tcp-btn"
               type="button"
-              disabled={preflightBusy || importBusy}
+              disabled={preflightBusy || importBusy || reindexBusy}
               onClick={onPreflight}
             >
               <i data-lucide="radar"></i>
@@ -1179,7 +1194,7 @@ function GoogleDriveOperationsPanel({
             <button
               className="tcp-btn tcp-btn-primary"
               type="button"
-              disabled={preflightBusy || importBusy || scopeMissing}
+              disabled={preflightBusy || importBusy || reindexBusy || scopeMissing}
               onClick={() =>
                 onImport({
                   tier,
@@ -1191,6 +1206,22 @@ function GoogleDriveOperationsPanel({
             >
               <i data-lucide="download-cloud"></i>
               Import
+            </button>
+            <button
+              className="tcp-btn"
+              type="button"
+              disabled={preflightBusy || importBusy || reindexBusy || scopeMissing}
+              onClick={() =>
+                onReindexBinding({
+                  tier,
+                  project_id: projectId.trim() || undefined,
+                  session_id: sessionId.trim() || undefined,
+                  sync_deletes: syncDeletes,
+                })
+              }
+            >
+              <i data-lucide="refresh-cw"></i>
+              Reindex binding
             </button>
           </div>
 
@@ -1235,9 +1266,12 @@ function GoogleDriveOperationsPanel({
             Sync deletes
           </label>
 
-          {preflightError || importError ? (
+          {preflightError || importError || reindexError ? (
             <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-              {errorText(preflightError || importError, "Google Drive action failed.")}
+              {errorText(
+                preflightError || importError || reindexError,
+                "Google Drive action failed."
+              )}
             </div>
           ) : null}
 
@@ -1258,12 +1292,12 @@ function GoogleDriveOperationsPanel({
             </div>
           ) : null}
 
-          {importPayload ? (
+          {latestPayload ? (
             <div className="grid gap-3 rounded-lg border border-white/8 bg-black/20 p-3 md:grid-cols-4">
               <div>
                 <div className="tcp-subtle text-xs uppercase tracking-[0.14em]">Fetched</div>
                 <div className="mt-1 text-lg font-semibold text-tcp-text-primary">
-                  {importPayload.drive_files_fetched || 0}
+                  {latestPayload.drive_files_fetched || 0}
                 </div>
               </div>
               <div>
@@ -1283,19 +1317,19 @@ function GoogleDriveOperationsPanel({
                 <div className="mt-1">
                   <Badge
                     tone={
-                      importPayload.ingestion_job?.state === "completed"
+                      latestPayload.ingestion_job?.state === "completed"
                         ? "ok"
-                        : importPayload.ingestion_job?.state === "quarantined"
+                        : latestPayload.ingestion_job?.state === "quarantined"
                           ? "warn"
                           : "ghost"
                     }
                   >
-                    {importPayload.ingestion_job?.state || "queued"}
+                    {latestPayload.ingestion_job?.state || "queued"}
                   </Badge>
                 </div>
               </div>
               <div className="break-all text-xs text-tcp-text-secondary md:col-span-4">
-                {importPayload.ingestion_job?.job_id}
+                {latestPayload.ingestion_job?.job_id}
               </div>
             </div>
           ) : null}
@@ -1657,6 +1691,7 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const ingestionQuarantines = useEnterpriseIngestionQuarantines(selectedBindingId);
   const preflightGoogleDrive = usePreflightEnterpriseGoogleDriveBinding();
   const importGoogleDrive = useImportEnterpriseGoogleDriveBinding();
+  const reindexGoogleDrive = useReindexEnterpriseGoogleDriveBinding();
   const reindexSourceObject = useReindexEnterpriseSourceObject();
   const reviewIngestionQuarantine = useReviewEnterpriseIngestionQuarantine();
   const deleteSourceObject = useDeleteEnterpriseSourceObject();
@@ -1684,6 +1719,8 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
       : null;
   const driveImportPayload =
     importGoogleDrive.data?.binding_id === selectedBindingId ? importGoogleDrive.data : null;
+  const driveReindexPayload =
+    reindexGoogleDrive.data?.binding_id === selectedBindingId ? reindexGoogleDrive.data : null;
   const busyObjectId =
     reindexSourceObject.isPending || deleteSourceObject.isPending || rescopeSourceObject.isPending
       ? reindexSourceObject.variables?.source_object_id ||
@@ -1851,10 +1888,13 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
           binding={selectedBinding}
           preflightPayload={drivePreflightPayload}
           importPayload={driveImportPayload}
+          reindexPayload={driveReindexPayload}
           preflightBusy={preflightGoogleDrive.isPending}
           importBusy={importGoogleDrive.isPending}
+          reindexBusy={reindexGoogleDrive.isPending}
           preflightError={preflightGoogleDrive.error}
           importError={importGoogleDrive.error}
+          reindexError={reindexGoogleDrive.error}
           onPreflight={() => {
             if (!selectedBindingId) return;
             preflightGoogleDrive
@@ -1879,6 +1919,19 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
                 toast("ok", `Google Drive import ${payload.ingestion_job?.state || "queued"}.`);
               })
               .catch((error) => toast("err", errorText(error, "Google Drive import failed.")));
+          }}
+          onReindexBinding={(input) => {
+            if (!selectedBindingId) return;
+            reindexGoogleDrive
+              .mutateAsync({ binding_id: selectedBindingId, ...input })
+              .then((payload) => {
+                sourceObjects.refetch();
+                ingestionJobs.refetch();
+                ingestionQuarantines.refetch();
+                if (selectedConnectorId) connectorImpact.refetch();
+                toast("ok", `Google Drive reindex ${payload.ingestion_job?.state || "queued"}.`);
+              })
+              .catch((error) => toast("err", errorText(error, "Google Drive reindex failed.")));
           }}
         />
 

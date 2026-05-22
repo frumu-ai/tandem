@@ -1003,6 +1003,162 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
+async fn enterprise_google_drive_reindex_refetches_existing_binding_without_exposing_token() {
+    let drive_base_url = spawn_enterprise_google_drive_fixture().await;
+    std::env::set_var("TANDEM_GOOGLE_DRIVE_API_BASE_URL", &drive_base_url);
+    std::env::set_var("TANDEM_TEST_ROUTE_DRIVE_TOKEN", "route-drive-token");
+
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/connectors")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(connector_body("google_drive", "google_drive")))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/connectors/google_drive/credential-refs")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(
+            json!({
+                "credential_id": "drive-readonly",
+                "credential_class": "read_only",
+                "secret_ref": {
+                    "org_id": "acme",
+                    "workspace_id": "finance",
+                    "provider": "env",
+                    "secret_id": "env://TANDEM_TEST_ROUTE_DRIVE_TOKEN",
+                    "name": "Local Drive token"
+                },
+                "source_bound_resource": {
+                    "organization_id": "acme",
+                    "workspace_id": "finance",
+                    "resource_kind": "document_collection",
+                    "resource_id": "finance-drive"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/source-bindings")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(
+            json!({
+                "binding_id": "finance-drive",
+                "connector_id": "google_drive",
+                "source_type": "google_drive",
+                "native_source_id": "drive-folder-123",
+                "source_root_label": "Finance Drive",
+                "credential_ref_id": "drive-readonly",
+                "resource_ref": {
+                    "organization_id": "acme",
+                    "workspace_id": "finance",
+                    "resource_kind": "document_collection",
+                    "resource_id": "finance-drive"
+                },
+                "data_class": "financial_record",
+                "ingestion_policy": {
+                    "allow_indexing": true,
+                    "allow_prompt_context": true,
+                    "require_review": false
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/source-bindings/finance-drive/google-drive/import")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(json!({"tier": "global"}).to_string()))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/source-bindings/finance-drive/google-drive/reindex")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(
+            json!({"tier": "global", "sync_deletes": true}).to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload
+            .pointer("/ingestion_job/state")
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+    assert!(payload
+        .pointer("/ingestion_job/job_id")
+        .and_then(Value::as_str)
+        .is_some_and(|job_id| job_id.starts_with("google-drive-reindex-")));
+    assert_eq!(
+        payload.get("drive_files_fetched").and_then(Value::as_u64),
+        Some(1)
+    );
+    let encoded = serde_json::to_string(&payload).expect("encoded response");
+    assert!(!encoded.contains("route-drive-token"));
+    assert!(!encoded.contains("TANDEM_TEST_ROUTE_DRIVE_TOKEN"));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/ingestion-jobs?binding_id=finance-drive")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert!(payload
+        .get("ingestion_jobs")
+        .and_then(Value::as_array)
+        .is_some_and(|jobs| jobs.iter().any(|job| job
+            .get("job_id")
+            .and_then(Value::as_str)
+            .is_some_and(|job_id| job_id.starts_with("google-drive-reindex-")))));
+
+    std::env::remove_var("TANDEM_GOOGLE_DRIVE_API_BASE_URL");
+    std::env::remove_var("TANDEM_TEST_ROUTE_DRIVE_TOKEN");
+}
+
+#[tokio::test]
 async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());

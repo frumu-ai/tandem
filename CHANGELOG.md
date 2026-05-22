@@ -193,6 +193,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and split organization-unit plus ingestion/source-object lifecycle routes into
   focused modules so the primary enterprise admin route file stays below the
   source-size guideline.
+- **Enterprise Google Drive reindex path**: Added an admin-gated Google Drive
+  re-fetch/reindex endpoint and hidden admin UI control that reuse read-only
+  source-bound credentials, stable binding namespaces, ingestion job auditing,
+  quarantine policy, and source-bound cache invalidation without returning
+  resolved credential material.
 
 ### Documentation
 

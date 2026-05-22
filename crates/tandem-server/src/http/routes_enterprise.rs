@@ -216,6 +216,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(super::routes_enterprise_google_drive::import_google_drive_source_binding),
         )
         .route(
+            "/enterprise/source-bindings/{binding_id}/google-drive/reindex",
+            post(super::routes_enterprise_google_drive::reindex_google_drive_source_binding),
+        )
+        .route(
             "/enterprise/source-bindings/{binding_id}/source-objects",
             get(super::routes_enterprise_lifecycle::list_source_objects),
         )

@@ -62,8 +62,26 @@ pub(super) struct EnterpriseGoogleDriveImportRequest {
     sync_deletes: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct EnterpriseGoogleDriveReindexRequest {
+    #[serde(default = "default_enterprise_connector_import_tier")]
+    tier: MemoryTier,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default = "default_google_drive_reindex_sync_deletes")]
+    sync_deletes: bool,
+    #[serde(default)]
+    source_object_id: Option<String>,
+}
+
 fn default_enterprise_connector_import_tier() -> MemoryTier {
     MemoryTier::Global
+}
+
+fn default_google_drive_reindex_sync_deletes() -> bool {
+    true
 }
 
 pub(super) async fn preflight_google_drive_source_binding(
@@ -103,6 +121,79 @@ pub(super) async fn import_google_drive_source_binding(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<EnterpriseGoogleDriveImportRequest>,
 ) -> EnterpriseResult<EnterpriseGoogleDriveImportResponse> {
+    let input = GoogleDriveImportOperationInput {
+        tier: input.tier,
+        project_id: input.project_id,
+        session_id: input.session_id,
+        sync_deletes: input.sync_deletes,
+        source_object_id: None,
+        job_kind: "import",
+        empty_job_state: IngestionJobState::Completed,
+        completion_reason: "google_drive_import_completed",
+    };
+    run_google_drive_import_operation(
+        state,
+        binding_id,
+        tenant_context,
+        request_principal,
+        verified_tenant_context,
+        input,
+    )
+    .await
+}
+
+pub(super) async fn reindex_google_drive_source_binding(
+    State(state): State<AppState>,
+    Path(binding_id): Path<String>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Json(input): Json<EnterpriseGoogleDriveReindexRequest>,
+) -> EnterpriseResult<EnterpriseGoogleDriveImportResponse> {
+    let source_object_id = input
+        .source_object_id
+        .map(|value| validate_enterprise_id("source_object_id", &value))
+        .transpose()?;
+    let input = GoogleDriveImportOperationInput {
+        tier: input.tier,
+        project_id: input.project_id,
+        session_id: input.session_id,
+        sync_deletes: input.sync_deletes,
+        source_object_id,
+        job_kind: "reindex",
+        empty_job_state: IngestionJobState::Skipped,
+        completion_reason: "google_drive_reindex_completed",
+    };
+    run_google_drive_import_operation(
+        state,
+        binding_id,
+        tenant_context,
+        request_principal,
+        verified_tenant_context,
+        input,
+    )
+    .await
+}
+
+struct GoogleDriveImportOperationInput {
+    tier: MemoryTier,
+    project_id: Option<String>,
+    session_id: Option<String>,
+    sync_deletes: bool,
+    source_object_id: Option<String>,
+    job_kind: &'static str,
+    empty_job_state: IngestionJobState,
+    completion_reason: &'static str,
+}
+
+async fn run_google_drive_import_operation(
+    state: AppState,
+    binding_id: String,
+    tenant_context: TenantContext,
+    request_principal: RequestPrincipal,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    input: GoogleDriveImportOperationInput,
+) -> EnterpriseResult<EnterpriseGoogleDriveImportResponse> {
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
     match input.tier {
@@ -139,17 +230,55 @@ pub(super) async fn import_google_drive_source_binding(
     .await
     .map_err(map_google_drive_import_error)?;
 
-    if fetched.files.is_empty() && !input.sync_deletes {
+    let Some(memory_manager) = open_enterprise_memory_manager().await else {
+        return Err(internal_error(
+            "ENTERPRISE_GOOGLE_DRIVE_IMPORT_MEMORY_OPEN_FAILED",
+        ));
+    };
+    let tenant_scope = memory_tenant_scope(&tenant_context);
+    let source_object_filter = if let Some(source_object_id) = input.source_object_id.as_deref() {
+        let record = memory_manager
+            .db()
+            .get_source_object_lifecycle_by_id_for_tenant(
+                &tenant_scope,
+                &binding.binding_id,
+                source_object_id,
+            )
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_GOOGLE_DRIVE_REINDEX_SOURCE_OBJECT_FAILED"))?
+            .ok_or_else(|| {
+                bad_request("ENTERPRISE_GOOGLE_DRIVE_REINDEX_SOURCE_OBJECT_NOT_FOUND")
+            })?;
+        Some(record)
+    } else {
+        None
+    };
+    let mut fetched_files = fetched.files;
+    if let Some(record) = source_object_filter.as_ref() {
+        fetched_files.retain(|file| {
+            google_drive_indexed_path(&binding.binding_id, &file.drive_file_id, &file.name)
+                == record.indexed_path
+        });
+        if fetched_files.is_empty() {
+            return Err(bad_request(
+                "ENTERPRISE_GOOGLE_DRIVE_REINDEX_SOURCE_OBJECT_NOT_FETCHED",
+            ));
+        }
+    }
+    let effective_sync_deletes = input.sync_deletes && source_object_filter.is_none();
+
+    if fetched_files.is_empty() && !effective_sync_deletes {
         let job_started_at_ms = now_ms();
         let completed_job = IngestionJob {
             job_id: format!(
-                "google-drive-import-{job_started_at_ms}-{}",
+                "google-drive-{}-{job_started_at_ms}-{}",
+                input.job_kind,
                 uuid::Uuid::new_v4()
             ),
             tenant_context: tenant_context.clone(),
             connector_id: binding.connector_id.clone(),
             binding_id: binding.binding_id.clone(),
-            state: IngestionJobState::Completed,
+            state: input.empty_job_state,
             source_object_ids: Vec::new(),
             started_at_ms: Some(job_started_at_ms),
             finished_at_ms: Some(now_ms()),
@@ -172,13 +301,14 @@ pub(super) async fn import_google_drive_source_binding(
     }
 
     let temp_dir = std::env::temp_dir().join(format!(
-        "tandem-google-drive-import-{binding_id}-{}",
+        "tandem-google-drive-{}-{binding_id}-{}",
+        input.job_kind,
         uuid::Uuid::new_v4()
     ));
     tokio::fs::create_dir_all(&temp_dir)
         .await
         .map_err(|_| internal_error("ENTERPRISE_GOOGLE_DRIVE_IMPORT_TEMP_FAILED"))?;
-    for file in &fetched.files {
+    for file in &fetched_files {
         let path = temp_dir.join(safe_google_drive_import_file_name(
             &file.drive_file_id,
             &file.name,
@@ -188,17 +318,11 @@ pub(super) async fn import_google_drive_source_binding(
             .map_err(|_| internal_error("ENTERPRISE_GOOGLE_DRIVE_IMPORT_TEMP_FAILED"))?;
     }
 
-    let Some(memory_manager) = open_enterprise_memory_manager().await else {
-        return Err(internal_error(
-            "ENTERPRISE_GOOGLE_DRIVE_IMPORT_MEMORY_OPEN_FAILED",
-        ));
-    };
-
-    let tenant_scope = memory_tenant_scope(&tenant_context);
     let source_binding = memory_import_source_binding_from_enterprise(&binding)?;
     let job_started_at_ms = now_ms();
     let job_id = format!(
-        "google-drive-import-{job_started_at_ms}-{}",
+        "google-drive-{}-{job_started_at_ms}-{}",
+        input.job_kind,
         uuid::Uuid::new_v4()
     );
     let running_job = IngestionJob {
@@ -222,7 +346,7 @@ pub(super) async fn import_google_drive_source_binding(
         project_id: normalized_optional_id(input.project_id),
         tenant_scope: tenant_scope.clone(),
         source_binding: Some(source_binding),
-        sync_deletes: input.sync_deletes,
+        sync_deletes: effective_sync_deletes,
         import_namespace: Some(format!("google-drive-{}", binding.binding_id)),
     };
     let stats = match import_files(
@@ -306,7 +430,7 @@ pub(super) async fn import_google_drive_source_binding(
         &state,
         &tenant_context,
         &binding.binding_id,
-        "google_drive_import_completed",
+        input.completion_reason,
     );
     let _ =
         invalidate_response_cache_for_source_binding(&tenant_context, &binding.binding_id).await?;
@@ -318,7 +442,7 @@ pub(super) async fn import_google_drive_source_binding(
         connector_id: connector.connector_id,
         ingestion_job: completed_job,
         stats,
-        drive_files_fetched: fetched.files.len(),
+        drive_files_fetched: fetched_files.len(),
         drive_files_skipped: fetched.skipped_files,
     }))
 }
@@ -500,6 +624,13 @@ fn safe_google_drive_import_file_name(file_id: &str, name: &str) -> String {
         safe_name.push_str(".txt");
     }
     format!("{safe_id}-{safe_name}")
+}
+
+fn google_drive_indexed_path(binding_id: &str, file_id: &str, name: &str) -> String {
+    format!(
+        "google-drive-{binding_id}/{}",
+        safe_google_drive_import_file_name(file_id, name)
+    )
 }
 
 fn sanitize_path_segment(value: &str) -> String {
