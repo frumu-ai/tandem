@@ -406,6 +406,11 @@ async fn build_channels_config(
         }),
         server_base_url: state.server_base_url(),
         api_token: state.api_token().await.unwrap_or_default(),
+        context_assertion: std::env::var("TANDEM_CHANNEL_CONTEXT_ASSERTION")
+            .ok()
+            .or_else(|| std::env::var("TANDEM_CONTEXT_ASSERTION").ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
         tool_policy: channels.tool_policy.clone(),
     })
 }

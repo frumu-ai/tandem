@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, Mutex};
@@ -55,7 +55,36 @@ enum PackBuilderReplyCommand {
 /// Tandem server is running in headless mode (Bearer) or via the Tauri sidecar
 /// (x-tandem-token).
 fn add_auth(rb: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
-    rb.header("x-tandem-token", token).bearer_auth(token)
+    let rb = rb
+        .header("x-tandem-token", token)
+        .header("x-tandem-request-source", "channel")
+        .bearer_auth(token);
+    match channel_context_assertion() {
+        Some(assertion) => rb.header("x-tandem-context-assertion", assertion),
+        None => rb,
+    }
+}
+
+static CHANNEL_CONTEXT_ASSERTION: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+
+fn set_channel_context_assertion(assertion: Option<String>) {
+    let lock = CHANNEL_CONTEXT_ASSERTION.get_or_init(|| RwLock::new(None));
+    if let Ok(mut guard) = lock.write() {
+        *guard = assertion;
+    }
+}
+
+fn channel_context_assertion() -> Option<String> {
+    CHANNEL_CONTEXT_ASSERTION
+        .get()
+        .and_then(|lock| lock.read().ok().and_then(|guard| guard.clone()))
+        .or_else(|| {
+            std::env::var("TANDEM_CHANNEL_CONTEXT_ASSERTION")
+                .ok()
+                .or_else(|| std::env::var("TANDEM_CONTEXT_ASSERTION").ok())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -1167,6 +1196,7 @@ pub async fn start_channel_listeners_with_diagnostics(
     config: ChannelsConfig,
     diagnostics: ChannelRuntimeDiagnostics,
 ) -> JoinSet<()> {
+    set_channel_context_assertion(config.context_assertion.clone());
     let initial_map = load_session_map().await;
     info!(
         "tandem-channels: loaded {} persisted session mappings",

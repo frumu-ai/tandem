@@ -123,10 +123,23 @@ async fn get_or_create_session(
         }
     };
 
-    let json: serde_json::Value = match resp.json().await {
+    let status = resp.status();
+    let body_text = match resp.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            error!("session create response read error: {e}");
+            return None;
+        }
+    };
+    if !status.is_success() {
+        error!("failed to create session ({status}): {body_text}");
+        return None;
+    }
+
+    let json: serde_json::Value = match serde_json::from_str(&body_text) {
         Ok(v) => v,
         Err(e) => {
-            error!("session create response parse error: {e}");
+            error!("session create response parse error: {e}: {body_text}");
             return None;
         }
     };

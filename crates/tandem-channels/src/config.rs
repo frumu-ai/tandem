@@ -16,6 +16,8 @@ pub struct ChannelsConfig {
     pub server_base_url: String,
     /// Value of `TANDEM_API_TOKEN` — used as `Authorization: Bearer <token>`.
     pub api_token: String,
+    /// Optional signed tenant context assertion for channel-originated engine calls.
+    pub context_assertion: Option<String>,
     /// Default policy for tool execution coming from channel commands
     pub tool_policy: ChannelToolPolicy,
 }
@@ -113,6 +115,11 @@ impl ChannelsConfig {
         let server_base_url = std::env::var("TANDEM_SERVER_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:39731".to_string());
         let api_token = std::env::var("TANDEM_API_TOKEN").unwrap_or_default();
+        let context_assertion = std::env::var("TANDEM_CHANNEL_CONTEXT_ASSERTION")
+            .ok()
+            .or_else(|| std::env::var("TANDEM_CONTEXT_ASSERTION").ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         let tool_policy = match std::env::var("TANDEM_CHANNEL_TOOL_POLICY").as_deref() {
             Ok("allow_all") => ChannelToolPolicy::AllowAll,
@@ -137,6 +144,7 @@ impl ChannelsConfig {
             slack,
             server_base_url,
             api_token,
+            context_assertion,
             tool_policy,
         })
     }
