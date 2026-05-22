@@ -77,6 +77,10 @@ pub(crate) fn resolve_enterprise_org_unit_memberships_path() -> PathBuf {
     resolve_canonical_data_file_path("enterprise/org_unit_memberships.json")
 }
 
+pub(crate) fn resolve_enterprise_org_unit_access_grants_path() -> PathBuf {
+    resolve_canonical_data_file_path("enterprise/org_unit_access_grants.json")
+}
+
 pub(crate) fn resolve_enterprise_source_bindings_path() -> PathBuf {
     resolve_canonical_data_file_path("enterprise/source_bindings.json")
 }

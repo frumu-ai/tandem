@@ -691,6 +691,121 @@ impl OrganizationUnitMembership {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizationUnitAccessGrant {
+    pub grant_id: String,
+    pub tenant_context: TenantContext,
+    pub unit: PrincipalRef,
+    pub resource: ResourceRef,
+    #[serde(default)]
+    pub effect: AccessEffect,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<AccessPermission>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_classes: Vec<DataClass>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_patterns: Vec<String>,
+    #[serde(default)]
+    pub state: OrganizationUnitState,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+impl OrganizationUnitAccessGrant {
+    pub fn active(
+        grant_id: impl Into<String>,
+        tenant_context: TenantContext,
+        unit: PrincipalRef,
+        resource: ResourceRef,
+        created_at_ms: u64,
+    ) -> Self {
+        Self {
+            grant_id: grant_id.into(),
+            tenant_context,
+            unit,
+            resource,
+            effect: AccessEffect::Allow,
+            permissions: Vec::new(),
+            data_classes: Vec::new(),
+            tool_patterns: Vec::new(),
+            state: OrganizationUnitState::Active,
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+            expires_at_ms: None,
+        }
+    }
+
+    pub fn with_effect(mut self, effect: AccessEffect) -> Self {
+        self.effect = effect;
+        self
+    }
+
+    pub fn with_permissions(mut self, permissions: Vec<AccessPermission>) -> Self {
+        self.permissions = permissions;
+        self
+    }
+
+    pub fn with_data_classes(mut self, data_classes: Vec<DataClass>) -> Self {
+        self.data_classes = data_classes;
+        self
+    }
+
+    pub fn with_tool_patterns(mut self, tool_patterns: Vec<String>) -> Self {
+        self.tool_patterns = tool_patterns;
+        self
+    }
+
+    pub fn with_expires_at_ms(mut self, expires_at_ms: u64) -> Self {
+        self.expires_at_ms = Some(expires_at_ms);
+        self
+    }
+
+    pub fn is_active_at(&self, now_ms: u64) -> bool {
+        self.state.is_active()
+            && self
+                .expires_at_ms
+                .map(|expires_at_ms| expires_at_ms > now_ms)
+                .unwrap_or(true)
+    }
+
+    pub fn to_scoped_grant_for_membership(
+        &self,
+        membership: &OrganizationUnitMembership,
+        now_ms: u64,
+    ) -> Option<ScopedGrant> {
+        if self.tenant_context.org_id != membership.tenant_context.org_id
+            || self.tenant_context.workspace_id != membership.tenant_context.workspace_id
+            || self.tenant_context.deployment_id != membership.tenant_context.deployment_id
+            || self.unit != membership.unit
+            || !self.is_active_at(now_ms)
+            || !membership.is_active_at(now_ms)
+        {
+            return None;
+        }
+
+        let mut grant = ScopedGrant::new(
+            format!("{}::{}", membership.membership_id, self.grant_id),
+            membership.member.clone(),
+            self.resource.clone(),
+            GrantSource::OrganizationUnitMembership,
+        )
+        .with_effect(self.effect)
+        .with_permissions(self.permissions.clone())
+        .with_data_classes(self.data_classes.clone())
+        .with_tool_patterns(self.tool_patterns.clone())
+        .with_source_principal(self.unit.clone());
+
+        grant.expires_at_ms = match (membership.expires_at_ms, self.expires_at_ms) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        };
+        Some(grant)
+    }
+}
+
 impl ScopedGrant {
     pub fn new(
         grant_id: impl Into<String>,

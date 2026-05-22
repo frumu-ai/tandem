@@ -16,6 +16,7 @@ use tandem_enterprise_contract::{
     governance::GovernancePolicyEngine, ConnectorInstance as EnterpriseConnectorInstance,
     IngestionJob as EnterpriseIngestionJob, IngestionQuarantine as EnterpriseIngestionQuarantine,
     OrganizationUnit as EnterpriseOrganizationUnit,
+    OrganizationUnitAccessGrant as EnterpriseOrganizationUnitAccessGrant,
     OrganizationUnitMembership as EnterpriseOrganizationUnitMembership,
     SourceBinding as EnterpriseSourceBinding,
 };
@@ -87,6 +88,9 @@ pub struct AppState {
     pub enterprise_org_unit_memberships:
         Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnitMembership>>>,
     pub enterprise_org_unit_memberships_path: PathBuf,
+    pub enterprise_org_unit_access_grants:
+        Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnitAccessGrant>>>,
+    pub enterprise_org_unit_access_grants_path: PathBuf,
     pub enterprise_source_bindings:
         Arc<RwLock<std::collections::HashMap<String, EnterpriseSourceBinding>>>,
     pub enterprise_source_bindings_path: PathBuf,

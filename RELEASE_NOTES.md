@@ -134,6 +134,12 @@ automation remain follow-up implementation phases.
   company-defined units such as departments, clinical roles, consultants, or
   executive groups. This is the first Phase H execution slice for turning
   company taxonomy into future signed grant projection.
+- Organization-unit access grants now provide the missing access-rule layer
+  between company taxonomy and resource/data-class permissions. Enterprise
+  admins can create tenant-scoped unit grants, preview the effective
+  `ScopedGrant` projection for a member, and disable grants before the global
+  signing middleware begins appending those projections to verified strict
+  contexts.
 - Connector credential-reference admin endpoints now accept and rotate
   `SecretRef` records without accepting raw credential values. Credential refs
   are tenant-validated, can be source-bound to a resource, and are visible in

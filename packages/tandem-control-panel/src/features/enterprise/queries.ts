@@ -52,6 +52,34 @@ export type EnterpriseOrganizationUnitMembership = {
   expires_at_ms?: number | null;
 };
 
+export type EnterpriseOrganizationUnitAccessGrant = {
+  grant_id: string;
+  tenant_context?: EnterpriseTenantContext;
+  unit: EnterprisePrincipalRef;
+  resource: EnterpriseResourceRef;
+  effect?: string;
+  permissions?: string[];
+  data_classes?: string[];
+  tool_patterns?: string[];
+  state?: string;
+  created_at_ms?: number;
+  updated_at_ms?: number;
+  expires_at_ms?: number | null;
+};
+
+export type EnterpriseScopedGrant = {
+  grant_id: string;
+  principal: EnterprisePrincipalRef;
+  resource: EnterpriseResourceRef;
+  effect?: string;
+  permissions?: string[];
+  data_classes?: string[];
+  tool_patterns?: string[];
+  grant_source: string;
+  source_principal?: EnterprisePrincipalRef | null;
+  expires_at_ms?: number | null;
+};
+
 export type EnterpriseResourceRef = {
   organization_id: string;
   workspace_id: string;
@@ -122,6 +150,16 @@ export type EnterpriseOrgUnitsResponse = EnterpriseNoopBase & {
 
 export type EnterpriseOrgUnitMembershipsResponse = EnterpriseNoopBase & {
   memberships?: EnterpriseOrganizationUnitMembership[];
+  count?: number;
+};
+
+export type EnterpriseOrgUnitAccessGrantsResponse = EnterpriseNoopBase & {
+  access_grants?: EnterpriseOrganizationUnitAccessGrant[];
+  count?: number;
+};
+
+export type EnterpriseOrgUnitEffectiveGrantsResponse = EnterpriseNoopBase & {
+  grants?: EnterpriseScopedGrant[];
   count?: number;
 };
 
@@ -274,6 +312,28 @@ export type UpdateEnterpriseOrganizationUnitMembershipInput = {
   expires_at_ms?: number;
 };
 
+export type CreateEnterpriseOrganizationUnitAccessGrantInput = {
+  grant_id?: string;
+  unit_id: string;
+  taxonomy_id?: string;
+  resource_kind: string;
+  resource_id: string;
+  project_id?: string;
+  path_prefix?: string;
+  effect?: string;
+  permissions?: string[];
+  data_classes?: string[];
+  tool_patterns?: string[];
+  state?: string;
+  expires_at_ms?: number;
+};
+
+export type UpdateEnterpriseOrganizationUnitAccessGrantInput = {
+  grant_id: string;
+  state: string;
+  expires_at_ms?: number;
+};
+
 export type CreateEnterpriseSourceBindingInput = {
   binding_id: string;
   connector_id: string;
@@ -374,6 +434,39 @@ export function useEnterpriseOrgUnitMemberships(enabled = true) {
         method: "GET",
       }) as Promise<EnterpriseOrgUnitMembershipsResponse>,
     enabled,
+    staleTime: 15000,
+    retry: retryEnterpriseQuery,
+  });
+}
+
+export function useEnterpriseOrgUnitAccessGrants(enabled = true) {
+  return useQuery({
+    queryKey: ["enterprise", "org-unit-access-grants"],
+    queryFn: () =>
+      api("/api/engine/enterprise/org-unit-access-grants", {
+        method: "GET",
+      }) as Promise<EnterpriseOrgUnitAccessGrantsResponse>,
+    enabled,
+    staleTime: 15000,
+    retry: retryEnterpriseQuery,
+  });
+}
+
+export function useEnterpriseOrgUnitEffectiveGrants(
+  memberId?: string | null,
+  memberKind = "human_user",
+  enabled = true
+) {
+  return useQuery({
+    queryKey: ["enterprise", "org-unit-effective-grants", memberKind, memberId || ""],
+    queryFn: () =>
+      api(
+        `/api/engine/enterprise/org-unit-access-grants/effective?member_kind=${encodeURIComponent(
+          memberKind
+        )}&member_id=${encodeURIComponent(memberId || "")}`,
+        { method: "GET" }
+      ) as Promise<EnterpriseOrgUnitEffectiveGrantsResponse>,
+    enabled: enabled && Boolean(memberId),
     staleTime: 15000,
     retry: retryEnterpriseQuery,
   });
@@ -502,6 +595,36 @@ export function useUpdateEnterpriseOrgUnitMembership() {
       }) as Promise<EnterpriseOrgUnitMembershipsResponse>,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["enterprise", "org-unit-memberships"] });
+    },
+  });
+}
+
+export function useCreateEnterpriseOrgUnitAccessGrant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateEnterpriseOrganizationUnitAccessGrantInput) =>
+      api("/api/engine/enterprise/org-unit-access-grants", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }) as Promise<EnterpriseOrgUnitAccessGrantsResponse>,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "org-unit-access-grants"] });
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "org-unit-effective-grants"] });
+    },
+  });
+}
+
+export function useUpdateEnterpriseOrgUnitAccessGrant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ grant_id, ...input }: UpdateEnterpriseOrganizationUnitAccessGrantInput) =>
+      api(`/api/engine/enterprise/org-unit-access-grants/${encodeURIComponent(grant_id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }) as Promise<EnterpriseOrgUnitAccessGrantsResponse>,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "org-unit-access-grants"] });
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "org-unit-effective-grants"] });
     },
   });
 }

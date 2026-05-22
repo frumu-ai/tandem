@@ -203,6 +203,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accounts to company-defined organization units such as departments, clinical
   roles, consultants, or executive groups. Memberships are tenant-scoped,
   storage-backed, admin-gated, and ready to feed future signed grant projection.
+- **Enterprise org-unit access grants**: Added the Phase H access-rule layer
+  between company-defined organization units and resource-scoped permissions.
+  Enterprise admins can define tenant-scoped org-unit access grants, preview
+  effective `ScopedGrant` projections for a member, and disable grants before
+  the signing middleware begins injecting these projections globally.
 
 ### Documentation
 

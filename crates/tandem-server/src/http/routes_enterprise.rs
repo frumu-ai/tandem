@@ -157,21 +157,7 @@ struct UpdateSourceBindingRequest {
 }
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
-    router
-        .route(
-            "/enterprise/org-units",
-            get(super::routes_enterprise_org_units::list_org_units)
-                .post(super::routes_enterprise_org_units::create_org_unit),
-        )
-        .route(
-            "/enterprise/org-unit-memberships",
-            get(super::routes_enterprise_org_units::list_org_unit_memberships)
-                .post(super::routes_enterprise_org_units::create_org_unit_membership),
-        )
-        .route(
-            "/enterprise/org-unit-memberships/{membership_id}",
-            patch(super::routes_enterprise_org_units::update_org_unit_membership),
-        )
+    super::routes_enterprise_org_units::apply(router)
         .route(
             "/enterprise/connector-providers",
             get(list_connector_providers),

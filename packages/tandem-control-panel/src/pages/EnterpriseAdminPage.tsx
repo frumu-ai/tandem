@@ -20,6 +20,8 @@ import {
   useEnterpriseConnectors,
   useEnterpriseIngestionJobs,
   useEnterpriseIngestionQuarantines,
+  useEnterpriseOrgUnitAccessGrants,
+  useEnterpriseOrgUnitEffectiveGrants,
   useEnterpriseOrgUnitMemberships,
   useEnterpriseOrgUnits,
   useEnterpriseSourceBindings,
@@ -32,8 +34,10 @@ import {
   useRescopeEnterpriseSourceObject,
   useRotateEnterpriseConnectorCredentialRef,
   useUpdateEnterpriseConnector,
+  useUpdateEnterpriseOrgUnitAccessGrant,
   useUpdateEnterpriseOrgUnitMembership,
   useUpdateEnterpriseSourceBinding,
+  type CreateEnterpriseOrganizationUnitAccessGrantInput,
   type CreateEnterpriseConnectorCredentialRefInput,
   type CreateEnterpriseConnectorInput,
   type CreateEnterpriseOrganizationUnitMembershipInput,
@@ -47,8 +51,10 @@ import {
   type EnterpriseIngestionJob,
   type EnterpriseIngestionQuarantine,
   type EnterpriseNoopBase,
+  type EnterpriseOrganizationUnitAccessGrant,
   type EnterpriseOrganizationUnitMembership,
   type EnterpriseOrganizationUnit,
+  type EnterpriseScopedGrant,
   type EnterpriseSourceBinding,
   type EnterpriseSourceObjectLifecycle,
 } from "../features/enterprise/queries";
@@ -88,6 +94,7 @@ const DATA_CLASSES = [
   "public",
 ];
 
+const ACCESS_PERMISSIONS = ["view", "read", "edit", "execute", "delegate", "admin"];
 const CONNECTOR_STATES = ["active", "paused", "revoked", "quarantined"];
 const CREDENTIAL_CLASSES = ["read_only", "read_write", "admin"];
 const MEMBER_KINDS = ["human_user", "group", "department", "agent_worker", "service_account"];
@@ -671,6 +678,176 @@ function OrgUnitMembershipForm({
   );
 }
 
+function OrgUnitAccessGrantForm({
+  orgUnits,
+  onCreate,
+  busy,
+}: {
+  orgUnits: EnterpriseOrganizationUnit[];
+  onCreate: (input: CreateEnterpriseOrganizationUnitAccessGrantInput) => Promise<void>;
+  busy: boolean;
+}) {
+  const [unitKey, setUnitKey] = useState("");
+  const [grantId, setGrantId] = useState("");
+  const [resourceKind, setResourceKind] = useState("data_store");
+  const [resourceId, setResourceId] = useState("");
+  const [effect, setEffect] = useState("allow");
+  const [permissions, setPermissions] = useState(["view", "read"]);
+  const [dataClasses, setDataClasses] = useState(["internal"]);
+  const [expiresAt, setExpiresAt] = useState("");
+  const selectedUnitKey =
+    unitKey ||
+    (orgUnits[0] ? `${orgUnits[0].taxonomy_id || "organization_unit"}/${orgUnits[0].unit_id}` : "");
+  const [taxonomyId, unitId] = selectedUnitKey.split("/");
+
+  const toggle = (value: string, rows: string[], setRows: (rows: string[]) => void) => {
+    setRows(rows.includes(value) ? rows.filter((row) => row !== value) : [...rows, value]);
+  };
+
+  return (
+    <PanelCard title="Grant unit access" subtitle="Org unit to resource grants">
+      <form
+        className="grid gap-3"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          await onCreate({
+            grant_id: grantId.trim() || undefined,
+            taxonomy_id: taxonomyId,
+            unit_id: unitId,
+            resource_kind: resourceKind,
+            resource_id: resourceId.trim(),
+            effect,
+            permissions,
+            data_classes: dataClasses,
+            expires_at_ms: expiresAt ? new Date(expiresAt).getTime() : undefined,
+          });
+          setGrantId("");
+          setResourceId("");
+          setExpiresAt("");
+        }}
+      >
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Org Unit">
+            <select
+              className="tcp-select"
+              value={selectedUnitKey}
+              onChange={(event) => setUnitKey(event.currentTarget.value)}
+              required
+            >
+              {orgUnits.length ? (
+                orgUnits.map((unit) => {
+                  const key = `${unit.taxonomy_id || "organization_unit"}/${unit.unit_id}`;
+                  return (
+                    <option key={key} value={key}>
+                      {unit.display_name} ({key})
+                    </option>
+                  );
+                })
+              ) : (
+                <option value="">create org unit first</option>
+              )}
+            </select>
+          </Field>
+          <Field label="Grant ID">
+            <input
+              className="tcp-input"
+              value={grantId}
+              onInput={(event) => setGrantId(event.currentTarget.value)}
+              placeholder="grant-doctors-patient-cases"
+            />
+          </Field>
+          <Field label="Resource Kind">
+            <select
+              className="tcp-select"
+              value={resourceKind}
+              onChange={(event) => setResourceKind(event.currentTarget.value)}
+            >
+              {RESOURCE_KINDS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Resource ID">
+            <input
+              className="tcp-input"
+              value={resourceId}
+              onInput={(event) => setResourceId(event.currentTarget.value)}
+              placeholder="patient-cases"
+              required
+            />
+          </Field>
+          <Field label="Effect">
+            <select
+              className="tcp-select"
+              value={effect}
+              onChange={(event) => setEffect(event.currentTarget.value)}
+            >
+              <option value="allow">allow</option>
+              <option value="deny">deny</option>
+            </select>
+          </Field>
+          <Field label="Expires">
+            <input
+              className="tcp-input"
+              type="datetime-local"
+              value={expiresAt}
+              onInput={(event) => setExpiresAt(event.currentTarget.value)}
+            />
+          </Field>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Permissions">
+            <div className="flex flex-wrap gap-2">
+              {ACCESS_PERMISSIONS.map((option) => (
+                <label
+                  key={option}
+                  className="flex items-center gap-1 text-xs text-tcp-text-secondary"
+                >
+                  <input
+                    type="checkbox"
+                    checked={permissions.includes(option)}
+                    onChange={() => toggle(option, permissions, setPermissions)}
+                  />
+                  {option}
+                </label>
+              ))}
+            </div>
+          </Field>
+          <Field label="Data Classes">
+            <div className="flex flex-wrap gap-2">
+              {DATA_CLASSES.map((option) => (
+                <label
+                  key={option}
+                  className="flex items-center gap-1 text-xs text-tcp-text-secondary"
+                >
+                  <input
+                    type="checkbox"
+                    checked={dataClasses.includes(option)}
+                    onChange={() => toggle(option, dataClasses, setDataClasses)}
+                  />
+                  {option}
+                </label>
+              ))}
+            </div>
+          </Field>
+        </div>
+        <div className="flex justify-end">
+          <button
+            className="tcp-btn tcp-btn-primary"
+            type="submit"
+            disabled={busy || !unitId || !permissions.length || !dataClasses.length}
+          >
+            <i data-lucide="shield-plus"></i>
+            {busy ? "Granting" : "Create grant"}
+          </button>
+        </div>
+      </form>
+    </PanelCard>
+  );
+}
+
 function SourceBindingForm({
   tenantPayload,
   onCreate,
@@ -976,6 +1153,126 @@ function OrgUnitMembershipsPanel({
         </div>
       ) : (
         <EmptyState title="No memberships" text="Assign hosted users to org units." />
+      )}
+    </PanelCard>
+  );
+}
+
+function OrgUnitAccessGrantsPanel({
+  rows,
+  effectiveRows,
+  loading,
+  error,
+  effectiveMemberId,
+  onEffectiveMemberId,
+  onSetState,
+  busyGrantId,
+}: {
+  rows: EnterpriseOrganizationUnitAccessGrant[];
+  effectiveRows: EnterpriseScopedGrant[];
+  loading: boolean;
+  error: unknown;
+  effectiveMemberId: string;
+  onEffectiveMemberId: (memberId: string) => void;
+  onSetState: (grantId: string, state: string) => void;
+  busyGrantId?: string | null;
+}) {
+  return (
+    <PanelCard
+      title="Unit access"
+      subtitle="Projected resource grants"
+      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      fullHeight
+    >
+      <div className="mb-3 grid gap-2">
+        <Field label="Preview member">
+          <input
+            className="tcp-input"
+            value={effectiveMemberId}
+            onInput={(event) => onEffectiveMemberId(event.currentTarget.value)}
+            placeholder="user@company.com"
+          />
+        </Field>
+        {effectiveMemberId ? (
+          <div className="rounded-lg border border-white/8 bg-black/20 p-3 text-xs text-tcp-text-secondary">
+            <div className="mb-2 font-medium text-tcp-text-primary">
+              Effective grants: {effectiveRows.length}
+            </div>
+            {effectiveRows.length ? (
+              <div className="grid gap-1">
+                {effectiveRows.map((grant) => (
+                  <div key={grant.grant_id}>
+                    {grant.resource.resource_kind}/{grant.resource.resource_id} ·{" "}
+                    {(grant.permissions || []).join(", ") || "no permissions"}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div>No active projected grants.</div>
+            )}
+          </div>
+        ) : null}
+      </div>
+      {loading ? (
+        <LoadingState title="Loading" text="Reading organization access grants" />
+      ) : error ? (
+        <EmptyState title="Unavailable" text={errorText(error, "Access grants could not load.")} />
+      ) : rows.length ? (
+        <div className="grid gap-2">
+          {rows.map((grant) => {
+            const busy = busyGrantId === grant.grant_id;
+            return (
+              <div
+                key={grant.grant_id}
+                className="rounded-lg border border-white/8 bg-black/20 p-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="font-medium text-tcp-text-primary">{grant.grant_id}</div>
+                    <div className="tcp-subtle text-xs">
+                      {grant.unit.id} / {grant.resource.resource_kind}:{grant.resource.resource_id}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge tone={grant.state === "disabled" ? "warn" : "ok"}>
+                      {grant.state || "active"}
+                    </Badge>
+                    <Badge tone={grant.effect === "deny" ? "err" : "info"}>
+                      {grant.effect || "allow"}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {(grant.permissions || []).map((permission) => (
+                    <Badge key={permission} tone="ghost">
+                      {permission}
+                    </Badge>
+                  ))}
+                  {(grant.data_classes || []).map((dataClass) => (
+                    <Badge key={dataClass} tone="info">
+                      {dataClass}
+                    </Badge>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {["active", "disabled"].map((state) => (
+                    <button
+                      key={state}
+                      className="tcp-btn"
+                      type="button"
+                      disabled={busy || grant.state === state}
+                      onClick={() => onSetState(grant.grant_id, state)}
+                    >
+                      {state}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState title="No access grants" text="Grant an org unit access to a resource." />
       )}
     </PanelCard>
   );
@@ -1878,13 +2175,20 @@ function IngestionQuarantinesPanel({
 export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const orgUnits = useEnterpriseOrgUnits();
   const orgUnitMemberships = useEnterpriseOrgUnitMemberships();
+  const orgUnitAccessGrants = useEnterpriseOrgUnitAccessGrants();
+  const [effectiveMemberId, setEffectiveMemberId] = useState("");
+  const effectiveOrgUnitGrants = useEnterpriseOrgUnitEffectiveGrants(
+    effectiveMemberId.trim() || null
+  );
   const connectors = useEnterpriseConnectors();
   const sourceBindings = useEnterpriseSourceBindings();
   const [selectedBindingId, setSelectedBindingId] = useState<string | null>(null);
   const [selectedConnectorId, setSelectedConnectorId] = useState<string | null>(null);
   const createOrgUnit = useCreateEnterpriseOrgUnit();
   const createOrgUnitMembership = useCreateEnterpriseOrgUnitMembership();
+  const createOrgUnitAccessGrant = useCreateEnterpriseOrgUnitAccessGrant();
   const updateOrgUnitMembership = useUpdateEnterpriseOrgUnitMembership();
+  const updateOrgUnitAccessGrant = useUpdateEnterpriseOrgUnitAccessGrant();
   const createConnector = useCreateEnterpriseConnector();
   const createConnectorCredentialRef = useCreateEnterpriseConnectorCredentialRef();
   const createSourceBinding = useCreateEnterpriseSourceBinding();
@@ -1906,6 +2210,14 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const membershipRows = useMemo(
     () => orgUnitMemberships.data?.memberships || [],
     [orgUnitMemberships.data]
+  );
+  const accessGrantRows = useMemo(
+    () => orgUnitAccessGrants.data?.access_grants || [],
+    [orgUnitAccessGrants.data]
+  );
+  const effectiveGrantRows = useMemo(
+    () => effectiveOrgUnitGrants.data?.grants || [],
+    [effectiveOrgUnitGrants.data]
   );
   const connectorRows = useMemo(() => connectors.data?.connectors || [], [connectors.data]);
   const bindingRows = useMemo(
@@ -1948,6 +2260,8 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const refreshEnterpriseState = () => {
     orgUnits.refetch();
     orgUnitMemberships.refetch();
+    orgUnitAccessGrants.refetch();
+    effectiveOrgUnitGrants.refetch();
     connectors.refetch();
     sourceBindings.refetch();
     if (selectedConnectorId) {
@@ -2009,6 +2323,18 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
                 toast("ok", "Organization membership assigned.");
               } catch (error) {
                 toast("err", errorText(error, "Organization membership could not be assigned."));
+              }
+            }}
+          />
+          <OrgUnitAccessGrantForm
+            orgUnits={orgRows}
+            busy={createOrgUnitAccessGrant.isPending}
+            onCreate={async (input) => {
+              try {
+                await createOrgUnitAccessGrant.mutateAsync(input);
+                toast("ok", "Organization unit access granted.");
+              } catch (error) {
+                toast("err", errorText(error, "Organization unit access could not be granted."));
               }
             }}
           />
@@ -2075,6 +2401,27 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
                 .then(() => toast("ok", `Membership ${state}.`))
                 .catch((error) =>
                   toast("err", errorText(error, "Organization membership could not be updated."))
+                );
+            }}
+          />
+          <OrgUnitAccessGrantsPanel
+            rows={accessGrantRows}
+            effectiveRows={effectiveGrantRows}
+            loading={orgUnitAccessGrants.isLoading}
+            error={orgUnitAccessGrants.error}
+            effectiveMemberId={effectiveMemberId}
+            onEffectiveMemberId={setEffectiveMemberId}
+            busyGrantId={
+              updateOrgUnitAccessGrant.isPending
+                ? updateOrgUnitAccessGrant.variables?.grant_id || null
+                : null
+            }
+            onSetState={(grantId, state) => {
+              updateOrgUnitAccessGrant
+                .mutateAsync({ grant_id: grantId, state })
+                .then(() => toast("ok", `Access grant ${state}.`))
+                .catch((error) =>
+                  toast("err", errorText(error, "Organization unit access could not be updated."))
                 );
             }}
           />

@@ -342,6 +342,136 @@ async fn enterprise_org_unit_memberships_require_existing_unit() {
 }
 
 #[tokio::test]
+async fn enterprise_org_unit_access_grants_project_effective_scoped_grants() {
+    let state = test_state().await;
+    let storage_path = state.enterprise_org_unit_access_grants_path.clone();
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/org-units")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .header("x-tandem-actor-id", "owner-user")
+        .body(Body::from(
+            json!({
+                "unit_id": "doctors",
+                "taxonomy_id": "clinical_role",
+                "display_name": "Doctors",
+                "kind": "clinical_group"
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/org-unit-memberships")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .header("x-tandem-actor-id", "owner-user")
+        .body(Body::from(
+            json!({
+                "membership_id": "membership-doctor-user",
+                "taxonomy_id": "clinical_role",
+                "unit_id": "doctors",
+                "member_kind": "human_user",
+                "member_id": "doctor.user@example.com",
+                "source": "hosted_control_plane"
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/org-unit-access-grants")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .header("x-tandem-actor-id", "owner-user")
+        .body(Body::from(
+            json!({
+                "grant_id": "grant-doctors-patient-cases",
+                "taxonomy_id": "clinical_role",
+                "unit_id": "doctors",
+                "resource_kind": "data_store",
+                "resource_id": "patient-cases",
+                "permissions": ["view", "read"],
+                "data_classes": ["regulated", "customer_data"]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(storage_path.exists());
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/org-unit-access-grants/effective?member_kind=human_user&member_id=doctor.user%40example.com")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        payload
+            .get("grants")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|grant| grant.get("grant_source"))
+            .and_then(Value::as_str),
+        Some("organization_unit_membership")
+    );
+    assert_eq!(
+        payload
+            .get("grants")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|grant| grant.get("resource"))
+            .and_then(|resource| resource.get("resource_id"))
+            .and_then(Value::as_str),
+        Some("patient-cases")
+    );
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/enterprise/org-unit-access-grants/grant-doctors-patient-cases")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .header("x-tandem-actor-id", "owner-user")
+        .body(Body::from(json!({"state": "disabled"}).to_string()))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/org-unit-access-grants/effective?member_kind=human_user&member_id=doctor.user%40example.com")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(0));
+}
+
+#[tokio::test]
 async fn enterprise_source_bindings_storage_threads_request_tenant() {
     let state = test_state().await;
     let app = app_router(state);
