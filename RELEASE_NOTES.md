@@ -15,8 +15,9 @@ This unreleased line currently contains the contract foundation, enterprise
 admin shell, storage-backed organization-unit registry, and storage-backed
 source-binding registry. Manual memory imports can now optionally target an
 enabled source binding so imported chunks carry resource and data-class
-metadata. Google Drive, Notion, GitHub, Slack, Gmail, live OAuth, and
-production connector ingestion flows remain follow-up implementation phases.
+metadata. Google Drive now has a guarded admin-triggered import path; Notion,
+GitHub, Slack, Gmail, live OAuth, background workers, and production connector
+automation remain follow-up implementation phases.
 
 ### Enterprise Connector Source Binding
 
@@ -160,6 +161,10 @@ production connector ingestion flows remain follow-up implementation phases.
   review-required quarantine, and invalidate source-bound response-cache entries
   after indexing. This remains an admin-controlled v1 path, not broad automatic
   OAuth ingestion.
+- The hidden Enterprise admin page can now run Google Drive source-binding
+  preflight, trigger the admin-controlled import endpoint, and refresh
+  source-object, ingestion-job, quarantine, and connector-impact views around
+  the selected binding.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

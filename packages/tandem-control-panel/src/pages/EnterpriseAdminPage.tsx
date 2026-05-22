@@ -22,6 +22,8 @@ import {
   useEnterpriseOrgUnits,
   useEnterpriseSourceBindings,
   useEnterpriseSourceObjects,
+  useImportEnterpriseGoogleDriveBinding,
+  usePreflightEnterpriseGoogleDriveBinding,
   useReindexEnterpriseSourceObject,
   useReviewEnterpriseIngestionQuarantine,
   useRescopeEnterpriseSourceObject,
@@ -35,6 +37,8 @@ import {
   type RotateEnterpriseConnectorCredentialRefInput,
   type EnterpriseConnectorInstance,
   type EnterpriseConnectorImpactResponse,
+  type EnterpriseGoogleDriveImportResponse,
+  type EnterpriseGoogleDrivePreflightResponse,
   type EnterpriseIngestionJob,
   type EnterpriseIngestionQuarantine,
   type EnterpriseNoopBase,
@@ -1110,6 +1114,197 @@ function formatLifecycleTime(value?: number | null) {
   return new Date(value).toLocaleString();
 }
 
+function GoogleDriveOperationsPanel({
+  binding,
+  preflightPayload,
+  importPayload,
+  preflightBusy,
+  importBusy,
+  preflightError,
+  importError,
+  onPreflight,
+  onImport,
+}: {
+  binding?: EnterpriseSourceBinding | null;
+  preflightPayload?: EnterpriseGoogleDrivePreflightResponse | null;
+  importPayload?: EnterpriseGoogleDriveImportResponse | null;
+  preflightBusy: boolean;
+  importBusy: boolean;
+  preflightError: unknown;
+  importError: unknown;
+  onPreflight: () => void;
+  onImport: (input: {
+    tier: string;
+    project_id?: string;
+    session_id?: string;
+    sync_deletes: boolean;
+  }) => void;
+}) {
+  const [tier, setTier] = useState("global");
+  const [projectId, setProjectId] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [syncDeletes, setSyncDeletes] = useState(false);
+  const isGoogleDrive = binding?.source_type === "google_drive";
+  const preflight = preflightPayload?.preflight;
+  const stats = importPayload?.stats || {};
+  const scopeMissing =
+    (tier === "project" && !projectId.trim()) || (tier === "session" && !sessionId.trim());
+
+  return (
+    <PanelCard
+      title="Google Drive import"
+      subtitle={binding ? binding.source_root_label || binding.binding_id : "Select a binding"}
+      actions={
+        <Badge tone={isGoogleDrive ? "ok" : "ghost"}>
+          {isGoogleDrive ? "drive" : "unavailable"}
+        </Badge>
+      }
+    >
+      {!binding ? (
+        <EmptyState title="No binding selected" text="Choose a source binding." />
+      ) : !isGoogleDrive ? (
+        <EmptyState title="Not Google Drive" text="Select a Google Drive source binding." />
+      ) : (
+        <div className="grid gap-3">
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="tcp-btn"
+              type="button"
+              disabled={preflightBusy || importBusy}
+              onClick={onPreflight}
+            >
+              <i data-lucide="radar"></i>
+              Preflight
+            </button>
+            <button
+              className="tcp-btn tcp-btn-primary"
+              type="button"
+              disabled={preflightBusy || importBusy || scopeMissing}
+              onClick={() =>
+                onImport({
+                  tier,
+                  project_id: projectId.trim() || undefined,
+                  session_id: sessionId.trim() || undefined,
+                  sync_deletes: syncDeletes,
+                })
+              }
+            >
+              <i data-lucide="download-cloud"></i>
+              Import
+            </button>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <Field label="Tier">
+              <select
+                className="tcp-select"
+                value={tier}
+                onChange={(event) => setTier(event.currentTarget.value)}
+              >
+                <option value="global">global</option>
+                <option value="project">project</option>
+                <option value="session">session</option>
+              </select>
+            </Field>
+            <Field label="Project ID">
+              <input
+                className="tcp-input"
+                value={projectId}
+                onInput={(event) => setProjectId(event.currentTarget.value)}
+                disabled={tier !== "project"}
+                placeholder={tier === "project" ? "finance-project" : ""}
+              />
+            </Field>
+            <Field label="Session ID">
+              <input
+                className="tcp-input"
+                value={sessionId}
+                onInput={(event) => setSessionId(event.currentTarget.value)}
+                disabled={tier !== "session"}
+                placeholder={tier === "session" ? "session-id" : ""}
+              />
+            </Field>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-tcp-text-secondary">
+            <input
+              type="checkbox"
+              checked={syncDeletes}
+              onChange={(event) => setSyncDeletes(event.currentTarget.checked)}
+            />
+            Sync deletes
+          </label>
+
+          {preflightError || importError ? (
+            <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+              {errorText(preflightError || importError, "Google Drive action failed.")}
+            </div>
+          ) : null}
+
+          {preflight ? (
+            <div className="grid gap-3 rounded-lg border border-white/8 bg-black/20 p-3 md:grid-cols-3">
+              <div>
+                <div className="tcp-subtle text-xs uppercase tracking-[0.14em]">Files</div>
+                <div className="mt-1 text-lg font-semibold text-tcp-text-primary">
+                  {preflight.file_count}
+                </div>
+              </div>
+              <div className="md:col-span-2">
+                <div className="tcp-subtle text-xs uppercase tracking-[0.14em]">Folder</div>
+                <div className="mt-1 break-all text-sm text-tcp-text-primary">
+                  {preflight.folder_id}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {importPayload ? (
+            <div className="grid gap-3 rounded-lg border border-white/8 bg-black/20 p-3 md:grid-cols-4">
+              <div>
+                <div className="tcp-subtle text-xs uppercase tracking-[0.14em]">Fetched</div>
+                <div className="mt-1 text-lg font-semibold text-tcp-text-primary">
+                  {importPayload.drive_files_fetched || 0}
+                </div>
+              </div>
+              <div>
+                <div className="tcp-subtle text-xs uppercase tracking-[0.14em]">Indexed</div>
+                <div className="mt-1 text-lg font-semibold text-tcp-text-primary">
+                  {stats.indexed_files || 0}
+                </div>
+              </div>
+              <div>
+                <div className="tcp-subtle text-xs uppercase tracking-[0.14em]">Chunks</div>
+                <div className="mt-1 text-lg font-semibold text-tcp-text-primary">
+                  {stats.chunks_created || 0}
+                </div>
+              </div>
+              <div>
+                <div className="tcp-subtle text-xs uppercase tracking-[0.14em]">Job</div>
+                <div className="mt-1">
+                  <Badge
+                    tone={
+                      importPayload.ingestion_job?.state === "completed"
+                        ? "ok"
+                        : importPayload.ingestion_job?.state === "quarantined"
+                          ? "warn"
+                          : "ghost"
+                    }
+                  >
+                    {importPayload.ingestion_job?.state || "queued"}
+                  </Badge>
+                </div>
+              </div>
+              <div className="break-all text-xs text-tcp-text-secondary md:col-span-4">
+                {importPayload.ingestion_job?.job_id}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </PanelCard>
+  );
+}
+
 function SourceObjectLifecyclePanel({
   binding,
   rows,
@@ -1460,6 +1655,8 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const connectorImpact = useEnterpriseConnectorImpact(selectedConnectorId);
   const ingestionJobs = useEnterpriseIngestionJobs(selectedBindingId);
   const ingestionQuarantines = useEnterpriseIngestionQuarantines(selectedBindingId);
+  const preflightGoogleDrive = usePreflightEnterpriseGoogleDriveBinding();
+  const importGoogleDrive = useImportEnterpriseGoogleDriveBinding();
   const reindexSourceObject = useReindexEnterpriseSourceObject();
   const reviewIngestionQuarantine = useReviewEnterpriseIngestionQuarantine();
   const deleteSourceObject = useDeleteEnterpriseSourceObject();
@@ -1481,6 +1678,12 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   );
   const selectedBinding =
     bindingRows.find((binding) => binding.binding_id === selectedBindingId) || null;
+  const drivePreflightPayload =
+    preflightGoogleDrive.data?.preflight?.binding_id === selectedBindingId
+      ? preflightGoogleDrive.data
+      : null;
+  const driveImportPayload =
+    importGoogleDrive.data?.binding_id === selectedBindingId ? importGoogleDrive.data : null;
   const busyObjectId =
     reindexSourceObject.isPending || deleteSourceObject.isPending || rescopeSourceObject.isPending
       ? reindexSourceObject.variables?.source_object_id ||
@@ -1642,6 +1845,41 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
           payload={connectorImpact.data}
           loading={connectorImpact.isLoading}
           error={connectorImpact.error}
+        />
+
+        <GoogleDriveOperationsPanel
+          binding={selectedBinding}
+          preflightPayload={drivePreflightPayload}
+          importPayload={driveImportPayload}
+          preflightBusy={preflightGoogleDrive.isPending}
+          importBusy={importGoogleDrive.isPending}
+          preflightError={preflightGoogleDrive.error}
+          importError={importGoogleDrive.error}
+          onPreflight={() => {
+            if (!selectedBindingId) return;
+            preflightGoogleDrive
+              .mutateAsync(selectedBindingId)
+              .then((payload) =>
+                toast(
+                  "ok",
+                  `Google Drive preflight found ${payload.preflight?.file_count || 0} files.`
+                )
+              )
+              .catch((error) => toast("err", errorText(error, "Google Drive preflight failed.")));
+          }}
+          onImport={(input) => {
+            if (!selectedBindingId) return;
+            importGoogleDrive
+              .mutateAsync({ binding_id: selectedBindingId, ...input })
+              .then((payload) => {
+                sourceObjects.refetch();
+                ingestionJobs.refetch();
+                ingestionQuarantines.refetch();
+                if (selectedConnectorId) connectorImpact.refetch();
+                toast("ok", `Google Drive import ${payload.ingestion_job?.state || "queued"}.`);
+              })
+              .catch((error) => toast("err", errorText(error, "Google Drive import failed.")));
+          }}
         />
 
         <div className="grid gap-4 xl:grid-cols-2">

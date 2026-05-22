@@ -158,7 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   present, while keeping unrelated tenant/source-binding entries intact.
 - **Enterprise Google Drive provider guardrails**: Added the first Google Drive
   provider descriptor and v1 policy guards requiring read-only, source-bound
-  credentials before live Drive ingestion is enabled.
+  credentials before Drive ingestion is enabled.
 - **Enterprise Google Drive read client**: Added a read-only Google Drive API
   client for listing admin-labeled folder roots, downloading stored file bytes,
   and exporting Google Workspace files once a future secret resolver supplies a
@@ -169,7 +169,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enterprise Google Drive preflight orchestration**: Added a source-binding
   preflight layer and admin-gated runtime endpoint that validate active Google
   Drive connectors, enabled source bindings, source-bound read-only credentials,
-  and resolver-backed folder listing before any live indexing worker is enabled.
+  and resolver-backed folder listing before indexing is enabled.
 - **Enterprise Google Drive admin import path**: Added the first admin-triggered
   Google Drive import endpoint behind the existing enterprise admin, active
   connector, enabled source-binding, read-only credential, and secret-ref
@@ -177,6 +177,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source-binding namespace, records ingestion jobs/source-object lifecycle rows,
   honors review-required quarantine, and invalidates source-bound response-cache
   entries after indexing.
+- **Enterprise Google Drive admin UI wiring**: Wired the hidden Enterprise admin
+  page to run Google Drive source-binding preflight and trigger the
+  admin-controlled import endpoint, then refresh source-object, ingestion-job,
+  quarantine, and connector-impact views so admins can inspect the resulting
+  audit trail from the control panel.
 
 ### Documentation
 

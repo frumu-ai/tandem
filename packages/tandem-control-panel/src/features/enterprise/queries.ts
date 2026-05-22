@@ -192,6 +192,37 @@ export type EnterpriseSourceObjectActionResponse = EnterpriseNoopBase & {
   import_index_deleted?: boolean;
 };
 
+export type EnterpriseGoogleDrivePreflight = {
+  binding_id: string;
+  connector_id: string;
+  folder_id: string;
+  file_count: number;
+  next_page_token?: string | null;
+};
+
+export type EnterpriseGoogleDrivePreflightResponse = EnterpriseNoopBase & {
+  preflight?: EnterpriseGoogleDrivePreflight;
+};
+
+export type EnterpriseMemoryImportStats = {
+  discovered_files?: number;
+  files_processed?: number;
+  indexed_files?: number;
+  skipped_files?: number;
+  deleted_files?: number;
+  chunks_created?: number;
+  errors?: number;
+};
+
+export type EnterpriseGoogleDriveImportResponse = EnterpriseNoopBase & {
+  binding_id: string;
+  connector_id: string;
+  ingestion_job: EnterpriseIngestionJob;
+  stats?: EnterpriseMemoryImportStats;
+  drive_files_fetched?: number;
+  drive_files_skipped?: number;
+};
+
 export type CreateEnterpriseOrganizationUnitInput = {
   unit_id: string;
   display_name: string;
@@ -264,6 +295,14 @@ export type RescopeEnterpriseSourceObjectInput = EnterpriseSourceObjectActionInp
 export type ReviewEnterpriseIngestionQuarantineInput = {
   quarantine_id: string;
   disposition: "release" | "delete" | "reindex";
+};
+
+export type ImportEnterpriseGoogleDriveBindingInput = {
+  binding_id: string;
+  tier?: string;
+  project_id?: string;
+  session_id?: string;
+  sync_deletes?: boolean;
 };
 
 const retryEnterpriseQuery = (failureCount: number, error: unknown) =>
@@ -468,6 +507,46 @@ export function useReviewEnterpriseIngestionQuarantine() {
       queryClient.invalidateQueries({ queryKey: ["enterprise", "ingestion-quarantines"] });
       queryClient.invalidateQueries({ queryKey: ["enterprise", "ingestion-jobs"] });
       queryClient.invalidateQueries({ queryKey: ["enterprise", "source-objects"] });
+    },
+  });
+}
+
+function invalidateIngestionQueries(queryClient: QueryClient, bindingId: string) {
+  queryClient.invalidateQueries({ queryKey: ["enterprise", "source-objects", bindingId] });
+  queryClient.invalidateQueries({ queryKey: ["enterprise", "ingestion-jobs"] });
+  queryClient.invalidateQueries({ queryKey: ["enterprise", "ingestion-quarantines"] });
+  queryClient.invalidateQueries({ queryKey: ["enterprise", "connector-impact"] });
+}
+
+export function usePreflightEnterpriseGoogleDriveBinding() {
+  return useMutation({
+    mutationFn: (bindingId: string) =>
+      api(
+        `/api/engine/enterprise/source-bindings/${encodeURIComponent(
+          bindingId
+        )}/google-drive/preflight`,
+        {
+          method: "POST",
+        }
+      ) as Promise<EnterpriseGoogleDrivePreflightResponse>,
+  });
+}
+
+export function useImportEnterpriseGoogleDriveBinding() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ binding_id, ...input }: ImportEnterpriseGoogleDriveBindingInput) =>
+      api(
+        `/api/engine/enterprise/source-bindings/${encodeURIComponent(
+          binding_id
+        )}/google-drive/import`,
+        {
+          method: "POST",
+          body: JSON.stringify(input),
+        }
+      ) as Promise<EnterpriseGoogleDriveImportResponse>,
+    onSuccess: (_data, variables) => {
+      invalidateIngestionQueries(queryClient, variables.binding_id);
     },
   });
 }
