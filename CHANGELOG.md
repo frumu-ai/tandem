@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   admin-controlled import endpoint, then refresh source-object, ingestion-job,
   quarantine, and connector-impact views so admins can inspect the resulting
   audit trail from the control panel.
+- **Enterprise Google Drive import regression proof**: Added HTTP-level
+  coverage for the admin-controlled Google Drive import flow, proving
+  review-required Drive imports create quarantined ingestion jobs,
+  source-object lifecycle rows, and quarantine records without exposing resolved
+  credential values.
 
 ### Documentation
 

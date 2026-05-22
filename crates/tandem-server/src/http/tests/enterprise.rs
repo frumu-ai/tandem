@@ -795,6 +795,214 @@ async fn enterprise_google_drive_preflight_lists_bound_folder_without_exposing_t
 }
 
 #[tokio::test]
+#[serial_test::serial]
+async fn enterprise_google_drive_import_records_quarantined_source_objects() {
+    let drive_base_url = spawn_enterprise_google_drive_fixture().await;
+    std::env::set_var("TANDEM_GOOGLE_DRIVE_API_BASE_URL", &drive_base_url);
+    std::env::set_var("TANDEM_TEST_ROUTE_DRIVE_TOKEN", "route-drive-token");
+
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/connectors")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(connector_body("google_drive", "google_drive")))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/connectors/google_drive/credential-refs")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(
+            json!({
+                "credential_id": "drive-readonly",
+                "credential_class": "read_only",
+                "secret_ref": {
+                    "org_id": "acme",
+                    "workspace_id": "finance",
+                    "provider": "env",
+                    "secret_id": "env://TANDEM_TEST_ROUTE_DRIVE_TOKEN",
+                    "name": "Local Drive token"
+                },
+                "source_bound_resource": {
+                    "organization_id": "acme",
+                    "workspace_id": "finance",
+                    "resource_kind": "document_collection",
+                    "resource_id": "finance-drive"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/source-bindings")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(
+            json!({
+                "binding_id": "finance-drive",
+                "connector_id": "google_drive",
+                "source_type": "google_drive",
+                "native_source_id": "drive-folder-123",
+                "source_root_label": "Finance Drive",
+                "credential_ref_id": "drive-readonly",
+                "resource_ref": {
+                    "organization_id": "acme",
+                    "workspace_id": "finance",
+                    "resource_kind": "document_collection",
+                    "resource_id": "finance-drive"
+                },
+                "data_class": "financial_record",
+                "ingestion_policy": {
+                    "allow_indexing": true,
+                    "allow_prompt_context": false,
+                    "require_review": true
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/source-bindings/finance-drive/google-drive/import")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::from(json!({"tier": "global"}).to_string()))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload
+            .pointer("/ingestion_job/state")
+            .and_then(Value::as_str),
+        Some("quarantined")
+    );
+    assert_eq!(
+        payload.get("drive_files_fetched").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        payload
+            .pointer("/stats/indexed_files")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    let quarantine_id = payload
+        .pointer("/ingestion_job/quarantine_id")
+        .and_then(Value::as_str)
+        .expect("quarantine id")
+        .to_string();
+    let encoded = serde_json::to_string(&payload).expect("encoded response");
+    assert!(!encoded.contains("route-drive-token"));
+    assert!(!encoded.contains("TANDEM_TEST_ROUTE_DRIVE_TOKEN"));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/source-bindings/finance-drive/source-objects")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let source_object = payload
+        .get("source_objects")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .expect("source object");
+    assert_eq!(
+        source_object.get("state").and_then(Value::as_str),
+        Some("quarantined")
+    );
+    assert_eq!(
+        source_object.get("connector_id").and_then(Value::as_str),
+        Some("google_drive")
+    );
+    assert_eq!(
+        source_object.get("data_class").and_then(Value::as_str),
+        Some("financial_record")
+    );
+    assert_eq!(
+        source_object
+            .get("resource_ref")
+            .and_then(|resource| resource.get("resource_id"))
+            .and_then(Value::as_str),
+        Some("finance-drive")
+    );
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/ingestion-jobs?binding_id=finance-drive")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert!(payload
+        .get("ingestion_jobs")
+        .and_then(Value::as_array)
+        .is_some_and(|jobs| jobs
+            .iter()
+            .any(|job| job.get("state").and_then(Value::as_str) == Some("quarantined"))));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/ingestion-quarantines?binding_id=finance-drive")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-admin")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        payload
+            .get("quarantines")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("quarantine_id"))
+            .and_then(Value::as_str),
+        Some(quarantine_id.as_str())
+    );
+
+    std::env::remove_var("TANDEM_GOOGLE_DRIVE_API_BASE_URL");
+    std::env::remove_var("TANDEM_TEST_ROUTE_DRIVE_TOKEN");
+}
+
+#[tokio::test]
 async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());
@@ -1633,10 +1841,15 @@ async fn enterprise_source_binding_disable_purges_indexed_source_objects() {
 }
 
 async fn spawn_enterprise_google_drive_fixture() -> String {
-    let app = axum::Router::new().route(
-        "/drive/v3/files",
-        axum::routing::get(enterprise_google_drive_list_fixture),
-    );
+    let app = axum::Router::new()
+        .route(
+            "/drive/v3/files",
+            axum::routing::get(enterprise_google_drive_list_fixture),
+        )
+        .route(
+            "/drive/v3/files/{file_id}",
+            axum::routing::get(enterprise_google_drive_download_fixture),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind drive fixture");
@@ -1663,6 +1876,11 @@ async fn enterprise_google_drive_list_fixture(
         query.get("q").map(String::as_str),
         Some("'drive-folder-123' in parents and trashed = false")
     );
+    if query.get("pageToken").is_some() {
+        return axum::Json(json!({
+            "files": []
+        }));
+    }
     axum::Json(json!({
         "nextPageToken": "next-token",
         "files": [{
@@ -1671,4 +1889,22 @@ async fn enterprise_google_drive_list_fixture(
             "mimeType": "text/plain"
         }]
     }))
+}
+
+async fn enterprise_google_drive_download_fixture(
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(file_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    assert_eq!(
+        headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer route-drive-token")
+    );
+    assert_eq!(file_id, "drive-file-1");
+    assert_eq!(query.get("alt").map(String::as_str), Some("media"));
+    axum::response::IntoResponse::into_response(
+        "Quarterly finance source-bound drive packet for import.",
+    )
 }

@@ -165,6 +165,10 @@ automation remain follow-up implementation phases.
   preflight, trigger the admin-controlled import endpoint, and refresh
   source-object, ingestion-job, quarantine, and connector-impact views around
   the selected binding.
+- The Google Drive import path now has HTTP-level regression coverage proving a
+  review-required source binding records a quarantined ingestion job,
+  source-object lifecycle row, and quarantine record while keeping resolved
+  credential material out of responses.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.
