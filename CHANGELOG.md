@@ -217,6 +217,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regression coverage proving department grants do not cross resource or
   data-class boundaries, CEO/global access is explicit, and CEO-spawned agents
   stay narrow unless a delegation projection grants broader access.
+- **Enterprise artifact export filtering**: Fintech audit package assembly now
+  treats artifacts carrying `ResourceRef` and `DataClass` metadata as scoped
+  content. Scoped artifacts are excluded unless the caller supplies a strict
+  projection with `Read` access for the artifact resource and data class, and
+  scoped artifacts fail closed when no strict projection is available.
 
 ### Documentation
 

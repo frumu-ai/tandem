@@ -151,6 +151,11 @@ automation remain follow-up implementation phases.
   grants do not reveal HR compensation records, CEO/global access is explicit,
   and CEO-spawned agents remain narrow unless the signed projection delegates
   broader access.
+- Fintech audit package assembly now filters scoped artifacts before export.
+  Artifacts carrying `ResourceRef` and `DataClass` metadata are included only
+  when a strict projection grants `Read` for that resource/data class; scoped
+  artifacts are excluded with an audit-package limitation when authorization is
+  missing.
 - Connector credential-reference admin endpoints now accept and rotate
   `SecretRef` records without accepting raw credential values. Credential refs
   are tenant-validated, can be source-bound to a resource, and are visible in
