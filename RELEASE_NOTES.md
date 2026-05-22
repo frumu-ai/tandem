@@ -172,6 +172,9 @@ automation remain follow-up implementation phases.
 - Google Drive enterprise preflight and import route handling now live in a
   focused HTTP module, keeping connector-specific orchestration separate from
   the general enterprise admin routes as more connector behavior lands.
+- Organization-unit and ingestion/source-object lifecycle endpoints also now
+  live in focused enterprise HTTP modules, keeping the primary enterprise admin
+  route file under the source-size guideline before the next connector work.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.

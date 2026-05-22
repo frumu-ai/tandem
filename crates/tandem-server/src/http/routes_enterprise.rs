@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{util::time::now_ms, AppState, EngineEvent};
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -9,10 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_enterprise_contract::{
     ConnectorCredentialClass, ConnectorCredentialRef, ConnectorInstance, ConnectorLifecycleState,
-    DataClass, IngestionJob, IngestionJobState, IngestionPolicy, IngestionQuarantine,
-    OrganizationUnit, OrganizationUnitKind, OrganizationUnitState, PrincipalRef,
-    QuarantineDisposition, RequestPrincipal, ResourceRef, SecretRef, SourceBinding,
-    SourceBindingState, TenantContext, VerifiedTenantContext,
+    DataClass, IngestionJob, IngestionPolicy, IngestionQuarantine, PrincipalRef, RequestPrincipal,
+    ResourceRef, SecretRef, SourceBinding, SourceBindingState, TenantContext,
+    VerifiedTenantContext,
 };
 use tandem_memory::db::MemoryDatabase;
 use tandem_memory::response_cache::ResponseCache;
@@ -27,11 +26,11 @@ const GOOGLE_DRIVE_SOURCE_TYPE: &str = "google_drive";
 
 #[derive(Debug, Serialize)]
 pub(super) struct EnterpriseAdminResponseBase {
-    tenant_context: TenantContext,
-    request_principal: RequestPrincipal,
-    bridge_state: &'static str,
-    status: &'static str,
-    message: &'static str,
+    pub(super) tenant_context: TenantContext,
+    pub(super) request_principal: RequestPrincipal,
+    pub(super) bridge_state: &'static str,
+    pub(super) status: &'static str,
+    pub(super) message: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,14 +55,6 @@ struct EnterpriseConnectorProviderDescriptor {
 }
 
 #[derive(Debug, Serialize)]
-struct EnterpriseOrgUnitsResponse {
-    #[serde(flatten)]
-    base: EnterpriseAdminResponseBase,
-    org_units: Vec<OrganizationUnit>,
-    count: usize,
-}
-
-#[derive(Debug, Serialize)]
 struct EnterpriseSourceBindingsResponse {
     #[serde(flatten)]
     base: EnterpriseAdminResponseBase,
@@ -80,41 +71,6 @@ struct EnterpriseConnectorsResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct EnterpriseSourceObjectsResponse {
-    #[serde(flatten)]
-    base: EnterpriseAdminResponseBase,
-    source_objects: Vec<SourceObjectLifecycleRecord>,
-    count: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct EnterpriseSourceObjectActionResponse {
-    #[serde(flatten)]
-    base: EnterpriseAdminResponseBase,
-    action: &'static str,
-    source_object: Option<SourceObjectLifecycleRecord>,
-    chunks_deleted: i64,
-    bytes_estimated: i64,
-    import_index_deleted: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct EnterpriseIngestionJobsResponse {
-    #[serde(flatten)]
-    base: EnterpriseAdminResponseBase,
-    ingestion_jobs: Vec<IngestionJob>,
-    count: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct EnterpriseIngestionQuarantinesResponse {
-    #[serde(flatten)]
-    base: EnterpriseAdminResponseBase,
-    quarantines: Vec<IngestionQuarantine>,
-    count: usize,
-}
-
-#[derive(Debug, Serialize)]
 struct EnterpriseConnectorImpactResponse {
     #[serde(flatten)]
     base: EnterpriseAdminResponseBase,
@@ -127,37 +83,6 @@ struct EnterpriseConnectorImpactResponse {
     compromise_window_started_at_ms: Option<u64>,
     compromise_window_finished_at_ms: Option<u64>,
     recommended_actions: Vec<&'static str>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListIngestionJobsQuery {
-    #[serde(default)]
-    binding_id: Option<String>,
-    #[serde(default)]
-    connector_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReviewIngestionQuarantineRequest {
-    disposition: QuarantineDisposition,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateOrganizationUnitRequest {
-    unit_id: String,
-    display_name: String,
-    #[serde(default)]
-    taxonomy_id: Option<String>,
-    #[serde(default)]
-    kind: OrganizationUnitKind,
-    #[serde(default)]
-    parent_unit_id: Option<String>,
-    #[serde(default)]
-    state: OrganizationUnitState,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    labels: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,17 +156,12 @@ struct UpdateSourceBindingRequest {
     ingestion_policy: Option<IngestionPolicy>,
 }
 
-#[derive(Debug, Deserialize)]
-struct RescopeSourceObjectRequest {
-    resource_ref: ResourceRef,
-    data_class: DataClass,
-}
-
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
         .route(
             "/enterprise/org-units",
-            get(list_org_units).post(create_org_unit),
+            get(super::routes_enterprise_org_units::list_org_units)
+                .post(super::routes_enterprise_org_units::create_org_unit),
         )
         .route(
             "/enterprise/connector-providers",
@@ -271,14 +191,17 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             "/enterprise/connectors/{connector_id}/credential-refs/{credential_id}/rotate",
             patch(rotate_connector_credential_ref),
         )
-        .route("/enterprise/ingestion-jobs", get(list_ingestion_jobs))
+        .route(
+            "/enterprise/ingestion-jobs",
+            get(super::routes_enterprise_lifecycle::list_ingestion_jobs),
+        )
         .route(
             "/enterprise/ingestion-quarantines",
-            get(list_ingestion_quarantines),
+            get(super::routes_enterprise_lifecycle::list_ingestion_quarantines),
         )
         .route(
             "/enterprise/ingestion-quarantines/{quarantine_id}/review",
-            patch(review_ingestion_quarantine),
+            patch(super::routes_enterprise_lifecycle::review_ingestion_quarantine),
         )
         .route(
             "/enterprise/source-bindings/{binding_id}",
@@ -294,111 +217,20 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         )
         .route(
             "/enterprise/source-bindings/{binding_id}/source-objects",
-            get(list_source_objects),
+            get(super::routes_enterprise_lifecycle::list_source_objects),
         )
         .route(
             "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}/reindex",
-            post(reindex_source_object),
+            post(super::routes_enterprise_lifecycle::reindex_source_object),
         )
         .route(
             "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}",
-            axum::routing::delete(delete_source_object),
+            axum::routing::delete(super::routes_enterprise_lifecycle::delete_source_object),
         )
         .route(
             "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}/scope",
-            patch(rescope_source_object),
+            patch(super::routes_enterprise_lifecycle::rescope_source_object),
         )
-}
-
-async fn list_org_units(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-) -> Json<EnterpriseOrgUnitsResponse> {
-    let mut org_units: Vec<_> = state
-        .enterprise_org_units
-        .read()
-        .await
-        .values()
-        .filter(|unit| organization_unit_tenant_matches(unit, &tenant_context))
-        .cloned()
-        .collect();
-    org_units.sort_by(|left, right| {
-        left.taxonomy_id
-            .cmp(&right.taxonomy_id)
-            .then_with(|| left.unit_id.cmp(&right.unit_id))
-    });
-
-    Json(EnterpriseOrgUnitsResponse {
-        base: storage_base(tenant_context, request_principal),
-        count: org_units.len(),
-        org_units,
-    })
-}
-
-async fn create_org_unit(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-    Json(input): Json<CreateOrganizationUnitRequest>,
-) -> EnterpriseResult<EnterpriseAdminResponseBase> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-
-    let unit_id = validate_enterprise_id("unit_id", &input.unit_id)?;
-    let taxonomy_id = validate_enterprise_id(
-        "taxonomy_id",
-        input.taxonomy_id.as_deref().unwrap_or("organization_unit"),
-    )?;
-    let display_name = input.display_name.trim().to_string();
-    if display_name.is_empty() {
-        return Err(bad_request("ENTERPRISE_ORG_UNIT_DISPLAY_NAME_REQUIRED"));
-    }
-    let parent_unit_id = input
-        .parent_unit_id
-        .as_deref()
-        .map(|value| validate_enterprise_id("parent_unit_id", value))
-        .transpose()?;
-    let labels = input
-        .labels
-        .into_iter()
-        .map(|label| label.trim().to_string())
-        .filter(|label| !label.is_empty())
-        .take(32)
-        .collect::<Vec<_>>();
-    let actor_id = request_principal
-        .actor_id
-        .clone()
-        .unwrap_or_else(|| request_principal.source.clone());
-    let mut unit = OrganizationUnit::active(
-        unit_id,
-        tenant_context.clone(),
-        display_name,
-        input.kind,
-        PrincipalRef::human_user(actor_id),
-        now_ms(),
-    )
-    .with_taxonomy_id(taxonomy_id)
-    .with_state(input.state, now_ms());
-    unit.parent_unit_id = parent_unit_id;
-    unit.description = input
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    unit.labels = labels;
-
-    {
-        let mut registry = state.enterprise_org_units.write().await;
-        registry.insert(enterprise_org_unit_key(&unit), unit);
-        persist_enterprise_org_units(&state.enterprise_org_units_path, &registry).await?;
-    }
-
-    Ok(Json(EnterpriseAdminResponseBase {
-        message: "enterprise organization unit saved",
-        ..storage_base(tenant_context, request_principal)
-    }))
 }
 
 async fn list_connector_providers(
@@ -537,55 +369,6 @@ async fn list_connectors(
     })
 }
 
-async fn list_ingestion_jobs(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-    Query(query): Query<ListIngestionJobsQuery>,
-) -> EnterpriseResult<EnterpriseIngestionJobsResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    let binding_id = query
-        .binding_id
-        .as_deref()
-        .and_then(|value| validate_enterprise_id("binding_id", value).ok());
-    let connector_id = query
-        .connector_id
-        .as_deref()
-        .and_then(|value| validate_enterprise_id("connector_id", value).ok());
-    let mut ingestion_jobs: Vec<_> = state
-        .enterprise_ingestion_jobs
-        .read()
-        .await
-        .values()
-        .filter(|job| ingestion_job_tenant_matches(job, &tenant_context))
-        .filter(|job| {
-            binding_id
-                .as_ref()
-                .is_none_or(|binding_id| job.binding_id == *binding_id)
-        })
-        .filter(|job| {
-            connector_id
-                .as_ref()
-                .is_none_or(|connector_id| job.connector_id == *connector_id)
-        })
-        .cloned()
-        .collect();
-    ingestion_jobs.sort_by(|left, right| {
-        right
-            .started_at_ms
-            .unwrap_or_default()
-            .cmp(&left.started_at_ms.unwrap_or_default())
-            .then_with(|| right.job_id.cmp(&left.job_id))
-    });
-
-    Ok(Json(EnterpriseIngestionJobsResponse {
-        count: ingestion_jobs.len(),
-        ingestion_jobs,
-        base: storage_base(tenant_context, request_principal),
-    }))
-}
-
 async fn get_connector_impact(
     State(state): State<AppState>,
     Path(connector_id): Path<String>,
@@ -609,105 +392,6 @@ async fn get_connector_impact(
         compromise_window_started_at_ms: impact.compromise_window_started_at_ms,
         compromise_window_finished_at_ms: impact.compromise_window_finished_at_ms,
         recommended_actions: impact.recommended_actions,
-    }))
-}
-
-async fn list_ingestion_quarantines(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-    Query(query): Query<ListIngestionJobsQuery>,
-) -> EnterpriseResult<EnterpriseIngestionQuarantinesResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    let binding_id = query
-        .binding_id
-        .as_deref()
-        .and_then(|value| validate_enterprise_id("binding_id", value).ok());
-    let connector_id = query
-        .connector_id
-        .as_deref()
-        .and_then(|value| validate_enterprise_id("connector_id", value).ok());
-    let mut quarantines: Vec<_> = state
-        .enterprise_ingestion_quarantines
-        .read()
-        .await
-        .values()
-        .filter(|quarantine| ingestion_quarantine_tenant_matches(quarantine, &tenant_context))
-        .filter(|quarantine| {
-            binding_id
-                .as_ref()
-                .is_none_or(|binding_id| quarantine.binding_id == *binding_id)
-        })
-        .filter(|quarantine| {
-            connector_id
-                .as_ref()
-                .is_none_or(|connector_id| quarantine.connector_id == *connector_id)
-        })
-        .cloned()
-        .collect();
-    quarantines.sort_by(|left, right| {
-        right
-            .created_at_ms
-            .cmp(&left.created_at_ms)
-            .then_with(|| right.quarantine_id.cmp(&left.quarantine_id))
-    });
-
-    Ok(Json(EnterpriseIngestionQuarantinesResponse {
-        count: quarantines.len(),
-        quarantines,
-        base: storage_base(tenant_context, request_principal),
-    }))
-}
-
-async fn review_ingestion_quarantine(
-    State(state): State<AppState>,
-    Path(quarantine_id): Path<String>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-    Json(input): Json<ReviewIngestionQuarantineRequest>,
-) -> EnterpriseResult<EnterpriseIngestionQuarantinesResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    let quarantine_id = validate_enterprise_id("quarantine_id", &quarantine_id)?;
-    let actor_id = request_principal
-        .actor_id
-        .clone()
-        .unwrap_or_else(|| request_principal.source.clone());
-    let reviewed = {
-        let mut registry = state.enterprise_ingestion_quarantines.write().await;
-        let Some(quarantine) = registry.values_mut().find(|quarantine| {
-            quarantine.quarantine_id == quarantine_id
-                && ingestion_quarantine_tenant_matches(quarantine, &tenant_context)
-        }) else {
-            return Err(not_found("ENTERPRISE_INGESTION_QUARANTINE_NOT_FOUND"));
-        };
-        quarantine.disposition = Some(input.disposition);
-        quarantine.reviewed_by = Some(PrincipalRef::human_user(actor_id));
-        quarantine.reviewed_at_ms = Some(now_ms());
-        let reviewed = quarantine.clone();
-        persist_enterprise_ingestion_quarantines(
-            &state.enterprise_ingestion_quarantines_path,
-            &registry,
-        )
-        .await?;
-        reviewed
-    };
-
-    update_ingestion_job_after_quarantine_review(&state, &tenant_context, &reviewed).await?;
-    emit_source_binding_cache_invalidation_required(
-        &state,
-        &tenant_context,
-        &reviewed.binding_id,
-        "ingestion_quarantine_reviewed",
-    );
-    let _ =
-        invalidate_response_cache_for_source_binding(&tenant_context, &reviewed.binding_id).await?;
-
-    Ok(Json(EnterpriseIngestionQuarantinesResponse {
-        count: 1,
-        quarantines: vec![reviewed],
-        base: storage_base(tenant_context, request_principal),
     }))
 }
 
@@ -1010,177 +694,6 @@ async fn update_source_binding(
     }))
 }
 
-async fn list_source_objects(
-    State(state): State<AppState>,
-    Path(binding_id): Path<String>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-) -> EnterpriseResult<EnterpriseSourceObjectsResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
-    ensure_source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
-    let db = open_enterprise_memory_db().await?;
-    let mut source_objects = db
-        .list_source_object_lifecycle_for_binding_for_tenant(
-            &memory_tenant_scope(&tenant_context),
-            &binding_id,
-        )
-        .await
-        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECTS_LIST_FAILED"))?;
-    source_objects.sort_by(|left, right| {
-        left.resource_ref
-            .to_string()
-            .cmp(&right.resource_ref.to_string())
-            .then_with(|| left.indexed_path.cmp(&right.indexed_path))
-    });
-
-    Ok(Json(EnterpriseSourceObjectsResponse {
-        base: storage_base(tenant_context, request_principal),
-        count: source_objects.len(),
-        source_objects,
-    }))
-}
-
-async fn reindex_source_object(
-    State(state): State<AppState>,
-    Path((binding_id, source_object_id)): Path<(String, String)>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-) -> EnterpriseResult<EnterpriseSourceObjectActionResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
-    let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
-    ensure_source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
-    let db = open_enterprise_memory_db().await?;
-    let tenant_scope = memory_tenant_scope(&tenant_context);
-    let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
-    let (chunks_deleted, bytes_estimated) =
-        purge_source_object_indexed_content(&db, &record).await?;
-    db.mark_source_object_lifecycle_state_for_tenant(
-        &tenant_scope,
-        &binding_id,
-        &source_object_id,
-        SourceObjectLifecycleState::Active,
-        now_ms(),
-    )
-    .await
-    .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_REINDEX_FAILED"))?;
-    emit_source_binding_cache_invalidation_required(
-        &state,
-        &tenant_context,
-        &binding_id,
-        "source_object_reindex_requested",
-    );
-    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
-    let source_object = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id)
-        .await
-        .ok();
-
-    Ok(Json(EnterpriseSourceObjectActionResponse {
-        base: storage_base(tenant_context, request_principal),
-        action: "reindex_requested",
-        source_object,
-        chunks_deleted,
-        bytes_estimated,
-        import_index_deleted: true,
-    }))
-}
-
-async fn delete_source_object(
-    State(state): State<AppState>,
-    Path((binding_id, source_object_id)): Path<(String, String)>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-) -> EnterpriseResult<EnterpriseSourceObjectActionResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
-    let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
-    ensure_source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
-    let db = open_enterprise_memory_db().await?;
-    let tenant_scope = memory_tenant_scope(&tenant_context);
-    let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
-    let (chunks_deleted, bytes_estimated) =
-        purge_source_object_indexed_content(&db, &record).await?;
-    db.delete_source_object_lifecycle_for_tenant(&tenant_scope, &binding_id, &source_object_id)
-        .await
-        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_DELETE_FAILED"))?;
-    emit_source_binding_cache_invalidation_required(
-        &state,
-        &tenant_context,
-        &binding_id,
-        "source_object_deleted",
-    );
-    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
-
-    Ok(Json(EnterpriseSourceObjectActionResponse {
-        base: storage_base(tenant_context, request_principal),
-        action: "deleted",
-        source_object: Some(record),
-        chunks_deleted,
-        bytes_estimated,
-        import_index_deleted: true,
-    }))
-}
-
-async fn rescope_source_object(
-    State(state): State<AppState>,
-    Path((binding_id, source_object_id)): Path<(String, String)>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Extension(request_principal): Extension<RequestPrincipal>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-    Json(input): Json<RescopeSourceObjectRequest>,
-) -> EnterpriseResult<EnterpriseSourceObjectActionResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
-    let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
-    let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
-    validate_resource_ref_matches_tenant(&input.resource_ref, &tenant_context)?;
-    ensure_source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
-    let db = open_enterprise_memory_db().await?;
-    let tenant_scope = memory_tenant_scope(&tenant_context);
-    let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
-    let (chunks_deleted, bytes_estimated) =
-        purge_source_object_indexed_content(&db, &record).await?;
-    let resource_ref = serde_json::to_value(input.resource_ref)
-        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_RESCOPE_FAILED"))?;
-    let data_class = serialize_data_class(input.data_class)?;
-    let updated = db
-        .rescope_source_object_lifecycle_for_tenant(
-            &tenant_scope,
-            &binding_id,
-            &source_object_id,
-            &resource_ref,
-            &data_class,
-            now_ms(),
-        )
-        .await
-        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_RESCOPE_FAILED"))?;
-    if !updated {
-        return Err(not_found("ENTERPRISE_SOURCE_OBJECT_NOT_FOUND"));
-    }
-    emit_source_binding_cache_invalidation_required(
-        &state,
-        &tenant_context,
-        &binding_id,
-        "source_object_rescoped",
-    );
-    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
-    let source_object = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id)
-        .await
-        .ok();
-
-    Ok(Json(EnterpriseSourceObjectActionResponse {
-        base: storage_base(tenant_context, request_principal),
-        action: "rescoped",
-        source_object,
-        chunks_deleted,
-        bytes_estimated,
-        import_index_deleted: true,
-    }))
-}
-
 pub(super) fn emit_source_binding_cache_invalidation_required(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -1274,19 +787,7 @@ pub(super) async fn invalidate_response_cache_for_source_binding(
         .map_err(|_| internal_error("ENTERPRISE_RESPONSE_CACHE_INVALIDATION_FAILED"))
 }
 
-async fn source_object_by_id(
-    db: &MemoryDatabase,
-    tenant_scope: &MemoryTenantScope,
-    binding_id: &str,
-    source_object_id: &str,
-) -> Result<SourceObjectLifecycleRecord, (StatusCode, Json<Value>)> {
-    db.get_source_object_lifecycle_by_id_for_tenant(tenant_scope, binding_id, source_object_id)
-        .await
-        .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_READ_FAILED"))?
-        .ok_or_else(|| not_found("ENTERPRISE_SOURCE_OBJECT_NOT_FOUND"))
-}
-
-async fn purge_source_object_indexed_content(
+pub(super) async fn purge_source_object_indexed_content(
     db: &MemoryDatabase,
     record: &SourceObjectLifecycleRecord,
 ) -> Result<(i64, i64), (StatusCode, Json<Value>)> {
@@ -1355,7 +856,8 @@ fn source_object_state_for_binding_update(binding: &SourceBinding) -> SourceObje
     }
 }
 
-async fn open_enterprise_memory_db() -> Result<MemoryDatabase, (StatusCode, Json<Value>)> {
+pub(super) async fn open_enterprise_memory_db() -> Result<MemoryDatabase, (StatusCode, Json<Value>)>
+{
     let paths = tandem_core::resolve_shared_paths()
         .map_err(|_| internal_error("ENTERPRISE_MEMORY_DB_OPEN_FAILED"))?;
     if let Some(parent) = paths.memory_db_path.parent() {
@@ -1675,7 +1177,7 @@ fn validate_external_id(field: &str, value: &str) -> Result<String, (StatusCode,
     Ok(value.to_string())
 }
 
-fn validate_resource_ref_matches_tenant(
+pub(super) fn validate_resource_ref_matches_tenant(
     resource_ref: &ResourceRef,
     tenant_context: &TenantContext,
 ) -> Result<(), (StatusCode, Json<Value>)> {
@@ -1781,48 +1283,6 @@ pub(super) fn bad_request(code: impl Into<String>) -> (StatusCode, Json<Value>) 
     )
 }
 
-fn organization_unit_tenant_matches(
-    unit: &OrganizationUnit,
-    tenant_context: &TenantContext,
-) -> bool {
-    unit.tenant_context.org_id == tenant_context.org_id
-        && unit.tenant_context.workspace_id == tenant_context.workspace_id
-        && unit.tenant_context.deployment_id == tenant_context.deployment_id
-}
-
-fn enterprise_org_unit_key(unit: &OrganizationUnit) -> String {
-    let deployment = unit
-        .tenant_context
-        .deployment_id
-        .as_deref()
-        .unwrap_or("local");
-    format!(
-        "{}::{}::{}::{}::{}",
-        unit.tenant_context.org_id,
-        unit.tenant_context.workspace_id,
-        deployment,
-        unit.taxonomy_id,
-        unit.unit_id
-    )
-}
-
-async fn persist_enterprise_org_units(
-    path: &std::path::Path,
-    registry: &HashMap<String, OrganizationUnit>,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|_| internal_error("ENTERPRISE_ORG_UNITS_PERSIST_FAILED"))?;
-    }
-    let payload = serde_json::to_vec_pretty(registry)
-        .map_err(|_| internal_error("ENTERPRISE_ORG_UNITS_PERSIST_FAILED"))?;
-    tokio::fs::write(path, payload)
-        .await
-        .map_err(|_| internal_error("ENTERPRISE_ORG_UNITS_PERSIST_FAILED"))?;
-    Ok(())
-}
-
 fn enterprise_source_binding_key(binding: &SourceBinding) -> String {
     let deployment = binding
         .tenant_context
@@ -1865,41 +1325,22 @@ pub(super) fn enterprise_ingestion_job_key(job: &IngestionJob) -> String {
     )
 }
 
-fn ingestion_job_tenant_matches(job: &IngestionJob, tenant_context: &TenantContext) -> bool {
+pub(super) fn ingestion_job_tenant_matches(
+    job: &IngestionJob,
+    tenant_context: &TenantContext,
+) -> bool {
     job.tenant_context.org_id == tenant_context.org_id
         && job.tenant_context.workspace_id == tenant_context.workspace_id
         && job.tenant_context.deployment_id == tenant_context.deployment_id
 }
 
-fn ingestion_quarantine_tenant_matches(
+pub(super) fn ingestion_quarantine_tenant_matches(
     quarantine: &IngestionQuarantine,
     tenant_context: &TenantContext,
 ) -> bool {
     quarantine.tenant_context.org_id == tenant_context.org_id
         && quarantine.tenant_context.workspace_id == tenant_context.workspace_id
         && quarantine.tenant_context.deployment_id == tenant_context.deployment_id
-}
-
-async fn update_ingestion_job_after_quarantine_review(
-    state: &AppState,
-    tenant_context: &TenantContext,
-    quarantine: &IngestionQuarantine,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    let mut registry = state.enterprise_ingestion_jobs.write().await;
-    if let Some(job) = registry.values_mut().find(|job| {
-        ingestion_job_tenant_matches(job, tenant_context)
-            && job.quarantine_id.as_deref() == Some(quarantine.quarantine_id.as_str())
-    }) {
-        job.state = match quarantine.disposition {
-            Some(QuarantineDisposition::Release) => IngestionJobState::Completed,
-            Some(QuarantineDisposition::Delete) => IngestionJobState::Skipped,
-            Some(QuarantineDisposition::Reindex) => IngestionJobState::Queued,
-            None => job.state,
-        };
-        job.finished_at_ms = Some(now_ms());
-        persist_enterprise_ingestion_jobs(&state.enterprise_ingestion_jobs_path, &registry).await?;
-    }
-    Ok(())
 }
 
 async fn persist_enterprise_source_bindings(
@@ -1970,7 +1411,7 @@ pub(super) async fn persist_enterprise_ingestion_quarantines(
     Ok(())
 }
 
-fn not_found(code: impl Into<String>) -> (StatusCode, Json<Value>) {
+pub(super) fn not_found(code: impl Into<String>) -> (StatusCode, Json<Value>) {
     let code = code.into();
     (
         StatusCode::NOT_FOUND,

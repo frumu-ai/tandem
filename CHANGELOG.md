@@ -189,7 +189,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential values.
 - **Enterprise route module split**: Moved Google Drive enterprise preflight and
   import route handling into a focused HTTP module so connector-specific logic
-  can evolve without further growing the general enterprise admin route file.
+  can evolve without further growing the general enterprise admin route file,
+  and split organization-unit plus ingestion/source-object lifecycle routes into
+  focused modules so the primary enterprise admin route file stays below the
+  source-size guideline.
 
 ### Documentation
 
