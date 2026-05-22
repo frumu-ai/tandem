@@ -13,12 +13,14 @@ import {
   useCreateEnterpriseConnector,
   useCreateEnterpriseConnectorCredentialRef,
   useCreateEnterpriseOrgUnit,
+  useCreateEnterpriseOrgUnitMembership,
   useCreateEnterpriseSourceBinding,
   useDeleteEnterpriseSourceObject,
   useEnterpriseConnectorImpact,
   useEnterpriseConnectors,
   useEnterpriseIngestionJobs,
   useEnterpriseIngestionQuarantines,
+  useEnterpriseOrgUnitMemberships,
   useEnterpriseOrgUnits,
   useEnterpriseSourceBindings,
   useEnterpriseSourceObjects,
@@ -30,9 +32,11 @@ import {
   useRescopeEnterpriseSourceObject,
   useRotateEnterpriseConnectorCredentialRef,
   useUpdateEnterpriseConnector,
+  useUpdateEnterpriseOrgUnitMembership,
   useUpdateEnterpriseSourceBinding,
   type CreateEnterpriseConnectorCredentialRefInput,
   type CreateEnterpriseConnectorInput,
+  type CreateEnterpriseOrganizationUnitMembershipInput,
   type CreateEnterpriseOrganizationUnitInput,
   type CreateEnterpriseSourceBindingInput,
   type RotateEnterpriseConnectorCredentialRefInput,
@@ -43,6 +47,7 @@ import {
   type EnterpriseIngestionJob,
   type EnterpriseIngestionQuarantine,
   type EnterpriseNoopBase,
+  type EnterpriseOrganizationUnitMembership,
   type EnterpriseOrganizationUnit,
   type EnterpriseSourceBinding,
   type EnterpriseSourceObjectLifecycle,
@@ -85,6 +90,15 @@ const DATA_CLASSES = [
 
 const CONNECTOR_STATES = ["active", "paused", "revoked", "quarantined"];
 const CREDENTIAL_CLASSES = ["read_only", "read_write", "admin"];
+const MEMBER_KINDS = ["human_user", "group", "department", "agent_worker", "service_account"];
+const MEMBERSHIP_SOURCES = [
+  "direct",
+  "hosted_control_plane",
+  "scim",
+  "google_workspace",
+  "okta",
+  "manual_import",
+];
 
 function compactTenant(payload?: EnterpriseNoopBase | null) {
   const tenant = payload?.tenant_context;
@@ -543,6 +557,120 @@ function OrgUnitForm({
   );
 }
 
+function OrgUnitMembershipForm({
+  orgUnits,
+  onCreate,
+  busy,
+}: {
+  orgUnits: EnterpriseOrganizationUnit[];
+  onCreate: (input: CreateEnterpriseOrganizationUnitMembershipInput) => Promise<void>;
+  busy: boolean;
+}) {
+  const [unitKey, setUnitKey] = useState("");
+  const [memberKind, setMemberKind] = useState("human_user");
+  const [memberId, setMemberId] = useState("");
+  const [source, setSource] = useState("hosted_control_plane");
+  const [expiresAt, setExpiresAt] = useState("");
+  const selectedUnitKey =
+    unitKey ||
+    (orgUnits[0] ? `${orgUnits[0].taxonomy_id || "organization_unit"}/${orgUnits[0].unit_id}` : "");
+  const [taxonomyId, unitId] = selectedUnitKey.split("/");
+
+  return (
+    <PanelCard title="Assign member" subtitle="Hosted org-unit membership">
+      <form
+        className="grid gap-3"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          await onCreate({
+            taxonomy_id: taxonomyId,
+            unit_id: unitId,
+            member_kind: memberKind,
+            member_id: memberId.trim(),
+            source,
+            expires_at_ms: expiresAt ? new Date(expiresAt).getTime() : undefined,
+          });
+          setMemberId("");
+          setExpiresAt("");
+        }}
+      >
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Org Unit">
+            <select
+              className="tcp-select"
+              value={selectedUnitKey}
+              onChange={(event) => setUnitKey(event.currentTarget.value)}
+              required
+            >
+              {orgUnits.length ? (
+                orgUnits.map((unit) => {
+                  const key = `${unit.taxonomy_id || "organization_unit"}/${unit.unit_id}`;
+                  return (
+                    <option key={key} value={key}>
+                      {unit.display_name} ({key})
+                    </option>
+                  );
+                })
+              ) : (
+                <option value="">create org unit first</option>
+              )}
+            </select>
+          </Field>
+          <Field label="Member Kind">
+            <select
+              className="tcp-select"
+              value={memberKind}
+              onChange={(event) => setMemberKind(event.currentTarget.value)}
+            >
+              {MEMBER_KINDS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Member ID">
+            <input
+              className="tcp-input"
+              value={memberId}
+              onInput={(event) => setMemberId(event.currentTarget.value)}
+              placeholder="user@company.com"
+              required
+            />
+          </Field>
+          <Field label="Source">
+            <select
+              className="tcp-select"
+              value={source}
+              onChange={(event) => setSource(event.currentTarget.value)}
+            >
+              {MEMBERSHIP_SOURCES.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Expires">
+            <input
+              className="tcp-input"
+              type="datetime-local"
+              value={expiresAt}
+              onInput={(event) => setExpiresAt(event.currentTarget.value)}
+            />
+          </Field>
+        </div>
+        <div className="flex justify-end">
+          <button className="tcp-btn tcp-btn-primary" type="submit" disabled={busy || !unitId}>
+            <i data-lucide="user-plus"></i>
+            {busy ? "Assigning" : "Assign member"}
+          </button>
+        </div>
+      </form>
+    </PanelCard>
+  );
+}
+
 function SourceBindingForm({
   tenantPayload,
   onCreate,
@@ -773,6 +901,81 @@ function OrgUnitsPanel({
           title="No org units"
           text="Create a company domain to start assigning access."
         />
+      )}
+    </PanelCard>
+  );
+}
+
+function OrgUnitMembershipsPanel({
+  rows,
+  loading,
+  error,
+  onSetState,
+  busyMembershipId,
+}: {
+  rows: EnterpriseOrganizationUnitMembership[];
+  loading: boolean;
+  error: unknown;
+  onSetState: (membershipId: string, state: string) => void;
+  busyMembershipId?: string | null;
+}) {
+  return (
+    <PanelCard
+      title="Org memberships"
+      subtitle="Users mapped to company domains"
+      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      fullHeight
+    >
+      {loading ? (
+        <LoadingState title="Loading" text="Reading organization memberships" />
+      ) : error ? (
+        <EmptyState title="Unavailable" text={errorText(error, "Memberships could not load.")} />
+      ) : rows.length ? (
+        <div className="grid gap-2">
+          {rows.map((membership) => {
+            const busy = busyMembershipId === membership.membership_id;
+            return (
+              <div
+                key={membership.membership_id}
+                className="rounded-lg border border-white/8 bg-black/20 p-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="font-medium text-tcp-text-primary">{membership.member.id}</div>
+                    <div className="tcp-subtle text-xs">
+                      {membership.member.kind} / {membership.unit.id}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge tone={membership.state === "disabled" ? "warn" : "ok"}>
+                      {membership.state || "active"}
+                    </Badge>
+                    <Badge tone="info">{membership.source || "direct"}</Badge>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 text-xs text-tcp-text-secondary md:grid-cols-2">
+                  <div>Created: {formatLifecycleTime(membership.created_at_ms)}</div>
+                  <div>Expires: {formatLifecycleTime(membership.expires_at_ms)}</div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {["active", "disabled"].map((state) => (
+                    <button
+                      key={state}
+                      className="tcp-btn"
+                      type="button"
+                      disabled={busy || membership.state === state}
+                      onClick={() => onSetState(membership.membership_id, state)}
+                    >
+                      {state}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState title="No memberships" text="Assign hosted users to org units." />
       )}
     </PanelCard>
   );
@@ -1674,11 +1877,14 @@ function IngestionQuarantinesPanel({
 
 export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const orgUnits = useEnterpriseOrgUnits();
+  const orgUnitMemberships = useEnterpriseOrgUnitMemberships();
   const connectors = useEnterpriseConnectors();
   const sourceBindings = useEnterpriseSourceBindings();
   const [selectedBindingId, setSelectedBindingId] = useState<string | null>(null);
   const [selectedConnectorId, setSelectedConnectorId] = useState<string | null>(null);
   const createOrgUnit = useCreateEnterpriseOrgUnit();
+  const createOrgUnitMembership = useCreateEnterpriseOrgUnitMembership();
+  const updateOrgUnitMembership = useUpdateEnterpriseOrgUnitMembership();
   const createConnector = useCreateEnterpriseConnector();
   const createConnectorCredentialRef = useCreateEnterpriseConnectorCredentialRef();
   const createSourceBinding = useCreateEnterpriseSourceBinding();
@@ -1697,6 +1903,10 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   const deleteSourceObject = useDeleteEnterpriseSourceObject();
   const rescopeSourceObject = useRescopeEnterpriseSourceObject();
   const orgRows = useMemo(() => orgUnits.data?.org_units || [], [orgUnits.data]);
+  const membershipRows = useMemo(
+    () => orgUnitMemberships.data?.memberships || [],
+    [orgUnitMemberships.data]
+  );
   const connectorRows = useMemo(() => connectors.data?.connectors || [], [connectors.data]);
   const bindingRows = useMemo(
     () => sourceBindings.data?.source_bindings || [],
@@ -1737,6 +1947,7 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
   );
   const refreshEnterpriseState = () => {
     orgUnits.refetch();
+    orgUnitMemberships.refetch();
     connectors.refetch();
     sourceBindings.refetch();
     if (selectedConnectorId) {
@@ -1789,6 +2000,18 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
               }
             }}
           />
+          <OrgUnitMembershipForm
+            orgUnits={orgRows}
+            busy={createOrgUnitMembership.isPending}
+            onCreate={async (input) => {
+              try {
+                await createOrgUnitMembership.mutateAsync(input);
+                toast("ok", "Organization membership assigned.");
+              } catch (error) {
+                toast("err", errorText(error, "Organization membership could not be assigned."));
+              }
+            }}
+          />
           <ConnectorForm
             busy={createConnector.isPending}
             onCreate={async (input) => {
@@ -1835,8 +2058,26 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
           />
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-3">
+        <div className="grid gap-4 xl:grid-cols-4">
           <OrgUnitsPanel rows={orgRows} loading={orgUnits.isLoading} error={orgUnits.error} />
+          <OrgUnitMembershipsPanel
+            rows={membershipRows}
+            loading={orgUnitMemberships.isLoading}
+            error={orgUnitMemberships.error}
+            busyMembershipId={
+              updateOrgUnitMembership.isPending
+                ? updateOrgUnitMembership.variables?.membership_id || null
+                : null
+            }
+            onSetState={(membershipId, state) => {
+              updateOrgUnitMembership
+                .mutateAsync({ membership_id: membershipId, state })
+                .then(() => toast("ok", `Membership ${state}.`))
+                .catch((error) =>
+                  toast("err", errorText(error, "Organization membership could not be updated."))
+                );
+            }}
+          />
           <ConnectorsPanel
             rows={connectorRows}
             loading={connectors.isLoading}

@@ -128,6 +128,12 @@ automation remain follow-up implementation phases.
 - The hidden Enterprise admin page can now create connector lifecycle records,
   list tenant-scoped connector status, and pause, revoke, quarantine, or
   reactivate connectors from the control panel.
+- Enterprise organization-unit memberships now have tenant-scoped runtime
+  storage, admin-gated create/list/update endpoints, and hidden admin UI
+  controls for assigning hosted users, groups, agents, and service accounts to
+  company-defined units such as departments, clinical roles, consultants, or
+  executive groups. This is the first Phase H execution slice for turning
+  company taxonomy into future signed grant projection.
 - Connector credential-reference admin endpoints now accept and rotate
   `SecretRef` records without accepting raw credential values. Credential refs
   are tenant-validated, can be source-bound to a resource, and are visible in

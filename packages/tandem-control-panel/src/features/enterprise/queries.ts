@@ -33,6 +33,25 @@ export type EnterpriseOrganizationUnit = {
   labels?: string[];
 };
 
+export type EnterprisePrincipalRef = {
+  kind: string;
+  id: string;
+  tenant_actor_id?: string | null;
+  issuer?: string | null;
+  subject?: string | null;
+};
+
+export type EnterpriseOrganizationUnitMembership = {
+  membership_id: string;
+  tenant_context?: EnterpriseTenantContext;
+  unit: EnterprisePrincipalRef;
+  member: EnterprisePrincipalRef;
+  source?: string;
+  state?: string;
+  created_at_ms?: number;
+  expires_at_ms?: number | null;
+};
+
 export type EnterpriseResourceRef = {
   organization_id: string;
   workspace_id: string;
@@ -98,6 +117,11 @@ export type EnterpriseConnectorCredentialRef = {
 
 export type EnterpriseOrgUnitsResponse = EnterpriseNoopBase & {
   org_units?: EnterpriseOrganizationUnit[];
+  count?: number;
+};
+
+export type EnterpriseOrgUnitMembershipsResponse = EnterpriseNoopBase & {
+  memberships?: EnterpriseOrganizationUnitMembership[];
   count?: number;
 };
 
@@ -233,6 +257,23 @@ export type CreateEnterpriseOrganizationUnitInput = {
   labels?: string[];
 };
 
+export type CreateEnterpriseOrganizationUnitMembershipInput = {
+  membership_id?: string;
+  unit_id: string;
+  taxonomy_id?: string;
+  member_kind?: string;
+  member_id: string;
+  source?: string;
+  state?: string;
+  expires_at_ms?: number;
+};
+
+export type UpdateEnterpriseOrganizationUnitMembershipInput = {
+  membership_id: string;
+  state: string;
+  expires_at_ms?: number;
+};
+
 export type CreateEnterpriseSourceBindingInput = {
   binding_id: string;
   connector_id: string;
@@ -319,6 +360,19 @@ export function useEnterpriseOrgUnits(enabled = true) {
       api("/api/engine/enterprise/org-units", {
         method: "GET",
       }) as Promise<EnterpriseOrgUnitsResponse>,
+    enabled,
+    staleTime: 15000,
+    retry: retryEnterpriseQuery,
+  });
+}
+
+export function useEnterpriseOrgUnitMemberships(enabled = true) {
+  return useQuery({
+    queryKey: ["enterprise", "org-unit-memberships"],
+    queryFn: () =>
+      api("/api/engine/enterprise/org-unit-memberships", {
+        method: "GET",
+      }) as Promise<EnterpriseOrgUnitMembershipsResponse>,
     enabled,
     staleTime: 15000,
     retry: retryEnterpriseQuery,
@@ -420,6 +474,34 @@ export function useCreateEnterpriseOrgUnit() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["enterprise", "org-units"] });
+    },
+  });
+}
+
+export function useCreateEnterpriseOrgUnitMembership() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateEnterpriseOrganizationUnitMembershipInput) =>
+      api("/api/engine/enterprise/org-unit-memberships", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }) as Promise<EnterpriseOrgUnitMembershipsResponse>,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "org-unit-memberships"] });
+    },
+  });
+}
+
+export function useUpdateEnterpriseOrgUnitMembership() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ membership_id, ...input }: UpdateEnterpriseOrganizationUnitMembershipInput) =>
+      api(`/api/engine/enterprise/org-unit-memberships/${encodeURIComponent(membership_id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }) as Promise<EnterpriseOrgUnitMembershipsResponse>,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["enterprise", "org-unit-memberships"] });
     },
   });
 }

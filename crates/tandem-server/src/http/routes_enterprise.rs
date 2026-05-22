@@ -164,6 +164,15 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
                 .post(super::routes_enterprise_org_units::create_org_unit),
         )
         .route(
+            "/enterprise/org-unit-memberships",
+            get(super::routes_enterprise_org_units::list_org_unit_memberships)
+                .post(super::routes_enterprise_org_units::create_org_unit_membership),
+        )
+        .route(
+            "/enterprise/org-unit-memberships/{membership_id}",
+            patch(super::routes_enterprise_org_units::update_org_unit_membership),
+        )
+        .route(
             "/enterprise/connector-providers",
             get(list_connector_providers),
         )
@@ -1173,7 +1182,10 @@ pub(super) fn validate_enterprise_id(
     Ok(value.to_string())
 }
 
-fn validate_external_id(field: &str, value: &str) -> Result<String, (StatusCode, Json<Value>)> {
+pub(super) fn validate_external_id(
+    field: &str,
+    value: &str,
+) -> Result<String, (StatusCode, Json<Value>)> {
     let value = value.trim();
     if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
         return Err(bad_request(format!("ENTERPRISE_{field}_INVALID")));

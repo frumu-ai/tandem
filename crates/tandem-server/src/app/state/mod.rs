@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use tandem_enterprise_contract::{
     governance::GovernancePolicyEngine, ConnectorInstance as EnterpriseConnectorInstance,
     IngestionJob as EnterpriseIngestionJob, IngestionQuarantine as EnterpriseIngestionQuarantine,
-    OrganizationUnit as EnterpriseOrganizationUnit, SourceBinding as EnterpriseSourceBinding,
+    OrganizationUnit as EnterpriseOrganizationUnit,
+    OrganizationUnitMembership as EnterpriseOrganizationUnitMembership,
+    SourceBinding as EnterpriseSourceBinding,
 };
 use tandem_memory::types::{MemorySourceAccessTarget, MemoryTier};
 use tandem_orchestrator::MissionState;
@@ -82,6 +84,9 @@ pub struct AppState {
     pub enterprise_org_units:
         Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnit>>>,
     pub enterprise_org_units_path: PathBuf,
+    pub enterprise_org_unit_memberships:
+        Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnitMembership>>>,
+    pub enterprise_org_unit_memberships_path: PathBuf,
     pub enterprise_source_bindings:
         Arc<RwLock<std::collections::HashMap<String, EnterpriseSourceBinding>>>,
     pub enterprise_source_bindings_path: PathBuf,

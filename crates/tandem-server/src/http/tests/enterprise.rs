@@ -197,6 +197,151 @@ async fn enterprise_org_units_do_not_cross_tenant_boundaries() {
 }
 
 #[tokio::test]
+async fn enterprise_org_unit_memberships_create_update_and_filter_by_tenant() {
+    let state = test_state().await;
+    let storage_path = state.enterprise_org_unit_memberships_path.clone();
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/org-units")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .header("x-tandem-actor-id", "owner-user")
+        .body(Body::from(
+            json!({
+                "unit_id": "doctors",
+                "taxonomy_id": "clinical_role",
+                "display_name": "Doctors",
+                "kind": "clinical_group"
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/org-unit-memberships")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .header("x-tandem-actor-id", "owner-user")
+        .body(Body::from(
+            json!({
+                "membership_id": "membership-doctor-user",
+                "taxonomy_id": "clinical_role",
+                "unit_id": "doctors",
+                "member_kind": "human_user",
+                "member_id": "doctor.user@example.com",
+                "source": "hosted_control_plane"
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(storage_path.exists());
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        payload
+            .get("memberships")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|membership| membership.get("unit"))
+            .and_then(|unit| unit.get("id"))
+            .and_then(Value::as_str),
+        Some("clinical_role/doctors")
+    );
+    assert_eq!(
+        payload
+            .get("memberships")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|membership| membership.get("member"))
+            .and_then(|member| member.get("id"))
+            .and_then(Value::as_str),
+        Some("doctor.user@example.com")
+    );
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/enterprise/org-unit-memberships/membership-doctor-user")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .header("x-tandem-actor-id", "owner-user")
+        .body(Body::from(json!({"state": "disabled"}).to_string()))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/org-unit-memberships")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload
+            .get("memberships")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|membership| membership.get("state"))
+            .and_then(Value::as_str),
+        Some("disabled")
+    );
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/org-unit-memberships")
+        .header("x-tandem-org-id", "other-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(0));
+}
+
+#[tokio::test]
+async fn enterprise_org_unit_memberships_require_existing_unit() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/org-unit-memberships")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "clinic-co")
+        .header("x-tandem-workspace-id", "care-delivery")
+        .header("x-tandem-actor-id", "owner-user")
+        .body(Body::from(
+            json!({
+                "taxonomy_id": "department",
+                "unit_id": "hr",
+                "member_kind": "human_user",
+                "member_id": "hr.user@example.com"
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn enterprise_source_bindings_storage_threads_request_tenant() {
     let state = test_state().await;
     let app = app_router(state);

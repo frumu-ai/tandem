@@ -237,6 +237,11 @@ impl AppState {
             protected_audit_path: config::paths::resolve_protected_audit_path(),
             enterprise_org_units: Arc::new(RwLock::new(std::collections::HashMap::new())),
             enterprise_org_units_path: config::paths::resolve_enterprise_org_units_path(),
+            enterprise_org_unit_memberships: Arc::new(
+                RwLock::new(std::collections::HashMap::new()),
+            ),
+            enterprise_org_unit_memberships_path:
+                config::paths::resolve_enterprise_org_unit_memberships_path(),
             enterprise_source_bindings: Arc::new(RwLock::new(std::collections::HashMap::new())),
             enterprise_source_bindings_path: config::paths::resolve_enterprise_source_bindings_path(
             ),
@@ -488,6 +493,7 @@ impl AppState {
             .await;
         let _ = self.load_shared_resources().await;
         let _ = self.load_enterprise_org_units().await;
+        let _ = self.load_enterprise_org_unit_memberships().await;
         let _ = self.load_enterprise_source_bindings().await;
         let _ = self.load_enterprise_connectors().await;
         let _ = self.load_enterprise_ingestion_jobs().await;
@@ -549,6 +555,20 @@ impl AppState {
             tandem_enterprise_contract::OrganizationUnit,
         > = serde_json::from_slice(&bytes)?;
         *self.enterprise_org_units.write().await = registry;
+        Ok(())
+    }
+
+    pub async fn load_enterprise_org_unit_memberships(&self) -> anyhow::Result<()> {
+        if !self.enterprise_org_unit_memberships_path.exists() {
+            return Ok(());
+        }
+        check_file_permissions(&self.enterprise_org_unit_memberships_path);
+        let bytes = fs::read(&self.enterprise_org_unit_memberships_path).await?;
+        let registry: std::collections::HashMap<
+            String,
+            tandem_enterprise_contract::OrganizationUnitMembership,
+        > = serde_json::from_slice(&bytes)?;
+        *self.enterprise_org_unit_memberships.write().await = registry;
         Ok(())
     }
 

@@ -198,6 +198,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source-bound credentials, stable binding namespaces, ingestion job auditing,
   quarantine policy, and source-bound cache invalidation without returning
   resolved credential material.
+- **Enterprise org-unit memberships**: Added the first Phase H runtime and
+  hidden-admin controls for assigning hosted users, groups, agents, and service
+  accounts to company-defined organization units such as departments, clinical
+  roles, consultants, or executive groups. Memberships are tenant-scoped,
+  storage-backed, admin-gated, and ready to feed future signed grant projection.
 
 ### Documentation
 
