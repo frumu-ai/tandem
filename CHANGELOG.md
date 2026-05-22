@@ -65,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visibility. Built-in tool metadata now emits these descriptors and the core
   tool capability classifier can derive conservative descriptors for
   unannotated provider/MCP tools.
+- **MCP catalog security metadata**: The embedded MCP catalog now exposes
+  server and per-tool security metadata, honors explicit catalog
+  `tool_security_overrides`, and derives conservative descriptors from catalog
+  server context plus tool action classification when no override is present.
 - **Enterprise source-object lifecycle records**: Added source-bound uploaded
   document lifecycle records in memory storage so manual imports can track
   active and tombstoned source objects by tenant, binding, resource, data class,

@@ -71,6 +71,10 @@ automation remain follow-up implementation phases.
   descriptors from their metadata, and unannotated MCP/provider tools can be
   classified conservatively before future discovery masking and execution
   enforcement.
+- The embedded MCP catalog now carries security metadata for servers and
+  cataloged tools. Catalog-provided overrides can mark sensitive tools as
+  admin/credential/hidden, while unannotated tools receive conservative
+  descriptors from catalog context and action classification.
 - Source-bound manual uploads now create durable source-object lifecycle
   records keyed by tenant, source binding, and native object identity. Changed
   documents keep the same source object ID while their hashes update, and
