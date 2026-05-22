@@ -94,6 +94,7 @@ mod routes_coder;
 mod routes_config_providers;
 mod routes_context;
 mod routes_enterprise;
+mod routes_enterprise_google_drive;
 mod routes_external_actions;
 mod routes_global;
 mod routes_governance;

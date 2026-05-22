@@ -187,6 +187,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   review-required Drive imports create quarantined ingestion jobs,
   source-object lifecycle rows, and quarantine records without exposing resolved
   credential values.
+- **Enterprise route module split**: Moved Google Drive enterprise preflight and
+  import route handling into a focused HTTP module so connector-specific logic
+  can evolve without further growing the general enterprise admin route file.
 
 ### Documentation
 

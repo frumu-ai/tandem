@@ -169,6 +169,9 @@ automation remain follow-up implementation phases.
   review-required source binding records a quarantined ingestion job,
   source-object lifecycle row, and quarantine record while keeping resolved
   credential material out of responses.
+- Google Drive enterprise preflight and import route handling now live in a
+  focused HTTP module, keeping connector-specific orchestration separate from
+  the general enterprise admin routes as more connector behavior lands.
 - Ingestion gating helpers model the required fail-closed behavior for paused,
   revoked, or quarantined connectors, disabled bindings, and review-only
   ingestion policy.
