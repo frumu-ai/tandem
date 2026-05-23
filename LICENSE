@@ -1,16 +1,23 @@
 Tandem Mixed License Notice
 
-This repository uses a mixed licensing model. Different directories and
-packages are governed by different license terms.
+SPDX-License-Identifier: LicenseRef-Tandem-Mixed
+
+Repository license class: Open Core / Mixed License
+
+This repository contains both permissive open-source components and
+source-available components.
 
 Permissive open-source components are licensed under MIT, Apache-2.0, or
 MIT OR Apache-2.0 as declared in their package manifests.
 
 Source-available components are licensed under the Business Source License
-1.1 (SPDX: BUSL-1.1) as declared in their package manifests and local
+1.1 (SPDX: BUSL-1.1) as declared in their package manifests and package-local
 LICENSE files.
 
-Canonical licensing map:
+This root LICENSE file is a repository-level notice. It is not a blanket
+license for every file in the repository.
+
+Canonical package-by-package license map:
 
   docs/LICENSING.md
 
@@ -21,5 +28,6 @@ License texts:
   crates/tandem-plan-compiler/LICENSE
   crates/tandem-governance-engine/LICENSE
 
-If a package manifest and this summary ever disagree, the package manifest
-and the package-local LICENSE file control for that package.
+If this notice, docs/LICENSING.md, and a package-local manifest or license file
+ever disagree, the package-local manifest and package-local license file control
+for that package.
