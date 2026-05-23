@@ -1,7 +1,7 @@
 {
   "name": "@frumu/tandem-panel",
   "version": "0.5.9",
-  "description": "Full web control center for Tandem Engine (chat, routines, swarm, memory, channels, and ops)",
+  "description": "Web control center for Tandem authority-layer runtime: agents, workflows, memory, approvals, channels, and ops",
   "type": "module",
   "bin": {
     "tandem-control-panel": "bin/cli.js",

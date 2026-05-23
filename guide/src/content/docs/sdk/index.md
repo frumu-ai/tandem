@@ -1,6 +1,6 @@
 ---
 title: Tandem SDK
-description: Connect to the Tandem engine from TypeScript or Python.
+description: Connect to Tandem authority-layer runtime APIs from TypeScript or Python.
 ---
 
 import { LinkCard, CardGrid } from "@astrojs/starlight/components";
@@ -51,7 +51,7 @@ tandem-engine serve --api-token $(tandem-engine token generate)
   <LinkCard
     title="Engine Authentication For Agents"
     href="../engine-authentication-for-agents/"
-    description="Get an engine token and authenticate SDK or HTTP calls safely."
+    description="Get an engine token and authenticate authority-layer SDK or HTTP calls safely."
   />
   <LinkCard
     title="Storage Maintenance For Agents"

@@ -1,6 +1,6 @@
 ---
 title: TypeScript SDK
-description: "@frumu/tandem-client — Node.js client for the Tandem engine"
+description: "@frumu/tandem-client — TypeScript client for Tandem authority-layer runtime APIs"
 ---
 
 ## Install

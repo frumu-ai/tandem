@@ -1,10 +1,10 @@
 ---
-title: Tandem Engine Guide
-description: Welcome to the Tandem documentation hub. Choose your path based on how you intend to use Tandem.
+title: Tandem Authority Layer Guide
+description: Tandem is the authority layer for AI-first work. Use these docs to set up runtime authority for agents, tools, memory, approvals, and audit trails.
 template: doc
 ---
 
-Welcome to the **Tandem Engine Documentation**. Tandem is an **engine-owned workflow runtime** for coordinated autonomous work, built to scale beyond the limitations of chat-first AI assistants and operate in multiple highly-concurrent configurations.
+Welcome to the **Tandem documentation hub**. Tandem is the authority layer for AI-first work: an engine-owned runtime that controls what agents can see, which tools they can use, when humans must approve, and what evidence survives after the work is done.
 
 To help you find what you need quickly, please select the path that best describes how you plan to use Tandem:
 
@@ -27,7 +27,7 @@ _You want to run the native Tandem desktop app or terminal UI to assist you with
 
 ## ☁️ I am a Server Admin
 
-_You want to deploy Tandem to a VPS or headless server so that you, or your external applications, can access autonomous agents remotely._
+_You want to deploy Tandem to a VPS, headless server, hosted/private environment, or customer infrastructure so agents can operate through runtime authority rather than prompt-only permissions._
 
 - **[Control Panel (Web Admin)](./control-panel/)** — Install the packaged web admin or generate an editable control panel app.
 - **[Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/)** — Bring a client pilot online quickly, then harden it for enterprise rollout.
@@ -59,7 +59,7 @@ or treat catalog visibility as permission to execute connector tools.
 
 ## 💻 I am a Developer
 
-_You want to build custom clients, connect external tools via MCP, or programmatically trigger agent workflows._
+_You want to build custom clients, connect external tools via MCP, or programmatically trigger AI-first workflows with scoped execution, approvals, permissioned memory, and evidence._
 
 - **[Building Automated Agents](./mcp-automated-agents/)** — Trigger agent pipelines automatically.
 - **[Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/)** — Agent-facing pilot and hardening checklist for getting clients online fast.

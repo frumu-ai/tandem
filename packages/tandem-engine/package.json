@@ -1,7 +1,7 @@
 {
   "name": "@frumu/tandem",
   "version": "0.5.9",
-  "description": "Tandem master CLI and engine binary distribution",
+  "description": "Tandem authority-layer runtime CLI and engine binary distribution",
   "homepage": "https://tandem.ac",
   "bin": {
     "tandem": "bin/tandem.js",

@@ -1,6 +1,6 @@
 ---
 title: Python SDK
-description: "tandem-client — Python client for the Tandem engine"
+description: "tandem-client — Python client for Tandem authority-layer runtime APIs"
 ---
 
 ## Install

@@ -1,6 +1,6 @@
 ---
 title: Enterprise Client Onboarding Runbook
-description: Fast pilot and hardening checklist for bringing enterprise clients and end users online with Tandem while keeping hosted provisioning private.
+description: Fast pilot and hardening checklist for bringing enterprise clients online with Tandem authority-layer runtime setup while keeping hosted provisioning private.
 ---
 
 Use this runbook when a forward engineer or agent needs to bring an enterprise

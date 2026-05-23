@@ -2,12 +2,11 @@
 title: Start Here
 ---
 
-Choose the path that matches how you want to use Tandem in terminal and engine workflows.
+Tandem is the authority layer for AI-first work. Choose the path that matches where you want runtime authority to live: local desktop, terminal, headless service, hosted/private deployment, or customer infrastructure.
 
 ## Path 1: CLI Binaries
 
-Use this if you want the master `tandem` CLI, direct `tandem-engine` runtime,
-and `tandem-tui` from the terminal.
+Use this if you want local execution through the master `tandem` CLI, direct `tandem-engine` runtime, and `tandem-tui` from the terminal.
 
 - npm packages:
   - `@frumu/tandem` (master CLI + engine)
@@ -17,7 +16,7 @@ and `tandem-tui` from the terminal.
 
 ## Path 2: Web Control Panel
 
-Use this if you want a browser-first workflow for chat, routines, channels, and memory.
+Use this if you want a browser-first control surface for agents, workflows, approvals, channels, memory, and runtime evidence.
 
 - npm add-on for the official ready-to-run panel:
   - `@frumu/tandem-panel`

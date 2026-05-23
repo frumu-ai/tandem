@@ -24,7 +24,7 @@
 
 <h1 align="center">The governed runtime for AI-first companies</h1>
 
-Tandem is a source-available governed runtime for AI-first work. It gives solo builders, startups, and platform teams a deployable authority layer that controls what agents can see, which tools they can discover, which actions they can execute, when humans must approve, and what evidence survives.
+Tandem is the authority layer for AI-first work. It is a source-available governed runtime that gives solo builders, startups, and platform teams a deployable authority layer controlling what agents can see, which tools they can discover, which actions they can execute, when humans must approve, and what evidence survives.
 
 The model is not the access-control perimeter. Tandem enforces authority below the model through scoped execution, tenant-aware state, permissioned memory, approval gates, and audit trails. Agents work inside projected authority; the runtime owns state, tools, approvals, memory, artifacts, and evidence.
 
