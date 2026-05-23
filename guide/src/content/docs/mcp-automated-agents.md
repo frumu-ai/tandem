@@ -24,6 +24,14 @@ If you want a showcase payload that demonstrates tight tool isolation, skip beha
 
 For provider and model routing choices, use [Choosing Providers And Models For Agents](./choosing-providers-and-models-for-agents/).
 
+For enterprise MCP governance, source-bound memory, org units, connector
+credentials, quarantine review, and Google Drive ingestion, use
+[Enterprise Data Governance](./enterprise-data-governance/). For the fastest
+client rollout order, use the
+[Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/).
+Agents can help draft setup plans and narrow policies, but operators should
+approve connector access, credential refs, and enterprise grants.
+
 ## What You Get
 
 - MCP connector lifecycle: add, enable/disable, connect, refresh
@@ -66,6 +74,13 @@ If the required MCP server or tool is missing from `mcp_list`, do not guess. If 
 If the workflow requires an external tool the agent cannot see in `mcp_list`, stop and explain whether the server is cataloged, disconnected, or uncataloged before continuing.
 
 The engine does have internal semantic tool retrieval for prompt-time tool selection, but that ranking path is separate from `mcp_list` and is not a public registry search endpoint.
+
+For enterprise setup, use this same discovery path before proposing org-unit,
+source-binding, or automation policies. The agent should identify the needed
+connector, list the exact available tool IDs, and then draft the narrowest
+`mcp_policy` that supports the job. If the connector is missing or disabled,
+the agent should request or describe the gap instead of authoring a workflow
+that assumes execution access.
 
 ## The Context Bloat Solution: Strict Tool Isolation
 

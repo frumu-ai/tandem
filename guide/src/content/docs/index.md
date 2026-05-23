@@ -30,10 +30,30 @@ _You want to run the native Tandem desktop app or terminal UI to assist you with
 _You want to deploy Tandem to a VPS or headless server so that you, or your external applications, can access autonomous agents remotely._
 
 - **[Control Panel (Web Admin)](./control-panel/)** — Install the packaged web admin or generate an editable control panel app.
+- **[Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/)** — Bring a client pilot online quickly, then harden it for enterprise rollout.
+- **[Enterprise Data Governance](./enterprise-data-governance/)** — Configure tenant-scoped org units, source bindings, connector credentials, quarantine review, and enterprise MCP governance.
 - **[Headless Service](./headless-service/)** — Run the Tandem Engine in headless API mode.
 - **[Channel Integrations](./channel-integrations/)** — Connect Telegram, Discord, and Slack with media-aware prompt flow.
 - **[Deployment Guide](./desktop/headless-deployment/)** — Learn best practices for securely exposing Tandem.
 - **[Protocol Matrix](./protocol-matrix/)** — Understand the ports and network boundaries.
+
+### Setting up enterprise systems with agents
+
+Start with the [Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/) when the goal is to get a client live quickly, then use [Enterprise Data Governance](./enterprise-data-governance/) for the deeper endpoint and policy details.
+
+Agents can help operators design and verify enterprise setups, but they should
+work through the runtime's governance surfaces instead of bypassing them. A
+useful agent can:
+
+- map business domains into org units and access grants for admin review
+- draft connector, source-binding, and data-class plans before credentials are attached
+- inspect MCP availability with `mcp_list` and `mcp_list_catalog`
+- request missing connector capabilities instead of self-connecting them
+- generate staged automation definitions with narrow `tool_policy` and `mcp_policy`
+- create runbooks for quarantine review, connector rotation, and incident response
+
+Agents should not paste raw secrets, grant themselves enterprise admin access,
+or treat catalog visibility as permission to execute connector tools.
 
 ---
 
@@ -42,6 +62,8 @@ _You want to deploy Tandem to a VPS or headless server so that you, or your exte
 _You want to build custom clients, connect external tools via MCP, or programmatically trigger agent workflows._
 
 - **[Building Automated Agents](./mcp-automated-agents/)** — Trigger agent pipelines automatically.
+- **[Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/)** — Agent-facing pilot and hardening checklist for getting clients online fast.
+- **[Enterprise Data Governance](./enterprise-data-governance/)** — Teach agents how hosted admins scope company data, connector credentials, source bindings, quarantine review, and enterprise MCP governance.
 - **[Eval Runner CLI](./eval-runner/)** — Run versioned AI quality evaluation datasets with `cargo run -p tandem-server --bin eval-runner`.
 - **[Self-Operator Playbook](./self-operator-playbook/)** — Operate governed recursive automations safely. Premium governance feature set required for mutation flows.
 - **[MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/)** — Distinguish connected, cataloged, and uncataloged MCPs before requesting new capabilities.

@@ -56,6 +56,7 @@ export default defineConfig({
           label: "Server & Deployment",
           items: [
             "control-panel",
+            "enterprise-client-onboarding-runbook",
             "enterprise-data-governance",
             "headless-service",
             "channel-integrations",

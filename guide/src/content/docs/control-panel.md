@@ -122,8 +122,9 @@ metadata, source bindings, Google Drive preflight/import/reindex operations,
 quarantine review, source-object lifecycle actions, and connector impact
 reports.
 
-Start with [Enterprise Data Governance](./enterprise-data-governance/) before
-using the page in a hosted deployment.
+For a client rollout, start with the [Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/),
+then use [Enterprise Data Governance](./enterprise-data-governance/) for the
+endpoint and policy details before using the page in a hosted deployment.
 
 ## Automations Workspace (Tabbed + Wizard)
 

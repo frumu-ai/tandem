@@ -1,6 +1,6 @@
 ---
 title: Enterprise Data Governance
-description: Configure org units, source bindings, Google Drive ingestion, quarantine review, and connector incident response.
+description: Configure enterprise MCP governance, org units, source bindings, Google Drive ingestion, quarantine review, and connector incident response.
 ---
 
 Tandem's enterprise governance surface lets hosted admins decide which company
@@ -9,9 +9,47 @@ access-control boundary; the runtime stamps ingested data with tenant,
 resource, data-class, source-object, and connector metadata, then filters
 source-bound memory before ranking, prompt assembly, citations, and cache reuse.
 
+Agent search terms: enterprise MCP governance, enterprise setup, tenant scoped
+memory, source bindings, connector credentials, org units, data classes,
+quarantine review, Google Drive import, connector incident response, governed
+MCP setup.
+
 This page covers the current operator workflow in the control panel. The
 enterprise admin route is intentionally separate from ordinary chat and
-automation setup.
+automation setup. For ordered client rollout steps, use the
+[Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/).
+
+## Hosted control-plane boundary
+
+The public Tandem runtime starts after hosted provisioning has established the
+customer tenant, workspace, and verified principal context. The private hosted
+control plane owns account provisioning, workspace creation, user invites,
+SSO/OIDC, SCIM, billing, and hosted end-user lifecycle. Public runtime docs
+should not imply public invite or user-provisioning endpoints.
+
+## What agents can help set up
+
+Agents are useful enterprise setup assistants when they operate through Tandem's
+governance surfaces and leave authority with the operator. They can help:
+
+- translate departments, groups, service accounts, and agent workers into
+  proposed org units
+- draft resource and data-class grants for admin review
+- propose connector lifecycle records and source bindings before ingestion
+- prepare read-only credential-reference checklists without handling raw secrets
+- inspect MCP connector availability with `mcp_list` and `mcp_list_catalog`
+- request missing capabilities through the approval queue instead of connecting
+  tools themselves
+- generate narrow automation policies that separate research, drafting,
+  approval, and post-approval external actions
+- write incident-response runbooks for connector revoke, rotation, quarantine,
+  re-scope, and cache invalidation workflows
+
+Agents should not self-grant enterprise roles, paste credential material into
+records, bypass quarantine review, or treat an MCP catalog entry as permission
+to execute tools. For connector execution policy and tool allowlists, pair this
+page with [MCP Automated Agents](./mcp-automated-agents/) and
+[MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/).
 
 ## Open the enterprise admin page
 
@@ -44,6 +82,12 @@ Enterprise data enters memory through a source binding:
 Each source-bound chunk is filtered by tenant, `ResourceRef`, and `DataClass`
 before retrieval ranking. Principals without a matching strict `Read` grant do
 not see the chunk, its source-object identifiers, or citation labels.
+
+For agents, the setup order matters. Discover or request the connector first,
+then draft source bindings and grants, then run preflight checks, and only then
+import or reindex data. If an MCP or enterprise connector is cataloged but not
+connected, the safe next step is an operator request, not a fallback connector
+or direct `mcp_debug` call.
 
 ## Organization units
 
@@ -93,6 +137,11 @@ attach or rotate metadata such as:
 Do not enter raw credential material into connector records. The runtime rejects
 raw Google Drive write/admin credential refs for the constrained Drive import
 flow.
+
+When an agent is helping, it should produce the credential-reference metadata
+that an admin needs to fill in and should explicitly mark unknown secret IDs as
+operator-supplied. It should not ask the model to remember, transform, or echo
+the underlying token.
 
 ## Source bindings
 
@@ -179,6 +228,7 @@ bulk destructive remediation should remain an explicit, reviewed follow-up.
 
 The control panel proxies these engine endpoints:
 
+- `GET /enterprise/connector-providers`
 - `GET /enterprise/org-units`
 - `POST /enterprise/org-units`
 - `GET /enterprise/org-unit-memberships`

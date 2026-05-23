@@ -15,6 +15,8 @@
 ## Core usage
 
 - /control-panel/ - Browser control panel and editable panel app path.
+- /enterprise-client-onboarding-runbook/ - Fast pilot and enterprise hardening runbook for bringing clients and end users online.
+- /enterprise-data-governance/ - Enterprise MCP governance, org units, source bindings, connector credential refs, quarantine review, Google Drive ingestion, and connector incident response.
 - /tui-guide/ - Terminal UI guide.
 - /how-tandem-works/ - Canonical runtime reference for sessions, runs, context, memory, and channels.
 - /agents-and-sessions/ - Sessions and execution model.
@@ -36,6 +38,8 @@
 ## Developer and automation
 
 - /mcp-automated-agents/ - Automated agent workflows and MCP integration.
+- /enterprise-client-onboarding-runbook/ - Agent-facing onboarding order for client pilots, go-live smoke tests, and enterprise hardening.
+- /enterprise-data-governance/ - Agent-facing enterprise setup guide for tenant-scoped memory, governed MCP setup, source bindings, connector credentials, and quarantine review.
 - /agent-workflow-mission-quickstart/ - Compact checklist for agents creating and operating Tandem workflows or missions.
 - /choosing-providers-and-models-for-agents/ - Provider and model selection guide for agents and staged workflows.
 - /prompting-workflows-and-missions/ - Prompting guide for workflows, missions, and staged recurring operations.
@@ -76,6 +80,8 @@
 - If the agent needs to understand what Tandem is, start at `/`.
 - If it needs user onboarding, go to `/start-here/`, then follow `/installation/` and `/first-run/`.
 - If it needs to operate Tandem, use `/control-panel/`, `/headless-service/`, and `/tui-guide/`.
+- If it needs to get an enterprise client online fast, use `/enterprise-client-onboarding-runbook/` first.
+- If it needs deeper enterprise MCP governance or tenant-scoped data setup details, use `/enterprise-data-governance/`.
 - If it needs to reason about agents, use `/agents-and-sessions/` and `/agent-teams/`.
 - If it needs integration guidance, use `/mcp-automated-agents/`, `/webmcp-for-agents/`, and the SDK pages.
 - If it needs the shortest actionable checklist, use `/agent-workflow-mission-quickstart/`.
