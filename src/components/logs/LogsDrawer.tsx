@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { List, type RowComponentProps, useListCallbackRef } from "react-window";
 import { useTranslation } from "react-i18next";
+import { maxBy } from "@/lib/utils";
 import {
   FileText,
   Pause,
@@ -221,8 +222,8 @@ function useMeasuredHeight() {
 
 function pickNewest(files: LogFileInfo[]): string | null {
   if (!files || files.length === 0) return null;
-  const sorted = [...files].sort((a, b) => b.modified_ms - a.modified_ms);
-  return sorted[0]?.name ?? null;
+  const newest = maxBy(files, (file) => file.modified_ms);
+  return newest?.name ?? null;
 }
 
 export function LogsDrawer({
