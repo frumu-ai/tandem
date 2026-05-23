@@ -246,6 +246,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projection with `Read` access for the artifact resource and data class, and
   scoped artifacts fail closed when no strict projection is available.
 
+### Fixed
+
+- **Automation artifact validation hardening**: Tightened automation output
+  validation so stale preexisting artifacts and failed external connector
+  mutations cannot be accepted as successful current-attempt output during
+  retries. This keeps enterprise delivery and source-bound workflows from
+  reporting success when the required current-attempt write or protected
+  mutation did not actually happen.
+- **Optional web-context tool exposure**: Restored optional `webfetch`
+  availability for workflows that request optional web context while preserving
+  stricter gating for required research workflows.
+- **Workflow-learning memory summaries**: Preserved terminal run detail in
+  completed-run learning summaries so generated memory facts keep the
+  operator-facing outcome context alongside node output summaries.
+- **Eval runner determinism**: Fixed eval priority-order assertions,
+  pass-rate threshold boundary handling, case-insensitive scripted-provider
+  matching, and stub/live local engine-mode errors when no `AppState` is
+  attached.
+- **Context rollback checkpoint isolation**: Moved rollback execution tests to
+  explicit temporary workspaces and serialized the checkpoint test module so
+  rollback file-deletion coverage cannot mutate the real repository
+  `src/lib.rs` during parallel test runs.
+
 ### Documentation
 
 - **Enterprise connector source-binding Kanban**: Added the internal enterprise
