@@ -157,7 +157,7 @@ struct UpdateSourceBindingRequest {
 }
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
-    super::routes_enterprise_org_units::apply(router)
+    super::routes_enterprise_onboarding::apply(super::routes_enterprise_org_units::apply(router))
         .route(
             "/enterprise/connector-providers",
             get(list_connector_providers),
@@ -1121,7 +1121,7 @@ pub(super) fn require_enterprise_admin(
     ))
 }
 
-fn enterprise_admin_allowed_for_mutation(
+pub(super) fn enterprise_admin_allowed_for_mutation(
     request_principal: &RequestPrincipal,
     verified_tenant_context: Option<&VerifiedTenantContext>,
 ) -> bool {

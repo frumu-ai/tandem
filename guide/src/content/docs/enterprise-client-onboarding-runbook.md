@@ -39,15 +39,22 @@ connector, one user-facing surface, and one safe automation.
 1. Start the engine and control panel.
 2. Verify the operator has an engine token.
 3. Check provider readiness before creating workflows.
-4. Open the control panel enterprise admin route:
+4. Check enterprise onboarding readiness:
+
+```bash
+curl -sS http://127.0.0.1:39731/enterprise/readiness \
+  -H "X-Tandem-Token: $TANDEM_API_TOKEN"
+```
+
+5. Open the control panel enterprise admin route:
 
 ```text
 http://127.0.0.1:39732/#/enterprise-admin
 ```
 
 Stop if the operator cannot authenticate, provider/model readiness is unknown,
-or the enterprise admin page does not show the expected tenant/principal
-context.
+`/enterprise/readiness` returns `blocked`, or the enterprise admin page does not
+show the expected tenant/principal context.
 
 Useful docs:
 
@@ -55,7 +62,28 @@ Useful docs:
 - [Engine Authentication For Agents](./engine-authentication-for-agents/)
 - [Choosing Providers And Models For Agents](./choosing-providers-and-models-for-agents/)
 
-### 2. Create the governance skeleton
+### 2. Preview the onboarding plan
+
+Before mutating runtime state, ask Tandem to validate the proposed pilot setup.
+Preview is non-mutating: it does not create records, attach credentials, connect
+MCP servers, import data, or request approvals.
+
+```bash
+curl -sS -X POST http://127.0.0.1:39731/enterprise/onboarding-plans/preview \
+  -H "content-type: application/json" \
+  -H "X-Tandem-Token: $TANDEM_API_TOKEN" \
+  -d '{
+    "org_units": [{"unit_id": "pilot-finance", "taxonomy_id": "department", "display_name": "Pilot Finance"}],
+    "connectors": [{"connector_id": "google_drive", "provider": "google_drive"}],
+    "mcp_requirements": [{"name": "pilot-slack", "required_tools": ["post_message"]}]
+  }'
+```
+
+Stop if preview returns `valid: false`, reports tenant mismatches, raw credential
+values, destructive actions, or missing private hosted-control-plane
+prerequisites.
+
+### 3. Create the governance skeleton
 
 Create only the minimum structure needed for the pilot:
 
@@ -99,7 +127,7 @@ curl -sS -X POST http://127.0.0.1:39731/enterprise/org-unit-access-grants \
 Stop if the grant is broader than the pilot needs. Executive, all-company, and
 admin-style access should be explicit and reviewed.
 
-### 3. Register the governed data source
+### 4. Register the governed data source
 
 For the first pilot, prefer one read-only Google Drive binding or one equivalent
 connector path that the enterprise admin page supports.
@@ -152,7 +180,7 @@ curl -sS -X POST http://127.0.0.1:39731/enterprise/source-bindings \
     "credential_ref_id": "readonly",
     "ingestion_policy": {
       "allow_indexing": true,
-      "review_required": true
+      "require_review": true
     }
   }'
 ```
@@ -160,7 +188,7 @@ curl -sS -X POST http://127.0.0.1:39731/enterprise/source-bindings \
 Stop if preflight fails, the credential is not read-only for the pilot, or
 quarantine output has not been reviewed.
 
-### 4. Add the pilot MCP connector
+### 5. Add the pilot MCP connector
 
 Use MCP for external tools and system actions. Keep the tool surface narrow.
 
@@ -194,7 +222,7 @@ curl -sS http://127.0.0.1:39731/mcp/tools \
 Stop if the required tool is not listed in `/mcp/tools` or `/tool/ids`. A
 catalog entry alone is not execution access.
 
-### 5. Configure one end-user surface
+### 6. Configure one end-user surface
 
 Choose the smallest pilot surface:
 
@@ -212,7 +240,7 @@ Useful docs:
 - [MCP Automated Agents](./mcp-automated-agents/)
 - [SDK](./sdk/)
 
-### 6. Create the first safe automation
+### 7. Create the first safe automation
 
 Use V2 automation for persistent pilot workflows. Separate high-impact action
 stages:
@@ -243,11 +271,12 @@ Minimal policy shape:
 Stop if the automation gives send/publish tools to research or approval-gate
 nodes.
 
-### 7. Run the go-live smoke test
+### 8. Run the go-live smoke test
 
 Before handing the pilot to the client, verify:
 
 - provider/model readiness is green
+- `/enterprise/readiness` is `ready` or has only reviewed `attention` items
 - enterprise tenant/principal context is correct
 - org unit membership and effective grants are correct
 - source binding preflight passes
@@ -290,6 +319,7 @@ that a forward engineer can review and apply. Good outputs include:
 - a provisioning prerequisite checklist for private hosted-control-plane owners
 - the proposed endpoint call order with sample payloads and unknown values marked
   as operator-supplied
+- the `/enterprise/onboarding-plans/preview` result and any blocking errors
 - the org-unit, membership, resource, and data-class map for admin review
 - the MCP inventory, missing capability requests, and exact allowed tool IDs
 - source-binding, credential-reference, preflight, import, and quarantine notes

@@ -96,6 +96,7 @@ mod routes_context;
 mod routes_enterprise;
 mod routes_enterprise_google_drive;
 mod routes_enterprise_lifecycle;
+mod routes_enterprise_onboarding;
 mod routes_enterprise_org_units;
 mod routes_external_actions;
 mod routes_global;

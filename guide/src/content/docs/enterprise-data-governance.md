@@ -228,6 +228,8 @@ bulk destructive remediation should remain an explicit, reviewed follow-up.
 
 The control panel proxies these engine endpoints:
 
+- `GET /enterprise/readiness`
+- `POST /enterprise/onboarding-plans/preview`
 - `GET /enterprise/connector-providers`
 - `GET /enterprise/org-units`
 - `POST /enterprise/org-units`

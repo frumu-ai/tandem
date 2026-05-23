@@ -564,6 +564,211 @@ fn connector_credential_ref_body(credential_id: &str, secret_id: &str) -> String
 }
 
 #[tokio::test]
+async fn enterprise_readiness_returns_onboarding_counts_without_mutation() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/readiness")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("overall_status").and_then(Value::as_str),
+        Some("attention")
+    );
+    assert_eq!(
+        payload.pointer("/counts/org_units").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(payload
+        .get("checks")
+        .and_then(Value::as_array)
+        .is_some_and(|checks| checks
+            .iter()
+            .any(|check| check.get("id").and_then(Value::as_str) == Some("governance_skeleton"))));
+    assert_eq!(state.enterprise_org_units.read().await.len(), 0);
+}
+
+#[tokio::test]
+async fn enterprise_readiness_rejects_hosted_member_without_admin_role() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/enterprise/readiness")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .header("x-tandem-actor-id", "finance-member")
+        .header("x-tandem-request-source", "tandem-web")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("ENTERPRISE_READ_ACCESS_REQUIRED")
+    );
+}
+
+#[tokio::test]
+async fn enterprise_onboarding_preview_returns_operations_and_does_not_persist() {
+    let state = test_state().await;
+    let org_units_path = state.enterprise_org_units_path.clone();
+    let connectors_path = state.enterprise_connectors_path.clone();
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/onboarding-plans/preview")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::from(
+            json!({
+                "org_units": [{
+                    "unit_id": "finance",
+                    "taxonomy_id": "department",
+                    "display_name": "Finance"
+                }],
+                "connectors": [{
+                    "connector_id": "google_drive",
+                    "provider": "google_drive"
+                }],
+                "credential_refs": [{
+                    "connector_id": "google_drive",
+                    "credential_id": "readonly",
+                    "credential_class": "read_only",
+                    "secret_ref": {
+                        "org_id": "acme",
+                        "workspace_id": "finance",
+                        "provider": "google_kms",
+                        "secret_id": "finance-drive-readonly",
+                        "name": "Finance Drive readonly"
+                    },
+                    "source_bound_resource": {
+                        "organization_id": "acme",
+                        "workspace_id": "finance",
+                        "resource_kind": "document_collection",
+                        "resource_id": "finance-drive"
+                    }
+                }],
+                "source_bindings": [{
+                    "binding_id": "finance-drive",
+                    "connector_id": "google_drive",
+                    "source_type": "google_drive",
+                    "native_source_id": "drive-folder-123",
+                    "resource_ref": {
+                        "organization_id": "acme",
+                        "workspace_id": "finance",
+                        "resource_kind": "document_collection",
+                        "resource_id": "finance-drive"
+                    },
+                    "data_class": "confidential",
+                    "credential_ref_id": "readonly",
+                    "ingestion_policy": {
+                        "allow_indexing": true,
+                        "allow_prompt_context": true,
+                        "require_review": true
+                    }
+                }],
+                "mcp_requirements": [{
+                    "name": "pilot-slack",
+                    "required_tools": ["post_message"]
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("valid").and_then(Value::as_bool), Some(true));
+    assert!(payload
+        .get("operations")
+        .and_then(Value::as_array)
+        .is_some_and(
+            |ops| ops.iter().any(|op| op.get("kind").and_then(Value::as_str)
+                == Some("source_binding")
+                && op.get("status").and_then(Value::as_str) == Some("would_create"))
+        ));
+    assert_eq!(state.enterprise_org_units.read().await.len(), 0);
+    assert_eq!(state.enterprise_connectors.read().await.len(), 0);
+    assert!(!org_units_path.exists());
+    assert!(!connectors_path.exists());
+}
+
+#[tokio::test]
+async fn enterprise_onboarding_preview_blocks_raw_credentials_and_destructive_actions() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/enterprise/onboarding-plans/preview")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "finance")
+        .body(Body::from(
+            json!({
+                "org_units": [{
+                    "unit_id": "finance",
+                    "display_name": "Finance",
+                    "action": "delete"
+                }],
+                "connectors": [{
+                    "connector_id": "google_drive",
+                    "provider": "google_drive"
+                }],
+                "credential_refs": [{
+                    "connector_id": "google_drive",
+                    "credential_id": "readonly",
+                    "credential_class": "read_only",
+                    "credential_value": {"token": "secret"},
+                    "secret_ref": {
+                        "org_id": "acme",
+                        "workspace_id": "finance",
+                        "provider": "google_kms",
+                        "secret_id": "finance-drive-readonly",
+                        "name": "Finance Drive readonly"
+                    }
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("valid").and_then(Value::as_bool), Some(false));
+    let errors = payload
+        .get("blocking_errors")
+        .and_then(Value::as_array)
+        .expect("errors");
+    assert!(errors
+        .iter()
+        .any(|error| error.get("code").and_then(Value::as_str)
+            == Some("ENTERPRISE_CONNECTOR_CREDENTIAL_VALUE_NOT_ALLOWED")));
+    assert!(errors
+        .iter()
+        .any(|error| error.get("code").and_then(Value::as_str)
+            == Some("ENTERPRISE_PREVIEW_DESTRUCTIVE_ACTION_NOT_ALLOWED")));
+    assert_eq!(state.enterprise_org_units.read().await.len(), 0);
+    assert_eq!(state.enterprise_connectors.read().await.len(), 0);
+}
+
+#[tokio::test]
 async fn enterprise_connector_providers_expose_google_drive_read_only_constraints() {
     let state = test_state().await;
     let app = app_router(state);
@@ -1146,7 +1351,7 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
                 "data_class": "financial_record",
                 "ingestion_policy": {
                     "allow_indexing": true,
-                    "allow_prompt_context": false,
+                    "allow_prompt_context": true,
                     "require_review": true
                 }
             })
