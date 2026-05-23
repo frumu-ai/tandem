@@ -1,7 +1,13 @@
 use super::*;
 
+fn context_run_mutation_checkpoint_test_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 #[tokio::test]
 async fn context_run_mutation_checkpoints_endpoint_returns_records_and_summary() {
+    let _guard = context_run_mutation_checkpoint_test_lock().lock().await;
     let state = test_state().await;
     let app = app_router(state.clone());
 
@@ -185,8 +191,12 @@ async fn context_run_mutation_checkpoints_endpoint_returns_records_and_summary()
 
 #[tokio::test]
 async fn rollback_execute_applies_executable_preview_steps() {
+    let _guard = context_run_mutation_checkpoint_test_lock().lock().await;
     let state = test_state().await;
     let app = app_router(state.clone());
+    let workspace_root =
+        std::env::temp_dir().join(format!("tandem-context-rollback-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
 
     let create_req = Request::builder()
         .method("POST")
@@ -196,6 +206,11 @@ async fn rollback_execute_applies_executable_preview_steps() {
             json!({
                 "run_id": "ctx-run-mutation-exec-1",
                 "objective": "execute rollback",
+                "workspace": {
+                    "workspace_id": "ctx-run-mutation-exec-1",
+                    "canonical_path": workspace_root.to_string_lossy(),
+                    "lease_epoch": 0
+                }
             })
             .to_string(),
         ))
@@ -220,17 +235,6 @@ async fn rollback_execute_applies_executable_preview_steps() {
     let workspace_root = get_payload["run"]["workspace"]["canonical_path"]
         .as_str()
         .expect("workspace path");
-    let mut paused_run = get_payload["run"].clone();
-    paused_run["status"] = Value::String("paused".to_string());
-    let put_req = Request::builder()
-        .method("PUT")
-        .uri("/context/runs/ctx-run-mutation-exec-1")
-        .header("content-type", "application/json")
-        .body(Body::from(paused_run.to_string()))
-        .expect("put request");
-    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
-    assert_eq!(put_resp.status(), StatusCode::OK);
-
     let target_path = std::path::Path::new(workspace_root).join("src/lib.rs");
     std::fs::create_dir_all(target_path.parent().expect("parent")).expect("create parent");
     std::fs::write(&target_path, "temporary").expect("write file");
@@ -273,6 +277,27 @@ async fn rollback_execute_applies_executable_preview_steps() {
         .await
         .expect("event response");
     assert_eq!(event_resp.status(), StatusCode::OK);
+
+    let get_req = Request::builder()
+        .method("GET")
+        .uri("/context/runs/ctx-run-mutation-exec-1")
+        .body(Body::empty())
+        .expect("get request");
+    let get_resp = app.clone().oneshot(get_req).await.expect("get response");
+    let get_body = to_bytes(get_resp.into_body(), usize::MAX)
+        .await
+        .expect("get body");
+    let get_payload: Value = serde_json::from_slice(&get_body).expect("get json");
+    let mut paused_run = get_payload["run"].clone();
+    paused_run["status"] = Value::String("paused".to_string());
+    let put_req = Request::builder()
+        .method("PUT")
+        .uri("/context/runs/ctx-run-mutation-exec-1")
+        .header("content-type", "application/json")
+        .body(Body::from(paused_run.to_string()))
+        .expect("put request");
+    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
 
     let preview_req = Request::builder()
         .method("GET")
@@ -357,6 +382,7 @@ async fn rollback_execute_applies_executable_preview_steps() {
 
 #[tokio::test]
 async fn rollback_execute_blocks_advisory_only_steps() {
+    let _guard = context_run_mutation_checkpoint_test_lock().lock().await;
     let state = test_state().await;
     let app = app_router(state.clone());
 
@@ -378,27 +404,6 @@ async fn rollback_execute_blocks_advisory_only_steps() {
         .await
         .expect("create response");
     assert_eq!(create_resp.status(), StatusCode::OK);
-
-    let get_req = Request::builder()
-        .method("GET")
-        .uri("/context/runs/ctx-run-mutation-blocked-1")
-        .body(Body::empty())
-        .expect("get request");
-    let get_resp = app.clone().oneshot(get_req).await.expect("get response");
-    let get_body = to_bytes(get_resp.into_body(), usize::MAX)
-        .await
-        .expect("get body");
-    let get_payload: Value = serde_json::from_slice(&get_body).expect("get json");
-    let mut paused_run = get_payload["run"].clone();
-    paused_run["status"] = Value::String("paused".to_string());
-    let put_req = Request::builder()
-        .method("PUT")
-        .uri("/context/runs/ctx-run-mutation-blocked-1")
-        .header("content-type", "application/json")
-        .body(Body::from(paused_run.to_string()))
-        .expect("put request");
-    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
-    assert_eq!(put_resp.status(), StatusCode::OK);
 
     let event_req = Request::builder()
         .method("POST")
@@ -439,6 +444,27 @@ async fn rollback_execute_blocks_advisory_only_steps() {
         .await
         .expect("event response");
     assert_eq!(event_resp.status(), StatusCode::OK);
+
+    let get_req = Request::builder()
+        .method("GET")
+        .uri("/context/runs/ctx-run-mutation-blocked-1")
+        .body(Body::empty())
+        .expect("get request");
+    let get_resp = app.clone().oneshot(get_req).await.expect("get response");
+    let get_body = to_bytes(get_resp.into_body(), usize::MAX)
+        .await
+        .expect("get body");
+    let get_payload: Value = serde_json::from_slice(&get_body).expect("get json");
+    let mut paused_run = get_payload["run"].clone();
+    paused_run["status"] = Value::String("paused".to_string());
+    let put_req = Request::builder()
+        .method("PUT")
+        .uri("/context/runs/ctx-run-mutation-blocked-1")
+        .header("content-type", "application/json")
+        .body(Body::from(paused_run.to_string()))
+        .expect("put request");
+    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
 
     let preview_req = Request::builder()
         .method("GET")
@@ -497,6 +523,7 @@ async fn rollback_execute_blocks_advisory_only_steps() {
 
 #[tokio::test]
 async fn rollback_execute_requires_explicit_step_selection() {
+    let _guard = context_run_mutation_checkpoint_test_lock().lock().await;
     let state = test_state().await;
     let app = app_router(state.clone());
 
@@ -508,6 +535,72 @@ async fn rollback_execute_requires_explicit_step_selection() {
             json!({
                 "run_id": "ctx-run-mutation-missing-selection-1",
                 "objective": "missing selection",
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let get_req = Request::builder()
+        .method("GET")
+        .uri("/context/runs/ctx-run-mutation-missing-selection-1")
+        .body(Body::empty())
+        .expect("get request");
+    let get_resp = app.clone().oneshot(get_req).await.expect("get response");
+    let get_body = to_bytes(get_resp.into_body(), usize::MAX)
+        .await
+        .expect("get body");
+    let get_payload: Value = serde_json::from_slice(&get_body).expect("get json");
+    let mut paused_run = get_payload["run"].clone();
+    paused_run["status"] = Value::String("paused".to_string());
+    let put_req = Request::builder()
+        .method("PUT")
+        .uri("/context/runs/ctx-run-mutation-missing-selection-1")
+        .header("content-type", "application/json")
+        .body(Body::from(paused_run.to_string()))
+        .expect("put request");
+    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let execute_req = Request::builder()
+        .method("POST")
+        .uri("/context/runs/ctx-run-mutation-missing-selection-1/checkpoints/mutations/rollback-execute")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "confirm": "rollback",
+                "event_ids": []
+            })
+            .to_string(),
+        ))
+        .expect("execute request");
+    let execute_resp = app
+        .clone()
+        .oneshot(execute_req)
+        .await
+        .expect("execute response");
+    assert_eq!(execute_resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn rollback_execute_blocks_unknown_selected_step_ids() {
+    let _guard = context_run_mutation_checkpoint_test_lock().lock().await;
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/context/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "ctx-run-mutation-unknown-selection-1",
+                "objective": "unknown selection",
             })
             .to_string(),
         ))
@@ -539,50 +632,6 @@ async fn rollback_execute_requires_explicit_step_selection() {
         .expect("put request");
     let put_resp = app.clone().oneshot(put_req).await.expect("put response");
     assert_eq!(put_resp.status(), StatusCode::OK);
-
-    let execute_req = Request::builder()
-        .method("POST")
-        .uri("/context/runs/ctx-run-mutation-missing-selection-1/checkpoints/mutations/rollback-execute")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "confirm": "rollback",
-                "event_ids": []
-            })
-            .to_string(),
-        ))
-        .expect("execute request");
-    let execute_resp = app
-        .clone()
-        .oneshot(execute_req)
-        .await
-        .expect("execute response");
-    assert_eq!(execute_resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn rollback_execute_blocks_unknown_selected_step_ids() {
-    let state = test_state().await;
-    let app = app_router(state.clone());
-
-    let create_req = Request::builder()
-        .method("POST")
-        .uri("/context/runs")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "run_id": "ctx-run-mutation-unknown-selection-1",
-                "objective": "unknown selection",
-            })
-            .to_string(),
-        ))
-        .expect("create request");
-    let create_resp = app
-        .clone()
-        .oneshot(create_req)
-        .await
-        .expect("create response");
-    assert_eq!(create_resp.status(), StatusCode::OK);
 
     let execute_req = Request::builder()
         .method("POST")
@@ -621,6 +670,7 @@ async fn rollback_execute_blocks_unknown_selected_step_ids() {
 
 #[tokio::test]
 async fn rollback_execute_blocks_when_policy_ack_is_missing() {
+    let _guard = context_run_mutation_checkpoint_test_lock().lock().await;
     let state = test_state().await;
     let app = app_router(state.clone());
 
@@ -696,6 +746,7 @@ async fn rollback_execute_blocks_when_policy_ack_is_missing() {
 
 #[tokio::test]
 async fn rollback_execute_blocks_when_run_status_is_not_eligible() {
+    let _guard = context_run_mutation_checkpoint_test_lock().lock().await;
     let state = test_state().await;
     let app = app_router(state.clone());
 

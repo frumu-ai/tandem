@@ -1396,6 +1396,7 @@ mod tests {
         assert!(result
             .skip_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("no active promoted knowledge")));
+            .is_some_and(|reason| reason.contains("no reusable knowledge spaces")
+                || reason.contains("no active promoted knowledge")));
     }
 }

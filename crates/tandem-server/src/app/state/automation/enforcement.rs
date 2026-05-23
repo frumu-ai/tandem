@@ -154,6 +154,12 @@ pub(crate) fn automation_node_consumes_upstream_artifacts_for_delivery(
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    let phase = builder
+        .and_then(|builder| builder.get("phase"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
     let retry_class = builder
         .and_then(|builder| builder.get("retry_class"))
         .and_then(Value::as_str)
@@ -164,11 +170,12 @@ pub(crate) fn automation_node_consumes_upstream_artifacts_for_delivery(
 
     matches!(
         task_class.as_str(),
-        "report_writing" | "brief_writer" | "brief_writing" | "delivery"
+        "report_writing" | "brief_writer" | "brief_writing" | "delivery" | "connector_write"
     ) || matches!(
         task_kind.as_str(),
         "delivery" | "draft_deliverable" | "synthesis"
-    ) || retry_class == "artifact_revision"
+    ) || matches!(phase.as_str(), "deliver" | "delivery")
+        || retry_class == "artifact_revision"
         || (objective.contains("use the synthesized findings")
             || objective.contains("use synthesized findings")
             || objective.contains("synthesize the triage summary")
@@ -997,6 +1004,9 @@ pub(crate) fn automation_node_output_enforcement(
     if enforcement.required_sections.is_empty() && is_research_contract {
         if is_external_research {
             enforcement.required_sections.push("citations".to_string());
+            enforcement
+                .required_sections
+                .push("web_sources_reviewed".to_string());
         } else if is_research_synthesis && enforcement_requires_external_sources(&enforcement) {
             enforcement.required_sections.push("citations".to_string());
         }

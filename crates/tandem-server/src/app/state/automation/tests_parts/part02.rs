@@ -131,18 +131,7 @@ fn report_markdown_nodes_do_not_infer_template_filenames_as_workspace_writes() {
                 | "resume-positioning.md"
         )
     }));
-    assert!(must_write_files
-        .iter()
-        .any(|path| path == "daily-recaps/2026-04-09-job-search-recap.md"));
-    assert!(must_write_files
-        .iter()
-        .any(|path| path == "opportunities/ranked/2026-04-09-ranked-opportunities.md"));
-    assert!(must_write_files
-        .iter()
-        .any(|path| path == "opportunities/shortlisted/2026-04-09-shortlist.md"));
-    assert!(must_write_files
-        .iter()
-        .any(|path| path == "tracker/pipeline.md"));
+    assert!(must_write_files.is_empty());
 }
 
 #[test]

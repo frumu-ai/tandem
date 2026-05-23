@@ -11,6 +11,11 @@ use crate::app::state::automation::node_output::{
     detect_automation_node_phase, detect_automation_node_status, wrap_automation_node_output,
 };
 
+fn automation_executor_test_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 mod brief_coverage;
 mod brief_outcomes;
 mod brief_validation;

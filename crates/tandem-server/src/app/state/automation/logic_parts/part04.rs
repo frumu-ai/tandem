@@ -237,6 +237,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .unwrap_or(true)
             && automation_verified_output_differs_from_preexisting(preexisting_output, value)
     });
+    let verified_output_for_restore = verified_output.clone();
     let mut accepted_output = verified_output;
     let verified_output_nonterminal_status = accepted_output
         .as_ref()
@@ -337,6 +338,14 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         || !enforcement.required_sections.is_empty()
         || !enforcement.prewrite_gates.is_empty();
     let parsed_status = parse_status_json(session_text);
+    let preserve_completed_generic_artifact = validator_kind
+        == crate::AutomationOutputValidatorKind::GenericArtifact
+        && parsed_status
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value.eq_ignore_ascii_case("completed"));
     let mut structured_handoff =
         if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson {
             extract_structured_handoff_json(session_text)
@@ -702,14 +711,15 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     runtime_values,
                 )
             });
-        let current_attempt_has_recorded_activity = !executed_tools_for_attempt.is_empty()
+        let current_attempt_has_non_verified_activity = !executed_tools_for_attempt.is_empty()
             || !session_write_candidates.is_empty()
-            || verified_output_materialized
             || (use_upstream_evidence && upstream_evidence.is_some());
+        let current_attempt_has_recorded_activity =
+            current_attempt_has_non_verified_activity || verified_output_materialized;
         let preexisting_output_reuse_allowed =
             automation_node_allows_preexisting_output_reuse(node);
-        let current_attempt_output_materialized =
-            current_attempt_output_materialized_via_filesystem || verified_output_materialized;
+        let current_attempt_output_materialized = current_attempt_output_materialized_via_filesystem
+            || (verified_output_materialized && current_attempt_has_non_verified_activity);
         let must_write_file_statuses = must_write_files
             .iter()
             .map(|required_path| {
@@ -770,6 +780,10 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             object.insert(
                 "current_attempt_has_recorded_activity".to_string(),
                 json!(current_attempt_has_recorded_activity),
+            );
+            object.insert(
+                "current_attempt_has_non_verified_activity".to_string(),
+                json!(current_attempt_has_non_verified_activity),
             );
             object.insert(
                 "current_attempt_has_read".to_string(),
@@ -850,10 +864,25 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             accepted_output = None;
             accepted_candidate_source = Some("current_attempt_missing_output_write".to_string());
             unmet_requirements.push("current_attempt_output_missing".to_string());
-            rejected_reason = Some(format!(
-                "required output `{}` was not created in the current attempt",
-                path
-            ));
+            let requested_read_missing = validator_kind
+                == crate::AutomationOutputValidatorKind::ResearchBrief
+                && tool_telemetry
+                    .get("requested_tools")
+                    .and_then(Value::as_array)
+                    .is_some_and(|tools| tools.iter().any(|value| value.as_str() == Some("read")))
+                && !tool_telemetry
+                    .get("executed_tools")
+                    .and_then(Value::as_array)
+                    .is_some_and(|tools| tools.iter().any(|value| value.as_str() == Some("read")));
+            rejected_reason = Some(if requested_read_missing {
+                "research completed without concrete file reads or required source coverage"
+                    .to_string()
+            } else {
+                format!(
+                    "required output `{}` was not created in the current attempt",
+                    path
+                )
+            });
         } else if !allow_preexisting_candidate {
             accepted_candidate_source = Some("current_attempt_missing_activity".to_string());
         }
@@ -868,7 +897,9 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             })
             .collect::<Vec<_>>();
         if let Some(best) = best_candidate.clone() {
-            accepted_candidate_source = Some(best.source.clone());
+            if !missing_current_attempt_output_write {
+                accepted_candidate_source = Some(best.source.clone());
+            }
             reviewed_paths_backed_by_read = best.reviewed_paths_backed_by_read.clone();
             citation_count = best.citation_count;
             web_sources_reviewed_present = best.web_sources_reviewed_present;
@@ -1071,8 +1102,9 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             .any(|tool| tool == "websearch")
             && !web_research_unavailable;
         if has_research_contract && (requested_has_read || requires_local_source_reads) {
-            let missing_concrete_reads =
-                !optional_workspace_reads && requires_local_source_reads && !executed_has_read;
+            let missing_concrete_reads = !optional_workspace_reads
+                && (requires_local_source_reads || requested_has_read)
+                && !executed_has_read;
             let missing_named_source_reads = !missing_required_source_read_paths.is_empty();
             let files_reviewed_backed = selected_assessment.is_some_and(|assessment| {
                 !assessment.reviewed_paths.is_empty()
@@ -1167,6 +1199,16 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 } else if missing_named_source_reads {
                     "research completed without reading the exact required source files".to_string()
                 } else if missing_concrete_reads {
+                    if automation_node_is_handoff_only_structured_json(node) {
+                        "structured handoff completed without required concrete file reads"
+                            .to_string()
+                    } else {
+                        "research completed without concrete file reads or required source coverage"
+                            .to_string()
+                    }
+                } else if missing_file_coverage || !unreviewed_relevant_paths.is_empty() {
+                    "research completed without covering or explicitly skipping relevant discovered files".to_string()
+                } else if missing_web_research && requested_has_read && !current_executed_has_read {
                     "research completed without concrete file reads or required source coverage"
                         .to_string()
                 } else if missing_web_research {
@@ -1313,9 +1355,10 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             if missing_editorial_substance {
                 unmet_requirements.push("editorial_substance_missing".to_string());
             }
-            if selected
-                .as_ref()
-                .is_some_and(|assessment| assessment.placeholder_like)
+            if contract_kind != "citations"
+                && selected
+                    .as_ref()
+                    .is_some_and(|assessment| assessment.placeholder_like)
             {
                 unmet_requirements.push("placeholder_artifact".to_string());
             }
@@ -1503,6 +1546,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         if semantic_block_reason.is_some()
             && enforcement_requires_evidence
             && !current_attempt_has_recorded_activity
+            && !preserve_completed_generic_artifact
         {
             accepted_output = None;
         }
@@ -1651,14 +1695,28 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         let optional_workspace_reads =
             enforcement::automation_node_allows_optional_workspace_reads(node);
 
-        if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson
+        if (automation_node_is_handoff_only_structured_json(node)
+            || (validator_kind == crate::AutomationOutputValidatorKind::StructuredJson
+                && accepted_output.is_none()))
             && structured_handoff.is_none()
         {
             unmet_requirements.push("structured_handoff_missing".to_string());
         }
+        let required_workspace_writes_completed = validation_basis
+            .get("must_write_file_statuses")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| {
+                !rows.is_empty()
+                    && rows.iter().all(|item| {
+                        item.get("materialized_by_current_attempt")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                    })
+            });
         if requires_workspace_inspection
             && !workspace_inspection_satisfied
             && !connector_source_satisfied
+            && !required_workspace_writes_completed
         {
             unmet_requirements.push("workspace_inspection_required".to_string());
         }
@@ -1716,6 +1774,15 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         .validation_profile
         .clone()
         .unwrap_or_else(|| "artifact_only".to_string());
+    if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
+        && !unreviewed_relevant_paths.is_empty()
+        && !repair_succeeded
+        && !unmet_requirements
+            .iter()
+            .any(|value| value == "relevant_files_not_reviewed_or_skipped")
+    {
+        unmet_requirements.push("relevant_files_not_reviewed_or_skipped".to_string());
+    }
     unmet_requirements.sort();
     unmet_requirements.dedup();
     let mut warning_requirements = unmet_requirements
@@ -1724,9 +1791,93 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         .cloned()
         .collect::<Vec<_>>();
     unmet_requirements.retain(|item| !validation_requirement_is_warning(&validation_profile, item));
+    if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
+        && quality_mode_resolution.effective == enforcement::AutomationQualityMode::StrictResearchV1
+    {
+        let promoted = warning_requirements
+            .iter()
+            .filter(|item| item.as_str() == "relevant_files_not_reviewed_or_skipped")
+            .cloned()
+            .collect::<Vec<_>>();
+        if !promoted.is_empty() {
+            unmet_requirements.extend(promoted);
+            warning_requirements
+                .retain(|item| item.as_str() != "relevant_files_not_reviewed_or_skipped");
+        }
+    }
     warning_requirements.sort();
     warning_requirements.dedup();
-    semantic_block_reason = semantic_block_reason_for_requirements(&unmet_requirements);
+    if unmet_requirements.is_empty()
+        && !warning_requirements.is_empty()
+        && semantic_block_reason.as_deref().is_some_and(|reason| {
+            matches!(
+                reason,
+                "editorial artifact is missing expected markdown structure"
+                    | "editorial artifact is too weak or placeholder-like"
+            )
+        })
+    {
+        semantic_block_reason = None;
+    }
+    if let Some(reason) = semantic_block_reason_for_requirements(&unmet_requirements) {
+        semantic_block_reason = Some(reason);
+    }
+    if unmet_requirements
+        .iter()
+        .any(|value| value == "relevant_files_not_reviewed_or_skipped")
+        && rejected_reason.is_none()
+    {
+        rejected_reason = semantic_block_reason.clone();
+    }
+    if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
+        && tool_telemetry
+            .get("requested_tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().any(|value| value.as_str() == Some("read")))
+        && !tool_telemetry
+            .get("executed_tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().any(|value| value.as_str() == Some("read")))
+        && semantic_block_reason.as_deref()
+            == Some("research completed without required current web research")
+        && !unmet_requirements
+            .iter()
+            .any(|value| value == "current_attempt_output_missing")
+    {
+        semantic_block_reason = Some(
+            "research completed without concrete file reads or required source coverage"
+                .to_string(),
+        );
+        rejected_reason = semantic_block_reason.clone();
+    }
+    if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
+        && semantic_block_reason.as_deref()
+            == Some("research completed without concrete file reads or required source coverage")
+        && rejected_reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("required output `"))
+        && !unmet_requirements
+            .iter()
+            .any(|value| value == "current_attempt_output_missing")
+    {
+        rejected_reason = semantic_block_reason.clone();
+    }
+    let preserve_completed_generic_artifact = validator_kind
+        == crate::AutomationOutputValidatorKind::GenericArtifact
+        && parsed_status
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value.eq_ignore_ascii_case("completed"));
+    if unmet_requirements.iter().any(|requirement| {
+        matches!(
+            requirement.as_str(),
+            "read_only_source_mutations" | "provider_required_tool_mode_unsatisfied"
+        )
+    }) {
+        rejected_reason = semantic_block_reason.clone();
+    }
     if unmet_requirements
         .iter()
         .any(|requirement| requirement == "mcp_required_tool_missing")
@@ -1759,10 +1910,16 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         .any(|value| value == "required_workspace_files_missing")
         && !missing_required_workspace_files.is_empty()
     {
-        let missing_line = missing_required_workspace_files.join(", ");
-        let reason = format!(
-            "required workspace files were not written in the current attempt: {missing_line}"
-        );
+        let reason = if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson
+            && !automation_node_explicit_output_files(node).is_empty()
+        {
+            "required workspace files were not written for this run".to_string()
+        } else {
+            format!(
+                "required workspace files were not written in the current attempt: {}",
+                missing_required_workspace_files.join(", ")
+            )
+        };
         semantic_block_reason = Some(reason.clone());
         if rejected_reason.is_none() {
             rejected_reason = Some(reason);
@@ -1777,12 +1934,14 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 | "mcp_connector_source_missing"
                 | "mcp_connector_source_artifact_missing"
                 | "mcp_discovery_missing"
-                | "no_concrete_reads"
-                | "concrete_read_required"
                 | "required_source_paths_not_read"
-                | "missing_successful_web_research"
                 | "web_research_artifact_contradicts_tool_receipts"
-        )
+        ) || (!preserve_completed_generic_artifact
+            && validator_kind != crate::AutomationOutputValidatorKind::ResearchBrief
+            && matches!(
+                requirement.as_str(),
+                "no_concrete_reads" | "concrete_read_required" | "missing_successful_web_research"
+            ))
     }) {
         accepted_output = None;
     }
@@ -1808,7 +1967,11 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                 output_path,
                 run_id,
                 runtime_values,
-            ) || verified_output_materialized
+            ) || (verified_output_materialized
+                && validation_basis
+                    .get("current_attempt_has_non_verified_activity")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false))
         });
     if accepted_output.is_none()
         && requires_current_attempt_output
@@ -1843,6 +2006,17 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         if semantic_block_reason.is_none() {
             semantic_block_reason =
                 Some("required output was not created in the current attempt".to_string());
+        }
+        if preexisting_output.is_some_and(|previous| previous != session_text) {
+            semantic_block_reason =
+                Some("required output was not created in the current attempt".to_string());
+            let missing_output_path = required_output_path_for_retry
+                .clone()
+                .unwrap_or_else(|| automation_node_required_output_path(node).unwrap_or_default());
+            rejected_reason = Some(format!(
+                "required output `{}` was not created in the current attempt",
+                missing_output_path
+            ));
         }
     }
     if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson
@@ -1941,18 +2115,36 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     | "mcp_required_tool_missing"
                     | "external_mutation_failed"
                     | "structured_handoff_missing"
-            )
+            ) || (value == "missing_successful_web_research"
+                && validator_kind != crate::AutomationOutputValidatorKind::ResearchBrief)
+                || (value == "no_concrete_reads"
+                    && (automation_node_is_handoff_only_structured_json(node)
+                        || validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief))
+                || (value == "concrete_read_required"
+                    && (automation_node_is_handoff_only_structured_json(node)
+                        || validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief))
         });
-    if repairable_contract_miss_with_node_budget
-        || (!node_attempt_exhausted
-            && unmet_requirements
-                .iter()
-                .any(|value| value == "structured_handoff_missing"))
+    if !repair_exhausted_hint
+        && (repairable_contract_miss_with_node_budget
+            || (!node_attempt_exhausted
+                && unmet_requirements.iter().any(|value| {
+                    value == "structured_handoff_missing"
+                        || (value == "no_concrete_reads"
+                            && (automation_node_is_handoff_only_structured_json(node)
+                                || validator_kind
+                                    == crate::AutomationOutputValidatorKind::ResearchBrief))
+                        || (value == "concrete_read_required"
+                            && (automation_node_is_handoff_only_structured_json(node)
+                                || validator_kind
+                                    == crate::AutomationOutputValidatorKind::ResearchBrief))
+                })))
     {
         repair_exhausted = false;
     }
     let has_required_tools = !enforcement.required_tools.is_empty();
-    let contract_requires_repair = !enforcement.retry_on_missing.is_empty()
+    let contract_requires_repair = validator_kind
+        == crate::AutomationOutputValidatorKind::ResearchBrief
+        || !enforcement.retry_on_missing.is_empty()
         || has_required_tools
         || external_mutation_failed
         || validator_kind == crate::AutomationOutputValidatorKind::StructuredJson;
@@ -1963,32 +2155,82 @@ pub(crate) fn validate_automation_artifact_output_with_context(
     let structured_handoff_missing = unmet_requirements
         .iter()
         .any(|value| value == "structured_handoff_missing");
+    if automation_node_is_handoff_only_structured_json(node)
+        && !structured_handoff_missing
+        && unmet_requirements
+            .iter()
+            .any(|value| value == "no_concrete_reads")
+    {
+        let reason =
+            "structured handoff completed without required concrete file reads".to_string();
+        semantic_block_reason = Some(reason.clone());
+        rejected_reason = Some(reason);
+    }
     let hard_blocking_unmet_requirements = unmet_requirements.iter().any(|value| {
         matches!(
             value.as_str(),
-            "read_only_source_mutations" | "artifact_status_not_terminal"
+            "read_only_source_mutations"
+                | "artifact_status_not_terminal"
+                | "required_workspace_files_missing"
         )
     }) || (!current_attempt_has_recorded_activity
         && unmet_requirements.iter().any(|value| {
             matches!(
                 value.as_str(),
-                "current_attempt_output_missing"
-                    | "provider_required_tool_mode_unsatisfied"
+                "provider_required_tool_mode_unsatisfied"
                     | "mcp_required_tool_missing"
                     | "mcp_connector_source_missing"
                     | "mcp_connector_source_artifact_missing"
                     | "mcp_discovery_missing"
-                    | "no_concrete_reads"
-                    | "concrete_read_required"
                     | "required_source_paths_not_read"
-                    | "missing_successful_web_research"
-            )
+            ) || (value == "no_concrete_reads"
+                && !preserve_completed_generic_artifact
+                && !automation_node_is_handoff_only_structured_json(node)
+                && validator_kind != crate::AutomationOutputValidatorKind::ResearchBrief)
+                || (value == "concrete_read_required"
+                    && !preserve_completed_generic_artifact
+                    && !automation_node_is_handoff_only_structured_json(node)
+                    && validator_kind != crate::AutomationOutputValidatorKind::ResearchBrief)
         })
         && !structured_handoff_missing);
     if hard_blocking_unmet_requirements {
         accepted_output = None;
     }
-    let validation_outcome = if hard_blocking_unmet_requirements {
+    if unmet_requirements
+        .iter()
+        .any(|value| value == "external_mutation_failed")
+    {
+        accepted_output = None;
+    }
+    let validation_outcome = if unmet_requirements
+        .iter()
+        .any(|value| value == "current_attempt_output_missing")
+        && preexisting_output.is_some()
+    {
+        "blocked"
+    } else if unmet_requirements
+        .iter()
+        .any(|value| value == "current_attempt_output_missing")
+        && !node_attempt_exhausted
+    {
+        "needs_repair"
+    } else if unmet_requirements.iter().any(|value| {
+        matches!(
+            value.as_str(),
+            "upstream_notion_identity_overstated"
+                | "uncited_market_claims_from_limited_web_artifact"
+        )
+    }) {
+        "blocked"
+    } else if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
+        && unmet_requirements
+            .iter()
+            .any(|value| value == "no_concrete_reads" || value == "concrete_read_required")
+        || semantic_block_reason.as_deref()
+            == Some("research completed without concrete file reads or required source coverage")
+    {
+        "needs_repair"
+    } else if hard_blocking_unmet_requirements {
         "blocked"
     } else if contract_requires_repair && semantic_block_reason.is_some() {
         if repair_exhausted || hard_blocking_unmet_requirements {
@@ -2006,6 +2248,20 @@ pub(crate) fn validate_automation_artifact_output_with_context(
     if external_mutation_failed {
         accepted_output = None;
         accepted_candidate_source = None;
+    }
+    if preserve_completed_generic_artifact
+        && accepted_output.is_none()
+        && !external_mutation_failed
+        && !unmet_requirements
+            .iter()
+            .any(|value| value == "current_attempt_output_missing")
+    {
+        if let Some((path, text)) = verified_output_for_restore {
+            accepted_output = Some((path.clone(), text.clone()));
+            if accepted_candidate_source.is_none() {
+                accepted_candidate_source = Some("verified_output".to_string());
+            }
+        }
     }
     let should_classify = contract_requires_repair;
     let latest_web_research_failure = tool_telemetry
@@ -2105,6 +2361,16 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         required_next_tool_actions.dedup();
     }
 
+    if unmet_requirements
+        .iter()
+        .any(|value| value == "required_source_paths_not_read")
+    {
+        let reason =
+            "research completed without reading the exact required source files".to_string();
+        rejected_reason = Some(reason.clone());
+        semantic_block_reason = Some(reason);
+    }
+
     let metadata = json!({
         "accepted_artifact_path": accepted_output.as_ref().map(|(path, _)| path.clone()),
         "accepted_candidate_source": accepted_candidate_source,
@@ -2188,9 +2454,31 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         "structured_handoff_present": structured_handoff.is_some(),
     });
     let rejected = metadata
-        .get("rejected_artifact_reason")
-        .and_then(Value::as_str)
-        .map(str::to_string)
+        .get("unmet_requirements")
+        .and_then(Value::as_array)
+        .and_then(|requirements| {
+            if requirements.iter().any(|requirement| {
+                requirement.as_str() == Some("provider_required_tool_mode_unsatisfied")
+            }) {
+                Some(
+                    "artifact contains a provider required-tool/write-required failure marker"
+                        .to_string(),
+                )
+            } else if requirements
+                .iter()
+                .any(|requirement| requirement.as_str() == Some("read_only_source_mutations"))
+            {
+                Some("read-only source-of-truth mutation detected".to_string())
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            metadata
+                .get("rejected_artifact_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .or_else(|| {
             metadata
                 .get("semantic_block_reason")

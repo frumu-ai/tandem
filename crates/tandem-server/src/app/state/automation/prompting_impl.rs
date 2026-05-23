@@ -47,14 +47,14 @@ pub(crate) fn automation_node_declared_artifacts_to_create(
             push_from(&mut out, &vals);
         }
     }
-    push_from(
-        &mut out,
-        &automation_node_builder_string_array(node, "output_files"),
-    );
-    push_from(
-        &mut out,
-        &automation_node_builder_string_array(node, "must_write_files"),
-    );
+    let explicit_output_files = automation_node_builder_string_array(node, "output_files");
+    push_from(&mut out, &explicit_output_files);
+    if explicit_output_files.is_empty() {
+        push_from(
+            &mut out,
+            &automation_node_builder_string_array(node, "must_write_files"),
+        );
+    }
     let read_only_files: HashSet<String> =
         enforcement::automation_node_read_only_source_of_truth_files(node)
             .into_iter()
@@ -554,9 +554,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         .map(|contract| contract.kind.as_str())
         .unwrap_or("structured_json");
     let validator_kind = automation_output_validator_kind(node);
-    let handoff_only_structured_json = validator_kind
-        == crate::AutomationOutputValidatorKind::StructuredJson
-        && automation_node_required_output_path(node).is_none();
+    let handoff_only_structured_json = automation_node_is_handoff_only_structured_json(node);
     let normalized_upstream_inputs = upstream_inputs
         .iter()
         .map(|input| {
@@ -891,7 +889,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
             String::new()
         } else {
             format!(
-                "\n- Write the required workspace file(s) first: {}.\n- Then write the required run artifact to `{}`.",
+                "\n- Write the required workspace file(s) first: {}.\n- Write the required run artifact to `{}` before ending this attempt.",
                 required_workspace_write_targets
                     .iter()
                     .map(|path| format!("`{}`", path))
@@ -950,8 +948,13 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     }
     if !required_workspace_write_targets.is_empty() {
         sections.push(format!(
-            "Required Workspace Writes:\n- These workspace files are part of the node objective and are approved write targets for this run.\n{}\n- Write these workspace files before the required run artifact when both are present.\n- Do not rely on, auto-copy, or mirror the run artifact into these paths; call an approved workspace write tool for each required path in the current attempt.\n- Keep these writes inside the workspace root and use full file contents when creating a file.",
-            automation_prompt_render_path_bullets(&required_workspace_write_targets)
+            "Required Workspace Writes:\n- These workspace files are part of the node objective and are approved write targets for this run.\n{}\n- In addition to the run artifact, create or update these required workspace files when needed: {}.\n- Write these workspace files before the required run artifact when both are present.\n- Do not rely on, auto-copy, or mirror the run artifact into these paths; call an approved workspace write tool for each required path in the current attempt.\n- Keep these writes inside the workspace root and use full file contents when creating a file.",
+            automation_prompt_render_path_bullets(&required_workspace_write_targets),
+            required_workspace_write_targets
+                .iter()
+                .map(|path| format!("`{}`", path))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if let Some(ref output_path) = required_output_path {
@@ -979,7 +982,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
                 approved_write_targets_rule
             ),
             _ => format!(
-                "Required Run Artifact:\n- Create or update `{}` for this run.\n- When calling the `write` tool, include the full final file body in the `content` field; do not call `write` with only a path or an empty body.\n- Do not create provisional, placeholder, `in_progress`, `will rewrite later`, or status-note artifacts. Read first when evidence is required, then write the finished artifact.\n- On every retry attempt, rewrite the required output in this attempt even if the content would be identical; do not rely on a prior attempt’s file.\n- Use `glob` and `read` only when you must inspect existing companion files or verify a preexisting artifact before updating it.\n- Do not let an empty `glob` end the run; still create the required final artifact.\n{}\n- Overwrite the declared output with the actual artifact contents for this run instead of preserving a prior placeholder.\n- If this artifact is JSON, use a terminal top-level status such as `completed` for finished work, even when it records connector/tool limitations. Put limitations in explicit limitation fields, not in the status field.\n- If the required run artifact is JSON, also include the exact JSON artifact body in the final response before the compact status object so the engine can recover the artifact when provider-side write delivery is flaky.\n- Do not report success unless this run artifact exists when the stage ends.",
+                "Required Run Artifact:\n- Create or update `{}` for this run.\n- When calling the `write` tool, use `write` immediately to create the full file contents in the `content` field; do not call `write` with only a path or an empty body.\n- Do not create provisional, placeholder, `in_progress`, `will rewrite later`, or status-note artifacts. Read first when evidence is required, then write the finished artifact.\n- On every retry attempt, rewrite the required output in this attempt even if the content would be identical; do not rely on a prior attempt’s file.\n- Use `glob` and `read` only when you must inspect existing companion files or verify a preexisting artifact before updating it.\n- Do not let an empty `glob` end the run; still create the required final artifact.\n{}\n- Overwrite the declared output with the actual artifact contents for this run instead of preserving a prior placeholder.\n- If this artifact is JSON, use a terminal top-level status such as `completed` for finished work, even when it records connector/tool limitations. Put limitations in explicit limitation fields, not in the status field.\n- If the required run artifact is JSON, also include the exact JSON artifact body in the final response before the compact status object so the engine can recover the artifact when provider-side write delivery is flaky.\n- Do not report success unless this run artifact exists when the stage ends.",
                 output_path,
                 approved_write_targets_rule
             ),

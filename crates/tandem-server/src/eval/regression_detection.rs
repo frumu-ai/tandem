@@ -283,7 +283,8 @@ fn check_pass_rate(
     };
 
     let drop = -delta;
-    let (status, message, threshold) = if drop >= thresholds.pass_rate_drop_critical {
+    let (status, message, threshold) = if drop + f64::EPSILON >= thresholds.pass_rate_drop_critical
+    {
         (
             RegressionStatus::Regression,
             format!(
@@ -293,7 +294,7 @@ fn check_pass_rate(
             ),
             thresholds.pass_rate_drop_critical,
         )
-    } else if drop >= thresholds.pass_rate_drop_warning {
+    } else if drop + f64::EPSILON >= thresholds.pass_rate_drop_warning {
         (
             RegressionStatus::Warning,
             format!("Pass rate dropped {:.1} percentage points", drop * 100.0),

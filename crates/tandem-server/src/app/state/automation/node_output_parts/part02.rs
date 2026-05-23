@@ -99,6 +99,14 @@ pub(crate) fn detect_automation_node_status(
         .unwrap_or(false)
         && (!structured_handoff_missing || node_attempt_exhausted);
     let validator_kind = automation_output_validator_kind(node);
+    if verified_output.is_some()
+        && artifact_validation
+            .and_then(|value| value.get("deterministic_artifact"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return ("completed".to_string(), None, None);
+    }
 
     // --- Glob-loop circuit breaker ---
     // If the agent made many discovery (glob/find) calls without ever reading a file,
@@ -306,6 +314,30 @@ pub(crate) fn detect_automation_node_status(
                 .or_else(|| Some("upstream review did not approve the output".to_string())),
             approved,
         );
+    }
+    if artifact_validation
+        .and_then(|value| value.get("validation_outcome"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| value == "needs_repair")
+    {
+        let reason = artifact_validation
+            .and_then(|value| {
+                value
+                    .get("rejected_artifact_reason")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        value
+                            .get("semantic_block_reason")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                    })
+            })
+            .map(str::to_string);
+        return ("needs_repair".to_string(), reason, approved);
     }
     if let Some(reason) = artifact_validation.and_then(|value| {
         value
@@ -518,7 +550,7 @@ pub(crate) fn detect_automation_node_status(
         && verification_outcome.as_deref() == Some("partial")
     {
         return (
-            "needs_repair".to_string(),
+            "blocked".to_string(),
             Some(format!(
                 "coding task completed with only {} of {} declared verification commands run",
                 verification_completed, verification_total
@@ -684,7 +716,15 @@ pub(crate) fn detect_automation_node_status(
     if external_mutation_succeeded
         && !artifact_validation_has_unmet_requirements(artifact_validation)
     {
-        return ("completed".to_string(), explicit_reason, approved);
+        return (
+            if automation_node_is_code_workflow(node) {
+                "done".to_string()
+            } else {
+                "completed".to_string()
+            },
+            explicit_reason,
+            approved,
+        );
     }
     let external_mutation_failed = artifact_validation
         .and_then(|value| value.get("unmet_requirements"))
@@ -1161,7 +1201,11 @@ pub(crate) fn detect_automation_blocker_category(
         && offered_email_like_tools.is_empty()
         && automation_attempt_evidence_delivery_status(tool_telemetry)
             .as_deref()
-            .is_some_and(|status| status != "succeeded" && status != "not_required")
+            .is_some_and(|status| {
+                matches!(status, "unavailable" | "tool_unavailable")
+                    || (status == "not_attempted"
+                        && reason.contains("no email-capable tools were available"))
+            })
     {
         return Some("tool_unavailable".to_string());
     }

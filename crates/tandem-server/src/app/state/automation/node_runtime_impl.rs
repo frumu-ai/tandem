@@ -347,6 +347,7 @@ pub(crate) fn normalize_automation_requested_tools(
 ) -> Vec<String> {
     let review_decision_node = automation_output_validator_kind(node)
         == crate::AutomationOutputValidatorKind::ReviewDecision;
+    let handoff_only_structured_json = automation_node_is_handoff_only_structured_json(node);
     let node_tool_allowlist = automation_node_metadata_tool_allowlist(node);
     let connector_hint_mentions =
         tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
@@ -359,6 +360,8 @@ pub(crate) fn normalize_automation_requested_tools(
             || node_tool_allowlist
                 .iter()
                 .any(|tool| tool.starts_with("mcp.")));
+    let upstream_synthesis_node =
+        super::enforcement::automation_node_consumes_upstream_artifacts_for_delivery(node);
     let mut normalized = if explicit_node_tool_allowlist {
         node_tool_allowlist
     } else {
@@ -404,40 +407,53 @@ pub(crate) fn normalize_automation_requested_tools(
             }
         }
     }
-    let upstream_synthesis_node =
-        super::enforcement::automation_node_consumes_upstream_artifacts_for_delivery(node);
     let connector_source_node = !automation_node_is_code_workflow(node)
         && !upstream_synthesis_node
         && !super::enforcement::automation_node_allows_optional_connector_references(node)
         && (connector_hint_mentions || normalized.iter().any(|tool| tool.starts_with("mcp.")));
-    if connector_source_node {
+    if explicit_connector_tool_allowlist || connector_source_node {
         normalized.retain(|tool| {
             !matches!(
                 tool.as_str(),
-                "codesearch" | "edit" | "apply_patch" | "glob" | "grep" | "bash"
+                "codesearch" | "read" | "edit" | "apply_patch" | "glob" | "grep" | "bash"
             )
         });
     }
-    if !node.input_refs.is_empty() {
+    if !node.input_refs.is_empty()
+        && !(explicit_connector_tool_allowlist && upstream_synthesis_node)
+    {
         normalized.push("read".to_string());
     }
     let has_read = normalized.iter().any(|tool| tool == "read");
     let has_workspace_probe = normalized
         .iter()
         .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list"));
-    if has_read && !has_workspace_probe {
+    if has_read
+        && !has_workspace_probe
+        && !explicit_connector_tool_allowlist
+        && !connector_source_node
+        && !handoff_only_structured_json
+    {
         normalized.push("glob".to_string());
     }
     if automation_node_web_research_expected(node)
         || enforcement::automation_node_allows_optional_web_research(node)
     {
         normalized.push("websearch".to_string());
-        normalized.push("webfetch".to_string());
+        if enforcement::automation_node_allows_optional_web_research(node) {
+            normalized.push("webfetch".to_string());
+        }
+    }
+    if handoff_only_structured_json {
+        normalized.retain(|tool| !matches!(tool.as_str(), "write" | "edit" | "apply_patch"));
     }
     if review_decision_node {
         normalized.retain(|tool| matches!(tool.as_str(), "read" | "glob" | "grep"));
         if !normalized.iter().any(|tool| tool == "read") {
             normalized.push("read".to_string());
+        }
+        if !normalized.iter().any(|tool| tool == "glob") {
+            normalized.push("glob".to_string());
         }
     }
     normalized.sort();
@@ -871,10 +887,7 @@ fn validation_requirement_is_warning(profile: &str, requirement: &str) -> bool {
                 | "files_reviewed_contains_nonconcrete_paths"
                 | "workspace_inspection_required"
         ),
-        "local_research" => matches!(
-            requirement,
-            "files_reviewed_missing" | "relevant_files_not_reviewed_or_skipped"
-        ),
+        "local_research" => matches!(requirement, "files_reviewed_missing"),
         "artifact_only" => matches!(
             requirement,
             "editorial_substance_missing" | "markdown_structure_missing"
@@ -1003,6 +1016,9 @@ pub(crate) fn automation_node_declared_output_path(node: &AutomationFlowNode) ->
     if automation_node_is_bug_monitor_context_artifact(node) {
         return None;
     }
+    if automation_node_is_handoff_only_structured_json(node) {
+        return None;
+    }
     node.metadata
         .as_ref()
         .and_then(|metadata| metadata.get("builder"))
@@ -1013,6 +1029,97 @@ pub(crate) fn automation_node_declared_output_path(node: &AutomationFlowNode) ->
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| automation_node_default_output_path(node))
+}
+
+pub(crate) fn automation_node_has_explicit_output_path(node: &AutomationFlowNode) -> bool {
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(Value::as_object)
+        .and_then(|builder| builder.get("output_path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+}
+
+fn automation_node_builder_has_nonempty_array(node: &AutomationFlowNode, key: &str) -> bool {
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(Value::as_object)
+        .and_then(|builder| builder.get(key))
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .any(|value| !value.is_empty())
+        })
+}
+
+fn automation_node_metadata_has_nonempty_array(node: &AutomationFlowNode, key: &str) -> bool {
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(key))
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .any(|value| !value.is_empty())
+        })
+}
+
+pub(crate) fn automation_node_declares_workspace_writes(node: &AutomationFlowNode) -> bool {
+    if automation_node_has_explicit_output_path(node)
+        || automation_node_builder_has_nonempty_array(node, "output_files")
+        || automation_node_builder_has_nonempty_array(node, "must_write_files")
+        || automation_node_metadata_has_nonempty_array(node, "artifacts")
+    {
+        return true;
+    }
+    let objective = node.objective.to_ascii_lowercase();
+    [
+        " write ",
+        " writes ",
+        " update ",
+        " updates ",
+        " create ",
+        " creates ",
+        " save ",
+        " saves ",
+        " generate ",
+        " generates ",
+        " materialize ",
+        " persist ",
+    ]
+    .iter()
+    .any(|needle| objective.contains(needle))
+}
+
+pub(crate) fn automation_node_is_handoff_only_structured_json(node: &AutomationFlowNode) -> bool {
+    if node.node_id == "collect_inputs" {
+        return false;
+    }
+    let structured_json = node
+        .output_contract
+        .as_ref()
+        .and_then(|contract| contract.validator)
+        .is_some_and(|validator| validator == crate::AutomationOutputValidatorKind::StructuredJson)
+        || node
+            .output_contract
+            .as_ref()
+            .map(|contract| contract.kind.trim().eq_ignore_ascii_case("structured_json"))
+            .unwrap_or(false);
+    let artifact_backed_structured_research = automation_node_task_kind(node)
+        .as_deref()
+        .is_some_and(|kind| matches!(kind, "connector_research" | "research" | "source_research"));
+    if artifact_backed_structured_research {
+        return false;
+    }
+    structured_json && !automation_node_declares_workspace_writes(node)
 }
 
 pub(crate) fn automation_node_is_bug_monitor_context_artifact(node: &AutomationFlowNode) -> bool {

@@ -43,6 +43,7 @@ async fn automation_v2_run_update_hydrates_history_only_run() {
         .build();
     {
         let mut runs = state.automation_v2_runs.write().await;
+        runs.clear();
         runs.insert(run.run_id.clone(), run.clone());
     }
 
@@ -78,6 +79,7 @@ async fn automation_v2_run_update_hydrates_history_only_run() {
 
 #[tokio::test]
 async fn automation_run_requeue_increments_attempt_counter() {
+    let _guard = automation_executor_test_lock().lock().await;
     let workspace_root =
         std::env::temp_dir().join(format!("tandem-requeue-attempts-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&workspace_root).expect("workspace");
@@ -259,6 +261,7 @@ async fn automation_run_requeue_increments_attempt_counter() {
 
 #[tokio::test]
 async fn automation_run_requires_stored_runtime_context_partition_at_startup() {
+    let _guard = automation_executor_test_lock().lock().await;
     let automation = AutomationV2Spec {
         automation_id: "auto-runtime-context-test".to_string(),
         name: "Runtime Context Test".to_string(),
@@ -347,6 +350,7 @@ async fn automation_run_requires_stored_runtime_context_partition_at_startup() {
 
 #[tokio::test]
 async fn automation_run_without_runtime_context_requirement_can_start_and_complete() {
+    let _guard = automation_executor_test_lock().lock().await;
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-automation-no-runtime-context-{}",
         uuid::Uuid::new_v4()

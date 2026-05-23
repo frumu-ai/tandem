@@ -804,10 +804,16 @@ fn automation_v2_hot_cutoff_ms() -> u64 {
 }
 
 fn automation_v2_run_history_root(active_path: &Path) -> PathBuf {
+    let stem = active_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("runs");
     active_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("automation-runs")
+        .join(stem)
 }
 
 fn automation_v2_run_history_month(run: &AutomationV2RunRecord) -> (i32, u32) {

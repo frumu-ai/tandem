@@ -137,6 +137,7 @@ fn configured_patterns() -> &'static [Regex] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(coverage))]
     use std::time::Instant;
 
     #[test]
@@ -230,8 +231,10 @@ mod tests {
         let key = format!("{}{}", "AKIA123456", "7890ABCDEF");
         let input = format!("{}\n{key}", "safe text ".repeat(450));
         let _ = redact_outbound("warmup", Path::new("/workspace"));
+        #[cfg(not(coverage))]
         let started = Instant::now();
         let redacted = redact_outbound(&input, Path::new("/workspace"));
+        #[cfg(not(coverage))]
         assert!(
             started.elapsed().as_millis() < 50,
             "4KB redaction should stay comfortably interactive"

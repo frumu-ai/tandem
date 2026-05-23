@@ -1526,7 +1526,7 @@ pub(crate) async fn execute_automation_v2_node(
                 ));
                 state.storage.save_session(session.clone()).await?;
 
-                let output = node_output::wrap_automation_node_output_with_automation(
+                let mut output = node_output::wrap_automation_node_output_with_automation(
                     automation,
                     node,
                     &session,
@@ -1575,10 +1575,17 @@ pub(crate) async fn execute_automation_v2_node(
         run_id,
         run_started_at_ms,
     );
-    if let (Some(output_path), Some(payload)) = (
-        required_output_path.as_deref(),
-        automation_node_inline_artifact_payload(node),
-    ) {
+    let inline_artifact_payload = automation_node_inline_artifact_payload(node);
+    let inline_output_path = required_output_path.clone().or_else(|| {
+        inline_artifact_payload.as_ref()?;
+        Some(format!(
+            ".tandem/artifacts/{}.json",
+            node.node_id.replace("_", "-")
+        ))
+    });
+    if let (Some(output_path), Some(payload)) =
+        (inline_output_path.as_deref(), inline_artifact_payload)
+    {
         let verified_output =
             write_automation_inline_artifact(&workspace_root, run_id, output_path, &payload)?;
         let mut session = Session::new(
@@ -1608,7 +1615,7 @@ pub(crate) async fn execute_automation_v2_node(
             output_path = %output_path,
             "automation node used deterministic inline artifact shortcut"
         );
-        let output = node_output::wrap_automation_node_output_with_automation(
+        let mut output = node_output::wrap_automation_node_output_with_automation(
             automation,
             node,
             &session,
@@ -1621,9 +1628,14 @@ pub(crate) async fn execute_automation_v2_node(
                 "deterministic_artifact": true,
                 "deterministic_source": "node_metadata_inputs",
                 "accepted_candidate_source": "verified_output",
+                "validation_outcome": "passed",
                 "unmet_requirements": [],
             })),
         );
+        if let Some(object) = output.as_object_mut() {
+            object.insert("status".to_string(), json!("completed"));
+            object.insert("blocked_reason".to_string(), Value::Null);
+        }
         return Ok(output);
     }
     let template = if let Some(template_id) = agent.template_id.as_deref().map(str::trim) {

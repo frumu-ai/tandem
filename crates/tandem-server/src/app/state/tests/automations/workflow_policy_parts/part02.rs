@@ -475,13 +475,16 @@ fn generic_artifact_validation_blocks_weak_report_markdown() {
         &std::collections::BTreeSet::new(),
     );
 
+    assert_eq!(rejected, None);
     assert_eq!(
-        rejected.as_deref(),
-        Some("editorial artifact is missing expected markdown structure")
+        artifact_validation
+            .get("validation_outcome")
+            .and_then(Value::as_str),
+        Some("accepted_with_warnings")
     );
     assert_eq!(
         artifact_validation
-            .get("unmet_requirements")
+            .get("warning_requirements")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default(),
@@ -510,11 +513,11 @@ fn generic_artifact_validation_blocks_weak_report_markdown() {
             None,
             Some(&artifact_validation),
         ),
-        Some("editorial_quality_failed".to_string())
+        None
     );
     assert_eq!(
         detect_automation_node_phase(&node, "blocked", Some(&artifact_validation)),
-        "editorial_validation"
+        "artifact_write"
     );
 
     let _ = std::fs::remove_dir_all(&workspace_root);

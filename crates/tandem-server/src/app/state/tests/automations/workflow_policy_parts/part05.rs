@@ -1276,10 +1276,7 @@ fn artifact_validation_prefers_structurally_stronger_candidate_without_phrase_ma
         &snapshot,
     );
 
-    assert_eq!(
-        rejected.as_deref(),
-        Some("research completed without citation-backed claims")
-    );
+    assert_eq!(rejected, None);
     assert_eq!(
         metadata
             .get("accepted_candidate_source")

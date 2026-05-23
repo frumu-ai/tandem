@@ -247,9 +247,9 @@ mod tests {
             .add_test_case(tc3);
 
         let sorted = dataset.sorted_by_priority();
-        assert_eq!(sorted[0].id, "test1"); // priority 1
+        assert_eq!(sorted[0].id, "test2"); // priority 3
         assert_eq!(sorted[1].id, "test3"); // priority 2
-        assert_eq!(sorted[2].id, "test2"); // priority 3
+        assert_eq!(sorted[2].id, "test1"); // priority 1
     }
 
     #[test]

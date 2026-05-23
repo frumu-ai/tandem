@@ -710,19 +710,17 @@ pub(crate) fn automation_effective_required_output_path_for_run(
     run_id: &str,
     started_at_ms: u64,
 ) -> Option<String> {
+    if is_agent_standup_automation(automation) && node.node_id == "standup_synthesis" {
+        if let Some(path) = resolve_standup_report_path_for_run(automation, started_at_ms) {
+            return Some(path);
+        }
+    }
     let runtime_values = automation_prompt_runtime_values(Some(started_at_ms));
     automation_node_required_output_path_with_runtime_for_run(
         node,
         Some(run_id),
         Some(&runtime_values),
     )
-    .or_else(|| {
-        if is_agent_standup_automation(automation) && node.node_id == "standup_synthesis" {
-            resolve_standup_report_path_for_run(automation, started_at_ms)
-        } else {
-            None
-        }
-    })
 }
 
 /// Derives the receipt path from the standup report path by inserting a
@@ -1058,9 +1056,8 @@ pub(crate) fn normalize_automation_requested_tools(
 ) -> Vec<String> {
     let review_decision_node = automation_output_validator_kind(node)
         == crate::AutomationOutputValidatorKind::ReviewDecision;
-    let handoff_only_structured_json = automation_output_validator_kind(node)
-        == crate::AutomationOutputValidatorKind::StructuredJson
-        && automation_node_required_output_path(node).is_none();
+    let handoff_only_structured_json =
+        node_runtime_impl::automation_node_is_handoff_only_structured_json(node);
     let node_tool_allowlist = node_runtime_impl::automation_node_metadata_tool_allowlist(node);
     let connector_hint_mentions =
         tandem_plan_compiler::api::workflow_plan_mentions_connector_backed_sources(
@@ -1072,6 +1069,8 @@ pub(crate) fn normalize_automation_requested_tools(
             || node_tool_allowlist
                 .iter()
                 .any(|tool| tool.starts_with("mcp.")));
+    let upstream_synthesis_node =
+        enforcement::automation_node_consumes_upstream_artifacts_for_delivery(node);
     let mut normalized = if explicit_connector_tool_allowlist {
         node_tool_allowlist
     } else {
@@ -1118,31 +1117,41 @@ pub(crate) fn normalize_automation_requested_tools(
         }
     }
     let connector_source_node = !automation_node_is_code_workflow(node)
+        && !upstream_synthesis_node
         && !enforcement::automation_node_allows_optional_connector_references(node)
         && (connector_hint_mentions || normalized.iter().any(|tool| tool.starts_with("mcp.")));
-    if connector_source_node {
+    if explicit_connector_tool_allowlist || connector_source_node {
         normalized.retain(|tool| {
             !matches!(
                 tool.as_str(),
-                "codesearch" | "edit" | "apply_patch" | "glob" | "grep" | "bash"
+                "codesearch" | "read" | "edit" | "apply_patch" | "glob" | "grep" | "bash"
             )
         });
     }
-    if !node.input_refs.is_empty() {
+    if !node.input_refs.is_empty()
+        && !(explicit_connector_tool_allowlist && upstream_synthesis_node)
+    {
         normalized.push("read".to_string());
     }
     let has_read = normalized.iter().any(|tool| tool == "read");
     let has_workspace_probe = normalized
         .iter()
         .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list"));
-    if has_read && !has_workspace_probe {
+    if has_read
+        && !has_workspace_probe
+        && !explicit_connector_tool_allowlist
+        && !connector_source_node
+        && !handoff_only_structured_json
+    {
         normalized.push("glob".to_string());
     }
     if automation_node_web_research_expected(node)
         || enforcement::automation_node_allows_optional_web_research(node)
     {
         normalized.push("websearch".to_string());
-        normalized.push("webfetch".to_string());
+        if enforcement::automation_node_allows_optional_web_research(node) {
+            normalized.push("webfetch".to_string());
+        }
     }
     if handoff_only_structured_json {
         normalized.retain(|tool| !matches!(tool.as_str(), "write" | "edit" | "apply_patch"));
@@ -1151,6 +1160,9 @@ pub(crate) fn normalize_automation_requested_tools(
         normalized.retain(|tool| matches!(tool.as_str(), "read" | "glob" | "grep"));
         if !normalized.iter().any(|tool| tool == "read") {
             normalized.push("read".to_string());
+        }
+        if !normalized.iter().any(|tool| tool == "glob") {
+            normalized.push("glob".to_string());
         }
     }
     normalized.sort();
@@ -1225,6 +1237,14 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
     let workspace_inspection_required = requested_tools
         .iter()
         .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list" | "read"));
+    let legacy_web_research_expected = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(Value::as_object)
+        .and_then(|builder| builder.get("web_research_expected"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let web_research_required =
         web_research_expected && requested_tools.iter().any(|tool| tool == "websearch");
     let brief_research_node = validation_profile == "local_research";
@@ -1260,7 +1280,7 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
         && requested_tools.iter().any(|tool| tool == "websearch");
     Some(PrewriteRequirements {
         workspace_inspection_required: workspace_inspection_required
-            && !external_research_node
+            && (!external_research_node || legacy_web_research_expected)
             && !connector_source_node
             && !research_finalize
             && explicit_input_files.is_empty(),
@@ -1271,11 +1291,18 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
             || has_any_required_tools
             || !enforcement.retry_on_missing.is_empty(),
         repair_budget: enforcement.repair_budget,
-        repair_exhaustion_behavior: Some(if enforcement::automation_node_is_strict_quality(node) {
-            tandem_types::PrewriteRepairExhaustionBehavior::FailClosed
-        } else {
-            tandem_types::PrewriteRepairExhaustionBehavior::WaiveAndWrite
-        }),
+        repair_exhaustion_behavior: Some(
+            if matches!(
+                enforcement::automation_node_quality_mode_resolution(node).requested,
+                Some(enforcement::AutomationQualityMode::Legacy)
+            ) {
+                tandem_types::PrewriteRepairExhaustionBehavior::WaiveAndWrite
+            } else if enforcement::automation_node_is_strict_quality(node) {
+                tandem_types::PrewriteRepairExhaustionBehavior::FailClosed
+            } else {
+                tandem_types::PrewriteRepairExhaustionBehavior::WaiveAndWrite
+            },
+        ),
         coverage_mode: if brief_research_node {
             PrewriteCoverageMode::ResearchCorpus
         } else {
@@ -1303,10 +1330,7 @@ pub(crate) fn validation_requirement_is_warning(profile: &str, requirement: &str
                 | "files_reviewed_contains_nonconcrete_paths"
                 | "workspace_inspection_required"
         ),
-        "local_research" => matches!(
-            requirement,
-            "files_reviewed_missing" | "relevant_files_not_reviewed_or_skipped"
-        ),
+        "local_research" => matches!(requirement, "files_reviewed_missing"),
         "artifact_only" => matches!(
             requirement,
             "editorial_substance_missing" | "markdown_structure_missing"
@@ -1319,7 +1343,9 @@ pub(crate) fn semantic_block_reason_for_requirements(
     unmet_requirements: &[String],
 ) -> Option<String> {
     let has_unmet = |needle: &str| unmet_requirements.iter().any(|value| value == needle);
-    if has_unmet("artifact_status_not_terminal") {
+    if has_unmet("read_only_source_mutations") {
+        Some("read-only source-of-truth mutation detected".to_string())
+    } else if has_unmet("artifact_status_not_terminal") {
         Some("artifact reported a non-terminal status".to_string())
     } else if has_unmet("output_schema_invalid") {
         Some("artifact does not match the declared output contract schema".to_string())
@@ -1346,6 +1372,8 @@ pub(crate) fn semantic_block_reason_for_requirements(
             "connector-backed source research completed without using a concrete connector tool"
                 .to_string(),
         )
+    } else if has_unmet("required_source_paths_not_read") {
+        Some("research completed without reading the exact required source files".to_string())
     } else if has_unmet("current_attempt_output_missing") {
         Some("required output was not created in the current attempt".to_string())
     } else if has_unmet("structured_handoff_missing") {
@@ -1371,8 +1399,6 @@ pub(crate) fn semantic_block_reason_for_requirements(
             "synthesis made market/web-backed claims even though upstream external citations were missing"
                 .to_string(),
         )
-    } else if has_unmet("required_source_paths_not_read") {
-        Some("research completed without reading the exact required source files".to_string())
     } else if has_unmet("no_concrete_reads") || has_unmet("concrete_read_required") {
         Some(
             "research completed without concrete file reads or required source coverage"
@@ -1440,7 +1466,6 @@ pub(crate) async fn resolve_automation_agent_model(
     let effective_config = state.config.get_effective_value().await;
     if let Some(config_default) =
         crate::app::state::default_model_spec_from_effective_config(&effective_config)
-            .filter(|spec| crate::app::routines::provider_catalog_has_model(&providers, spec))
     {
         return Some(config_default);
     }
@@ -1500,6 +1525,10 @@ pub(crate) fn automation_node_required_output_path_for_run(
 
 pub fn automation_node_required_output_path(node: &AutomationFlowNode) -> Option<String> {
     node_runtime_impl::automation_node_required_output_path(node)
+}
+
+pub(crate) fn automation_node_is_handoff_only_structured_json(node: &AutomationFlowNode) -> bool {
+    node_runtime_impl::automation_node_is_handoff_only_structured_json(node)
 }
 
 pub(crate) fn automation_node_allows_preexisting_output_reuse(node: &AutomationFlowNode) -> bool {

@@ -168,13 +168,6 @@ impl EvalRunner {
                         )
                         .with_max_duration(Duration::from_secs(self.config.max_test_duration_secs));
                         return executor.run_test_case(test_case).await;
-                    } else {
-                        return engine_mode_unavailable_with_message(
-                            test_case,
-                            self.effective_engine_mode(),
-                            start_time,
-                            "engine_url configured but engine_token missing (set TANDEM_API_TOKEN or use --engine-token)".to_string(),
-                        );
                     }
                 }
 

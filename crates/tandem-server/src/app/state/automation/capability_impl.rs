@@ -102,8 +102,9 @@ pub(crate) fn automation_tool_capability_ids(
                 .iter()
                 .any(|tool| tool.starts_with("mcp.")));
     let requires_workspace_read = required_tools.iter().any(|tool| tool == "read")
-        || (!connector_source_node && !node.input_refs.is_empty());
+        || (!connector_source_node && !upstream_synthesis_node && !node.input_refs.is_empty());
     let requires_workspace_discover = !connector_source_node
+        && !upstream_synthesis_node
         && (automation_node_required_output_path(node).is_some()
             || automation_output_validator_kind(node)
                 == crate::AutomationOutputValidatorKind::ResearchBrief
@@ -269,6 +270,20 @@ pub(crate) fn automation_resolve_capabilities_with_schemas(
         );
     }
     let mut output = serde_json::Map::new();
+    if automation_node_requires_email_delivery(node)
+        && missing.iter().any(|capability| capability == "email_send")
+        && !missing.iter().any(|capability| capability == "email_draft")
+        && automation_matching_tool_names(
+            available_tool_names.iter().cloned(),
+            &available_tool_schemas_by_name,
+            "email_delivery",
+        )
+        .is_empty()
+    {
+        missing.push("email_draft".to_string());
+        missing.sort();
+        missing.dedup();
+    }
     output.insert(
         "required_capabilities".to_string(),
         json!(required_capabilities),

@@ -91,8 +91,9 @@ impl ScriptedEvalProvider {
     }
 
     fn match_response(&self, prompt: &str) -> ScriptedResponse {
+        let prompt = prompt.to_ascii_lowercase();
         for (needle, response) in &self.patterns {
-            if prompt.contains(needle) {
+            if prompt.contains(&needle.to_ascii_lowercase()) {
                 return response.clone();
             }
         }

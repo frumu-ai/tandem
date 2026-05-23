@@ -1772,7 +1772,7 @@ fn bootstrap_inference_applies_to_dependent_workspace_bootstrap_nodes() {
 }
 
 #[test]
-fn automation_output_targets_fill_in_final_node_workspace_writes() {
+fn automation_output_targets_do_not_fill_in_implicit_workspace_writes() {
     let automation = AutomationV2Spec {
         automation_id: "automation-final-targets".to_string(),
         name: "Final Targets".to_string(),
@@ -1832,17 +1832,7 @@ fn automation_output_targets_fill_in_final_node_workspace_writes() {
         Some(&runtime_values("2026-04-09", "1304", "2026-04-09 13:04")),
     );
 
-    assert!(
-        must_write_files.is_empty(),
-        "must_write_files should only include node's own output_files, not automation output_targets. Got: {must_write_files:?}"
-    );
-    assert!(!must_write_files
-        .iter()
-        .any(|path| path.contains("daily-recaps")));
-    assert!(!must_write_files
-        .iter()
-        .any(|path| path.contains("opportunities")));
-    assert!(!must_write_files.iter().any(|path| path.contains("tracker")));
+    assert!(must_write_files.is_empty());
 }
 
 #[test]
