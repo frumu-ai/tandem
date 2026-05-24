@@ -414,6 +414,86 @@ fn save_fallback_map(map: &HashMap<String, String>) -> anyhow::Result<()> {
     write_secure_json(&path, &Value::Object(root))
 }
 
+fn load_provider_index_from_dir(security_dir: &Path) -> HashSet<String> {
+    let path = security_dir.join("provider_auth_index.json");
+    let json = read_json(&path).unwrap_or_else(|_| json!({}));
+    let mut out = HashSet::new();
+    if let Some(arr) = json.get("providers").and_then(Value::as_array) {
+        for entry in arr {
+            if let Some(id) = entry.as_str() {
+                let normalized = normalize_provider_id(id);
+                if !normalized.is_empty() {
+                    out.insert(normalized);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn save_provider_index_to_dir(security_dir: &Path, ids: &HashSet<String>) -> anyhow::Result<()> {
+    let mut sorted = ids
+        .iter()
+        .filter(|id| !id.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    sorted.sort();
+    write_secure_json(
+        &security_dir.join("provider_auth_index.json"),
+        &json!({ "providers": sorted }),
+    )
+}
+
+fn load_fallback_map_from_dir(security_dir: &Path) -> HashMap<String, String> {
+    let path = security_dir.join("provider_auth_fallback.json");
+    let json = read_json(&path).unwrap_or_else(|_| json!({}));
+    let mut out = HashMap::new();
+    if let Some(obj) = json.as_object() {
+        for (id, value) in obj {
+            let provider_id = normalize_provider_id(id);
+            if provider_id.is_empty() {
+                continue;
+            }
+            let token = value
+                .as_str()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            if !token.is_empty() {
+                out.insert(provider_id, token);
+            }
+        }
+    }
+    out
+}
+
+fn save_fallback_map_to_dir(
+    security_dir: &Path,
+    map: &HashMap<String, String>,
+) -> anyhow::Result<()> {
+    let mut root = serde_json::Map::new();
+    let mut pairs = map
+        .iter()
+        .filter_map(|(id, token)| {
+            let provider_id = normalize_provider_id(id);
+            let key = token.trim();
+            if provider_id.is_empty() || key.is_empty() {
+                None
+            } else {
+                Some((provider_id, key.to_string()))
+            }
+        })
+        .collect::<Vec<_>>();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (id, token) in pairs {
+        root.insert(id, Value::String(token));
+    }
+    write_secure_json(
+        &security_dir.join("provider_auth_fallback.json"),
+        &Value::Object(root),
+    )
+}
+
 fn normalize_provider_credential(
     credential: ProviderCredential,
 ) -> anyhow::Result<ProviderCredential> {
@@ -735,6 +815,95 @@ fn save_credential_fallback_map(map: &HashMap<String, ProviderCredential>) -> an
     write_secure_json(&path, &Value::Object(root))
 }
 
+fn load_provider_credentials_index_from_dir(security_dir: &Path) -> HashSet<String> {
+    let path = security_dir.join("provider_credentials_index.json");
+    let json = read_json(&path).unwrap_or_else(|_| json!({}));
+    let mut out = HashSet::new();
+    if let Some(arr) = json.get("providers").and_then(Value::as_array) {
+        for entry in arr {
+            if let Some(id) = entry.as_str() {
+                let normalized = normalize_provider_id(id);
+                if !normalized.is_empty() {
+                    out.insert(normalized);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn save_provider_credentials_index_to_dir(
+    security_dir: &Path,
+    ids: &HashSet<String>,
+) -> anyhow::Result<()> {
+    let mut sorted = ids
+        .iter()
+        .filter(|id| !id.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    sorted.sort();
+    write_secure_json(
+        &security_dir.join("provider_credentials_index.json"),
+        &json!({ "providers": sorted }),
+    )
+}
+
+fn load_credential_fallback_map_from_dir(
+    security_dir: &Path,
+) -> HashMap<String, ProviderCredential> {
+    let path = security_dir.join("provider_credentials_fallback.json");
+    let json = read_json(&path).unwrap_or_else(|_| json!({}));
+    let mut out = HashMap::new();
+    let Some(obj) = json.as_object() else {
+        return out;
+    };
+
+    for (id, value) in obj {
+        let provider_id = normalize_provider_id(id);
+        if provider_id.is_empty() {
+            continue;
+        }
+        let Ok(mut credential) = serde_json::from_value::<ProviderCredential>(value.clone()) else {
+            continue;
+        };
+        match &mut credential {
+            ProviderCredential::ApiKey(api) => api.provider_id = provider_id.clone(),
+            ProviderCredential::OAuth(oauth) => oauth.provider_id = provider_id.clone(),
+        }
+        if let Ok(normalized) = normalize_provider_credential(credential) {
+            out.insert(provider_id, normalized);
+        }
+    }
+
+    out
+}
+
+fn save_credential_fallback_map_to_dir(
+    security_dir: &Path,
+    map: &HashMap<String, ProviderCredential>,
+) -> anyhow::Result<()> {
+    let mut root = serde_json::Map::new();
+    let mut entries = map
+        .iter()
+        .filter_map(|(id, credential)| {
+            let provider_id = normalize_provider_id(id);
+            if provider_id.is_empty() {
+                return None;
+            }
+            let normalized = normalize_provider_credential(credential.clone()).ok()?;
+            Some((provider_id, serde_json::to_value(normalized).ok()?))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (id, value) in entries {
+        root.insert(id, value);
+    }
+    write_secure_json(
+        &security_dir.join("provider_credentials_fallback.json"),
+        &Value::Object(root),
+    )
+}
+
 pub fn load_provider_auth() -> HashMap<String, String> {
     let fallback = load_fallback_map();
     let mut known = load_provider_index();
@@ -832,6 +1001,23 @@ pub fn load_provider_auth_for_tenant(tenant_context: &TenantContext) -> HashMap<
         .collect()
 }
 
+pub fn load_provider_auth_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+) -> HashMap<String, String> {
+    let fallback = load_fallback_map_from_dir(security_dir);
+    let mut known = load_provider_index_from_dir(security_dir);
+    known.extend(fallback.keys().cloned());
+    known
+        .into_iter()
+        .filter_map(|provider_id| {
+            let token = fallback.get(&provider_id)?;
+            strip_tenant_scoped_provider_id(tenant_context, &provider_id)
+                .map(|stripped| (stripped, token.clone()))
+        })
+        .collect()
+}
+
 pub fn set_provider_auth_for_tenant(
     tenant_context: &TenantContext,
     provider_id: &str,
@@ -841,12 +1027,60 @@ pub fn set_provider_auth_for_tenant(
     set_provider_auth(&scoped_provider_id, token)
 }
 
+pub fn set_provider_auth_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    token: &str,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let scoped_provider_id = tenant_scoped_provider_id(tenant_context, provider_id);
+    let id = normalize_provider_id(&scoped_provider_id);
+    let secret = token.trim().to_string();
+    if id.is_empty() {
+        anyhow::bail!("provider id cannot be empty");
+    }
+    if secret.is_empty() {
+        anyhow::bail!("provider token cannot be empty");
+    }
+    let mut fallback = load_fallback_map_from_dir(security_dir);
+    fallback.insert(id.clone(), secret);
+    save_fallback_map_to_dir(security_dir, &fallback)?;
+    let mut known = load_provider_index_from_dir(security_dir);
+    known.insert(id);
+    save_provider_index_to_dir(security_dir, &known)?;
+    Ok(ProviderAuthBackend::File)
+}
+
 pub fn delete_provider_auth_for_tenant(
     tenant_context: &TenantContext,
     provider_id: &str,
 ) -> anyhow::Result<bool> {
     let scoped_provider_id = tenant_scoped_provider_id(tenant_context, provider_id);
     delete_provider_auth(&scoped_provider_id)
+}
+
+pub fn delete_provider_auth_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> anyhow::Result<bool> {
+    let scoped_provider_id =
+        normalize_provider_id(&tenant_scoped_provider_id(tenant_context, provider_id));
+    if scoped_provider_id.is_empty() {
+        return Ok(false);
+    }
+    let mut removed = false;
+    let mut fallback = load_fallback_map_from_dir(security_dir);
+    if fallback.remove(&scoped_provider_id).is_some() {
+        removed = true;
+    }
+    save_fallback_map_to_dir(security_dir, &fallback)?;
+    let mut known = load_provider_index_from_dir(security_dir);
+    if known.remove(&scoped_provider_id) {
+        removed = true;
+    }
+    save_provider_index_to_dir(security_dir, &known)?;
+    Ok(removed)
 }
 
 pub fn load_provider_credentials() -> HashMap<String, ProviderCredential> {
@@ -891,8 +1125,41 @@ pub fn load_provider_credentials_for_tenant(
         .collect()
 }
 
+pub fn load_provider_credentials_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+) -> HashMap<String, ProviderCredential> {
+    let fallback = load_credential_fallback_map_from_dir(security_dir);
+    let mut known = load_provider_credentials_index_from_dir(security_dir);
+    known.extend(fallback.keys().cloned());
+    known
+        .into_iter()
+        .filter_map(|provider_id| {
+            let credential = fallback.get(&provider_id)?;
+            strip_tenant_scoped_provider_id(tenant_context, &provider_id).map(|stripped| {
+                (
+                    stripped.clone(),
+                    credential_with_provider_id(credential.clone(), stripped),
+                )
+            })
+        })
+        .collect()
+}
+
 pub fn load_provider_oauth_credential(provider_id: &str) -> Option<OAuthProviderCredential> {
     match load_provider_credentials().remove(&normalize_provider_id(provider_id)) {
+        Some(ProviderCredential::OAuth(credential)) => Some(credential),
+        Some(ProviderCredential::ApiKey(_)) | None => None,
+    }
+}
+
+pub fn load_provider_oauth_credential_in_dir(
+    security_dir: &Path,
+    provider_id: &str,
+) -> Option<OAuthProviderCredential> {
+    match load_credential_fallback_map_from_dir(security_dir)
+        .remove(&normalize_provider_id(provider_id))
+    {
         Some(ProviderCredential::OAuth(credential)) => Some(credential),
         Some(ProviderCredential::ApiKey(_)) | None => None,
     }
@@ -903,6 +1170,19 @@ pub fn load_provider_oauth_credential_for_tenant(
     provider_id: &str,
 ) -> Option<OAuthProviderCredential> {
     match load_provider_credentials_for_tenant(tenant_context)
+        .remove(&normalize_provider_id(provider_id))
+    {
+        Some(ProviderCredential::OAuth(credential)) => Some(credential),
+        Some(ProviderCredential::ApiKey(_)) | None => None,
+    }
+}
+
+pub fn load_provider_oauth_credential_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> Option<OAuthProviderCredential> {
+    match load_provider_credentials_for_tenant_in_dir(security_dir, tenant_context)
         .remove(&normalize_provider_id(provider_id))
     {
         Some(ProviderCredential::OAuth(credential)) => Some(credential),
@@ -955,6 +1235,24 @@ pub fn set_provider_oauth_credential(
     set_provider_credential(ProviderCredential::OAuth(credential))
 }
 
+pub fn set_provider_oauth_credential_in_dir(
+    security_dir: &Path,
+    provider_id: &str,
+    credential: OAuthProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let mut credential = credential;
+    credential.provider_id = normalize_provider_id(provider_id);
+    let normalized = normalize_provider_credential(ProviderCredential::OAuth(credential))?;
+    let provider_id = normalized.provider_id().to_string();
+    let mut fallback = load_credential_fallback_map_from_dir(security_dir);
+    fallback.insert(provider_id.clone(), normalized);
+    save_credential_fallback_map_to_dir(security_dir, &fallback)?;
+    let mut known = load_provider_credentials_index_from_dir(security_dir);
+    known.insert(provider_id);
+    save_provider_credentials_index_to_dir(security_dir, &known)?;
+    Ok(ProviderAuthBackend::File)
+}
+
 pub fn set_provider_oauth_credential_for_tenant(
     tenant_context: &TenantContext,
     provider_id: &str,
@@ -963,6 +1261,26 @@ pub fn set_provider_oauth_credential_for_tenant(
     let mut credential = credential;
     credential.provider_id = normalize_provider_id(provider_id);
     set_provider_credential_for_tenant(tenant_context, ProviderCredential::OAuth(credential))
+}
+
+pub fn set_provider_oauth_credential_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    credential: OAuthProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let mut credential = credential;
+    credential.provider_id = normalize_provider_id(provider_id);
+    let normalized = normalize_provider_credential(ProviderCredential::OAuth(credential))?;
+    let scoped_provider_id = tenant_scoped_provider_id(tenant_context, normalized.provider_id());
+    let normalized = credential_with_provider_id(normalized, scoped_provider_id.clone());
+    let mut fallback = load_credential_fallback_map_from_dir(security_dir);
+    fallback.insert(normalize_provider_id(&scoped_provider_id), normalized);
+    save_credential_fallback_map_to_dir(security_dir, &fallback)?;
+    let mut known = load_provider_credentials_index_from_dir(security_dir);
+    known.insert(normalize_provider_id(&scoped_provider_id));
+    save_provider_credentials_index_to_dir(security_dir, &known)?;
+    Ok(ProviderAuthBackend::File)
 }
 
 pub fn delete_provider_credential(provider_id: &str) -> anyhow::Result<bool> {
@@ -1000,6 +1318,30 @@ pub fn delete_provider_credential_for_tenant(
 ) -> anyhow::Result<bool> {
     let scoped_provider_id = tenant_scoped_provider_id(tenant_context, provider_id);
     delete_provider_credential(&scoped_provider_id)
+}
+
+pub fn delete_provider_credential_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> anyhow::Result<bool> {
+    let scoped_provider_id =
+        normalize_provider_id(&tenant_scoped_provider_id(tenant_context, provider_id));
+    if scoped_provider_id.is_empty() {
+        return Ok(false);
+    }
+    let mut removed = false;
+    let mut fallback = load_credential_fallback_map_from_dir(security_dir);
+    if fallback.remove(&scoped_provider_id).is_some() {
+        removed = true;
+    }
+    save_credential_fallback_map_to_dir(security_dir, &fallback)?;
+    let mut known = load_provider_credentials_index_from_dir(security_dir);
+    if known.remove(&scoped_provider_id) {
+        removed = true;
+    }
+    save_provider_credentials_index_to_dir(security_dir, &known)?;
+    Ok(removed)
 }
 
 #[cfg(test)]

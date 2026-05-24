@@ -306,7 +306,7 @@ pub(super) async fn memory_audit(
 }
 
 pub(super) async fn memory_list(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<MemoryListQuery>,
@@ -322,7 +322,7 @@ pub(super) async fn memory_list(
         (None, Some(actor)) => actor.to_string(),
         (None, None) => "default".to_string(),
     };
-    let page = if let Some(db) = open_global_memory_db().await {
+    let page = if let Some(db) = open_global_memory_db_for_state(&state).await {
         let source_access_filter = verified_tenant_context
             .as_ref()
             .and_then(|context| context.strict_projection.clone())
@@ -383,7 +383,7 @@ pub(super) async fn memory_delete(
     Path(id): Path<String>,
     Query(query): Query<MemoryDeleteQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let db = open_global_memory_db()
+    let db = open_global_memory_db_for_state(&state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let record = db

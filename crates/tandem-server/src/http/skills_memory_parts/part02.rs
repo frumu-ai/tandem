@@ -335,12 +335,30 @@ pub(super) async fn open_global_memory_db() -> Option<MemoryDatabase> {
     MemoryDatabase::new(&paths.memory_db_path).await.ok()
 }
 
+pub(super) async fn open_global_memory_db_for_state(state: &AppState) -> Option<MemoryDatabase> {
+    if let Some(parent) = state.memory_db_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    MemoryDatabase::new(&state.memory_db_path).await.ok()
+}
+
 pub(super) async fn open_memory_manager() -> Option<tandem_memory::MemoryManager> {
     let paths = tandem_core::resolve_shared_paths().ok()?;
     if let Some(parent) = paths.memory_db_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
     tandem_memory::MemoryManager::new(&paths.memory_db_path)
+        .await
+        .ok()
+}
+
+pub(super) async fn open_memory_manager_for_state(
+    state: &AppState,
+) -> Option<tandem_memory::MemoryManager> {
+    if let Some(parent) = state.memory_db_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    tandem_memory::MemoryManager::new(&state.memory_db_path)
         .await
         .ok()
 }
@@ -777,7 +795,7 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
         return;
     }
     let mut rx = state.event_bus.subscribe();
-    let Some(db) = open_global_memory_db().await else {
+    let Some(db) = open_global_memory_db_for_state(&state).await else {
         tracing::warn!("global memory ingestor disabled: could not open memory database");
         return;
     };
@@ -949,7 +967,7 @@ pub(super) async fn memory_import(
         }),
     );
 
-    let Some(manager) = open_memory_manager().await else {
+    let Some(manager) = open_memory_manager_for_state(&state).await else {
         if let (Some(job_id), Some(binding)) = (&ingestion_job_id, source_binding_for_job.as_ref())
         {
             if let Err(err) = record_enterprise_ingestion_job(
@@ -1515,7 +1533,7 @@ pub(super) async fn memory_put_impl(
     let kind = memory_kind_for_request(request.kind.clone());
     let now = crate::now_ms();
     let audit_id = Uuid::new_v4().to_string();
-    let db = open_global_memory_db()
+    let db = open_global_memory_db_for_state(state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let artifact_refs = request.artifact_refs.clone();
@@ -1691,7 +1709,7 @@ pub(super) async fn memory_promote_impl(
         .await?;
         return Err(StatusCode::FORBIDDEN);
     }
-    let db = open_global_memory_db()
+    let db = open_global_memory_db_for_state(state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let source = db
@@ -2009,7 +2027,7 @@ pub(super) async fn memory_search(
     let hits = if scopes_used.is_empty() {
         Vec::new()
     } else {
-        let db = open_global_memory_db()
+        let db = open_global_memory_db_for_state(&state)
             .await
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         db.search_global_memory_for_tenant(
@@ -2171,7 +2189,7 @@ pub(super) async fn memory_demote(
     Extension(tenant_context): Extension<TenantContext>,
     Json(input): Json<MemoryDemoteInput>,
 ) -> Result<Json<Value>, StatusCode> {
-    let db = open_global_memory_db()
+    let db = open_global_memory_db_for_state(&state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let record = db
@@ -2314,10 +2332,10 @@ pub(super) struct ContextDistillRequest {
 }
 
 pub(super) async fn context_resolve_uri(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(input): Json<ContextResolveUriRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    let manager = open_memory_manager()
+    let manager = open_memory_manager_for_state(&state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -2330,10 +2348,10 @@ pub(super) async fn context_resolve_uri(
 }
 
 pub(super) async fn context_tree(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(query): Query<ContextTreeQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let manager = open_memory_manager()
+    let manager = open_memory_manager_for_state(&state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -2353,7 +2371,7 @@ pub(super) async fn context_generate_layers(
     let runtime_state = state.runtime.wait();
     let providers = runtime_state.providers.clone();
 
-    let manager = open_memory_manager()
+    let manager = open_memory_manager_for_state(&state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 

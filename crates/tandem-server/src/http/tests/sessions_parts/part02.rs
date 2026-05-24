@@ -151,9 +151,32 @@ fn extract_persistable_tool_part_accepts_snake_case_tool_types() {
 #[tokio::test]
 async fn prompt_async_permission_approve_executes_tool_and_emits_todo_update() {
     let state = test_state().await;
-    let session = Session::new(Some("perm".to_string()), Some(".".to_string()));
+    state
+        .providers
+        .replace_for_test(
+            vec![Arc::new(ScriptedStrictKbProvider {
+                steps: Arc::new(Mutex::new(VecDeque::from([
+                    StrictKbProviderStep::ToolCall {
+                        tool: "todo_write".to_string(),
+                        args: json!({"todos":[{"content":"write tests"}]}),
+                    },
+                    StrictKbProviderStep::Text("done".to_string()),
+                ]))),
+            })],
+            Some("strict-kb-test".to_string()),
+        )
+        .await;
+    let mut session = Session::new(Some("perm".to_string()), Some(".".to_string()));
+    session.model = Some(ModelSpec {
+        provider_id: "strict-kb-test".to_string(),
+        model_id: "strict-kb-test-1".to_string(),
+    });
     let session_id = session.id.clone();
     state.storage.save_session(session).await.expect("save");
+    state
+        .engine_loop
+        .set_session_allowed_tools(&session_id, vec!["todo_write".to_string()])
+        .await;
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state.clone());
 
@@ -161,9 +184,15 @@ async fn prompt_async_permission_approve_executes_tool_and_emits_todo_update() {
         "parts": [
             {
                 "type": "text",
-                "text": "/tool todo_write {\"todos\":[{\"content\":\"write tests\"}]}"
+                "text": "update the todo list"
             }
-        ]
+        ],
+        "model": {
+            "provider_id": "strict-kb-test",
+            "model_id": "strict-kb-test-1"
+        },
+        "tool_mode": "required",
+        "tool_allowlist": ["todo_write"]
     });
     let req = Request::builder()
         .method("POST")
@@ -933,8 +962,7 @@ async fn channel_session_archival_writes_deduped_global_exchange_memory() {
     )
     .await;
 
-    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
-    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+    let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
         .await
         .expect("memory db");
     let rows = db.get_global_chunks(20).await.expect("global chunks");

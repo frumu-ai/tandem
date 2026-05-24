@@ -80,6 +80,6 @@ async fn task_intake_preview_roundtrip_for_grouped_task() {
             .get("grouping_signals")
             .and_then(|signals| signals.as_array())
             .map(|signals| signals.len()),
-        Some(9)
+        Some(11)
     );
 }

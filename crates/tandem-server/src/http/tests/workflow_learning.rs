@@ -691,7 +691,7 @@ async fn workflow_learning_graph_patch_spawn_revision_tracks_change_type_metadat
         .and_then(|row| row.get("notes"))
         .and_then(Value::as_str)
         .expect("graph notes");
-    assert!(notes.contains("Requested change type: graph_patch."));
+    assert!(notes.contains("requested a `graph_patch` revision."));
     assert!(notes.contains("run-graph-a, run-graph-b"));
     assert!(notes.contains("fingerprint-graph-session"));
     let session_id = spawn_payload

@@ -699,7 +699,11 @@ async fn automations_v2_run_task_reset_preview_reports_exact_subtree() {
             .into_iter()
             .filter_map(|value| value.as_str().map(str::to_string))
             .collect::<Vec<_>>(),
-        Vec::<String>::new()
+        vec![
+            ".tandem/artifacts/approval.json".to_string(),
+            ".tandem/artifacts/draft.json".to_string(),
+            ".tandem/artifacts/review.json".to_string()
+        ]
     );
     assert_eq!(
         preview
@@ -1035,6 +1039,8 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
                     "node_id": "research-brief",
                     "status": "blocked",
                     "workflow_class": "research",
+                    "quality_mode": "strict_research_v1",
+                    "emergency_rollback_enabled": false,
                     "phase": "blocked",
                     "failure_kind": "research_missing_reads",
                     "summary": "Blocked research brief preserved for inspection.",
@@ -1050,7 +1056,14 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
                         ],
                         "repair_attempt": 1,
                         "repair_attempts_remaining": 4,
-                        "unmet_requirements": ["concrete_read_required", "coverage_mode"]
+                        "unmet_requirements": ["concrete_read_required", "coverage_mode"],
+                        "validation_basis": {
+                            "authority": "filesystem_and_receipts",
+                            "current_attempt_has_recorded_activity": true,
+                            "required_source_read_paths": [],
+                            "missing_required_source_read_paths": [],
+                            "upstream_read_paths": []
+                        }
                     },
                     "knowledge_preflight": {
                         "project_id": "proj-research-smoke",
@@ -1067,7 +1080,12 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
                         "path": "marketing-brief.md",
                         "text": "# Marketing Brief\n\n## Files reviewed\n\n## Files not reviewed\n- tandem-reference/readmes/repo-README.md: not read in this run.\n\n## Research status\nBlocked pending concrete file reads.",
                         "session_id": "sess-research-smoke"
-                    }
+                    },
+                    "receipt_timeline": [
+                        { "event_type": "session_started" },
+                        { "event_type": "artifact_validation" },
+                        { "event_type": "validation_summary" }
+                    ]
                 }),
             );
         })
@@ -1241,7 +1259,7 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
             .get("blockedNodeIDs")
             .and_then(Value::as_array)
             .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
-        Some(vec!["research-brief"])
+        Some(vec!["draft-copy", "research-brief"])
     );
     assert_eq!(
         run_payload

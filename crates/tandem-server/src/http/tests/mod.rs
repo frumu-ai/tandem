@@ -151,6 +151,7 @@ pub(super) async fn test_state() -> AppState {
     state.shared_resources_path = root.join("shared_resources.json");
     state.channel_automation_drafts_path = root.join("channel_automation_drafts.json");
     state.channel_user_capabilities_path = root.join("channel_user_capabilities.json");
+    state.memory_db_path = tandem_home.join("memory.sqlite");
     state.memory_audit_path = root.join("memory").join("audit.log.jsonl");
     state.protected_audit_path = root.join("audit").join("protected_events.log.jsonl");
     state.enterprise_org_units_path = root.join("enterprise_org_units.json");
@@ -162,11 +163,23 @@ pub(super) async fn test_state() -> AppState {
     state.enterprise_ingestion_jobs_path = root.join("enterprise_ingestion_jobs.json");
     state.enterprise_ingestion_quarantines_path =
         root.join("enterprise_ingestion_quarantines.json");
+    state.routines_path = root.join("routines.json");
+    state.routine_history_path = root.join("routine_history.json");
+    state.routine_runs_path = root.join("routine_runs.json");
+    state.automations_v2_path = root.join("automations_v2.json");
+    state.automation_v2_runs_path = root.join("automation_v2_runs.json");
+    state.optimization_campaigns_path = root.join("optimization_campaigns.json");
+    state.optimization_experiments_path = root.join("optimization_experiments.json");
     state.bug_monitor_config_path = root.join("bug_monitor_config.json");
     state.bug_monitor_drafts_path = root.join("bug_monitor_drafts.json");
     state.bug_monitor_incidents_path = root.join("bug_monitor_incidents.json");
     state.bug_monitor_posts_path = root.join("bug_monitor_posts.json");
     state.external_actions_path = root.join("external_actions.json");
+    state.workflow_runs_path = root.join("workflow_runs.json");
+    state.workflow_planner_sessions_path = root.join("workflow_planner_sessions.json");
+    state.workflow_learning_candidates_path = root.join("workflow_learning_candidates.json");
+    state.context_packs_path = root.join("context_packs.json");
+    state.workflow_hook_overrides_path = root.join("workflow_hook_overrides.json");
     state
         .mark_ready(crate::RuntimeState {
             storage,

@@ -328,13 +328,16 @@ pub(super) async fn pack_builder_apply(
 ) -> Result<Json<Value>, StatusCode> {
     let context_run_id = input.context_run_id.clone();
     let session_for_bb = input.session_id.clone();
+    let approvals = input.approvals.unwrap_or_default();
     let args = json!({
         "mode": "apply",
         "plan_id": input.plan_id,
         "__session_id": input.session_id,
         "thread_key": input.thread_key,
         "selected_connectors": input.selected_connectors.unwrap_or_default(),
-        "approvals": input.approvals.unwrap_or_default(),
+        "approve_connector_registration": approvals.approve_connector_registration,
+        "approve_pack_install": approvals.approve_pack_install,
+        "approve_enable_routines": approvals.approve_enable_routines,
         "secret_refs_confirmed": input.secret_refs_confirmed.unwrap_or(json!({})),
     });
     let payload = run_pack_builder_tool(&state, args).await?;

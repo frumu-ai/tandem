@@ -48,7 +48,9 @@ async fn capabilities_resolve_returns_missing_capability_error() {
                 "workflow_id": "wf-pr",
                 "required_capabilities": ["github.create_pull_request"],
                 "provider_preference": ["arcade", "composio"],
-                "available_tools": []
+                "available_tools": [
+                    {"provider":"mcp","tool_name":"mcp.github.list_issues","schema":{}}
+                ]
             })
             .to_string(),
         ))
@@ -80,7 +82,9 @@ async fn capabilities_readiness_returns_blocking_issues_when_unbound() {
                 "workflow_id": "wf-readiness",
                 "required_capabilities": ["github.create_pull_request"],
                 "provider_preference": ["composio", "arcade", "mcp"],
-                "available_tools": []
+                "available_tools": [
+                    {"provider":"mcp","tool_name":"mcp.github.list_issues","schema":{}}
+                ]
             })
             .to_string(),
         ))

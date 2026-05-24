@@ -1,6 +1,10 @@
 impl MemoryDatabase {
     /// Initialize or open the memory database
     pub async fn new(db_path: &Path) -> MemoryResult<Self> {
+        if let Some(parent) = db_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
         // Register sqlite-vec extension
         unsafe {
             sqlite3_auto_extension(Some(std::mem::transmute::<
@@ -25,6 +29,8 @@ impl MemoryDatabase {
             conn: Arc::new(Mutex::new(conn)),
             db_path: db_path.to_path_buf(),
         };
+
+        let _schema_init_guard = SCHEMA_INIT_LOCK.lock().await;
 
         // Initialize schema
         db.init_schema().await?;

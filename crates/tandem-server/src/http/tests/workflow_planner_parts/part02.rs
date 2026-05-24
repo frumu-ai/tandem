@@ -225,7 +225,8 @@ async fn workflow_plan_apply_succeeds_when_legacy_automations_file_is_stale() {
     .expect("write stale legacy automations file");
     _guard.set("TANDEM_STATE_DIR", state_root.display().to_string());
 
-    let state = test_state().await;
+    let mut state = test_state().await;
+    state.automations_v2_path = state_root.join("data").join("automations_v2.json");
     configure_openai_provider(&state).await;
     let app = app_router(state.clone());
     _guard.set(
@@ -305,11 +306,29 @@ async fn workflow_plan_apply_succeeds_when_legacy_automations_file_is_stale() {
         .and_then(Value::as_str)
         .expect("automation id");
 
-    let canonical_path = state_root.join("data").join("automations_v2.json");
-    let canonical_raw =
-        std::fs::read_to_string(&canonical_path).expect("read canonical automations file");
-    let canonical_json: Value = serde_json::from_str(&canonical_raw).expect("canonical json");
-    assert!(canonical_json.get(automation_id).is_some());
+    let definitions_root = state_root.join("data").join("automations-v2");
+    let index_path = definitions_root.join("index.json");
+    let index_raw =
+        std::fs::read_to_string(&index_path).expect("read automation definitions index");
+    let index_json: Value = serde_json::from_str(&index_raw).expect("definitions index json");
+    let shard_name = index_json
+        .get("definitions")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find_map(|row| {
+                (row.get("automation_id").and_then(Value::as_str) == Some(automation_id))
+                    .then(|| row.get("path").and_then(Value::as_str))
+                    .flatten()
+            })
+        })
+        .expect("automation shard path");
+    let shard_raw = std::fs::read_to_string(definitions_root.join(shard_name))
+        .expect("read automation definition shard");
+    let shard_json: Value = serde_json::from_str(&shard_raw).expect("automation shard json");
+    assert_eq!(
+        shard_json.get("automation_id").and_then(Value::as_str),
+        Some(automation_id)
+    );
 
     assert!(
         !state_root.join("automations_v2.json").exists(),
@@ -374,7 +393,12 @@ async fn load_automations_v2_prefers_canonical_file_over_stale_legacy_entries() 
     .expect("write legacy automations file");
     _guard.set("TANDEM_STATE_DIR", state_root.display().to_string());
 
-    let state = test_state().await;
+    let mut state = test_state().await;
+    state.automations_v2_path = canonical_dir.join("automations_v2.json");
+    state
+        .load_automations_v2()
+        .await
+        .expect("load canonical automations");
     let automations = state.list_automations_v2().await;
     let ids = automations
         .iter()

@@ -385,8 +385,13 @@ fn resolve_local_enterprise_request_context(
         first_header(headers, &["x-tandem-workspace-id", "x-tenant-workspace-id"]).as_deref(),
         first_header(headers, &["x-tandem-actor-id", "x-user-id"]).as_deref(),
     );
-    let request_source = first_header(headers, &["x-tandem-request-source"])
-        .unwrap_or_else(|| "api_token".to_string());
+    let request_source = first_header(headers, &["x-tandem-request-source"]).unwrap_or_else(|| {
+        if extract_request_token(headers).is_some() {
+            "api_token".to_string()
+        } else {
+            "local_control_panel".to_string()
+        }
+    });
     let request_principal = RequestPrincipal {
         actor_id: tenant_context.actor_id.clone(),
         source: request_source,
@@ -1067,7 +1072,7 @@ mod tests {
         assert_eq!(tenant_context.workspace_id, "local");
         assert!(tenant_context.actor_id.is_none());
         assert_eq!(principal.actor_id, None);
-        assert_eq!(principal.source, "api_token");
+        assert_eq!(principal.source, "local_control_panel");
     }
 
     #[test]

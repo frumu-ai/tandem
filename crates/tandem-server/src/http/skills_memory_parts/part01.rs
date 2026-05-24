@@ -1380,11 +1380,13 @@ impl GovernedDistillationWriter {
             fact.category,
             fact.content
         ));
-        let db = open_global_memory_db().await.ok_or_else(|| {
-            tandem_memory::types::MemoryError::InvalidConfig(
-                "global memory db unavailable".to_string(),
-            )
-        })?;
+        let db = open_global_memory_db_for_state(&self.state)
+            .await
+            .ok_or_else(|| {
+                tandem_memory::types::MemoryError::InvalidConfig(
+                    "global memory db unavailable".to_string(),
+                )
+            })?;
         let existing = db
             .list_global_memory_for_tenant(
                 &self.tenant_context.org_id,

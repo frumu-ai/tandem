@@ -966,7 +966,8 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
                         .is_some_and(|detail| {
                             detail.contains("kind=solution_capsule")
                                 && detail.contains("classification=internal")
-                                && detail.contains("artifact_refs=artifact://run-3/task-1/fix.json")
+                                && detail
+                                    .contains("artifact_refs=artifact://run-3/task-1/patch.diff")
                                 && detail.contains("visibility=private")
                                 && detail.contains("tier=session")
                                 && detail.contains("partition_key=org-1/ws-1/proj-1/session")
@@ -992,7 +993,8 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
                         .is_some_and(|detail| {
                             detail.contains("kind=solution_capsule")
                                 && detail.contains("classification=internal")
-                                && detail.contains("artifact_refs=artifact://run-3/task-1/fix.json")
+                                && detail
+                                    .contains("artifact_refs=artifact://run-3/task-1/patch.diff")
                                 && detail.contains("visibility=shared")
                                 && detail.contains("tier=project")
                                 && detail.contains("partition_key=org-1/ws-1/proj-1/project")
@@ -1248,4 +1250,3 @@ async fn memory_list_and_delete_admin_routes_work() {
         .unwrap_or(false);
     assert!(delete_audit_exists);
 }
-

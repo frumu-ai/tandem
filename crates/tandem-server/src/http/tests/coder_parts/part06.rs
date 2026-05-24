@@ -1835,7 +1835,7 @@ async fn coder_issue_triage_retrieves_governed_memory_hits() {
         .refresh_builtin_bindings()
         .await
         .expect("refresh builtin bindings");
-    let db = super::super::skills_memory::open_global_memory_db()
+    let db = super::super::skills_memory::open_global_memory_db_for_state(&state)
         .await
         .expect("global memory db");
     db.put_global_memory_record(&GlobalMemoryRecord {
@@ -1934,7 +1934,7 @@ async fn coder_memory_hits_hide_source_bound_governed_metadata_without_strict_gr
         .refresh_builtin_bindings()
         .await
         .expect("refresh builtin bindings");
-    let db = super::super::skills_memory::open_global_memory_db()
+    let db = super::super::skills_memory::open_global_memory_db_for_state(&state)
         .await
         .expect("global memory db");
     db.put_global_memory_record(&GlobalMemoryRecord {

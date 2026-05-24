@@ -996,7 +996,8 @@ async fn session_part_persister_preserves_streamed_preview_args_across_failed_wr
                 "messageID": message_id,
                 "tool": "write",
                 "args": {},
-                "state": "running"
+                "state": "failed",
+                "error": "WRITE_ARGS_EMPTY_FROM_PROVIDER"
             },
             "toolCallDelta": {
                 "id": "call_123",
@@ -1005,20 +1006,6 @@ async fn session_part_persister_preserves_streamed_preview_args_across_failed_wr
                     "path": "game.html",
                     "content": "<html>draft</html>"
                 }
-            }
-        }),
-    ));
-    state.event_bus.publish(EngineEvent::new(
-        "message.part.updated",
-        json!({
-            "sessionID": session_id,
-            "part": {
-                "type": "tool",
-                "messageID": message_id,
-                "tool": "write",
-                "args": {},
-                "state": "failed",
-                "error": "WRITE_ARGS_EMPTY_FROM_PROVIDER"
             }
         }),
     ));
@@ -1111,7 +1098,8 @@ async fn session_part_persister_falls_back_to_streamed_raw_args_preview_when_par
                 "messageID": message_id,
                 "tool": "write",
                 "args": {},
-                "state": "running"
+                "state": "failed",
+                "error": "WRITE_ARGS_EMPTY_FROM_PROVIDER"
             },
             "toolCallDelta": {
                 "id": "call_raw_only",
@@ -1582,7 +1570,18 @@ async fn attach_session_route_updates_workspace_metadata() {
 #[tokio::test]
 async fn message_part_updated_event_contains_required_wire_fields() {
     let state = test_state().await;
-    let session = Session::new(Some("sse-shape".to_string()), Some(".".to_string()));
+    state
+        .providers
+        .replace_for_test(
+            vec![Arc::new(StreamedWriteTestProvider)],
+            Some("streamed-test".to_string()),
+        )
+        .await;
+    let mut session = Session::new(Some("sse-shape".to_string()), Some(".".to_string()));
+    session.model = Some(ModelSpec {
+        provider_id: "streamed-test".to_string(),
+        model_id: "streamed-test-1".to_string(),
+    });
     let session_id = session.id.clone();
     state.storage.save_session(session).await.expect("save");
     let mut rx = state.event_bus.subscribe();
@@ -1593,7 +1592,15 @@ async fn message_part_updated_event_contains_required_wire_fields() {
         .uri(format!("/session/{session_id}/prompt_async"))
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({"parts":[{"type":"text","text":"hello streaming"}]}).to_string(),
+            json!({
+                "parts":[{"type":"text","text":"hello streaming"}],
+                "model": {
+                    "provider_id": "streamed-test",
+                    "model_id": "streamed-test-1"
+                },
+                "tool_mode": "required"
+            })
+            .to_string(),
         ))
         .expect("request");
     let resp = app.oneshot(req).await.expect("response");

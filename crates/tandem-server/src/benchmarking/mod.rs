@@ -954,9 +954,10 @@ pub fn redact_text(raw: &str) -> String {
     let mut out = raw.trim().replace('\n', " ");
     for marker in ["sk-", "xoxb-", "ghp_", "github_pat_", "Bearer "] {
         while let Some(index) = out.find(marker) {
-            let end = out[index..]
+            let search_start = index + marker.len();
+            let end = out[search_start..]
                 .find(char::is_whitespace)
-                .map(|offset| index + offset)
+                .map(|offset| search_start + offset)
                 .unwrap_or(out.len());
             out.replace_range(index..end, "[redacted]");
         }

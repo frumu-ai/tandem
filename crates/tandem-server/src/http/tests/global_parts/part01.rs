@@ -1409,6 +1409,13 @@ async fn skills_endpoints_return_expected_shapes() {
 async fn skills_compile_pack_builder_recipe_emits_automation_preview() {
     let state = test_state().await;
     let app = app_router(state);
+    let skill_name = format!("recipe-compiler-test-{}", Uuid::new_v4());
+    let skill_md = format!(
+        "---\nname: {skill_name}\ndescription: Recipe compiler test skill.\nversion: 0.1.0\n---\n\n# Skill: recipe compiler test\n\n## Purpose\nCompile into automation preview.\n\n## Inputs\n- user prompt\n\n## Agents\n- worker\n\n## Tools\n- webfetch\n\n## Workflow\n1. Interpret user intent\n2. Execute workflow steps\n3. Return result\n\n## Outputs\n- completed task result\n\n## Schedule compatibility\n- manual\n"
+    );
+    let workflow_yaml = format!(
+        "kind: pack_builder_recipe\nskill_id: {skill_name}\nexecution_mode: team\ngoal_template: \"Research '{{{{query}}}}' and produce a cited report.\"\n"
+    );
 
     let install_req = Request::builder()
         .method("POST")
@@ -1418,8 +1425,8 @@ async fn skills_compile_pack_builder_recipe_emits_automation_preview() {
             json!({
                 "location":"global",
                 "artifacts":{
-                    "SKILL.md":"---\nname: recipe-compiler-test\ndescription: Recipe compiler test skill.\nversion: 0.1.0\n---\n\n# Skill: recipe compiler test\n\n## Purpose\nCompile into automation preview.\n\n## Inputs\n- user prompt\n\n## Agents\n- worker\n\n## Tools\n- webfetch\n\n## Workflow\n1. Interpret user intent\n2. Execute workflow steps\n3. Return result\n\n## Outputs\n- completed task result\n\n## Schedule compatibility\n- manual\n",
-                    "workflow.yaml":"kind: pack_builder_recipe\nskill_id: recipe-compiler-test\nexecution_mode: team\ngoal_template: \"Research '{{query}}' and produce a cited report.\"\n"
+                    "SKILL.md": skill_md,
+                    "workflow.yaml": workflow_yaml
                 }
             })
             .to_string(),
@@ -1438,7 +1445,7 @@ async fn skills_compile_pack_builder_recipe_emits_automation_preview() {
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
-                "skill_name":"recipe-compiler-test",
+                "skill_name": skill_name,
                 "goal":"Research tandem autonomous runtime patterns and produce a cited report.",
                 "schedule":{"type":"manual"}
             })
@@ -1472,7 +1479,7 @@ async fn skills_compile_pack_builder_recipe_emits_automation_preview() {
         automation_preview
             .pointer("/metadata/skill_name")
             .and_then(Value::as_str),
-        Some("recipe-compiler-test")
+        Some(skill_name.as_str())
     );
     assert_eq!(
         automation_preview
@@ -1482,7 +1489,7 @@ async fn skills_compile_pack_builder_recipe_emits_automation_preview() {
     );
     assert_eq!(
         automation_preview
-            .pointer("/metadata/operator_preferences/execution_mode")
+            .pointer("/metadata/skill_execution_mode")
             .and_then(Value::as_str),
         Some("team")
     );
@@ -1490,7 +1497,7 @@ async fn skills_compile_pack_builder_recipe_emits_automation_preview() {
         automation_preview
             .pointer("/agents/0/skills/0")
             .and_then(Value::as_str),
-        Some("recipe-compiler-test")
+        Some(skill_name.as_str())
     );
 }
 

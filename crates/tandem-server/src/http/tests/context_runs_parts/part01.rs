@@ -1040,25 +1040,25 @@ async fn context_run_replay_detects_status_drift() {
         .expect("get body");
     let mut get_payload: Value = serde_json::from_slice(&get_body).expect("get json");
     get_payload["run"]["status"] = Value::String("failed".to_string());
-
-    let put_req = Request::builder()
-        .method("PUT")
-        .uri("/context/runs/ctx-run-replay-drift")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            get_payload
-                .get("run")
-                .cloned()
-                .expect("run payload")
-                .to_string(),
-        ))
-        .expect("put request");
-    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
-    assert_eq!(put_resp.status(), StatusCode::OK);
+    let run_path = state
+        .shared_resources_path
+        .parent()
+        .expect("state root")
+        .join("context-runs")
+        .join("hot")
+        .join("ctx-run-replay-drift")
+        .join("run_state.json");
+    tokio::fs::write(
+        &run_path,
+        serde_json::to_string_pretty(get_payload.get("run").expect("run payload"))
+            .expect("serialize drifted run"),
+    )
+    .await
+    .expect("write drifted run state");
 
     let replay_req = Request::builder()
         .method("GET")
-        .uri("/context/runs/ctx-run-replay-drift/replay")
+        .uri("/context/runs/ctx-run-replay-drift/replay?from_checkpoint=false")
         .body(Body::empty())
         .expect("replay request");
     let replay_resp = app

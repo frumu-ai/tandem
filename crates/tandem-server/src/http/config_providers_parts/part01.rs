@@ -257,6 +257,14 @@ pub(super) async fn config_providers(State(state): State<AppState>) -> Json<Valu
     }))
 }
 
+fn provider_auth_security_dir_for_state(state: &AppState) -> std::path::PathBuf {
+    state
+        .memory_db_path
+        .parent()
+        .map(|parent| parent.join("security"))
+        .unwrap_or_else(|| std::path::PathBuf::from("security"))
+}
+
 pub(super) async fn list_providers(State(state): State<AppState>) -> Json<Value> {
     let cfg = state.config.get().await;
     let default = cfg.default_provider.unwrap_or_else(|| "local".to_string());
@@ -422,8 +430,15 @@ pub(super) async fn provider_auth(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let persisted = tandem_core::load_provider_auth_for_tenant(&tenant_context);
-    let persisted_credentials = tandem_core::load_provider_credentials_for_tenant(&tenant_context);
+    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let persisted = tandem_core::load_provider_auth_for_tenant_in_dir(
+        &provider_auth_security_dir,
+        &tenant_context,
+    );
+    let persisted_credentials = tandem_core::load_provider_credentials_for_tenant_in_dir(
+        &provider_auth_security_dir,
+        &tenant_context,
+    );
     let persisted_ids = persisted
         .keys()
         .filter(|id| !is_internal_secret_id(id))
@@ -654,9 +669,13 @@ pub(super) async fn provider_oauth_status(
         }
     }
 
+    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
     if let Some(tandem_core::ProviderCredential::OAuth(oauth)) =
-        tandem_core::load_provider_credentials_for_tenant(&tenant_context)
-            .remove(OPENAI_CODEX_PROVIDER_ID)
+        tandem_core::load_provider_credentials_for_tenant_in_dir(
+            &provider_auth_security_dir,
+            &tenant_context,
+        )
+        .remove(OPENAI_CODEX_PROVIDER_ID)
     {
         return Json(json!({
             "ok": true,
@@ -1088,7 +1107,9 @@ pub(super) async fn provider_oauth_disconnect(
         }));
     }
 
-    let persisted_removed = tandem_core::delete_provider_credential_for_tenant(
+    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let persisted_removed = tandem_core::delete_provider_credential_for_tenant_in_dir(
+        &provider_auth_security_dir,
         &tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
     )
@@ -1150,7 +1171,9 @@ pub(super) async fn provider_oauth_local_session(
         }));
     };
 
-    let backend = match tandem_core::set_provider_oauth_credential_for_tenant(
+    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let backend = match tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
+        &provider_auth_security_dir,
         &tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
         credential.clone(),
@@ -1250,7 +1273,9 @@ pub(super) async fn provider_oauth_session_import(
     };
     credential.managed_by = "codex-upload".to_string();
 
-    let backend = match tandem_core::set_provider_oauth_credential_for_tenant(
+    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let backend = match tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
+        &provider_auth_security_dir,
         &tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
         credential.clone(),
@@ -1314,18 +1339,23 @@ pub(super) async fn set_auth(
         return Json(json!({"ok": false, "error": "token cannot be empty"}));
     }
 
-    let backend =
-        match tandem_core::set_provider_auth_for_tenant(&tenant_context, &normalized_id, &token) {
-            Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
-            Ok(tandem_core::ProviderAuthBackend::File) => "file",
-            Err(err) => {
-                return Json(json!({
-                    "ok": false,
-                    "id": normalized_id,
-                    "error": format!("failed to persist provider auth: {err}")
-                }));
-            }
-        };
+    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let backend = match tandem_core::set_provider_auth_for_tenant_in_dir(
+        &provider_auth_security_dir,
+        &tenant_context,
+        &normalized_id,
+        &token,
+    ) {
+        Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
+        Ok(tandem_core::ProviderAuthBackend::File) => "file",
+        Err(err) => {
+            return Json(json!({
+                "ok": false,
+                "id": normalized_id,
+                "error": format!("failed to persist provider auth: {err}")
+            }));
+        }
+    };
 
     let ok = if tenant_context.is_local_implicit() {
         // Keep legacy in-memory auth map for compatibility while runtime config
@@ -1380,10 +1410,14 @@ pub(super) async fn delete_auth(
         return Json(json!({"ok": false, "error": "provider id cannot be empty"}));
     }
     let mut removed = false;
-    let persisted_removed =
-        tandem_core::delete_provider_auth_for_tenant(&tenant_context, &normalized_id)
-            .map(|ok| ok)
-            .unwrap_or(false);
+    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let persisted_removed = tandem_core::delete_provider_auth_for_tenant_in_dir(
+        &provider_auth_security_dir,
+        &tenant_context,
+        &normalized_id,
+    )
+    .map(|ok| ok)
+    .unwrap_or(false);
     let mut runtime_removed = false;
     if tenant_context.is_local_implicit() {
         removed = state.auth.write().await.remove(&normalized_id).is_some();
@@ -1717,11 +1751,14 @@ fn validate_provider_url(url_str: &str) -> Result<(), String> {
         .and_then(|rest| rest.split('/').next())
         .and_then(|host_part| host_part.split(':').next())
         .ok_or("invalid provider URL format")?;
+    let is_local_dev_host =
+        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1";
+    if cfg!(any(test, debug_assertions)) && is_local_dev_host {
+        return Ok(());
+    }
 
     // Block localhost-like domains
-    if host.eq_ignore_ascii_case("localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
+    if is_local_dev_host
         || host.ends_with(".local")
         || host.ends_with(".localdomain")
         || host.ends_with(".internal")

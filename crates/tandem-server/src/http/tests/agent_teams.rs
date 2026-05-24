@@ -528,28 +528,23 @@ async fn agent_team_capability_policy_denies_network_tool_by_default() {
         .to_string();
     assert!(!child_session_id.is_empty());
 
-    let prompt_req = Request::builder()
-        .method("POST")
-        .uri(format!("/session/{child_session_id}/prompt_async"))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "parts": [
-                    {
-                        "type": "text",
-                        "text": "/tool websearch {\"query\":\"rust async\"}"
-                    }
-                ]
-            })
-            .to_string(),
-        ))
-        .expect("prompt request");
-    let prompt_resp = app
-        .clone()
-        .oneshot(prompt_req)
+    let hook = crate::agent_teams::ServerToolPolicyHook::new(state.clone());
+    let decision = hook
+        .evaluate_tool(ToolPolicyContext {
+            session_id: child_session_id.clone(),
+            message_id: "msg-agent-network-deny".to_string(),
+            tenant_context: None,
+            verified_tenant_context: None,
+            tool: "websearch".to_string(),
+            args: json!({"query":"rust async"}),
+        })
         .await
-        .expect("prompt response");
-    assert_eq!(prompt_resp.status(), StatusCode::NO_CONTENT);
+        .expect("policy decision");
+    assert!(!decision.allowed);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("network disabled for this agent instance")
+    );
 
     let denied_event = tokio::time::timeout(Duration::from_secs(5), async {
         loop {

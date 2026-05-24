@@ -230,7 +230,7 @@ async fn run_google_drive_import_operation(
     .await
     .map_err(map_google_drive_import_error)?;
 
-    let Some(memory_manager) = open_enterprise_memory_manager().await else {
+    let Some(memory_manager) = open_enterprise_memory_manager_for_state(&state).await else {
         return Err(internal_error(
             "ENTERPRISE_GOOGLE_DRIVE_IMPORT_MEMORY_OPEN_FAILED",
         ));
@@ -433,7 +433,8 @@ async fn run_google_drive_import_operation(
         input.completion_reason,
     );
     let _ =
-        invalidate_response_cache_for_source_binding(&tenant_context, &binding.binding_id).await?;
+        invalidate_response_cache_for_source_binding(&state, &tenant_context, &binding.binding_id)
+            .await?;
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;
 
     Ok(Json(EnterpriseGoogleDriveImportResponse {
@@ -493,12 +494,13 @@ fn map_google_drive_import_error(error: GoogleDriveIngestionError) -> (StatusCod
     }
 }
 
-async fn open_enterprise_memory_manager() -> Option<tandem_memory::MemoryManager> {
-    let paths = tandem_core::resolve_shared_paths().ok()?;
-    if let Some(parent) = paths.memory_db_path.parent() {
+async fn open_enterprise_memory_manager_for_state(
+    state: &AppState,
+) -> Option<tandem_memory::MemoryManager> {
+    if let Some(parent) = state.memory_db_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    tandem_memory::MemoryManager::new(&paths.memory_db_path)
+    tandem_memory::MemoryManager::new(&state.memory_db_path)
         .await
         .ok()
 }

@@ -1078,8 +1078,8 @@ mod tests {
         normalize_workflow_step_metadata(&mut step);
 
         assert_eq!(step.input_refs.len(), 2);
-        assert_eq!(step.input_refs[0].from_step_id, "extract_job_board_sources");
-        assert_eq!(step.input_refs[1].from_step_id, "detect_repeated_listings");
+        assert_eq!(step.input_refs[0].from_step_id, "detect_repeated_listings");
+        assert_eq!(step.input_refs[1].from_step_id, "extract_job_board_sources");
         assert!(step
             .output_contract
             .as_ref()

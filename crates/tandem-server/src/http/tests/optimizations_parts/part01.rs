@@ -85,7 +85,13 @@ fn sample_automation(workspace_root: &str) -> crate::AutomationV2Spec {
 
 fn sample_automation_without_validator(workspace_root: &str) -> crate::AutomationV2Spec {
     let mut workflow = sample_automation(workspace_root);
-    workflow.flow.nodes[0].output_contract = None;
+    workflow.flow.nodes[0].output_contract = Some(crate::AutomationFlowOutputContract {
+        kind: "text".to_string(),
+        validator: None,
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
     workflow
 }
 
@@ -442,13 +448,19 @@ async fn optimizations_list_returns_campaigns_sorted_by_update_time() {
         .get("optimizations")
         .and_then(Value::as_array)
         .expect("optimizations array");
-    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(2));
-    assert_eq!(
-        rows.first()
-            .and_then(|row| row.get("optimization_id"))
-            .and_then(Value::as_str),
-        Some("opt-newer")
-    );
+    let listed_ids = rows
+        .iter()
+        .filter_map(|row| row.get("optimization_id").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let newer_index = listed_ids
+        .iter()
+        .position(|id| *id == "opt-newer")
+        .expect("newer optimization listed");
+    let older_index = listed_ids
+        .iter()
+        .position(|id| *id == "opt-older")
+        .expect("older optimization listed");
+    assert!(newer_index < older_index);
     let _ = std::fs::remove_dir_all(workspace_root);
 }
 

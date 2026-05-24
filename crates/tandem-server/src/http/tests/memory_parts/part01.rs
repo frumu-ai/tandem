@@ -50,7 +50,7 @@ async fn memory_import_validates_project_and_session_scope() {
 #[tokio::test]
 async fn memory_import_rejects_invalid_path_source() {
     let state = test_state().await;
-    let app = app_router(state);
+    let app = app_router(state.clone());
 
     let req = Request::builder()
         .method("POST")
@@ -103,7 +103,7 @@ async fn memory_import_rejects_disabled_source_binding() {
         .write()
         .await
         .insert("local::local::local::disabled-binding".to_string(), binding);
-    let app = app_router(state);
+    let app = app_router(state.clone());
 
     let req = Request::builder()
         .method("POST")
@@ -175,7 +175,7 @@ async fn memory_import_rejects_inactive_source_binding_connector() {
         "local::local::local::paused-connector-binding".to_string(),
         binding,
     );
-    let app = app_router(state);
+    let app = app_router(state.clone());
 
     let req = Request::builder()
         .method("POST")
@@ -219,7 +219,7 @@ async fn memory_import_can_use_default_local_manual_source_binding_projection() 
     )
     .await
     .expect("import file");
-    let app = app_router(state);
+    let app = app_router(state.clone());
 
     let req = Request::builder()
         .method("POST")
@@ -245,8 +245,7 @@ async fn memory_import_can_use_default_local_manual_source_binding_projection() 
         Some("local_manual_upload")
     );
 
-    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
-    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+    let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
         .await
         .expect("memory db");
     let rows = db
@@ -317,7 +316,7 @@ async fn memory_import_records_enterprise_ingestion_job_audit() {
         .write()
         .await
         .insert("local::local::local::audited-binding".to_string(), binding);
-    let app = app_router(state);
+    let app = app_router(state.clone());
 
     let req = Request::builder()
         .method("POST")
@@ -338,8 +337,7 @@ async fn memory_import_records_enterprise_ingestion_job_audit() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(storage_path.exists());
 
-    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
-    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+    let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
         .await
         .expect("memory db");
     let rows = db
@@ -1315,6 +1313,111 @@ async fn memory_search_preserves_restricted_classification() {
 }
 
 #[tokio::test]
+async fn memory_put_and_search_are_scoped_to_app_state_memory_db() {
+    let state_a = test_state().await;
+    let state_b = test_state().await;
+    assert_ne!(state_a.memory_db_path, state_b.memory_db_path);
+    let app_a = app_router(state_a.clone());
+    let app_b = app_router(state_b.clone());
+
+    let put_req = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "run-state-scoped-memory",
+                "partition": {
+                    "org_id": "org-shared",
+                    "workspace_id": "ws-shared",
+                    "project_id": "proj-shared",
+                    "tier": "session"
+                },
+                "kind": "note",
+                "content": "state scoped memory sentinel",
+                "classification": "internal"
+            })
+            .to_string(),
+        ))
+        .expect("put request");
+    let put_resp = app_a.clone().oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let search_body = || {
+        Body::from(
+            json!({
+                "run_id": "run-state-scoped-memory",
+                "query": "state scoped memory sentinel",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "org-shared",
+                    "workspace_id": "ws-shared",
+                    "project_id": "proj-shared",
+                    "tier": "session"
+                },
+                "limit": 5
+            })
+            .to_string(),
+        )
+    };
+
+    let isolated_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(search_body())
+        .expect("isolated search request");
+    let isolated_resp = app_b
+        .clone()
+        .oneshot(isolated_req)
+        .await
+        .expect("isolated search response");
+    assert_eq!(isolated_resp.status(), StatusCode::OK);
+    let isolated_payload: Value = serde_json::from_slice(
+        &to_bytes(isolated_resp.into_body(), usize::MAX)
+            .await
+            .expect("isolated body"),
+    )
+    .expect("isolated json");
+    assert_eq!(
+        isolated_payload
+            .get("results")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+
+    let same_state_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(search_body())
+        .expect("same-state search request");
+    let same_state_resp = app_a
+        .clone()
+        .oneshot(same_state_req)
+        .await
+        .expect("same-state search response");
+    assert_eq!(same_state_resp.status(), StatusCode::OK);
+    let same_state_payload: Value = serde_json::from_slice(
+        &to_bytes(same_state_resp.into_body(), usize::MAX)
+            .await
+            .expect("same-state body"),
+    )
+    .expect("same-state json");
+    assert!(same_state_payload
+        .get("results")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter().any(|row| {
+                row.get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| content.contains("state scoped memory sentinel"))
+            })
+        }));
+}
+
+#[tokio::test]
 async fn memory_promote_blocks_sensitive_content_and_emits_audit() {
     let state = test_state().await;
     let app = app_router(state.clone());
@@ -1350,7 +1453,7 @@ async fn memory_promote_blocks_sensitive_content_and_emits_audit() {
                     "tier": "session"
                 },
                 "kind": "solution_capsule",
-                "content": concat!("-----BEGIN", " PRIVATE KEY-----"),
+                "content": "restricted content with sk-ant-sensitive-marker",
                 "classification": "restricted",
                 "capability": capability
             })
@@ -1491,7 +1594,7 @@ async fn memory_promote_blocks_sensitive_content_and_emits_audit() {
         .properties
         .get("detail")
         .and_then(Value::as_str)
-        .is_some_and(|detail| detail.contains("private key")));
+        .is_some_and(|detail| detail.contains("sensitive secret marker")));
 
     let audit_req = Request::builder()
         .method("GET")
@@ -1519,7 +1622,7 @@ async fn memory_promote_blocks_sensitive_content_and_emits_audit() {
                         .get("detail")
                         .and_then(Value::as_str)
                         .is_some_and(|detail| {
-                            detail.contains("private key")
+                            detail.contains("sensitive secret marker")
                                 && detail.contains("origin_run_id=run-3")
                                 && detail.contains("project_id=proj-1")
                         })

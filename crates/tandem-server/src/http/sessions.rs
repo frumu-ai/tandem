@@ -417,10 +417,7 @@ pub(super) async fn archive_session_exchange_to_global_memory(state: AppState, s
         return;
     };
 
-    let Ok(memory_db_path) = tandem_core::resolve_memory_db_path() else {
-        return;
-    };
-    if let Some(parent) = memory_db_path.parent() {
+    if let Some(parent) = state.memory_db_path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
             tracing::warn!(
                 "global chat exchange archival could not create memory db parent for session {}: {}",
@@ -430,7 +427,8 @@ pub(super) async fn archive_session_exchange_to_global_memory(state: AppState, s
             return;
         }
     }
-    let Ok(manager) = tandem_memory::manager::MemoryManager::new(&memory_db_path).await else {
+    let Ok(manager) = tandem_memory::manager::MemoryManager::new(&state.memory_db_path).await
+    else {
         return;
     };
 

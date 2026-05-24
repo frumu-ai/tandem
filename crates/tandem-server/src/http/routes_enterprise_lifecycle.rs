@@ -16,7 +16,7 @@ use super::routes_enterprise::{
     emit_source_binding_cache_invalidation_required, ingestion_job_tenant_matches,
     ingestion_quarantine_tenant_matches, internal_error,
     invalidate_response_cache_for_source_binding, memory_tenant_scope, not_found,
-    open_enterprise_memory_db, persist_enterprise_ingestion_jobs,
+    open_enterprise_memory_db_for_state, persist_enterprise_ingestion_jobs,
     persist_enterprise_ingestion_quarantines, purge_source_object_indexed_content,
     require_enterprise_admin, serialize_data_class, source_binding_for_tenant, storage_base,
     validate_enterprise_id, validate_resource_ref_matches_tenant, EnterpriseAdminResponseBase,
@@ -224,7 +224,8 @@ pub(super) async fn review_ingestion_quarantine(
         "ingestion_quarantine_reviewed",
     );
     let _ =
-        invalidate_response_cache_for_source_binding(&tenant_context, &reviewed.binding_id).await?;
+        invalidate_response_cache_for_source_binding(&state, &tenant_context, &reviewed.binding_id)
+            .await?;
 
     Ok(Json(EnterpriseIngestionQuarantinesResponse {
         count: 1,
@@ -243,7 +244,7 @@ pub(super) async fn list_source_objects(
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
     source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
-    let db = open_enterprise_memory_db().await?;
+    let db = open_enterprise_memory_db_for_state(&state).await?;
     let mut source_objects = db
         .list_source_object_lifecycle_for_binding_for_tenant(
             &memory_tenant_scope(&tenant_context),
@@ -276,7 +277,7 @@ pub(super) async fn reindex_source_object(
     let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
     let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
     source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
-    let db = open_enterprise_memory_db().await?;
+    let db = open_enterprise_memory_db_for_state(&state).await?;
     let tenant_scope = memory_tenant_scope(&tenant_context);
     let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
     let (chunks_deleted, bytes_estimated) =
@@ -296,7 +297,8 @@ pub(super) async fn reindex_source_object(
         &binding_id,
         "source_object_reindex_requested",
     );
-    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
+    let _ =
+        invalidate_response_cache_for_source_binding(&state, &tenant_context, &binding_id).await?;
     let source_object = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id)
         .await
         .ok();
@@ -322,7 +324,7 @@ pub(super) async fn delete_source_object(
     let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
     let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
     source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
-    let db = open_enterprise_memory_db().await?;
+    let db = open_enterprise_memory_db_for_state(&state).await?;
     let tenant_scope = memory_tenant_scope(&tenant_context);
     let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
     let (chunks_deleted, bytes_estimated) =
@@ -336,7 +338,8 @@ pub(super) async fn delete_source_object(
         &binding_id,
         "source_object_deleted",
     );
-    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
+    let _ =
+        invalidate_response_cache_for_source_binding(&state, &tenant_context, &binding_id).await?;
 
     Ok(Json(EnterpriseSourceObjectActionResponse {
         base: storage_base(tenant_context, request_principal),
@@ -361,7 +364,7 @@ pub(super) async fn rescope_source_object(
     let source_object_id = validate_enterprise_id("source_object_id", &source_object_id)?;
     validate_resource_ref_matches_tenant(&input.resource_ref, &tenant_context)?;
     source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
-    let db = open_enterprise_memory_db().await?;
+    let db = open_enterprise_memory_db_for_state(&state).await?;
     let tenant_scope = memory_tenant_scope(&tenant_context);
     let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
     let (chunks_deleted, bytes_estimated) =
@@ -389,7 +392,8 @@ pub(super) async fn rescope_source_object(
         &binding_id,
         "source_object_rescoped",
     );
-    let _ = invalidate_response_cache_for_source_binding(&tenant_context, &binding_id).await?;
+    let _ =
+        invalidate_response_cache_for_source_binding(&state, &tenant_context, &binding_id).await?;
     let source_object = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id)
         .await
         .ok();

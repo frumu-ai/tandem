@@ -1000,9 +1000,8 @@ async fn load_coder_memory_candidate_payload(
     serde_json::from_str::<Value>(&raw).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-async fn open_semantic_memory_manager() -> Option<MemoryManager> {
-    let paths = tandem_core::resolve_shared_paths().ok()?;
-    MemoryManager::new(&paths.memory_db_path).await.ok()
+async fn open_semantic_memory_manager(state: &AppState) -> Option<MemoryManager> {
+    MemoryManager::new(&state.memory_db_path).await.ok()
 }
 
 async fn list_repo_memory_candidates(
@@ -1656,11 +1655,12 @@ async fn maybe_write_follow_on_duplicate_linkage_candidate(
 }
 
 async fn list_project_memory_hits(
+    state: &AppState,
     repo_binding: &CoderRepoBinding,
     query: &str,
     limit: usize,
 ) -> Vec<Value> {
-    let Some(manager) = open_semantic_memory_manager().await else {
+    let Some(manager) = open_semantic_memory_manager(state).await else {
         return Vec::new();
     };
     let Ok(results) = manager
@@ -1723,11 +1723,12 @@ fn candidate_linked_numbers(candidate_payload: &Value, key: &str) -> Vec<u64> {
 }
 
 async fn list_governed_memory_hits(
+    state: &AppState,
     record: &CoderRunRecord,
     query: &str,
     limit: usize,
 ) -> Vec<Value> {
-    let Some(db) = super::skills_memory::open_global_memory_db().await else {
+    let Some(db) = super::skills_memory::open_global_memory_db_for_state(state).await else {
         return Vec::new();
     };
     let mut hits = Vec::<Value>::new();
@@ -1870,8 +1871,9 @@ async fn collect_coder_memory_hits(
         limit,
     )
     .await?;
-    let mut project_hits = list_project_memory_hits(&record.repo_binding, query, limit).await;
-    let mut governed_hits = list_governed_memory_hits(record, query, limit).await;
+    let mut project_hits =
+        list_project_memory_hits(state, &record.repo_binding, query, limit).await;
+    let mut governed_hits = list_governed_memory_hits(state, record, query, limit).await;
     hits.append(&mut project_hits);
     hits.append(&mut governed_hits);
     hits.sort_by(|a, b| compare_coder_memory_hits(record, a, b));

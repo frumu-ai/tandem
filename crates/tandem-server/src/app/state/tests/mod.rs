@@ -349,6 +349,9 @@ pub(crate) async fn ready_test_state() -> AppState {
     );
     let mut state = AppState::new_starting(uuid::Uuid::new_v4().to_string(), false);
     state.shared_resources_path = root.join("shared_resources.json");
+    state.automations_v2_path = tandem_home.join("data").join("automations_v2.json");
+    state.automation_v2_runs_path = tandem_home.join("data").join("automation_v2_runs.json");
+    state.memory_db_path = tandem_home.join("memory.sqlite");
     state
         .mark_ready(crate::RuntimeState {
             storage,

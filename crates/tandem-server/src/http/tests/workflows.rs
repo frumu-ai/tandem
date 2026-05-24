@@ -530,6 +530,9 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
             Request::builder()
                 .method("GET")
                 .uri(format!("/context/runs/{slack_context_run_id}/blackboard"))
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "north")
+                .header("x-user-id", "user-1")
                 .body(Body::empty())
                 .expect("slack workflow blackboard request"),
         )
@@ -556,6 +559,9 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
                 .uri(format!(
                     "/context/runs/{workflow_context_run_id}/blackboard"
                 ))
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "north")
+                .header("x-user-id", "user-1")
                 .body(Body::empty())
                 .expect("workflow blackboard request"),
         )

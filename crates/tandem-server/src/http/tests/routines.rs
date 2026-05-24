@@ -2056,11 +2056,17 @@ async fn routine_fired_event_contract_snapshot() {
         "type": event.event_type,
         "properties": properties,
     });
+    let run_id = snapshot
+        .pointer("/properties/runID")
+        .and_then(Value::as_str)
+        .expect("runID");
+    assert!(run_id.starts_with("routine-run-"));
     let expected = json!({
         "type": "routine.fired",
         "properties": {
             "routineID": "routine-fired-contract",
             "runCount": 2,
+            "runID": run_id,
             "triggerType": "manual"
         }
     });
@@ -2114,11 +2120,17 @@ async fn routine_approval_required_event_contract_snapshot() {
         "type": event.event_type,
         "properties": event.properties,
     });
+    let run_id = snapshot
+        .pointer("/properties/runID")
+        .and_then(Value::as_str)
+        .expect("runID");
+    assert!(run_id.starts_with("routine-run-"));
     let expected = json!({
         "type": "routine.approval_required",
         "properties": {
             "routineID": "routine-approval-contract",
             "runCount": 1,
+            "runID": run_id,
             "triggerType": "manual",
             "reason": "manual approval required before external side effects (manual)"
         }
@@ -2173,11 +2185,17 @@ async fn routine_blocked_event_contract_snapshot() {
         "type": event.event_type,
         "properties": event.properties,
     });
+    let run_id = snapshot
+        .pointer("/properties/runID")
+        .and_then(Value::as_str)
+        .expect("runID");
+    assert!(run_id.starts_with("routine-run-"));
     let expected = json!({
         "type": "routine.blocked",
         "properties": {
             "routineID": "routine-blocked-contract",
             "runCount": 1,
+            "runID": run_id,
             "triggerType": "manual",
             "reason": "external integrations are disabled by policy"
         }

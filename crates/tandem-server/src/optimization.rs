@@ -260,7 +260,10 @@ pub struct OptimizationExperimentRecord {
 }
 
 pub fn optimization_snapshot_hash(snapshot: &AutomationV2Spec) -> String {
-    let canonical = serde_json::to_vec(snapshot).unwrap_or_default();
+    let mut normalized = snapshot.clone();
+    normalized.execution.profile =
+        Some(crate::automation_v2::types::resolve_effective_execution_profile(snapshot, None));
+    let canonical = serde_json::to_vec(&normalized).unwrap_or_default();
     let mut hasher = Sha256::new();
     hasher.update(canonical);
     format!("{:x}", hasher.finalize())

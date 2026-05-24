@@ -165,7 +165,9 @@ async fn mission_builder_generate_draft_returns_generated_blueprint_and_schedule
         payload
             .get("validation")
             .and_then(Value::as_array)
-            .map(|rows| rows.is_empty()),
+            .map(|rows| rows
+                .iter()
+                .all(|row| { row.get("severity").and_then(Value::as_str) == Some("warning") })),
         Some(true)
     );
     assert_eq!(

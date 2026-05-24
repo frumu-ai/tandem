@@ -747,7 +747,7 @@ impl TelegramChannel {
     }
 
     fn api_url(&self, method: &str) -> String {
-        format!("{}/{}/{}", self.api_base_url, self.bot_token, method)
+        format!("{}{}/{}", self.api_base_url, self.bot_token, method)
     }
 
     fn redact_token(&self, text: &str) -> String {
@@ -1443,6 +1443,24 @@ mod tests {
         assert!(out.contains("• second"));
     }
 
+    #[test]
+    fn telegram_api_url_uses_bot_token_path_without_extra_slash() {
+        let config = TelegramConfig {
+            bot_token: "telegram-test-token".to_string(),
+            allowed_users: vec!["*".to_string()],
+            mention_only: false,
+            style_profile: TelegramStyleProfile::Default,
+            security_profile: crate::config::ChannelSecurityProfile::Operator,
+        };
+        let channel =
+            TelegramChannel::new_with_api_base_url(config, "https://api.telegram.org/bot");
+
+        assert_eq!(
+            channel.api_url("getUpdates"),
+            "https://api.telegram.org/bottelegram-test-token/getUpdates"
+        );
+    }
+
     #[tokio::test]
     async fn send_card_posts_and_update_card_edits_against_mock_telegram() {
         #[derive(Default)]
@@ -1475,11 +1493,14 @@ mod tests {
 
         let calls = Arc::new(AsyncMutex::new(Calls::default()));
         let app = Router::new()
-            .route("/{token}/sendMessage", post(send_message))
-            .route("/{token}/editMessageText", post(edit_message))
+            .route("/bottelegram-test-token/sendMessage", post(send_message))
+            .route(
+                "/bottelegram-test-token/editMessageText",
+                post(edit_message),
+            )
             .with_state(calls.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+        let base_url = format!("http://{}/bot", listener.local_addr().expect("local addr"));
         let server = tokio::spawn(async move {
             axum::serve(listener, app)
                 .await

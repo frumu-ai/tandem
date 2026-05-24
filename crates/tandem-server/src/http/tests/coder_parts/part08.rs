@@ -605,9 +605,15 @@ async fn coder_promoted_regression_signal_reuses_across_pull_requests() {
     let first_hit = hits_payload
         .get("hits")
         .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("source").and_then(Value::as_str) == Some("governed_memory")
+                    && row.get("memory_id").and_then(Value::as_str)
+                        == promote_payload.get("memory_id").and_then(Value::as_str)
+            })
+        })
         .cloned()
-        .expect("first hit");
+        .expect("promoted fix hit");
     assert_eq!(
         first_hit.get("source").and_then(Value::as_str),
         Some("governed_memory")
@@ -995,9 +1001,15 @@ async fn coder_promoted_fix_memory_reuses_strategy_across_issues() {
     let first_hit = hits_payload
         .get("hits")
         .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("source").and_then(Value::as_str) == Some("governed_memory")
+                    && row.get("memory_id").and_then(Value::as_str)
+                        == promote_payload.get("memory_id").and_then(Value::as_str)
+            })
+        })
         .cloned()
-        .expect("first hit");
+        .expect("promoted validation hit");
     assert_eq!(
         first_hit.get("source").and_then(Value::as_str),
         Some("governed_memory")
@@ -1190,9 +1202,15 @@ async fn coder_promoted_validation_memory_reuses_across_issues() {
     let first_hit = hits_payload
         .get("hits")
         .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("source").and_then(Value::as_str) == Some("governed_memory")
+                    && row.get("memory_id").and_then(Value::as_str)
+                        == promote_payload.get("memory_id").and_then(Value::as_str)
+            })
+        })
         .cloned()
-        .expect("first hit");
+        .expect("promoted validation hit");
     assert_eq!(
         first_hit.get("source").and_then(Value::as_str),
         Some("governed_memory")
@@ -1376,9 +1394,15 @@ async fn coder_promoted_issue_fix_regression_signal_reuses_across_issues() {
     let first_hit = hits_payload
         .get("hits")
         .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("source").and_then(Value::as_str) == Some("governed_memory")
+                    && row.get("memory_id").and_then(Value::as_str)
+                        == promote_payload.get("memory_id").and_then(Value::as_str)
+            })
+        })
         .cloned()
-        .expect("first hit");
+        .expect("promoted triage outcome hit");
     assert_eq!(
         first_hit.get("source").and_then(Value::as_str),
         Some("governed_memory")

@@ -531,7 +531,7 @@ pub(crate) async fn find_failure_pattern_duplicates(
 ) -> Result<Vec<Value>, StatusCode> {
     let mut hits =
         list_repo_memory_candidates(state, repo_slug, None, limit.saturating_mul(3)).await?;
-    if let Some(db) = super::skills_memory::open_global_memory_db().await {
+    if let Some(db) = super::skills_memory::open_global_memory_db_for_state(state).await {
         let mut seen_memory_ids = HashSet::<String>::new();
         for subject in subjects {
             let Ok(results) = db

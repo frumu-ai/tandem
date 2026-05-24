@@ -15,7 +15,7 @@ use rusqlite::{ffi::sqlite3_auto_extension, params, Connection, OptionalExtensio
 use sqlite_vec::sqlite3_vec_init;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -33,6 +33,8 @@ pub struct MemoryDatabase {
     conn: Arc<Mutex<Connection>>,
     db_path: std::path::PathBuf,
 }
+
+static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 include!("memory_database_impl_parts/part01.rs");
 include!("memory_database_impl_parts/part02.rs");

@@ -144,6 +144,7 @@ pub struct McpRegistry {
     servers: Arc<RwLock<HashMap<String, McpServer>>>,
     processes: Arc<Mutex<HashMap<String, Child>>>,
     state_file: Arc<PathBuf>,
+    oauth_security_dir: Arc<PathBuf>,
 }
 
 impl McpRegistry {
@@ -152,6 +153,10 @@ impl McpRegistry {
     }
 
     pub fn new_with_state_file(state_file: PathBuf) -> Self {
+        let oauth_security_dir = state_file
+            .parent()
+            .map(|parent| parent.join("security"))
+            .unwrap_or_else(|| PathBuf::from("security"));
         let (loaded_state, migrated) = load_state(&state_file);
         let loaded = loaded_state
             .into_iter()
@@ -186,6 +191,7 @@ impl McpRegistry {
             servers: Arc::new(RwLock::new(loaded)),
             processes: Arc::new(Mutex::new(HashMap::new())),
             state_file: Arc::new(state_file),
+            oauth_security_dir: Arc::new(oauth_security_dir),
         }
     }
 
@@ -1134,8 +1140,10 @@ impl McpRegistry {
         let Some(oauth) = server.oauth.clone() else {
             return Ok(false);
         };
-        let Some(credential) = tandem_core::load_provider_oauth_credential(&oauth.provider_id)
-        else {
+        let Some(credential) = tandem_core::load_provider_oauth_credential_in_dir(
+            &self.oauth_security_dir,
+            &oauth.provider_id,
+        ) else {
             return Ok(false);
         };
 
@@ -1148,8 +1156,12 @@ impl McpRegistry {
 
         let refreshed = refresh_mcp_oauth_credential(&oauth, &credential).await?;
         self.set_bearer_token(name, &refreshed.access_token).await?;
-        tandem_core::set_provider_oauth_credential(&oauth.provider_id, refreshed)
-            .map_err(|error| error.to_string())?;
+        tandem_core::set_provider_oauth_credential_in_dir(
+            &self.oauth_security_dir,
+            &oauth.provider_id,
+            refreshed,
+        )
+        .map_err(|error| error.to_string())?;
         Ok(true)
     }
 }

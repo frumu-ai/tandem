@@ -674,8 +674,14 @@ impl AppState {
 
     pub async fn reload_workflows(&self) -> anyhow::Result<Vec<WorkflowValidationMessage>> {
         let mut sources = Vec::new();
+        let builtin_workflows_dir = self
+            .workflow_runs_path
+            .parent()
+            .map(|parent| parent.join("builtin_workflows"))
+            .filter(|path| path.exists())
+            .unwrap_or_else(config::paths::resolve_builtin_workflows_dir);
         sources.push(WorkflowLoadSource {
-            root: config::paths::resolve_builtin_workflows_dir(),
+            root: builtin_workflows_dir,
             kind: WorkflowSourceKind::BuiltIn,
             pack_id: None,
         });

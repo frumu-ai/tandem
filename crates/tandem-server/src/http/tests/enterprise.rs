@@ -521,7 +521,7 @@ fn source_binding_body(binding_id: &str, org_id: &str, workspace_id: &str) -> St
             "organization_id": org_id,
             "workspace_id": workspace_id,
             "resource_kind": "document_collection",
-            "resource_id": "finance-drive"
+            "resource_id": binding_id
         },
         "data_class": "financial_record",
         "ingestion_policy": {
@@ -1283,6 +1283,7 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
 
     let state = test_state().await;
     let app = app_router(state.clone());
+    let binding_id = "finance-drive-quarantine-import";
 
     let req = Request::builder()
         .method("POST")
@@ -1318,7 +1319,7 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
                     "organization_id": "acme",
                     "workspace_id": "finance",
                     "resource_kind": "document_collection",
-                    "resource_id": "finance-drive"
+                    "resource_id": binding_id
                 }
             })
             .to_string(),
@@ -1336,7 +1337,7 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
         .header("x-tandem-actor-id", "finance-admin")
         .body(Body::from(
             json!({
-                "binding_id": "finance-drive",
+                "binding_id": binding_id,
                 "connector_id": "google_drive",
                 "source_type": "google_drive",
                 "native_source_id": "drive-folder-123",
@@ -1346,7 +1347,7 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
                     "organization_id": "acme",
                     "workspace_id": "finance",
                     "resource_kind": "document_collection",
-                    "resource_id": "finance-drive"
+                    "resource_id": binding_id
                 },
                 "data_class": "financial_record",
                 "ingestion_policy": {
@@ -1363,7 +1364,9 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/enterprise/source-bindings/finance-drive/google-drive/import")
+        .uri(format!(
+            "/enterprise/source-bindings/{binding_id}/google-drive/import"
+        ))
         .header("content-type", "application/json")
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
@@ -1401,7 +1404,9 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/enterprise/source-bindings/finance-drive/source-objects")
+        .uri(format!(
+            "/enterprise/source-bindings/{binding_id}/source-objects"
+        ))
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
         .header("x-tandem-actor-id", "finance-admin")
@@ -1433,12 +1438,14 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
             .get("resource_ref")
             .and_then(|resource| resource.get("resource_id"))
             .and_then(Value::as_str),
-        Some("finance-drive")
+        Some(binding_id)
     );
 
     let req = Request::builder()
         .method("GET")
-        .uri("/enterprise/ingestion-jobs?binding_id=finance-drive")
+        .uri(format!(
+            "/enterprise/ingestion-jobs?binding_id={binding_id}"
+        ))
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
         .header("x-tandem-actor-id", "finance-admin")
@@ -1457,7 +1464,9 @@ async fn enterprise_google_drive_import_records_quarantined_source_objects() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/enterprise/ingestion-quarantines?binding_id=finance-drive")
+        .uri(format!(
+            "/enterprise/ingestion-quarantines?binding_id={binding_id}"
+        ))
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
         .header("x-tandem-actor-id", "finance-admin")
@@ -1639,6 +1648,7 @@ async fn enterprise_google_drive_reindex_refetches_existing_binding_without_expo
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());
@@ -1663,7 +1673,7 @@ async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
         .header("x-tandem-workspace-id", "finance")
         .header("x-tandem-actor-id", "finance-admin")
         .body(Body::from(source_binding_body(
-            "finance-drive",
+            "finance-drive-impact",
             "acme",
             "finance",
         )))
@@ -1676,14 +1686,13 @@ async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
         workspace_id: "finance".to_string(),
         deployment_id: None,
     };
-    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
-    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+    let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
         .await
         .expect("memory db");
     db.upsert_source_object_active_for_tenant(&SourceObjectLifecycleRecord {
         source_object_id: "source-object-finance-impact".to_string(),
         tenant_scope,
-        source_binding_id: "finance-drive".to_string(),
+        source_binding_id: "finance-drive-impact".to_string(),
         connector_id: "google_drive".to_string(),
         state: SourceObjectLifecycleState::Active,
         tier: MemoryTier::Global,
@@ -1696,7 +1705,7 @@ async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
             "organization_id": "acme",
             "workspace_id": "finance",
             "resource_kind": "document_collection",
-            "resource_id": "finance-drive"
+            "resource_id": "finance-drive-impact"
         }),
         data_class: "financial_record".to_string(),
         content_hash: Some("content-impact".to_string()),
@@ -1715,7 +1724,7 @@ async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
             job_id: "job-impact".to_string(),
             tenant_context: tandem_types::TenantContext::explicit("acme", "finance", None),
             connector_id: "google_drive".to_string(),
-            binding_id: "finance-drive".to_string(),
+            binding_id: "finance-drive-impact".to_string(),
             state: tandem_enterprise_contract::IngestionJobState::Completed,
             source_object_ids: vec!["source-object-finance-impact".to_string()],
             started_at_ms: Some(1_000),
@@ -1729,7 +1738,7 @@ async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
             quarantine_id: "quarantine-impact".to_string(),
             tenant_context: tandem_types::TenantContext::explicit("acme", "finance", None),
             connector_id: "google_drive".to_string(),
-            binding_id: "finance-drive".to_string(),
+            binding_id: "finance-drive-impact".to_string(),
             source_object_ids: vec!["source-object-finance-impact".to_string()],
             reason: "impact test".to_string(),
             created_at_ms: 1_500,
@@ -1825,7 +1834,7 @@ async fn enterprise_source_bindings_create_and_update_persist_under_request_tena
     let state = test_state().await;
     let storage_path = state.enterprise_source_bindings_path.clone();
     let mut rx = state.event_bus.subscribe();
-    let app = app_router(state);
+    let app = app_router(state.clone());
     let req = Request::builder()
         .method("POST")
         .uri("/enterprise/source-bindings")
@@ -1862,8 +1871,7 @@ async fn enterprise_source_bindings_create_and_update_persist_under_request_tena
         Some("source_binding_created")
     );
 
-    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
-    let cache_dir = paths.memory_db_path.parent().expect("memory parent");
+    let cache_dir = state.memory_db_path.parent().expect("memory parent");
     let response_cache = tandem_memory::ResponseCache::new(cache_dir, 60, 1000)
         .await
         .expect("response cache");
@@ -2071,7 +2079,10 @@ async fn enterprise_source_bindings_do_not_cross_tenant_boundaries() {
 async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_scoped() {
     let state = test_state().await;
     let mut rx = state.event_bus.subscribe();
-    let app = app_router(state);
+    let app = app_router(state.clone());
+    let binding_id = "finance-drive-lifecycle";
+    let source_object_id = "source-object-finance-note-lifecycle";
+    let indexed_path = "import-test-lifecycle/note.md";
 
     let req = Request::builder()
         .method("POST")
@@ -2081,9 +2092,7 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
         .header("x-tandem-workspace-id", "finance")
         .header("x-tandem-actor-id", "finance-admin")
         .body(Body::from(source_binding_body(
-            "finance-drive",
-            "acme",
-            "finance",
+            binding_id, "acme", "finance",
         )))
         .expect("request");
     let resp = app.clone().oneshot(req).await.expect("response");
@@ -2099,27 +2108,26 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
         workspace_id: "finance".to_string(),
         deployment_id: None,
     };
-    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
-    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+    let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
         .await
         .expect("memory db");
     db.upsert_source_object_active_for_tenant(&SourceObjectLifecycleRecord {
-        source_object_id: "source-object-finance-note".to_string(),
+        source_object_id: source_object_id.to_string(),
         tenant_scope: tenant_scope.clone(),
-        source_binding_id: "finance-drive".to_string(),
+        source_binding_id: binding_id.to_string(),
         connector_id: "manual-upload".to_string(),
         state: SourceObjectLifecycleState::Active,
         tier: MemoryTier::Global,
         session_id: None,
         project_id: None,
-        import_namespace: "import-test".to_string(),
-        indexed_path: "import-test/note.md".to_string(),
-        native_object_id: "import-test/note.md".to_string(),
+        import_namespace: "import-test-lifecycle".to_string(),
+        indexed_path: indexed_path.to_string(),
+        native_object_id: indexed_path.to_string(),
         resource_ref: json!({
             "organization_id": "acme",
             "workspace_id": "finance",
             "resource_kind": "document_collection",
-            "resource_id": "finance-drive"
+            "resource_id": binding_id
         }),
         data_class: "financial_record".to_string(),
         content_hash: Some("content-1".to_string()),
@@ -2133,7 +2141,9 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
     .expect("seed lifecycle");
     let req = Request::builder()
         .method("GET")
-        .uri("/enterprise/source-bindings/finance-drive/source-objects")
+        .uri(format!(
+            "/enterprise/source-bindings/{binding_id}/source-objects"
+        ))
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
         .body(Body::empty())
@@ -2146,7 +2156,9 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
 
     let req = Request::builder()
         .method("DELETE")
-        .uri("/enterprise/source-bindings/finance-drive/source-objects/source-object-finance-note")
+        .uri(format!(
+            "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}"
+        ))
         .header("x-tandem-org-id", "other-co")
         .header("x-tandem-workspace-id", "finance")
         .body(Body::empty())
@@ -2156,7 +2168,9 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
 
     let req = Request::builder()
         .method("POST")
-        .uri("/enterprise/source-bindings/finance-drive/source-objects/source-object-finance-note/reindex")
+        .uri(format!(
+            "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}/reindex"
+        ))
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
         .body(Body::empty())
@@ -2184,13 +2198,13 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
 
     db.store_chunk(
         &MemoryChunk {
-            id: "chunk-finance-note".to_string(),
+            id: "chunk-finance-note-lifecycle".to_string(),
             content: "finance note stale content must be purged on rescope".to_string(),
             tier: MemoryTier::Global,
             session_id: None,
             project_id: None,
             source: "file".to_string(),
-            source_path: Some("import-test/note.md".to_string()),
+            source_path: Some(indexed_path.to_string()),
             source_mtime: None,
             source_size: Some(57),
             source_hash: Some("source-1".to_string()),
@@ -2199,17 +2213,17 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
             token_count: 8,
             metadata: Some(json!({
                 "enterprise_source_binding": {
-                    "binding_id": "finance-drive",
+                    "binding_id": binding_id,
                     "connector_id": "manual-upload",
                     "resource_ref": {
                         "organization_id": "acme",
                         "workspace_id": "finance",
                         "resource_kind": "document_collection",
-                        "resource_id": "finance-drive"
+                        "resource_id": binding_id
                     },
                     "data_class": "financial_record",
-                    "source_object_id": "source-object-finance-note",
-                    "native_object_id": "import-test/note.md",
+                    "source_object_id": source_object_id,
+                    "native_object_id": indexed_path,
                     "content_hash": "content-1"
                 }
             })),
@@ -2223,11 +2237,13 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
         .await
         .expect("global chunks before rescope")
         .iter()
-        .any(|chunk| chunk.id == "chunk-finance-note"));
+        .any(|chunk| chunk.id == "chunk-finance-note-lifecycle"));
 
     let req = Request::builder()
         .method("PATCH")
-        .uri("/enterprise/source-bindings/finance-drive/source-objects/source-object-finance-note/scope")
+        .uri(format!(
+            "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}/scope"
+        ))
         .header("content-type", "application/json")
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
@@ -2287,7 +2303,7 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
             .await
             .expect("global chunks after rescope")
             .iter()
-            .any(|chunk| chunk.id == "chunk-finance-note"
+            .any(|chunk| chunk.id == "chunk-finance-note-lifecycle"
                 || chunk
                     .content
                     .contains("finance note stale content must be purged")),
@@ -2296,7 +2312,9 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
 
     let req = Request::builder()
         .method("DELETE")
-        .uri("/enterprise/source-bindings/finance-drive/source-objects/source-object-finance-note")
+        .uri(format!(
+            "/enterprise/source-bindings/{binding_id}/source-objects/{source_object_id}"
+        ))
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
         .body(Body::empty())
@@ -2312,7 +2330,9 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
 
     let req = Request::builder()
         .method("GET")
-        .uri("/enterprise/source-bindings/finance-drive/source-objects")
+        .uri(format!(
+            "/enterprise/source-bindings/{binding_id}/source-objects"
+        ))
         .header("x-tandem-org-id", "acme")
         .header("x-tandem-workspace-id", "finance")
         .body(Body::empty())
@@ -2328,7 +2348,7 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
 async fn enterprise_source_binding_disable_purges_indexed_source_objects() {
     let state = test_state().await;
     let mut rx = state.event_bus.subscribe();
-    let app = app_router(state);
+    let app = app_router(state.clone());
 
     let req = Request::builder()
         .method("POST")
@@ -2356,8 +2376,7 @@ async fn enterprise_source_binding_disable_purges_indexed_source_objects() {
         workspace_id: "finance".to_string(),
         deployment_id: None,
     };
-    let paths = tandem_core::resolve_shared_paths().expect("shared paths");
-    let db = tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path)
+    let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
         .await
         .expect("memory db");
     db.upsert_source_object_active_for_tenant(&SourceObjectLifecycleRecord {

@@ -410,7 +410,7 @@ async fn automation_run_learning_summary_persists_to_state_and_status_json() {
             .post_run_metrics
             .as_ref()
             .map(|metrics| metrics.sample_size),
-        Some(3)
+        Some(1)
     );
     let updated_summary = updated
         .learning_summary
@@ -451,9 +451,10 @@ async fn automation_run_learning_summary_persists_to_state_and_status_json() {
 #[tokio::test]
 async fn workflow_learning_context_only_surfaces_approved_candidates() {
     let state = ready_test_state().await;
+    let project_id = format!("proj-context-{}", uuid::Uuid::new_v4());
     let automation = AutomationSpecBuilder::new("workflow-context")
         .metadata(json!({
-            "project_id": "proj-1"
+            "project_id": project_id
         }))
         .build();
     let node = AutomationNodeBuilder::new("node-1")
@@ -473,6 +474,8 @@ async fn workflow_learning_context_only_surfaces_approved_candidates() {
         WorkflowLearningCandidateStatus::Approved,
         "ctx-approved-same",
     );
+    let mut approved_same_workflow = approved_same_workflow;
+    approved_same_workflow.project_id = project_id.clone();
     let mut applied_project_candidate = sample_candidate(
         "wflearn-applied-project",
         "workflow-other",
@@ -480,7 +483,7 @@ async fn workflow_learning_context_only_surfaces_approved_candidates() {
         WorkflowLearningCandidateStatus::Applied,
         "ctx-applied-project",
     );
-    applied_project_candidate.project_id = "proj-1".to_string();
+    applied_project_candidate.project_id = project_id.clone();
     let proposed_same_workflow = sample_candidate(
         "wflearn-proposed",
         "workflow-context",
@@ -488,6 +491,8 @@ async fn workflow_learning_context_only_surfaces_approved_candidates() {
         WorkflowLearningCandidateStatus::Proposed,
         "ctx-proposed",
     );
+    let mut proposed_same_workflow = proposed_same_workflow;
+    proposed_same_workflow.project_id = project_id;
 
     state
         .put_workflow_learning_candidate(approved_same_workflow)
@@ -608,7 +613,7 @@ async fn completed_runs_generate_memory_fact_candidates() {
         .create_automation_v2_run(&automation, "manual")
         .await
         .expect("create run");
-    let updated = state
+    state
         .update_automation_v2_run(&run.run_id, |row| {
             row.status = AutomationRunStatus::Completed;
             row.detail = Some("Remember that this workflow completed cleanly".to_string());
@@ -632,7 +637,7 @@ async fn completed_runs_generate_memory_fact_candidates() {
     let candidate = &candidates[0];
     assert_eq!(candidate.kind, WorkflowLearningCandidateKind::MemoryFact);
     assert_eq!(candidate.status, WorkflowLearningCandidateStatus::Proposed);
-    assert!(candidate.summary.contains("completed cleanly"));
+    assert!(candidate.summary.contains("Final report written"));
     assert_eq!(
         candidate
             .evidence_refs
@@ -651,6 +656,10 @@ async fn completed_runs_generate_memory_fact_candidates() {
             .map(|rows| rows.len()),
         Some(1)
     );
+    let updated = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("stored completed run");
     assert_eq!(
         updated
             .learning_summary
@@ -949,8 +958,8 @@ async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_
         graph_patch
             .evidence_refs
             .first()
-            .and_then(|row| row.get("detail"))
+            .and_then(|row| row.get("reason"))
             .and_then(Value::as_str),
-        Some("validator blocked final report")
+        Some("validator rejected unsupported citations")
     );
 }

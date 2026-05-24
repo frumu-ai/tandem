@@ -247,6 +247,7 @@ async fn mcp_catalog_stays_available_but_capability_requests_fail_closed_without
         .method("POST")
         .uri("/mcp/request-capability")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", "agent-self-operator")
         .body(Body::from(
             json!({
@@ -882,7 +883,13 @@ async fn mcp_refresh_silently_renews_expired_oauth_token() {
     let callback_resp = app.oneshot(callback_req).await.expect("callback response");
     assert_eq!(callback_resp.status(), StatusCode::OK);
 
-    tandem_core::set_provider_oauth_credential(
+    let provider_auth_security_dir = state
+        .shared_resources_path
+        .parent()
+        .expect("state root")
+        .join("security");
+    tandem_core::set_provider_oauth_credential_in_dir(
+        &provider_auth_security_dir,
         "mcp-oauth::notion",
         tandem_core::OAuthProviderCredential {
             provider_id: "mcp-oauth::notion".to_string(),
@@ -915,8 +922,11 @@ async fn mcp_refresh_silently_renews_expired_oauth_token() {
             .map(String::as_str),
         Some("Bearer access-token-456")
     );
-    let stored = tandem_core::load_provider_oauth_credential("mcp-oauth::notion")
-        .expect("refreshed oauth credential");
+    let stored = tandem_core::load_provider_oauth_credential_in_dir(
+        &provider_auth_security_dir,
+        "mcp-oauth::notion",
+    )
+    .expect("refreshed oauth credential");
     assert_eq!(stored.access_token, "access-token-456");
     assert_eq!(stored.refresh_token, "refresh-token-456");
 
@@ -1047,6 +1057,7 @@ async fn mcp_request_capability_route_creates_approval_request() {
         .method("POST")
         .uri("/mcp/request-capability")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", "agent-self-operator")
         .body(Body::from(
             json!({

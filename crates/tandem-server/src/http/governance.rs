@@ -25,7 +25,10 @@ fn first_header(headers: &HeaderMap, names: &[&str]) -> Option<String> {
 }
 
 fn is_control_panel_request_source(request_source: &str) -> bool {
-    matches!(request_source.trim(), "control_panel")
+    matches!(
+        request_source.trim(),
+        "control_panel" | "local_control_panel"
+    )
 }
 
 pub(crate) fn resolve_governance_actor(
@@ -60,7 +63,10 @@ pub(crate) fn resolve_governance_provenance(
 ) -> AutomationProvenanceRecord {
     let request_source = first_header(headers, &["x-tandem-request-source"])
         .or_else(|| Some(request_principal.source.clone()));
-    if is_control_panel_request_source(&request_principal.source) {
+    if request_source
+        .as_deref()
+        .is_some_and(is_control_panel_request_source)
+    {
         let mut provenance = AutomationProvenanceRecord::human(
             tenant_context
                 .actor_id

@@ -1229,7 +1229,7 @@ async fn coder_promoted_merge_memory_reuses_policy_history_across_pull_requests(
 
     let hits_req = Request::builder()
         .method("GET")
-        .uri("/coder/runs/coder-merge-promote-b/memory-hits?q=codeowners%20ci%20%2F%20test%20approval")
+        .uri("/coder/runs/coder-merge-promote-b/memory-hits?q=codeowners%20ci%20%2F%20test%20approval&limit=20")
         .body(Body::empty())
         .expect("hits request");
     let hits_resp = app.clone().oneshot(hits_req).await.expect("hits response");
@@ -1533,9 +1533,15 @@ async fn coder_promoted_merge_outcome_reuses_across_pull_requests() {
     let first_hit = hits_payload
         .get("hits")
         .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("source").and_then(Value::as_str) == Some("governed_memory")
+                    && row.get("memory_id").and_then(Value::as_str)
+                        == promote_payload.get("memory_id").and_then(Value::as_str)
+            })
+        })
         .cloned()
-        .expect("first hit");
+        .expect("promoted merge outcome hit");
     assert_eq!(
         first_hit.get("source").and_then(Value::as_str),
         Some("governed_memory")

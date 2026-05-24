@@ -690,7 +690,7 @@ async fn pack_builder_apply_endpoint_blocks_when_required_secrets_missing() {
                     "approvals": {
                         "approve_pack_install": true,
                         "approve_connector_registration": true,
-                        "approve_enable_routines": false
+                        "approve_enable_routines": true
                     },
                     "secret_refs_confirmed": false
                 })

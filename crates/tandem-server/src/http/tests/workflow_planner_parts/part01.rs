@@ -894,7 +894,7 @@ async fn workflow_plan_preview_rejects_invalid_llm_step_id_and_uses_fallback() {
                 "Invalid plan",
                 manual_schedule_json(),
                 "/tmp/ignored",
-                vec![step_json("custom_step", "custom", "Invalid.", &[], "worker", json!([]), "structured_json")],
+                vec![step_json("123 totally custom step", "custom", "Invalid.", &[], "worker", json!([]), "structured_json")],
                 None
             )
         })
@@ -984,7 +984,7 @@ async fn workflow_plan_preview_uses_phased_fallback_for_complex_prompt_on_invali
     );
     assert_eq!(step_ids.first().copied(), Some("assess"));
     assert_eq!(step_ids.get(1).copied(), Some("collect_inputs"));
-    assert_eq!(step_ids.last().copied(), Some("execute_goal"));
+    assert_eq!(step_ids.last().copied(), Some("finalize_outputs"));
 }
 
 #[tokio::test]

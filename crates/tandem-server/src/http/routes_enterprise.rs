@@ -338,7 +338,8 @@ async fn create_source_binding(
         "source_binding_created",
     );
     let _ =
-        invalidate_response_cache_for_source_binding(&tenant_context, &input.binding_id).await?;
+        invalidate_response_cache_for_source_binding(&state, &tenant_context, &input.binding_id)
+            .await?;
 
     Ok(Json(EnterpriseAdminResponseBase {
         message: "enterprise source binding saved",
@@ -672,11 +673,14 @@ async fn update_source_binding(
         &updated_binding.binding_id,
         "source_binding_updated",
     );
-    let _ =
-        invalidate_response_cache_for_source_binding(&tenant_context, &updated_binding.binding_id)
-            .await?;
+    let _ = invalidate_response_cache_for_source_binding(
+        &state,
+        &tenant_context,
+        &updated_binding.binding_id,
+    )
+    .await?;
     if source_binding_update_requires_index_purge(&updated_binding) {
-        let db = open_enterprise_memory_db().await?;
+        let db = open_enterprise_memory_db_for_state(&state).await?;
         let tenant_scope = memory_tenant_scope(&tenant_context);
         let _ = purge_source_binding_indexed_content(
             &db,
@@ -754,19 +758,18 @@ async fn invalidate_response_cache_for_connector(
         .collect();
     let mut removed = 0;
     for binding_id in binding_ids {
-        removed +=
-            invalidate_response_cache_for_source_binding(tenant_context, &binding_id).await?;
+        removed += invalidate_response_cache_for_source_binding(state, tenant_context, &binding_id)
+            .await?;
     }
     Ok(removed)
 }
 
 pub(super) async fn invalidate_response_cache_for_source_binding(
+    state: &AppState,
     tenant_context: &TenantContext,
     binding_id: &str,
 ) -> Result<usize, (StatusCode, Json<Value>)> {
-    let paths = tandem_core::resolve_shared_paths()
-        .map_err(|_| internal_error("ENTERPRISE_RESPONSE_CACHE_INVALIDATION_FAILED"))?;
-    let Some(parent) = paths.memory_db_path.parent() else {
+    let Some(parent) = state.memory_db_path.parent() else {
         return Ok(0);
     };
     if !parent.join("response_cache.db").exists() {
@@ -869,6 +872,19 @@ pub(super) async fn open_enterprise_memory_db() -> Result<MemoryDatabase, (Statu
         .map_err(|_| internal_error("ENTERPRISE_MEMORY_DB_OPEN_FAILED"))
 }
 
+pub(super) async fn open_enterprise_memory_db_for_state(
+    state: &AppState,
+) -> Result<MemoryDatabase, (StatusCode, Json<Value>)> {
+    if let Some(parent) = state.memory_db_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_MEMORY_DB_OPEN_FAILED"))?;
+    }
+    MemoryDatabase::new(&state.memory_db_path)
+        .await
+        .map_err(|_| internal_error("ENTERPRISE_MEMORY_DB_OPEN_FAILED"))
+}
+
 pub(super) fn memory_tenant_scope(tenant_context: &TenantContext) -> MemoryTenantScope {
     MemoryTenantScope {
         org_id: tenant_context.org_id.clone(),
@@ -953,7 +969,7 @@ async fn build_connector_impact(
     affected_bindings.sort_by(|left, right| left.binding_id.cmp(&right.binding_id));
 
     let tenant_scope = memory_tenant_scope(tenant_context);
-    let db = open_enterprise_memory_db().await?;
+    let db = open_enterprise_memory_db_for_state(state).await?;
     let mut affected_source_objects = Vec::new();
     for binding in &affected_bindings {
         let mut rows = db

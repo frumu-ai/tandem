@@ -720,6 +720,10 @@ pub(super) async fn context_run_tasks_claim(
 ) -> Result<Json<Value>, StatusCode> {
     let run = load_context_run_state(&state, &run_id).await?;
     ensure_context_run_tenant(&tenant_context, &run)?;
+    let deduped = input
+        .command_id
+        .as_deref()
+        .is_some_and(|command_id| context_run_events_have_command_id(&state, &run_id, command_id));
     let task = claim_next_context_task(
         &state,
         &run_id,
@@ -732,6 +736,7 @@ pub(super) async fn context_run_tasks_claim(
     .await?;
     Ok(Json(json!({
         "ok": true,
+        "deduped": deduped,
         "task": task,
         "blackboard": load_projected_context_blackboard(&state, &run_id),
     })))

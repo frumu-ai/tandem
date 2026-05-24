@@ -2,6 +2,7 @@ use futures::future::join_all;
 use futures::FutureExt;
 use serde_json::{json, Value};
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 
 use crate::app::state::AppState;
 use crate::automation_v2::types::{AutomationRunStatus, AutomationStopKind};
@@ -1041,6 +1042,39 @@ pub async fn run_automation_v2_run(
                     Some(detail.clone()),
                     Some(AutomationStopKind::GuardrailStopped),
                 );
+            })
+            .await;
+        return;
+    }
+    let workspace_root =
+        crate::app::state::resolve_automation_v2_workspace_root(&state, &automation).await;
+    let workspace_path = PathBuf::from(&workspace_root);
+    if !workspace_path.exists() {
+        let detail = format!(
+            "workspace_root `{}` for automation `{}` does not exist",
+            workspace_root, automation.automation_id
+        );
+        let _ = state
+            .update_automation_v2_run(&run.run_id, |row| {
+                row.status = AutomationRunStatus::Failed;
+                row.detail = Some(detail.clone());
+                row.stop_kind = Some(AutomationStopKind::GuardrailStopped);
+                row.stop_reason = Some(detail.clone());
+            })
+            .await;
+        return;
+    }
+    if !workspace_path.is_dir() {
+        let detail = format!(
+            "workspace_root `{}` for automation `{}` is not a directory",
+            workspace_root, automation.automation_id
+        );
+        let _ = state
+            .update_automation_v2_run(&run.run_id, |row| {
+                row.status = AutomationRunStatus::Failed;
+                row.detail = Some(detail.clone());
+                row.stop_kind = Some(AutomationStopKind::GuardrailStopped);
+                row.stop_reason = Some(detail.clone());
             })
             .await;
         return;

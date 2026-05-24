@@ -240,6 +240,7 @@ async fn automations_v2_create_rejects_lineage_depth_over_limit() {
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", "agent-depth-test")
         .header(
             "x-tandem-agent-ancestor-ids",
@@ -272,6 +273,7 @@ async fn automations_v2_create_requires_approved_capability_request() {
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             automation_v2_payload(
@@ -300,6 +302,7 @@ async fn automations_v2_create_requires_approved_capability_request() {
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             automation_v2_payload(
@@ -398,6 +401,7 @@ async fn automations_v2_patch_requires_approved_capability_request() {
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             automation_v2_payload("auto-v2-recursion-patch", agent_id, None).to_string(),
@@ -414,6 +418,7 @@ async fn automations_v2_patch_requires_approved_capability_request() {
         .method("PATCH")
         .uri("/automations/v2/auto-v2-recursion-patch")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             json!({
@@ -440,6 +445,7 @@ async fn automations_v2_patch_requires_approved_capability_request() {
         .method("PATCH")
         .uri("/automations/v2/auto-v2-recursion-patch")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             json!({
@@ -482,6 +488,7 @@ async fn automations_v2_spend_caps_pause_and_resume_after_quota_override() {
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             automation_v2_payload(automation_id, agent_id, None).to_string(),
@@ -589,6 +596,7 @@ async fn automations_v2_spend_caps_pause_and_resume_after_quota_override() {
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             automation_v2_payload("auto-v2-spend-test-2", agent_id, None).to_string(),
@@ -627,6 +635,7 @@ async fn automations_v2_spend_caps_pause_and_resume_after_quota_override() {
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             automation_v2_payload("auto-v2-spend-test-3", agent_id, None).to_string(),
@@ -658,6 +667,7 @@ async fn automations_v2_creation_review_threshold_blocks_and_can_be_acknowledged
             .method("POST")
             .uri("/automations/v2")
             .header("content-type", "application/json")
+            .header("x-tandem-request-source", "agent")
             .header("x-tandem-agent-id", agent_id)
             .body(Body::from(
                 automation_v2_payload(&automation_id, agent_id, None).to_string(),
@@ -702,6 +712,7 @@ async fn automations_v2_creation_review_threshold_blocks_and_can_be_acknowledged
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
         .header("x-tandem-agent-id", agent_id)
         .body(Body::from(
             automation_v2_payload("auto-v2-creation-review-3", agent_id, None).to_string(),

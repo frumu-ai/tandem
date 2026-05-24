@@ -80,6 +80,7 @@ pub struct AppState {
     pub run_stale_ms: u64,
     pub memory_records: Arc<RwLock<std::collections::HashMap<String, GovernedMemoryRecord>>>,
     pub memory_audit_log: Arc<RwLock<Vec<MemoryAuditEvent>>>,
+    pub memory_db_path: PathBuf,
     pub memory_audit_path: PathBuf,
     pub protected_audit_path: PathBuf,
     pub enterprise_org_units:
@@ -1182,13 +1183,17 @@ impl ServerPromptContextHook {
     }
 
     async fn open_memory_db(&self) -> Option<MemoryDatabase> {
-        let paths = resolve_shared_paths().ok()?;
-        MemoryDatabase::new(&paths.memory_db_path).await.ok()
+        if let Some(parent) = self.state.memory_db_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        MemoryDatabase::new(&self.state.memory_db_path).await.ok()
     }
 
     async fn open_memory_manager(&self) -> Option<tandem_memory::MemoryManager> {
-        let paths = resolve_shared_paths().ok()?;
-        tandem_memory::MemoryManager::new(&paths.memory_db_path)
+        if let Some(parent) = self.state.memory_db_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        tandem_memory::MemoryManager::new(&self.state.memory_db_path)
             .await
             .ok()
     }

@@ -233,6 +233,8 @@ impl AppState {
             run_stale_ms: config::env::resolve_run_stale_ms(),
             memory_records: Arc::new(RwLock::new(std::collections::HashMap::new())),
             memory_audit_log: Arc::new(RwLock::new(Vec::new())),
+            memory_db_path: tandem_core::resolve_memory_db_path()
+                .unwrap_or_else(|_| std::path::PathBuf::from("memory.sqlite")),
             memory_audit_path: config::paths::resolve_memory_audit_path(),
             protected_audit_path: config::paths::resolve_protected_audit_path(),
             enterprise_org_units: Arc::new(RwLock::new(std::collections::HashMap::new())),

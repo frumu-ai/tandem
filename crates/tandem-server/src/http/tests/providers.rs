@@ -217,14 +217,19 @@ async fn tenant_a_cannot_list_update_or_delete_tenant_b_provider_api_key() {
         tandem_types::TenantContext::explicit("org-a", "workspace-a", Some("user-a".to_string()));
     let tenant_b =
         tandem_types::TenantContext::explicit("org-b", "workspace-b", Some("user-b".to_string()));
+    let provider_auth_security_dir = state
+        .memory_db_path
+        .parent()
+        .expect("memory db parent")
+        .join("security");
     assert_eq!(
-        tandem_core::load_provider_auth_for_tenant(&tenant_a)
+        tandem_core::load_provider_auth_for_tenant_in_dir(&provider_auth_security_dir, &tenant_a)
             .get("openai")
             .map(String::as_str),
         Some("sk-tenant-a")
     );
     assert_eq!(
-        tandem_core::load_provider_auth_for_tenant(&tenant_b)
+        tandem_core::load_provider_auth_for_tenant_in_dir(&provider_auth_security_dir, &tenant_b)
             .get("openai")
             .map(String::as_str),
         Some("sk-tenant-b")
@@ -241,13 +246,13 @@ async fn tenant_a_cannot_list_update_or_delete_tenant_b_provider_api_key() {
     let resp = app.clone().oneshot(delete_a).await.expect("delete a");
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(
-        tandem_core::load_provider_auth_for_tenant(&tenant_a)
+        tandem_core::load_provider_auth_for_tenant_in_dir(&provider_auth_security_dir, &tenant_a)
             .get("openai")
             .is_none(),
         "tenant A delete only removes tenant A provider credential"
     );
     assert_eq!(
-        tandem_core::load_provider_auth_for_tenant(&tenant_b)
+        tandem_core::load_provider_auth_for_tenant_in_dir(&provider_auth_security_dir, &tenant_b)
             .get("openai")
             .map(String::as_str),
         Some("sk-tenant-b"),

@@ -2110,6 +2110,14 @@ pub(crate) fn automation_output_path_uses_legacy_workspace_artifact_contract(
         normalize_automation_path_text(workspace_root)
             .unwrap_or_else(|| workspace_root.trim().to_string()),
     );
+    let workspace = if workspace.is_absolute() {
+        workspace
+    } else {
+        let Ok(current_dir) = std::env::current_dir() else {
+            return false;
+        };
+        current_dir.join(workspace)
+    };
     let Ok(relative) = resolved.strip_prefix(&workspace) else {
         return false;
     };
@@ -2397,6 +2405,11 @@ pub(crate) fn resolve_automation_output_path(
         normalize_automation_path_text(workspace_root)
             .unwrap_or_else(|| workspace_root.trim().to_string()),
     );
+    let workspace = if workspace.is_absolute() {
+        workspace
+    } else {
+        std::env::current_dir()?.join(workspace)
+    };
     let candidate = PathBuf::from(trimmed);
     let resolved = if candidate.is_absolute() {
         candidate
