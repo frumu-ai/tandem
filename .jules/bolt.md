@@ -1,3 +1,6 @@
 ## 2024-06-25 - Avoid multiple useMemo mapped passes on large streams
 **Learning:** In a codebase that streams thousands of logs (like `src/components/logs/LogsDrawer.tsx`), performing three separate `lines.map().filter()` inside separate `useMemo` hooks is incredibly wasteful. It creates 6 intermediate array allocations matching the size of the stream, every time the `lines` state updates, causing huge memory spikes and GC churn.
 **Action:** Combine multiple array-wide extractors over the same dataset into a single `useMemo` block with one manual `for` loop, parsing matching criteria into `Set` structures to maintain the exact same functionality while dramatically slashing O(N) allocation and compute overhead.
+## 2024-11-21 - Replace `.sort()[0]` array sorting for single min/max with O(N) utils
+**Learning:** React components (e.g., `DeveloperRunViewer.tsx`) often need the single newest or oldest element from a list of artifacts/events. Previously this used `[...arr].sort(...)[0]`, causing an O(N) array copy and O(N log N) time complexity. For frequently updating lists of logs or runs, this creates enormous CPU and garbage collection spikes.
+**Action:** Use `maxBy` and `minBy` utility functions that compute the result in O(N) time with O(1) space. Always audit `.sort` operations in frequent render paths where only a single extreme element is needed.
