@@ -41,6 +41,17 @@ mkdir -p "$(dirname "$LOG_FILE")"
 : > "$LOG_FILE"
 
 echo "Publishing npm wrappers..." | tee -a "$LOG_FILE"
+if [[ "${PUBLISH_NPM_ENTERPRISE:-false}" != "true" ]]; then
+  FILTERED_PACKAGES=()
+  for package_dir in "${PACKAGES[@]}"; do
+    if [[ "$package_dir" == "packages/tandem-enterprise" ]]; then
+      echo "SKIP packages/tandem-enterprise (set PUBLISH_NPM_ENTERPRISE=true to publish)" | tee -a "$LOG_FILE"
+      continue
+    fi
+    FILTERED_PACKAGES+=("$package_dir")
+  done
+  PACKAGES=("${FILTERED_PACKAGES[@]}")
+fi
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "Mode: dry-run" | tee -a "$LOG_FILE"
 fi

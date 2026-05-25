@@ -40,6 +40,10 @@ $packages = @(
 )
 
 Write-Host "Publishing npm wrappers..."
+if ($env:PUBLISH_NPM_ENTERPRISE -ne "true") {
+    "SKIP packages/tandem-enterprise (set PUBLISH_NPM_ENTERPRISE=true to publish)" | Tee-Object -FilePath $logFile -Append
+    $packages = @($packages | Where-Object { $_ -ne "packages/tandem-enterprise" })
+}
 if ($DryRun) {
     Write-Host "Mode: dry-run"
 }
