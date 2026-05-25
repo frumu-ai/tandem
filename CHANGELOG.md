@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.10] - Unreleased
+## [0.5.11] - 2026-05-25
+
+### Added
+
+- Added a hosted-only Linux x64 enterprise engine distribution path. Release
+  builds now produce `tandem-engine-enterprise-linux-x64.tar.gz` with browser
+  automation and enterprise-full routes compiled into `tandem-engine`.
+- Added the public `@frumu/tandem-enterprise` npm wrapper package for hosted
+  Linux deployments. It installs the enterprise release asset while exposing
+  the same `tandem-engine` command used by existing sidecar scripts.
+
+### Changed
+
+- Refactored the npm engine binary installer into reusable artifact-resolution
+  logic so the standard and enterprise engine wrappers can share download,
+  extraction, version-check, and platform-validation behavior.
+- Updated release/version/publish automation to know about the new enterprise
+  package and release asset, while keeping the enterprise npm package publish
+  gated behind `PUBLISH_NPM_ENTERPRISE=true` for the first package publish.
+
+### Fixed
+
+- Kept automatic npm registry publishing from failing on the first release that
+  contains `@frumu/tandem-enterprise` by skipping that package unless it is
+  explicitly enabled.
+
+## [0.5.10] - Released - 2026-05-25
 
 ### Added
 

@@ -2,7 +2,29 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.5.10 (Unreleased)
+## v0.5.11 (2026-05-25)
+
+Tandem 0.5.11 prepares the hosted enterprise engine distribution path. The
+release now builds a Linux x64 `tandem-engine` binary with browser automation
+and enterprise-full routes compiled in, publishes it as a separate enterprise
+release asset, and adds a dedicated npm wrapper for hosted sidecar deployments.
+
+### Hosted Enterprise Engine
+
+- Added `tandem-engine-enterprise-linux-x64.tar.gz` to the Linux release asset
+  set. The archive extracts to a normal `tandem-engine` binary so existing
+  hosted sidecar scripts can keep the same command name.
+- Added the public `@frumu/tandem-enterprise` npm package for Linux x64 hosted
+  deployments. Its installer downloads only the enterprise Linux asset and
+  fails clearly on unsupported platforms.
+- Kept the standard `@frumu/tandem` package on the normal public engine asset,
+  so desktop and local installs do not pick up enterprise-full dependencies by
+  default.
+- Gated automatic enterprise npm publishing behind `PUBLISH_NPM_ENTERPRISE=true`
+  so the 0.5.11 registry publish can ship existing packages first while the new
+  npm package is first-published and configured intentionally.
+
+## v0.5.10 (Released - 2026-05-25)
 
 Tandem 0.5.10 opens the enterprise connector source-binding workstream. The
 focus is safe ingestion governance for hosted and enterprise deployments:
@@ -11,7 +33,7 @@ connector credentials as secret references, source bindings mapped to
 resource-scoped memory retrieval, and hosted authorization hardening around
 who may bind company data into Tandem.
 
-This unreleased line currently contains the contract foundation, enterprise
+This release contains the contract foundation, enterprise
 admin shell, storage-backed organization-unit registry, and storage-backed
 source-binding registry. Manual memory imports can now optionally target an
 enabled source binding so imported chunks carry resource and data-class
