@@ -7,9 +7,11 @@ set -euo pipefail
 # Usage:
 #   ./scripts/publish-npm-ci.sh --dry-run
 #   ./scripts/publish-npm-ci.sh
+#   ./scripts/publish-npm-ci.sh --otp 123456
 
 DRY_RUN=false
 PROVENANCE=false
+OTP="${NPM_OTP:-}"
 LOG_FILE="${PUBLISH_NPM_LOG:-publish-npm.log}"
 
 while [[ $# -gt 0 ]]; do
@@ -20,6 +22,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --provenance)
       PROVENANCE=true
+      shift
+      ;;
+    --otp)
+      OTP="${2:-}"
+      if [[ -z "$OTP" ]]; then
+        echo "Missing value for --otp" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    --otp=*)
+      OTP="${1#--otp=}"
       shift
       ;;
     *)
@@ -51,6 +65,10 @@ if [[ "${PUBLISH_NPM_ENTERPRISE:-false}" != "true" ]]; then
     FILTERED_PACKAGES+=("$package_dir")
   done
   PACKAGES=("${FILTERED_PACKAGES[@]}")
+fi
+if [[ -n "$OTP" && ! "$OTP" =~ ^[0-9]{6,8}$ ]]; then
+  echo "Invalid OTP. Use the numeric authenticator code, usually 6 digits." >&2
+  exit 1
 fi
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "Mode: dry-run" | tee -a "$LOG_FILE"
@@ -133,6 +151,9 @@ for dir in "${PACKAGES[@]}"; do
   publish_cmd=(npm publish --access public)
   if [[ "$PROVENANCE" == "true" ]]; then
     publish_cmd+=(--provenance)
+  fi
+  if [[ -n "$OTP" ]]; then
+    publish_cmd+=(--otp "$OTP")
   fi
 
   # TS SDK publish path: build explicitly, then publish without lifecycle scripts.
