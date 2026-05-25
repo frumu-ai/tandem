@@ -1511,7 +1511,7 @@ async function engineHealth(token = "") {
             "x-tandem-token": token,
           }
         : {},
-      signal: AbortSignal.timeout(1800),
+      signal: AbortSignal.timeout(30000),
     });
     if (!response.ok) return null;
     return await response.json();
@@ -1529,7 +1529,7 @@ async function probeEngineHealth(token = "") {
             "x-tandem-token": token,
           }
         : {},
-      signal: AbortSignal.timeout(1800),
+      signal: AbortSignal.timeout(30000),
     });
     const text = await response.text().catch(() => "");
     let payload = null;
@@ -1626,11 +1626,18 @@ async function validateEngineToken(token) {
         authorization: `Bearer ${token}`,
         "x-tandem-token": token,
       },
-      signal: AbortSignal.timeout(1800),
+      signal: AbortSignal.timeout(30000),
     });
-    return response.ok;
-  } catch {
-    return false;
+    return {
+      ok: response.ok,
+      status: response.status,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -2493,8 +2500,15 @@ async function handleAuthLogin(req, res) {
       return;
     }
     if (health.apiTokenRequired) {
-      const valid = await validateEngineToken(token);
-      if (!valid) {
+      const validation = await validateEngineToken(token);
+      if (!validation.ok) {
+        if (validation.status === 0) {
+          sendJson(res, 503, {
+            ok: false,
+            error: "Engine did not respond while validating the token. Try again in a moment.",
+          });
+          return;
+        }
         sendJson(res, 401, { ok: false, error: "Invalid engine API token" });
         return;
       }
