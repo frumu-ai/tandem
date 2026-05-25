@@ -40,3 +40,39 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+
+/**
+ * Finds the element in an array that has the maximum value according to the provided extractor.
+ * This avoids the O(n log n) overhead of `[...arr].sort(...)[0]` and the O(n) memory allocation.
+ */
+export function maxBy<T>(array: T[], extractor: (value: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let maxElement = array[0];
+  let maxValue = extractor(maxElement);
+  for (let i = 1; i < array.length; i++) {
+    const value = extractor(array[i]);
+    if (value > maxValue) {
+      maxValue = value;
+      maxElement = array[i];
+    }
+  }
+  return maxElement;
+}
+
+/**
+ * Finds the element in an array that has the minimum value according to the provided extractor.
+ * This avoids the O(n log n) overhead of `[...arr].sort(...)[0]` and the O(n) memory allocation.
+ */
+export function minBy<T>(array: T[], extractor: (value: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let minElement = array[0];
+  let minValue = extractor(minElement);
+  for (let i = 1; i < array.length; i++) {
+    const value = extractor(array[i]);
+    if (value < minValue) {
+      minValue = value;
+      minElement = array[i];
+    }
+  }
+  return minElement;
+}
