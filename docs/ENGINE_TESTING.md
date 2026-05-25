@@ -11,12 +11,12 @@ This guide covers:
 From `tandem/`:
 
 ```powershell
-pnpm install
+pnpm -C apps/tandem-desktop install
 pnpm engine:stop:windows
 cargo build -p tandem-ai
-New-Item -ItemType Directory -Force -Path .\src-tauri\binaries | Out-Null
-Copy-Item .\target\debug\tandem-engine.exe .\src-tauri\binaries\tandem-engine.exe -Force
-pnpm tauri dev
+New-Item -ItemType Directory -Force -Path .\apps\tandem-desktop\src-tauri\binaries | Out-Null
+Copy-Item .\target\debug\tandem-engine.exe .\apps\tandem-desktop\src-tauri\binaries\tandem-engine.exe -Force
+pnpm -C apps/tandem-desktop tauri dev
 ```
 
 ## macOS/Linux quickstart (engine + tauri dev)
@@ -24,24 +24,24 @@ pnpm tauri dev
 From `tandem/`:
 
 ```bash
-pnpm install
+pnpm -C apps/tandem-desktop install
 # Kill any existing engine instance
 pkill tandem-engine || true
 cargo build -p tandem-ai
-mkdir -p src-tauri/binaries
-cp target/debug/tandem-engine src-tauri/binaries/tandem-engine
-pnpm tauri dev
+mkdir -p apps/tandem-desktop/src-tauri/binaries
+cp target/debug/tandem-engine apps/tandem-desktop/src-tauri/binaries/tandem-engine
+pnpm -C apps/tandem-desktop tauri dev
 ```
 
 PowerShell equivalent (Windows):
 
 ```powershell
-pnpm install
+pnpm -C apps/tandem-desktop install
 Get-Process | Where-Object { $_.ProcessName -in @('tandem-engine','tandem') } | Stop-Process -Force -ErrorAction SilentlyContinue
 cargo build -p tandem-ai
-New-Item -ItemType Directory -Force -Path .\src-tauri\binaries | Out-Null
-Copy-Item .\target\debug\tandem-engine.exe .\src-tauri\binaries\tandem-engine.exe -Force
-pnpm tauri dev
+New-Item -ItemType Directory -Force -Path .\apps\tandem-desktop\src-tauri\binaries | Out-Null
+Copy-Item .\target\debug\tandem-engine.exe .\apps\tandem-desktop\src-tauri\binaries\tandem-engine.exe -Force
+pnpm -C apps/tandem-desktop tauri dev
 ```
 
 ## Quick commands
@@ -481,10 +481,10 @@ HOSTNAME=127.0.0.1 PORT=39731 STATE_DIR=.tandem-smoke OUT_DIR=runtime-proof bash
 cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731 --state-dir .tandem
 ```
 
-## Running with `pnpm tauri dev`
+## Running with `pnpm -C apps/tandem-desktop tauri dev`
 
 Tauri dev must be able to find the `tandem-engine` sidecar binary in a dev lookup path.
-Use the binary built in `target/` and copy it into `src-tauri/binaries/`.
+Use the binary built in `target/` and copy it into `apps/tandem-desktop/src-tauri/binaries/`.
 
 Important: the filename is the same (`tandem-engine` or `tandem-engine.exe`), but the directories are different.
 
@@ -506,14 +506,14 @@ $env:TANDEM_SHARED_ENGINE_MODE="0"
 If the app is stuck on `Connecting...` or fails to load, do a clean dev restart:
 
 ```powershell
-pnpm tauri:dev:clean
+pnpm desktop:dev:clean
 ```
 
 Manual equivalent:
 
 ```powershell
 Get-Process | Where-Object { $_.ProcessName -in @('tandem','tandem-engine','node') } | Stop-Process -Force -ErrorAction SilentlyContinue
-pnpm tauri dev
+pnpm -C apps/tandem-desktop tauri dev
 ```
 
 ## JSON-first orchestrator feature flag
@@ -524,13 +524,13 @@ Strict planner/validator contract mode can be forced via env:
 
 ```powershell
 $env:TANDEM_ORCH_STRICT_CONTRACT="1"
-pnpm tauri dev
+pnpm -C apps/tandem-desktop tauri dev
 ```
 
 ### macOS/Linux (bash)
 
 ```bash
-TANDEM_ORCH_STRICT_CONTRACT=1 pnpm tauri dev
+TANDEM_ORCH_STRICT_CONTRACT=1 pnpm -C apps/tandem-desktop tauri dev
 ```
 
 Behavior in strict mode:
@@ -546,10 +546,10 @@ From `tandem/`:
 
 ```bash
 cargo build -p tandem-ai
-mkdir -p ./src-tauri/binaries
-cp ./target/debug/tandem-engine ./src-tauri/binaries/tandem-engine
-chmod +x ./src-tauri/binaries/tandem-engine
-pnpm tauri dev
+mkdir -p ./apps/tandem-desktop/src-tauri/binaries
+cp ./target/debug/tandem-engine ./apps/tandem-desktop/src-tauri/binaries/tandem-engine
+chmod +x ./apps/tandem-desktop/src-tauri/binaries/tandem-engine
+pnpm -C apps/tandem-desktop tauri dev
 ```
 
 ### macOS/Linux
@@ -599,8 +599,8 @@ Windows copy/paste recovery for `os error 5`:
 ```powershell
 Get-Process | Where-Object { $_.ProcessName -in @('tandem-engine','tandem') } | Stop-Process -Force -ErrorAction SilentlyContinue
 cargo build -p tandem-ai
-New-Item -ItemType Directory -Force -Path .\src-tauri\binaries | Out-Null
-Copy-Item .\target\debug\tandem-engine.exe .\src-tauri\binaries\tandem-engine.exe -Force
+New-Item -ItemType Directory -Force -Path .\apps\tandem-desktop\src-tauri\binaries | Out-Null
+Copy-Item .\target\debug\tandem-engine.exe .\apps\tandem-desktop\src-tauri\binaries\tandem-engine.exe -Force
 ```
 
 Note: `mkdir -p` and `cp target/debug/tandem-engine ...` are macOS/Linux commands. On Windows, use `New-Item` and `Copy-Item` with the `.exe` filename.
@@ -656,7 +656,7 @@ For an existing workspace that contains legacy metadata:
 
 ## Observability verification (JSONL + correlation)
 
-After launching desktop (`pnpm tauri dev`) and sending one prompt:
+After launching desktop (`pnpm -C apps/tandem-desktop tauri dev`) and sending one prompt:
 
 1. Open `%APPDATA%\\tandem\\logs` and verify files exist:
    - `tandem.desktop.YYYY-MM-DD.jsonl`

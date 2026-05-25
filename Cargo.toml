@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "src-tauri",
+    "apps/tandem-desktop/src-tauri",
     "engine",
     "crates/tandem-browser",
     "crates/tandem-types",

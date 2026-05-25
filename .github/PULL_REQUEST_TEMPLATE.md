@@ -9,7 +9,7 @@
 ## How to test
 
 - [ ] `pnpm exec tsc --noEmit`
-- [ ] (If Rust changed) `cargo test --manifest-path src-tauri/Cargo.toml`
+- [ ] (If Rust changed) `cargo test --manifest-path apps/tandem-desktop/src-tauri/Cargo.toml`
 
 ## UX / Screenshots (if UI)
 

@@ -4,7 +4,7 @@ target/
 
 # Build outputs
 dist/
-src-tauri/target/
+apps/tandem-desktop/src-tauri/target/
 *.app
 *.dmg
 *.exe
@@ -13,8 +13,8 @@ src-tauri/target/
 *.AppImage
 
 # Sidecar binaries (downloaded at build time, not committed)
-src-tauri/binaries/*
-!src-tauri/binaries/.gitkeep
+apps/tandem-desktop/src-tauri/binaries/*
+!apps/tandem-desktop/src-tauri/binaries/.gitkeep
 
 # Environment and secrets - NEVER COMMIT
 .env
@@ -60,7 +60,7 @@ __pycache__/
 *.pyc
 
 # Tauri
-src-tauri/gen/
+apps/tandem-desktop/src-tauri/gen/
 
 # Tandem
 .tandem/
@@ -80,7 +80,7 @@ logs.txt
 # Fastembed Cache
 **/.fastembed_cache/
 crates/tandem-memory/.fastembed_cache/
-src-tauri/.fastembed_cache/
+apps/tandem-desktop/src-tauri/.fastembed_cache/
 
 # OpenCode workspace runtime (may be generated when the engine starts)
 .opencode/

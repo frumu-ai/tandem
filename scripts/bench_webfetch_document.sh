@@ -20,10 +20,10 @@ if [ -z "$engine_bin" ]; then
     engine_bin="./target/debug/tandem-engine"
   elif [ -x "./target/debug/tandem-engine.exe" ]; then
     engine_bin="./target/debug/tandem-engine.exe"
-  elif [ -x "./src-tauri/binaries/tandem-engine" ]; then
-    engine_bin="./src-tauri/binaries/tandem-engine"
-  elif [ -x "./src-tauri/binaries/tandem-engine.exe" ]; then
-    engine_bin="./src-tauri/binaries/tandem-engine.exe"
+  elif [ -x "./apps/tandem-desktop/src-tauri/binaries/tandem-engine" ]; then
+    engine_bin="./apps/tandem-desktop/src-tauri/binaries/tandem-engine"
+  elif [ -x "./apps/tandem-desktop/src-tauri/binaries/tandem-engine.exe" ]; then
+    engine_bin="./apps/tandem-desktop/src-tauri/binaries/tandem-engine.exe"
   fi
 fi
 

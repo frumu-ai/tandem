@@ -26,7 +26,7 @@ jobs:
       - name: Extract public key from tauri.conf.json
         id: pubkey
         run: |
-          PUBKEY=$(jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json)
+          PUBKEY=$(jq -r '.plugins.updater.pubkey' apps/tandem-desktop/src-tauri/tauri.conf.json)
           echo "pubkey=$PUBKEY" >> $GITHUB_OUTPUT
           echo "Found public key: ${PUBKEY:0:50}..."
 

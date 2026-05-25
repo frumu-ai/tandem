@@ -53,13 +53,13 @@ regex = "1"
 globset = "0.4"
 tokio-util = { version = "0.7", features = ["rt"] }
 semver = "1"
-tandem-core = { path = "../crates/tandem-core" }
-tandem-enterprise-contract = { path = "../crates/tandem-enterprise-contract" }
-tandem-types = { path = "../crates/tandem-types" }
-tandem-document = { path = "../crates/tandem-document" }
-tandem-observability = { path = "../crates/tandem-observability" }
-tandem-skills = { path = "../crates/tandem-skills" }
-tandem-memory = { path = "../crates/tandem-memory", features = ["local-embeddings"] }
+tandem-core = { path = "../../../crates/tandem-core" }
+tandem-enterprise-contract = { path = "../../../crates/tandem-enterprise-contract" }
+tandem-types = { path = "../../../crates/tandem-types" }
+tandem-document = { path = "../../../crates/tandem-document" }
+tandem-observability = { path = "../../../crates/tandem-observability" }
+tandem-skills = { path = "../../../crates/tandem-skills" }
+tandem-memory = { path = "../../../crates/tandem-memory", features = ["local-embeddings"] }
 
 # Memory context dependencies
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }

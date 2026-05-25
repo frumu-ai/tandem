@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-const LOCALES_ROOT = path.resolve("src", "i18n", "locales");
+const LOCALES_ROOT = path.resolve("apps", "tandem-desktop", "src", "i18n", "locales");
 const BASE_LOCALE = "en";
 const TARGET_LOCALE = "zh-CN";
 

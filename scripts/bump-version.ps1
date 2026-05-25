@@ -23,7 +23,8 @@ if (!version || !rootDir) {
 
 const jsonFiles = [
   "package.json",
-  "src-tauri/tauri.conf.json",
+  "apps/tandem-desktop/package.json",
+  "apps/tandem-desktop/src-tauri/tauri.conf.json",
   "packages/tandem-ai/package.json",
   "packages/tandem-client-ts/package.json",
   "packages/tandem-control-panel/package.json",
@@ -34,7 +35,7 @@ const jsonFiles = [
 ];
 
 const cargoFiles = [
-  "src-tauri/Cargo.toml",
+  "apps/tandem-desktop/src-tauri/Cargo.toml",
   "engine/Cargo.toml",
   "Cargo.lock",
   "crates/tandem-agent-teams/Cargo.toml",

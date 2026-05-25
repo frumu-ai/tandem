@@ -1,0 +1,288 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach desktop artifacts to, for example v0.5.12"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  # Safety toggle: macOS signing/notarization is disabled by default to avoid breaking builds.
+  # To enable, set a GitHub Actions repository variable: MACOS_SIGNING_ENABLED=true
+  MACOS_SIGNING_ENABLED: ${{ vars.MACOS_SIGNING_ENABLED }}
+
+jobs:
+  resolve-release:
+    name: Resolve Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_body: ${{ steps.release-body.outputs.release_body }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Generate release notes
+        run: node scripts/extract-release-notes.js "${{ inputs.tag }}" > release_notes.md
+
+      - name: Export release body output
+        id: release-body
+        shell: bash
+        run: |
+          {
+            echo "release_body<<EOF"
+            cat release_notes.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Find GitHub release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ inputs.tag }}';
+            const { data } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag,
+            });
+            core.setOutput('release_id', String(data.id));
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.platform }})
+    needs: resolve-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            upload_updater_json: false
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            upload_updater_json: false
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            upload_updater_json: false
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            upload_updater_json: true
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/tandem-desktop/pnpm-lock.yaml
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config \
+            build-essential
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/tandem-desktop/src-tauri -> apps/tandem-desktop/src-tauri/target
+
+      - name: Install desktop dependencies
+        run: pnpm -C apps/tandem-desktop install --frozen-lockfile
+
+      - name: Build bundled engine sidecar (Unix)
+        if: ${{ matrix.platform != 'windows-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-browser --features tandem-ai/browser
+          mkdir -p apps/tandem-desktop/src-tauri/resources/binaries
+          cp "target/${{ matrix.target }}/release/tandem-engine" "apps/tandem-desktop/src-tauri/resources/binaries/tandem-engine"
+          cp "target/${{ matrix.target }}/release/tandem-browser" "apps/tandem-desktop/src-tauri/resources/binaries/tandem-browser"
+          chmod +x "apps/tandem-desktop/src-tauri/resources/binaries/tandem-engine"
+          chmod +x "apps/tandem-desktop/src-tauri/resources/binaries/tandem-browser"
+
+      - name: Build bundled engine sidecar (Windows)
+        if: ${{ matrix.platform == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-browser --features tandem-ai/browser
+          New-Item -ItemType Directory -Path "apps/tandem-desktop/src-tauri/resources/binaries" -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "apps/tandem-desktop/src-tauri/resources/binaries/tandem-engine.exe" -Force
+          Copy-Item "target/${{ matrix.target }}/release/tandem-browser.exe" "apps/tandem-desktop/src-tauri/resources/binaries/tandem-browser.exe" -Force
+
+      - name: Prepare App Store Connect API key (optional, for notarization)
+        if: ${{ matrix.platform == 'macos-latest' }}
+        id: asc_api_key
+        shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          echo "key_path=" >> "$GITHUB_OUTPUT"
+
+          if [ "${MACOS_SIGNING_ENABLED:-}" != "true" ]; then
+            echo "MACOS_SIGNING_ENABLED is not true; skipping."
+            exit 0
+          fi
+
+          if [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_KEY_P8:-}" ]; then
+            echo "App Store Connect API key not configured; skipping."
+            exit 0
+          fi
+
+          mkdir -p "$RUNNER_TEMP/apple-notary"
+          KEY_PATH="$RUNNER_TEMP/apple-notary/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "key_path=$KEY_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Build and upload (macOS, unsigned)
+        if: ${{ matrix.platform == 'macos-latest' && env.MACOS_SIGNING_ENABLED != 'true' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/tandem-desktop
+          releaseId: ${{ needs.resolve-release.outputs.release_id }}
+          releaseBody: ${{ needs.resolve-release.outputs.release_body }}
+          retryAttempts: 3
+          args: --target ${{ matrix.target }}
+          updaterJsonPreferNsis: true
+          includeUpdaterJson: ${{ matrix.upload_updater_json }}
+
+      - name: Build and upload (macOS, signed/notarized)
+        if: ${{ matrix.platform == 'macos-latest' && env.MACOS_SIGNING_ENABLED == 'true' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ steps.asc_api_key.outputs.key_path }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/tandem-desktop
+          releaseId: ${{ needs.resolve-release.outputs.release_id }}
+          releaseBody: ${{ needs.resolve-release.outputs.release_body }}
+          retryAttempts: 3
+          args: --target ${{ matrix.target }}
+          updaterJsonPreferNsis: true
+          includeUpdaterJson: ${{ matrix.upload_updater_json }}
+
+      - name: Verify macOS DMG (Gatekeeper)
+        if: ${{ matrix.platform == 'macos-latest' }}
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          set -euo pipefail
+
+          if [ "${MACOS_SIGNING_ENABLED:-}" != "true" ]; then
+            echo "MACOS_SIGNING_ENABLED is not true; skipping Gatekeeper validation."
+            exit 0
+          fi
+
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "Apple signing not configured; skipping Gatekeeper validation."
+            exit 0
+          fi
+
+          DMG=""
+          for p in \
+            "apps/tandem-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg" \
+            "apps/tandem-desktop/src-tauri/target/release/bundle/dmg" \
+          ; do
+            if [ -d "$p" ]; then
+              DMG="$(ls -1 "$p"/*.dmg 2>/dev/null | head -n 1 || true)"
+              if [ -n "$DMG" ]; then break; fi
+            fi
+          done
+          if [ -z "$DMG" ]; then
+            DMG="$(find apps/tandem-desktop/src-tauri/target -path "*/bundle/dmg/*.dmg" -maxdepth 6 -print 2>/dev/null | head -n 1 || true)"
+          fi
+          if [ -z "$DMG" ]; then
+            echo "No DMG found under apps/tandem-desktop/src-tauri/target/**/bundle/dmg."
+            exit 1
+          fi
+
+          MOUNT="$RUNNER_TEMP/tandem-dmg-mount"
+          mkdir -p "$MOUNT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG"
+          APP="$(find "$MOUNT" -maxdepth 2 -name "*.app" -print | head -n 1 || true)"
+          if [ -z "$APP" ]; then
+            echo "No .app found in mounted DMG."
+            hdiutil detach "$MOUNT" || true
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          spctl -a -vvv --type execute "$APP"
+          stapler validate "$APP"
+          hdiutil detach "$MOUNT"
+
+      - name: Build and upload (non-macOS)
+        if: ${{ matrix.platform != 'macos-latest' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/tandem-desktop
+          releaseId: ${{ needs.resolve-release.outputs.release_id }}
+          releaseBody: ${{ needs.resolve-release.outputs.release_body }}
+          retryAttempts: 3
+          args: --target ${{ matrix.target }}
+          updaterJsonPreferNsis: true
+          includeUpdaterJson: ${{ matrix.upload_updater_json }}

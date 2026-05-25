@@ -3,18 +3,23 @@
 This document outlines the steps to create and publish a new release of Tandem.
 
 > [!IMPORTANT]
-> Binary/app release and registry publishing are intentionally separated:
+> Runtime, desktop, and registry publishing are intentionally separated:
 >
-> - `.github/workflows/release.yml` handles desktop binaries + GitHub Release assets.
-> - `.github/workflows/publish-registries.yml` handles crates.io and npm publishing.
+> - `.github/workflows/release.yml` handles runtime GitHub Release assets and registry dispatch.
+> - `.github/workflows/desktop-release.yml` optionally builds Tauri desktop bundles for an existing tag.
+> - `.github/workflows/publish-registries.yml` handles crates.io, npm, and PyPI publishing.
 
 ## Overview
 
 Tandem uses **Git tags** to trigger automated builds and releases. When you push a tag matching the pattern `v*.*.*` (e.g., `v0.1.10`), GitHub Actions automatically:
 
-- Builds the application for all platforms (Windows, macOS, Linux)
-- Creates a GitHub Release with the built artifacts
+- Builds runtime binaries for Windows, macOS, and Linux
+- Builds the Linux x64 enterprise engine artifact
+- Creates a GitHub Release with the runtime artifacts
 - Publishes the release notes
+- Dispatches registry publishing
+
+Desktop bundles are no longer built on every tag. Run **Desktop Release** manually for a tag when a desktop build is actually needed.
 
 ## Registry Publish Workflow (Crates + npm)
 
@@ -74,6 +79,7 @@ Then publish from package folders:
 
 ```bash
 cd packages/tandem-engine && npm publish --access public
+cd packages/tandem-enterprise && npm publish --access public
 cd packages/tandem-tui && npm publish --access public
 ```
 
@@ -98,18 +104,19 @@ Before creating a release, ensure:
 - [ ] `RELEASE_NOTES.md` is updated with detailed release notes
 - [ ] Workflow-runtime fixes since the previous release have replay coverage
 - [ ] Workflow fast gate and deep gate are green for release-relevant workflow changes
-- [ ] **Version numbers are updated in ALL three files** (critical for auto-updater):
-  - `src-tauri/tauri.conf.json` - **REQUIRED** (this is what the app reports as its version)
-  - `package.json` - **REQUIRED**
-  - `src-tauri/Cargo.toml` - **REQUIRED**
+- [ ] Version numbers are updated with `./scripts/bump-version.sh <version>`
+- [ ] Desktop version numbers are updated when desktop bundles will be published:
+  - `apps/tandem-desktop/package.json`
+  - `apps/tandem-desktop/src-tauri/tauri.conf.json` - this is what the app reports as its version
+  - `apps/tandem-desktop/src-tauri/Cargo.toml`
 
 > [!CAUTION]
-> **DO NOT create a release tag without updating all three version numbers first!** The auto-updater will fail if version numbers are mismatched. Always verify with:
+> **DO NOT create a release tag without running the version bump first.** For desktop releases, also verify:
 >
 > ```bash
-> grep '"version"' src-tauri/tauri.conf.json
-> grep '"version"' package.json
-> grep '^version' src-tauri/Cargo.toml
+> grep '"version"' apps/tandem-desktop/package.json
+> grep '"version"' apps/tandem-desktop/src-tauri/tauri.conf.json
+> grep '^version' apps/tandem-desktop/src-tauri/Cargo.toml
 > ```
 
 ## Release Steps
@@ -145,8 +152,9 @@ git push --tags
 
 1. Go to the [GitHub Actions page](https://github.com/frumu-ai/tandem/actions)
 2. Look for the workflow run triggered by your tag
-3. Wait for the build to complete (usually 10-20 minutes)
+3. Wait for the runtime build to complete
 4. Check for any build failures
+5. If desktop bundles are needed, run **Actions -> Desktop Release -> Run workflow** with the same tag
 
 ### 4. Verify the Release
 
@@ -154,8 +162,9 @@ Once the build completes:
 
 1. Go to the [Releases page](https://github.com/frumu-ai/tandem/releases)
 2. Verify the new release is published
-3. Check that all platform binaries are attached
-4. Review the auto-generated release notes
+3. Check that runtime binaries are attached, including the Linux enterprise engine artifact
+4. If you ran Desktop Release, check that desktop bundles were attached
+5. Review the generated release notes
 
 ## Workflow Runtime Release Rules
 

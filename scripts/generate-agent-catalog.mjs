@@ -8,7 +8,7 @@ const repoRoot = path.resolve(__dirname, "..");
 const sourceRoot = path.join(repoRoot, "docs/internal/tandem-proprietary");
 const categoryRoot = path.join(sourceRoot, "categories");
 const outputFiles = [
-  path.join(repoRoot, "src/generated/agent-catalog.json"),
+  path.join(repoRoot, "apps/tandem-desktop/src/generated/agent-catalog.json"),
   path.join(repoRoot, "packages/tandem-control-panel/src/generated/agent-catalog.json"),
 ];
 

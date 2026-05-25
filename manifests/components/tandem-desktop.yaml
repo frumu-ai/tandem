@@ -53,9 +53,9 @@ deployment_targets:
   - desktop app
 
 source_of_truth:
-  - path: src
+  - path: apps/tandem-desktop/src
     reason: primary React frontend implementation
-  - path: src-tauri
+  - path: apps/tandem-desktop/src-tauri
     reason: native desktop backend, tauri commands, and integration logic
 
 notes:

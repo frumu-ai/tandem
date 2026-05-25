@@ -12,7 +12,7 @@ They are intended to answer:
 ## Manifest Locations
 
 - Canonical source manifests live in `manifests/components/`.
-- Agent-runtime copies live in `src-tauri/resources/agent-context/component-manifests/`.
+- Agent-runtime copies live in `apps/tandem-desktop/src-tauri/resources/agent-context/component-manifests/`.
 - When a manifest is updated, both locations should be updated in the same change.
 
 ## Included Components
@@ -20,7 +20,7 @@ They are intended to answer:
 | Component              | Kind              | Manifest                                                                         | Why it has its own manifest                                                                                           | Primary source-of-truth paths                                                                                                                    |
 | ---------------------- | ----------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `tandem-engine`        | `runtime`         | [`tandem-engine.yaml`](../manifests/components/tandem-engine.yaml)               | Central runtime, API surface, orchestration, workflows, automations, memory, tools, and coordination state live here. | `engine/`, `crates/tandem-server/`, `crates/tandem-runtime/`, `crates/tandem-orchestrator/`, `crates/tandem-memory/`, `crates/tandem-workflows/` |
-| `tandem-desktop`       | `desktop-client`  | [`tandem-desktop.yaml`](../manifests/components/tandem-desktop.yaml)             | The Tauri desktop application is a distinct first-party user-facing client with its own frontend and native backend.  | `src/`, `src-tauri/`                                                                                                                             |
+| `tandem-desktop`       | `desktop-client`  | [`tandem-desktop.yaml`](../manifests/components/tandem-desktop.yaml)             | The Tauri desktop application is a distinct first-party user-facing client with its own frontend and native backend.  | `apps/tandem-desktop/src/`, `apps/tandem-desktop/src-tauri/`                                                                                                                             |
 | `tandem-tui`           | `terminal-client` | [`tandem-tui.yaml`](../manifests/components/tandem-tui.yaml)                     | The terminal UI is a separate client surface with its own UX, commands, and engine attach/bootstrap behavior.         | `crates/tandem-tui/`                                                                                                                             |
 | `tandem-control-panel` | `web-client`      | [`tandem-control-panel.yaml`](../manifests/components/tandem-control-panel.yaml) | The browser-based control panel is implemented in-repo as its own package, gateway, and service bootstrap layer.      | `packages/tandem-control-panel/`                                                                                                                 |
 | `tandem-sdk-clients`   | `sdk`             | [`tandem-sdk-clients.yaml`](../manifests/components/tandem-sdk-clients.yaml)     | The official TypeScript and Python SDKs are implemented in-repo and wrap the engine HTTP + SSE API.                   | `packages/tandem-client-ts/`, `packages/tandem-client-py/`                                                                                       |
@@ -49,7 +49,7 @@ These areas are present in the repo but are not modeled as standalone component 
 - Do not infer ownership of downstream apps, hosted services, or external ecosystems from integration code alone.
 - Update manifests only after verifying ownership in code, config, or docs under the listed `source_of_truth` paths.
 - Keep each `owns` entry paired with at least one concrete implementation path.
-- When boundaries change, update both `manifests/components/` and `src-tauri/resources/agent-context/component-manifests/` together.
+- When boundaries change, update both `manifests/components/` and `apps/tandem-desktop/src-tauri/resources/agent-context/component-manifests/` together.
 
 ## Optional Product-Messaging Fields
 

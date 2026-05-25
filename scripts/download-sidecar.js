@@ -3,7 +3,7 @@
  * Download OpenCode sidecar binary for the current platform
  * 
  * This script fetches the appropriate OpenCode binary from GitHub releases
- * and places it in src-tauri/binaries/ for bundling with the Tauri app.
+ * and places it in apps/tandem-desktop/src-tauri/binaries/ for bundling with the Tauri app.
  * 
  * Usage: node scripts/download-sidecar.js [--force]
  */
@@ -17,7 +17,7 @@ import { createWriteStream } from "fs";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT_DIR = join(__dirname, "..");
-const BINARIES_DIR = join(ROOT_DIR, "src-tauri", "binaries");
+const BINARIES_DIR = join(ROOT_DIR, "apps", "tandem-desktop", "src-tauri", "binaries");
 
 // OpenCode release info
 const OPENCODE_REPO = "anomalyco/opencode";

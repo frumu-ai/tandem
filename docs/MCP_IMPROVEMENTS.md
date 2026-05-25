@@ -10,8 +10,8 @@ You have the full Tandem repo locally. Start by inspecting:
 - `crates/tandem-server/src/http.rs` (MCP endpoints + tool endpoints)
 - `crates/tandem-tools/src/lib.rs` (current MCP call patterns: `mcp_debug`, hardwired MCP usage)
 - `crates/tandem-core/src/engine_loop.rs` (where tool schemas are sent to the model)
-- `src-tauri/src/modes.rs` and related desktop config (mode/tool allowlist concepts)
-- `src-tauri/src/commands.rs` (existing MCP initialize probe + any desktop-side MCP config)
+- `apps/tandem-desktop/src-tauri/src/modes.rs` and related desktop config (mode/tool allowlist concepts)
+- `apps/tandem-desktop/src-tauri/src/commands.rs` (existing MCP initialize probe + any desktop-side MCP config)
 
 # Goal
 

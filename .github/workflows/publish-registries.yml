@@ -157,8 +157,9 @@ jobs:
 
           checks = [
               ("package.json", read_json_version("package.json")),
-              ("src-tauri/Cargo.toml", read_cargo_version("src-tauri/Cargo.toml")),
-              ("src-tauri/tauri.conf.json", read_json_version("src-tauri/tauri.conf.json")),
+              ("apps/tandem-desktop/package.json", read_json_version("apps/tandem-desktop/package.json")),
+              ("apps/tandem-desktop/src-tauri/Cargo.toml", read_cargo_version("apps/tandem-desktop/src-tauri/Cargo.toml")),
+              ("apps/tandem-desktop/src-tauri/tauri.conf.json", read_json_version("apps/tandem-desktop/src-tauri/tauri.conf.json")),
               ("packages/tandem-engine/package.json", read_json_version("packages/tandem-engine/package.json")),
               ("packages/tandem-enterprise/package.json", read_json_version("packages/tandem-enterprise/package.json")),
               ("packages/tandem-tui/package.json", read_json_version("packages/tandem-tui/package.json")),

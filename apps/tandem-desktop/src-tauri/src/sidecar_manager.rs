@@ -183,17 +183,32 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
                 return Ok(dev_binary);
             }
 
-            // Try src-tauri/binaries if we are in the project root
+            // Try desktop app binaries when running from the repository root.
             let dev_binary_nested = current_dir
+                .join("apps")
+                .join("tandem-desktop")
                 .join("src-tauri")
                 .join("binaries")
                 .join(binary_name);
             if dev_binary_nested.exists() {
                 tracing::debug!(
-                    "Using dev sidecar from src-tauri/binaries: {:?}",
+                    "Using dev sidecar from apps/tandem-desktop/src-tauri/binaries: {:?}",
                     dev_binary_nested
                 );
                 return Ok(dev_binary_nested);
+            }
+
+            // Try src-tauri/binaries when running from the desktop app root.
+            let app_root_binary = current_dir
+                .join("src-tauri")
+                .join("binaries")
+                .join(binary_name);
+            if app_root_binary.exists() {
+                tracing::debug!(
+                    "Using dev sidecar from src-tauri/binaries: {:?}",
+                    app_root_binary
+                );
+                return Ok(app_root_binary);
             }
         }
     }

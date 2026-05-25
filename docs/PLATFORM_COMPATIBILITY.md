@@ -47,9 +47,9 @@ Tandem is designed to work across **Windows, Linux, and macOS** with appropriate
 
 | Location                               | Platform     | Purpose                   | macOS Impact                   |
 | -------------------------------------- | ------------ | ------------------------- | ------------------------------ |
-| `src-tauri/src/main.rs`                | Linux only   | GTK/WebKit env vars       | None - properly isolated       |
-| `src-tauri/src/commands.rs:292`        | Windows only | Hide `git` console window | None - macOS uses Unix path    |
-| `src-tauri/src/sidecar_manager.rs:488` | Windows only | Hide `taskkill` console   | None - macOS uses Unix signals |
+| `apps/tandem-desktop/src-tauri/src/main.rs`                | Linux only   | GTK/WebKit env vars       | None - properly isolated       |
+| `apps/tandem-desktop/src-tauri/src/commands.rs:292`        | Windows only | Hide `git` console window | None - macOS uses Unix path    |
+| `apps/tandem-desktop/src-tauri/src/sidecar_manager.rs:488` | Windows only | Hide `taskkill` console   | None - macOS uses Unix signals |
 
 #### Frontend (TypeScript/React)
 

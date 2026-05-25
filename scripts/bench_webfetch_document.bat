@@ -19,7 +19,7 @@ if not exist "%URLS_FILE%" (
 
 if "%ENGINE_BIN%"=="" (
   if exist ".\target\debug\tandem-engine.exe" set "ENGINE_BIN=.\target\debug\tandem-engine.exe"
-  if exist ".\src-tauri\binaries\tandem-engine.exe" set "ENGINE_BIN=.\src-tauri\binaries\tandem-engine.exe"
+  if exist ".\apps\tandem-desktop\src-tauri\binaries\tandem-engine.exe" set "ENGINE_BIN=.\apps\tandem-desktop\src-tauri\binaries\tandem-engine.exe"
 )
 
 if "%ENGINE_BIN%"=="" (
