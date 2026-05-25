@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@frumu/tandem-client": path.resolve(__dirname, "../tandem-client-ts/src/index.ts"),
+      zod: path.resolve(__dirname, "node_modules/zod/index.js"),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react-dom/client": "preact/compat",
