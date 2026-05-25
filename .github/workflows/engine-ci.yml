@@ -34,16 +34,38 @@ jobs:
           node-version: 20
 
       - name: Cargo check
-        run: cargo check -p tandem-ai
+        run: cargo check -p tandem-ai --no-default-features
 
       - name: Cargo test
-        run: cargo test -p tandem-ai
+        run: cargo test -p tandem-ai --no-default-features
 
       - name: Cargo clippy
-        run: cargo clippy -p tandem-ai -- -D warnings
+        run: cargo clippy -p tandem-ai --no-default-features -- -D warnings
 
       - name: Cargo fmt
         run: cargo fmt --check
+
+  browser-sidecar-check:
+    name: Browser Sidecar Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check engine with browser feature
+        run: cargo check -p tandem-ai --features browser
+
+      - name: Check server with browser feature
+        run: cargo check -p tandem-server --features browser --lib
+
+      - name: Check browser sidecar
+        run: cargo check -p tandem-browser
+
+      - name: Test browser sidecar
+        run: cargo test -p tandem-browser
 
   workflow-runtime-fast-gate:
     name: Workflow Runtime Fast Gate

@@ -6,6 +6,7 @@ pub mod app;
 pub mod audit;
 pub mod automation_v2;
 pub mod benchmarking;
+#[cfg(feature = "browser")]
 pub mod browser;
 pub mod bug_monitor;
 pub mod bug_monitor_github;
@@ -44,6 +45,7 @@ pub use automation_v2::execution_profile::{
     RelaxedValidatorClass, ValidationOutcome, ValidatorClass, ValidatorClassDispositionSummary,
 };
 pub use automation_v2::types::*;
+#[cfg(feature = "browser")]
 pub use browser::*;
 pub use bug_monitor::types::*;
 pub use config::channels::*;

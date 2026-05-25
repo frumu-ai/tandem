@@ -30,10 +30,11 @@ use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 #[cfg(feature = "enterprise-server")]
 use tandem_server::serve_with_route_extensions;
 use tandem_server::{
-    detect_host_runtime_context, install_browser_sidecar, serve, AppState, AutomationRunStatus,
-    AutomationV2RunRecord, AutomationV2Spec, BrowserSidecarInstallResult, BrowserSubsystem,
-    RuntimeState,
+    detect_host_runtime_context, serve, AppState, AutomationRunStatus, AutomationV2RunRecord,
+    AutomationV2Spec, RuntimeState,
 };
+#[cfg(feature = "browser")]
+use tandem_server::{install_browser_sidecar, BrowserSidecarInstallResult, BrowserSubsystem};
 use tandem_tools::ToolRegistry;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -809,52 +810,21 @@ async fn main() -> anyhow::Result<()> {
                 config,
                 json,
             } => {
-                let state_dir = resolve_state_dir(state_dir);
-                let config_path = config.map(PathBuf::from);
-                let status = browser_doctor_status(&state_dir, config_path).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&status)?);
-                } else {
-                    println!("Browser readiness");
-                    println!("  Enabled: {}", status.enabled);
-                    println!("  Runnable: {}", status.runnable);
-                    println!(
-                        "  Sidecar: {}",
-                        status
-                            .sidecar
-                            .path
-                            .clone()
-                            .unwrap_or_else(|| "<not found>".to_string())
-                    );
-                    println!(
-                        "  Browser: {}",
-                        status
-                            .browser
-                            .path
-                            .clone()
-                            .unwrap_or_else(|| "<not found>".to_string())
-                    );
-                    if let Some(version) = status.browser.version.as_deref() {
-                        println!("  Browser version: {}", version);
+                #[cfg(feature = "browser")]
+                {
+                    let state_dir = resolve_state_dir(state_dir);
+                    let config_path = config.map(PathBuf::from);
+                    let status = browser_doctor_status(&state_dir, config_path).await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&status)?);
+                    } else {
+                        print_browser_readiness(&status);
                     }
-                    if !status.blocking_issues.is_empty() {
-                        println!("Blocking issues:");
-                        for issue in &status.blocking_issues {
-                            println!("  - {}: {}", issue.code, issue.message);
-                        }
-                    }
-                    if !status.recommendations.is_empty() {
-                        println!("Recommendations:");
-                        for row in &status.recommendations {
-                            println!("  - {}", row);
-                        }
-                    }
-                    if !status.install_hints.is_empty() {
-                        println!("Install hints:");
-                        for row in &status.install_hints {
-                            println!("  - {}", row);
-                        }
-                    }
+                }
+                #[cfg(not(feature = "browser"))]
+                {
+                    let _ = (state_dir, config, json);
+                    anyhow::bail!("browser feature disabled; rebuild tandem-engine with --features browser or use the bundled tandem-browser sidecar");
                 }
             }
             BrowserCommand::Install {
@@ -862,24 +832,32 @@ async fn main() -> anyhow::Result<()> {
                 config,
                 json,
             } => {
-                let state_dir = resolve_state_dir(state_dir);
-                let config_path = config.map(PathBuf::from);
-                let result = browser_install_result(&state_dir, config_path).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
-                    println!("Installed tandem-browser");
-                    println!("  Version: {}", result.version);
-                    println!("  Asset: {}", result.asset_name);
-                    println!("  Path: {}", result.installed_path);
-                    println!("  Downloaded bytes: {}", result.downloaded_bytes);
-                    println!("  Runnable: {}", result.status.runnable);
-                    if !result.status.blocking_issues.is_empty() {
-                        println!("Blocking issues:");
-                        for issue in &result.status.blocking_issues {
-                            println!("  - {}: {}", issue.code, issue.message);
+                #[cfg(feature = "browser")]
+                {
+                    let state_dir = resolve_state_dir(state_dir);
+                    let config_path = config.map(PathBuf::from);
+                    let result = browser_install_result(&state_dir, config_path).await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    } else {
+                        println!("Installed tandem-browser");
+                        println!("  Version: {}", result.version);
+                        println!("  Asset: {}", result.asset_name);
+                        println!("  Path: {}", result.installed_path);
+                        println!("  Downloaded bytes: {}", result.downloaded_bytes);
+                        println!("  Runnable: {}", result.status.runnable);
+                        if !result.status.blocking_issues.is_empty() {
+                            println!("Blocking issues:");
+                            for issue in &result.status.blocking_issues {
+                                println!("  - {}: {}", issue.code, issue.message);
+                            }
                         }
                     }
+                }
+                #[cfg(not(feature = "browser"))]
+                {
+                    let _ = (state_dir, config, json);
+                    anyhow::bail!("browser feature disabled; rebuild tandem-engine with --features browser or use the bundled tandem-browser sidecar");
                 }
             }
         },
@@ -2381,6 +2359,7 @@ async fn build_runtime(
     let phase_start = Instant::now();
     let event_bus = EventBus::new();
     let app_config = config.get().await;
+    #[cfg(feature = "browser")]
     let browser = BrowserSubsystem::new(app_config.browser.clone());
     let providers = ProviderRegistry::new(app_config.into());
     let plugins = PluginRegistry::new(".").await?;
@@ -2392,6 +2371,7 @@ async fn build_runtime(
             tools_for_index.index_all().await;
         });
     }
+    #[cfg(feature = "browser")]
     if startup_state.is_none() {
         browser.register_tools(&tools, None).await?;
     }
@@ -2452,10 +2432,56 @@ async fn build_runtime(
         cancellations,
         engine_loop,
         host_runtime_context,
+        #[cfg(feature = "browser")]
         browser,
     })
 }
 
+#[cfg(feature = "browser")]
+fn print_browser_readiness(status: &tandem_browser::BrowserStatus) {
+    println!("Browser readiness");
+    println!("  Enabled: {}", status.enabled);
+    println!("  Runnable: {}", status.runnable);
+    println!(
+        "  Sidecar: {}",
+        status
+            .sidecar
+            .path
+            .clone()
+            .unwrap_or_else(|| "<not found>".to_string())
+    );
+    println!(
+        "  Browser: {}",
+        status
+            .browser
+            .path
+            .clone()
+            .unwrap_or_else(|| "<not found>".to_string())
+    );
+    if let Some(version) = status.browser.version.as_deref() {
+        println!("  Browser version: {}", version);
+    }
+    if !status.blocking_issues.is_empty() {
+        println!("Blocking issues:");
+        for issue in &status.blocking_issues {
+            println!("  - {}: {}", issue.code, issue.message);
+        }
+    }
+    if !status.recommendations.is_empty() {
+        println!("Recommendations:");
+        for row in &status.recommendations {
+            println!("  - {}", row);
+        }
+    }
+    if !status.install_hints.is_empty() {
+        println!("Install hints:");
+        for row in &status.install_hints {
+            println!("  - {}", row);
+        }
+    }
+}
+
+#[cfg(feature = "browser")]
 async fn browser_doctor_status(
     state_dir: &Path,
     override_config_path: Option<PathBuf>,
@@ -2467,6 +2493,7 @@ async fn browser_doctor_status(
     Ok(browser.refresh_status().await)
 }
 
+#[cfg(feature = "browser")]
 async fn browser_install_result(
     state_dir: &Path,
     override_config_path: Option<PathBuf>,

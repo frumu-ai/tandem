@@ -7,7 +7,7 @@ repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"
 
 [features]
-default = ["browser"]
+default = []
 enterprise = []
 browser = ["tandem-browser"]
 local-embeddings = ["tandem-memory/local-embeddings"]

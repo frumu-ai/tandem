@@ -121,7 +121,9 @@ pub(super) async fn test_state() -> AppState {
         .expect("config");
     let event_bus = EventBus::new();
     let app_config = config.get().await;
+    #[cfg(feature = "browser")]
     let browser = crate::BrowserSubsystem::new(app_config.browser.clone());
+    #[cfg(feature = "browser")]
     let _ = browser.refresh_status().await;
     let providers = ProviderRegistry::new(app_config.into());
     let plugins = PluginRegistry::new(".").await.expect("plugins");
@@ -199,6 +201,7 @@ pub(super) async fn test_state() -> AppState {
             cancellations,
             engine_loop,
             host_runtime_context,
+            #[cfg(feature = "browser")]
             browser,
         })
         .await
