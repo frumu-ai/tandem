@@ -161,8 +161,10 @@ jobs:
               ("src-tauri/tauri.conf.json", read_json_version("src-tauri/tauri.conf.json")),
               ("packages/tandem-engine/package.json", read_json_version("packages/tandem-engine/package.json")),
               ("packages/tandem-tui/package.json", read_json_version("packages/tandem-tui/package.json")),
+              ("packages/tandem-ai/package.json", read_json_version("packages/tandem-ai/package.json")),
               ("packages/tandem-client-ts/package.json", read_json_version("packages/tandem-client-ts/package.json")),
               ("packages/tandem-control-panel/package.json", read_json_version("packages/tandem-control-panel/package.json")),
+              ("packages/create-tandem-panel/package.json", read_json_version("packages/create-tandem-panel/package.json")),
               ("packages/tandem-client-py/pyproject.toml", read_pyproject_version("packages/tandem-client-py/pyproject.toml")),
           ]
 
@@ -213,6 +215,7 @@ jobs:
               "crates/tandem-governance-engine",
               "crates/tandem-tui",
               "crates/tandem-server",
+              "crates/tandem-enterprise-server",
               "engine",
           ]
 

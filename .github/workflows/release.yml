@@ -101,6 +101,7 @@ jobs:
           update_json(root / "packages" / "tandem-ai" / "package.json")
           update_json(root / "packages" / "tandem-client-ts" / "package.json")
           update_json(root / "packages" / "tandem-control-panel" / "package.json")
+          update_json(root / "packages" / "create-tandem-panel" / "package.json")
           update_pyproject_version(root / "packages" / "tandem-client-py" / "pyproject.toml")
           update_json(root / "src-tauri" / "tauri.conf.json")
           PY
@@ -123,6 +124,7 @@ jobs:
             packages/tandem-ai/package.json \
             packages/tandem-client-ts/package.json \
             packages/tandem-control-panel/package.json \
+            packages/create-tandem-panel/package.json \
             packages/tandem-client-py/pyproject.toml
           git commit -m "chore(release): bump versions to ${VERSION}"
           git tag -f "${TAG_NAME}"

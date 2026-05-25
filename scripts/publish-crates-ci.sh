@@ -49,6 +49,7 @@ CRATES=(
   "crates/tandem-plan-compiler"
   "crates/tandem-governance-engine"
   "crates/tandem-server"
+  "crates/tandem-enterprise-server"
   "crates/tandem-tui"
   "engine"
 )
