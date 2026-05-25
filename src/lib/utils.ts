@@ -40,3 +40,23 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+
+
+/**
+ * Returns the element in the array that has the maximum value returned by the given function.
+ * This is an O(N) performance optimization over sorting patterns like `[...arr].sort(...)[0]`
+ * which incur O(N log N) compute and O(N) memory allocation overhead.
+ */
+export function maxBy<T>(array: T[], fn: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let maxItem = array[0];
+  let maxVal = fn(maxItem);
+  for (let i = 1; i < array.length; i++) {
+    const val = fn(array[i]);
+    if (val > maxVal) {
+      maxVal = val;
+      maxItem = array[i];
+    }
+  }
+  return maxItem;
+}
