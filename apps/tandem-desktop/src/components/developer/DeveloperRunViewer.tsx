@@ -948,7 +948,9 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
 
   const latestDecision = useMemo(() => {
     if (decisions.length === 0) return null;
-    return maxBy(decisions, (item) => blackboardRowTimestamp(item) ?? 0) ?? null;
+    return (
+      maxBy(decisions, (item) => blackboardRowTimestamp(item) ?? 0) ?? null
+    );
   }, [decisions]);
 
   const blackboardTimeline = useMemo<BlackboardTimelineItem[]>(() => {
@@ -1099,7 +1101,8 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       return type === "rollback_execution_applied" || type === "rollback_execution_blocked";
     });
     if (rollbackEvents.length === 0) return null;
-    const latest = maxBy(rollbackEvents, (item) => runEventTimestamp(item) ?? 0) ?? null;
+    const latest =
+      maxBy(rollbackEvents, (item) => runEventTimestamp(item) ?? 0) ?? null;
     if (!latest) return null;
     const payload = asRecord(latest.payload);
     return {
@@ -1422,15 +1425,9 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       )
       .sort((left, right) => right.ts_ms - left.ts_ms);
     const olderInCategory =
-      maxBy(
-        inCategory.filter((artifact) => artifact.ts_ms < selectedArtifactRecord.ts_ms),
-        (item) => item.ts_ms
-      ) ?? null;
+      maxBy(inCategory.filter((artifact) => artifact.ts_ms < selectedArtifactRecord.ts_ms), (item) => item.ts_ms) ?? null;
     const newerInCategory =
-      minBy(
-        inCategory.filter((artifact) => artifact.ts_ms > selectedArtifactRecord.ts_ms),
-        (item) => item.ts_ms
-      ) ?? null;
+      minBy(inCategory.filter((artifact) => artifact.ts_ms > selectedArtifactRecord.ts_ms), (item) => item.ts_ms) ?? null;
     const sameStepArtifacts = selectedArtifactRecord.step_id
       ? artifacts
           .filter(
@@ -1856,18 +1853,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     }
     if (refs.size === 0) return null;
     return (
-      maxBy(
-        artifacts.filter((artifact) =>
-          [
-            artifact.path,
-            artifact.id,
-            artifact.artifact_type,
-            artifact.step_id ?? "",
-            artifact.source_event_id ?? "",
-          ].some((value) => value && refs.has(value))
-        ),
-        (item) => item.ts_ms
-      ) ?? null
+      maxBy(artifacts.filter((artifact) => [artifact.path, artifact.id, artifact.artifact_type, artifact.step_id ?? "", artifact.source_event_id ?? ""].some((value) => value && refs.has(value))), (item) => item.ts_ms) ?? null
     );
   }, [artifacts, selectedBlackboard]);
 
