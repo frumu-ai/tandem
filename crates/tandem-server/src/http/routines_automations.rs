@@ -4,7 +4,7 @@ use axum::{
     response::sse::{Event, KeepAlive, Sse},
     Json,
 };
-use tandem_types::{RequestPrincipal, TenantContext};
+use tandem_types::{RequestPrincipal, TenantContext, VerifiedTenantContext};
 
 include!("routines_automations_parts/part01.rs");
 include!("routines_automations_parts/part02.rs");

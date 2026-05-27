@@ -89,6 +89,239 @@ fn automation_v2_summary_value(automation: &AutomationV2Spec) -> Value {
     })
 }
 
+fn hosted_context_admin(verified: Option<&VerifiedTenantContext>) -> bool {
+    let Some(verified) = verified else {
+        return false;
+    };
+    verified.roles.iter().any(|role| {
+        matches!(
+            role.as_str(),
+            "owner"
+                | "admin"
+                | "hosted:owner"
+                | "hosted:admin"
+                | "enterprise:admin"
+                | "workspace:admin"
+                | "organization:admin"
+        )
+    }) || verified.capabilities.iter().any(|capability| {
+        matches!(
+            capability.as_str(),
+            "hosted.owner" | "hosted.admin" | "automation.write" | "automation.share"
+        )
+    })
+}
+
+fn hosted_context_actor_id(verified: Option<&VerifiedTenantContext>) -> Option<&str> {
+    verified
+        .map(|context| context.human_actor.actor_id.trim())
+        .filter(|actor_id| !actor_id.is_empty())
+}
+
+fn automation_v2_access_metadata(automation: &AutomationV2Spec) -> Option<&serde_json::Map<String, Value>> {
+    automation
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("resource_access"))
+        .and_then(Value::as_object)
+}
+
+fn automation_v2_access_visibility(automation: &AutomationV2Spec) -> Option<&str> {
+    automation_v2_access_metadata(automation)
+        .and_then(|metadata| metadata.get("visibility"))
+        .and_then(Value::as_str)
+}
+
+fn automation_v2_access_owner(automation: &AutomationV2Spec) -> Option<&str> {
+    automation_v2_access_metadata(automation)
+        .and_then(|metadata| metadata.get("owner_principal"))
+        .and_then(Value::as_object)
+        .and_then(|owner| owner.get("id"))
+        .and_then(Value::as_str)
+}
+
+fn automation_v2_access_audiences(automation: &AutomationV2Spec) -> Vec<String> {
+    automation_v2_access_metadata(automation)
+        .and_then(|metadata| metadata.get("audience_principals"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn automation_v2_visible_to_context(
+    automation: &AutomationV2Spec,
+    verified: Option<&VerifiedTenantContext>,
+) -> bool {
+    if verified.is_none() || automation_v2_access_metadata(automation).is_none() {
+        return true;
+    }
+    if hosted_context_admin(verified) {
+        return true;
+    }
+    let Some(actor_id) = hosted_context_actor_id(verified) else {
+        return false;
+    };
+    if automation_v2_access_owner(automation) == Some(actor_id) {
+        return true;
+    }
+    match automation_v2_access_visibility(automation).unwrap_or("private") {
+        "org" => true,
+        "group" => {
+            let audience = automation_v2_access_audiences(automation);
+            let groups = verified
+                .map(|context| context.org_units.as_slice())
+                .unwrap_or(&[]);
+            groups.iter().any(|group| audience.iter().any(|entry| entry == group))
+        }
+        _ => false,
+    }
+}
+
+fn ensure_automation_v2_visible_to_context(
+    automation: &AutomationV2Spec,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if automation_v2_visible_to_context(automation, verified) {
+        Ok(())
+    } else {
+        Err(automation_v2_not_found(&automation.automation_id))
+    }
+}
+
+fn ensure_automation_v2_owner_or_admin(
+    automation: &AutomationV2Spec,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if verified.is_none() || automation_v2_access_metadata(automation).is_none() {
+        return Ok(());
+    }
+    let actor_id = hosted_context_actor_id(verified);
+    if hosted_context_admin(verified) || actor_id == automation_v2_access_owner(automation) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Automation access denied",
+                "code": "AUTOMATION_V2_ACCESS_DENIED",
+            })),
+        ))
+    }
+}
+
+async fn automation_v2_run_automation_for_access(
+    state: &AppState,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) -> Result<AutomationV2Spec, (StatusCode, Json<Value>)> {
+    state
+        .get_automation_v2(&run.automation_id)
+        .await
+        .or_else(|| run.automation_snapshot.clone())
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error":"Automation not found",
+                    "code":"AUTOMATION_V2_NOT_FOUND",
+                    "automationID": run.automation_id,
+                })),
+            )
+        })
+}
+
+async fn ensure_automation_v2_run_visible_to_context(
+    state: &AppState,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<AutomationV2Spec, (StatusCode, Json<Value>)> {
+    let automation = automation_v2_run_automation_for_access(state, run).await?;
+    ensure_automation_v2_visible_to_context(&automation, verified)?;
+    Ok(automation)
+}
+
+async fn ensure_automation_v2_run_owner_or_admin(
+    state: &AppState,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<AutomationV2Spec, (StatusCode, Json<Value>)> {
+    let automation = automation_v2_run_automation_for_access(state, run).await?;
+    ensure_automation_v2_owner_or_admin(&automation, verified)?;
+    Ok(automation)
+}
+
+fn with_automation_v2_private_access_metadata(
+    metadata: Option<Value>,
+    verified: Option<&VerifiedTenantContext>,
+) -> Option<Value> {
+    let Some(actor_id) = hosted_context_actor_id(verified) else {
+        return metadata;
+    };
+    let mut obj = metadata.and_then(|value| value.as_object().cloned()).unwrap_or_default();
+    obj.entry("resource_access".to_string()).or_insert_with(|| {
+        json!({
+            "owner_principal": {
+                "kind": "human_user",
+                "id": actor_id,
+            },
+            "visibility": "private",
+            "audience_principals": [],
+            "created_by": actor_id,
+            "updated_by": actor_id,
+        })
+    });
+    Some(Value::Object(obj))
+}
+
+fn apply_automation_v2_share_metadata(
+    automation: &mut AutomationV2Spec,
+    input: AutomationV2ShareInput,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let visibility = input.visibility.unwrap_or_else(|| "private".to_string());
+    if !matches!(visibility.as_str(), "private" | "group" | "org") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Invalid automation visibility",
+                "code": "AUTOMATION_V2_INVALID_VISIBILITY",
+            })),
+        ));
+    }
+    let actor_id = hosted_context_actor_id(verified)
+        .or_else(|| automation_v2_access_owner(automation))
+        .unwrap_or("unknown")
+        .to_string();
+    let owner_id = automation_v2_access_owner(automation)
+        .or_else(|| hosted_context_actor_id(verified))
+        .unwrap_or(&automation.creator_id)
+        .to_string();
+    let audience = input.audience_principals.unwrap_or_default();
+    let mut obj = automation
+        .metadata
+        .take()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    obj.insert(
+        "resource_access".to_string(),
+        json!({
+            "owner_principal": {
+                "kind": "human_user",
+                "id": owner_id,
+            },
+            "visibility": visibility,
+            "audience_principals": audience,
+            "updated_by": actor_id,
+        }),
+    );
+    automation.metadata = Some(Value::Object(obj));
+    Ok(())
+}
+
 pub(super) async fn automations_patch(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -755,6 +988,7 @@ pub(super) async fn automations_v2_create(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Json(input): Json<AutomationV2CreateInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -778,7 +1012,13 @@ pub(super) async fn automations_v2_create(
                 })),
             )
         })?;
-    let metadata = merge_automation_capabilities_metadata(input.metadata, input.capabilities)?;
+    let metadata = merge_automation_capabilities_metadata(
+        with_automation_v2_private_access_metadata(
+            input.metadata,
+            verified_tenant_context.as_ref().map(|context| &context.0),
+        ),
+        input.capabilities,
+    )?;
     let declared_capabilities =
         crate::automation_v2::governance::AutomationDeclaredCapabilities::from_metadata(
             metadata.as_ref(),
@@ -867,13 +1107,16 @@ pub(super) async fn automations_v2_create(
 pub(super) async fn automations_v2_list(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<AutomationsV2ListQuery>,
 ) -> Json<Value> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let rows = state
         .list_automations_v2()
         .await
         .into_iter()
         .filter(|automation| super::tenant_matches(&tenant_context, &automation.tenant_context()))
+        .filter(|automation| automation_v2_visible_to_context(automation, verified))
         .collect::<Vec<_>>();
     if query
         .view
@@ -899,12 +1142,14 @@ pub(super) async fn automations_v2_list(
 pub(super) async fn automations_v2_get(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Some(automation) = state.get_automation_v2(&id).await else {
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_visible_to_context(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
     Ok(Json(json!({ "automation": automation })))
 }
 
@@ -912,6 +1157,7 @@ pub(super) async fn automations_v2_patch(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<AutomationV2PatchInput>,
@@ -920,6 +1166,7 @@ pub(super) async fn automations_v2_patch(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let governance = state
@@ -1050,10 +1297,38 @@ pub(super) async fn automations_v2_patch(
     Ok(Json(json!({ "automation": stored })))
 }
 
+pub(super) async fn automations_v2_share(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<AutomationV2ShareInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(mut automation) = state.get_automation_v2(&id).await else {
+        return Err(automation_v2_not_found(&id));
+    };
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_owner_or_admin(&automation, verified)?;
+    apply_automation_v2_share_metadata(&mut automation, input, verified)?;
+    automation.updated_at_ms = crate::now_ms();
+    let stored = state.put_automation_v2(automation).await.map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "AUTOMATION_V2_SHARE_FAILED",
+            })),
+        )
+    })?;
+    Ok(Json(json!({ "automation": stored })))
+}
+
 pub(super) async fn automations_v2_delete(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1061,6 +1336,7 @@ pub(super) async fn automations_v2_delete(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state
@@ -1105,6 +1381,7 @@ pub(super) async fn automations_v2_run_now(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<AutomationV2RunNowInput>,
@@ -1113,6 +1390,7 @@ pub(super) async fn automations_v2_run_now(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_visible_to_context(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state
@@ -1219,6 +1497,7 @@ pub(super) async fn automations_v2_pause(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
@@ -1227,6 +1506,7 @@ pub(super) async fn automations_v2_pause(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state
@@ -1301,6 +1581,7 @@ pub(super) async fn automations_v2_resume(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1308,6 +1589,7 @@ pub(super) async fn automations_v2_resume(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state
@@ -1355,6 +1637,7 @@ pub(super) async fn automations_v2_resume(
 pub(super) async fn automations_v2_handoffs(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     use crate::automation_v2::types::HandoffArtifact;
@@ -1363,6 +1646,10 @@ pub(super) async fn automations_v2_handoffs(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_visible_to_context(
+        &automation,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )?;
 
     let workspace_root = match automation.workspace_root.as_deref() {
         Some(root) if !root.is_empty() => root.to_string(),
@@ -1439,6 +1726,7 @@ pub(super) async fn automations_v2_handoffs(
 pub(super) async fn automations_v2_runs(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
     Query(query): Query<RoutineRunsQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1446,6 +1734,10 @@ pub(super) async fn automations_v2_runs(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
+    ensure_automation_v2_visible_to_context(
+        &automation,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )?;
     let limit = query.limit.unwrap_or(50);
     let rows = state.list_automation_v2_runs(Some(&id), limit).await;
     for run in &rows {
@@ -1464,15 +1756,26 @@ pub(super) async fn automations_v2_runs(
 pub(super) async fn automations_v2_runs_all(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<RoutineRunsQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let rows = state
+    let candidate_rows = state
         .list_automation_v2_runs(None, limit)
         .await
         .into_iter()
         .filter(|run| super::tenant_matches(&tenant_context, &run.tenant_context))
         .collect::<Vec<_>>();
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    let mut rows = Vec::with_capacity(candidate_rows.len());
+    for run in candidate_rows {
+        if ensure_automation_v2_run_visible_to_context(&state, &run, verified)
+            .await
+            .is_ok()
+        {
+            rows.push(run);
+        }
+    }
     for run in &rows {
         if let Some(automation) = state.get_automation_v2(&run.automation_id).await {
             let _ =
@@ -1490,16 +1793,20 @@ pub(super) async fn automations_v2_runs_all(
 pub(super) async fn automations_v2_run_get(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Some(run) = state.get_automation_v2_run(&run_id).await else {
         return Err(automation_v2_run_not_found(&run_id));
     };
     ensure_automation_v2_run_tenant(&tenant_context, &run)?;
-    if let Some(automation) = state.get_automation_v2(&run.automation_id).await {
-        let _ =
-            super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &run).await;
-    }
+    let automation = ensure_automation_v2_run_visible_to_context(
+        &state,
+        &run,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )
+    .await?;
+    let _ = super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &run).await;
     let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
     Ok(Json(json!({
         "run": automation_v2_run_with_context_links(&state, &run).await,
@@ -1511,6 +1818,7 @@ pub(super) async fn automations_v2_run_get(
 pub(super) async fn automations_v2_run_pause(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1518,6 +1826,12 @@ pub(super) async fn automations_v2_run_pause(
         return Err(automation_v2_run_not_found(&run_id));
     };
     ensure_automation_v2_run_tenant(&tenant_context, &current)?;
+    let _automation = ensure_automation_v2_run_owner_or_admin(
+        &state,
+        &current,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )
+    .await?;
     if !matches!(
         current.status,
         AutomationRunStatus::Running | AutomationRunStatus::Queued
@@ -1574,6 +1888,7 @@ pub(super) async fn automations_v2_run_pause(
 pub(super) async fn automations_v2_run_resume(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1581,6 +1896,12 @@ pub(super) async fn automations_v2_run_resume(
         return Err(automation_v2_run_not_found(&run_id));
     };
     ensure_automation_v2_run_tenant(&tenant_context, &current)?;
+    let _automation = ensure_automation_v2_run_owner_or_admin(
+        &state,
+        &current,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )
+    .await?;
     if current.status != AutomationRunStatus::Paused {
         return Err((
             StatusCode::CONFLICT,
@@ -1621,6 +1942,7 @@ pub(super) async fn automations_v2_run_resume(
 pub(super) async fn automations_v2_run_cancel(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1628,6 +1950,12 @@ pub(super) async fn automations_v2_run_cancel(
         return Err(automation_v2_run_not_found(&run_id));
     };
     ensure_automation_v2_run_tenant(&tenant_context, &current)?;
+    let _automation = ensure_automation_v2_run_owner_or_admin(
+        &state,
+        &current,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )
+    .await?;
     if matches!(
         current.status,
         AutomationRunStatus::Cancelled
@@ -1684,6 +2012,7 @@ pub(super) async fn automations_v2_run_cancel(
 pub(crate) async fn automations_v2_run_gate_decide(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Json(input): Json<AutomationV2GateDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1691,6 +2020,12 @@ pub(crate) async fn automations_v2_run_gate_decide(
         return Err(automation_v2_run_not_found(&run_id));
     };
     ensure_automation_v2_run_tenant(&tenant_context, &current)?;
+    let automation_for_access = ensure_automation_v2_run_visible_to_context(
+        &state,
+        &current,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )
+    .await?;
     if current.status != AutomationRunStatus::AwaitingApproval {
         // Race UX: when a second surface tries to decide a gate that has just
         // been resolved by another surface (Slack click + control-panel click,
@@ -1723,6 +2058,7 @@ pub(crate) async fn automations_v2_run_gate_decide(
         .get_automation_v2(&current.automation_id)
         .await
         .or_else(|| current.automation_snapshot.clone())
+        .or(Some(automation_for_access))
     else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -2075,6 +2411,7 @@ fn decision_label(decision: &str) -> &'static str {
 pub(super) async fn automations_v2_run_recover(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -2082,6 +2419,12 @@ pub(super) async fn automations_v2_run_recover(
         return Err(automation_v2_run_not_found(&run_id));
     };
     ensure_automation_v2_run_tenant(&tenant_context, &current)?;
+    let automation = ensure_automation_v2_run_owner_or_admin(
+        &state,
+        &current,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )
+    .await?;
     let blocked_node_ids = automation_v2_blocked_node_ids(&current);
     let blocked_run_is_recoverable = matches!(current.status, AutomationRunStatus::Blocked)
         || (matches!(current.status, AutomationRunStatus::Completed)
@@ -2098,14 +2441,6 @@ pub(super) async fn automations_v2_run_recover(
             ),
         ));
     }
-    let Some(automation) = state.get_automation_v2(&current.automation_id).await else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(
-                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": current.automation_id}),
-            ),
-        ));
-    };
     let runtime_context_failure = current.status == AutomationRunStatus::Failed
         && current.detail.as_deref()
             == Some("runtime context partition missing for automation run");
@@ -2232,6 +2567,7 @@ pub(super) async fn automations_v2_run_recover(
 pub(super) async fn automations_v2_run_repair(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Json(input): Json<AutomationV2RunRepairInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -2248,6 +2584,12 @@ pub(super) async fn automations_v2_run_repair(
         return Err(automation_v2_run_not_found(&run_id));
     };
     ensure_automation_v2_run_tenant(&tenant_context, &current)?;
+    let automation_for_access = ensure_automation_v2_run_owner_or_admin(
+        &state,
+        &current,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )
+    .await?;
     if matches!(
         current.status,
         AutomationRunStatus::Running | AutomationRunStatus::Queued | AutomationRunStatus::Pausing
@@ -2263,6 +2605,7 @@ pub(super) async fn automations_v2_run_repair(
         .get_automation_v2(&current.automation_id)
         .await
         .or_else(|| current.automation_snapshot.clone())
+        .or(Some(automation_for_access))
     else {
         return Err((
             StatusCode::NOT_FOUND,

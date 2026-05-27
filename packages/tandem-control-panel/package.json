@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem-panel",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "Web control center for Tandem authority-layer runtime: agents, workflows, memory, approvals, channels, and ops",
   "type": "module",
   "bin": {
@@ -42,8 +42,8 @@
   "homepage": "https://tandem.ac",
   "author": "Frumu Ltd",
   "dependencies": {
-    "@frumu/tandem": "^0.5.11",
-    "@frumu/tandem-client": "^0.5.11",
+    "@frumu/tandem": "^0.5.12",
+    "@frumu/tandem-client": "^0.5.12",
     "@fullcalendar/core": "6.1.20",
     "@fullcalendar/interaction": "6.1.20",
     "@fullcalendar/react": "6.1.20",

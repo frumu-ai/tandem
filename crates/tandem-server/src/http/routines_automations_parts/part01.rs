@@ -651,6 +651,14 @@ pub(super) struct AutomationV2PatchInput {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct AutomationV2ShareInput {
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub audience_principals: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct AutomationV2RunNowInput {
     #[serde(default)]
     pub dry_run: bool,

@@ -385,6 +385,7 @@ async fn dispatch_decision(
     let result = crate::http::routines_automations::automations_v2_run_gate_decide(
         State(state),
         axum::extract::Extension(tenant_context),
+        None,
         axum::extract::Path(parsed.run_id.clone()),
         Json(input),
     )

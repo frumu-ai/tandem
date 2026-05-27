@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.12] - 2026-05-27
+
+### Added
+
+- Added hosted single-tenant context assertion claims for org units,
+  capabilities, and policy version so Tandem-hosted panel sessions can carry
+  customer org policy into the runtime without exposing the root engine token.
+- Added hosted automation ownership metadata for automation v2 resources.
+  New hosted automations are private to their creator by default, while
+  owners/admins can share resources with org units/groups or the whole hosted
+  org.
+- Added `POST /automations/v2/{id}/share` to update hosted automation
+  visibility and audience metadata under runtime owner/admin enforcement.
+
+### Changed
+
+- Updated the hosted control panel session model and `/api/auth/me` response to
+  include hosted org units, effective capabilities, and policy version.
+- Replaced the hosted panel proxy's broad role checks with capability-aware
+  route checks for automation reads, execution, writes, and sharing.
+- Extended hosted runtime request verification so automation v2 list/read/run
+  surfaces honor private, group, and org visibility derived from the signed
+  Tandem assertion.
+
+### Fixed
+
+- Fixed hosted automation mutation paths so hosted users cannot edit, pause,
+  resume, delete, recover, or repair another user's private automation unless
+  they are the owner or have hosted admin authority.
+- Preserved channel approval compatibility for Slack, Discord, and Telegram
+  automation gate decisions after adding hosted assertion-aware route handling.
+
 ## [0.5.11] - 2026-05-25
 
 ### Added

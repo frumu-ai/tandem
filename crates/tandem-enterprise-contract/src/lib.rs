@@ -973,6 +973,12 @@ pub struct VerifiedTenantContext {
     pub authority_chain: AuthorityChain,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub org_units: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict_projection: Option<StrictTenantContext>,
     pub issuer: String,
@@ -1012,6 +1018,12 @@ pub struct TenantContextAssertionClaims {
     pub authority_chain: AuthorityChain,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub org_units: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal: Option<PrincipalRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1046,6 +1058,9 @@ impl TenantContextAssertionClaims {
             human_actor,
             authority_chain,
             roles,
+            org_units: Vec::new(),
+            capabilities: Vec::new(),
+            policy_version: None,
             principal: None,
             resource_scope: None,
             grants: Vec::new(),
@@ -1115,6 +1130,9 @@ impl From<TenantContextAssertionClaims> for VerifiedTenantContext {
             human_actor: claims.human_actor,
             authority_chain: claims.authority_chain,
             roles: claims.roles,
+            org_units: claims.org_units,
+            capabilities: claims.capabilities,
+            policy_version: claims.policy_version,
             strict_projection,
             issuer: claims.issuer,
             audience: claims.audience,
@@ -2086,6 +2104,9 @@ mod tests {
             human_actor: actor,
             authority_chain: AuthorityChain::from_request(principal),
             roles: vec!["owner".to_string()],
+            org_units: Vec::new(),
+            capabilities: Vec::new(),
+            policy_version: None,
             strict_projection: None,
             issuer: "tandem-web".to_string(),
             audience: "tandem-runtime".to_string(),
@@ -2646,6 +2667,9 @@ mod tests {
             human_actor: HumanActor::tandem_user("user-a"),
             authority_chain: AuthorityChain::from_request(principal),
             roles: vec!["enterprise:admin".to_string()],
+            org_units: Vec::new(),
+            capabilities: Vec::new(),
+            policy_version: None,
             strict_projection: None,
             issuer: "tandem-web".to_string(),
             audience: "tandem-runtime".to_string(),

@@ -2,6 +2,41 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.5.12 (2026-05-27)
+
+Tandem 0.5.12 hardens the hosted control-panel sign-in path and starts the
+hosted organization access model inside the runtime. Hosted panel sessions now
+carry Tandem-signed org-unit membership, capabilities, and policy-version
+context, and automation v2 resources can be private, group-shared, or org-wide.
+
+### Hosted Panel Access
+
+- Hosted panel session exchange and refresh payloads now preserve org units,
+  effective capabilities, and policy version from Tandem-hosted identity.
+- `/api/auth/me` exposes the hosted access context so the control panel can
+  filter navigation and actions without treating UI hiding as enforcement.
+- The control-panel proxy now uses capabilities for hosted reads, automation
+  execution, automation writes, and sharing actions before forwarding requests
+  to the engine.
+
+### Runtime Resource Sharing
+
+- Hosted automation v2 creation stamps owner/private access metadata from the
+  verified Tandem assertion instead of trusting caller-provided user fields.
+- Automation v2 list/read/run routes enforce private, group, and org visibility
+  in hosted mode. Private automations remain visible to their creator and
+  hosted admins.
+- Owners/admins can update automation visibility through
+  `POST /automations/v2/{id}/share`, setting private, group, or org-wide
+  access.
+- Automation mutation and repair routes now require owner/admin access for
+  hosted resources, while legacy/local unscoped operation remains compatible.
+
+### Compatibility
+
+- Slack, Discord, and Telegram approval-gate integrations continue to call the
+  runtime gate-decision path without requiring a browser hosted assertion.
+
 ## v0.5.11 (2026-05-25)
 
 Tandem 0.5.11 prepares the hosted enterprise engine distribution path. The

@@ -2609,6 +2609,14 @@ function hostedSessionFields(payload) {
     session_expires_at: String(payload?.session_expires_at || ""),
     hosted_role: String(payload?.role || ""),
     hosted_roles: Array.isArray(payload?.roles) ? payload.roles.map((role) => String(role)) : [],
+    hosted_org_units: Array.isArray(payload?.org_units) ? payload.org_units : [],
+    hosted_capabilities: Array.isArray(payload?.capabilities)
+      ? payload.capabilities.map((capability) => String(capability))
+      : [],
+    hosted_policy_version:
+      payload?.policy_version === null || payload?.policy_version === undefined
+        ? null
+        : Number(payload.policy_version),
     hosted_user: payload?.user || null,
     principal_id: String(payload?.user?.id || ""),
     principal_source: "tandem-hosted",
@@ -2643,6 +2651,9 @@ async function handleHostedAuthExchange(req, res) {
       hosted: true,
       role: payload?.role || "",
       roles: payload?.roles || [],
+      org_units: Array.isArray(payload?.org_units) ? payload.org_units : [],
+      capabilities: Array.isArray(payload?.capabilities) ? payload.capabilities : [],
+      policy_version: payload?.policy_version ?? null,
       user: payload?.user || null,
     });
   } catch (error) {
@@ -2664,10 +2675,25 @@ function hostedProxyAllowed(session, method, targetPath) {
   const role = String(session.hosted_role || "").toLowerCase();
   const verb = String(method || "GET").toUpperCase();
   const path = String(targetPath || "/").toLowerCase();
-  if (role === "owner" || role === "admin") return true;
-  if (role === "viewer") return verb === "GET" || verb === "HEAD";
+  const capabilities = new Set(
+    (Array.isArray(session.hosted_capabilities) ? session.hosted_capabilities : [])
+      .map((capability) => String(capability).toLowerCase())
+  );
+  const has = (capability) => capabilities.has(String(capability).toLowerCase());
+  if (role === "owner" || role === "admin" || has("hosted.owner") || has("hosted.admin")) return true;
+  if (verb === "GET" || verb === "HEAD") {
+    return has("hosted.view") || role === "viewer" || role === "member";
+  }
+  if (path.match(/^\/automations\/v2\/[^/]+\/share$/)) {
+    return has("automation.share");
+  }
+  if (path.match(/^\/automations\/v2\/[^/]+\/run_now$/)) {
+    return has("automation.execute");
+  }
+  if (path.startsWith("/automations")) {
+    return has("automation.write") || has("automation.execute") || role === "member";
+  }
   if (role === "member") {
-    if (verb === "GET" || verb === "HEAD") return true;
     if (verb === "DELETE" || verb === "PATCH") return false;
     if (
       path.startsWith("/config") ||
@@ -2678,7 +2704,7 @@ function hostedProxyAllowed(session, method, targetPath) {
     ) {
       return false;
     }
-    return true;
+    return has("hosted.use");
   }
   return false;
 }
@@ -5988,7 +6014,13 @@ async function handleApi(req, res) {
       hosted: session.hosted === true,
       hosted_role: String(session.hosted_role || ""),
       hosted_roles: Array.isArray(session.hosted_roles) ? session.hosted_roles : [],
+      hosted_org_units: Array.isArray(session.hosted_org_units) ? session.hosted_org_units : [],
+      hosted_capabilities: Array.isArray(session.hosted_capabilities) ? session.hosted_capabilities : [],
+      hosted_policy_version: session.hosted_policy_version ?? null,
       hosted_user: session.hosted_user || null,
+      org_units: Array.isArray(session.hosted_org_units) ? session.hosted_org_units : [],
+      capabilities: Array.isArray(session.hosted_capabilities) ? session.hosted_capabilities : [],
+      policy_version: session.hosted_policy_version ?? null,
     });
     return true;
   }

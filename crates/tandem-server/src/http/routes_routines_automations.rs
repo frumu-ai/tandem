@@ -74,6 +74,7 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
                 .delete(automations_v2_delete),
         )
         .route("/automations/v2/{id}/run_now", post(automations_v2_run_now))
+        .route("/automations/v2/{id}/share", post(automations_v2_share))
         .route("/automations/v2/{id}/pause", post(automations_v2_pause))
         .route("/automations/v2/{id}/resume", post(automations_v2_resume))
         .route(
