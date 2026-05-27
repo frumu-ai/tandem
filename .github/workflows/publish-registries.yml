@@ -20,7 +20,7 @@ on:
       publish_npm_enterprise:
         description: "Publish @frumu/tandem-enterprise npm wrapper"
         required: true
-        default: false
+        default: true
         type: boolean
       publish_pypi:
         description: "Publish python wrappers"
@@ -60,6 +60,8 @@ jobs:
       - name: Resolve inputs / tag contract
         id: resolve
         shell: bash
+        env:
+          DISABLE_NPM_ENTERPRISE_PUBLISH: ${{ vars.DISABLE_NPM_ENTERPRISE_PUBLISH }}
         run: |
           set -euo pipefail
 
@@ -83,7 +85,11 @@ jobs:
             checkout_ref="refs/tags/v${version}"
             crates_enabled="true"
             npm_enabled="true"
-            npm_enterprise_enabled="false"
+            if [[ "${DISABLE_NPM_ENTERPRISE_PUBLISH:-false}" == "true" ]]; then
+              npm_enterprise_enabled="false"
+            else
+              npm_enterprise_enabled="true"
+            fi
             pypi_enabled="true"
             dry_run="false"
           fi

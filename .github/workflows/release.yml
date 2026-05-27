@@ -448,6 +448,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ github.ref_name }}
+          DISABLE_NPM_ENTERPRISE_PUBLISH: ${{ vars.DISABLE_NPM_ENTERPRISE_PUBLISH }}
         with:
           script: |
             const tag = process.env.RELEASE_TAG || '';
@@ -466,6 +467,7 @@ jobs:
                 version,
                 publish_crates: 'true',
                 publish_npm: 'true',
+                publish_npm_enterprise: process.env.DISABLE_NPM_ENTERPRISE_PUBLISH === 'true' ? 'false' : 'true',
                 publish_pypi: 'true',
                 dry_run: 'false',
               },
