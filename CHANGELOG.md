@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added Linear task-source registration to the Coder control panel, including
+  team/project filters, launch statuses, label filters, query filters, and
+  Linear MCP connection status.
+
+### Changed
+
+- Generalized the Coder intake board so GitHub Project and Linear issue sources
+  share the same preview, scheduler launch, batch run, and active-run controls.
+
 ## [0.5.12] - 2026-05-27
 
 ### Added

@@ -2,6 +2,19 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## vNext (Unreleased)
+
+### Coder Linear Intake
+
+- The Coder control panel can now register ACA projects backed by Linear teams
+  and projects, with optional launch-status, label, and search-query filters.
+- The Coder intake board now renders both GitHub Project items and Linear
+  issues through one scheduler-aware issue board, including batch launch,
+  active-run detection, and direct issue links.
+- Coder overview and intake refresh messaging now reflect the selected issue
+  source, including Linear MCP connection state when a Linear-backed project is
+  selected.
+
 ## v0.5.12 (2026-05-27)
 
 Tandem 0.5.12 hardens the hosted control-panel sign-in path and starts the

@@ -169,7 +169,7 @@ export function CodingWorkflowsOverviewTab({
           <Metric
             label="Connected MCP servers"
             value={connectedMcpServersCount}
-            helper={connectedMcpServersCount ? "GitHub available" : "MCP pending"}
+            helper={connectedMcpServersCount ? "MCP available" : "MCP pending"}
             tone={connectedMcpServersCount ? "ok" : "warn"}
           />
           <Metric
@@ -303,6 +303,13 @@ export function CodingWorkflowsOverviewTab({
                       ? "GitHub MCP connected"
                       : "GitHub MCP pending"}
                   </Badge>
+                  {acaOverview.data.overview.linear_mcp ? (
+                    <Badge tone={acaOverview.data.overview.linear_mcp?.connected ? "ok" : "warn"}>
+                      {acaOverview.data.overview.linear_mcp?.connected
+                        ? "Linear MCP connected"
+                        : "Linear MCP pending"}
+                    </Badge>
+                  ) : null}
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-2">
@@ -356,7 +363,7 @@ export function CodingWorkflowsOverviewTab({
 
                   <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                      Engine and GitHub
+                      Engine and issue MCP
                     </div>
                     <div className="mt-1 text-sm font-semibold">
                       {safeText(acaOverview.data.overview.engine?.status, "unknown")} engine
@@ -367,9 +374,18 @@ export function CodingWorkflowsOverviewTab({
                         : "Engine URL unavailable"}
                     </div>
                     <div className="tcp-subtle mt-1 text-xs">
-                      GitHub MCP {safeText(acaOverview.data.overview.github_mcp?.scope, "unset")}
-                      {acaOverview.data.overview.github_mcp?.remote_sync
-                        ? ` · Sync ${safeText(acaOverview.data.overview.github_mcp.remote_sync)}`
+                      Source MCP{" "}
+                      {safeText(
+                        acaOverview.data.overview.linear_mcp?.scope ||
+                          acaOverview.data.overview.github_mcp?.scope,
+                        "unset"
+                      )}
+                      {acaOverview.data.overview.linear_mcp?.remote_sync ||
+                      acaOverview.data.overview.github_mcp?.remote_sync
+                        ? ` · Sync ${safeText(
+                            acaOverview.data.overview.linear_mcp?.remote_sync ||
+                              acaOverview.data.overview.github_mcp?.remote_sync
+                          )}`
                         : ""}
                     </div>
                   </div>
@@ -445,8 +461,8 @@ export function CodingWorkflowsOverviewTab({
                 <div className="grid gap-3">
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/20 p-3">
                     <div className="tcp-subtle text-xs">
-                      GitHub Project intake is refreshed on demand through Tandem&apos;s GitHub MCP.
-                      It does not auto-update here so we can keep GitHub calls down.
+                      Live issue intake is refreshed on demand through Tandem MCP. It does not
+                      auto-update here so external issue-tracker calls stay bounded.
                       {taskPreviewRefreshAt
                         ? ` Last refreshed ${new Date(taskPreviewRefreshAt).toLocaleTimeString()}.`
                         : ""}
@@ -457,7 +473,7 @@ export function CodingWorkflowsOverviewTab({
                       onClick={refreshTaskPreview}
                       disabled={projectTasksQuery.isFetching}
                     >
-                      {projectTasksQuery.isFetching ? "Refreshing..." : "Refresh from GitHub"}
+                      {projectTasksQuery.isFetching ? "Refreshing..." : "Refresh intake"}
                     </button>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -481,10 +497,10 @@ export function CodingWorkflowsOverviewTab({
                       {projectTasksQuery.data.task?.source ? (
                         projectTasksQuery.data.task.source.status ? (
                           <Badge tone="ghost">
-                            GitHub status {String(projectTasksQuery.data.task.source.status)}
+                            Source status {String(projectTasksQuery.data.task.source.status)}
                           </Badge>
                         ) : (
-                          <Badge tone="ghost">GitHub status unavailable from MCP</Badge>
+                          <Badge tone="ghost">Source status unavailable from MCP</Badge>
                         )
                       ) : null}
                     </div>
