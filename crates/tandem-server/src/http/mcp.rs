@@ -513,6 +513,13 @@ pub(super) async fn add_mcp(
 ) -> Json<Value> {
     let name = input.name.unwrap_or_else(|| "default".to_string());
     let transport = input.transport.unwrap_or_else(|| "stdio".to_string());
+    if transport.trim_start().starts_with("stdio:") {
+        return Json(json!({
+            "ok": false,
+            "error": "stdio MCP transports cannot be registered through the HTTP API",
+            "code": "MCP_STDIO_TRANSPORT_DENIED"
+        }));
+    }
     let auth_kind = normalize_mcp_auth_kind(input.auth_kind.as_deref().unwrap_or_default());
     let audit_transport = transport.clone();
     state

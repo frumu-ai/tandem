@@ -472,13 +472,16 @@ fn ensure_allowed_browser_url(url: &str, allow_hosts: &[String]) -> anyhow::Resu
         "http" | "https" => {}
         other => anyhow::bail!("unsupported_url_scheme: `{}` is not allowed", other),
     }
-    if allow_hosts.is_empty() {
-        return Ok(());
-    }
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow!("url `{}` has no host", url))?
         .to_ascii_lowercase();
+    if is_local_or_private_host(&host) {
+        anyhow::bail!("host `{}` is blocked by browser network policy", host);
+    }
+    if allow_hosts.is_empty() {
+        anyhow::bail!("browser host allowlist is empty");
+    }
     let allowed = allow_hosts
         .iter()
         .any(|candidate| host == *candidate || host.ends_with(&format!(".{candidate}")));

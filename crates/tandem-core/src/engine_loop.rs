@@ -685,6 +685,39 @@ impl EngineLoop {
                 .copied()
                 .unwrap_or(false);
             if auto_approve_permissions {
+                let allowed_tools = self
+                    .session_allowed_tools
+                    .read()
+                    .await
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if allowed_tools.is_empty()
+                    || !any_policy_matches(&allowed_tools, &tool)
+                    || is_shell_tool_name(&tool)
+                {
+                    let reason = if allowed_tools.is_empty() {
+                        format!(
+                            "Permission auto-approve denied for tool `{tool}` because this run has no explicit tool allowlist."
+                        )
+                    } else if is_shell_tool_name(&tool) {
+                        format!("Permission auto-approve denied for shell tool `{tool}` by policy.")
+                    } else {
+                        format!(
+                            "Permission auto-approve denied for tool `{tool}` because it is not in this run's explicit allowlist."
+                        )
+                    };
+                    publish_tool_effect(
+                        tool_call_id.as_deref(),
+                        ToolEffectLedgerPhase::Outcome,
+                        ToolEffectLedgerStatus::Blocked,
+                        &args,
+                        None,
+                        None,
+                        Some(&reason),
+                    );
+                    return Ok(Some(reason));
+                }
                 // Governance audit: if args were recovered via heuristics and the tool is
                 // mutating, log a WARN so recovered writes are never silent in automation
                 // mode. Does not block — operators must opt out via TANDEM_AUTO_APPROVE_RECOVERED_ARGS=false
@@ -1123,7 +1156,32 @@ impl EngineLoop {
                     continue;
                 }
 
-                // 4. Inject parent execution context into sub-call args.
+                // 4. Permission rules. Batch sub-calls cannot create interactive prompts;
+                // sub-tools that would require Ask are skipped like explicit Deny.
+                let sub_rule = self
+                    .plugins
+                    .permission_override(&sub_tool)
+                    .await
+                    .unwrap_or(self.permissions.evaluate(&sub_tool, &sub_tool).await);
+                if matches!(sub_rule, PermissionAction::Deny | PermissionAction::Ask) {
+                    if let Some(obj) = call.as_object_mut() {
+                        let action = match sub_rule {
+                            PermissionAction::Deny => "denied",
+                            PermissionAction::Ask => "requires approval",
+                            PermissionAction::Allow => "allowed",
+                        };
+                        obj.insert(
+                            "_blocked".to_string(),
+                            Value::String(format!(
+                                "batch sub-call skipped: tool `{sub_tool}` {action} by permission policy"
+                            )),
+                        );
+                    }
+                    governed_calls.push(call);
+                    continue;
+                }
+
+                // 5. Inject parent execution context into sub-call args.
                 if let Some(sub_obj) = sub_args.as_object_mut() {
                     if let Some(ref v) = ctx_workspace_root {
                         sub_obj

@@ -59,7 +59,27 @@ fn write_file_token(path: &PathBuf, token: &str) -> bool {
             return false;
         }
     }
-    std::fs::write(path, token).is_ok()
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+        else {
+            return false;
+        };
+        file.write_all(token.as_bytes()).is_ok() && file.flush().is_ok()
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, token).is_ok()
+    }
 }
 
 pub fn load_or_create_engine_api_token() -> EngineApiTokenMaterial {

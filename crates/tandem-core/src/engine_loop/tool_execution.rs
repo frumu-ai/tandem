@@ -113,8 +113,16 @@ impl EngineLoop {
             if candidate_paths.is_empty() {
                 return None;
             }
-            let session = self.storage.get_session(session_id).await?;
-            let workspace = session_effective_workspace_root(&session)?;
+            let Some(session) = self.storage.get_session(session_id).await else {
+                return Some(format!(
+                    "ToolDenied {{ reason: WorkspaceScope }}: Sandbox blocked MCP tool `{tool}` because the session workspace could not be resolved."
+                ));
+            };
+            let Some(workspace) = session_effective_workspace_root(&session) else {
+                return Some(format!(
+                    "ToolDenied {{ reason: WorkspaceScope }}: Sandbox blocked MCP tool `{tool}` because the session workspace could not be resolved."
+                ));
+            };
             let workspace_path = PathBuf::from(&workspace);
             if let Some(sensitive) = candidate_paths.iter().find(|path| {
                 let raw = Path::new(path);
@@ -142,8 +150,22 @@ impl EngineLoop {
                 "ToolDenied {{ reason: WorkspaceScope }}: Sandbox blocked MCP tool `{tool}` path `{outside}` (workspace root: `{workspace}`)"
             ));
         }
-        let session = self.storage.get_session(session_id).await?;
-        let workspace = session_effective_workspace_root(&session)?;
+        let Some(session) = self.storage.get_session(session_id).await else {
+            if is_shell_tool_name(tool) || super::write_targets::requires_concrete(tool, args) {
+                return Some(format!(
+                    "ToolDenied {{ reason: WorkspaceScope }}: Sandbox blocked `{tool}` because the session workspace could not be resolved."
+                ));
+            }
+            return None;
+        };
+        let Some(workspace) = session_effective_workspace_root(&session) else {
+            if is_shell_tool_name(tool) || super::write_targets::requires_concrete(tool, args) {
+                return Some(format!(
+                    "ToolDenied {{ reason: WorkspaceScope }}: Sandbox blocked `{tool}` because the session workspace could not be resolved."
+                ));
+            }
+            return None;
+        };
         let workspace_path = PathBuf::from(&workspace);
         let candidate_paths = extract_tool_candidate_paths(tool, args);
         if candidate_paths.is_empty() {
@@ -207,10 +229,19 @@ impl EngineLoop {
             return None;
         }
 
-        let session = self.storage.get_session(session_id).await?;
-        let workspace = session
+        let Some(session) = self.storage.get_session(session_id).await else {
+            return Some(format!(
+                "Write policy blocked `{tool}` because the session workspace could not be resolved."
+            ));
+        };
+        let Some(workspace) = session
             .workspace_root
-            .or_else(|| crate::normalize_workspace_path(&session.directory))?;
+            .or_else(|| crate::normalize_workspace_path(&session.directory))
+        else {
+            return Some(format!(
+                "Write policy blocked `{tool}` because the session workspace could not be resolved."
+            ));
+        };
         let workspace_path = normalize_path_lexical(Path::new(&workspace));
         let effective_cwd = string_field(args, "__effective_cwd")
             .map(PathBuf::from)

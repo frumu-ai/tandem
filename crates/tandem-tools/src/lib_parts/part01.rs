@@ -966,19 +966,15 @@ fn normalize_existing_or_lexical(path: &Path) -> PathBuf {
 }
 
 fn is_within_workspace_root(path: &Path, workspace_root: &Path) -> bool {
-    // First compare lexical-normalized paths so non-existent target files under symlinked
-    // workspace roots still pass containment checks.
-    let candidate_lexical = normalize_path_for_compare(path);
-    let root_lexical = normalize_path_for_compare(workspace_root);
-    if candidate_lexical.starts_with(&root_lexical) {
-        return true;
-    }
-
-    // Fallback to canonical comparison when available (best for existing paths and symlink
-    // resolution consistency).
-    let candidate = normalize_existing_or_lexical(path);
     let root = normalize_existing_or_lexical(workspace_root);
-    candidate.starts_with(root)
+    let candidate = if path.exists() {
+        normalize_existing_or_lexical(path)
+    } else if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        normalize_existing_or_lexical(parent).join(name)
+    } else {
+        normalize_path_for_compare(path)
+    };
+    candidate == root || candidate.starts_with(&root)
 }
 
 fn resolve_tool_path(path: &str, args: &Value) -> Option<PathBuf> {

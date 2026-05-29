@@ -569,11 +569,20 @@ async fn post_json_rpc_with_session(
             req = req.header("Mcp-Session-Id", trimmed);
         }
     }
-    let response = req
+    let mut response = req
         .json(&request)
         .send()
         .await
         .map_err(|e| format!("MCP request failed: {e}"))?;
+    if response
+        .content_length()
+        .is_some_and(|len| len as usize > MCP_HTTP_RESPONSE_MAX_BYTES)
+    {
+        return Err(format!(
+            "MCP response too large: exceeds {} bytes",
+            MCP_HTTP_RESPONSE_MAX_BYTES
+        ));
+    }
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
@@ -587,10 +596,22 @@ async fn post_json_rpc_with_session(
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     let status = response.status();
-    let payload = response
-        .text()
+    let mut payload_bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| format!("Failed to read MCP response: {e}"))?;
+        .map_err(|e| format!("Failed to read MCP response: {e}"))?
+    {
+        if payload_bytes.len().saturating_add(chunk.len()) > MCP_HTTP_RESPONSE_MAX_BYTES {
+            return Err(format!(
+                "MCP response too large: exceeds {} bytes",
+                MCP_HTTP_RESPONSE_MAX_BYTES
+            ));
+        }
+        payload_bytes.extend_from_slice(&chunk);
+    }
+    let payload = String::from_utf8(payload_bytes)
+        .map_err(|e| format!("MCP response was not valid UTF-8: {e}"))?;
     if !status.is_success() {
         return Err(format!(
             "MCP endpoint returned HTTP {}: {}",

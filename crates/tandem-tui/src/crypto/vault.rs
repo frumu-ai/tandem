@@ -8,10 +8,10 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Minimum PIN length
-pub const MIN_PIN_LENGTH: usize = 4;
-/// Maximum PIN length
-pub const MAX_PIN_LENGTH: usize = 4;
+/// Minimum passphrase length for protecting the vault master key.
+pub const MIN_PIN_LENGTH: usize = 12;
+/// Maximum passphrase length accepted by the local vault UI.
+pub const MAX_PIN_LENGTH: usize = 128;
 
 /// Encrypted vault key file format
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +27,7 @@ pub struct EncryptedVaultKey {
 }
 
 impl EncryptedVaultKey {
-    /// Create a new encrypted vault key from PIN and random master key.
+    /// Create a new encrypted vault key from a passphrase and random master key.
     pub fn create(pin: &str) -> Result<(Self, Vec<u8>)> {
         validate_pin_format(pin)?;
 
@@ -74,11 +74,16 @@ impl EncryptedVaultKey {
     /// Persist vault key to disk.
     pub fn save(&self, path: &PathBuf) -> Result<()> {
         let json = serde_json::to_string_pretty(self).context("Failed to serialize vault key")?;
-        std::fs::write(path, json).context(format!("Failed to write vault key to {:?}", path))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .context(format!("Failed to create vault key parent {:?}", parent))?;
+        }
+        write_secret_file(path, json.as_bytes())
+            .context(format!("Failed to write vault key to {:?}", path))?;
         Ok(())
     }
 
-    /// Decrypt the master key using a PIN
+    /// Decrypt the master key using a passphrase
     pub fn decrypt(&self, pin: &str) -> Result<Vec<u8>> {
         use base64::Engine;
 
@@ -130,13 +135,37 @@ impl EncryptedVaultKey {
     }
 }
 
-/// Validate PIN format
-pub fn validate_pin_format(pin: &str) -> Result<()> {
-    if pin.len() != MIN_PIN_LENGTH {
-        return Err(anyhow!("PIN must be {} digits", MIN_PIN_LENGTH));
+fn write_secret_file(path: &PathBuf, bytes: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(bytes)?;
+        file.flush()?;
     }
-    if !pin.chars().all(|c| c.is_ascii_digit()) {
-        return Err(anyhow!("PIN must contain only digits"));
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)?;
+    }
+
+    Ok(())
+}
+
+/// Validate passphrase format.
+pub fn validate_pin_format(pin: &str) -> Result<()> {
+    if pin.len() < MIN_PIN_LENGTH || pin.len() > MAX_PIN_LENGTH {
+        return Err(anyhow!(
+            "Passphrase must be between {} and {} characters",
+            MIN_PIN_LENGTH,
+            MAX_PIN_LENGTH
+        ));
     }
     Ok(())
 }

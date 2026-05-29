@@ -65,9 +65,14 @@ impl SecureKeyStore {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
         let data = serde_json::to_vec_pretty(&self.store).context("Failed to encode key store")?;
-        std::fs::write(path.as_ref(), data)
-            .context(format!("Failed to write key store to {:?}", path.as_ref()))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .context(format!("Failed to create key store parent {:?}", parent))?;
+        }
+        write_secret_file(path, &data)
+            .context(format!("Failed to write key store to {:?}", path))?;
         Ok(())
     }
 
@@ -95,4 +100,27 @@ impl SecureKeyStore {
     pub fn remove(&mut self, key: &str) -> bool {
         self.store.entries.remove(key).is_some()
     }
+}
+
+fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)?;
+    }
+
+    Ok(())
 }

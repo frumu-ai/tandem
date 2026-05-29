@@ -60,25 +60,30 @@ pub fn build_mode_permission_rules(
         });
     }
 
+    let default_write_action = if allowed_tools.is_none() {
+        "ask"
+    } else {
+        "allow"
+    };
     if allows_any(allowed_tools, &["write"]) {
         rules.push(PermissionRuleTemplate {
             permission: "write".to_string(),
             pattern: "*".to_string(),
-            action: "allow".to_string(),
+            action: default_write_action.to_string(),
         });
     }
     if allows_any(allowed_tools, &["edit"]) {
         rules.push(PermissionRuleTemplate {
             permission: "edit".to_string(),
             pattern: "*".to_string(),
-            action: "allow".to_string(),
+            action: default_write_action.to_string(),
         });
     }
     if allows_any(allowed_tools, &["apply_patch"]) {
         rules.push(PermissionRuleTemplate {
             permission: "apply_patch".to_string(),
             pattern: "*".to_string(),
-            action: "allow".to_string(),
+            action: default_write_action.to_string(),
         });
     }
 
@@ -161,5 +166,15 @@ mod tests {
         let allowed = vec!["pack_builder".to_string()];
         let rules = build_mode_permission_rules(Some(&allowed));
         assert!(rules.iter().any(|rule| rule.permission == "pack_builder"));
+    }
+
+    #[test]
+    fn default_write_tools_require_prompt() {
+        let rules = default_tui_permission_rules();
+        for permission in ["write", "edit", "apply_patch"] {
+            assert!(rules.iter().any(|rule| {
+                rule.permission == permission && rule.pattern == "*" && rule.action == "ask"
+            }));
+        }
     }
 }
