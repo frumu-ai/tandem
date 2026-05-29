@@ -10,12 +10,11 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use tandem_types::{
-    AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
-    NoopRequestAuthorizationHook, OrganizationUnitAccessGrant, OrganizationUnitMembership,
-    PrincipalRef, RequestAuthorizationHook, RequestPrincipal, ResourceKind, ResourceRef,
-    ResourceScope, RuntimeAuthMode, ScopedGrant, SigningKeyPurpose, TenantContext,
-    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantContextResolver,
-    TenantSource, VerifiedTenantContext,
+    AccessPermission, DataBoundary, DataClass, GrantSource, NoopRequestAuthorizationHook,
+    OrganizationUnitAccessGrant, OrganizationUnitMembership, PrincipalRef,
+    RequestAuthorizationHook, RequestPrincipal, ResourceKind, ResourceRef, ResourceScope,
+    RuntimeAuthMode, ScopedGrant, SigningKeyPurpose, TenantContext, TenantContextAssertionClaims,
+    TenantContextAssertionHeader, TenantSource, VerifiedTenantContext,
 };
 
 use crate::{AppState, StartupStatus};
@@ -392,12 +391,7 @@ fn resolve_enterprise_request_context_for_mode(
 fn resolve_local_enterprise_request_context(
     headers: &HeaderMap,
 ) -> ResolvedEnterpriseRequestContext {
-    let resolver = HeaderTenantContextResolver;
-    let tenant_context = resolver.resolve_tenant_context(
-        first_header(headers, &["x-tandem-org-id", "x-tenant-org-id"]).as_deref(),
-        first_header(headers, &["x-tandem-workspace-id", "x-tenant-workspace-id"]).as_deref(),
-        first_header(headers, &["x-tandem-actor-id", "x-user-id"]).as_deref(),
-    );
+    let tenant_context = TenantContext::local_implicit();
     let request_source = first_header(headers, &["x-tandem-request-source"]).unwrap_or_else(|| {
         if extract_request_token(headers).is_some() {
             "api_token".to_string()
@@ -406,7 +400,7 @@ fn resolve_local_enterprise_request_context(
         }
     });
     let request_principal = RequestPrincipal {
-        actor_id: tenant_context.actor_id.clone(),
+        actor_id: None,
         source: request_source,
     };
     ResolvedEnterpriseRequestContext::local(tenant_context, request_principal)
@@ -1089,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_enterprise_request_context_uses_tenant_headers() {
+    fn resolve_enterprise_request_context_ignores_unsigned_tenant_headers_in_local_mode() {
         let mut headers = HeaderMap::new();
         headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));
         headers.insert("x-tandem-workspace-id", HeaderValue::from_static("north"));
@@ -1097,11 +1091,11 @@ mod tests {
         let resolved = resolve_enterprise_request_context(&headers);
         let tenant_context = resolved.tenant_context;
         let principal = resolved.request_principal;
-        assert_eq!(tenant_context.org_id, "acme");
-        assert_eq!(tenant_context.workspace_id, "north");
-        assert_eq!(tenant_context.actor_id.as_deref(), Some("user-1"));
-        assert_eq!(principal.actor_id.as_deref(), Some("user-1"));
-        assert_eq!(tenant_context.source, TenantSource::Explicit);
+        assert_eq!(tenant_context.org_id, "local");
+        assert_eq!(tenant_context.workspace_id, "local");
+        assert_eq!(tenant_context.actor_id, None);
+        assert_eq!(principal.actor_id, None);
+        assert_eq!(tenant_context.source, TenantSource::LocalImplicit);
     }
 
     #[test]
@@ -1228,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn local_mode_continues_to_accept_tenant_headers() {
+    fn local_mode_ignores_unsigned_tenant_headers() {
         let mut headers = HeaderMap::new();
         headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));
         headers.insert("x-tandem-workspace-id", HeaderValue::from_static("north"));
@@ -1238,13 +1232,13 @@ mod tests {
             &headers,
             RuntimeAuthMode::LocalSingleTenant,
         )
-        .expect("local mode keeps legacy header behavior");
+        .expect("local mode falls back to implicit tenant");
         let tenant_context = resolved.tenant_context;
         let principal = resolved.request_principal;
 
-        assert_eq!(tenant_context.org_id, "acme");
-        assert_eq!(tenant_context.workspace_id, "north");
-        assert_eq!(principal.actor_id.as_deref(), Some("user-1"));
+        assert_eq!(tenant_context.org_id, "local");
+        assert_eq!(tenant_context.workspace_id, "local");
+        assert_eq!(principal.actor_id, None);
     }
 
     #[test]
