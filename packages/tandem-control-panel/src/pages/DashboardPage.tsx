@@ -197,7 +197,8 @@ export function DashboardPage(props: AppPageProps) {
     }
 
     const sorted = [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-    const maxTokens = Math.max(1, ...sorted.map(([, b]) => b.tokens));
+    // Optimization: Replaced Math.max(...map) with reduce to avoid O(N) intermediate array allocation and prevent potential "Maximum call stack size exceeded" errors with large data sets.
+    const maxTokens = sorted.reduce((max, [, b]) => Math.max(max, b.tokens), 1);
     return { buckets: sorted.map(([, b]) => b), maxTokens, bucketCount };
   }, [automationRunRows, tokenGranularity]);
 
