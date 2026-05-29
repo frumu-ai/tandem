@@ -40,3 +40,40 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+
+
+/**
+ * Returns the element in an array that has the maximum value according to the iteratee function.
+ * This is an O(N) performance optimization over `[...arr].sort((a, b) => b.value - a.value)[0]`.
+ */
+export function maxBy<T>(array: T[], iteratee: (value: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let maxElement = array[0];
+  let maxScore = iteratee(maxElement);
+  for (let i = 1; i < array.length; i++) {
+    const score = iteratee(array[i]);
+    if (score > maxScore) {
+      maxScore = score;
+      maxElement = array[i];
+    }
+  }
+  return maxElement;
+}
+
+/**
+ * Returns the element in an array that has the minimum value according to the iteratee function.
+ * This is an O(N) performance optimization over `[...arr].sort((a, b) => a.value - b.value)[0]`.
+ */
+export function minBy<T>(array: T[], iteratee: (value: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let minElement = array[0];
+  let minScore = iteratee(minElement);
+  for (let i = 1; i < array.length; i++) {
+    const score = iteratee(array[i]);
+    if (score < minScore) {
+      minScore = score;
+      minElement = array[i];
+    }
+  }
+  return minElement;
+}
