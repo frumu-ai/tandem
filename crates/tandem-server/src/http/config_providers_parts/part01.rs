@@ -1481,8 +1481,10 @@ pub(super) async fn clear_api_token(
     if let Err(error) = authorize_api_token_management(&state, &headers).await {
         return Json(error);
     }
-    state.set_api_token(None).await;
-    Json(json!({"ok": true}))
+    Json(json!({
+        "ok": false,
+        "error": "clearing the API token is disabled because it would reopen the HTTP API; use /auth/token/generate to rotate it"
+    }))
 }
 
 pub(super) async fn generate_api_token(
