@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.13] - 2026-05-29
 
 ### Added
 
@@ -17,6 +17,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Generalized the Coder intake board so GitHub Project and Linear issue sources
   share the same preview, scheduler launch, batch run, and active-run controls.
+- Hardened local engine HTTP API defaults by refusing unauthenticated
+  non-loopback binds and preventing token-clearing from reopening the API.
+- Tightened local runtime tenancy so caller-supplied tenant headers are ignored
+  in local single-tenant mode unless a hosted/enterprise signed context is used.
+
+### Security
+
+- Blocked HTTP registration of arbitrary `stdio:` MCP transports.
+- Changed default file write, edit, and patch permissions to ask instead of
+  silently allowing workspace mutation.
+- Added batch sub-call permission checks so nested tool calls cannot skip the
+  normal approval and sandbox gates.
+- Made workspace and write-policy checks fail closed when no workspace root can
+  be resolved.
+- Added Linux shell execution confinement through `bubblewrap` by default, with
+  an explicit unsafe opt-out for unsandboxed shell execution.
+- Hardened automation auto-approval so empty allowlists deny by default and
+  shell tools are not auto-approved.
+- Hardened secret storage by writing API tokens, vault keys, and TUI keystores
+  with owner-only permissions on Unix, and replaced the fixed 4-digit vault PIN
+  with longer passphrases.
+- Closed browser and provider SSRF edge cases by failing closed on empty browser
+  allowlists, blocking local/private browser targets, and validating provider
+  base URLs.
+- Enforced tenant checks on run event streams, audit streams, project listing,
+  and local-mode tenant context resolution.
+- Redacted provider credentials in debug output and improved bug-monitor log
+  redaction for repeated secrets.
 
 ## [0.5.12] - 2026-05-27
 

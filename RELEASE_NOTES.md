@@ -2,7 +2,12 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## vNext (Unreleased)
+## v0.5.13 (2026-05-29)
+
+Tandem 0.5.13 combines the Linear-backed Coder intake work with a focused
+runtime security hardening pass. The release tightens local API exposure,
+workspace mutation defaults, shell execution, tenant scoping, audit/event
+visibility, secret storage, and browser/provider network guardrails.
 
 ### Coder Linear Intake
 
@@ -14,6 +19,41 @@ This is the canonical release-notes file used by release tooling.
 - Coder overview and intake refresh messaging now reflect the selected issue
   source, including Linear MCP connection state when a Linear-backed project is
   selected.
+
+### Runtime Security Hardening
+
+- Local engine HTTP API startup now refuses unauthenticated non-loopback binds,
+  and token-clearing no longer reopens the API.
+- HTTP MCP registration rejects arbitrary `stdio:` transports.
+- File write, edit, and patch tools now ask by default instead of silently
+  mutating the workspace.
+- Batch sub-calls pass through permission and sandbox evaluation so nested tool
+  calls cannot skip approval gates.
+- Workspace and write-policy checks fail closed when no workspace root can be
+  resolved.
+- Shell execution uses Linux `bubblewrap` confinement by default, requires
+  workspace context, and requires an explicit unsafe opt-out for unsandboxed
+  shell execution.
+- Automation auto-approval now treats empty allowlists as deny-all and refuses
+  to auto-approve shell tools.
+- Local single-tenant mode ignores caller-supplied tenant headers; hosted and
+  enterprise tenant context continues to require signed assertions.
+- Run event streams, audit streams, and project listing now enforce tenant
+  ownership/visibility checks.
+- API tokens, vault keys, and TUI keystores are written with owner-only Unix
+  permissions, and vault passphrases replace the previous 4-digit PIN model.
+- Browser navigation fails closed without an allowlist and blocks local/private
+  targets; provider base URL validation rejects unsafe remote HTTP endpoints.
+- Provider credential debug output and bug-monitor log redaction now avoid
+  leaking plaintext secrets.
+
+### Compatibility Notes
+
+- Linux hosts that need shell execution must have `bubblewrap` available, or
+  explicitly set `TANDEM_UNSAFE_UNSANDBOXED_SHELL=1` for trusted local-only
+  development.
+- Local clients should rely on the generated/shared API token rather than
+  clearing token auth during development.
 
 ## v0.5.12 (2026-05-27)
 

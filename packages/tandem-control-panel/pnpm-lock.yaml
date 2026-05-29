@@ -1021,7 +1021,7 @@ packages:
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
 
-  vite-prerender-plugin@0.5.12:
+  vite-prerender-plugin@0.5.13:
     resolution: {integrity: sha512-EiwhbMn+flg14EysbLTmZSzq8NGTxhytgK3bf4aGRF1evWLGwZiHiUJ1KZDvbxgKbMf2pG6fJWGEa3UZXOnR1g==}
     peerDependencies:
       vite: 5.x || 6.x || 7.x
@@ -1316,7 +1316,7 @@ snapshots:
       magic-string: 0.30.21
       picocolors: 1.1.1
       vite: 8.0.14(jiti@1.21.7)(yaml@2.8.2)
-      vite-prerender-plugin: 0.5.12(vite@8.0.14(jiti@1.21.7)(yaml@2.8.2))
+      vite-prerender-plugin: 0.5.13(vite@8.0.14(jiti@1.21.7)(yaml@2.8.2))
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - preact
@@ -1961,7 +1961,7 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  vite-prerender-plugin@0.5.12(vite@8.0.14(jiti@1.21.7)(yaml@2.8.2)):
+  vite-prerender-plugin@0.5.13(vite@8.0.14(jiti@1.21.7)(yaml@2.8.2)):
     dependencies:
       kolorist: 1.8.0
       magic-string: 0.30.21

@@ -1,6 +1,6 @@
 {
   "name": "tandem-ai",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "description": "Tandem authority-layer runtime CLI installer/launcher",
   "license": "MIT",
   "bin": {
