@@ -184,7 +184,11 @@ export function BugMonitorExternalProjectsPanel({
           unhealthyCount,
           candidateCount,
           submittedCount,
-          lastPollAtMs: Math.max(...runtimeRows.map((row) => Number(row.last_poll_at_ms || 0)), 0),
+          // ⚡ Bolt: Replace Math.max(...array.map()) with reduce to prevent call stack limits and intermediate allocations
+          lastPollAtMs: runtimeRows.reduce(
+            (max, row) => Math.max(max, Number(row.last_poll_at_ms || 0)),
+            0
+          ),
         };
       }),
     [projects, statusBySource]
