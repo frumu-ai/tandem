@@ -239,6 +239,7 @@ impl MemoryManager {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_for_tenant_with_access_filter(
         &self,
         query: &str,
