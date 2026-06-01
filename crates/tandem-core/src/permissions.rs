@@ -80,10 +80,18 @@ impl PermissionManager {
         let permission = normalize_permission_alias(permission);
         let pattern = normalize_permission_alias(pattern);
         let rules = self.rules.read().await;
-        if let Some(rule) = rules.iter().rev().find(|rule| {
+        let matches_rule = |rule: &&PermissionRule| {
             wildcard_matches(&normalize_permission_alias(&rule.permission), &permission)
                 && wildcard_matches(&normalize_permission_alias(&rule.pattern), &pattern)
-        }) {
+        };
+        if rules
+            .iter()
+            .filter(matches_rule)
+            .any(|rule| matches!(rule.action, PermissionAction::Deny))
+        {
+            return PermissionAction::Deny;
+        }
+        if let Some(rule) = rules.iter().rev().find(matches_rule) {
             return rule.action.clone();
         }
         PermissionAction::Ask

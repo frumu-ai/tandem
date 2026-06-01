@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -199,13 +200,13 @@ fn credential_with_provider_id(
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiKeyProviderCredential {
     pub provider_id: String,
     pub token: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuthProviderCredential {
     pub provider_id: String,
     pub access_token: String,
@@ -244,11 +245,45 @@ struct CodexCliAuthFile {
     last_refresh: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderCredential {
     ApiKey(ApiKeyProviderCredential),
     OAuth(OAuthProviderCredential),
+}
+
+impl fmt::Debug for ApiKeyProviderCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiKeyProviderCredential")
+            .field("provider_id", &self.provider_id)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl fmt::Debug for OAuthProviderCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OAuthProviderCredential")
+            .field("provider_id", &self.provider_id)
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("expires_at_ms", &self.expires_at_ms)
+            .field("account_id", &self.account_id)
+            .field("email", &self.email)
+            .field("display_name", &self.display_name)
+            .field("managed_by", &self.managed_by)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl fmt::Debug for ProviderCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ApiKey(credential) => f.debug_tuple("ApiKey").field(credential).finish(),
+            Self::OAuth(credential) => f.debug_tuple("OAuth").field(credential).finish(),
+        }
+    }
 }
 
 impl ProviderCredential {

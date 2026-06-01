@@ -2,9 +2,10 @@ use base64::Engine;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::net::IpAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tandem_providers::openai_codex_supported_model_rows;
@@ -1456,8 +1457,12 @@ pub(super) async fn delete_auth(
 
 pub(super) async fn set_api_token(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(input): Json<ApiTokenInput>,
 ) -> Json<Value> {
+    if let Err(error) = authorize_api_token_management(&state, &headers).await {
+        return Json(error);
+    }
     let token = input.token.unwrap_or_default().trim().to_string();
     if token.is_empty() {
         return Json(json!({
@@ -1469,18 +1474,79 @@ pub(super) async fn set_api_token(
     Json(json!({"ok": true}))
 }
 
-pub(super) async fn clear_api_token(State(state): State<AppState>) -> Json<Value> {
-    state.set_api_token(None).await;
-    Json(json!({"ok": true}))
+pub(super) async fn clear_api_token(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Json<Value> {
+    if let Err(error) = authorize_api_token_management(&state, &headers).await {
+        return Json(error);
+    }
+    Json(json!({
+        "ok": false,
+        "error": "clearing the API token is disabled because it would reopen the HTTP API; use /auth/token/generate to rotate it"
+    }))
 }
 
-pub(super) async fn generate_api_token(State(state): State<AppState>) -> Json<Value> {
+pub(super) async fn generate_api_token(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Json<Value> {
+    if let Err(error) = authorize_api_token_management(&state, &headers).await {
+        return Json(error);
+    }
     let token = format!("tk_{}", Uuid::new_v4().simple());
     state.set_api_token(Some(token.clone())).await;
     Json(json!({
         "ok": true,
         "token": token
     }))
+}
+
+async fn authorize_api_token_management(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), Value> {
+    if state.api_token().await.is_some() {
+        return Ok(());
+    }
+    let expected = std::env::var("TANDEM_TOKEN_BOOTSTRAP_SECRET")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| json!({
+            "ok": false,
+            "error": "api token management requires TANDEM_TOKEN_BOOTSTRAP_SECRET before a token exists",
+            "code": "TOKEN_BOOTSTRAP_REQUIRED"
+        }))?;
+    let provided = headers
+        .get("x-tandem-bootstrap-token")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| json!({
+            "ok": false,
+            "error": "missing bootstrap token",
+            "code": "TOKEN_BOOTSTRAP_REQUIRED"
+        }))?;
+    if constant_time_token_eq(provided, &expected) {
+        Ok(())
+    } else {
+        Err(json!({
+            "ok": false,
+            "error": "invalid bootstrap token",
+            "code": "TOKEN_BOOTSTRAP_DENIED"
+        }))
+    }
+}
+
+fn constant_time_token_eq(provided: &str, expected: &str) -> bool {
+    let provided_hash = Sha256::digest(provided.as_bytes());
+    let expected_hash = Sha256::digest(expected.as_bytes());
+    let mut diff = 0u8;
+    for (left, right) in provided_hash.iter().zip(expected_hash.iter()) {
+        diff |= left ^ right;
+    }
+    diff == 0
 }
 
 #[derive(Debug)]
@@ -1737,31 +1803,23 @@ fn provider_config_api_key(
 /// Validate provider base URL to prevent SSRF attacks.
 /// Rejects private IP addresses and non-HTTPS schemes.
 fn validate_provider_url(url_str: &str) -> Result<(), String> {
-    // Require HTTPS for security
-    if !url_str.starts_with("https://") {
-        if url_str.starts_with("http://127.0.0.1") || url_str.starts_with("http://localhost") {
-            // Allow HTTP for localhost in development
-        } else if url_str.starts_with("http://") {
-            return Err("provider URLs must use HTTPS for non-localhost addresses".to_string());
-        } else {
-            return Err("provider URLs must start with https://".to_string());
-        }
+    let parsed = reqwest::Url::parse(url_str).map_err(|_| "invalid provider URL format")?;
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "https" | "http") {
+        return Err("provider URLs must use http or https".to_string());
     }
-
-    // Extract host from URL
-    let host = url_str
-        .strip_prefix("https://")
-        .or_else(|| url_str.strip_prefix("http://"))
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|host_part| host_part.split(':').next())
-        .ok_or("invalid provider URL format")?;
-    let is_local_dev_host =
-        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1";
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "invalid provider URL format".to_string())?
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    let is_local_dev_host = host == "localhost" || host == "::1" || host == "127.0.0.1";
+    if scheme == "http" && !(cfg!(any(test, debug_assertions)) && is_local_dev_host) {
+        return Err("provider URLs must use HTTPS for non-localhost addresses".to_string());
+    }
     if cfg!(any(test, debug_assertions)) && is_local_dev_host {
         return Ok(());
     }
-
-    // Block localhost-like domains
     if is_local_dev_host
         || host.ends_with(".local")
         || host.ends_with(".localdomain")
@@ -1769,21 +1827,26 @@ fn validate_provider_url(url_str: &str) -> Result<(), String> {
     {
         return Err("provider URL cannot use localhost or private hostnames".to_string());
     }
-
-    // Block private IP ranges (RFC 1918 and other reserved ranges)
-    if host.starts_with("10.") ||
-       host.starts_with("172.16.") || host.starts_with("172.17.") || host.starts_with("172.18.") ||
-       host.starts_with("172.19.") || host.starts_with("172.20.") || host.starts_with("172.21.") ||
-       host.starts_with("172.22.") || host.starts_with("172.23.") || host.starts_with("172.24.") ||
-       host.starts_with("172.25.") || host.starts_with("172.26.") || host.starts_with("172.27.") ||
-       host.starts_with("172.28.") || host.starts_with("172.29.") || host.starts_with("172.30.") ||
-       host.starts_with("172.31.") ||
-       host.starts_with("192.168.") ||
-       host.starts_with("169.254.") || // Link-local
-       host.starts_with("224.") || host.starts_with("225.") || host.starts_with("226.") || // Multicast
-       host == "0.0.0.0"
-    {
-        return Err("provider URL cannot use private or reserved IP addresses".to_string());
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        let blocked = match ip {
+            IpAddr::V4(ip) => {
+                ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+                    || ip.is_private()
+                    || ip.is_link_local()
+            }
+            IpAddr::V6(ip) => {
+                ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local()
+            }
+        };
+        if blocked {
+            return Err("provider URL cannot use private or reserved IP addresses".to_string());
+        }
     }
 
     Ok(())

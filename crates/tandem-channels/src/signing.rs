@@ -22,7 +22,7 @@
 //! and log the error kind without leaking the offending signature/payload.
 
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 /// Default replay-protection window for Slack-style timestamp signing.
@@ -142,12 +142,9 @@ pub fn verify_telegram_secret_token(
         .ok_or(SigningError::MissingHeader(
             "x-telegram-bot-api-secret-token",
         ))?;
-    let provided_bytes = provided.as_bytes();
-    let expected_bytes = expected_secret.as_bytes();
-    if provided_bytes.len() != expected_bytes.len() {
-        return Err(SigningError::BadSignature);
-    }
-    if provided_bytes.ct_eq(expected_bytes).into() {
+    let provided_hash = Sha256::digest(provided.as_bytes());
+    let expected_hash = Sha256::digest(expected_secret.as_bytes());
+    if provided_hash.ct_eq(&expected_hash).into() {
         Ok(())
     } else {
         Err(SigningError::BadSignature)

@@ -30,6 +30,7 @@ pub(crate) struct ShellExecutionPlan {
     translated_command: Option<String>,
     os_guardrail_applied: bool,
     guardrail_reason: Option<String>,
+    sandbox_mode: String,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -37,6 +38,146 @@ pub(crate) struct ShellExecutionPlan {
 pub(crate) enum ShellCommandPlan {
     Execute(ShellExecutionPlan),
     Blocked(ToolResult),
+}
+
+fn bool_env_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn sandbox_blocked_result(reason: &str) -> ShellCommandPlan {
+    ShellCommandPlan::Blocked(ToolResult {
+        output: format!("Shell command blocked by sandbox policy: {reason}"),
+        metadata: json!({
+            "blocked": true,
+            "shell_sandbox": "blocked",
+            "guardrail_reason": reason,
+        }),
+    })
+}
+
+#[cfg(unix)]
+fn find_executable_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+pub(crate) fn prepare_shell_workspace(
+    args: &Value,
+) -> Result<(PathBuf, PathBuf), ShellCommandPlan> {
+    let workspace_root = workspace_root_from_args(args)
+        .ok_or_else(|| sandbox_blocked_result("missing_workspace_root"))?;
+    let workspace_root = workspace_root
+        .canonicalize()
+        .map_err(|_| sandbox_blocked_result("workspace_root_not_canonical"))?;
+    let effective_cwd = effective_cwd_from_args(args);
+    let effective_cwd = effective_cwd
+        .canonicalize()
+        .map_err(|_| sandbox_blocked_result("effective_cwd_not_canonical"))?;
+    if !is_within_workspace_root(&effective_cwd, &workspace_root) {
+        return Err(sandbox_blocked_result("effective_cwd_outside_workspace"));
+    }
+    Ok((workspace_root, effective_cwd))
+}
+
+#[cfg(unix)]
+fn build_unsandboxed_posix_shell_command(raw_cmd: &str) -> ShellExecutionPlan {
+    let mut command = Command::new("sh");
+    command.args(["-lc", raw_cmd]);
+    ShellExecutionPlan {
+        command,
+        translated_command: None,
+        os_guardrail_applied: false,
+        guardrail_reason: Some("unsafe_unsandboxed_shell_opt_out".to_string()),
+        sandbox_mode: "unsafe_unsandboxed".to_string(),
+    }
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn build_bwrap_shell_command(raw_cmd: &str, args: &Value) -> ShellCommandPlan {
+    if bool_env_enabled("TANDEM_UNSAFE_UNSANDBOXED_SHELL") {
+        return ShellCommandPlan::Execute(build_unsandboxed_posix_shell_command(raw_cmd));
+    }
+
+    let (workspace_root, effective_cwd) = match prepare_shell_workspace(args) {
+        Ok(paths) => paths,
+        Err(blocked) => return blocked,
+    };
+    let bwrap = match find_executable_on_path("bwrap") {
+        Some(path) => path,
+        None => return sandbox_blocked_result("bubblewrap_not_available"),
+    };
+    let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
+
+    let mut command = Command::new(bwrap);
+    command.env_clear();
+    command.args([
+        "--die-with-parent",
+        "--unshare-all",
+        "--new-session",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--ro-bind",
+        "/bin",
+        "/bin",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind-try",
+        "/lib",
+        "/lib",
+        "--ro-bind-try",
+        "/lib64",
+        "/lib64",
+        "--ro-bind-try",
+        "/etc/alternatives",
+        "/etc/alternatives",
+        "--bind",
+    ]);
+    command.arg(&workspace_root);
+    command.arg(&workspace_root);
+    command.arg("--chdir");
+    command.arg(&effective_cwd);
+    command.args(["--setenv", "PATH", &path, "--setenv", "TMPDIR", "/tmp"]);
+    command.arg("--setenv");
+    command.arg("HOME");
+    command.arg(&workspace_root);
+    command.args(["--", "/bin/sh", "-lc", raw_cmd]);
+
+    ShellCommandPlan::Execute(ShellExecutionPlan {
+        command,
+        translated_command: None,
+        os_guardrail_applied: false,
+        guardrail_reason: None,
+        sandbox_mode: "bubblewrap".to_string(),
+    })
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn build_platform_shell_command(raw_cmd: &str, _args: &Value) -> ShellCommandPlan {
+    if bool_env_enabled("TANDEM_UNSAFE_UNSANDBOXED_SHELL") {
+        return ShellCommandPlan::Execute(build_unsandboxed_posix_shell_command(raw_cmd));
+    }
+    sandbox_blocked_result("os_shell_sandbox_unavailable")
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn build_platform_shell_command(raw_cmd: &str, args: &Value) -> ShellCommandPlan {
+    build_bwrap_shell_command(raw_cmd, args)
 }
 
 fn bash_timeout_ms(args: &Value) -> u64 {
@@ -55,11 +196,13 @@ fn shell_metadata(
     translated_command: Option<&str>,
     os_guardrail_applied: bool,
     guardrail_reason: Option<&str>,
+    sandbox_mode: &str,
     stderr: String,
 ) -> Value {
     let mut metadata = json!({
         "stderr": stderr,
         "os_guardrail_applied": os_guardrail_applied,
+        "shell_sandbox": sandbox_mode,
     });
     if let Some(obj) = metadata.as_object_mut() {
         if let Some(translated) = translated_command {
@@ -225,7 +368,7 @@ pub(crate) fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
     None
 }
 
-fn build_shell_command(raw_cmd: &str) -> ShellCommandPlan {
+fn build_shell_command(raw_cmd: &str, args: &Value) -> ShellCommandPlan {
     #[cfg(windows)]
     {
         let reason = windows_guardrail_reason(raw_cmd);
@@ -240,7 +383,8 @@ fn build_shell_command(raw_cmd: &str) -> ShellCommandPlan {
                     metadata: json!({
                         "os_guardrail_applied": true,
                         "guardrail_reason": reason,
-                        "blocked": true
+                        "blocked": true,
+                        "shell_sandbox": "windows_guardrail"
                     }),
                 });
             }
@@ -253,19 +397,13 @@ fn build_shell_command(raw_cmd: &str) -> ShellCommandPlan {
             translated_command: translated,
             os_guardrail_applied: reason.is_some() || translated_applied,
             guardrail_reason: reason.map(str::to_string),
+            sandbox_mode: "windows_guardrail".to_string(),
         });
     }
 
-    #[allow(unreachable_code)]
+    #[cfg(not(windows))]
     {
-        let mut command = Command::new("sh");
-        command.args(["-lc", raw_cmd]);
-        ShellCommandPlan::Execute(ShellExecutionPlan {
-            command,
-            translated_command: None,
-            os_guardrail_applied: false,
-            guardrail_reason: None,
-        })
+        build_platform_shell_command(raw_cmd, args)
     }
 }
 
@@ -274,7 +412,7 @@ async fn run_bash_command(
     args: &Value,
     cancel: Option<CancellationToken>,
 ) -> anyhow::Result<ToolResult> {
-    let shell = match build_shell_command(cmd) {
+    let shell = match build_shell_command(cmd, args) {
         ShellCommandPlan::Execute(plan) => plan,
         ShellCommandPlan::Blocked(result) => return Ok(result),
     };
@@ -284,6 +422,7 @@ async fn run_bash_command(
         translated_command,
         os_guardrail_applied,
         guardrail_reason,
+        sandbox_mode,
     } = shell;
     let effective_cwd = effective_cwd_from_args(args);
     command.current_dir(&effective_cwd);
@@ -341,6 +480,7 @@ async fn run_bash_command(
             translated_command.as_deref(),
             os_guardrail_applied,
             guardrail_reason.as_deref(),
+            &sandbox_mode,
             stderr,
         );
         if let Some(obj) = metadata.as_object_mut() {
@@ -379,6 +519,7 @@ async fn run_bash_command(
         translated_command.as_deref(),
         os_guardrail_applied,
         guardrail_reason.as_deref(),
+        &sandbox_mode,
         stderr,
     );
     if let Some(obj) = metadata.as_object_mut() {

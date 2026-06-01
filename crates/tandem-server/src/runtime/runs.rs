@@ -35,6 +35,14 @@ impl RunRegistry {
         self.active.read().await.get(session_id).cloned()
     }
 
+    pub async fn session_for_run(&self, run_id: &str) -> Option<String> {
+        self.active
+            .read()
+            .await
+            .iter()
+            .find_map(|(session_id, run)| (run.run_id == run_id).then(|| session_id.clone()))
+    }
+
     pub async fn acquire(
         &self,
         session_id: &str,

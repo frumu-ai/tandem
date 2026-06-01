@@ -49,26 +49,44 @@ pub fn workspace_project_id(input: &str) -> Option<String> {
 }
 
 pub fn is_within_workspace_root(path: &Path, workspace_root: &Path) -> bool {
-    let candidate = if path.exists() {
+    let Some(root) = canonicalize_existing_or_self(workspace_root) else {
+        return false;
+    };
+    let Some(candidate) = canonicalize_path_or_parent(path) else {
+        return false;
+    };
+    let candidate = normalize_for_workspace_compare(candidate);
+    let root = normalize_for_workspace_compare(root);
+    candidate == root || candidate.starts_with(&root)
+}
+
+fn canonicalize_existing_or_self(path: &Path) -> Option<PathBuf> {
+    if path.exists() {
         path.canonicalize().ok()
     } else if path.is_absolute() {
         Some(path.to_path_buf())
     } else {
         std::env::current_dir().ok().map(|cwd| cwd.join(path))
-    };
-    let Some(candidate) = candidate else {
-        return false;
-    };
-    let root = if workspace_root.exists() {
-        workspace_root
-            .canonicalize()
-            .unwrap_or_else(|_| workspace_root.to_path_buf())
+    }
+}
+
+fn canonicalize_path_or_parent(path: &Path) -> Option<PathBuf> {
+    if path.exists() {
+        return path.canonicalize().ok();
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
     } else {
-        workspace_root.to_path_buf()
+        std::env::current_dir().ok()?.join(path)
     };
-    let candidate = normalize_for_workspace_compare(candidate);
-    let root = normalize_for_workspace_compare(root);
-    candidate.starts_with(root)
+    let parent = absolute.parent()?;
+    let file_name = absolute.file_name()?;
+    let canonical_parent = if parent.exists() {
+        parent.canonicalize().ok()?
+    } else {
+        parent.to_path_buf()
+    };
+    Some(canonical_parent.join(file_name))
 }
 
 fn normalize_for_workspace_compare(path: PathBuf) -> PathBuf {

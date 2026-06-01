@@ -1,4 +1,7 @@
 use std::path::Path;
+use std::sync::OnceLock;
+
+use regex::Regex;
 
 use serde_json::Value;
 
@@ -339,24 +342,23 @@ fn is_new_log_line(text: &str) -> bool {
 }
 
 fn redact_text(text: &str) -> String {
-    let mut out = text.to_string();
-    for needle in ["api_key=", "token=", "password=", "secret="] {
-        if let Some(idx) = out.to_ascii_lowercase().find(needle) {
-            let end = out[idx..]
-                .find(char::is_whitespace)
-                .map(|rel| idx + rel)
-                .unwrap_or(out.len());
-            out.replace_range(idx..end, &format!("{needle}[redacted]"));
-        }
-    }
-    if let Some(idx) = out.to_ascii_lowercase().find("authorization: bearer ") {
-        let end = out[idx..]
-            .find(char::is_whitespace)
-            .map(|rel| idx + rel)
-            .unwrap_or(out.len());
-        out.replace_range(idx..end, "Authorization: Bearer [redacted]");
-    }
-    out
+    static KEY_VALUE_SECRET_RE: OnceLock<Regex> = OnceLock::new();
+    static BEARER_SECRET_RE: OnceLock<Regex> = OnceLock::new();
+    let key_value = KEY_VALUE_SECRET_RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(api[_-]?key|token|password|secret)\s*=\s*\S+")
+            .expect("valid bug monitor secret regex")
+    });
+    let bearer = BEARER_SECRET_RE.get_or_init(|| {
+        Regex::new(r"(?i)\bauthorization\s*:\s*bearer\s+\S+")
+            .expect("valid bug monitor bearer regex")
+    });
+
+    let out = key_value.replace_all(text, |caps: &regex::Captures<'_>| {
+        format!("{}=[redacted]", &caps[1])
+    });
+    bearer
+        .replace_all(&out, "Authorization: Bearer [redacted]")
+        .to_string()
 }
 
 fn build_fingerprint(

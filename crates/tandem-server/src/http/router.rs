@@ -22,14 +22,9 @@ fn build_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
             if let Ok(origin_str) = origin.to_str() {
-                origins.iter().any(|allowed| {
-                    if allowed.ends_with("*") {
-                        let prefix = &allowed[..allowed.len() - 1];
-                        origin_str.starts_with(prefix)
-                    } else {
-                        origin_str == allowed || origin_str.starts_with(&format!("{}:", allowed))
-                    }
-                })
+                origins
+                    .iter()
+                    .any(|allowed| origin_matches_allowed(origin_str, allowed))
             } else {
                 false
             }
@@ -51,6 +46,53 @@ fn build_cors_layer() -> CorsLayer {
             HeaderName::from_static("x-tandem-actor-id"),
             HeaderName::from_static("x-tandem-request-source"),
         ])
+}
+
+fn origin_matches_allowed(origin: &str, allowed: &str) -> bool {
+    let allowed = allowed.trim();
+    if allowed.is_empty() {
+        return false;
+    }
+    if allowed == origin {
+        return true;
+    }
+
+    if let Some(domain) = allowed.strip_prefix("https://*.") {
+        return origin_host_matches_wildcard(origin, "https", domain);
+    }
+    if let Some(domain) = allowed.strip_prefix("http://*.") {
+        return origin_host_matches_wildcard(origin, "http", domain);
+    }
+
+    let Ok(origin_url) = reqwest::Url::parse(origin) else {
+        return allowed.ends_with("://") && origin.starts_with(allowed);
+    };
+    let Ok(allowed_url) = reqwest::Url::parse(allowed) else {
+        return allowed.ends_with("://") && origin.starts_with(allowed);
+    };
+    if origin_url.scheme() != allowed_url.scheme() {
+        return false;
+    }
+    if origin_url.host_str() != allowed_url.host_str() {
+        return false;
+    }
+    match allowed_url.port() {
+        Some(port) => origin_url.port() == Some(port),
+        None => true,
+    }
+}
+
+fn origin_host_matches_wildcard(origin: &str, scheme: &str, domain: &str) -> bool {
+    let Ok(origin_url) = reqwest::Url::parse(origin) else {
+        return false;
+    };
+    if origin_url.scheme() != scheme {
+        return false;
+    }
+    let Some(host) = origin_url.host_str() else {
+        return false;
+    };
+    host != domain && host.ends_with(&format!(".{domain}"))
 }
 
 pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegistrar]) -> Router {

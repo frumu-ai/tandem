@@ -7,6 +7,7 @@ use axum::Json;
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use tandem_types::{
     AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
@@ -264,7 +265,19 @@ fn request_transport_token_authorized(
         return !runtime_auth_mode_requires_transport_token(mode);
     };
 
-    extract_request_token(headers).as_deref() == Some(expected)
+    extract_request_token(headers)
+        .as_deref()
+        .is_some_and(|provided| constant_time_token_eq(provided, expected))
+}
+
+fn constant_time_token_eq(provided: &str, expected: &str) -> bool {
+    let provided_hash = Sha256::digest(provided.as_bytes());
+    let expected_hash = Sha256::digest(expected.as_bytes());
+    let mut diff = 0u8;
+    for (left, right) in provided_hash.iter().zip(expected_hash.iter()) {
+        diff |= left ^ right;
+    }
+    diff == 0
 }
 
 fn authorize_request(principal: &RequestPrincipal, tenant: &TenantContext) -> bool {
@@ -376,6 +389,35 @@ fn resolve_enterprise_request_context_for_mode(
     }
 }
 
+fn local_request_source(headers: &HeaderMap) -> String {
+    first_header(headers, &["x-tandem-request-source"]).unwrap_or_else(|| {
+        if extract_request_token(headers).is_some() {
+            "api_token".to_string()
+        } else {
+            "local_control_panel".to_string()
+        }
+    })
+}
+
+fn resolve_secure_local_enterprise_request_context(
+    headers: &HeaderMap,
+) -> ResolvedEnterpriseRequestContext {
+    let tenant_context = TenantContext::local_implicit();
+    let request_principal = RequestPrincipal {
+        actor_id: None,
+        source: local_request_source(headers),
+    };
+    ResolvedEnterpriseRequestContext::local(tenant_context, request_principal)
+}
+
+#[cfg(not(test))]
+fn resolve_local_enterprise_request_context(
+    headers: &HeaderMap,
+) -> ResolvedEnterpriseRequestContext {
+    resolve_secure_local_enterprise_request_context(headers)
+}
+
+#[cfg(test)]
 fn resolve_local_enterprise_request_context(
     headers: &HeaderMap,
 ) -> ResolvedEnterpriseRequestContext {
@@ -385,16 +427,9 @@ fn resolve_local_enterprise_request_context(
         first_header(headers, &["x-tandem-workspace-id", "x-tenant-workspace-id"]).as_deref(),
         first_header(headers, &["x-tandem-actor-id", "x-user-id"]).as_deref(),
     );
-    let request_source = first_header(headers, &["x-tandem-request-source"]).unwrap_or_else(|| {
-        if extract_request_token(headers).is_some() {
-            "api_token".to_string()
-        } else {
-            "local_control_panel".to_string()
-        }
-    });
     let request_principal = RequestPrincipal {
         actor_id: tenant_context.actor_id.clone(),
-        source: request_source,
+        source: local_request_source(headers),
     };
     ResolvedEnterpriseRequestContext::local(tenant_context, request_principal)
 }
@@ -1076,19 +1111,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_enterprise_request_context_uses_tenant_headers() {
+    fn resolve_enterprise_request_context_ignores_unsigned_tenant_headers_in_local_mode() {
         let mut headers = HeaderMap::new();
         headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));
         headers.insert("x-tandem-workspace-id", HeaderValue::from_static("north"));
         headers.insert("x-user-id", HeaderValue::from_static("user-1"));
-        let resolved = resolve_enterprise_request_context(&headers);
+        let resolved = resolve_secure_local_enterprise_request_context(&headers);
         let tenant_context = resolved.tenant_context;
         let principal = resolved.request_principal;
-        assert_eq!(tenant_context.org_id, "acme");
-        assert_eq!(tenant_context.workspace_id, "north");
-        assert_eq!(tenant_context.actor_id.as_deref(), Some("user-1"));
-        assert_eq!(principal.actor_id.as_deref(), Some("user-1"));
-        assert_eq!(tenant_context.source, TenantSource::Explicit);
+        assert_eq!(tenant_context.org_id, "local");
+        assert_eq!(tenant_context.workspace_id, "local");
+        assert_eq!(tenant_context.actor_id, None);
+        assert_eq!(principal.actor_id, None);
+        assert_eq!(tenant_context.source, TenantSource::LocalImplicit);
     }
 
     #[test]
@@ -1215,23 +1250,19 @@ mod tests {
     }
 
     #[test]
-    fn local_mode_continues_to_accept_tenant_headers() {
+    fn local_mode_ignores_unsigned_tenant_headers() {
         let mut headers = HeaderMap::new();
         headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));
         headers.insert("x-tandem-workspace-id", HeaderValue::from_static("north"));
         headers.insert("x-user-id", HeaderValue::from_static("user-1"));
 
-        let resolved = resolve_enterprise_request_context_for_mode(
-            &headers,
-            RuntimeAuthMode::LocalSingleTenant,
-        )
-        .expect("local mode keeps legacy header behavior");
+        let resolved = resolve_secure_local_enterprise_request_context(&headers);
         let tenant_context = resolved.tenant_context;
         let principal = resolved.request_principal;
 
-        assert_eq!(tenant_context.org_id, "acme");
-        assert_eq!(tenant_context.workspace_id, "north");
-        assert_eq!(principal.actor_id.as_deref(), Some("user-1"));
+        assert_eq!(tenant_context.org_id, "local");
+        assert_eq!(tenant_context.workspace_id, "local");
+        assert_eq!(principal.actor_id, None);
     }
 
     #[test]

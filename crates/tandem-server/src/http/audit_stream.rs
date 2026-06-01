@@ -2,10 +2,10 @@ use std::convert::Infallible;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Extension, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
-use tandem_types::{EngineEvent, RequestPrincipal};
+use tandem_types::{EngineEvent, RequestPrincipal, TenantContext};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -14,9 +14,9 @@ use crate::AppState;
 pub(crate) async fn audit_stream(
     State(state): State<AppState>,
     Extension(principal): Extension<RequestPrincipal>,
-    headers: HeaderMap,
+    Extension(tenant_context): Extension<TenantContext>,
 ) -> Response {
-    if !audit_admin_allowed(&principal, &headers) {
+    if !audit_admin_allowed(&principal) {
         return (
             StatusCode::FORBIDDEN,
             axum::Json(json!({
@@ -28,11 +28,16 @@ pub(crate) async fn audit_stream(
     }
 
     let rx = state.event_bus.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg| match msg {
-        Ok(event) => audit_event_to_stream_record(&event).map(|record| {
-            let line = serde_json::to_string(&record).unwrap_or_else(|_| "{}".to_string()) + "\n";
-            Ok::<Bytes, Infallible>(Bytes::from(line))
-        }),
+    let stream_tenant = tenant_context.clone();
+    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(event) if audit_event_matches_tenant(&event, &stream_tenant) => {
+            audit_event_to_stream_record(&event).map(|record| {
+                let line =
+                    serde_json::to_string(&record).unwrap_or_else(|_| "{}".to_string()) + "\n";
+                Ok::<Bytes, Infallible>(Bytes::from(line))
+            })
+        }
+        Ok(_) => None,
         Err(_) => None,
     });
 
@@ -44,21 +49,34 @@ pub(crate) async fn audit_stream(
     response
 }
 
-fn audit_admin_allowed(principal: &RequestPrincipal, headers: &HeaderMap) -> bool {
-    let tier = headers
-        .get("x-tandem-capability-tier")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if matches!(tier.as_str(), "admin" | "reconfigure") {
-        return true;
+fn audit_admin_allowed(principal: &RequestPrincipal) -> bool {
+    matches!(principal.source.as_str(), "api_token" | "control_panel")
+}
+
+fn audit_event_matches_tenant(event: &EngineEvent, tenant: &TenantContext) -> bool {
+    let event_org = event
+        .properties
+        .get("org_id")
+        .or_else(|| event.properties.get("orgID"))
+        .or_else(|| event.properties.get("organization_id"))
+        .and_then(Value::as_str);
+    let event_workspace = event
+        .properties
+        .get("workspace_id")
+        .or_else(|| event.properties.get("workspaceID"))
+        .and_then(Value::as_str);
+
+    if let Some(org_id) = event_org {
+        if org_id != tenant.org_id {
+            return false;
+        }
     }
-    headers
-        .get("x-tandem-admin")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes"))
-        || matches!(principal.source.as_str(), "api_token" | "control_panel")
+    if let Some(workspace_id) = event_workspace {
+        if workspace_id != tenant.workspace_id {
+            return false;
+        }
+    }
+    true
 }
 
 pub(crate) fn audit_event_to_stream_record(event: &EngineEvent) -> Option<Value> {

@@ -64,6 +64,11 @@ export function CodingWorkflowsPage({
   const [taskSourcePrompt, setTaskSourcePrompt] = useState("");
   const [taskSourcePath, setTaskSourcePath] = useState("");
   const [taskSourceProject, setTaskSourceProject] = useState("");
+  const [taskSourceLinearTeam, setTaskSourceLinearTeam] = useState("");
+  const [taskSourceLinearProject, setTaskSourceLinearProject] = useState("");
+  const [taskSourceLinearStatuses, setTaskSourceLinearStatuses] = useState("Backlog,Todo,Triage,Ready");
+  const [taskSourceLinearLabels, setTaskSourceLinearLabels] = useState("");
+  const [taskSourceLinearQuery, setTaskSourceLinearQuery] = useState("");
   const [runItem, setRunItem] = useState("");
   // Empty run overrides are intentional: ACA should inherit its configured base provider/model.
   const [overrideProvider, setOverrideProvider] = useState("");
@@ -138,7 +143,7 @@ export function CodingWorkflowsPage({
       normalizeProjects(projectsQuery.data).some(
         (project: any) =>
           project.slug === selectedProjectSlug &&
-          String(project?.taskSource?.type || "").trim() === "github_project"
+          ["github_project", "linear"].includes(String(project?.taskSource?.type || "").trim())
       ),
     refetchInterval:
       acaAvailable &&
@@ -146,7 +151,7 @@ export function CodingWorkflowsPage({
       normalizeProjects(projectsQuery.data).some(
         (project: any) =>
           project.slug === selectedProjectSlug &&
-          String(project?.taskSource?.type || "").trim() === "github_project"
+          ["github_project", "linear"].includes(String(project?.taskSource?.type || "").trim())
       )
         ? 5000
         : false,
@@ -270,11 +275,21 @@ export function CodingWorkflowsPage({
     }
   }, [logRows, selectedLogName]);
   const healthy = !!(health.data?.engine?.ready || health.data?.engine?.healthy);
-  const githubConnected = mcpServers.some((server) => server.name.toLowerCase().includes("github"));
+  const githubConnected = mcpServers.some(
+    (server) => server.connected && server.name.toLowerCase().includes("github")
+  );
+  const linearConnected = mcpServers.some(
+    (server) => server.connected && server.name.toLowerCase().includes("linear")
+  );
   const selectedProject =
     projects.find((project: any) => project.slug === selectedProjectSlug) || null;
   const selectedProjectRepo = selectedProject?.repo || {};
   const selectedProjectTaskSourceType = String(selectedProject?.taskSource?.type || "").trim();
+  const selectedTaskSourceLabel =
+    selectedProjectTaskSourceType === "linear" ? "Linear" : "GitHub Project";
+  const selectedProjectHasLiveBoard = ["github_project", "linear"].includes(
+    selectedProjectTaskSourceType
+  );
   const planningWorkspaceRootSeed = String(
     (health.data as any)?.workspaceRoot ||
       (health.data as any)?.workspace_root ||
@@ -380,8 +395,8 @@ export function CodingWorkflowsPage({
       }
       if (["blocked", "stalled", "on_hold", "failed"].includes(statusKey)) return "blocked";
       if (["review", "in_review", "ready_for_review"].includes(statusKey)) return "review";
-      if (["done", "complete", "completed", "closed"].includes(statusKey)) return "done";
-      if (["todo", "todos", "ready", "backlog", "open"].includes(statusKey)) return "todos";
+      if (["done", "complete", "completed", "closed", "canceled", "cancelled"].includes(statusKey)) return "done";
+      if (["todo", "todos", "ready", "backlog", "open", "triage", "unstarted"].includes(statusKey)) return "todos";
       return "unknown";
     };
     const rankItem = (item: any) => {
@@ -594,8 +609,18 @@ export function CodingWorkflowsPage({
   }
   async function registerProject() {
     const repoRef = parseGithubRepoRef(newRepoUrl);
+    const linearSlugSeed = taskSourceType === "linear"
+      ? `linear-${taskSourceLinearTeam || "team"}-${taskSourceLinearProject || "issues"}`
+      : "";
+    const safeLinearSlug = linearSlugSeed
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._/-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
     const slug =
-      newProjectSlug.trim() || (taskSourceType === "github_project" ? repoRef?.slug || "" : "");
+      newProjectSlug.trim() ||
+      (taskSourceType === "github_project" ? repoRef?.slug || "" : "") ||
+      (taskSourceType === "linear" ? safeLinearSlug : "");
     const name = newProjectName.trim();
     const repoUrl = newRepoUrl.trim();
     const repoPath = newRepoPath.trim();
@@ -623,6 +648,11 @@ export function CodingWorkflowsPage({
       path: taskSourcePath,
       repoRef,
       projectNumber: taskSourceProject,
+      linearTeam: taskSourceLinearTeam,
+      linearProject: taskSourceLinearProject,
+      linearStatuses: taskSourceLinearStatuses,
+      linearLabels: taskSourceLinearLabels,
+      linearQuery: taskSourceLinearQuery,
     });
     if (taskSource.type === "manual" && !taskSource.prompt) {
       toast("warn", "Manual task source requires a prompt.");
@@ -637,6 +667,10 @@ export function CodingWorkflowsPage({
       (!taskSource.owner || !taskSource.repo || !taskSource.project)
     ) {
       toast("warn", "GitHub Project task sources require a repo URL and project number.");
+      return;
+    }
+    if (taskSource.type === "linear" && !taskSource.team) {
+      toast("warn", "Linear task sources require a team key or name.");
       return;
     }
     setRegistering(true);
@@ -666,6 +700,11 @@ export function CodingWorkflowsPage({
       setNewDefaultBranch("main");
       setNewRemoteName("origin");
       setNewCredentialFile("");
+      setTaskSourceLinearTeam("");
+      setTaskSourceLinearProject("");
+      setTaskSourceLinearStatuses("Backlog,Todo,Triage,Ready");
+      setTaskSourceLinearLabels("");
+      setTaskSourceLinearQuery("");
       toast("ok", `Registered ACA project ${slug}.`);
     } catch (error) {
       toast("err", error instanceof Error ? error.message : String(error));
@@ -732,7 +771,7 @@ export function CodingWorkflowsPage({
     if (!selectors.length) {
       toast(
         "warn",
-        "Those GitHub items are already running or are not launchable from ACA intake."
+        "Those intake items are already running or are not launchable from ACA intake."
       );
       return;
     }
@@ -809,20 +848,20 @@ export function CodingWorkflowsPage({
   }
   async function refreshTaskPreview() {
     if (!selectedProjectSlug) {
-      toast("warn", "Select a project before refreshing GitHub intake.");
+      toast("warn", "Select a project before refreshing intake.");
       return;
     }
     try {
       await projectTasksQuery.refetch();
       setTaskPreviewRefreshAt(Date.now());
-      toast("ok", "Refreshed task intake from GitHub MCP.");
+      toast("ok", `Refreshed task intake from ${selectedTaskSourceLabel} MCP.`);
     } catch (error) {
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
   async function refreshGithubBoard() {
     if (!selectedProjectSlug) {
-      toast("warn", "Select a GitHub-backed project before refreshing the board.");
+      toast("warn", "Select a project with a live task-source board before refreshing.");
       return;
     }
     try {
@@ -834,7 +873,7 @@ export function CodingWorkflowsPage({
         data
       );
       setGithubBoardRefreshAt(Number(data?.last_synced_at_ms || Date.now()));
-      toast("ok", "Refreshed GitHub Project items through Tandem MCP.");
+      toast("ok", `Refreshed ${selectedTaskSourceLabel} items through Tandem MCP.`);
     } catch (error) {
       toast("err", error instanceof Error ? error.message : String(error));
     }
@@ -918,9 +957,15 @@ export function CodingWorkflowsPage({
               <Badge tone={healthy ? "ok" : "warn"}>
                 {healthy ? "Engine healthy" : "Engine checking"}
               </Badge>
-              <Badge tone={githubConnected ? "ok" : "warn"}>
-                {githubConnected ? "GitHub MCP connected" : "GitHub MCP pending"}
-              </Badge>
+              {selectedProjectTaskSourceType === "linear" ? (
+                <Badge tone={linearConnected ? "ok" : "warn"}>
+                  {linearConnected ? "Linear MCP connected" : "Linear MCP pending"}
+                </Badge>
+              ) : (
+                <Badge tone={githubConnected ? "ok" : "warn"}>
+                  {githubConnected ? "GitHub MCP connected" : "GitHub MCP pending"}
+                </Badge>
+              )}
               <StatusPulse
                 tone={activeRuns.length ? "live" : "info"}
                 text={`${activeRuns.length} active runs`}
@@ -1015,7 +1060,7 @@ export function CodingWorkflowsPage({
       {tab === "board" ? (
         <div className="grid gap-4">
           <div className="grid gap-4">
-            <PanelCard title="GitHub Project intake" subtitle="GitHub items ACA can launch">
+            <PanelCard title="Task-source intake" subtitle="Issues ACA can launch">
               <div className="mb-4">
                 <select
                   className="tcp-input"
@@ -1032,18 +1077,18 @@ export function CodingWorkflowsPage({
                   ))}
                 </select>
               </div>
-              {String(selectedProject?.taskSource?.type || "").trim() === "github_project" ? (
+              {selectedProjectHasLiveBoard ? (
                 githubBoardLoading ? (
                   <LoadingState
-                    title="Loading GitHub Project items"
-                    text="Tandem is syncing the intake board through the GitHub connection."
+                    title={`Loading ${selectedTaskSourceLabel} items`}
+                    text={`Tandem is syncing the intake board through the ${selectedTaskSourceLabel} connection.`}
                     className="min-h-[10rem]"
                   />
                 ) : projectBoardQuery.isError ? (
                   <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
                     {projectBoardQuery.error instanceof Error
                       ? projectBoardQuery.error.message
-                      : "Could not load the GitHub Project items."}
+                      : `Could not load the ${selectedTaskSourceLabel} items.`}
                   </div>
                 ) : (
                   <div className="grid gap-3">
@@ -1069,15 +1114,14 @@ export function CodingWorkflowsPage({
                           onClick={refreshGithubBoard}
                           disabled={projectBoardQuery.isFetching}
                         >
-                          {projectBoardQuery.isFetching ? "Refreshing..." : "Refresh from GitHub"}
+                          {projectBoardQuery.isFetching ? "Refreshing..." : `Refresh from ${selectedTaskSourceLabel}`}
                         </button>
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-3">
                       <div className="tcp-subtle text-xs">
-                        ACA runs only scheduler-approved child issues. It works through the lowest
-                        open phase first, then advances to later phases when earlier work is no
-                        longer pending. Parent cards organize the plan and are not launched.
+                        ACA runs only scheduler-approved issues. GitHub Projects can apply phase
+                        ordering, while Linear queues the next issue by status and priority.
                       </div>
                       <div className="flex flex-wrap gap-2 text-xs">
                         <Badge tone="info">
@@ -1097,7 +1141,11 @@ export function CodingWorkflowsPage({
                           {githubSchedulerNextIssues.length
                             ? githubSchedulerNextIssues
                                 .slice(0, 4)
-                                .map((value: any) => `#${String(value)}`)
+                                .map((value: any) =>
+                                  selectedProjectTaskSourceType === "linear"
+                                    ? String(value)
+                                    : `#${String(value)}`
+                                )
                                 .join(", ")
                             : "none"}
                         </Badge>
@@ -1196,6 +1244,12 @@ export function CodingWorkflowsPage({
                                       lowerTitle.includes("[aca slice parent]") ||
                                       lowerTitle.includes("slice parent");
                                     const isDraft = !item.issueNumber && !item.issueUrl;
+                                    const issueDisplay =
+                                      selectedProjectTaskSourceType === "linear"
+                                        ? String(item.identifier || item.issueNumber || "").trim()
+                                        : item.issueNumber
+                                          ? `#${String(item.issueNumber)}`
+                                          : "";
                                     return (
                                       <div
                                         key={itemId}
@@ -1222,9 +1276,7 @@ export function CodingWorkflowsPage({
                                               {item.repoName
                                                 ? String(item.repoName)
                                                 : selectedProjectSlug}
-                                              {item.issueNumber
-                                                ? ` #${String(item.issueNumber)}`
-                                                : ""}
+                                              {issueDisplay ? ` ${issueDisplay}` : ""}
                                             </div>
                                           </div>
                                         </div>
@@ -1277,7 +1329,7 @@ export function CodingWorkflowsPage({
                                               target="_blank"
                                               rel="noreferrer"
                                             >
-                                              Open in GitHub
+                                              Open in {selectedTaskSourceLabel}
                                             </a>
                                           ) : null}
                                           <button
@@ -1327,12 +1379,12 @@ export function CodingWorkflowsPage({
                         </div>
                       </div>
                     ) : (
-                      <EmptyState text="No GitHub Project items returned for this project." />
+                      <EmptyState text={`No ${selectedTaskSourceLabel} items returned for this project.`} />
                     )}
                   </div>
                 )
               ) : (
-                <EmptyState text="The selected project is not backed by a GitHub Project task source." />
+                <EmptyState text="The selected project is not backed by a live issue task source." />
               )}
             </PanelCard>
             <PanelCard
@@ -1744,6 +1796,8 @@ export function CodingWorkflowsPage({
                   placeholder={
                     taskSourceType === "github_project"
                       ? "Project slug (optional, defaults to owner/repo)"
+                      : taskSourceType === "linear"
+                        ? "Project slug (optional, defaults to linear-team-project)"
                       : "Project slug"
                   }
                   value={newProjectSlug}
@@ -1766,6 +1820,7 @@ export function CodingWorkflowsPage({
                   <option value="kanban_board">Kanban board</option>
                   <option value="local_backlog">Local backlog</option>
                   <option value="github_project">GitHub Project</option>
+                  <option value="linear">Linear team/project</option>
                 </select>
                 {taskSourceType === "manual" ? (
                   <textarea
@@ -1798,6 +1853,56 @@ export function CodingWorkflowsPage({
                     <div className="tcp-subtle text-xs">
                       Only GitHub Project board tasks are imported. Public issues that are not on
                       this project board remain outside ACA intake.
+                    </div>
+                  </>
+                ) : null}
+                {taskSourceType === "linear" ? (
+                  <>
+                    <input
+                      className="tcp-input"
+                      placeholder="Linear team key or name, e.g. ENG"
+                      value={taskSourceLinearTeam}
+                      onInput={(event) =>
+                        setTaskSourceLinearTeam((event.target as HTMLInputElement).value)
+                      }
+                    />
+                    <input
+                      className="tcp-input"
+                      placeholder="Linear project name or id (optional)"
+                      value={taskSourceLinearProject}
+                      onInput={(event) =>
+                        setTaskSourceLinearProject((event.target as HTMLInputElement).value)
+                      }
+                    />
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <input
+                        className="tcp-input"
+                        placeholder="Launch statuses, comma-separated"
+                        value={taskSourceLinearStatuses}
+                        onInput={(event) =>
+                          setTaskSourceLinearStatuses((event.target as HTMLInputElement).value)
+                        }
+                      />
+                      <input
+                        className="tcp-input"
+                        placeholder="Required labels, comma-separated (optional)"
+                        value={taskSourceLinearLabels}
+                        onInput={(event) =>
+                          setTaskSourceLinearLabels((event.target as HTMLInputElement).value)
+                        }
+                      />
+                    </div>
+                    <input
+                      className="tcp-input"
+                      placeholder="Linear search query (optional)"
+                      value={taskSourceLinearQuery}
+                      onInput={(event) =>
+                        setTaskSourceLinearQuery((event.target as HTMLInputElement).value)
+                      }
+                    />
+                    <div className="tcp-subtle text-xs">
+                      Connect Linear in the Integrations tab first. ACA will use the `linear` MCP
+                      server from Tandem and sync status, labels, and a run summary comment.
                     </div>
                   </>
                 ) : null}

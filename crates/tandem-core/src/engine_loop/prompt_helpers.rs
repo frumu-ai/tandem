@@ -436,6 +436,15 @@ pub(super) fn extract_tool_candidate_paths(tool: &str, args: &Value) -> Vec<Stri
     let Some(obj) = args.as_object() else {
         return Vec::new();
     };
+    if tool == "apply_patch" {
+        return obj
+            .get("patchText")
+            .or_else(|| obj.get("patch_text"))
+            .or_else(|| obj.get("patch"))
+            .and_then(Value::as_str)
+            .map(extract_apply_patch_paths)
+            .unwrap_or_default();
+    }
     // For MCP tools, probe a wider set of path-like keys since MCP schemas vary by server.
     let mcp_path_keys: &[&str] = &[
         "path",
@@ -479,21 +488,31 @@ pub(super) fn extract_tool_candidate_paths(tool: &str, args: &Value) -> Vec<Stri
         .collect()
 }
 
-/// Returns true if the MCP server name is in the operator-configured exemption list.
-/// Set `TANDEM_MCP_SANDBOX_EXEMPT_SERVERS` to a comma-separated list of server names
-/// (e.g. `composio,github`) to exempt those servers from workspace path containment.
+/// Only built-in Tandem documentation MCP tools are exempt from workspace path checks.
+/// User-configured MCP display names are not trusted as an exemption identity.
 pub(super) fn is_mcp_sandbox_exempt_server(server_name: &str) -> bool {
-    if matches!(
+    matches!(
         server_name,
         "tandem_mcp" | "tandem-mcp" | "tandemDocs" | "tandem_docs" | "tandem-docs"
-    ) {
-        return true;
+    )
+}
+
+fn extract_apply_patch_paths(patch: &str) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut paths = HashSet::new();
+    for line in patch.lines() {
+        let trimmed = line.trim();
+        let marker = trimmed
+            .strip_prefix("*** Add File: ")
+            .or_else(|| trimmed.strip_prefix("*** Update File: "))
+            .or_else(|| trimmed.strip_prefix("*** Delete File: "));
+        if let Some(path) = marker.map(str::trim).filter(|value| !value.is_empty()) {
+            paths.insert(path.to_string());
+        }
     }
-    let Ok(raw) = std::env::var("TANDEM_MCP_SANDBOX_EXEMPT_SERVERS") else {
-        return false;
-    };
-    raw.split(',')
-        .any(|s| s.trim().eq_ignore_ascii_case(server_name))
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    paths.sort();
+    paths
 }
 
 pub(super) fn is_mcp_tool_name(tool_name: &str) -> bool {

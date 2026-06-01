@@ -864,6 +864,39 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn shell_sandbox_requires_workspace_context() {
+        let err = prepare_shell_workspace(&json!({})).expect_err("workspace context required");
+        match err {
+            ShellCommandPlan::Blocked(result) => {
+                assert_eq!(result.metadata["guardrail_reason"], json!("missing_workspace_root"));
+            }
+            ShellCommandPlan::Execute(_) => panic!("expected blocked shell plan"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_sandbox_rejects_cwd_outside_workspace() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        let err = prepare_shell_workspace(&json!({
+            "__workspace_root": root.path().to_string_lossy().to_string(),
+            "__effective_cwd": outside.path().to_string_lossy().to_string(),
+        }))
+        .expect_err("cwd outside workspace should be rejected");
+        match err {
+            ShellCommandPlan::Blocked(result) => {
+                assert_eq!(
+                    result.metadata["guardrail_reason"],
+                    json!("effective_cwd_outside_workspace")
+                );
+            }
+            ShellCommandPlan::Execute(_) => panic!("expected blocked shell plan"),
+        }
+    }
+
     #[test]
     fn path_policy_rejects_tool_markup_and_globs() {
         assert!(resolve_tool_path(

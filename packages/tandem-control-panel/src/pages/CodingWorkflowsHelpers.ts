@@ -1,6 +1,6 @@
 import type { PlannerProviderOption } from "../features/planner/plannerShared";
 export type CodingTab = "overview" | "board" | "planning" | "manual" | "integrations";
-export type TaskSourceType = "manual" | "kanban_board" | "github_project" | "local_backlog";
+export type TaskSourceType = "manual" | "kanban_board" | "github_project" | "linear" | "local_backlog";
 
 export type GithubRepoRef = {
   owner: string;
@@ -69,6 +69,12 @@ export function normalizeProjects(raw: any) {
         ? `github:${String(taskSource.owner).trim().toLowerCase()}/${String(taskSource.repo)
             .trim()
             .toLowerCase()}#${String(taskSource.project).trim()}`
+        : taskType === "linear" && String(taskSource?.team || "").trim()
+          ? `linear:${String(taskSource.team).trim().toLowerCase()}/${String(
+              taskSource?.project || "issues"
+            )
+              .trim()
+              .toLowerCase()}`
         : repoUrl
           ? `repo:${repoUrl.toLowerCase()}`
           : `slug:${row.slug}`;
@@ -132,6 +138,8 @@ export function normalizeGithubBoard(raw: any) {
           statusKey: String(item?.status_key || item?.statusKey || "unknown").trim(),
           statusName: String(item?.status_name || item?.statusName || "Unknown").trim(),
           issueNumber: item?.issue_number || item?.issueNumber || null,
+          issueId: String(item?.issue_id || item?.issueId || "").trim(),
+          identifier: String(item?.identifier || "").trim(),
           issueUrl: String(item?.issue_url || item?.issueUrl || "").trim(),
           repoName: String(item?.repo_name || item?.repoName || "").trim(),
           isParent: item?.is_parent === true || item?.isParent === true,
@@ -152,6 +160,9 @@ export function normalizeGithubBoard(raw: any) {
           selector: String(
             item?.project_item_id ||
               item?.projectItemId ||
+              item?.identifier ||
+              item?.issue_id ||
+              item?.issueId ||
               item?.issue_number ||
               item?.issueNumber ||
               item?.id ||
@@ -317,7 +328,7 @@ export function githubBoardItemCanRun(item: any) {
 
 export function githubBoardItemLaunchLabel(item: any) {
   if (githubBoardItemCanRun(item)) return "Run task";
-  if (!item?.selector) return "Missing GitHub issue";
+  if (!item?.selector) return "Missing linked issue";
   const titleKey = String(item?.title || "").toLowerCase();
   if (
     item?.isParent === true ||
@@ -411,11 +422,21 @@ export function buildTaskSourcePayload(
     path,
     repoRef,
     projectNumber,
+    linearTeam,
+    linearProject,
+    linearStatuses,
+    linearLabels,
+    linearQuery,
   }: {
     prompt: string;
     path: string;
     repoRef: GithubRepoRef | null;
     projectNumber: string;
+    linearTeam: string;
+    linearProject: string;
+    linearStatuses: string;
+    linearLabels: string;
+    linearQuery: string;
   }
 ) {
   if (taskSourceType === "manual") {
@@ -426,6 +447,16 @@ export function buildTaskSourcePayload(
   }
   if (taskSourceType === "local_backlog") {
     return { type: "local_backlog", path: path.trim() };
+  }
+  if (taskSourceType === "linear") {
+    return {
+      type: "linear",
+      team: linearTeam.trim(),
+      project: linearProject.trim(),
+      statuses: linearStatuses.trim(),
+      labels: linearLabels.trim(),
+      query: linearQuery.trim(),
+    };
   }
   return {
     type: "github_project",

@@ -18,6 +18,7 @@ const MCP_CLIENT_NAME: &str = "tandem";
 const MCP_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MCP_AUTH_REPROBE_COOLDOWN_MS: u64 = 15_000;
 const MCP_SECRET_PLACEHOLDER: &str = "";
+const MCP_HTTP_RESPONSE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolCacheEntry {

@@ -185,6 +185,9 @@ pub async fn ensure_managed_worktree(
             reused: true,
         });
     }
+    if input.base.trim_start().starts_with('-') {
+        anyhow::bail!("git worktree base ref cannot start with '-'");
+    }
     let output = std::process::Command::new("git")
         .args([
             "-C",
@@ -194,6 +197,7 @@ pub async fn ensure_managed_worktree(
             "-b",
             &branch,
             &path.to_string_lossy(),
+            "--",
             &input.base,
         ])
         .output()?;

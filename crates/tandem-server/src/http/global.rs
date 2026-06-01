@@ -1393,18 +1393,36 @@ pub(super) async fn instance_dispose() -> Json<Value> {
 
 pub(super) async fn run_events(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
-) -> axum::response::Sse<
-    impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
-> {
+) -> Response {
+    if let Some(session_id) = state.run_registry.session_for_run(&id).await {
+        let Some(session) = state.storage.get_session(&session_id).await else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        if ensure_same_tenant(&tenant_context, &session.tenant_context).is_err() {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    } else if let Ok(run) = super::context_runs::load_context_run_state(&state, &id).await {
+        if ensure_same_tenant(&tenant_context, &run.tenant_context).is_err() {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    } else {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let rx = state.event_bus.subscribe();
-    let initial = tokio_stream::once(Ok(axum::response::sse::Event::default().data(
-        serde_json::to_string(&EngineEvent::new(
-            "run.stream.connected",
-            json!({ "runID": id }),
-        ))
-        .unwrap_or_default(),
-    )));
+    let stream_tenant = tenant_context.clone();
+    let stream_run_id = id.clone();
+    let initial = tokio_stream::once(Ok::<_, std::convert::Infallible>(
+        axum::response::sse::Event::default().data(
+            serde_json::to_string(&EngineEvent::new(
+                "run.stream.connected",
+                json!({ "runID": id }),
+            ))
+            .unwrap_or_default(),
+        ),
+    ));
     let live = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event) => {
             let event_run = event
@@ -1412,7 +1430,9 @@ pub(super) async fn run_events(
                 .get("runID")
                 .or_else(|| event.properties.get("run_id"))
                 .and_then(|v| v.as_str());
-            if event_run == Some(&id) {
+            if event_run == Some(stream_run_id.as_str())
+                && event_visible_to_tenant(&event, &stream_tenant)
+            {
                 let payload = serde_json::to_string(&event).unwrap_or_default();
                 Some(Ok(axum::response::sse::Event::default().data(payload)))
             } else {
@@ -1421,18 +1441,24 @@ pub(super) async fn run_events(
         }
         Err(_) => None,
     });
-    axum::response::Sse::new(initial.chain(live)).keep_alive(
-        axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(10)),
-    )
+    axum::response::Sse::new(initial.chain(live))
+        .keep_alive(
+            axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(10)),
+        )
+        .into_response()
 }
 
-pub(super) async fn list_projects(State(state): State<AppState>) -> Json<Value> {
+pub(super) async fn list_projects(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+) -> Json<Value> {
     let sessions = state
         .storage
         .list_sessions_scoped(tandem_core::SessionListScope::Global)
         .await;
     let mut directories = sessions
         .iter()
+        .filter(|s| tenant_matches(&tenant_context, &s.tenant_context))
         .map(|s| s.directory.clone())
         .collect::<Vec<_>>();
     directories.sort();

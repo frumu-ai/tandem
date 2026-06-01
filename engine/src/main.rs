@@ -596,6 +596,14 @@ async fn main() -> anyhow::Result<()> {
             let startup_attempt_id = Uuid::new_v4().to_string();
             let state = AppState::new_starting(startup_attempt_id.clone(), in_process);
             state.configure_web_ui(web_ui, web_ui_prefix);
+            let addr: SocketAddr = format!("{hostname}:{port}")
+                .parse()
+                .context("invalid hostname or port")?;
+            if unsafe_no_api_token && !addr.ip().is_loopback() {
+                anyhow::bail!(
+                    "--unsafe-no-api-token/TANDEM_UNSAFE_NO_API_TOKEN is only allowed on loopback binds; set TANDEM_API_TOKEN or bind to 127.0.0.1"
+                );
+            }
             if let Some(token) = resolve_engine_api_token(api_token, unsafe_no_api_token)? {
                 info!("API token auth enabled for tandem-engine HTTP API");
                 state.set_api_token(Some(token)).await;
@@ -604,9 +612,6 @@ async fn main() -> anyhow::Result<()> {
                     "API token auth disabled for tandem-engine HTTP API by explicit unsafe flag"
                 );
             }
-            let addr: SocketAddr = format!("{hostname}:{port}")
-                .parse()
-                .context("invalid hostname or port")?;
             let internal_host = if hostname == "0.0.0.0" {
                 "127.0.0.1".to_string()
             } else {
