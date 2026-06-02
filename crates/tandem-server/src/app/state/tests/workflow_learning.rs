@@ -670,6 +670,63 @@ async fn completed_runs_generate_memory_fact_candidates() {
 }
 
 #[tokio::test]
+async fn completed_runs_with_validation_warnings_do_not_generate_positive_learning() {
+    let state = ready_test_state().await;
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-workflow-learning-warning-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+
+    let automation = AutomationSpecBuilder::new("workflow-learning-warning")
+        .workspace_root(workspace_root.to_string_lossy().to_string())
+        .nodes(vec![AutomationNodeBuilder::new("node-1").build()])
+        .build();
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Completed;
+            row.detail = Some("Completed with validation warnings".to_string());
+            row.checkpoint.completed_nodes = vec!["node-1".to_string()];
+            row.checkpoint.node_outputs.insert(
+                "node-1".to_string(),
+                json!({
+                    "status": "completed",
+                    "summary": "Final report written, but weakly structured",
+                    "validator_summary": {
+                        "outcome": "accepted_with_warnings",
+                        "unmet_requirements": [],
+                        "warning_requirements": ["markdown_structure_missing"]
+                    }
+                }),
+            );
+        })
+        .await
+        .expect("complete run with warning");
+
+    let candidates = state
+        .list_workflow_learning_candidates(Some(&automation.automation_id), None, None)
+        .await;
+    assert!(candidates.is_empty());
+    let metrics = state
+        .workflow_learning_metrics_for_workflow(&automation.automation_id)
+        .await;
+    assert_eq!(metrics.sample_size, 1);
+    assert_eq!(metrics.completion_rate, 1.0);
+    assert_eq!(metrics.validation_pass_rate, 0.0);
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+#[tokio::test]
 async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_graph_patch() {
     let state = ready_test_state().await;
     let workspace_root = std::env::temp_dir().join(format!(

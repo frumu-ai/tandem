@@ -166,7 +166,9 @@ impl EngineLoop {
             }
         } else {
             let mut completion = String::new();
-            let mut max_iterations = max_tool_iterations();
+            let max_iteration_budget = max_tool_iterations();
+            let mut max_iterations = max_iteration_budget;
+            let mut iteration_budget_exhausted = false;
             let mut followup_context: Option<String> = None;
             let mut last_tool_outputs: Vec<String> = Vec::new();
             let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
@@ -219,8 +221,20 @@ impl EngineLoop {
                 && is_short_simple_prompt(&text)
                 && matches!(intent, ToolIntent::Chitchat | ToolIntent::Knowledge);
 
-            while max_iterations > 0 && !cancel.is_cancelled() {
-                let iteration = 26usize.saturating_sub(max_iterations);
+            macro_rules! continue_prompt_iteration {
+                ($loop_label:lifetime) => {{
+                    if max_iterations == 0 {
+                        iteration_budget_exhausted = true;
+                        break $loop_label;
+                    }
+                    continue $loop_label;
+                }};
+            }
+
+            'prompt_iteration_loop: while max_iterations > 0 && !cancel.is_cancelled() {
+                let iteration = max_iteration_budget
+                    .saturating_sub(max_iterations)
+                    .saturating_add(1);
                 max_iterations -= 1;
                 let context_profile = if matches!(requested_context_mode, ContextMode::Full) {
                     ChatHistoryProfile::Full
@@ -686,6 +700,10 @@ impl EngineLoop {
                                         "maxRetries": provider_stream_retry_budget,
                                     }),
                                 ));
+                                tokio::time::sleep(provider_stream_retry_backoff_duration(
+                                    provider_stream_retry_count,
+                                ))
+                                .await;
                                 continue 'provider_stream_attempt;
                             }
                             let error_code = provider_error_code(&error_text);
@@ -736,6 +754,31 @@ impl EngineLoop {
                             Ok(next_chunk) => next_chunk,
                             Err(err) => {
                                 let error_text = err.to_string();
+                                if is_transient_provider_stream_error(&error_text)
+                                    && provider_stream_retry_count < provider_stream_retry_budget
+                                {
+                                    provider_stream_retry_count =
+                                        provider_stream_retry_count.saturating_add(1);
+                                    let detail = truncate_text(&error_text, 500);
+                                    self.event_bus.publish(EngineEvent::new(
+                                        "provider.call.iteration.retry",
+                                        json!({
+                                            "sessionID": session_id,
+                                            "messageID": user_message_id,
+                                            "providerID": provider_id,
+                                            "modelID": model_id_value,
+                                            "iteration": iteration,
+                                            "error": detail,
+                                            "retry": provider_stream_retry_count,
+                                            "maxRetries": provider_stream_retry_budget,
+                                        }),
+                                    ));
+                                    tokio::time::sleep(provider_stream_retry_backoff_duration(
+                                        provider_stream_retry_count,
+                                    ))
+                                    .await;
+                                    continue 'provider_stream_attempt;
+                                }
                                 self.event_bus.publish(EngineEvent::new(
                                     "provider.call.iteration.error",
                                     json!({
@@ -777,6 +820,10 @@ impl EngineLoop {
                                             "maxRetries": provider_stream_retry_budget,
                                         }),
                                     ));
+                                    tokio::time::sleep(provider_stream_retry_backoff_duration(
+                                        provider_stream_retry_count,
+                                    ))
+                                    .await;
                                     continue 'provider_stream_attempt;
                                 }
                                 let error_code = provider_error_code(&stream_error_text);
@@ -1016,7 +1063,7 @@ impl EngineLoop {
                             "rejectedToolCalls": 0,
                         }),
                     ));
-                    continue;
+                    continue_prompt_iteration!('prompt_iteration_loop);
                 }
                 if tool_calls.is_empty()
                     && !auto_workspace_probe_attempted
@@ -1386,7 +1433,7 @@ impl EngineLoop {
                                             "requiredToolFailureReason": latest_required_tool_failure_kind.code(),
                                         }),
                                     ));
-                                    continue;
+                                    continue_prompt_iteration!('prompt_iteration_loop);
                                 }
                             }
                             let progress_made_in_cycle = productive_workspace_inspection_total > 0
@@ -1418,7 +1465,7 @@ impl EngineLoop {
                                         "requiredToolFailureReason": latest_required_tool_failure_kind.code(),
                                     }),
                                 ));
-                                continue;
+                                continue_prompt_iteration!('prompt_iteration_loop);
                             }
                             completion = required_tool_mode_unsatisfied_completion(
                                 latest_required_tool_failure_kind,
@@ -1513,7 +1560,7 @@ impl EngineLoop {
                                             ),
                                         }),
                                     ));
-                                    continue;
+                                    continue_prompt_iteration!('prompt_iteration_loop);
                                 }
                                 if !prewrite_gate_waived {
                                     if prewrite_fail_closed {
@@ -1588,7 +1635,7 @@ impl EngineLoop {
                                             ),
                                         }),
                                     ));
-                                    continue;
+                                    continue_prompt_iteration!('prompt_iteration_loop);
                                 }
                             }
                             latest_required_tool_failure_kind =
@@ -1620,7 +1667,7 @@ impl EngineLoop {
                                         "requiredToolFailureReason": latest_required_tool_failure_kind.code(),
                                     }),
                                 ));
-                                continue;
+                                continue_prompt_iteration!('prompt_iteration_loop);
                             }
                             completion = required_tool_mode_unsatisfied_completion(
                                 latest_required_tool_failure_kind,
@@ -1676,7 +1723,7 @@ impl EngineLoop {
                                         "rejectedToolCalls": 0,
                                     }),
                                 ));
-                                continue;
+                                continue_prompt_iteration!('prompt_iteration_loop);
                             }
                         }
                         let guard_budget_hit =
@@ -1700,7 +1747,7 @@ impl EngineLoop {
                                     "rejectedToolCalls": 0,
                                 }),
                             ));
-                            continue;
+                            continue_prompt_iteration!('prompt_iteration_loop);
                         }
                         if executed_productive_tool {
                             let prewrite_gate = evaluate_prewrite_gate(
@@ -1760,7 +1807,7 @@ impl EngineLoop {
                                         ),
                                     }),
                                 ));
-                                continue;
+                                continue_prompt_iteration!('prompt_iteration_loop);
                             }
                             if requested_write_required
                                 && productive_write_tool_calls_total > 0
@@ -1820,7 +1867,7 @@ impl EngineLoop {
                                     "rejectedToolCalls": 0,
                                 }),
                             ));
-                            continue;
+                            continue_prompt_iteration!('prompt_iteration_loop);
                         }
                         if guard_budget_hit {
                             completion = summarize_guard_budget_outputs(&outputs)
@@ -1888,7 +1935,7 @@ impl EngineLoop {
                             ),
                             &last_tool_outputs,
                         ));
-                        continue;
+                        continue_prompt_iteration!('prompt_iteration_loop);
                     }
                     let progress_made_in_cycle = productive_workspace_inspection_total > 0
                         || productive_concrete_read_total > 0
@@ -1906,7 +1953,7 @@ impl EngineLoop {
                             latest_required_tool_failure_kind,
                             &text,
                         ));
-                        continue;
+                        continue_prompt_iteration!('prompt_iteration_loop);
                     }
                     completion = required_tool_mode_unsatisfied_completion(
                         latest_required_tool_failure_kind,
@@ -1967,7 +2014,7 @@ impl EngineLoop {
                                 "rejectedToolCalls": 0,
                             }),
                         ));
-                        continue;
+                        continue_prompt_iteration!('prompt_iteration_loop);
                     }
                     let prewrite_gate = evaluate_prewrite_gate(
                         requested_write_required,
@@ -2027,7 +2074,7 @@ impl EngineLoop {
                                     ),
                                 }),
                             ));
-                            continue;
+                            continue_prompt_iteration!('prompt_iteration_loop);
                         }
                         if prewrite_fail_closed {
                             let repair_attempt = unmet_prewrite_repair_retry_count;
@@ -2101,7 +2148,7 @@ impl EngineLoop {
                                 ),
                             }),
                         ));
-                        continue;
+                        continue_prompt_iteration!('prompt_iteration_loop);
                     }
                     if prewrite_gate_waived
                         && requested_write_required
@@ -2133,7 +2180,7 @@ impl EngineLoop {
                                 "rejectedToolCalls": 0,
                             }),
                         ));
-                        continue;
+                        continue_prompt_iteration!('prompt_iteration_loop);
                     }
                     self.event_bus.publish(EngineEvent::new(
                         "provider.call.iteration.finish",
@@ -2148,6 +2195,39 @@ impl EngineLoop {
                     ));
                 }
                 break;
+            }
+            if iteration_budget_exhausted && !cancel.is_cancelled() {
+                let detail = format!(
+                    "Prompt execution exhausted the configured iteration budget ({max_iteration_budget}) before the model produced a terminal response."
+                );
+                emit_event(
+                    Level::WARN,
+                    ProcessKind::Engine,
+                    ObservabilityEvent {
+                        event: "provider.call.iteration.budget_exhausted",
+                        component: "engine.loop",
+                        correlation_id: correlation_ref,
+                        session_id: Some(&session_id),
+                        run_id: None,
+                        message_id: Some(&user_message_id),
+                        provider_id: Some(provider_id.as_str()),
+                        model_id,
+                        status: Some("failed"),
+                        error_code: Some("iteration_budget_exhausted"),
+                        detail: Some(&detail),
+                    },
+                );
+                self.event_bus.publish(EngineEvent::new(
+                    "provider.call.iteration.budget_exhausted",
+                    json!({
+                        "sessionID": session_id,
+                        "messageID": user_message_id,
+                        "maxIterations": max_iteration_budget,
+                        "error": detail,
+                    }),
+                ));
+                self.mark_session_run_failed(&session_id, &detail).await;
+                return Err(anyhow::anyhow!(detail));
             }
             if matches!(requested_tool_mode, ToolMode::Required) && productive_tool_calls_total == 0
             {
@@ -2356,4 +2436,9 @@ impl EngineLoop {
         self.cancellations.remove(&session_id).await;
         Ok(())
     }
+}
+
+fn provider_stream_retry_backoff_duration(retry_count: usize) -> Duration {
+    let retry = u64::try_from(retry_count).unwrap_or(u64::MAX);
+    Duration::from_millis(retry.saturating_mul(50).min(500))
 }

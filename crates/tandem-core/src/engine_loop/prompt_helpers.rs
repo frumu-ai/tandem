@@ -112,6 +112,12 @@ pub(super) fn is_transient_provider_stream_error(error_text: &str) -> bool {
     }
     lower.contains("provider stream chunk error")
         || lower.contains("stream chunk error")
+        || lower.contains("provider stream connect timeout")
+        || lower.contains("provider stream idle timeout")
+        || lower.contains("connect timeout")
+        || lower.contains("connection timed out")
+        || lower.contains("request timed out")
+        || lower.contains("operation timed out")
         || lower.contains("error decoding response body")
         || lower.contains("unexpected eof")
         || lower.contains("incomplete streamed response")

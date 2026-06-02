@@ -30,6 +30,7 @@ pub struct RoutineExecutionPlan {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DependencyPlanningError {
     MissingStepDependency { step_id: String, dependency: String },
+    StrictSequentialOrderContradictsDependency { step_id: String, dependency: String },
     CyclicStepDependencies { remaining_step_ids: Vec<String> },
 }
 
@@ -89,6 +90,28 @@ pub fn plan_routine_execution(
 
     match routine.dependency_resolution.strategy {
         DependencyResolutionStrategy::StrictSequential => {
+            for step in &routine.steps {
+                let step_index = declared_index
+                    .get(&step.step_id)
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                for dependency in &step.dependencies {
+                    if step_id_set.contains(dependency) {
+                        let dependency_index = declared_index
+                            .get(dependency)
+                            .copied()
+                            .unwrap_or(usize::MAX);
+                        if dependency_index > step_index {
+                            return Err(
+                                DependencyPlanningError::StrictSequentialOrderContradictsDependency {
+                                    step_id: step.step_id.clone(),
+                                    dependency: dependency.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
             batches = step_ids
                 .iter()
                 .map(|step_id| RoutineExecutionBatch {
@@ -396,6 +419,22 @@ mod tests {
                     step_ids: vec!["step_d".to_string()]
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn strict_sequential_rejects_order_that_contradicts_dependencies() {
+        let mut routine = sample_routine(DependencyResolutionStrategy::StrictSequential);
+        routine.steps.swap(0, 1);
+
+        let error = plan_routine_execution(&routine).expect_err("strict order conflict");
+
+        assert_eq!(
+            error,
+            DependencyPlanningError::StrictSequentialOrderContradictsDependency {
+                step_id: "step_b".to_string(),
+                dependency: "step_a".to_string(),
+            }
         );
     }
 

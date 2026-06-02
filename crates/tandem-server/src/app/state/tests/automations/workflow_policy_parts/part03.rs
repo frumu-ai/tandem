@@ -1031,6 +1031,111 @@ fn code_workflow_with_full_verification_plan_reports_done() {
 }
 
 #[test]
+fn verification_command_matching_requires_normalized_command_prefix() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "implement".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Implement feature".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "task_kind": "code_change",
+                "verification_command": "cargo test"
+            }
+        })),
+    };
+    let mut false_positive_session = Session::new(Some("verification false positive".to_string()), None);
+    false_positive_session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "bash".to_string(),
+            args: json!({"command":"cargo testify"}),
+            result: Some(json!({"metadata":{"exit_code":0}})),
+            error: None,
+        }],
+    ));
+
+    let false_positive_telemetry = summarize_automation_tool_activity(
+        &node,
+        &false_positive_session,
+        &[
+            "glob".to_string(),
+            "read".to_string(),
+            "edit".to_string(),
+            "apply_patch".to_string(),
+            "write".to_string(),
+            "bash".to_string(),
+        ],
+    );
+
+    assert_eq!(
+        false_positive_telemetry
+            .get("verification_outcome")
+            .and_then(Value::as_str),
+        Some("missing")
+    );
+    assert_eq!(
+        false_positive_telemetry
+            .get("verification_completed")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+
+    let mut valid_session = Session::new(Some("verification pass".to_string()), None);
+    valid_session.messages.push(tandem_types::Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "bash".to_string(),
+            args: json!({"command":"cargo test -- --nocapture"}),
+            result: Some(json!({"metadata":{"exit_code":0}})),
+            error: None,
+        }],
+    ));
+
+    let valid_telemetry = summarize_automation_tool_activity(
+        &node,
+        &valid_session,
+        &[
+            "glob".to_string(),
+            "read".to_string(),
+            "edit".to_string(),
+            "apply_patch".to_string(),
+            "write".to_string(),
+            "bash".to_string(),
+        ],
+    );
+
+    assert_eq!(
+        valid_telemetry
+            .get("verification_outcome")
+            .and_then(Value::as_str),
+        Some("passed")
+    );
+    assert_eq!(
+        valid_telemetry
+            .get("verification_completed")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+}
+
+#[test]
 fn code_workflow_with_partial_verification_is_blocked() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

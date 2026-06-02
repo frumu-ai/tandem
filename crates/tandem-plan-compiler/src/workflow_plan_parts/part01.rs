@@ -824,6 +824,38 @@ fn compact_objective<I, O>(
     parts.join(" ")
 }
 
+fn compact_input_refs_for_bucket<I, O>(
+    bucket: &str,
+    steps: &[WorkflowPlanStep<I, O>],
+    original_step_buckets: &std::collections::BTreeMap<String, String>,
+    available: &[String],
+) -> Vec<I>
+where
+    I: Clone + WorkflowInputRefLike + Serialize,
+{
+    let available = available.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    let mut seen = std::collections::BTreeSet::<String>::new();
+    let mut compacted = Vec::new();
+    for input_ref in steps.iter().flat_map(|step| step.input_refs.iter()) {
+        let source_bucket = original_step_buckets.get(input_ref.from_step_id());
+        let Some(source_bucket) = source_bucket else {
+            continue;
+        };
+        if source_bucket == bucket || !available.contains(source_bucket) {
+            continue;
+        }
+        let Some(remapped) = input_ref.clone_with_from_step_id(source_bucket) else {
+            continue;
+        };
+        let dedupe_key = serde_json::to_string(&serde_json::to_value(&remapped).unwrap_or(Value::Null))
+            .unwrap_or_else(|_| format!("{}:{}", source_bucket, compacted.len()));
+        if seen.insert(dedupe_key) {
+            compacted.push(remapped);
+        }
+    }
+    compacted
+}
+
 fn compact_step_dependencies(bucket: &str, available: &[String]) -> Vec<String> {
     let has = |id: &str| available.iter().any(|value| value == id);
     match bucket {
@@ -873,7 +905,7 @@ pub fn compact_generated_workflow_plan_to_budget<M, I, O>(
     Option<Value>,
 )
 where
-    I: Clone + WorkflowInputRefLike,
+    I: Clone + WorkflowInputRefLike + Serialize,
     O: Clone + Serialize,
 {
     if workflow_plan_source_exempts_generated_task_budget(&plan.plan_source)
@@ -895,11 +927,11 @@ where
         "synthesize_work",
     ];
     let mut bucketed = std::collections::BTreeMap::<String, Vec<WorkflowPlanStep<I, O>>>::new();
+    let mut original_step_buckets = std::collections::BTreeMap::<String, String>::new();
     for step in original_steps {
-        bucketed
-            .entry(compact_bucket_for_step(&step).to_string())
-            .or_default()
-            .push(step);
+        let bucket = compact_bucket_for_step(&step).to_string();
+        original_step_buckets.insert(step.step_id.clone(), bucket.clone());
+        bucketed.entry(bucket).or_default().push(step);
     }
 
     let prompt = plan.original_prompt.clone();
@@ -926,14 +958,21 @@ where
         step.kind = kind.to_string();
         step.agent_role = agent_role.to_string();
         step.objective = compact_objective(bucket, default_objective, &steps, &prompt);
-        step.depends_on = compact_step_dependencies(
-            bucket,
-            &next_steps
-                .iter()
-                .map(|row: &WorkflowPlanStep<I, O>| row.step_id.clone())
-                .collect::<Vec<_>>(),
-        );
-        step.input_refs = Vec::new();
+        let available_step_ids = next_steps
+            .iter()
+            .map(|row: &WorkflowPlanStep<I, O>| row.step_id.clone())
+            .collect::<Vec<_>>();
+        step.depends_on = compact_step_dependencies(bucket, &available_step_ids);
+        step.input_refs =
+            compact_input_refs_for_bucket(bucket, &steps, &original_step_buckets, &available_step_ids);
+        for input_ref in &step.input_refs {
+            let source = input_ref.from_step_id();
+            if !step.depends_on.iter().any(|dependency| dependency == source) {
+                step.depends_on.push(source.to_string());
+            }
+        }
+        step.depends_on.sort();
+        step.depends_on.dedup();
         let original_ids = steps
             .iter()
             .map(|row| row.step_id.clone())
@@ -1982,6 +2021,13 @@ pub fn workflow_schedule_equal<M: Serialize>(
 
 pub trait WorkflowInputRefLike {
     fn from_step_id(&self) -> &str;
+
+    fn clone_with_from_step_id(&self, _from_step_id: &str) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
 }
 
 pub fn validate_workflow_plan<S, I, O>(
@@ -2014,26 +2060,98 @@ where
             ));
         }
     }
-    for step in &plan.steps {
+    let mut dependency_edges = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for (step, normalized_step_id) in plan.steps.iter().zip(normalized_step_ids.iter()) {
+        let mut normalized_deps = std::collections::BTreeSet::<String>::new();
         for dep in &step.depends_on {
-            if !step_ids.contains(&normalize_workflow_step_id(dep.as_str())) {
+            let normalized_dep = normalize_workflow_step_id(dep.as_str());
+            if !step_ids.contains(&normalized_dep) {
                 return Err(format!(
                     "workflow step `{}` depends on unknown step `{}`",
                     step.step_id, dep
                 ));
             }
+            normalized_deps.insert(normalized_dep);
         }
         for input in &step.input_refs {
-            if !step_ids.contains(&normalize_workflow_step_id(input.from_step_id())) {
+            let normalized_input = normalize_workflow_step_id(input.from_step_id());
+            if !step_ids.contains(&normalized_input) {
                 return Err(format!(
                     "workflow step `{}` references unknown input step `{}`",
                     step.step_id,
                     input.from_step_id()
                 ));
             }
+            if !normalized_deps.contains(&normalized_input) {
+                return Err(format!(
+                    "workflow step `{}` input_ref `{}` must also be listed in depends_on",
+                    step.step_id,
+                    input.from_step_id()
+                ));
+            }
+            normalized_deps.insert(normalized_input);
         }
+        dependency_edges.insert(
+            normalized_step_id.clone(),
+            normalized_deps.into_iter().collect::<Vec<_>>(),
+        );
+    }
+    if let Some(cycle) = workflow_plan_dependency_cycle(&dependency_edges) {
+        return Err(format!(
+            "workflow plan contains dependency cycle: {}",
+            cycle.join(" -> ")
+        ));
     }
     Ok(())
+}
+
+fn workflow_plan_dependency_cycle(
+    dependency_edges: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Option<Vec<String>> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum VisitState {
+        Visiting,
+        Visited,
+    }
+
+    fn visit(
+        node_id: &str,
+        dependency_edges: &std::collections::BTreeMap<String, Vec<String>>,
+        states: &mut std::collections::BTreeMap<String, VisitState>,
+        stack: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        if states.get(node_id) == Some(&VisitState::Visited) {
+            return None;
+        }
+        if states.get(node_id) == Some(&VisitState::Visiting) {
+            let cycle_start = stack
+                .iter()
+                .position(|candidate| candidate == node_id)
+                .unwrap_or(0);
+            let mut cycle = stack[cycle_start..].to_vec();
+            cycle.push(node_id.to_string());
+            return Some(cycle);
+        }
+        states.insert(node_id.to_string(), VisitState::Visiting);
+        stack.push(node_id.to_string());
+        for dep_id in dependency_edges.get(node_id).into_iter().flatten() {
+            if let Some(cycle) = visit(dep_id, dependency_edges, states, stack) {
+                return Some(cycle);
+            }
+        }
+        stack.pop();
+        states.insert(node_id.to_string(), VisitState::Visited);
+        None
+    }
+
+    let mut states = std::collections::BTreeMap::<String, VisitState>::new();
+    let mut stack = Vec::<String>::new();
+    for node_id in dependency_edges.keys() {
+        if let Some(cycle) = visit(node_id, dependency_edges, &mut states, &mut stack) {
+            return Some(cycle);
+        }
+    }
+    None
 }
 
 pub const WORKFLOW_STEP_ID_EXAMPLES: &[&str] = &[

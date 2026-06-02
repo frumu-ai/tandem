@@ -1,4 +1,315 @@
 #[test]
+fn empty_node_output_without_artifact_requests_repair() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "summarize".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Summarize the gathered research".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(&node, "", None, &json!({}), None);
+
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("node produced no final output or validated artifact")
+    );
+    assert_eq!(approved, None);
+}
+
+#[test]
+fn empty_node_output_without_artifact_blocks_when_repair_exhausted() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "summarize".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Summarize the gathered research".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "",
+            None,
+            &json!({}),
+            Some(&json!({
+                "repair_exhausted": true,
+                "validation_basis": {
+                    "node_attempt": 3,
+                    "node_max_attempts": 3
+                }
+            })),
+        );
+
+    assert_eq!(status, "blocked");
+    assert_eq!(
+        reason.as_deref(),
+        Some("node produced no final output or validated artifact")
+    );
+    assert_eq!(approved, None);
+}
+
+#[test]
+fn synthesis_upstream_read_evidence_satisfies_required_read_gate() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "synthesize".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Synthesize upstream source evidence into a final report".to_string(),
+        depends_on: vec!["collect".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "collect".to_string(),
+            alias: "source_notes".to_string(),
+        }],
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "brief".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("research_synthesis".to_string()),
+                required_tools: vec!["read".to_string()],
+                required_tool_calls: Vec::new(),
+                required_evidence: Vec::new(),
+                required_sections: Vec::new(),
+                prewrite_gates: Vec::new(),
+                retry_on_missing: Vec::new(),
+                terminal_on: Vec::new(),
+                repair_budget: Some(3),
+                session_text_recovery: None,
+            }),
+            schema: None,
+            summary_guidance: None,
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+    let tool_telemetry = json!({
+        "requested_tools": ["read", "write"],
+        "executed_tools": ["write"]
+    });
+    let artifact_validation = json!({
+        "validation_profile": "research_synthesis",
+        "validation_outcome": "passed",
+        "upstream_evidence_applied": true,
+        "upstream_read_paths": [".tandem/runs/run-1/artifacts/collect.json"],
+        "unmet_requirements": []
+    });
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            r#"{"status":"completed"}"#,
+            None,
+            &tool_telemetry,
+            Some(&artifact_validation),
+        );
+
+    assert_eq!(status, "completed");
+    assert_eq!(reason, None);
+    assert_eq!(approved, None);
+}
+
+#[test]
+fn required_read_gate_still_repairs_without_upstream_evidence() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "synthesize".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Synthesize source evidence into a final report".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "brief".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            enforcement: Some(crate::AutomationOutputEnforcement {
+                validation_profile: Some("research_synthesis".to_string()),
+                required_tools: vec!["read".to_string()],
+                required_tool_calls: Vec::new(),
+                required_evidence: Vec::new(),
+                required_sections: Vec::new(),
+                prewrite_gates: Vec::new(),
+                retry_on_missing: Vec::new(),
+                terminal_on: Vec::new(),
+                repair_budget: Some(3),
+                session_text_recovery: None,
+            }),
+            schema: None,
+            summary_guidance: None,
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+    let tool_telemetry = json!({
+        "requested_tools": ["read", "write"],
+        "executed_tools": ["write"]
+    });
+    let artifact_validation = json!({
+        "validation_profile": "research_synthesis",
+        "validation_outcome": "passed",
+        "unmet_requirements": []
+    });
+
+    let (status, reason, _approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            r#"{"status":"completed"}"#,
+            None,
+            &tool_telemetry,
+            Some(&artifact_validation),
+        );
+
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("research brief cited workspace sources without using read, so source-backed validation is incomplete")
+    );
+}
+
+#[test]
+fn artifact_materialized_without_status_or_validation_requests_repair() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "summarize".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Write a substantive research summary".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+    let verified_output = (
+        "outputs/summary.md".to_string(),
+        "# Summary\n\nThe artifact contains a concrete result, but validation metadata is missing."
+            .to_string(),
+    );
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "Finished writing the requested artifact.",
+            Some(&verified_output),
+            &json!({}),
+            None,
+        );
+
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("node wrote an artifact but completion validation did not pass or was unavailable")
+    );
+    assert_eq!(approved, None);
+}
+
+#[test]
+fn artifact_materialized_without_status_completes_when_validation_passed() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "summarize".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Write a substantive research summary".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: None,
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+    let verified_output = (
+        "outputs/summary.md".to_string(),
+        "# Summary\n\nThis artifact contains validated, substantive findings."
+            .to_string(),
+    );
+    let artifact_validation = json!({
+        "validation_outcome": "passed",
+        "unmet_requirements": [],
+        "accepted_candidate_source": "verified_output"
+    });
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "Finished writing the requested artifact.",
+            Some(&verified_output),
+            &json!({}),
+            Some(&artifact_validation),
+        );
+
+    assert_eq!(status, "completed");
+    assert_eq!(reason, None);
+    assert_eq!(approved, None);
+}
+
+#[test]
 fn email_delivery_nodes_without_email_tools_report_tool_unavailable_with_diagnostics() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

@@ -485,7 +485,7 @@ fn review_decision_accepts_extended_json_status_payload() {
 }
 
 #[test]
-fn artifact_workflow_with_materialized_output_completes_without_explicit_status_json() {
+fn artifact_workflow_with_materialized_output_without_status_or_validation_requests_repair() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
         node_id: "generate_report".to_string(),
@@ -533,8 +533,11 @@ fn artifact_workflow_with_materialized_output_completes_without_explicit_status_
             None,
         );
 
-    assert_eq!(status, "completed");
-    assert_eq!(reason, None);
+    assert_eq!(status, "needs_repair");
+    assert_eq!(
+        reason.as_deref(),
+        Some("node wrote an artifact but completion validation did not pass or was unavailable")
+    );
     assert_eq!(approved, None);
 }
 

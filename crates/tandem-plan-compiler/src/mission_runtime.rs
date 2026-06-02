@@ -23,6 +23,7 @@ use crate::mission_blueprint::{
     compile_barrier_dependencies, mission_workstream_enforcement_defaults,
     mission_workstream_node_metadata, phase_rank_map, MISSION_EXECUTION_KIND_GOVERNANCE,
 };
+use crate::plan_package::PartialFailureMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CoderAutomationBranchContext {
@@ -135,6 +136,7 @@ pub fn compile_mission_runtime_projection(
             timeout_ms: workstream.timeout_ms,
             stage_kind: Some(ProjectedAutomationStageKind::Workstream),
             gate: None,
+            partial_failure_mode: Some(PartialFailureMode::PauseDownstreamOnly),
             metadata: mission_workstream_node_metadata(workstream),
         });
     }
@@ -210,6 +212,7 @@ pub fn compile_mission_runtime_projection(
             timeout_ms: None,
             stage_kind: Some(stage_kind),
             gate: stage.gate.as_ref().map(projected_gate),
+            partial_failure_mode: Some(PartialFailureMode::PauseDownstreamOnly),
             metadata: Some(review_stage_metadata(
                 stage,
                 &stage_tool_allowlist,

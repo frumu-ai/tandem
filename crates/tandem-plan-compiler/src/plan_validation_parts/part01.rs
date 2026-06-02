@@ -381,6 +381,19 @@ pub fn validate_plan_package(plan: &PlanPackage) -> PlanValidationReport {
                     ),
                     blocking: true,
                 }),
+                DependencyPlanningError::StrictSequentialOrderContradictsDependency {
+                    step_id,
+                    dependency,
+                } => issues.push(PlanValidationIssue {
+                    code: "strict_sequential_order_conflict".to_string(),
+                    severity: PlanValidationSeverity::Error,
+                    path: format!("routine_graph[{routine_index}]"),
+                    message: format!(
+                        "Routine `{}` uses strict sequential ordering, but step `{}` is declared before its dependency `{}`.",
+                        routine.routine_id, step_id, dependency
+                    ),
+                    blocking: true,
+                }),
                 DependencyPlanningError::CyclicStepDependencies { remaining_step_ids } => {
                     issues.push(PlanValidationIssue {
                         code: "cyclic_step_dependencies".to_string(),
@@ -1241,6 +1254,7 @@ pub fn validate_plan_package(plan: &PlanPackage) -> PlanValidationReport {
         dependencies_resolvable: Some(!issues.iter().any(|issue| {
             issue.code == "missing_routine_dependency"
                 || issue.code == "missing_step_dependency"
+                || issue.code == "strict_sequential_order_conflict"
                 || issue.code == "cyclic_step_dependencies"
         })),
         approvals_complete: Some(

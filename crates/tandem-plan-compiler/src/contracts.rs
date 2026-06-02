@@ -78,6 +78,16 @@ impl WorkflowInputRefLike for Value {
             .and_then(Value::as_str)
             .unwrap_or_default()
     }
+
+    fn clone_with_from_step_id(&self, from_step_id: &str) -> Option<Self> {
+        let mut cloned = self.clone();
+        let object = cloned.as_object_mut()?;
+        object.insert(
+            "from_step_id".to_string(),
+            Value::String(from_step_id.to_string()),
+        );
+        Some(cloned)
+    }
 }
 
 pub type AutomationV2ScheduleJson = AutomationV2Schedule<Value>;

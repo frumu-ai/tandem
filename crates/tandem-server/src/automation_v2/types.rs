@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tandem_orchestrator::KnowledgeBinding;
 use tandem_plan_compiler::api::{
     ContextObject, PlanScopeSnapshot, PlanValidationReport,
@@ -423,6 +423,34 @@ where
     O: Into<AutomationFlowOutputContract>,
 {
     fn from(value: tandem_plan_compiler::api::ProjectedAutomationNode<I, O>) -> Self {
+        fn metadata_with_partial_failure_mode(
+            metadata: Option<Value>,
+            partial_failure_mode: Option<&tandem_plan_compiler::api::PartialFailureMode>,
+        ) -> Option<Value> {
+            let Some(mode) = partial_failure_mode else {
+                return metadata;
+            };
+            let mode = match mode {
+                tandem_plan_compiler::api::PartialFailureMode::ContinueIndependent => {
+                    "continue_independent"
+                }
+                tandem_plan_compiler::api::PartialFailureMode::PauseDownstreamOnly => {
+                    "pause_downstream_only"
+                }
+                tandem_plan_compiler::api::PartialFailureMode::PauseAll => "pause_all",
+            };
+            let mut metadata = metadata.unwrap_or_else(|| json!({}));
+            if !metadata.is_object() {
+                metadata = json!({ "projected_metadata": metadata });
+            }
+            if let Some(object) = metadata.as_object_mut() {
+                object
+                    .entry("partial_failure_mode".to_string())
+                    .or_insert_with(|| Value::String(mode.to_string()));
+            }
+            Some(metadata)
+        }
+
         fn knowledge_from_metadata(metadata: Option<&Value>, objective: &str) -> KnowledgeBinding {
             let mut binding = KnowledgeBinding::default();
             if let Some(parsed) = metadata
@@ -451,6 +479,8 @@ where
 
         let objective = value.objective;
         let knowledge = knowledge_from_metadata(value.metadata.as_ref(), &objective);
+        let metadata =
+            metadata_with_partial_failure_mode(value.metadata, value.partial_failure_mode.as_ref());
 
         Self {
             node_id: value.node_id,
@@ -467,7 +497,7 @@ where
             max_tool_calls: None,
             stage_kind: value.stage_kind.map(Into::into),
             gate: value.gate.map(Into::into),
-            metadata: value.metadata,
+            metadata,
         }
     }
 }
@@ -1366,6 +1396,9 @@ mod tests {
             timeout_ms: None,
             stage_kind: None,
             gate: None,
+            partial_failure_mode: Some(
+                tandem_plan_compiler::api::PartialFailureMode::ContinueIndependent,
+            ),
             metadata: Some(json!({
                 "builder": {
                     "knowledge": {
@@ -1387,6 +1420,13 @@ mod tests {
         assert_eq!(node.knowledge.subject.as_deref(), Some("Topic map"));
         assert_eq!(node.knowledge.read_spaces.len(), 1);
         assert_eq!(node.knowledge.promote_spaces.len(), 1);
+        assert_eq!(
+            node.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("partial_failure_mode"))
+                .and_then(Value::as_str),
+            Some("continue_independent")
+        );
     }
 
     // ── AutomationScopePolicy ────────────────────────────────────────────────

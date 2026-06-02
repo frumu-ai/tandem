@@ -377,7 +377,12 @@ fn workflow_learning_validation_pass(run: &AutomationV2RunRecord) -> bool {
             .and_then(Value::as_object)
             .and_then(|summary| summary.get("outcome"))
             .and_then(Value::as_str)
-            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "failed" | "blocked"))
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "failed" | "blocked" | "accepted_with_warnings"
+                )
+            })
             .unwrap_or(false)
     })
 }
@@ -613,7 +618,7 @@ pub(crate) fn workflow_learning_candidates_for_terminal_run(
     let mut candidates = Vec::new();
     let now = now_ms();
 
-    if run.status == AutomationRunStatus::Completed {
+    if workflow_learning_validation_pass(run) {
         if let Some(summary) = workflow_learning_completed_summary(run) {
             let normalized = workflow_learning_normalize_text(&summary);
             if !normalized.is_empty() {

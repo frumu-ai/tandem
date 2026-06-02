@@ -6,6 +6,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tandem_providers::{AppConfig, Provider};
+use tandem_tools::Tool;
+use tandem_types::ToolResult;
 
 struct ScriptedProviderStream {
     calls: Arc<AtomicUsize>,
@@ -15,7 +17,41 @@ struct ScriptedProviderStream {
 #[derive(Clone, Copy)]
 enum ScriptedProviderStreamMode {
     DecodeThenSuccess,
+    IdleThenSuccess,
     AuthFailure,
+    EndlessToolCalls,
+}
+
+struct FailingTool;
+struct LoopingTool;
+
+#[async_trait]
+impl Tool for FailingTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new("failing_tool", "fails for testing", json!({}))
+    }
+
+    async fn execute(&self, _args: Value) -> anyhow::Result<ToolResult> {
+        anyhow::bail!("transient connector failure")
+    }
+}
+
+#[async_trait]
+impl Tool for LoopingTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "loop_tool",
+            "returns output for iteration-budget tests",
+            json!({}),
+        )
+    }
+
+    async fn execute(&self, _args: Value) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult {
+            output: "loop tool produced output".to_string(),
+            metadata: json!({}),
+        })
+    }
 }
 
 #[async_trait]
@@ -64,8 +100,38 @@ impl Provider for ScriptedProviderStream {
                     usage: None,
                 }),
             ]))),
+            ScriptedProviderStreamMode::IdleThenSuccess if call == 0 => {
+                Ok(Box::pin(stream::pending()))
+            }
+            ScriptedProviderStreamMode::IdleThenSuccess => Ok(Box::pin(stream::iter(vec![
+                Ok(StreamChunk::TextDelta(
+                    "final answer after idle retry".to_string(),
+                )),
+                Ok(StreamChunk::Done {
+                    finish_reason: "stop".to_string(),
+                    usage: None,
+                }),
+            ]))),
             ScriptedProviderStreamMode::AuthFailure => {
                 anyhow::bail!("authentication failed for scripted provider")
+            }
+            ScriptedProviderStreamMode::EndlessToolCalls => {
+                let call_id = format!("loop-tool-call-{call}");
+                Ok(Box::pin(stream::iter(vec![
+                    Ok(StreamChunk::ToolCallStart {
+                        id: call_id.clone(),
+                        name: "loop_tool".to_string(),
+                    }),
+                    Ok(StreamChunk::ToolCallDelta {
+                        id: call_id.clone(),
+                        args_delta: "{}".to_string(),
+                    }),
+                    Ok(StreamChunk::ToolCallEnd { id: call_id }),
+                    Ok(StreamChunk::Done {
+                        finish_reason: "tool_calls".to_string(),
+                        usage: None,
+                    }),
+                ])))
             }
         }
     }
@@ -85,6 +151,9 @@ async fn engine_loop_with_scripted_provider(
     let agents = AgentRegistry::new(base).await.expect("agents");
     let permissions = PermissionManager::new(bus.clone());
     let tools = ToolRegistry::new();
+    tools
+        .register_tool("loop_tool".to_string(), Arc::new(LoopingTool))
+        .await;
     let cancellations = CancellationRegistry::new();
     let host_runtime_context = HostRuntimeContext {
         os: HostOs::Linux,
@@ -111,6 +180,231 @@ fn scripted_model() -> ModelSpec {
         provider_id: "scripted-provider-stream".to_string(),
         model_id: "scripted-model".to_string(),
     }
+}
+
+#[test]
+fn nonfatal_tool_execution_error_is_recoverable_model_output() {
+    let output = recoverable_tool_execution_error_output(
+        "mcp.notion.create_page",
+        "HTTP 500: transient upstream failure",
+    );
+
+    assert!(!tool_execution_error_is_prompt_fatal(
+        "HTTP 500: transient upstream failure",
+        false
+    ));
+    assert!(output.contains("Tool `mcp.notion.create_page` failed during execution"));
+    assert!(output.contains("recoverable in the current turn"));
+    assert!(output.contains("HTTP 500: transient upstream failure"));
+}
+
+#[tokio::test]
+async fn nonfatal_tool_execution_error_does_not_abort_prompt_execution() {
+    let base = std::env::temp_dir().join(format!("engine-loop-test-{}", Uuid::new_v4()));
+    let storage = Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(
+        Some("s".to_string()),
+        Some(base.to_string_lossy().to_string()),
+    );
+    let session_id = session.id.clone();
+    storage
+        .save_session(session.clone())
+        .await
+        .expect("save session");
+    let bus = EventBus::new();
+    let providers = ProviderRegistry::new(AppConfig::default());
+    let plugins = PluginRegistry::new(&base).await.expect("plugins");
+    let agents = AgentRegistry::new(&base).await.expect("agents");
+    let permissions = PermissionManager::new(bus.clone());
+    let tools = ToolRegistry::new();
+    tools
+        .register_tool("failing_tool".to_string(), Arc::new(FailingTool))
+        .await;
+    let cancellations = CancellationRegistry::new();
+    let host_runtime_context = HostRuntimeContext {
+        os: HostOs::Linux,
+        arch: std::env::consts::ARCH.to_string(),
+        shell_family: ShellFamily::Posix,
+        path_style: PathStyle::Posix,
+    };
+    let engine = EngineLoop::new(
+        storage,
+        bus,
+        providers,
+        plugins,
+        agents,
+        permissions,
+        tools,
+        cancellations,
+        host_runtime_context,
+    );
+    engine
+        .set_session_allowed_tools(&session_id, vec!["failing_tool".to_string()])
+        .await;
+    engine
+        .set_session_auto_approve_permissions(&session_id, true)
+        .await;
+
+    let output = engine
+        .execute_tool_with_permission(
+            &session_id,
+            "message-1",
+            "failing_tool".to_string(),
+            json!({}),
+            Some("tool-call-1".to_string()),
+            None,
+            "use the failing tool",
+            false,
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("recoverable tool errors should not abort the prompt");
+
+    let output = output.expect("recoverable tool error should be surfaced to the model");
+    assert!(output.contains("Tool `failing_tool` failed during execution"));
+    assert!(output.contains("transient connector failure"));
+    assert!(output.contains("recoverable in the current turn"));
+}
+
+#[tokio::test]
+async fn write_required_auto_approve_denial_fails_loudly() {
+    let base = std::env::temp_dir().join(format!("engine-loop-c10-deny-{}", Uuid::new_v4()));
+    let storage = Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(
+        Some("c10 auto approve denial".to_string()),
+        Some(base.to_string_lossy().to_string()),
+    );
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+    let bus = EventBus::new();
+    let providers = ProviderRegistry::new(AppConfig::default());
+    let plugins = PluginRegistry::new(&base).await.expect("plugins");
+    let agents = AgentRegistry::new(&base).await.expect("agents");
+    let permissions = PermissionManager::new(bus.clone());
+    let tools = ToolRegistry::new();
+    tools
+        .register_tool("failing_tool".to_string(), Arc::new(FailingTool))
+        .await;
+    let cancellations = CancellationRegistry::new();
+    let host_runtime_context = HostRuntimeContext {
+        os: HostOs::Linux,
+        arch: std::env::consts::ARCH.to_string(),
+        shell_family: ShellFamily::Posix,
+        path_style: PathStyle::Posix,
+    };
+    let engine = EngineLoop::new(
+        storage,
+        bus,
+        providers,
+        plugins,
+        agents,
+        permissions,
+        tools,
+        cancellations,
+        host_runtime_context,
+    );
+    engine
+        .set_session_auto_approve_permissions(&session_id, true)
+        .await;
+
+    let error = engine
+        .execute_tool_with_permission(
+            &session_id,
+            "message-1",
+            "failing_tool".to_string(),
+            json!({}),
+            Some("tool-call-1".to_string()),
+            None,
+            "use the failing tool",
+            true,
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("write-required auto-approve denial should fail loudly");
+
+    assert!(error.to_string().contains("Permission auto-approve denied"));
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[tokio::test]
+async fn write_required_permission_timeout_fails_loudly() {
+    let _guard = env_test_lock();
+    unsafe {
+        std::env::set_var("TANDEM_PERMISSION_WAIT_TIMEOUT_MS", "1");
+    }
+    let base = std::env::temp_dir().join(format!("engine-loop-c10-timeout-{}", Uuid::new_v4()));
+    let storage = Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(
+        Some("c10 permission timeout".to_string()),
+        Some(base.to_string_lossy().to_string()),
+    );
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+    let bus = EventBus::new();
+    let providers = ProviderRegistry::new(AppConfig::default());
+    let plugins = PluginRegistry::new(&base).await.expect("plugins");
+    let agents = AgentRegistry::new(&base).await.expect("agents");
+    let permissions = PermissionManager::new(bus.clone());
+    let tools = ToolRegistry::new();
+    tools
+        .register_tool("failing_tool".to_string(), Arc::new(FailingTool))
+        .await;
+    let cancellations = CancellationRegistry::new();
+    let host_runtime_context = HostRuntimeContext {
+        os: HostOs::Linux,
+        arch: std::env::consts::ARCH.to_string(),
+        shell_family: ShellFamily::Posix,
+        path_style: PathStyle::Posix,
+    };
+    let engine = EngineLoop::new(
+        storage,
+        bus,
+        providers,
+        plugins,
+        agents,
+        permissions,
+        tools,
+        cancellations,
+        host_runtime_context,
+    );
+
+    let error = engine
+        .execute_tool_with_permission(
+            &session_id,
+            "message-1",
+            "failing_tool".to_string(),
+            json!({}),
+            Some("tool-call-1".to_string()),
+            None,
+            "use the failing tool",
+            true,
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("write-required permission timeout should fail loudly");
+
+    assert!(error.to_string().contains("Permission request"));
+    assert!(error.to_string().contains("timed out"));
+    unsafe {
+        std::env::remove_var("TANDEM_PERMISSION_WAIT_TIMEOUT_MS");
+    }
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn cancellation_and_shutdown_tool_errors_remain_prompt_fatal() {
+    assert!(tool_execution_error_is_prompt_fatal(
+        "tool future observed operation cancelled",
+        false
+    ));
+    assert!(tool_execution_error_is_prompt_fatal(
+        "runtime not ready",
+        false
+    ));
+    assert!(tool_execution_error_is_prompt_fatal("ordinary error", true));
 }
 
 #[tokio::test]
@@ -192,6 +486,91 @@ async fn channel_pinned_workspace_blocks_file_read_outside_pin() {
 }
 
 #[tokio::test]
+async fn provider_stream_idle_timeout_retries_current_iteration() {
+    let _guard = env_test_lock();
+    std::env::set_var("TANDEM_PROVIDER_STREAM_IDLE_TIMEOUT_MS", "1");
+    std::env::set_var("TANDEM_PROVIDER_STREAM_DECODE_RETRY_ATTEMPTS", "1");
+
+    let base = std::env::temp_dir().join(format!(
+        "engine-loop-provider-stream-idle-retry-{}",
+        Uuid::new_v4()
+    ));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(ScriptedProviderStream {
+        calls: calls.clone(),
+        mode: ScriptedProviderStreamMode::IdleThenSuccess,
+    });
+    let (engine, bus, storage) = engine_loop_with_scripted_provider(&base, provider).await;
+    let mut session = Session::new(
+        Some("provider stream idle retry".to_string()),
+        Some(".".to_string()),
+    );
+    session.model = Some(scripted_model());
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+    let mut rx = bus.subscribe();
+
+    engine
+        .run_prompt_async(
+            session_id.clone(),
+            SendMessageRequest {
+                parts: vec![MessagePartInput::Text {
+                    text: "answer once".to_string(),
+                }],
+                model: Some(scripted_model()),
+                agent: None,
+                tool_mode: Some(ToolMode::None),
+                tool_allowlist: None,
+                strict_kb_grounding: None,
+                context_mode: None,
+                write_required: None,
+                prewrite_requirements: None,
+            },
+        )
+        .await
+        .expect("prompt should recover from idle timeout");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let session = storage.get_session(&session_id).await.expect("session");
+    let assistant_text = session
+        .messages
+        .iter()
+        .rev()
+        .flat_map(|message| message.parts.iter())
+        .filter_map(|part| match part {
+            MessagePart::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    assert!(assistant_text.contains("final answer after idle retry"));
+
+    let mut saw_retry = false;
+    while let Ok(event) = rx.try_recv() {
+        if event.event_type == "provider.call.iteration.retry" {
+            saw_retry = true;
+            assert_eq!(
+                event.properties.get("retry").and_then(Value::as_u64),
+                Some(1)
+            );
+            assert!(event
+                .properties
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("provider stream idle timeout")));
+        }
+    }
+    assert!(saw_retry);
+
+    std::env::remove_var("TANDEM_PROVIDER_STREAM_IDLE_TIMEOUT_MS");
+    std::env::remove_var("TANDEM_PROVIDER_STREAM_DECODE_RETRY_ATTEMPTS");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[tokio::test]
 async fn provider_stream_decode_error_retries_current_iteration() {
     let base = std::env::temp_dir().join(format!(
         "engine-loop-provider-stream-retry-{}",
@@ -265,6 +644,106 @@ async fn provider_stream_decode_error_retries_current_iteration() {
     }
     assert!(saw_retry);
 
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[tokio::test]
+async fn iteration_budget_exhaustion_fails_run_without_idle_completion() {
+    let _guard = env_test_lock();
+    std::env::set_var("TANDEM_MAX_TOOL_ITERATIONS", "1");
+
+    let base =
+        std::env::temp_dir().join(format!("engine-loop-iteration-budget-{}", Uuid::new_v4()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(ScriptedProviderStream {
+        calls: calls.clone(),
+        mode: ScriptedProviderStreamMode::EndlessToolCalls,
+    });
+    let (engine, bus, storage) = engine_loop_with_scripted_provider(&base, provider).await;
+    let mut session = Session::new(
+        Some("provider stream iteration budget".to_string()),
+        Some(".".to_string()),
+    );
+    session.model = Some(scripted_model());
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+    engine
+        .set_session_allowed_tools(&session_id, vec!["loop_tool".to_string()])
+        .await;
+    engine
+        .set_session_auto_approve_permissions(&session_id, true)
+        .await;
+    let mut rx = bus.subscribe();
+
+    let result = engine
+        .run_prompt_async(
+            session_id.clone(),
+            SendMessageRequest {
+                parts: vec![MessagePartInput::Text {
+                    text: "keep calling the loop tool".to_string(),
+                }],
+                model: Some(scripted_model()),
+                agent: None,
+                tool_mode: Some(ToolMode::Auto),
+                tool_allowlist: Some(vec!["loop_tool".to_string()]),
+                strict_kb_grounding: None,
+                context_mode: None,
+                write_required: None,
+                prewrite_requirements: None,
+            },
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let session = storage.get_session(&session_id).await.expect("session");
+    let assistant_text = session
+        .messages
+        .iter()
+        .filter(|message| matches!(message.role, MessageRole::Assistant))
+        .flat_map(|message| message.parts.iter())
+        .filter_map(|part| match part {
+            MessagePart::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(assistant_text.trim().is_empty());
+
+    let mut saw_budget_event = false;
+    let mut saw_failed_status = false;
+    while let Ok(event) = rx.try_recv() {
+        if event.event_type == "provider.call.iteration.budget_exhausted" {
+            saw_budget_event = true;
+            assert_eq!(
+                event
+                    .properties
+                    .get("maxIterations")
+                    .and_then(Value::as_u64),
+                Some(1)
+            );
+            assert!(event
+                .properties
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("iteration budget")));
+        }
+        if event.event_type == "session.status"
+            && event.properties.get("status").and_then(Value::as_str) == Some("failed")
+        {
+            saw_failed_status = true;
+            assert!(event
+                .properties
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("iteration budget")));
+        }
+    }
+    assert!(saw_budget_event);
+    assert!(saw_failed_status);
+
+    std::env::remove_var("TANDEM_MAX_TOOL_ITERATIONS");
     let _ = std::fs::remove_dir_all(base);
 }
 

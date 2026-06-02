@@ -1,4 +1,13 @@
 const DEFAULT_STALE_AUTO_RESUME_WINDOW_MS: u64 = 20 * 60 * 1000;
+const DEFAULT_STALE_AUTO_RESUME_MAX_ATTEMPTS: usize = 2;
+
+fn approval_gate_stale_after_ms() -> u64 {
+    std::env::var("TANDEM_APPROVAL_GATE_STALE_AFTER_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(24 * 60 * 60 * 1000)
+}
 
 fn stale_auto_resume_window_ms() -> u64 {
     std::env::var("TANDEM_STALE_AUTO_RESUME_WINDOW_MS")
@@ -26,6 +35,18 @@ fn stale_reap_is_within_auto_resume_window(
     auto_resume_window_ms: u64,
 ) -> bool {
     now.saturating_sub(stale_reaped_at_ms) <= auto_resume_window_ms
+}
+
+fn stale_auto_resume_max_attempts() -> usize {
+    std::env::var("TANDEM_STALE_AUTO_RESUME_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_STALE_AUTO_RESUME_MAX_ATTEMPTS)
+}
+
+fn stale_auto_resume_count_exceeds_cap(auto_resume_count: usize, max_attempts: usize) -> bool {
+    auto_resume_count >= max_attempts
 }
 
 fn detail_node_id(detail: &str) -> Option<&str> {
@@ -80,8 +101,9 @@ fn refresh_stale_running_detail(run: &mut AutomationV2RunRecord) {
 #[cfg(test)]
 mod stale_auto_resume_window_tests {
     use super::{
-        refresh_stale_running_detail, stale_reap_is_within_auto_resume_window,
-        AutomationRunCheckpoint, AutomationRunStatus, AutomationV2RunRecord, TenantContext,
+        refresh_stale_running_detail, stale_auto_resume_count_exceeds_cap,
+        stale_reap_is_within_auto_resume_window, AutomationRunCheckpoint, AutomationRunStatus,
+        AutomationV2RunRecord, TenantContext,
     };
 
     #[test]
@@ -96,6 +118,15 @@ mod stale_auto_resume_window_tests {
         assert!(!stale_reap_is_within_auto_resume_window(
             10_000, 7_000, 1_000,
         ));
+    }
+
+    #[test]
+    fn stale_auto_resume_count_respects_configured_cap() {
+        assert!(!stale_auto_resume_count_exceeds_cap(0, 2));
+        assert!(!stale_auto_resume_count_exceeds_cap(1, 2));
+        assert!(stale_auto_resume_count_exceeds_cap(2, 2));
+        assert!(stale_auto_resume_count_exceeds_cap(3, 2));
+        assert!(!stale_auto_resume_count_exceeds_cap(2, 3));
     }
 
     #[test]
@@ -248,6 +279,80 @@ impl AppState {
         recovered
     }
 
+    pub async fn mark_stale_awaiting_approval_runs(&self) -> usize {
+        let now = now_ms();
+        let stale_after_ms = approval_gate_stale_after_ms();
+        let candidate_runs = self
+            .automation_v2_runs
+            .read()
+            .await
+            .values()
+            .filter(|run| run.status == AutomationRunStatus::AwaitingApproval)
+            .filter(|run| run.checkpoint.awaiting_gate.is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut marked = 0usize;
+        for run in candidate_runs {
+            let Some(gate) = run.checkpoint.awaiting_gate.as_ref() else {
+                continue;
+            };
+            if now.saturating_sub(gate.requested_at_ms) < stale_after_ms {
+                continue;
+            }
+            let already_marked = gate
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("stale"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if already_marked {
+                continue;
+            }
+            let gate_node_id = gate.node_id.clone();
+            let requested_at_ms = gate.requested_at_ms;
+            let detail = format!(
+                "awaiting manual approval for gate `{}` for at least {}s; no automatic expiry action is configured",
+                gate_node_id,
+                stale_after_ms / 1000
+            );
+            if self
+                .update_automation_v2_run(&run.run_id, |row| {
+                    row.detail = Some(detail.clone());
+                    if let Some(gate) = row.checkpoint.awaiting_gate.as_mut() {
+                        let mut metadata = gate
+                            .metadata
+                            .take()
+                            .and_then(|value| value.as_object().cloned())
+                            .unwrap_or_default();
+                        metadata.insert("stale".to_string(), json!(true));
+                        metadata.insert("stale_policy".to_string(), json!("manual_only_visible_status"));
+                        metadata.insert("stale_after_ms".to_string(), json!(stale_after_ms));
+                        metadata.insert("stale_marked_at_ms".to_string(), json!(now));
+                        metadata.insert("requested_at_ms".to_string(), json!(requested_at_ms));
+                        gate.metadata = Some(Value::Object(metadata));
+                    }
+                    automation::record_automation_lifecycle_event_with_metadata(
+                        row,
+                        "approval_gate_marked_stale",
+                        Some(detail.clone()),
+                        None,
+                        Some(json!({
+                            "node_id": gate_node_id,
+                            "requested_at_ms": requested_at_ms,
+                            "stale_after_ms": stale_after_ms,
+                            "policy": "manual_only_visible_status",
+                        })),
+                    );
+                })
+                .await
+                .is_some()
+            {
+                marked += 1;
+            }
+        }
+        marked
+    }
+
     pub async fn auto_resume_stale_reaped_runs(&self) -> usize {
         // Stale reaping is provider/session infrastructure failure, not proof
         // that the workflow contract failed. Keep the retry bounded so a truly
@@ -269,6 +374,7 @@ impl AppState {
         let mut resumed = 0usize;
         let now = now_ms();
         let auto_resume_window_ms = stale_auto_resume_window_ms();
+        let auto_resume_max_attempts = stale_auto_resume_max_attempts();
         for run in candidate_runs {
             let Some(stale_reaped_at_ms) = latest_stale_reap_recorded_at_ms(&run) else {
                 continue;
@@ -286,7 +392,7 @@ impl AppState {
                 .iter()
                 .filter(|event| event.event == "run_auto_resumed")
                 .count();
-            if auto_resume_count >= 2 {
+            if stale_auto_resume_count_exceeds_cap(auto_resume_count, auto_resume_max_attempts) {
                 continue;
             }
             let automation = self.get_automation_v2(&run.automation_id).await;
@@ -337,6 +443,67 @@ impl AppState {
                         Some(json!({
                             "auto_resume_window_ms": auto_resume_window_ms,
                             "stale_reaped_at_ms": stale_reaped_at_ms,
+                        })),
+                    );
+                })
+                .await
+                .is_some()
+            {
+                resumed += 1;
+            }
+        }
+        resumed += self.auto_resume_guardrail_stopped_runs().await;
+        resumed
+    }
+
+    async fn auto_resume_guardrail_stopped_runs(&self) -> usize {
+        let candidate_runs = self
+            .automation_v2_runs
+            .read()
+            .await
+            .values()
+            .filter(|run| run.status == AutomationRunStatus::Paused)
+            .filter(|run| run.stop_kind == Some(AutomationStopKind::GuardrailStopped))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut resumed = 0usize;
+        for run in candidate_runs {
+            let automation = self.get_automation_v2(&run.automation_id).await;
+            let automation = match automation.or(run.automation_snapshot.clone()) {
+                Some(a) => a,
+                None => continue,
+            };
+            let agent_ids = std::iter::once(automation.creator_id.clone())
+                .chain(automation.agents.iter().map(|agent| agent.agent_id.clone()))
+                .filter(|agent_id| !agent_id.trim().is_empty())
+                .collect::<std::collections::BTreeSet<_>>();
+            if agent_ids.is_empty() {
+                continue;
+            }
+            let has_approved_override = {
+                let governance = self.automation_governance.read().await;
+                agent_ids
+                    .iter()
+                    .any(|agent_id| governance.has_approved_agent_quota_override(agent_id))
+            };
+            if !has_approved_override {
+                continue;
+            }
+            if self
+                .update_automation_v2_run(&run.run_id, |row| {
+                    row.status = AutomationRunStatus::Queued;
+                    row.pause_reason = None;
+                    row.detail = None;
+                    row.stop_kind = None;
+                    row.stop_reason = None;
+                    automation::record_automation_lifecycle_event_with_metadata(
+                        row,
+                        "run_auto_resumed",
+                        Some("auto_resume_after_guardrail_override".to_string()),
+                        None,
+                        Some(json!({
+                            "agent_ids": agent_ids.iter().cloned().collect::<Vec<_>>(),
+                            "stop_kind": "guardrail_stopped",
                         })),
                     );
                 })

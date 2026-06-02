@@ -1,3 +1,46 @@
+#[tokio::test]
+async fn automation_v2_misfires_skip_queued_or_running_runs_for_same_automation() {
+    let state = test_state_with_path(tmp_resource_file("automation-misfire-dedup"));
+    let mut automation = AutomationSpecBuilder::new("auto-misfire-dedup")
+        .nodes(vec![AutomationNodeBuilder::new("work").build()])
+        .build();
+    automation.schedule = AutomationV2Schedule {
+        schedule_type: AutomationV2ScheduleType::Interval,
+        cron_expression: None,
+        interval_seconds: Some(60),
+        timezone: "UTC".to_string(),
+        misfire_policy: RoutineMisfirePolicy::RunOnce,
+    };
+    automation.next_fire_at_ms = Some(1_000);
+    automation.status = AutomationV2Status::Active;
+    {
+        let mut automations = state.automations_v2.write().await;
+        automations.insert(automation.automation_id.clone(), automation.clone());
+    }
+    {
+        let mut runs = state.automation_v2_runs.write().await;
+        runs.insert(
+            "run-existing".to_string(),
+            AutomationRunBuilder::new("run-existing", "auto-misfire-dedup")
+                .status(AutomationRunStatus::Queued)
+                .build(),
+        );
+    }
+
+    let due = state.evaluate_automation_v2_misfires(2_000).await;
+
+    assert!(due.is_empty(), "queued automation run should dedupe timer fire");
+    let stored = state
+        .automations_v2
+        .read()
+        .await
+        .get("auto-misfire-dedup")
+        .cloned()
+        .expect("automation stored");
+    assert_eq!(stored.next_fire_at_ms, Some(1_000));
+    assert_eq!(stored.last_fired_at_ms, None);
+}
+
 #[test]
 fn prompt_orders_required_workspace_writes_before_run_artifact() {
     let automation = AutomationV2Spec {

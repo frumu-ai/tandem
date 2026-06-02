@@ -20,6 +20,38 @@ visibility, secret storage, and browser/provider network guardrails.
   source, including Linear MCP connection state when a Linear-backed project is
   selected.
 
+### Automations V2 Reliability
+
+- Automations V2 completion is now gated by terminal checkpoint integrity and
+  contract-aware deliverable assertions instead of only checking for empty
+  pending-node queues.
+- Required file deliverables must exist, be substantive, and pass basic shape
+  checks; missing or weak deliverables requeue the owning node while repair
+  attempts remain.
+- Required email delivery and generic outbound connector actions now need
+  successful receipt evidence before the run can complete. Model prose alone no
+  longer satisfies governed side effects.
+- Workflow graph validation now rejects dependency cycles and keeps `input_refs`
+  aligned with readiness dependencies, including through budget compaction and
+  strict sequential plans.
+- Verification failures now retry through the repair path until attempt budget
+  is exhausted, and verification failure detection is scoped to verification
+  output rather than unrelated artifact prose.
+- Recoverable tool execution errors are surfaced to the model for adaptation,
+  while cancellation, shutdown, runtime-not-ready, and write-required
+  permission failures remain loud failures.
+- Timer-triggered automations now dedupe queued/running runs the same way watch
+  triggers do, preventing slow scheduled workflows from accumulating backlogs.
+- Parked-state lifecycle handling is explicit: approval gates can be marked as
+  visibly stale under a manual-only policy, guardrail-stopped runs can
+  auto-resume after approved quota overrides, stale reaping honors active
+  run-registry heartbeats, and node execution uses idle/no-progress timeouts
+  with an absolute ceiling.
+- Warning outcomes are now consistent across runtime and learning surfaces:
+  `accepted_with_warnings` remains passable only without unmet requirements,
+  but it is not counted as a clean workflow-learning validation pass and does
+  not generate positive learning evidence.
+
 ### Runtime Security Hardening
 
 - Local engine HTTP API startup now refuses unauthenticated non-loopback binds,

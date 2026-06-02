@@ -12,6 +12,426 @@ enum DerivedTerminalRunState {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletionDeliverableRepair {
+    node_id: String,
+    path: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CompletionDeliverableState {
+    Satisfied,
+    Repair(CompletionDeliverableRepair),
+    Failed { detail: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletionDeliverableRequirement {
+    path: String,
+    owner_node_id: Option<String>,
+}
+
+fn completion_artifact_is_substantive(path: &str, text: &str) -> Result<(), String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("artifact is empty".to_string());
+    }
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match extension.as_str() {
+        "json" => {
+            let parsed: Value = serde_json::from_str(trimmed)
+                .map_err(|error| format!("artifact is not valid JSON: {error}"))?;
+            let substantive = match &parsed {
+                Value::Object(map) => !map.is_empty(),
+                Value::Array(items) => !items.is_empty(),
+                Value::String(value) => !value.trim().is_empty(),
+                Value::Number(_) | Value::Bool(_) => true,
+                Value::Null => false,
+            };
+            if substantive {
+                Ok(())
+            } else {
+                Err("JSON artifact has no substantive value".to_string())
+            }
+        }
+        "md" | "markdown" | "html" | "htm" | "txt" => {
+            if crate::app::state::automation::structural_substantive_artifact_text(trimmed) {
+                Ok(())
+            } else {
+                Err("artifact is not substantive enough for completion".to_string())
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn completion_required_deliverables(
+    automation: &crate::AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) -> Vec<CompletionDeliverableRequirement> {
+    let started_at_ms = run.started_at_ms.unwrap_or(run.created_at_ms);
+    let runtime_values = crate::app::state::automation::automation_prompt_runtime_values(Some(
+        started_at_ms,
+    ));
+    let mut requirements = Vec::new();
+    let mut owner_by_path = std::collections::HashMap::<String, String>::new();
+    for node in &automation.flow.nodes {
+        if let Some(path) = crate::app::state::automation::automation_effective_required_output_path_for_run(
+            automation,
+            node,
+            &run.run_id,
+            started_at_ms,
+        ) {
+            owner_by_path.insert(path.clone(), node.node_id.clone());
+            requirements.push(CompletionDeliverableRequirement {
+                path,
+                owner_node_id: Some(node.node_id.clone()),
+            });
+        }
+    }
+    for target in &automation.output_targets {
+        let path = crate::app::state::automation::automation_runtime_placeholder_replace(
+            target,
+            Some(&runtime_values),
+        );
+        let path = path.trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        let owner_node_id = owner_by_path.get(&path).cloned();
+        requirements.push(CompletionDeliverableRequirement {
+            path,
+            owner_node_id,
+        });
+    }
+    let mut seen = std::collections::HashSet::new();
+    requirements
+        .into_iter()
+        .filter(|requirement| seen.insert(requirement.path.clone()))
+        .collect()
+}
+
+fn repairable_completion_owner(
+    automation: &crate::AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    owner_node_id: Option<&str>,
+) -> Option<String> {
+    let owner_node_id = owner_node_id?;
+    let node = automation
+        .flow
+        .nodes
+        .iter()
+        .find(|node| node.node_id == owner_node_id)?;
+    let attempts = run
+        .checkpoint
+        .node_attempts
+        .get(owner_node_id)
+        .copied()
+        .unwrap_or(0);
+    if attempts < crate::app::state::automation_node_max_attempts(node) {
+        Some(owner_node_id.to_string())
+    } else {
+        None
+    }
+}
+
+fn completion_node_tool_telemetry<'a>(output: &'a Value) -> Option<&'a Value> {
+    output
+        .get("tool_telemetry")
+        .or_else(|| output.pointer("/attempt_evidence/tool_telemetry"))
+}
+
+fn completion_node_email_delivery_succeeded(output: &Value) -> bool {
+    let telemetry = completion_node_tool_telemetry(output);
+    telemetry
+        .and_then(|value| value.get("email_delivery_succeeded"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || telemetry
+            .and_then(|value| value.get("delivery_status"))
+            .and_then(Value::as_str)
+            .is_some_and(|status| matches!(status.trim().to_ascii_lowercase().as_str(), "sent" | "drafted" | "succeeded" | "success"))
+        || output
+            .pointer("/attempt_evidence/delivery/status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status.trim().eq_ignore_ascii_case("succeeded"))
+}
+
+fn completion_external_action_status_succeeded(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "posted" | "sent" | "succeeded" | "success" | "executed" | "completed"
+    )
+}
+
+fn completion_node_external_action_succeeded(output: &Value) -> bool {
+    let Some(actions) = output.get("external_actions").and_then(Value::as_array) else {
+        return false;
+    };
+    actions.iter().any(|action| {
+        let status_ok = action
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(completion_external_action_status_succeeded);
+        let approval_ok = action
+            .get("approval_state")
+            .and_then(Value::as_str)
+            .map(|state| state.trim().eq_ignore_ascii_case("executed"))
+            .unwrap_or(true);
+        let has_error = action.get("error").is_some_and(|error| {
+            !error.is_null()
+                && error
+                    .as_str()
+                    .map(str::trim)
+                    .map(|value| !value.is_empty())
+                    .unwrap_or(true)
+        });
+        status_ok && approval_ok && !has_error
+    })
+}
+
+fn completion_side_effect_missing_state(
+    automation: &crate::AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    node: &crate::AutomationFlowNode,
+    path: impl Into<String>,
+    detail: String,
+) -> CompletionDeliverableState {
+    if let Some(node_id) = repairable_completion_owner(automation, run, Some(&node.node_id)) {
+        return CompletionDeliverableState::Repair(CompletionDeliverableRepair {
+            node_id,
+            path: path.into(),
+            detail,
+        });
+    }
+    CompletionDeliverableState::Failed { detail }
+}
+
+fn assert_completion_side_effects(
+    automation: &crate::AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) -> CompletionDeliverableState {
+    for node in &automation.flow.nodes {
+        let Some(output) = run.checkpoint.node_outputs.get(&node.node_id) else {
+            continue;
+        };
+        if crate::app::state::automation_node_requires_email_delivery(node) {
+            if completion_node_email_delivery_succeeded(output) {
+                continue;
+            }
+            let target = crate::app::state::automation_node_delivery_target(node)
+                .unwrap_or_else(|| "requested recipient".to_string());
+            let detail = format!(
+                "automation run missing successful email delivery receipt for node `{}` to `{}`",
+                node.node_id, target
+            );
+            return completion_side_effect_missing_state(
+                automation,
+                run,
+                node,
+                "email_delivery",
+                detail,
+            );
+        }
+        if !crate::app::state::automation_node_is_outbound_action(node) {
+            continue;
+        }
+        if completion_node_external_action_succeeded(output) {
+            continue;
+        }
+        let detail = format!(
+            "automation run missing successful external action receipt for outbound node `{}`",
+            node.node_id
+        );
+        return completion_side_effect_missing_state(
+            automation,
+            run,
+            node,
+            "external_action_receipt",
+            detail,
+        );
+    }
+    CompletionDeliverableState::Satisfied
+}
+
+fn normalize_completion_path_for_compare(path: &str) -> String {
+    let trimmed = path.trim().strip_prefix("file://").unwrap_or(path.trim());
+    crate::app::state::automation::normalize_automation_path_text(trimmed)
+        .unwrap_or_else(|| trimmed.to_string())
+        .trim_start_matches("./")
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn completion_output_value_references_path(value: &Value, target: &str) -> bool {
+    if let Some(text) = value.as_str() {
+        return normalize_completion_path_for_compare(text) == target;
+    }
+    if let Some(object) = value.as_object() {
+        for key in ["path", "output_path", "source_artifact_path", "published_path", "target_path"] {
+            if object
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|path| normalize_completion_path_for_compare(path) == target)
+            {
+                return true;
+            }
+        }
+        return object
+            .values()
+            .any(|value| completion_output_value_references_path(value, target));
+    }
+    if let Some(array) = value.as_array() {
+        return array
+            .iter()
+            .any(|value| completion_output_value_references_path(value, target));
+    }
+    false
+}
+
+fn completion_unowned_output_target_has_run_evidence(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    path: &str,
+) -> bool {
+    let target = normalize_completion_path_for_compare(path);
+    run.checkpoint
+        .node_outputs
+        .values()
+        .any(|output| completion_output_value_references_path(output, &target))
+}
+
+fn assert_completion_deliverables(
+    automation: &crate::AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    workspace_root: &str,
+) -> CompletionDeliverableState {
+    match assert_completion_side_effects(automation, run) {
+        CompletionDeliverableState::Satisfied => {}
+        state => return state,
+    }
+    for requirement in completion_required_deliverables(automation, run) {
+        if requirement.owner_node_id.is_none()
+            && !completion_unowned_output_target_has_run_evidence(run, &requirement.path)
+        {
+            return CompletionDeliverableState::Failed {
+                detail: format!(
+                    "automation run deliverable `{}` lacks current-run output evidence",
+                    requirement.path
+                ),
+            };
+        }
+        let resolved = match crate::app::state::automation::resolve_automation_output_path(
+            workspace_root,
+            &requirement.path,
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                return CompletionDeliverableState::Failed {
+                    detail: format!(
+                        "automation run missing required deliverable `{}`: {}",
+                        requirement.path, error
+                    ),
+                };
+            }
+        };
+        let text = match std::fs::read_to_string(&resolved) {
+            Ok(text) => text,
+            Err(_) => {
+                let detail = format!(
+                    "automation run missing required deliverable `{}`",
+                    requirement.path
+                );
+                if let Some(node_id) = repairable_completion_owner(
+                    automation,
+                    run,
+                    requirement.owner_node_id.as_deref(),
+                ) {
+                    return CompletionDeliverableState::Repair(CompletionDeliverableRepair {
+                        node_id,
+                        path: requirement.path,
+                        detail,
+                    });
+                }
+                return CompletionDeliverableState::Failed { detail };
+            }
+        };
+        if let Err(reason) = completion_artifact_is_substantive(&requirement.path, &text) {
+            let detail = format!(
+                "automation run deliverable `{}` failed completion assertion: {}",
+                requirement.path, reason
+            );
+            if let Some(node_id) = repairable_completion_owner(
+                automation,
+                run,
+                requirement.owner_node_id.as_deref(),
+            ) {
+                return CompletionDeliverableState::Repair(CompletionDeliverableRepair {
+                    node_id,
+                    path: requirement.path,
+                    detail,
+                });
+            }
+            return CompletionDeliverableState::Failed { detail };
+        }
+    }
+    CompletionDeliverableState::Satisfied
+}
+
+fn requeue_completion_deliverable_repair(
+    row: &mut crate::automation_v2::types::AutomationV2RunRecord,
+    repair: &CompletionDeliverableRepair,
+) {
+    row.checkpoint.completed_nodes.retain(|id| id != &repair.node_id);
+    row.checkpoint.blocked_nodes.retain(|id| id != &repair.node_id);
+    if !row
+        .checkpoint
+        .pending_nodes
+        .iter()
+        .any(|id| id == &repair.node_id)
+    {
+        row.checkpoint.pending_nodes.push(repair.node_id.clone());
+    }
+    row.checkpoint.node_outputs.insert(
+        repair.node_id.clone(),
+        json!({
+            "status": "needs_repair",
+            "failure_kind": "missing_required_artifact_path",
+            "summary": repair.detail,
+            "blocked_reason": repair.detail,
+            "artifact_validation": {
+                "validation_outcome": "needs_repair",
+                "rejected_artifact_reason": repair.detail,
+                "missing_workspace_files": [repair.path],
+                "required_next_tool_actions": [format!("Write `{}` before completing the automation run.", repair.path)],
+                "repair_exhausted": false
+            }
+        }),
+    );
+    row.checkpoint.last_failure = Some(crate::automation_v2::types::AutomationFailureRecord {
+        node_id: repair.node_id.clone(),
+        reason: repair.detail.clone(),
+        failed_at_ms: now_ms(),
+    });
+    row.status = AutomationRunStatus::Running;
+    row.detail = Some(repair.detail.clone());
+    crate::app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata(
+        row,
+        "run_completion_repair_requested",
+        Some(repair.detail.clone()),
+        None,
+        Some(json!({
+            "node_id": repair.node_id,
+            "path": repair.path,
+            "reason": repair.detail,
+        })),
+    );
+}
+
 fn node_output_status(value: &Value) -> String {
     value
         .get("status")

@@ -88,6 +88,37 @@ use crate::{
 };
 use tokio::sync::RwLock;
 
+fn tool_execution_error_is_prompt_fatal(err_text: &str, cancel_is_cancelled: bool) -> bool {
+    if cancel_is_cancelled {
+        return true;
+    }
+    let lowered = err_text.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return false;
+    }
+    lowered.contains("session cancelled")
+        || lowered.contains("session canceled")
+        || lowered.contains("operation cancelled")
+        || lowered.contains("operation canceled")
+        || lowered.contains("request cancelled")
+        || lowered.contains("request canceled")
+        || lowered.contains("server shutdown")
+        || lowered.contains("scheduler shutdown")
+        || lowered.contains("runtime not ready")
+}
+
+fn recoverable_tool_execution_error_output(tool: &str, err_text: &str) -> String {
+    truncate_text(
+        &format!(
+            "Tool `{tool}` failed during execution:
+{err_text}
+
+This tool error is recoverable in the current turn. Adjust the arguments, use a different available tool, or return a blocked status with the failure details if the required action cannot be completed."
+        ),
+        16_000,
+    )
+}
+
 #[derive(Clone)]
 pub struct EngineLoop {
     storage: std::sync::Arc<Storage>,
@@ -587,6 +618,9 @@ impl EngineLoop {
                     None,
                     Some(&reason),
                 );
+                if write_required {
+                    return Err(anyhow::anyhow!(reason));
+                }
                 return Ok(Some(reason));
             }
         }
@@ -716,6 +750,9 @@ impl EngineLoop {
                         None,
                         Some(&reason),
                     );
+                    if write_required {
+                        return Err(anyhow::anyhow!(reason));
+                    }
                     return Ok(Some(reason));
                 }
                 // Governance audit: if args were recovered via heuristics and the tool is
@@ -830,6 +867,9 @@ impl EngineLoop {
                         None,
                         Some(&timeout_reason),
                     );
+                    if write_required {
+                        return Err(anyhow::anyhow!(timeout_reason));
+                    }
                     return Ok(Some(format!(
                         "Permission request for tool `{tool}` timed out after {timeout_ms} ms."
                     )));
@@ -860,6 +900,9 @@ impl EngineLoop {
                         None,
                         Some(&denied_reason),
                     );
+                    if write_required {
+                        return Err(anyhow::anyhow!(denied_reason));
+                    }
                     return Ok(Some(format!(
                         "Permission denied for tool `{tool}` by user."
                     )));
@@ -1332,7 +1375,12 @@ impl EngineLoop {
                     invoke_part_id.as_deref(),
                     MutationCheckpointOutcome::Failed,
                 );
-                return Err(err);
+                if tool_execution_error_is_prompt_fatal(&err_text, cancel.is_cancelled()) {
+                    return Err(err);
+                }
+                return Ok(Some(recoverable_tool_execution_error_output(
+                    &tool, &err_text,
+                )));
             }
         };
         if let Some(auth) = extract_mcp_auth_required_metadata(&result.metadata) {

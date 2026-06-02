@@ -209,6 +209,44 @@ mod tests {
     }
 
     #[test]
+    fn flags_strict_sequential_order_conflict() {
+        let mut plan = sample_plan();
+        plan.routine_graph[0].dependency_resolution.strategy =
+            DependencyResolutionStrategy::StrictSequential;
+        plan.routine_graph[0].steps.push(StepPackage {
+            step_id: "step_b".to_string(),
+            label: "Step B".to_string(),
+            kind: "analysis".to_string(),
+            action: "Do dependent work".to_string(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            dependencies: vec!["step_a".to_string()],
+            context_reads: Vec::new(),
+            context_writes: Vec::new(),
+            connector_requirements: Vec::new(),
+            model_policy: Default::default(),
+            approval_policy: ApprovalMode::InternalOnly,
+            success_criteria: SuccessCriteria::default(),
+            failure_policy: Default::default(),
+            retry_policy: Default::default(),
+            artifacts: Vec::new(),
+            provenance: None,
+            notes: None,
+        });
+        plan.routine_graph[0].steps.swap(0, 1);
+
+        let report = validate_plan_package(&plan);
+
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == "strict_sequential_order_conflict"
+                && issue.message.contains("step `step_b`")
+                && issue.message.contains("dependency `step_a`")
+        }));
+        assert!(report.blocker_count >= 1);
+        assert_eq!(report.validation_state.dependencies_resolvable, Some(false));
+    }
+
+    #[test]
     fn flags_duplicate_connector_bindings() {
         let mut plan = sample_plan();
         plan.connector_bindings
