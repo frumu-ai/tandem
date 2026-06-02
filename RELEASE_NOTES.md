@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.5.13 (2026-05-29)
+## v0.5.13 (2026-06-02)
 
 Tandem 0.5.13 combines the Linear-backed Coder intake work with a focused
 runtime security hardening pass. The release tightens local API exposure,

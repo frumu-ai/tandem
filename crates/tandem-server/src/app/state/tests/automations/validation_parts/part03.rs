@@ -1,4 +1,97 @@
 #[test]
+fn structured_handoff_workspace_bootstrap_nodes_treat_reads_as_optional() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "execute_goal".to_string(),
+        agent_id: "workspace-operator".to_string(),
+        objective: "Initialize any missing job-search workspace directories and files, read README.md if present, and update resume-overview.md, tracker/search-ledger/2026-04-07.json, tracker/seen-jobs.jsonl, and daily-recaps/2026-04-07-job-search-recap.md.".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return a structured handoff.".to_string()),
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: None,
+    };
+
+    let enforcement = automation_node_output_enforcement(&node);
+    assert!(enforcement.required_tools.iter().any(|tool| tool == "glob"));
+    assert!(enforcement
+        .required_tools
+        .iter()
+        .any(|tool| tool == "write"));
+    assert!(!enforcement.required_tools.iter().any(|tool| tool == "read"));
+    assert_eq!(
+        enforcement.validation_profile.as_deref(),
+        Some("artifact_only")
+    );
+    assert!(!enforcement
+        .required_evidence
+        .iter()
+        .any(|evidence| evidence == "local_source_reads"));
+
+    let capabilities = automation_tool_capability_ids(&node, "artifact_write");
+    assert!(capabilities
+        .iter()
+        .any(|capability| capability == "workspace_discover"));
+    assert!(capabilities
+        .iter()
+        .any(|capability| capability == "artifact_write"));
+    assert!(!capabilities
+        .iter()
+        .any(|capability| capability == "workspace_read"));
+}
+
+#[test]
+fn bootstrap_workspace_output_nodes_require_inspection_but_not_concrete_reads() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "execute_goal".to_string(),
+        agent_id: "workspace-operator".to_string(),
+        objective: "Initialize any missing job-search workspace directories and files, read README.md if present, and update resume-overview.md, tracker/search-ledger/2026-04-07.json, tracker/seen-jobs.jsonl, and daily-recaps/2026-04-07-job-search-recap.md.".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: Some("Return a structured handoff.".to_string()),
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: Some(AutomationNodeStageKind::Workstream),
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": "daily-recaps/2026-04-07-job-search-recap.md"
+            }
+        })),
+    };
+
+    let requirements = automation_node_prewrite_requirements(
+        &node,
+        &["glob".to_string(), "read".to_string(), "write".to_string()],
+    )
+    .expect("prewrite requirements");
+    assert!(requirements.workspace_inspection_required);
+    assert!(!requirements.concrete_read_required);
+}
+
+#[test]
 fn bootstrap_required_files_are_inferred_from_objective_paths_without_filename_hardcoding() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-bootstrap-required-files-{}",
