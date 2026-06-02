@@ -30,12 +30,13 @@ Source plan: `docs/internal/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENIN
   - Verification: `cargo test -p tandem-server gate_decision_rejects_agent_context_caller -- --nocapture` and `gate_decision_records_human_decider` (both pass); regression slice `automations_v2_gate gate_rework approvals_aggregator slack_ discord_ telegram_` = 35 passed / 0 failed.
 
 - `GOV-B4` Enforce human-only + self-approval on approval pipeline
-  - Status: `todo`
+  - Status: `done` (governance approval pipeline); routine/coder human-only folded into GOV-B2a/b
   - Priority: P0
-  - Scope: `governance_approval_approve` omits the `kind==Human` check; `decide_approval_request` has no self-approval guard; routines/coder approve/deny/pause/cancel have no human gate.
-  - Acceptance: agent-origin approval forbidden; reviewer == requester rejected; routine/coder approvals are human-only.
-  - Files: `crates/tandem-server/src/http/routes_governance.rs:166,245`; `crates/tandem-governance-engine/src/lib.rs:310`; `crates/tandem-server/src/app/state/governance.rs:806`.
-  - Verification: `cargo test -p tandem-server governance_approval -- --nocapture` plus `approval_requires_human_reviewer`, `approval_rejects_self_approval`.
+  - Scope: `governance_approval_approve`/`deny` omitted the `kind==Human` check; `decide_approval_request` had no self-approval guard.
+  - Acceptance: agent-origin approval forbidden; an agent-filed request cannot be reviewed by the same agent identity.
+  - Progress: added `ensure_governance_review_authorized` to both `governance_approval_approve` and `_deny` — rejects non-human reviewers (`GOVERNANCE_APPROVAL_REQUIRES_HUMAN`) and self-review of agent-filed requests (`GOVERNANCE_APPROVAL_SELF_REVIEW`). Added an authoritative self-review guard inside the engine `decide_approval_request` so no caller path can self-approve, plus a `get_governance_approval_request` accessor. The self-review guard is scoped to agent-filed requests so the legitimate human-operator "file-on-behalf-of-agent then approve" workflow is preserved. The routine/coder approve/deny/pause/cancel human-only enforcement is deferred into GOV-B2a/B2b, where those endpoints are routed through governance.
+  - Files: `crates/tandem-server/src/http/routes_governance.rs` (`ensure_governance_review_authorized` + both handlers); `crates/tandem-governance-engine/src/lib.rs` (`decide_approval_request` self-review guard); `crates/tandem-server/src/app/state/governance.rs` (`get_governance_approval_request`).
+  - Verification: `cargo test -p tandem-server --features premium-governance governance_approval_approve_rejects_agent_reviewer`, `governance_approval_rejects_agent_self_review` (both pass); full `governance::` module = 14 passed / 0 failed (operator create+approve workflow preserved).
 
 - `GOV-B2a` Coder runs through governance
   - Status: `todo`

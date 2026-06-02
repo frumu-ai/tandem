@@ -803,6 +803,20 @@ impl AppState {
         rows
     }
 
+    /// GOV-B4: fetch an approval request so callers can enforce a self-review
+    /// guard before deciding.
+    pub async fn get_governance_approval_request(
+        &self,
+        approval_id: &str,
+    ) -> Option<GovernanceApprovalRequest> {
+        self.automation_governance
+            .read()
+            .await
+            .approvals
+            .get(approval_id)
+            .cloned()
+    }
+
     pub async fn decide_approval_request(
         &self,
         approval_id: &str,

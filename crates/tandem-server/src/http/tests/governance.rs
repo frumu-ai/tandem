@@ -1578,3 +1578,107 @@ async fn automations_v2_mcp_policy_narrowing_pauses_automation_and_requests_depe
         Some(true)
     );
 }
+
+/// GOV-B4: create a capability approval request and return its id. The request
+/// headers control how `requested_by` resolves (human operator vs agent).
+async fn create_capability_approval(
+    app: &axum::Router,
+    agent_id: &str,
+    capability_key: &str,
+    request_headers: &[(&str, &str)],
+) -> String {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/governance/approvals")
+        .header("content-type", "application/json");
+    for (name, value) in request_headers {
+        builder = builder.header(*name, *value);
+    }
+    let create_req = builder
+        .body(Body::from(
+            approval_request_payload(agent_id, capability_key).to_string(),
+        ))
+        .expect("approval create request");
+    let create_resp = (*app)
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("approval create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    response_json(create_resp)
+        .await
+        .get("approval")
+        .and_then(|value| value.get("approval_id"))
+        .and_then(Value::as_str)
+        .expect("approval id")
+        .to_string()
+}
+
+/// GOV-B4: an agent-context caller cannot review (approve) a governance approval.
+#[tokio::test]
+async fn governance_approval_approve_rejects_agent_reviewer() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let approval_id = create_capability_approval(
+        &app,
+        "agent-b4-human-only",
+        "creates_agents",
+        &[("x-tandem-actor-id", "governance-operator")],
+    )
+    .await;
+
+    let approve_req = Request::builder()
+        .method("POST")
+        .uri(format!("/governance/approvals/{approval_id}/approve"))
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-b4-human-only")
+        .body(Body::from(json!({ "notes": "self" }).to_string()))
+        .expect("approve request");
+    let resp = app
+        .clone()
+        .oneshot(approve_req)
+        .await
+        .expect("approve response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(resp).await.get("code").and_then(Value::as_str),
+        Some("GOVERNANCE_APPROVAL_REQUIRES_HUMAN")
+    );
+}
+
+/// GOV-B4: an agent-filed request cannot be self-approved by the same agent
+/// identity (even when presented as a human actor sharing that id).
+#[tokio::test]
+async fn governance_approval_rejects_agent_self_review() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let approval_id = create_capability_approval(
+        &app,
+        "agent-b4-self",
+        "creates_agents",
+        &[
+            ("x-tandem-request-source", "agent"),
+            ("x-tandem-agent-id", "agent-b4-self"),
+        ],
+    )
+    .await;
+
+    let approve_req = Request::builder()
+        .method("POST")
+        .uri(format!("/governance/approvals/{approval_id}/approve"))
+        .header("content-type", "application/json")
+        .header("x-tandem-actor-id", "agent-b4-self")
+        .body(Body::from(json!({ "notes": "self" }).to_string()))
+        .expect("approve request");
+    let resp = app
+        .clone()
+        .oneshot(approve_req)
+        .await
+        .expect("approve response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(resp).await.get("code").and_then(Value::as_str),
+        Some("GOVERNANCE_APPROVAL_SELF_REVIEW")
+    );
+}
