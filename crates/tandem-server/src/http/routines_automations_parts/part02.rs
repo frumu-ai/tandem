@@ -2009,21 +2009,66 @@ pub(super) async fn automations_v2_run_cancel(
     ))
 }
 
+/// Axum entrypoint for the approval gate-decision endpoint. Resolves the calling
+/// principal into a governance actor before delegating to the shared inner handler,
+/// so the human-in-the-loop control is always attributed to a verified decider
+/// (GOV-B1).
 pub(crate) async fn automations_v2_run_gate_decide(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<AutomationV2GateDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let decider =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    automations_v2_run_gate_decide_inner(
+        state,
+        tenant_context,
+        verified_tenant_context.map(|context| context.0),
+        run_id,
+        input,
+        decider,
+    )
+    .await
+}
+
+/// Shared gate-decision logic used by the HTTP endpoint and the channel
+/// interaction handlers. `decider` is the verified actor recording the decision;
+/// it MUST be a human (or channel-verified Approve-tier user, which the channel
+/// handlers resolve to a human actor). Agents cannot decide their own gates.
+pub(crate) async fn automations_v2_run_gate_decide_inner(
+    state: AppState,
+    tenant_context: TenantContext,
+    verified_tenant_context: Option<VerifiedTenantContext>,
+    run_id: String,
+    input: AutomationV2GateDecisionInput,
+    decider: crate::automation_v2::governance::GovernanceActorRef,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // GOV-B1: the approval gate is a human-in-the-loop control. Only a verified
+    // human (or a channel-verified Approve-tier user resolved to a human actor)
+    // may decide it — an agent must never be able to approve its own run.
+    if decider.kind != crate::automation_v2::governance::GovernanceActorKind::Human {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Approval gate decisions require a verified human approver",
+                "code": "AUTOMATION_V2_GATE_REQUIRES_HUMAN",
+            })),
+        ));
+    }
     let Some(current) = state.get_automation_v2_run(&run_id).await else {
         return Err(automation_v2_run_not_found(&run_id));
     };
     ensure_automation_v2_run_tenant(&tenant_context, &current)?;
-    let automation_for_access = ensure_automation_v2_run_visible_to_context(
+    // GOV-B1/B9: approving a gate is at least as privileged as resuming/cancelling
+    // a run, so require owner-or-admin rather than mere read visibility.
+    let automation_for_access = ensure_automation_v2_run_owner_or_admin(
         &state,
         &current,
-        verified_tenant_context.as_ref().map(|context| &context.0),
+        verified_tenant_context.as_ref(),
     )
     .await?;
     if current.status != AutomationRunStatus::AwaitingApproval {
@@ -2142,6 +2187,7 @@ pub(crate) async fn automations_v2_run_gate_decide(
                 &gate,
                 &decision,
                 reason.clone(),
+                Some(decider.clone()),
             ) {
                 crate::app::state::AutomationGateDecisionOutcome::Applied => {
                     decision_applied = true;
@@ -2184,6 +2230,26 @@ pub(crate) async fn automations_v2_run_gate_decide(
     }
     let _ =
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    // GOV-B1/B8: every gate decision (allow path) writes tamper-evident audit
+    // evidence attributing WHO decided.
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.gate_decided",
+        &current.tenant_context,
+        decider
+            .actor_id
+            .clone()
+            .or_else(|| decider.source.clone()),
+        json!({
+            "runID": run_id.clone(),
+            "automationID": automation.automation_id.clone(),
+            "nodeID": gate.node_id.clone(),
+            "decision": decision.clone(),
+            "reason": reason.clone(),
+            "decidedBy": decider.clone(),
+        }),
+    )
+    .await;
     state.event_bus.publish(tandem_types::EngineEvent::new(
         "approval.decision.recorded",
         json!({
@@ -2193,6 +2259,7 @@ pub(crate) async fn automations_v2_run_gate_decide(
             "decision": decision.clone(),
             "reason": reason.clone(),
             "executed_as": "approval_gate",
+            "decided_by": decider.clone(),
             "timestamp": crate::now_ms(),
             "tenantContext": current.tenant_context.clone(),
         }),

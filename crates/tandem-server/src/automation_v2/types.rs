@@ -1070,6 +1070,10 @@ pub struct AutomationGateDecisionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub decided_at_ms: u64,
+    /// Verified actor that recorded this decision. `None` only for legacy records
+    /// persisted before decider attribution was enforced (GOV-B1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<crate::automation_v2::governance::GovernanceActorRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }

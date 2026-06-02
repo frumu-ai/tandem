@@ -21,12 +21,13 @@ Source plan: `docs/internal/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENIN
 ## Now
 
 - `GOV-B1` Gate-decision endpoint: require verified human, self-approval guard, audit decider
-  - Status: `todo`
+  - Status: `done`
   - Priority: P0
-  - Scope: `automations_v2_run_gate_decide` resumes an `AwaitingApproval` run with no actor, no human requirement, no self-approval guard, no attributable audit.
+  - Scope: `automations_v2_run_gate_decide` resumed an `AwaitingApproval` run with no actor, no human requirement, no self-approval guard, no attributable audit.
   - Acceptance: agent-context approval of its own run is rejected; decider must be a verified Human (or channel-verified Approve tier) and not the run's executing agent; access guard is owner/admin; gate record + protected audit both carry `decided_by`.
-  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs:2012`, `:2185`; `crates/tandem-server/src/app/state/automation/gates.rs:26-64`; `crates/tandem-server/src/automation_v2/types.rs:1067`.
-  - Verification: `cargo test -p tandem-server gate_decide -- --nocapture` plus new `gate_decision_requires_human_non_self_approver`, `gate_decision_writes_protected_audit_with_decider`.
+  - Progress: split the axum handler into `automations_v2_run_gate_decide` (resolves the governance actor from the request principal) and a shared `automations_v2_run_gate_decide_inner`; the inner rejects any non-Human decider with `AUTOMATION_V2_GATE_REQUIRES_HUMAN` (this is the self-approval guard — a governed run executes as an agent, so requiring a human means the executing agent cannot approve itself), upgrades the access check from read-visibility to `owner_or_admin`, threads a `decided_by: GovernanceActorRef` into `AutomationGateDecisionRecord`, and writes a protected `automation.governance.gate_decided` audit event. The three channel interaction handlers (Slack/Discord/Telegram) now call the inner with a channel-verified human decider (they already enforce signature + allowlist + Approve tier upstream).
+  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs` (`automations_v2_run_gate_decide` + new `_inner`); `crates/tandem-server/src/app/state/automation/gates.rs` (`apply_automation_gate_decision` takes `decided_by`); `crates/tandem-server/src/automation_v2/types.rs` (`AutomationGateDecisionRecord.decided_by`); `crates/tandem-server/src/http/{slack,discord,telegram}_interactions.rs`.
+  - Verification: `cargo test -p tandem-server gate_decision_rejects_agent_context_caller -- --nocapture` and `gate_decision_records_human_decider` (both pass); regression slice `automations_v2_gate gate_rework approvals_aggregator slack_ discord_ telegram_` = 35 passed / 0 failed.
 
 - `GOV-B4` Enforce human-only + self-approval on approval pipeline
   - Status: `todo`

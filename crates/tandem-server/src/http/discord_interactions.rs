@@ -382,12 +382,19 @@ async fn dispatch_decision(
         .await
         .map(|run| run.tenant_context)
         .unwrap_or_else(tandem_types::TenantContext::local_implicit);
-    let result = crate::http::routines_automations::automations_v2_run_gate_decide(
-        State(state),
-        axum::extract::Extension(tenant_context),
+    // GOV-B1: caller is verified (Ed25519 signature + allowlist + Approve tier);
+    // attribute the decision to the Discord identity as a human approver.
+    let decider = crate::automation_v2::governance::GovernanceActorRef::human(
+        Some(user_id.to_string()),
+        "discord",
+    );
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state,
+        tenant_context,
         None,
-        axum::extract::Path(parsed.run_id.clone()),
-        Json(input),
+        parsed.run_id.clone(),
+        input,
+        decider,
     )
     .await;
 

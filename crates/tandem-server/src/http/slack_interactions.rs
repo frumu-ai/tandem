@@ -240,12 +240,20 @@ pub(crate) async fn slack_interactions(
         .await
         .map(|run| run.tenant_context)
         .unwrap_or_else(tandem_types::TenantContext::local_implicit);
-    let result = crate::http::routines_automations::automations_v2_run_gate_decide(
-        State(state),
-        axum::extract::Extension(tenant_context),
+    // GOV-B1: this user has already passed signature verification, allowlist, and
+    // the Approve capability-tier check above, so record the decision as a verified
+    // human approver attributed to the Slack identity.
+    let decider = crate::automation_v2::governance::GovernanceActorRef::human(
+        Some(action.user_id.clone()),
+        "slack",
+    );
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state,
+        tenant_context,
         None,
-        axum::extract::Path(run_id.clone()),
-        Json(input),
+        run_id.clone(),
+        input,
+        decider,
     )
     .await;
 

@@ -1962,3 +1962,115 @@ async fn automation_v2_editorial_workflow_smoke_exposes_quality_validation_state
         Some(1)
     );
 }
+
+/// GOV-B1: arrange a run parked on a `publish` approval gate.
+async fn arrange_awaiting_publish_gate(
+    state: &AppState,
+    automation_id: &str,
+) -> crate::automation_v2::types::AutomationV2RunRecord {
+    let automation = create_branched_test_automation_v2(state, automation_id).await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::AwaitingApproval;
+            row.checkpoint.completed_nodes = vec![
+                "research".to_string(),
+                "analysis".to_string(),
+                "draft".to_string(),
+            ];
+            row.checkpoint.pending_nodes = vec!["publish".to_string()];
+            row.checkpoint.awaiting_gate = Some(crate::AutomationPendingGate {
+                node_id: "publish".to_string(),
+                title: "Publish approval".to_string(),
+                instructions: Some("approve final publish step".to_string()),
+                decisions: vec![
+                    "approve".to_string(),
+                    "rework".to_string(),
+                    "cancel".to_string(),
+                ],
+                rework_targets: vec!["draft".to_string()],
+                requested_at_ms: crate::now_ms(),
+                upstream_node_ids: vec!["analysis".to_string(), "draft".to_string()],
+                metadata: None,
+            });
+            row.checkpoint.blocked_nodes = vec!["publish".to_string()];
+        })
+        .await
+        .expect("updated run")
+}
+
+/// GOV-B1: an agent-context caller cannot decide (self-approve) an approval gate.
+#[tokio::test]
+async fn gate_decision_rejects_agent_context_caller() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let run = arrange_awaiting_publish_gate(&state, "auto-v2-gate-agent-reject").await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/gate", run.run_id))
+                .header("content-type", "application/json")
+                // Forge an agent identity. `request-source: agent` prevents the
+                // control-panel short-circuit, so the actor resolves to an agent.
+                .header("x-tandem-agent-id", "agent-a")
+                .header("x-tandem-request-source", "agent")
+                .body(Body::from(json!({ "decision": "approve" }).to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let after = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after rejected decision");
+    // The gate must remain undecided and the run still awaiting approval.
+    assert_eq!(after.status, crate::AutomationRunStatus::AwaitingApproval);
+    assert!(after.checkpoint.gate_history.is_empty());
+}
+
+/// GOV-B1: a human decision is applied and attributed to a verified decider.
+#[tokio::test]
+async fn gate_decision_records_human_decider() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let run = arrange_awaiting_publish_gate(&state, "auto-v2-gate-human-decider").await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/gate", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "decision": "approve" }).to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let after = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after human decision");
+    assert_eq!(after.status, crate::AutomationRunStatus::Queued);
+    let decision = after
+        .checkpoint
+        .gate_history
+        .last()
+        .expect("gate decision recorded");
+    let decided_by = decision
+        .decided_by
+        .as_ref()
+        .expect("decision attributes a decider");
+    assert_eq!(
+        decided_by.kind,
+        crate::automation_v2::governance::GovernanceActorKind::Human
+    );
+}
