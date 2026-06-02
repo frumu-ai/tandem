@@ -1047,8 +1047,11 @@ Tests failed in the prior CI run. This final report documents the remediation an
             None,
         );
 
-    assert_eq!(status, "completed");
-    assert_eq!(reason, None);
+    assert_eq!(status, "needs_repair");
+    assert!(reason
+        .as_deref()
+        .is_some_and(|value| value.contains("completion validation did not pass or was unavailable")));
+    assert_ne!(status, "verify_failed");
     assert_eq!(approved, None);
 }
 
