@@ -1,0 +1,140 @@
+# Governance Enforcement Hardening Kanban
+
+Last updated: 2026-06-02
+Owner: Engine / Runtime Authority
+Goal: `docs/internal/governance_hardening/GOAL.md`
+Source plan: `docs/internal/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLAN.md`
+
+## Status Legend
+- `todo`
+- `in_progress`
+- `blocked`
+- `done`
+
+## Priority Legend
+- P0: human-in-the-loop / governance bypassable in ANY deployment mode. Must land first.
+- P1: defeats governance in the default runtime mode, or resumes governed work without recheck.
+- P2: audit/attribution gaps, channel tier defaults, authorization-altitude.
+
+---
+
+## Now
+
+- `GOV-B1` Gate-decision endpoint: require verified human, self-approval guard, audit decider
+  - Status: `todo`
+  - Priority: P0
+  - Scope: `automations_v2_run_gate_decide` resumes an `AwaitingApproval` run with no actor, no human requirement, no self-approval guard, no attributable audit.
+  - Acceptance: agent-context approval of its own run is rejected; decider must be a verified Human (or channel-verified Approve tier) and not the run's executing agent; access guard is owner/admin; gate record + protected audit both carry `decided_by`.
+  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs:2012`, `:2185`; `crates/tandem-server/src/app/state/automation/gates.rs:26-64`; `crates/tandem-server/src/automation_v2/types.rs:1067`.
+  - Verification: `cargo test -p tandem-server gate_decide -- --nocapture` plus new `gate_decision_requires_human_non_self_approver`, `gate_decision_writes_protected_audit_with_decider`.
+
+- `GOV-B4` Enforce human-only + self-approval on approval pipeline
+  - Status: `todo`
+  - Priority: P0
+  - Scope: `governance_approval_approve` omits the `kind==Human` check; `decide_approval_request` has no self-approval guard; routines/coder approve/deny/pause/cancel have no human gate.
+  - Acceptance: agent-origin approval forbidden; reviewer == requester rejected; routine/coder approvals are human-only.
+  - Files: `crates/tandem-server/src/http/routes_governance.rs:166,245`; `crates/tandem-governance-engine/src/lib.rs:310`; `crates/tandem-server/src/app/state/governance.rs:806`.
+  - Verification: `cargo test -p tandem-server governance_approval -- --nocapture` plus `approval_requires_human_reviewer`, `approval_rejects_self_approval`.
+
+- `GOV-B2a` Coder runs through governance
+  - Status: `todo`
+  - Priority: P0
+  - Scope: `coder_run_create`/`execute_all`/`approve`/`cancel` resolve no actor and call no governance; an agent blocked on V2 create/run uses the coder endpoints instead.
+  - Acceptance: agent-context coder create/run is gated identically to V2; approve/cancel human-only; allow+deny audited.
+  - Files: `crates/tandem-server/src/http/coder_parts/part06.rs:1130`; `part07.rs:279,419,620`.
+  - Verification: `cargo test -p tandem-server coder_run_governance -- --nocapture`.
+
+- `GOV-B2b` Routines + v1 wrappers through governance
+  - Status: `todo`
+  - Priority: P0
+  - Scope: `routines_create` (`// TODO: SECURITY`), `routines_run_now`, and v1 `automations_run_*` never consult governance; approval flags are client-set body fields.
+  - Acceptance: create/run gated like V2; approve/deny/pause/resume human-only; audited.
+  - Files: `crates/tandem-server/src/http/routines_automations_parts/part01.rs:827,983,1242,1312,1382,1467`; `part02.rs:476,589`.
+  - Verification: `cargo test -p tandem-server routines_governance -- --nocapture`.
+
+- `GOV-B2c` Channel automation draft confirm through creation governance
+  - Status: `todo`
+  - Priority: P0
+  - Scope: `channel_automation_drafts_confirm` calls `put_automation_v2` directly, skipping `can_create_automation_for_actor` + `record_automation_creation`; no principal.
+  - Acceptance: channel-draft create runs creation governance with a resolved channel principal and is audited.
+  - Files: `crates/tandem-server/src/http/channel_automation_drafts.rs:329` (+ `start`/`answer`).
+  - Verification: `cargo test -p tandem-server channel_draft_confirm_governance -- --nocapture`.
+
+## Next
+
+- `GOV-B3` Non-forgeable actor (human/agent) classification
+  - Status: `todo`
+  - Priority: P1
+  - Scope: in `LocalSingleTenant`, Human-ness is derived from the unsigned `x-tandem-request-source` header, defeating all agent gates.
+  - Acceptance: a caller cannot self-elevate to Human via headers alone in local mode; hosted/enterprise JWS path unchanged; the test `automations_v2_create_and_run_now_treat_control_panel_source_as_human` is updated to the secure behavior.
+  - Files: `crates/tandem-server/src/http/governance.rs:27-126`; `crates/tandem-server/src/http/middleware.rs:392-411`.
+  - Verification: `cargo test -p tandem-server governance_actor -- --nocapture` plus `control_panel_source_requires_local_token`.
+
+- `GOV-B10` OSS ownership check + enterprise admin header fallback
+  - Status: `todo`
+  - Priority: P1
+  - Scope: OSS "Human ⇒ allow" has no owner/grant check; latent enterprise-admin fallback grants admin from a header source absent verified context.
+  - Acceptance: a human who is neither owner nor grant-holder cannot mutate another's automation; enterprise mutation under local mode is impossible or token+role gated.
+  - Files: `crates/tandem-server/src/app/state/governance.rs:17-66,554-570`; `crates/tandem-enterprise-server/src/http/routes_enterprise.rs:1140`.
+  - Verification: `cargo test -p tandem-server oss_human_ownership -- --nocapture`; `cargo test -p tandem-enterprise-server admin_fallback -- --nocapture`.
+
+- `GOV-B6` Governance recheck on launch + stale auto-resume
+  - Status: `todo`
+  - Priority: P1
+  - Scope: launch and stale auto-resume transition runs to Running without rechecking agent pause / spend pause / capability approval.
+  - Acceptance: a paused or capability-revoked agent's queued/reaped run does not launch/resume; the block is recorded.
+  - Files: `crates/tandem-server/src/app/state/app_state_impl_parts/part05.rs:573,356`; `crates/tandem-server/src/app/state/automation/scheduler.rs:150,203`.
+  - Verification: `cargo test -p tandem-server launch_governance_recheck -- --nocapture`, `stale_resume_governance_recheck`.
+
+- `GOV-B7` Govern + audit `automations_v2_share`
+  - Status: `todo`
+  - Priority: P1
+  - Scope: visibility/share mutation has no governance call and no audit; can flip private → org-wide.
+  - Acceptance: non-authorized/agent actor cannot widen visibility; change is audited.
+  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs:1300`.
+  - Verification: `cargo test -p tandem-server automation_share_governance -- --nocapture`.
+
+## Backlog
+
+### P2 - Evidence / Attribution
+- `GOV-B8` Protected audit on deny paths + internal sweeps with system actor
+  - Status: `todo`
+  - Priority: P2
+  - Scope: V2 deny paths emit no audit; internal sweeps (reaper, auto-resume, recover, shutdown-fail) write only run-local lifecycle history with no system-actor attribution.
+  - Acceptance: every allow AND deny of a consequential action, including internal transitions, produces an attributable protected audit record.
+  - Files: `crates/tandem-server/src/app/state/automation/lifecycle.rs:7-16`; sweep sites in `app_state_impl_parts/part03.rs`, `part05.rs`, `automation_v2/executor.rs`; deny paths across `routines_automations_parts/part02.rs`.
+  - Verification: `cargo test -p tandem-server governance_deny_audit -- --nocapture`, `internal_sweep_audit_attribution`.
+
+### P2 - Channel Authority
+- `GOV-B5` Channel Approve-by-default fallback + button step-up + tenant binding
+  - Status: `todo`
+  - Priority: P2
+  - Scope: unenrolled allowlisted users default to `Operator` → `Reconfigure` ≥ `Approve`; PIN step-up is a global env var and only on slash commands, not approve buttons; channels not tenant-bound.
+  - Acceptance: allowlisted-but-unenrolled user cannot approve; button approvals require per-user expiring step-up; channel actions tenant-scoped and attributed.
+  - Files: `crates/tandem-server/src/app/state/channel_user_capabilities.rs:185-209`; `crates/tandem-channels/src/channel_registry.rs:119-124`, `config.rs:28`; `crates/tandem-channels/src/dispatcher_parts/part03.rs:1060-1083`; `*_interactions.rs`.
+  - Verification: `cargo test -p tandem-server channel_approval_tier -- --nocapture`, `channel_button_step_up`.
+
+### P2 - Authorization Altitude
+- `GOV-B9` `run_now` / `gate_decide` require owner/admin (not read-visibility)
+  - Status: `todo`
+  - Priority: P2
+  - Scope: both gate on read-level `visible_to_context`, letting a view-only user execute/approve a run they cannot edit.
+  - Acceptance: a view-only (`org`-visibility) user cannot execute or approve.
+  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs:1393,2022`.
+  - Verification: `cargo test -p tandem-server run_now_owner_or_admin -- --nocapture`.
+
+- `GOV-B2d` Attribution + audit for `abort_session` / `cancel_run_by_id`
+  - Status: `todo`
+  - Priority: P2
+  - Scope: session/run cancel enforces same-tenant but resolves no actor, enforces no human-only, writes no cancel audit.
+  - Acceptance: cancellations are attributed and audited.
+  - Files: `crates/tandem-server/src/http/sessions.rs:1825,1861`.
+  - Verification: `cargo test -p tandem-server session_cancel_audit -- --nocapture`.
+
+### Cross-cutting
+- `GOV-X1` Consequential-route regression guard
+  - Status: `todo`
+  - Priority: P1
+  - Scope: one integration test asserting that for every consequential route, a forged-source agent request is either blocked or produces a protected audit event with a verified non-self decider.
+  - Acceptance: adding a new mutation route without governance fails this test.
+  - Verification: `cargo test -p tandem-server consequential_routes_enforce_governance -- --nocapture`.
