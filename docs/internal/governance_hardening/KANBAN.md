@@ -55,12 +55,14 @@ Source plan: `docs/internal/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENIN
   - Verification: `cargo test -p tandem-server routines_governance -- --nocapture`.
 
 - `GOV-B2c` Channel automation draft confirm through creation governance
-  - Status: `todo`
+  - Status: `done`
   - Priority: P0
-  - Scope: `channel_automation_drafts_confirm` calls `put_automation_v2` directly, skipping `can_create_automation_for_actor` + `record_automation_creation`; no principal.
-  - Acceptance: channel-draft create runs creation governance with a resolved channel principal and is audited.
-  - Files: `crates/tandem-server/src/http/channel_automation_drafts.rs:329` (+ `start`/`answer`).
-  - Verification: `cargo test -p tandem-server channel_draft_confirm_governance -- --nocapture`.
+  - Scope: `channel_automation_drafts_confirm` called `put_automation_v2` directly, skipping `can_create_automation_for_actor`; no principal.
+  - Acceptance: channel-draft create runs creation governance with a resolved principal and is audited; agent-context confirm is rejected.
+  - Progress: `channel_automation_drafts_confirm` now takes `Extension<RequestPrincipal>` + `HeaderMap`, resolves provenance via `resolve_governance_provenance`, derives declared capabilities from the built automation metadata, calls `can_create_automation_for_actor` (mapping denials through `governance_error_response`) before `put_automation_v2`, records governance provenance, and writes an `automation.governance.created` protected audit event tagged `origin: channel_draft`. An agent-context confirm is now refused instead of silently provisioning an automation.
+  - Files: `crates/tandem-server/src/http/channel_automation_drafts.rs` (`channel_automation_drafts_confirm`).
+  - Verification: `cargo test -p tandem-server channel_automation_draft_confirm_rejects_agent_context` (non-premium build: agent confirm returns NOT_IMPLEMENTED and the draft stays unapplied); existing `channel_automation_draft_*` suite = 5 passed / 0 failed.
+  - Note: `start`/`answer` collect draft state only and do not create the automation, so creation governance is enforced at `confirm`; no separate gating needed there.
 
 ## Next
 
