@@ -53,10 +53,26 @@ impl AppState {
     }
 
     pub async fn evaluate_automation_v2_misfires(&self, now_ms: u64) -> Vec<String> {
+        let active_automation_ids: std::collections::HashSet<String> = {
+            let runs = self.automation_v2_runs.read().await;
+            runs.values()
+                .filter(|run| {
+                    matches!(
+                        run.status,
+                        crate::automation_v2::types::AutomationRunStatus::Queued
+                            | crate::automation_v2::types::AutomationRunStatus::Running
+                    )
+                })
+                .map(|run| run.automation_id.clone())
+                .collect()
+        };
         let mut fired = Vec::new();
         let mut guard = self.automations_v2.write().await;
         for automation in guard.values_mut() {
             if automation.status != AutomationV2Status::Active {
+                continue;
+            }
+            if active_automation_ids.contains(&automation.automation_id) {
                 continue;
             }
             let Some(next_fire_at_ms) = automation.next_fire_at_ms else {

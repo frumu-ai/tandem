@@ -21,6 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-loopback binds and preventing token-clearing from reopening the API.
 - Tightened local runtime tenancy so caller-supplied tenant headers are ignored
   in local single-tenant mode unless a hosted/enterprise signed context is used.
+- Completed the Automations V2 reliability remediation workstream. Run
+  completion now requires contract-aware deliverable checks, current-run
+  evidence for publish targets, successful receipts for governed external
+  actions, and consistent terminal checkpoint accounting.
+- Strengthened Automations V2 workflow planning and repair behavior, including
+  cycle/input-ref validation, timer-trigger deduplication, verification retry
+  routing, exact-enough verification command matching, recoverable tool-error
+  handling, and repair requeueing for missing or weak deliverables.
+- Added explicit parked-state lifecycle handling for Automations V2: approval
+  gates now surface visible stale manual status, guardrail-stopped runs can
+  auto-resume after approved overrides, node execution uses idle/no-progress
+  timeouts with absolute ceilings, and stale auto-resume limits are
+  configurable.
+- Normalized warning and budget policy: `accepted_with_warnings` no longer
+  produces positive workflow-learning evidence, and `.env.example` now matches
+  the enforced tool-guard budget default while documenting the email cap.
 
 ### Security
 

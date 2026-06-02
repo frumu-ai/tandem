@@ -909,6 +909,234 @@ async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
         .any(|entry| entry.event == "run_auto_resumed"));
 }
 
+
+#[tokio::test]
+async fn guardrail_stopped_run_auto_resumes_after_quota_override_approval() {
+    let agent_id = "agent-guardrail-resume";
+    let automation = AutomationV2Spec {
+        automation_id: "auto-guardrail-resume".to_string(),
+        name: "Guardrail Resume Test".to_string(),
+        description: None,
+        status: AutomationV2Status::Active,
+        schedule: AutomationV2Schedule {
+            schedule_type: AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: vec![AutomationAgentProfile {
+            agent_id: agent_id.to_string(),
+            template_id: None,
+            display_name: "Guardrail Agent".to_string(),
+            avatar_url: None,
+            model_policy: None,
+            skills: Vec::new(),
+            tool_policy: AutomationAgentToolPolicy {
+                allowlist: vec!["*".to_string()],
+                denylist: Vec::new(),
+            },
+            mcp_policy: AutomationAgentMcpPolicy {
+                allowed_servers: Vec::new(),
+                allowed_tools: None,
+            },
+            approval_policy: None,
+        }],
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            profile: None,
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        creator_id: "creator-guardrail-resume".to_string(),
+        workspace_root: Some("/tmp/guardrail-resume-workspace".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let state = ready_test_state().await;
+    state.put_automation_v2(automation.clone()).await.expect("put automation");
+    let mut run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let run_id = run.run_id.clone();
+    run.status = AutomationRunStatus::Paused;
+    run.detail = Some("weekly spend cap exceeded for agent-guardrail-resume".to_string());
+    run.pause_reason = run.detail.clone();
+    run.stop_kind = Some(AutomationStopKind::GuardrailStopped);
+    run.stop_reason = run.detail.clone();
+    run.automation_snapshot = Some(automation);
+    {
+        let mut runs = state.automation_v2_runs.write().await;
+        runs.insert(run_id.clone(), run);
+    }
+
+    assert_eq!(state.auto_resume_stale_reaped_runs().await, 0);
+    assert_eq!(
+        state
+            .get_automation_v2_run(&run_id)
+            .await
+            .expect("paused run")
+            .status,
+        AutomationRunStatus::Paused
+    );
+
+    let now = now_ms();
+    {
+        let mut governance = state.automation_governance.write().await;
+        governance.approvals.insert(
+            "approval-guardrail-resume".to_string(),
+            crate::automation_v2::governance::GovernanceApprovalRequest {
+                approval_id: "approval-guardrail-resume".to_string(),
+                request_type: crate::automation_v2::governance::GovernanceApprovalRequestType::QuotaOverride,
+                requested_by: crate::automation_v2::governance::GovernanceActorRef {
+                    kind: crate::automation_v2::governance::GovernanceActorKind::Human,
+                    actor_id: Some("reviewer".to_string()),
+                    source: Some("test".to_string()),
+                },
+                target_resource: crate::automation_v2::governance::GovernanceResourceRef {
+                    resource_type: "agent".to_string(),
+                    id: agent_id.to_string(),
+                },
+                rationale: "allow guarded resume".to_string(),
+                context: serde_json::json!({}),
+                status: crate::automation_v2::governance::GovernanceApprovalStatus::Approved,
+                expires_at_ms: now + 60_000,
+                reviewed_by: Some(crate::automation_v2::governance::GovernanceActorRef {
+                    kind: crate::automation_v2::governance::GovernanceActorKind::Human,
+                    actor_id: Some("reviewer".to_string()),
+                    source: Some("test".to_string()),
+                }),
+                reviewed_at_ms: Some(now),
+                review_notes: Some("approved".to_string()),
+                created_at_ms: now,
+                updated_at_ms: now,
+            },
+        );
+    }
+
+    assert_eq!(state.auto_resume_stale_reaped_runs().await, 1);
+    let resumed = state
+        .get_automation_v2_run(&run_id)
+        .await
+        .expect("resumed run");
+    assert_eq!(resumed.status, AutomationRunStatus::Queued);
+    assert_eq!(resumed.pause_reason, None);
+    assert_eq!(resumed.stop_kind, None);
+    assert_eq!(resumed.stop_reason, None);
+    assert!(resumed
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .any(|entry| entry.event == "run_auto_resumed"
+            && entry.reason.as_deref() == Some("auto_resume_after_guardrail_override")));
+}
+
+#[tokio::test]
+async fn awaiting_approval_runs_are_marked_stale_with_visible_manual_policy() {
+    let automation = AutomationV2Spec {
+        automation_id: "auto-awaiting-approval-stale".to_string(),
+        name: "Awaiting Approval Stale Test".to_string(),
+        description: None,
+        status: AutomationV2Status::Active,
+        schedule: AutomationV2Schedule {
+            schedule_type: AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            profile: None,
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp/awaiting-approval-stale-workspace".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let state = ready_test_state().await;
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+    let mut run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let run_id = run.run_id.clone();
+    run.status = AutomationRunStatus::AwaitingApproval;
+    run.detail = Some("awaiting approval for gate `approval`".to_string());
+    run.checkpoint.awaiting_gate = Some(AutomationPendingGate {
+        node_id: "approval".to_string(),
+        title: "Publish approval".to_string(),
+        instructions: Some("Approve before publishing.".to_string()),
+        decisions: vec!["approve".to_string(), "cancel".to_string()],
+        rework_targets: Vec::new(),
+        requested_at_ms: now_ms().saturating_sub(2 * 24 * 60 * 60 * 1000),
+        upstream_node_ids: Vec::new(),
+        metadata: None,
+    });
+    {
+        let mut runs = state.automation_v2_runs.write().await;
+        runs.insert(run_id.clone(), run);
+    }
+
+    assert_eq!(state.mark_stale_awaiting_approval_runs().await, 1);
+    assert_eq!(state.mark_stale_awaiting_approval_runs().await, 0);
+
+    let updated = state
+        .get_automation_v2_run(&run_id)
+        .await
+        .expect("updated run");
+    assert_eq!(updated.status, AutomationRunStatus::AwaitingApproval);
+    assert!(updated
+        .detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("awaiting manual approval")));
+    let metadata = updated
+        .checkpoint
+        .awaiting_gate
+        .as_ref()
+        .and_then(|gate| gate.metadata.as_ref())
+        .expect("stale gate metadata");
+    assert_eq!(metadata.get("stale").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        metadata.get("stale_policy").and_then(Value::as_str),
+        Some("manual_only_visible_status")
+    );
+    assert!(updated
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .any(|entry| entry.event == "approval_gate_marked_stale"));
+}
+
 #[tokio::test]
 async fn stale_running_automation_runs_fail_terminal_in_progress_nodes() {
     let automation = AutomationV2Spec {
@@ -1323,10 +1551,76 @@ async fn automation_node_prompt_timeout_cancels_the_session() {
     .await
     .expect_err("timeout should fail");
 
+    assert!(crate::app::state::automation::automation_node_prompt_timeout_error(
+        &error,
+        &node
+    ));
     assert!(error
         .to_string()
-        .contains("automation node `timeout_node` timed out after 1 ms"));
+        .contains("automation node `timeout_node` idle timed out after 1 ms"));
     assert!(cancellation.is_cancelled());
+}
+
+#[test]
+fn automation_node_progress_event_matching_requires_same_session() {
+    let progress = tandem_types::EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "sessionID": "session-progress-test",
+            "delta": "streamed text"
+        }),
+    );
+    assert!(crate::app::state::automation::automation_node_event_is_progress_for_session(
+        &progress,
+        "session-progress-test"
+    ));
+
+    let other_session = tandem_types::EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "sessionID": "different-session",
+            "delta": "streamed text"
+        }),
+    );
+    assert!(!crate::app::state::automation::automation_node_event_is_progress_for_session(
+        &other_session,
+        "session-progress-test"
+    ));
+
+    let heartbeat_only = tandem_types::EngineEvent::new(
+        "session.status",
+        json!({ "sessionID": "session-progress-test" }),
+    );
+    assert!(!crate::app::state::automation::automation_node_event_is_progress_for_session(
+        &heartbeat_only,
+        "session-progress-test"
+    ));
+}
+
+#[test]
+fn automation_node_absolute_timeout_exceeds_idle_budget() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "timeout_node".to_string(),
+        agent_id: "agent-a".to_string(),
+        objective: "Timeout test".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: None,
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: Some(1_000),
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    };
+
+    assert_eq!(
+        crate::app::state::automation::effective_automation_node_absolute_timeout_ms(&node),
+        61_000
+    );
 }
 
 #[test]

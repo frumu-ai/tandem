@@ -422,6 +422,10 @@ The Notion page should include:
                 metadata: None,
             });
         }
+        original_steps[11].input_refs = vec![json!({
+            "from_step_id": "generated_step_04",
+            "alias": "market_sources"
+        })];
         let mut plan = test_plan_with_steps(original_steps);
         plan.original_prompt = prompt.to_string();
         plan.normalized_prompt = normalize_prompt(prompt);
@@ -468,6 +472,22 @@ The Notion page should include:
         assert!(all_objectives.contains("mcp.tandem_mcp.search_docs"));
         assert!(all_objectives.contains("web_research"));
         assert!(all_objectives.contains("mcp.composio.reddit"));
+        let draft_step = compacted
+            .steps
+            .iter()
+            .find(|step| step.step_id == "draft_market_brief")
+            .expect("draft macro step");
+        assert!(draft_step
+            .depends_on
+            .iter()
+            .any(|dependency| dependency == "gather_market_sources"));
+        assert!(draft_step.input_refs.iter().any(|input_ref| {
+            input_ref
+                .get("from_step_id")
+                .and_then(Value::as_str)
+                == Some("gather_market_sources")
+                && input_ref.get("alias").and_then(Value::as_str) == Some("market_sources")
+        }));
         assert!(all_objectives.contains("collection://892d3e9b-2bf8-4b3e-a541-dc725f77295d"));
         assert!(all_objectives.contains("Summary"));
         assert!(all_objectives.contains("Key Findings"));
@@ -689,6 +709,71 @@ The Notion page should include:
 
         let error = validate_workflow_plan(&plan).expect_err("malformed step id should fail");
         assert!(error.contains("invalid workflow step id"));
+    }
+
+
+    #[test]
+    fn validate_workflow_plan_rejects_depends_on_cycles() {
+        let plan = test_plan_with_steps(vec![
+            WorkflowPlanStep {
+                step_id: "collect".to_string(),
+                kind: "research".to_string(),
+                objective: "Collect inputs.".to_string(),
+                depends_on: vec!["summarize".to_string()],
+                agent_role: "researcher".to_string(),
+                input_refs: vec![],
+                output_contract: Some(json!({"kind":"structured_json"})),
+                metadata: None,
+            },
+            WorkflowPlanStep {
+                step_id: "summarize".to_string(),
+                kind: "synthesis".to_string(),
+                objective: "Summarize inputs.".to_string(),
+                depends_on: vec!["collect".to_string()],
+                agent_role: "writer".to_string(),
+                input_refs: vec![],
+                output_contract: Some(json!({"kind":"structured_json"})),
+                metadata: None,
+            },
+        ]);
+
+        let error = validate_workflow_plan(&plan).expect_err("cycle should fail validation");
+        assert!(error.contains("dependency cycle"), "{error}");
+        assert!(error.contains("collect"), "{error}");
+        assert!(error.contains("summarize"), "{error}");
+    }
+
+    #[test]
+    fn validate_workflow_plan_rejects_input_refs_missing_from_depends_on() {
+        let plan = test_plan_with_steps(vec![
+            WorkflowPlanStep {
+                step_id: "collect".to_string(),
+                kind: "research".to_string(),
+                objective: "Collect inputs.".to_string(),
+                depends_on: vec![],
+                agent_role: "researcher".to_string(),
+                input_refs: vec![],
+                output_contract: Some(json!({"kind":"structured_json"})),
+                metadata: None,
+            },
+            WorkflowPlanStep {
+                step_id: "summarize".to_string(),
+                kind: "synthesis".to_string(),
+                objective: "Summarize inputs.".to_string(),
+                depends_on: vec![],
+                agent_role: "writer".to_string(),
+                input_refs: vec![json!({
+                    "from_step_id": "collect",
+                    "alias": "source_data"
+                })],
+                output_contract: Some(json!({"kind":"structured_json"})),
+                metadata: None,
+            },
+        ]);
+
+        let error = validate_workflow_plan(&plan)
+            .expect_err("input_ref without depends_on should fail validation");
+        assert!(error.contains("must also be listed in depends_on"), "{error}");
     }
 
     #[test]

@@ -95,6 +95,32 @@ pub(crate) fn split_verification_commands(raw: &str) -> Vec<String> {
         .collect()
 }
 
+fn normalized_command_tokens(command: &str) -> Vec<String> {
+    command
+        .split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| matches!(ch, '\'' | '"' | '`'))
+                .to_ascii_lowercase()
+        })
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn verification_command_matches(executed: &str, expected: &str) -> bool {
+    let expected_tokens = normalized_command_tokens(expected);
+    if expected_tokens.is_empty() {
+        return false;
+    }
+    split_verification_commands(executed)
+        .into_iter()
+        .any(|segment| {
+            let executed_tokens = normalized_command_tokens(&segment);
+            executed_tokens.len() >= expected_tokens.len()
+                && executed_tokens[..expected_tokens.len()] == expected_tokens[..]
+        })
+}
+
 pub(crate) fn automation_node_verification_plan(
     node: &AutomationFlowNode,
 ) -> Vec<AutomationVerificationStep> {
@@ -218,7 +244,6 @@ pub(crate) fn session_verification_summary(node: &AutomationFlowNode, session: &
             let Some(command) = args.get("command").and_then(Value::as_str).map(str::trim) else {
                 continue;
             };
-            let command_normalized = command.to_ascii_lowercase();
             let failure = if let Some(error) = error
                 .as_deref()
                 .map(str::trim)
@@ -277,8 +302,7 @@ pub(crate) fn session_verification_summary(node: &AutomationFlowNode, session: &
                 let Some(expected) = result.get("command").and_then(Value::as_str) else {
                     continue;
                 };
-                let expected_normalized = expected.trim().to_ascii_lowercase();
-                if !command_normalized.contains(&expected_normalized) {
+                if !verification_command_matches(command, expected) {
                     continue;
                 }
                 verification_ran = true;

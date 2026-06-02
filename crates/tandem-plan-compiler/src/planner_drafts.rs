@@ -15,6 +15,13 @@ use crate::workflow_plan::WorkflowInputRefLike;
 
 const SUCCESS_MEMORY_PREFIX: &str = "Previous successful materialization:";
 
+fn planner_revision_failed(clarifier: &Value) -> bool {
+    clarifier
+        .get("revision_failed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 #[derive(Debug)]
 pub enum PlannerDraftError {
     NotFound,
@@ -192,8 +199,11 @@ where
         )
         .await;
 
-    draft.plan_revision = draft.plan_revision.saturating_add(1);
-    draft.current_plan = revised_plan;
+    let revision_failed = planner_revision_failed(&clarifier);
+    if !revision_failed {
+        draft.plan_revision = draft.plan_revision.saturating_add(1);
+        draft.current_plan = revised_plan;
+    }
     draft.planner_diagnostics = planner_diagnostics.clone();
     draft.conversation.messages.push(WorkflowPlanChatMessage {
         role: "assistant".to_string(),
@@ -287,6 +297,12 @@ mod tests {
     impl WorkflowInputRefLike for TestInputRef {
         fn from_step_id(&self) -> &str {
             self.from_step_id.as_str()
+        }
+
+        fn clone_with_from_step_id(&self, from_step_id: &str) -> Option<Self> {
+            let mut cloned = self.clone();
+            cloned.from_step_id = from_step_id.to_string();
+            Some(cloned)
         }
     }
 
@@ -596,6 +612,78 @@ mod tests {
         assert_eq!(revision.draft.conversation.messages.len(), 2);
         assert_eq!(revision.draft.conversation.messages[0].role, "user");
         assert_eq!(revision.draft.conversation.messages[1].role, "assistant");
+    }
+
+    #[tokio::test]
+    async fn failed_planner_revision_does_not_advance_plan_revision() {
+        let host = MockHost {
+            now_ms: 3500,
+            llm_payload: Arc::new(Mutex::new(Some(json!({
+                "action": "revise",
+                "assistant_text": "I revised it, but forgot the plan payload."
+            })))),
+            ..Default::default()
+        };
+
+        store_preview_draft(&host, test_plan(), None)
+            .await
+            .expect("seed draft");
+
+        let revision = revise_workflow_plan_draft::<Value, TestInputRef, Value, _>(
+            &host,
+            "wfplan-test",
+            "Please retitle it",
+            PlannerLoopConfig {
+                session_title: "test".to_string(),
+                timeout_ms: 1000,
+                override_env: "IGNORED".to_string(),
+            },
+            |_step: &mut WorkflowPlanStep<TestInputRef, Value>| {},
+        )
+        .await
+        .expect("revision failure response");
+
+        assert_eq!(revision.draft.current_plan.title, "Initial Title");
+        assert_eq!(revision.draft.plan_revision, 1);
+        assert!(revision.change_summary.is_empty());
+        assert_eq!(
+            revision
+                .clarifier
+                .get("revision_failed")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            revision
+                .clarifier
+                .get("blocks_activation")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            revision
+                .clarifier
+                .get("failure_reason")
+                .and_then(Value::as_str),
+            Some("planner_invalid_response")
+        );
+        assert!(revision
+            .assistant_text
+            .contains("I could not revise the current plan"));
+
+        let persisted = host
+            .drafts
+            .lock()
+            .expect("draft lock")
+            .get("wfplan-test")
+            .cloned()
+            .expect("persisted draft");
+        let persisted: WorkflowPlanDraftRecord<
+            WorkflowPlan<AutomationV2Schedule<Value>, WorkflowPlanStep<TestInputRef, Value>>,
+        > = serde_json::from_value(persisted).expect("decode draft");
+        assert_eq!(persisted.plan_revision, 1);
+        assert_eq!(persisted.current_plan.title, "Initial Title");
+        assert_eq!(persisted.conversation.messages.len(), 2);
     }
 
     #[tokio::test]

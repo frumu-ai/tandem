@@ -837,7 +837,10 @@ fn should_skip_due_to_triage_gate(
     node_outputs: &std::collections::HashMap<String, serde_json::Value>,
     flow_nodes: &[crate::automation_v2::types::AutomationFlowNode],
 ) -> bool {
+    let mut has_no_work_triage_parent = false;
+    let mut has_real_work_parent = false;
     for dep_id in &node.depends_on {
+        let dep_output = node_outputs.get(dep_id);
         // Only apply the skip when the dependency is itself a triage gate node.
         let dep_is_triage = flow_nodes
             .iter()
@@ -850,25 +853,27 @@ fn should_skip_due_to_triage_gate(
             // Propagate: if the *dependency* was itself skipped due to triage,
             // its skip output also carries triage_skipped:true so this node
             // picks it up in the next iteration.
-            let dep_triage_skipped = node_outputs
-                .get(dep_id)
+            let dep_triage_skipped = dep_output
                 .and_then(|o| o.get("triage_skipped"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             if dep_triage_skipped {
-                return true;
+                has_no_work_triage_parent = true;
+                continue;
+            }
+            if dep_output.is_some() {
+                has_real_work_parent = true;
             }
             continue;
         }
-        let has_work = node_outputs
-            .get(dep_id)
-            .and_then(triage_output_has_work)
-            .unwrap_or(true); // default: proceed (don't skip) if field is absent
-        if !has_work {
-            return true;
+        let has_work = dep_output.and_then(triage_output_has_work).unwrap_or(true); // default: proceed (don't skip) if field is absent
+        if has_work {
+            has_real_work_parent = true;
+        } else {
+            has_no_work_triage_parent = true;
         }
     }
-    false
+    has_no_work_triage_parent && !has_real_work_parent
 }
 
 fn automation_activation_validation_failure(
@@ -916,6 +921,82 @@ fn reconcile_pending_nodes_after_node_output(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimePartialFailureMode {
+    ContinueIndependent,
+    PauseDownstreamOnly,
+    PauseAll,
+}
+
+fn automation_node_partial_failure_mode(
+    node: &crate::automation_v2::types::AutomationFlowNode,
+) -> RuntimePartialFailureMode {
+    fn parse(value: &str) -> Option<RuntimePartialFailureMode> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "continue_independent" | "continue-independent" | "continueindependent" => {
+                Some(RuntimePartialFailureMode::ContinueIndependent)
+            }
+            "pause_downstream_only" | "pause-downstream-only" | "pausedownstreamonly" => {
+                Some(RuntimePartialFailureMode::PauseDownstreamOnly)
+            }
+            "pause_all" | "pause-all" | "pauseall" => Some(RuntimePartialFailureMode::PauseAll),
+            _ => None,
+        }
+    }
+
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| {
+            metadata
+                .get("partial_failure_mode")
+                .or_else(|| metadata.pointer("/builder/partial_failure_mode"))
+                .or_else(|| metadata.pointer("/runtime/partial_failure_mode"))
+        })
+        .and_then(Value::as_str)
+        .and_then(parse)
+        .unwrap_or(RuntimePartialFailureMode::PauseDownstreamOnly)
+}
+
+fn blocked_nodes_for_partial_failure_mode(
+    automation: &crate::automation_v2::types::AutomationV2Spec,
+    checkpoint: &crate::automation_v2::types::AutomationRunCheckpoint,
+    failed_node_id: &str,
+) -> std::collections::HashSet<String> {
+    let mode = automation
+        .flow
+        .nodes
+        .iter()
+        .find(|node| node.node_id == failed_node_id)
+        .map(automation_node_partial_failure_mode)
+        .unwrap_or(RuntimePartialFailureMode::PauseDownstreamOnly);
+    match mode {
+        RuntimePartialFailureMode::ContinueIndependent
+        | RuntimePartialFailureMode::PauseDownstreamOnly => {
+            crate::app::state::collect_automation_descendants(
+                automation,
+                &std::iter::once(failed_node_id.to_string()).collect(),
+            )
+        }
+        RuntimePartialFailureMode::PauseAll => checkpoint
+            .pending_nodes
+            .iter()
+            .cloned()
+            .chain(std::iter::once(failed_node_id.to_string()))
+            .collect(),
+    }
+}
+
+fn node_output_is_terminal_success(output: &Value) -> bool {
+    let status = node_output_status(output);
+    let failure_kind = node_output_failure_kind(output);
+    matches!(
+        status.as_str(),
+        "completed" | "done" | "passed" | "accepted_with_warnings" | "skipped"
+    ) && !blocked_failure_kind(&failure_kind)
+        && failure_kind != "verification_failed"
+        && failure_kind != "run_failed"
+}
+
 fn derive_terminal_run_state(
     automation: &crate::automation_v2::types::AutomationV2Spec,
     run: &crate::automation_v2::types::AutomationV2RunRecord,
@@ -924,12 +1005,24 @@ fn derive_terminal_run_state(
     let mut blocked_nodes = run.checkpoint.blocked_nodes.clone();
     blocked_nodes.extend(crate::app::state::automation_blocked_nodes(automation, run));
     let mut failed_nodes = Vec::new();
+    let mut incomplete_nodes = Vec::new();
     let pending_nodes = run
         .checkpoint
         .pending_nodes
         .iter()
         .cloned()
         .collect::<std::collections::HashSet<_>>();
+    let completed_nodes = run
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    for completed_node in &completed_nodes {
+        if !run.checkpoint.node_outputs.contains_key(completed_node) {
+            incomplete_nodes.push(completed_node.clone());
+        }
+    }
     for node in &automation.flow.nodes {
         let attempts = run
             .checkpoint
@@ -950,10 +1043,53 @@ fn derive_terminal_run_state(
             }
             failed_nodes.push(node.node_id.clone());
         }
+        if pending_nodes.contains(&node.node_id)
+            || blocked_nodes.iter().any(|id| id == &node.node_id)
+        {
+            continue;
+        }
+        match run.checkpoint.node_outputs.get(&node.node_id) {
+            Some(output) if node_output_is_terminal_success(output) => {}
+            Some(output) => {
+                let status = node_output_status(output);
+                let failure_kind = node_output_failure_kind(output);
+                if matches!(status.as_str(), "failed" | "verify_failed")
+                    || failure_kind == "verification_failed"
+                    || failure_kind == "run_failed"
+                {
+                    failed_nodes.push(node.node_id.clone());
+                } else if status == "blocked" || blocked_failure_kind(&failure_kind) {
+                    blocked_nodes.push(node.node_id.clone());
+                } else {
+                    incomplete_nodes.push(node.node_id.clone());
+                }
+            }
+            None => incomplete_nodes.push(node.node_id.clone()),
+        }
     }
     for (node_id, output) in &run.checkpoint.node_outputs {
         let status = node_output_status(output);
         let failure_kind = node_output_failure_kind(output);
+        let retryable_pending_output = automation
+            .flow
+            .nodes
+            .iter()
+            .find(|node| node.node_id == *node_id)
+            .is_some_and(|node| {
+                pending_nodes.contains(node_id)
+                    && run
+                        .checkpoint
+                        .node_attempts
+                        .get(node_id)
+                        .copied()
+                        .unwrap_or(0)
+                        < crate::app::state::automation_node_max_attempts(node)
+            });
+        if retryable_pending_output
+            && (status == "verify_failed" || failure_kind == "verification_failed")
+        {
+            continue;
+        }
         if matches!(status.as_str(), "failed" | "verify_failed")
             || failure_kind == "verification_failed"
             || failure_kind == "run_failed"
@@ -969,6 +1105,8 @@ fn derive_terminal_run_state(
     blocked_nodes.dedup();
     failed_nodes.sort();
     failed_nodes.dedup();
+    incomplete_nodes.sort();
+    incomplete_nodes.dedup();
     if !failed_nodes.is_empty() {
         let detail = format!(
             "automation run failed from node outcomes: {}",
@@ -988,6 +1126,16 @@ fn derive_terminal_run_state(
             } else {
                 "automation run blocked by upstream node outcome".to_string()
             },
+        };
+    }
+    if !incomplete_nodes.is_empty() {
+        return DerivedTerminalRunState::Failed {
+            failed_nodes: incomplete_nodes.clone(),
+            blocked_nodes: Vec::new(),
+            detail: format!(
+                "automation run incomplete: terminal accounting missing for node(s): {}",
+                incomplete_nodes.join(", ")
+            ),
         };
     }
     if deadlock {
@@ -1155,7 +1303,27 @@ pub async fn run_automation_v2_run(
             break;
         }
         if latest.checkpoint.pending_nodes.is_empty() {
-            let terminal_state = derive_terminal_run_state(&automation, &latest, false);
+            let mut terminal_state = derive_terminal_run_state(&automation, &latest, false);
+            if matches!(terminal_state, DerivedTerminalRunState::Completed) {
+                match assert_completion_deliverables(&automation, &latest, &workspace_root) {
+                    CompletionDeliverableState::Satisfied => {}
+                    CompletionDeliverableState::Repair(repair) => {
+                        let _ = state
+                            .update_automation_v2_run(&run_id, |row| {
+                                requeue_completion_deliverable_repair(row, &repair);
+                            })
+                            .await;
+                        continue;
+                    }
+                    CompletionDeliverableState::Failed { detail } => {
+                        terminal_state = DerivedTerminalRunState::Failed {
+                            failed_nodes: Vec::new(),
+                            blocked_nodes: Vec::new(),
+                            detail,
+                        };
+                    }
+                }
+            }
             let _ = state
                 .update_automation_v2_run(&run_id, |row| match &terminal_state {
                     DerivedTerminalRunState::Completed => {
@@ -1293,7 +1461,27 @@ pub async fn run_automation_v2_run(
         );
 
         if runnable.is_empty() {
-            let terminal_state = derive_terminal_run_state(&automation, &latest, true);
+            let mut terminal_state = derive_terminal_run_state(&automation, &latest, true);
+            if matches!(terminal_state, DerivedTerminalRunState::Completed) {
+                match assert_completion_deliverables(&automation, &latest, &workspace_root) {
+                    CompletionDeliverableState::Satisfied => {}
+                    CompletionDeliverableState::Repair(repair) => {
+                        let _ = state
+                            .update_automation_v2_run(&run_id, |row| {
+                                requeue_completion_deliverable_repair(row, &repair);
+                            })
+                            .await;
+                        continue;
+                    }
+                    CompletionDeliverableState::Failed { detail } => {
+                        terminal_state = DerivedTerminalRunState::Failed {
+                            failed_nodes: Vec::new(),
+                            blocked_nodes: Vec::new(),
+                            detail,
+                        };
+                    }
+                }
+            }
             let _ = state
                 .update_automation_v2_run(&run_id, |row| match &terminal_state {
                     DerivedTerminalRunState::Completed => {
@@ -1669,6 +1857,8 @@ pub async fn run_automation_v2_run(
                         .map(crate::app::state::automation_node_max_attempts)
                         .unwrap_or(1);
                     let terminal_repair_block = needs_repair && repair_exhausted;
+                    let terminal_verify_failed = verify_failed && attempt >= max_attempts;
+                    let retryable_verify_failed = verify_failed && !terminal_verify_failed;
                     if terminal_repair_block {
                         if let Some(object) = output.as_object_mut() {
                             object.insert("status".to_string(), json!("blocked"));
@@ -1761,10 +1951,11 @@ pub async fn run_automation_v2_run(
                                     return;
                                 }
                             }
-                            let blocked_descendants = if blocked || verify_failed {
-                                crate::app::state::collect_automation_descendants(
+                            let blocked_descendants = if blocked || terminal_verify_failed {
+                                blocked_nodes_for_partial_failure_mode(
                                     &automation,
-                                    &std::iter::once(node_id.clone()).collect(),
+                                    &row.checkpoint,
+                                    &node_id,
                                 )
                             } else {
                                 std::collections::HashSet::new()
@@ -1772,8 +1963,8 @@ pub async fn run_automation_v2_run(
                             reconcile_pending_nodes_after_node_output(
                                 &mut row.checkpoint,
                                 &node_id,
-                                needs_repair,
-                                terminal_repair_block,
+                                needs_repair || retryable_verify_failed,
+                                terminal_repair_block || terminal_verify_failed,
                                 &blocked_descendants,
                             );
                             if !blocked
@@ -1810,7 +2001,7 @@ pub async fn run_automation_v2_run(
                             {
                                 row.checkpoint.last_failure = None;
                             }
-                            if verify_failed {
+                            if terminal_verify_failed {
                                 row.checkpoint.last_failure = Some(
                                     crate::automation_v2::types::AutomationFailureRecord {
                                         node_id: node_id.clone(),
@@ -1973,7 +2164,7 @@ pub async fn run_automation_v2_run(
                             crate::app::state::refresh_automation_runtime_state(&automation, row);
                         })
                         .await;
-                    if verify_failed {
+                    if terminal_verify_failed {
                         terminal_failure =
                             Some(failure_reason.unwrap_or_else(|| {
                                 format!("node `{}` failed verification", node_id)

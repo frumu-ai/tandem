@@ -257,6 +257,7 @@ mod tests {
                 timeout_ms: None,
                 stage_kind: None,
                 gate: None,
+                partial_failure_mode: Some(PartialFailureMode::PauseDownstreamOnly),
                 metadata: Some(json!({"phase": "main"})),
             }],
             execution: ProjectedAutomationExecutionPolicy {

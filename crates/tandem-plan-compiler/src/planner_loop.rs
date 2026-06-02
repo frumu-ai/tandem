@@ -57,6 +57,17 @@ pub struct PlannerLoopConfig {
     pub override_env: String,
 }
 
+fn planner_revision_failure_clarifier(question: impl Into<String>, reason: &'static str) -> Value {
+    json!({
+        "field": "general",
+        "question": question.into(),
+        "options": [],
+        "revision_failed": true,
+        "blocks_activation": true,
+        "failure_reason": reason,
+    })
+}
+
 pub async fn revise_workflow_plan_with_planner_loop<M, I, O, H>(
     host: &H,
     current_plan: &WorkflowPlan<AutomationV2Schedule<M>, WorkflowPlanStep<I, O>>,
@@ -91,13 +102,9 @@ where
         let question = planner_llm_unavailable_hint();
         return (
             current_plan.clone(),
-            format!("I kept the current plan. Clarification needed: {question}"),
+            format!("I could not revise the current plan. Clarification needed: {question}"),
             Vec::new(),
-            json!({
-                "field": "general",
-                "question": question,
-                "options": [],
-            }),
+            planner_revision_failure_clarifier(question, "planner_model_unavailable"),
             Some(workflow_plan_decomposition_observation(
                 &decomposition_profile,
                 current_step_count,
@@ -109,13 +116,9 @@ where
         let question = planner_llm_provider_unconfigured_hint(&model.provider_id);
         return (
             current_plan.clone(),
-            format!("I kept the current plan. Clarification needed: {question}"),
+            format!("I could not revise the current plan. Clarification needed: {question}"),
             Vec::new(),
-            json!({
-                "field": "general",
-                "question": question,
-                "options": [],
-            }),
+            planner_revision_failure_clarifier(question, "planner_provider_unconfigured"),
             Some(workflow_plan_decomposition_observation(
                 &decomposition_profile,
                 current_step_count,
@@ -158,13 +161,9 @@ where
             let question = planner_llm_invalid_response_hint();
             (
                 current_plan.clone(),
-                format!("I kept the current plan. Clarification needed: {question}"),
+                format!("I could not revise the current plan. Clarification needed: {question}"),
                 Vec::new(),
-                json!({
-                    "field": "general",
-                    "question": question,
-                    "options": [],
-                }),
+                planner_revision_failure_clarifier(question, "planner_invalid_response"),
                 Some(workflow_plan_decomposition_observation(
                     &decomposition_profile,
                     current_step_count,
@@ -175,13 +174,9 @@ where
             let question = planner_failure_clarifier_hint(&failure);
             (
                 current_plan.clone(),
-                format!("I kept the current plan. Clarification needed: {question}"),
+                format!("I could not revise the current plan. Clarification needed: {question}"),
                 Vec::new(),
-                json!({
-                    "field": "general",
-                    "question": question,
-                    "options": [],
-                }),
+                planner_revision_failure_clarifier(question, "planner_invocation_failed"),
                 Some(workflow_plan_decomposition_observation(
                     &decomposition_profile,
                     current_step_count,

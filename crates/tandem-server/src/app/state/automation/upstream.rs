@@ -17,6 +17,70 @@ pub(crate) fn automation_upstream_structured_handoff<'a>(output: &'a Value) -> O
         .or_else(|| output.get("structured_handoff"))
 }
 
+fn upstream_text_is_substantive(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.len() >= 16 && trimmed.split_whitespace().take(4).count() >= 3
+}
+
+fn upstream_value_has_substance(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(_) | Value::Number(_) => true,
+        Value::String(text) => upstream_text_is_substantive(text),
+        Value::Array(items) => items.iter().any(upstream_value_has_substance),
+        Value::Object(object) => {
+            if object.is_empty() {
+                return false;
+            }
+            object.iter().any(|(key, value)| {
+                !matches!(
+                    key.as_str(),
+                    "status" | "phase" | "blocked_reason" | "reason" | "failure_kind"
+                ) && upstream_value_has_substance(value)
+            })
+        }
+    }
+}
+
+fn automation_upstream_output_is_usable(output: &Value) -> bool {
+    let status = output
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_ascii_lowercase);
+    if status.as_deref().is_some_and(|status| {
+        matches!(
+            status,
+            "blocked" | "failed" | "verify_failed" | "needs_repair" | "skipped"
+        )
+    }) {
+        return false;
+    }
+    if let Some(reason) = output
+        .get("blocked_reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+    {
+        if !reason.eq_ignore_ascii_case("null") {
+            return false;
+        }
+    }
+    output
+        .get("summary")
+        .is_some_and(upstream_value_has_substance)
+        || output
+            .get("content")
+            .is_some_and(upstream_value_has_substance)
+        || output
+            .get("artifact")
+            .is_some_and(upstream_value_has_substance)
+        || output
+            .get("verified_output")
+            .is_some_and(upstream_value_has_substance)
+        || automation_upstream_structured_handoff(output).is_some_and(upstream_value_has_substance)
+}
+
 fn routine_id_for_node(run: &AutomationV2RunRecord, node: &AutomationFlowNode) -> Option<String> {
     let runtime_context = run.runtime_context.as_ref()?;
     runtime_context
@@ -130,6 +194,13 @@ pub(crate) fn build_automation_v2_upstream_inputs(
                 node.node_id
             );
         };
+        if !automation_upstream_output_is_usable(output) {
+            anyhow::bail!(
+                "upstream output for `{}` referenced by node `{}` is empty, blocked, or not substantive",
+                input_ref.from_step_id,
+                node.node_id
+            );
+        }
         inputs.push(json!({
             "alias": input_ref.alias,
             "from_step_id": input_ref.from_step_id,
@@ -295,6 +366,101 @@ mod tests {
             handoff_config: None,
         });
         run
+    }
+
+    fn input_ref_node() -> AutomationFlowNode {
+        AutomationFlowNode {
+            knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+            node_id: "step_b".to_string(),
+            agent_id: "agent_b".to_string(),
+            objective: "Use upstream output".to_string(),
+            depends_on: vec!["step_a".to_string()],
+            input_refs: vec![AutomationFlowInputRef {
+                from_step_id: "step_a".to_string(),
+                alias: "step_a_output".to_string(),
+            }],
+            output_contract: None,
+            tool_policy: None,
+            mcp_policy: None,
+            retry_policy: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            stage_kind: None,
+            gate: None,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn build_upstream_inputs_rejects_empty_upstream_output() {
+        let mut run = test_run();
+        run.checkpoint
+            .node_outputs
+            .insert("step_a".to_string(), json!({"status": "completed"}));
+        let node = input_ref_node();
+
+        let error = build_automation_v2_upstream_inputs(&run, &node, "/workspace")
+            .expect_err("empty upstream output should not propagate");
+
+        assert!(
+            error
+                .to_string()
+                .contains("empty, blocked, or not substantive"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn build_upstream_inputs_rejects_blocked_upstream_output() {
+        let mut run = test_run();
+        run.checkpoint.node_outputs.insert(
+            "step_a".to_string(),
+            json!({
+                "status": "blocked",
+                "summary": "Could not complete source collection because credentials were missing."
+            }),
+        );
+        let node = input_ref_node();
+
+        let error = build_automation_v2_upstream_inputs(&run, &node, "/workspace")
+            .expect_err("blocked upstream output should not propagate");
+
+        assert!(
+            error
+                .to_string()
+                .contains("empty, blocked, or not substantive"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn build_upstream_inputs_accepts_substantive_upstream_output() {
+        let mut run = test_run();
+        run.checkpoint.node_outputs.insert(
+            "step_a".to_string(),
+            json!({
+                "status": "completed",
+                "summary": "Collected three source documents with concrete implementation notes.",
+                "content": {
+                    "structured_handoff": {
+                        "read_paths": ["docs/source.md"]
+                    }
+                }
+            }),
+        );
+        let node = input_ref_node();
+
+        let inputs = build_automation_v2_upstream_inputs(&run, &node, "/workspace")
+            .expect("substantive upstream output should propagate");
+
+        let input = inputs
+            .iter()
+            .find(|input| input.get("alias").and_then(Value::as_str) == Some("step_a_output"))
+            .expect("input ref output");
+        assert_eq!(
+            input.get("from_step_id").and_then(Value::as_str),
+            Some("step_a")
+        );
     }
 
     #[test]

@@ -69,6 +69,75 @@ fn artifact_validation_has_unmet_requirements(artifact_validation: Option<&Value
         .is_some_and(|items| !items.is_empty())
 }
 
+fn artifact_validation_has_upstream_read_evidence(artifact_validation: Option<&Value>) -> bool {
+    let Some(validation) = artifact_validation else {
+        return false;
+    };
+    let synthesis_profile = validation
+        .get("validation_profile")
+        .and_then(Value::as_str)
+        .is_some_and(|profile| profile == "research_synthesis");
+    let upstream_evidence_applied = validation
+        .get("upstream_evidence_applied")
+        .or_else(|| {
+            validation
+                .get("validation_basis")
+                .and_then(|basis| basis.get("upstream_evidence_used"))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let upstream_read_paths_present = validation
+        .get("upstream_read_paths")
+        .and_then(Value::as_array)
+        .is_some_and(|paths| !paths.is_empty());
+    synthesis_profile && (upstream_evidence_applied || upstream_read_paths_present)
+}
+
+fn artifact_validation_allows_artifact_only_completion(artifact_validation: Option<&Value>) -> bool {
+    let Some(validation) = artifact_validation else {
+        return false;
+    };
+    if artifact_validation_has_unmet_requirements(Some(validation)) {
+        return false;
+    }
+    if validation
+        .get("rejected_artifact_reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || validation
+            .get("semantic_block_reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    {
+        return false;
+    }
+    if validation
+        .get("validation_error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || validation
+            .get("validation_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return false;
+    }
+    validation
+        .get("validation_outcome")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(|outcome| {
+            matches!(
+                outcome,
+                "accepted" | "accepted_with_warnings" | "passed"
+            )
+        })
+        .unwrap_or(true)
+}
+
 pub(crate) fn detect_automation_node_status(
     node: &AutomationFlowNode,
     session_text: &str,
@@ -106,6 +175,18 @@ pub(crate) fn detect_automation_node_status(
             .unwrap_or(false)
     {
         return ("completed".to_string(), None, None);
+    }
+
+    if verified_output.is_none() && session_text.trim().is_empty() {
+        return (
+            if research_repair_exhausted {
+                "blocked".to_string()
+            } else {
+                "needs_repair".to_string()
+            },
+            Some("node produced no final output or validated artifact".to_string()),
+            None,
+        );
     }
 
     // --- Glob-loop circuit breaker ---
@@ -418,19 +499,9 @@ pub(crate) fn detect_automation_node_status(
         "i’m blocked",
         "i'm blocked",
     ];
-    // TODO(coding-hardening): Same here for verification failures. We should rely on
-    // explicit verification result metadata and command outcomes, not phrase matching.
-    let verify_failed_markers = [
-        "status: verify_failed",
-        "status verify_failed",
-        "verification failed",
-        "tests failed",
-        "build failed",
-        "lint failed",
-        "verify failed",
-    ];
+    let explicit_verify_failed_markers = ["status: verify_failed", "status verify_failed"];
     if !explicit_status_is_completed
-        && verify_failed_markers
+        && explicit_verify_failed_markers
             .iter()
             .any(|marker| lowered.contains(marker))
     {
@@ -499,10 +570,7 @@ pub(crate) fn detect_automation_node_status(
         automation_capability_resolution_mcp_tools(tool_telemetry, "registered_tools");
     let canonical_delivery_status = automation_attempt_evidence_delivery_status(tool_telemetry);
     let is_brief_contract = validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief;
-    let read_gate_is_advisory = artifact_validation
-        .and_then(|value| value.get("validation_profile"))
-        .and_then(Value::as_str)
-        .is_some_and(|profile| profile == "research_synthesis");
+    let read_gate_is_advisory = artifact_validation_has_upstream_read_evidence(artifact_validation);
     let requires_read = automation_node_required_tools(node)
         .iter()
         .any(|value| value == "read");
@@ -749,10 +817,26 @@ pub(crate) fn detect_automation_node_status(
         );
     }
     // If the artifact exists on disk but the session text has no parseable status JSON,
-    // accept as completed. The artifact is the authoritative output — a missing compact
-    // status in the text is a prompt-compliance gap, not a runtime failure.
+    // require validator evidence before accepting it as terminal. A write alone proves
+    // that a target path was touched; it does not prove the deliverable is substantive.
     if artifact_materialized && !status_signal_present {
-        return ("completed".to_string(), explicit_reason, approved);
+        if artifact_validation_allows_artifact_only_completion(artifact_validation) {
+            return ("completed".to_string(), explicit_reason, approved);
+        }
+        return (
+            if validation_repairable {
+                "needs_repair".to_string()
+            } else {
+                "blocked".to_string()
+            },
+            explicit_reason.or_else(|| {
+                Some(
+                    "node wrote an artifact but completion validation did not pass or was unavailable"
+                        .to_string(),
+                )
+            }),
+            approved,
+        );
     }
     if !status_signal_present && !artifact_materialized && !session_text.trim().is_empty() {
         return (

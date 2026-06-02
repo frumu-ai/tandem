@@ -133,6 +133,52 @@ fn test_triage_node(node_id: &str) -> crate::automation_v2::types::AutomationFlo
 }
 
 #[test]
+fn partial_failure_mode_defaults_to_downstream_only_blocking() {
+    let mut automation = test_automation();
+    automation.flow.nodes = vec![
+        test_node("failed", Vec::new()),
+        test_node("downstream", vec!["failed"]),
+        test_node("independent", Vec::new()),
+    ];
+    let mut run = test_run_with_output(json!({"status": "blocked"}));
+    run.checkpoint.pending_nodes = vec![
+        "failed".to_string(),
+        "downstream".to_string(),
+        "independent".to_string(),
+    ];
+
+    let blocked = blocked_nodes_for_partial_failure_mode(&automation, &run.checkpoint, "failed");
+
+    assert!(blocked.contains("failed"));
+    assert!(blocked.contains("downstream"));
+    assert!(!blocked.contains("independent"));
+}
+
+#[test]
+fn partial_failure_mode_pause_all_blocks_all_pending_nodes() {
+    let mut automation = test_automation();
+    let mut failed = test_node("failed", Vec::new());
+    failed.metadata = Some(json!({"partial_failure_mode": "pause_all"}));
+    automation.flow.nodes = vec![
+        failed,
+        test_node("downstream", vec!["failed"]),
+        test_node("independent", Vec::new()),
+    ];
+    let mut run = test_run_with_output(json!({"status": "blocked"}));
+    run.checkpoint.pending_nodes = vec![
+        "failed".to_string(),
+        "downstream".to_string(),
+        "independent".to_string(),
+    ];
+
+    let blocked = blocked_nodes_for_partial_failure_mode(&automation, &run.checkpoint, "failed");
+
+    assert!(blocked.contains("failed"));
+    assert!(blocked.contains("downstream"));
+    assert!(blocked.contains("independent"));
+}
+
+#[test]
 fn triage_gate_skips_dependency_with_direct_has_work_false() {
     let triage = test_triage_node("select");
     let writer = test_node("write", vec!["select"]);
@@ -161,6 +207,52 @@ fn triage_gate_skips_dependency_with_structured_handoff_has_work_false() {
         &writer,
         &outputs,
         &[triage, writer.clone()]
+    ));
+}
+
+#[test]
+fn triage_gate_does_not_skip_fan_in_when_non_triage_parent_has_output() {
+    let triage = test_triage_node("select");
+    let research = test_node("research", vec![]);
+    let writer = test_node("write", vec!["select", "research"]);
+    let outputs = std::collections::HashMap::from([
+        (
+            "select".to_string(),
+            json!({ "content": { "has_work": false } }),
+        ),
+        (
+            "research".to_string(),
+            json!({ "status": "completed", "summary": "Research produced a real output." }),
+        ),
+    ]);
+
+    assert!(!should_skip_due_to_triage_gate(
+        &writer,
+        &outputs,
+        &[triage, research, writer.clone()]
+    ));
+}
+
+#[test]
+fn triage_gate_still_skips_when_only_triage_parent_has_no_work() {
+    let triage = test_triage_node("select");
+    let skipped = test_node("skipped", vec!["select"]);
+    let writer = test_node("write", vec!["skipped"]);
+    let outputs = std::collections::HashMap::from([
+        (
+            "select".to_string(),
+            json!({ "content": { "has_work": false } }),
+        ),
+        (
+            "skipped".to_string(),
+            json!({ "status": "skipped", "triage_skipped": true }),
+        ),
+    ]);
+
+    assert!(should_skip_due_to_triage_gate(
+        &writer,
+        &outputs,
+        &[triage, skipped, writer.clone()]
     ));
 }
 
@@ -576,6 +668,477 @@ fn promote_materialized_output_marks_session_salvage_recovery_source() {
     );
 }
 
+fn completion_test_workspace() -> std::path::PathBuf {
+    let workspace = std::env::temp_dir().join(format!(
+        "tandem-completion-deliverables-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace).expect("create completion test workspace");
+    workspace
+}
+
+fn write_completion_artifact(workspace: &std::path::Path, path: &str, text: &str) {
+    let resolved = crate::app::state::automation::resolve_automation_output_path(
+        workspace.to_str().expect("workspace path"),
+        path,
+    )
+    .expect("resolve artifact path");
+    if let Some(parent) = resolved.parent() {
+        std::fs::create_dir_all(parent).expect("create artifact parent");
+    }
+    std::fs::write(resolved, text).expect("write artifact");
+}
+
+fn substantive_markdown() -> String {
+    "# Final Report\n\nThis report summarizes the completed automation work with concrete evidence and useful operator context.\n\n## Findings\n\nThe run produced a durable artifact, checked the relevant inputs, and preserved the conclusions for downstream review.\n\n## Evidence\n\n- Workspace files were inspected.\n- The result contains a clear summary.\n- The output is long enough to be substantive.\n- The artifact can be reviewed independently.\n- The automation can now complete safely.\n"
+        .to_string()
+}
+
+fn automation_with_email_delivery_node() -> crate::AutomationV2Spec {
+    let mut automation = test_automation();
+    let node = &mut automation.flow.nodes[0];
+    node.node_id = "notify-user".to_string();
+    node.objective = "Send the finalized report to recipient@example.com by email.".to_string();
+    node.output_contract = Some(crate::AutomationFlowOutputContract {
+        kind: "approval_gate".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "delivery": {
+            "method": "email",
+            "to": "recipient@example.com",
+            "content_type": "text/html",
+            "inline_body_only": true,
+            "attachments": false
+        }
+    }));
+    automation
+}
+
+fn automation_with_outbound_action_node() -> crate::AutomationV2Spec {
+    let mut automation = test_automation();
+    let node = &mut automation.flow.nodes[0];
+    node.node_id = "publish-update".to_string();
+    node.objective = "Post the finalized update to the engineering channel.".to_string();
+    node.metadata = Some(json!({
+        "builder": {
+            "role": "publisher"
+        }
+    }));
+    automation
+}
+
+fn automation_with_required_output(path: &str, kind: &str) -> crate::AutomationV2Spec {
+    let mut automation = test_automation();
+    automation.flow.nodes[0].output_contract = Some(crate::AutomationFlowOutputContract {
+        kind: kind.to_string(),
+        validator: None,
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    automation.flow.nodes[0].metadata = Some(json!({
+        "builder": {
+            "output_path": path
+        }
+    }));
+    automation
+}
+
+#[test]
+fn completion_assertion_requeues_outbound_action_node_without_receipt() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_outbound_action_node();
+    let mut run = test_run_with_output(json!({
+        "status": "completed",
+        "summary": "Posted the update to engineering."
+    }));
+    run.checkpoint.node_outputs.clear();
+    run.checkpoint.node_outputs.insert(
+        "publish-update".to_string(),
+        json!({
+            "status": "completed",
+            "summary": "Posted the update to engineering."
+        }),
+    );
+    run.checkpoint.completed_nodes = vec!["publish-update".to_string()];
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Repair(CompletionDeliverableRepair { ref node_id, ref path, ref detail })
+            if node_id == "publish-update"
+                && path == "external_action_receipt"
+                && detail.contains("missing successful external action receipt")
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_assertion_accepts_outbound_action_success_receipt() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_outbound_action_node();
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+    run.checkpoint.node_outputs.insert(
+        "publish-update".to_string(),
+        json!({
+            "status": "completed",
+            "summary": "Posted the update to engineering.",
+            "external_actions": [{
+                "operation": "slack.post_message",
+                "status": "posted",
+                "approval_state": "executed",
+                "capability_id": "slack.post_message",
+                "target": "engineering",
+                "receipt": {
+                    "tool": "workflow_test.slack",
+                    "result": { "output": "posted" }
+                },
+                "error": null
+            }]
+        }),
+    );
+    run.checkpoint.completed_nodes = vec!["publish-update".to_string()];
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert_eq!(state, CompletionDeliverableState::Satisfied);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_assertion_requeues_email_node_without_success_receipt() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_email_delivery_node();
+    let mut run = test_run_with_output(json!({
+        "status": "completed",
+        "summary": "Sent the report to recipient@example.com.",
+        "tool_telemetry": {
+            "email_delivery_attempted": false,
+            "email_delivery_succeeded": false
+        }
+    }));
+    run.checkpoint.node_outputs.clear();
+    run.checkpoint.node_outputs.insert(
+        "notify-user".to_string(),
+        json!({
+            "status": "completed",
+            "summary": "Sent the report to recipient@example.com.",
+            "tool_telemetry": {
+                "email_delivery_attempted": false,
+                "email_delivery_succeeded": false
+            }
+        }),
+    );
+    run.checkpoint.completed_nodes = vec!["notify-user".to_string()];
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Repair(CompletionDeliverableRepair { ref node_id, ref path, ref detail })
+            if node_id == "notify-user"
+                && path == "email_delivery"
+                && detail.contains("missing successful email delivery receipt")
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_assertion_accepts_email_success_telemetry() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_email_delivery_node();
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+    run.checkpoint.node_outputs.insert(
+        "notify-user".to_string(),
+        json!({
+            "status": "completed",
+            "summary": "Email sent.",
+            "tool_telemetry": {
+                "email_delivery_attempted": true,
+                "email_delivery_succeeded": true
+            },
+            "attempt_evidence": {
+                "delivery": {
+                    "status": "succeeded",
+                    "recipient": "recipient@example.com"
+                }
+            }
+        }),
+    );
+    run.checkpoint.completed_nodes = vec!["notify-user".to_string()];
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert_eq!(state, CompletionDeliverableState::Satisfied);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_assertion_fails_email_node_without_receipt_at_attempt_cap() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_email_delivery_node();
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+    run.checkpoint.node_outputs.insert(
+        "notify-user".to_string(),
+        json!({
+            "status": "completed",
+            "summary": "Email sent.",
+            "tool_telemetry": {
+                "email_delivery_attempted": false,
+                "email_delivery_succeeded": false
+            }
+        }),
+    );
+    run.checkpoint.completed_nodes = vec!["notify-user".to_string()];
+    run.checkpoint
+        .node_attempts
+        .insert("notify-user".to_string(), 3);
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Failed { ref detail }
+            if detail.contains("missing successful email delivery receipt")
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_requeues_missing_node_artifact() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_required_output("reports/final.md", "report_markdown");
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.completed_nodes = vec!["research-brief".to_string()];
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Repair(CompletionDeliverableRepair { ref node_id, ref path, .. })
+            if node_id == "research-brief" && path == "reports/final.md"
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_requeues_weak_markdown() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_required_output("reports/final.md", "report_markdown");
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.completed_nodes = vec!["research-brief".to_string()];
+    write_completion_artifact(&workspace, "reports/final.md", "done");
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Repair(CompletionDeliverableRepair { ref node_id, ref path, .. })
+            if node_id == "research-brief" && path == "reports/final.md"
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_requeues_invalid_json() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_required_output("artifacts/final.json", "structured_json");
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.completed_nodes = vec!["research-brief".to_string()];
+    write_completion_artifact(&workspace, "artifacts/final.json", "not json");
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Repair(CompletionDeliverableRepair { ref node_id, ref path, .. })
+            if node_id == "research-brief" && path == "artifacts/final.json"
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_rejects_stale_unowned_output_target() {
+    let workspace = completion_test_workspace();
+    let mut automation = test_automation();
+    automation.flow.nodes.clear();
+    automation.output_targets = vec!["reports/final.md".to_string()];
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+    write_completion_artifact(&workspace, "reports/final.md", &substantive_markdown());
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Failed { ref detail }
+            if detail.contains("lacks current-run output evidence")
+                && detail.contains("reports/final.md")
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_accepts_unowned_output_target_with_publication_evidence() {
+    let workspace = completion_test_workspace();
+    let mut automation = test_automation();
+    automation.flow.nodes.clear();
+    automation.output_targets = vec!["reports/final.md".to_string()];
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+    run.checkpoint.node_outputs.insert(
+        "publisher".to_string(),
+        json!({
+            "status": "completed",
+            "artifact_publication": {
+                "targets": [{
+                    "scope": "workspace",
+                    "mode": "snapshot_replace",
+                    "path": "reports/final.md",
+                    "source_artifact_path": ".tandem/runs/run-test/artifacts/publisher.md",
+                    "copied": true
+                }]
+            }
+        }),
+    );
+    write_completion_artifact(&workspace, "reports/final.md", &substantive_markdown());
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert_eq!(state, CompletionDeliverableState::Satisfied);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_fails_unowned_missing_output_target() {
+    let workspace = completion_test_workspace();
+    let mut automation = test_automation();
+    automation.flow.nodes.clear();
+    automation.output_targets = vec!["reports/final.md".to_string()];
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Failed { ref detail }
+            if detail.contains("reports/final.md")
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_accepts_substantive_markdown_and_json() {
+    let workspace = completion_test_workspace();
+    let mut automation = automation_with_required_output("reports/final.md", "report_markdown");
+    automation.output_targets = vec!["artifacts/receipt.json".to_string()];
+    let mut run = test_run_with_output(json!({
+        "status": "completed",
+        "artifact_publication": {
+            "targets": [{
+                "scope": "workspace",
+                "mode": "snapshot_replace",
+                "path": "artifacts/receipt.json",
+                "source_artifact_path": "reports/final.md",
+                "copied": true
+            }]
+        }
+    }));
+    run.checkpoint.completed_nodes = vec!["research-brief".to_string()];
+    write_completion_artifact(&workspace, "reports/final.md", &substantive_markdown());
+    write_completion_artifact(&workspace, "artifacts/receipt.json", r#"{"status":"ok"}"#);
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert_eq!(state, CompletionDeliverableState::Satisfied);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_repair_requeue_clears_stale_completion() {
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.completed_nodes = vec!["research-brief".to_string()];
+    let repair = CompletionDeliverableRepair {
+        node_id: "research-brief".to_string(),
+        path: "reports/final.md".to_string(),
+        detail: "automation run missing required deliverable `reports/final.md`".to_string(),
+    };
+
+    requeue_completion_deliverable_repair(&mut run, &repair);
+
+    assert_eq!(run.status, crate::AutomationRunStatus::Running);
+    assert_eq!(
+        run.checkpoint.pending_nodes,
+        vec!["research-brief".to_string()]
+    );
+    assert!(run.checkpoint.completed_nodes.is_empty());
+    assert_eq!(
+        run.checkpoint
+            .node_outputs
+            .get("research-brief")
+            .and_then(|output| output.get("status"))
+            .and_then(Value::as_str),
+        Some("needs_repair")
+    );
+}
+
 #[test]
 fn derive_terminal_run_state_marks_blocked_outputs_as_blocked() {
     let automation = test_automation();
@@ -610,7 +1173,7 @@ fn derive_terminal_run_state_marks_verify_failed_outputs_as_failed() {
 }
 
 #[test]
-fn derive_terminal_run_state_does_not_block_repairable_research_outputs() {
+fn derive_terminal_run_state_fails_unqueued_repairable_outputs_as_incomplete() {
     let automation = test_automation();
     let run = test_run_with_output(json!({
         "status": "needs_repair",
@@ -621,7 +1184,94 @@ fn derive_terminal_run_state_does_not_block_repairable_research_outputs() {
     }));
     assert_eq!(
         derive_terminal_run_state(&automation, &run, false),
+        DerivedTerminalRunState::Failed {
+            failed_nodes: vec!["research-brief".to_string()],
+            blocked_nodes: Vec::new(),
+            detail:
+                "automation run incomplete: terminal accounting missing for node(s): research-brief"
+                    .to_string(),
+        }
+    );
+}
+
+#[test]
+fn derive_terminal_run_state_fails_when_flow_node_has_no_terminal_accounting() {
+    let automation = test_automation();
+    let mut run = test_run_with_output(json!({
+        "status": "completed",
+    }));
+    run.checkpoint.node_outputs.clear();
+
+    assert_eq!(
+        derive_terminal_run_state(&automation, &run, false),
+        DerivedTerminalRunState::Failed {
+            failed_nodes: vec!["research-brief".to_string()],
+            blocked_nodes: Vec::new(),
+            detail:
+                "automation run incomplete: terminal accounting missing for node(s): research-brief"
+                    .to_string(),
+        }
+    );
+}
+
+#[test]
+fn derive_terminal_run_state_fails_completed_node_without_output() {
+    let automation = test_automation();
+    let mut run = test_run_with_output(json!({
+        "status": "completed",
+    }));
+    run.checkpoint.node_outputs.clear();
+    run.checkpoint.completed_nodes = vec!["research-brief".to_string()];
+
+    assert_eq!(
+        derive_terminal_run_state(&automation, &run, false),
+        DerivedTerminalRunState::Failed {
+            failed_nodes: vec!["research-brief".to_string()],
+            blocked_nodes: Vec::new(),
+            detail:
+                "automation run incomplete: terminal accounting missing for node(s): research-brief"
+                    .to_string(),
+        }
+    );
+}
+
+#[test]
+fn derive_terminal_run_state_allows_pending_verify_failed_before_attempt_cap() {
+    let automation = test_automation();
+    let mut run = test_run_with_output(json!({
+        "status": "verify_failed",
+        "failure_kind": "verification_failed",
+    }));
+    run.checkpoint.pending_nodes = vec!["research-brief".to_string()];
+    run.checkpoint
+        .node_attempts
+        .insert("research-brief".to_string(), 1);
+
+    assert_eq!(
+        derive_terminal_run_state(&automation, &run, false),
         DerivedTerminalRunState::Completed
+    );
+}
+
+#[test]
+fn derive_terminal_run_state_fails_pending_verify_failed_at_attempt_cap() {
+    let automation = test_automation();
+    let mut run = test_run_with_output(json!({
+        "status": "verify_failed",
+        "failure_kind": "verification_failed",
+    }));
+    run.checkpoint.pending_nodes = vec!["research-brief".to_string()];
+    run.checkpoint
+        .node_attempts
+        .insert("research-brief".to_string(), 3);
+
+    assert_eq!(
+        derive_terminal_run_state(&automation, &run, false),
+        DerivedTerminalRunState::Failed {
+            failed_nodes: vec!["research-brief".to_string()],
+            blocked_nodes: Vec::new(),
+            detail: "automation run failed from node outcomes: research-brief".to_string(),
+        }
     );
 }
 
@@ -669,6 +1319,47 @@ fn derive_terminal_run_state_fails_pending_nodes_that_exhausted_attempts() {
             detail: "automation run failed from node outcomes: research-brief".to_string(),
         }
     );
+}
+
+#[test]
+fn retryable_verify_failed_output_requeues_node() {
+    let mut run = test_run_with_output(json!({
+        "status": "verify_failed",
+        "failure_kind": "verification_failed",
+    }));
+    run.checkpoint.pending_nodes.clear();
+
+    reconcile_pending_nodes_after_node_output(
+        &mut run.checkpoint,
+        "research-brief",
+        true,
+        false,
+        &std::collections::HashSet::new(),
+    );
+
+    assert_eq!(
+        run.checkpoint.pending_nodes,
+        vec!["research-brief".to_string()]
+    );
+}
+
+#[test]
+fn terminal_verify_failed_output_does_not_requeue_node() {
+    let mut run = test_run_with_output(json!({
+        "status": "verify_failed",
+        "failure_kind": "verification_failed",
+    }));
+    run.checkpoint.pending_nodes = vec!["research-brief".to_string()];
+
+    reconcile_pending_nodes_after_node_output(
+        &mut run.checkpoint,
+        "research-brief",
+        true,
+        true,
+        &std::collections::HashSet::new(),
+    );
+
+    assert!(run.checkpoint.pending_nodes.is_empty());
 }
 
 #[test]

@@ -11,6 +11,7 @@ use crate::automation_projection::{
 use crate::materialization::{
     materialization_seed_from_projection, ProjectedAutomationMaterializationSeed,
 };
+use crate::plan_package::PartialFailureMode;
 use crate::workflow_plan::{
     agent_id_for_role, compile_operator_model_policy, compile_workflow_agent_tool_allowlist,
     display_name_for_role, infer_explicit_output_targets, plan_max_parallel_agents,
@@ -60,6 +61,7 @@ where
             timeout_ms: workflow_runtime_step_timeout_ms(step),
             stage_kind: None,
             gate: None,
+            partial_failure_mode: Some(PartialFailureMode::PauseDownstreamOnly),
             metadata: stamp_fintech_step_metadata(step.metadata.clone(), step, fintech_strict),
         })
         .collect::<Vec<_>>();
@@ -324,6 +326,10 @@ mod tests {
         assert_eq!(projection.nodes.len(), 1);
         assert_eq!(projection.nodes[0].node_id, "execute_goal");
         assert_eq!(projection.nodes[0].timeout_ms, Some(1_800_000));
+        assert_eq!(
+            projection.nodes[0].partial_failure_mode,
+            Some(PartialFailureMode::PauseDownstreamOnly)
+        );
         assert_eq!(projection.execution.max_parallel_agents, Some(1));
         assert_eq!(projection.name, "Runtime Test");
         assert_eq!(

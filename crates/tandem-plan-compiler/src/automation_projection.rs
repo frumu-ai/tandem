@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::plan_package::PartialFailureMode;
+
 use crate::materialization::ProjectedAutomationContextMaterialization;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +62,8 @@ pub struct ProjectedAutomationNode<I, O> {
     pub stage_kind: Option<ProjectedAutomationStageKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<ProjectedAutomationApprovalGate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_failure_mode: Option<PartialFailureMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }

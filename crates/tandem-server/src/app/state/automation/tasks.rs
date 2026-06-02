@@ -90,6 +90,8 @@ async fn run_automation_v2_executor_single(state: AppState) {
             .reap_stale_running_automation_runs(STALE_RUNNING_AUTOMATION_RUN_MS)
             .await;
 
+        let _ = state.mark_stale_awaiting_approval_runs().await;
+
         let _ = state.auto_resume_stale_reaped_runs().await;
 
         if active.is_empty() {
@@ -122,6 +124,8 @@ async fn run_automation_v2_executor_multi(state: AppState) {
         let _ = state
             .reap_stale_running_automation_runs(STALE_RUNNING_AUTOMATION_RUN_MS)
             .await;
+
+        let _ = state.mark_stale_awaiting_approval_runs().await;
 
         let _ = state.auto_resume_stale_reaped_runs().await;
 

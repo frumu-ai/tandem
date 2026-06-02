@@ -32,7 +32,6 @@ impl RateLimitManager {
                 if let Some(until) = status.throttled_until_ms {
                     return now_ms() < until;
                 }
-                return true;
             }
         }
         false
@@ -43,5 +42,61 @@ impl RateLimitManager {
             status.is_throttled = false;
             status.throttled_until_ms = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_throttle_expiry_is_not_permanent_throttle() {
+        let mut manager = RateLimitManager::new();
+        manager.providers.insert(
+            "provider-a".to_string(),
+            ProviderRateLimitStatus {
+                active_requests: 0,
+                is_throttled: true,
+                throttled_until_ms: None,
+            },
+        );
+
+        assert!(!manager.is_provider_throttled("provider-a"));
+    }
+
+    #[test]
+    fn expired_throttle_is_not_active() {
+        let mut manager = RateLimitManager::new();
+        manager.providers.insert(
+            "provider-a".to_string(),
+            ProviderRateLimitStatus {
+                active_requests: 0,
+                is_throttled: true,
+                throttled_until_ms: Some(now_ms().saturating_sub(1)),
+            },
+        );
+
+        assert!(!manager.is_provider_throttled("provider-a"));
+    }
+
+    #[test]
+    fn active_throttle_remains_throttled() {
+        let mut manager = RateLimitManager::new();
+        manager.providers.insert(
+            "provider-a".to_string(),
+            ProviderRateLimitStatus {
+                active_requests: 0,
+                is_throttled: true,
+                throttled_until_ms: Some(now_ms().saturating_add(60_000)),
+            },
+        );
+
+        assert!(manager.is_provider_throttled("provider-a"));
+        let status = manager
+            .providers
+            .get("provider-a")
+            .expect("provider status");
+        assert!(status.is_throttled);
+        assert!(status.throttled_until_ms.is_some());
     }
 }

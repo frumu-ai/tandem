@@ -998,6 +998,61 @@ fn report_describing_test_failures_with_completed_status_passes() {
 }
 
 #[test]
+fn artifact_prose_about_prior_test_failures_does_not_create_verify_failed_status() {
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "generate_report".to_string(),
+        agent_id: "writer".to_string(),
+        objective: "Generate the final report".to_string(),
+        depends_on: Vec::new(),
+        input_refs: Vec::new(),
+        output_contract: Some(AutomationFlowOutputContract {
+            kind: "report_markdown".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        }),
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "builder": {
+                "output_path": "outputs/generate-report.md"
+            }
+        })),
+    };
+    let tool_telemetry = json!({
+        "requested_tools": ["write"],
+        "executed_tools": ["write"],
+    });
+
+    let (status, reason, approved): (String, Option<String>, Option<bool>) =
+        detect_automation_node_status(
+            &node,
+            "# CI Summary
+
+Tests failed in the prior CI run. This final report documents the remediation and current status.",
+            Some(&(
+                "outputs/generate-report.md".to_string(),
+                "# CI Summary
+
+Tests failed in the prior CI run. This final report documents the remediation and current status.".to_string(),
+            )),
+            &tool_telemetry,
+            None,
+        );
+
+    assert_eq!(status, "completed");
+    assert_eq!(reason, None);
+    assert_eq!(approved, None);
+}
+
+#[test]
 fn explicit_blocked_status_still_detected() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

@@ -1330,7 +1330,9 @@ pub(crate) async fn run_automation_node_prompt_with_timeout<F>(
 where
     F: std::future::Future<Output = anyhow::Result<()>>,
 {
-    let timeout_ms = effective_automation_node_timeout_ms(node);
+    let idle_timeout_ms = effective_automation_node_timeout_ms(node);
+    let absolute_timeout_ms = effective_automation_node_absolute_timeout_ms(node);
+    let mut event_rx = state.event_bus.subscribe();
     if let Err(active_run) = state
         .run_registry
         .acquire(
@@ -1353,7 +1355,9 @@ where
     let mut future = Box::pin(future);
     let mut ticker = tokio::time::interval(Duration::from_secs(3));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut timeout = Box::pin(tokio::time::sleep(Duration::from_millis(timeout_ms)));
+    let absolute_deadline = tokio::time::Instant::now() + Duration::from_millis(absolute_timeout_ms);
+    let mut absolute_timeout = Box::pin(tokio::time::sleep_until(absolute_deadline));
+    let mut idle_timeout = Box::pin(tokio::time::sleep(Duration::from_millis(idle_timeout_ms)));
     loop {
         tokio::select! {
             _ = ticker.tick() => {
@@ -1362,16 +1366,35 @@ where
                     .touch(session_id, run_id)
                     .await;
             }
-            _ = &mut timeout => {
+            event = event_rx.recv() => {
+                if let Ok(event) = event {
+                    if automation_node_event_is_progress_for_session(&event, session_id) {
+                        idle_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_millis(idle_timeout_ms));
+                    }
+                }
+            }
+            _ = &mut idle_timeout => {
                 let _ = state.cancellations.cancel(session_id).await;
                 let _ = state
                     .run_registry
                     .finish_if_match(session_id, run_id)
                     .await;
                 anyhow::bail!(
-                    "automation node `{}` timed out after {} ms",
+                    "automation node `{}` idle timed out after {} ms without progress",
                     node.node_id,
-                    timeout_ms
+                    idle_timeout_ms
+                );
+            }
+            _ = &mut absolute_timeout => {
+                let _ = state.cancellations.cancel(session_id).await;
+                let _ = state
+                    .run_registry
+                    .finish_if_match(session_id, run_id)
+                    .await;
+                anyhow::bail!(
+                    "automation node `{}` absolute timed out after {} ms",
+                    node.node_id,
+                    absolute_timeout_ms
                 );
             }
             result = &mut future => {
@@ -1391,9 +1414,47 @@ pub(crate) fn automation_node_prompt_timeout_error(
 ) -> bool {
     let message = error.to_string();
     message.contains(&format!(
+        "automation node `{}` idle timed out after",
+        node.node_id
+    )) || message.contains(&format!(
+        "automation node `{}` absolute timed out after",
+        node.node_id
+    )) || message.contains(&format!(
         "automation node `{}` timed out after",
         node.node_id
     ))
+}
+
+pub(crate) fn automation_node_event_is_progress_for_session(
+    event: &tandem_types::EngineEvent,
+    session_id: &str,
+) -> bool {
+    let matches_session = event
+        .properties
+        .get("sessionID")
+        .or_else(|| event.properties.get("session_id"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value == session_id);
+    if !matches_session {
+        return false;
+    }
+    matches!(
+        event.event_type.as_str(),
+        "message.part.updated"
+            | "provider.call.first_byte"
+            | "provider.call.iteration.finish"
+            | "provider.call.iteration.retry"
+            | "provider.usage"
+            | "tool.progress"
+            | "tool.call.progress"
+            | "tool.effect"
+    ) || event.event_type.starts_with("tool.")
+}
+
+pub(crate) fn effective_automation_node_absolute_timeout_ms(node: &AutomationFlowNode) -> u64 {
+    effective_automation_node_timeout_ms(node)
+        .saturating_mul(3)
+        .max(effective_automation_node_timeout_ms(node).saturating_add(60_000))
 }
 
 pub(crate) fn effective_automation_node_timeout_ms(node: &AutomationFlowNode) -> u64 {
