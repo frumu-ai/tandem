@@ -62,6 +62,7 @@ fn sandbox_blocked_result(reason: &str) -> ShellCommandPlan {
 }
 
 #[cfg(unix)]
+#[allow(dead_code)] // used by Linux-only shell-sandbox paths; unused on other unix (e.g. macOS)
 fn find_executable_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
@@ -74,7 +75,7 @@ fn find_executable_on_path(name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err, dead_code)] // used by Linux-only shell-sandbox paths; unused on other unix (e.g. macOS)
 pub(crate) fn prepare_shell_workspace(
     args: &Value,
 ) -> Result<(PathBuf, PathBuf), ShellCommandPlan> {
