@@ -2105,3 +2105,34 @@ async fn automation_v2_share_is_governed() {
     let agent_resp = app.clone().oneshot(agent_req).await.expect("agent share response");
     assert!(!agent_resp.status().is_success());
 }
+
+/// GOV-B9: `run_now` now requires owner/admin altitude (not mere read visibility).
+/// In local single-user mode (no verified context) the owner/admin check is a
+/// no-op, so a local human can still trigger a run; an agent-context caller is
+/// still refused by governance.
+#[tokio::test]
+async fn run_now_allowed_for_local_human_and_refused_for_agent() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-b9-runnow").await;
+
+    let human_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/v2/{}/run_now", automation.automation_id))
+        .header("content-type", "application/json")
+        .body(Body::from(json!({}).to_string()))
+        .expect("run_now request");
+    let human_resp = app.clone().oneshot(human_req).await.expect("run_now response");
+    assert_eq!(human_resp.status(), StatusCode::OK);
+
+    let agent_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/v2/{}/run_now", automation.automation_id))
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-b9")
+        .body(Body::from(json!({}).to_string()))
+        .expect("agent run_now request");
+    let agent_resp = app.clone().oneshot(agent_req).await.expect("agent run_now response");
+    assert!(!agent_resp.status().is_success());
+}

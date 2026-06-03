@@ -1475,7 +1475,10 @@ pub(super) async fn automations_v2_run_now(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
-    ensure_automation_v2_visible_to_context(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
+    // GOV-B9: executing a run is a mutation-altitude action, not a read. A user with
+    // only read visibility (e.g. org-wide visibility) must not be able to trigger a
+    // run; require owner/admin.
+    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state

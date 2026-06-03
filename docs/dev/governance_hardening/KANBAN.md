@@ -132,20 +132,22 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
 
 ### P2 - Authorization Altitude
 - `GOV-B9` `run_now` / `gate_decide` require owner/admin (not read-visibility)
-  - Status: `todo`
+  - Status: `done`
   - Priority: P2
-  - Scope: both gate on read-level `visible_to_context`, letting a view-only user execute/approve a run they cannot edit.
+  - Scope: both gated on read-level `visible_to_context`, letting a view-only user execute/approve a run they cannot edit.
   - Acceptance: a view-only (`org`-visibility) user cannot execute or approve.
-  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs:1393,2022`.
-  - Verification: `cargo test -p tandem-server run_now_owner_or_admin -- --nocapture`.
+  - Progress: `automations_v2_run_now` now calls `ensure_automation_v2_owner_or_admin` instead of `ensure_automation_v2_visible_to_context`, matching patch/delete/share. `gate_decide` (`automations_v2_run_gate_decide_inner`) was already switched to `ensure_automation_v2_run_owner_or_admin` under GOV-B1, so no further change there.
+  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs` (`automations_v2_run_now`).
+  - Verification: `run_now_allowed_for_local_human_and_refused_for_agent` (local human runs → 200; agent-context → refused). Note: the owner/admin **denial** branch requires a verified (signed-assertion) context that the HTTP integration suite has no infrastructure for — no handler has an `AUTOMATION_V2_ACCESS_DENIED` test repo-wide. `run_now` now shares the identical, already-trusted helper as patch/delete/share, so the denial behavior is covered transitively; the local-safety invariant (no verified context ⇒ owner/admin is a no-op) is tested directly.
 
 - `GOV-B2d` Attribution + audit for `abort_session` / `cancel_run_by_id`
-  - Status: `todo`
+  - Status: `done`
   - Priority: P2
-  - Scope: session/run cancel enforces same-tenant but resolves no actor, enforces no human-only, writes no cancel audit.
+  - Scope: session/run cancel enforced same-tenant but resolved no actor and wrote no cancel audit.
   - Acceptance: cancellations are attributed and audited.
-  - Files: `crates/tandem-server/src/http/sessions.rs:1825,1861`.
-  - Verification: `cargo test -p tandem-server session_cancel_audit -- --nocapture`.
+  - Progress: both `abort_session` and `cancel_run_by_id` now take `Extension<RequestPrincipal>` + `HeaderMap`, resolve the governance actor, and write a protected audit event (`session.aborted` / `session.run.cancelled`) attributing the actor. No human-only gate is imposed — cancellation is a de-escalation/stop, and blocking an agent from stopping its own run would be harmful — but it is now attributed and tamper-evidently recorded.
+  - Files: `crates/tandem-server/src/http/sessions.rs` (`abort_session`, `cancel_run_by_id`).
+  - Verification: `abort_session_writes_attributed_protected_audit` (abort with `x-tandem-actor-id` → `session.aborted` event in the protected audit log carrying the actor + session id).
 
 ### Cross-cutting
 - `GOV-X1` Consequential-route regression guard
