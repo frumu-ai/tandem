@@ -74,6 +74,7 @@ fn find_executable_on_path(name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
+#[allow(clippy::result_large_err)]
 pub(crate) fn prepare_shell_workspace(
     args: &Value,
 ) -> Result<(PathBuf, PathBuf), ShellCommandPlan> {
