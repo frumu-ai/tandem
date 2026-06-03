@@ -125,12 +125,14 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
 
 ### P2 - Channel Authority
 - `GOV-B5` Channel Approve-by-default fallback + button step-up + tenant binding
-  - Status: `todo`
+  - Status: `research` (three sub-problems, each needs a decision — not coded)
   - Priority: P2
   - Scope: unenrolled allowlisted users default to `Operator` → `Reconfigure` ≥ `Approve`; PIN step-up is a global env var and only on slash commands, not approve buttons; channels not tenant-bound.
   - Acceptance: allowlisted-but-unenrolled user cannot approve; button approvals require per-user expiring step-up; channel actions tenant-scoped and attributed.
-  - Files: `crates/tandem-server/src/app/state/channel_user_capabilities.rs:185-209`; `crates/tandem-channels/src/channel_registry.rs:119-124`, `config.rs:28`; `crates/tandem-channels/src/dispatcher_parts/part03.rs:1060-1083`; `*_interactions.rs`.
-  - Verification: `cargo test -p tandem-server channel_approval_tier -- --nocapture`, `channel_button_step_up`.
+  - Research: full findings + options + decisions in `docs/dev/governance_hardening/GOV-B5-RESEARCH.md`. Confirmed: `command_tier_for_profile(Operator) = Reconfigure` (the max tier) and `Operator` is the default profile, so any unenrolled user on a default-profile channel can approve/reconfigure; the step-up PIN is a global env var (not per-user), slash-only (buttons bypass it), and `Reconfigure`-only; channel capability records key on `{channel,user}` with no tenant.
+  - Blocking decisions: **D-B5.1** unenrolled fallback tier + solo-operator bootstrap (changing it risks breaking single-operator channels — same local-safety constraint as B10/B6); **D-B5.2** per-user expiring step-up token model + apply to buttons + which tiers; **D-B5.3** channel→tenant binding model + migration.
+  - Recommended phasing: **B5a** cap unenrolled fallback below Approve (with solo bootstrap) + protected audit on every channel Approve/Reconfigure; **B5b** per-user expiring step-up token applied to buttons; **B5c** tenant binding + migration.
+  - Files (for implementation): `crates/tandem-server/src/app/state/channel_user_capabilities.rs`; `crates/tandem-channels/src/dispatcher_parts/part03.rs`, `*_interactions.rs`, `channel_registry.rs`, `config.rs`.
 
 ### P2 - Authorization Altitude
 - `GOV-B9` `run_now` / `gate_decide` require owner/admin (not read-visibility)
