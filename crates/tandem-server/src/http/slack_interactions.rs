@@ -35,7 +35,7 @@ use crate::app::state::channel_user_capabilities::{
     channel_requires_approval_step_up, channel_security_profile_from_config,
 };
 use crate::app::state::principals::channel_identity::{
-    channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+    channel_bound_tenant, channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution, ChannelKind,
 };
 use crate::AppState;
 
@@ -261,6 +261,21 @@ pub(crate) async fn slack_interactions(
         .await
         .map(|run| run.tenant_context)
         .unwrap_or_else(tandem_types::TenantContext::local_implicit);
+    // GOV-B5c: if this channel is bound to a tenant, refuse to act on a run that
+    // belongs to a different tenant (prevents a channel acting cross-tenant by run
+    // id). An unbound channel (single-tenant/local) is unaffected.
+    if let Some((org_id, workspace_id)) =
+        channel_bound_tenant(&effective_config, ChannelKind::Slack)
+    {
+        if tenant_context.org_id != org_id || tenant_context.workspace_id != workspace_id {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                user_id = %action.user_id,
+                "rejecting Slack interaction targeting a run outside the channel's bound tenant"
+            );
+            return reject_forbidden("channel not bound to this run's tenant");
+        }
+    }
     // GOV-B1: this user has already passed signature verification, allowlist, and
     // the Approve capability-tier check above, so record the decision as a verified
     // human approver attributed to the Slack identity.
