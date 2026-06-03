@@ -125,8 +125,12 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
 
 ### P2 - Channel Authority
 - `GOV-B5` Channel Approve-by-default fallback + button step-up + tenant binding
-  - Status: `research` (three sub-problems, each needs a decision — not coded)
+  - Status: `in_progress` (B5a done — approve-by-default closed; B5b step-up + B5c tenant binding remain)
   - Priority: P2
+  - Decision (D-B5.1, from owner): approval is granular per-identity, separate from the comms allowlist. A hand-picked (non-wildcard) allowlist is a deliberate identity-trust decision, so those users keep approval; a wildcard-open (`*`) channel does NOT confer approval — that requires an explicit per-identity grant. Never lock out solo/hand-picked setups.
+  - Progress (B5a): `channel_user_can_approve` now (1) honors an explicit per-identity capability grant as authoritative (including a deliberate downgrade below Approve), and (2) for an ungranted user, falls back to the channel security profile ONLY on a non-open channel — on a wildcard-open channel it returns false. New `channel_is_open_to_all` helper detects `*` in `allowed_users`; threaded into all four interaction approve checks (slack/telegram/discord). Behavior changes ONLY for `*`-open Operator-profile channels (the actual hole); hand-picked allowlists, solo operators, and other profiles are unaffected.
+  - Files (B5a): `crates/tandem-server/src/app/state/principals/channel_identity.rs` (`channel_is_open_to_all`); `channel_user_capabilities.rs` (`channel_user_can_approve`); `slack_interactions.rs`, `telegram_interactions.rs`, `discord_interactions.rs`.
+  - Verification (B5a): `open_channel_denies_approval_without_explicit_grant`, `explicit_grant_approves_even_on_open_channel`; existing channel-cap + 16 interaction-handler tests green.
   - Scope: unenrolled allowlisted users default to `Operator` → `Reconfigure` ≥ `Approve`; PIN step-up is a global env var and only on slash commands, not approve buttons; channels not tenant-bound.
   - Acceptance: allowlisted-but-unenrolled user cannot approve; button approvals require per-user expiring step-up; channel actions tenant-scoped and attributed.
   - Research: full findings + options + decisions in `docs/dev/governance_hardening/GOV-B5-RESEARCH.md`. Confirmed: `command_tier_for_profile(Operator) = Reconfigure` (the max tier) and `Operator` is the default profile, so any unenrolled user on a default-profile channel can approve/reconfigure; the step-up PIN is a global env var (not per-user), slash-only (buttons bypass it), and `Reconfigure`-only; channel capability records key on `{channel,user}` with no tenant.

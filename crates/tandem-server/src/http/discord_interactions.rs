@@ -32,7 +32,7 @@ use tandem_channels::signing::verify_discord_signature;
 use crate::app::rate_limit::{ChannelRateLimitKey, ChannelRateLimitKind};
 use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
 use crate::app::state::principals::channel_identity::{
-    resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+    channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution, ChannelKind,
 };
 use crate::AppState;
 
@@ -212,7 +212,12 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
     let profile =
         channel_security_profile_from_config(&effective_config, ChannelKind::Discord.as_str());
     if !state
-        .channel_user_can_approve(ChannelKind::Discord.as_str(), &user_id, profile)
+        .channel_user_can_approve(
+            ChannelKind::Discord.as_str(),
+            &user_id,
+            profile,
+            channel_is_open_to_all(&effective_config, ChannelKind::Discord),
+        )
         .await
     {
         tracing::warn!(
@@ -328,7 +333,12 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
     let profile =
         channel_security_profile_from_config(&effective_config, ChannelKind::Discord.as_str());
     if !state
-        .channel_user_can_approve(ChannelKind::Discord.as_str(), &user_id, profile)
+        .channel_user_can_approve(
+            ChannelKind::Discord.as_str(),
+            &user_id,
+            profile,
+            channel_is_open_to_all(&effective_config, ChannelKind::Discord),
+        )
         .await
     {
         tracing::warn!(

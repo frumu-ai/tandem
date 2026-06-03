@@ -33,7 +33,7 @@ use tandem_channels::signing::verify_slack_signature;
 use crate::app::rate_limit::{ChannelRateLimitKey, ChannelRateLimitKind};
 use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
 use crate::app::state::principals::channel_identity::{
-    resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+    channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution, ChannelKind,
 };
 use crate::AppState;
 
@@ -173,7 +173,12 @@ pub(crate) async fn slack_interactions(
     let profile =
         channel_security_profile_from_config(&effective_config, ChannelKind::Slack.as_str());
     if !state
-        .channel_user_can_approve(ChannelKind::Slack.as_str(), &action.user_id, profile)
+        .channel_user_can_approve(
+            ChannelKind::Slack.as_str(),
+            &action.user_id,
+            profile,
+            channel_is_open_to_all(&effective_config, ChannelKind::Slack),
+        )
         .await
     {
         tracing::warn!(

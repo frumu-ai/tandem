@@ -202,10 +202,24 @@ impl AppState {
         channel: &str,
         user_id: &str,
         fallback_profile: ChannelSecurityProfile,
+        is_open_channel: bool,
     ) -> bool {
-        self.channel_user_capability_tier(channel, user_id, fallback_profile)
-            .await
-            >= CommandTier::Approve
+        // An explicit per-identity capability grant is authoritative — including a
+        // deliberate downgrade below `Approve`.
+        let key = channel_user_capability_key(channel, user_id);
+        if let Some(record) = self.channel_user_capabilities.read().await.get(&key) {
+            return CommandTier::from(record.max_tier) >= CommandTier::Approve;
+        }
+        // GOV-B5a: with no explicit grant, fall back to the channel security profile
+        // ONLY on a non-open channel, where the hand-picked `allowed_users` list is a
+        // deliberate identity-trust decision by the operator. On a wildcard-open (`*`)
+        // channel, "allowed to talk" must not imply "allowed to approve" — approval
+        // there requires an explicit per-identity grant. This closes the
+        // approve-by-default hole without disturbing solo/hand-picked-allowlist setups.
+        if is_open_channel {
+            return false;
+        }
+        command_tier_for_profile(fallback_profile) >= CommandTier::Approve
     }
 }
 
@@ -311,7 +325,74 @@ mod tests {
                 .channel_user_can_approve(
                     "telegram",
                     "fake-telegram-user",
-                    ChannelSecurityProfile::PublicDemo
+                    ChannelSecurityProfile::PublicDemo,
+                    false,
+                )
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn open_channel_denies_approval_without_explicit_grant() {
+        // GOV-B5a: on a wildcard-open channel, the Operator profile must NOT confer
+        // approval to an ungranted user — "allowed to talk" is not "allowed to approve".
+        let state = AppState::new_starting("test".to_string(), true);
+        assert!(
+            !state
+                .channel_user_can_approve("slack", "U-open", ChannelSecurityProfile::Operator, true)
+                .await,
+            "open channel must not auto-confer approval"
+        );
+        // On a hand-picked (non-open) channel, the deliberate Operator profile still
+        // confers approval — preserving solo/trusted-allowlist setups.
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-open",
+                    ChannelSecurityProfile::Operator,
+                    false
+                )
+                .await,
+            "non-open Operator channel preserves approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_grant_approves_even_on_open_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = AppState::new_starting("test".to_string(), true);
+        state.channel_user_capabilities_path = dir.path().join("caps.json");
+        state
+            .upsert_channel_user_capability(ChannelUserCapabilityRecord {
+                channel: "slack".to_string(),
+                user_id: "U-granted".to_string(),
+                max_tier: StoredCommandTier::Approve,
+                enrolled_at_ms: Some(1),
+                enrolled_by: Some("admin".to_string()),
+                pinned_workspace_id: None,
+            })
+            .await
+            .unwrap();
+        // An explicit per-identity grant >= Approve wins even on an open channel.
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-granted",
+                    ChannelSecurityProfile::PublicDemo,
+                    true
+                )
+                .await
+        );
+        // A different, ungranted user on the same open channel still cannot approve.
+        assert!(
+            !state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-nogrant",
+                    ChannelSecurityProfile::PublicDemo,
+                    true
                 )
                 .await
         );

@@ -87,6 +87,21 @@ pub fn resolve_channel_user(
     ChannelIdentityResolution::Resolved(build_principal(kind, user_id))
 }
 
+/// GOV-B5a: a channel is "open" when its `allowed_users` admits everyone via the
+/// `*` wildcard. On such a channel, being allowed to *talk* must not imply approval
+/// authority — approval there requires an explicit per-identity capability grant.
+pub fn channel_is_open_to_all(effective_config: &Value, kind: ChannelKind) -> bool {
+    effective_config
+        .pointer(&format!("/channels/{}/allowed_users", kind.as_str()))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .any(|entry| entry.trim() == "*")
+        })
+        .unwrap_or(false)
+}
+
 fn user_is_allowed(allowlist: &[String], user_id: &str) -> bool {
     if allowlist.is_empty() {
         // An empty `allowed_users` list is treated as "deny all" — the
