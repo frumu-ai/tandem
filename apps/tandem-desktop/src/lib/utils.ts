@@ -40,39 +40,3 @@ export function takeLastReversed<T>(
   }
   return result;
 }
-
-/**
- * Finds the element in an array that has the maximum value returned by the given function.
- * This is an O(n) operation, which is significantly faster than sorting the array O(n log n).
- */
-export function maxBy<T>(array: T[], getter: (item: T) => number): T | undefined {
-  if (array.length === 0) return undefined;
-  let maxElement = array[0];
-  let maxValue = getter(maxElement);
-  for (let i = 1; i < array.length; i++) {
-    const value = getter(array[i]);
-    if (value > maxValue) {
-      maxValue = value;
-      maxElement = array[i];
-    }
-  }
-  return maxElement;
-}
-
-/**
- * Finds the element in an array that has the minimum value returned by the given function.
- * This is an O(n) operation, which is significantly faster than sorting the array O(n log n).
- */
-export function minBy<T>(array: T[], getter: (item: T) => number): T | undefined {
-  if (array.length === 0) return undefined;
-  let minElement = array[0];
-  let minValue = getter(minElement);
-  for (let i = 1; i < array.length; i++) {
-    const value = getter(array[i]);
-    if (value < minValue) {
-      minValue = value;
-      minElement = array[i];
-    }
-  }
-  return minElement;
-}
