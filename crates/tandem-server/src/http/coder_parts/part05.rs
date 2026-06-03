@@ -1386,10 +1386,13 @@ pub(super) async fn coder_issue_fix_pr_submit(
                 );
                 let parent_run =
                     load_context_run_state(&state, &record.linked_context_run_id).await?;
-                let response = coder_run_create(
-                    State(state.clone()),
-                    axum::extract::Extension(parent_run.tenant_context.clone()),
-                    Json(create_input),
+                // GOV-B2a: internal auto-spawn of follow-on runs is system-initiated
+                // within an already-governed parent run, so it uses the inner
+                // (ungated) create path rather than the human-gated HTTP handler.
+                let response = coder_run_create_inner(
+                    state.clone(),
+                    parent_run.tenant_context.clone(),
+                    create_input,
                 )
                 .await?;
                 let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -1989,10 +1992,7 @@ pub(super) async fn coder_follow_on_run_create(
         )
     };
     let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
-    coder_run_create(
-        State(state),
-        axum::extract::Extension(run.tenant_context.clone()),
-        Json(create_input),
-    )
-    .await
+    // GOV-B2a: system-initiated follow-on run creation uses the inner (ungated)
+    // create path; the human gate applies only to the HTTP handler.
+    coder_run_create_inner(state, run.tenant_context.clone(), create_input).await
 }

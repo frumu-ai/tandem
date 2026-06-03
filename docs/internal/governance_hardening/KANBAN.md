@@ -39,12 +39,13 @@ Source plan: `docs/internal/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENIN
   - Verification: `cargo test -p tandem-server --features premium-governance governance_approval_approve_rejects_agent_reviewer`, `governance_approval_rejects_agent_self_review` (both pass); full `governance::` module = 14 passed / 0 failed (operator create+approve workflow preserved).
 
 - `GOV-B2a` Coder runs through governance
-  - Status: `todo`
+  - Status: `done`
   - Priority: P0
-  - Scope: `coder_run_create`/`execute_all`/`approve`/`cancel` resolve no actor and call no governance; an agent blocked on V2 create/run uses the coder endpoints instead.
-  - Acceptance: agent-context coder create/run is gated identically to V2; approve/cancel human-only; allow+deny audited.
-  - Files: `crates/tandem-server/src/http/coder_parts/part06.rs:1130`; `part07.rs:279,419,620`.
-  - Verification: `cargo test -p tandem-server coder_run_governance -- --nocapture`.
+  - Scope: `coder_run_create`/`execute_all`/`approve`/`cancel` resolved no actor and called no governance; an agent blocked on V2 create/run could use the coder endpoints instead.
+  - Acceptance: agent-context coder create/execute/approve/cancel over HTTP is refused; internal system-initiated follow-on runs are unaffected.
+  - Progress: added `ensure_coder_human_actor` (resolves the governance actor from the verified principal; rejects non-human callers with `FORBIDDEN`) and applied it to the `coder_run_create` HTTP handler and `coder_run_execute_all`/`approve`/`cancel`. The two internal auto-spawn/follow-on callers in `part05.rs` were repointed from the (now-gated) `coder_run_create` HTTP handler to `coder_run_create_inner`, so system-initiated follow-on runs within an already-governed parent run keep working without a human gate. Rationale matches B2b: coder runs have no per-run agent-governance record, so the HTTP path is human-only; agents needing governed autonomous work use Automations V2.
+  - Files: `crates/tandem-server/src/http/coder_parts/part06.rs` (`ensure_coder_human_actor`, `coder_run_create`); `part07.rs` (`coder_run_execute_all`/`approve`/`cancel`); `part05.rs` (two internal callers → `coder_run_create_inner`).
+  - Verification: `cargo test -p tandem-server coder_run_create_rejects_agent_context` (pass) + `coder_merge_recommendation_execute_all_runs_to_completion` (pass, exercises the rerouted auto-spawn path); full `coder::` module = 101 passed / 2 failed, where the 2 failures (`issue_fix_handoff_commits_and_pushes_worker_branch`, `coder_issue_fix_worker_uses_managed_worktree_for_git_repo`) are PRE-EXISTING environmental git-push/worktree failures — confirmed identical on a stashed clean tree (origin/main), unrelated to this change.
 
 - `GOV-B2b` Routines + v1 wrappers through governance
   - Status: `done`
