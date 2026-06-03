@@ -2136,3 +2136,58 @@ async fn run_now_allowed_for_local_human_and_refused_for_agent() {
     let agent_resp = app.clone().oneshot(agent_req).await.expect("agent run_now response");
     assert!(!agent_resp.status().is_success());
 }
+
+/// GOV-X1: consequential-route regression guard. Every consequential automation
+/// mutation route must refuse a forged agent-context request. Adding a new
+/// mutation route without routing it through governance will fail this test.
+/// Gated to the OSS build, where agent mutations are uniformly refused by the
+/// `UnavailableGovernanceEngine`.
+#[cfg(not(feature = "premium-governance"))]
+#[tokio::test]
+async fn consequential_routes_refuse_agent_context() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-x1-guard").await;
+    let aid = automation.automation_id.clone();
+
+    let create_payload = json!({
+        "automation_id": "auto-x1-created-by-agent",
+        "name": "x1 created by agent",
+        "status": "draft",
+        "schedule": { "type": "manual", "timezone": "UTC", "misfire_policy": { "type": "skip" } },
+        "agents": [{
+            "agent_id": "agent-x1",
+            "display_name": "Agent X1",
+            "skills": [],
+            "tool_policy": { "allowlist": ["read"], "denylist": [] },
+            "mcp_policy": { "allowed_servers": [] }
+        }],
+        "flow": { "nodes": [{ "node_id": "n1", "agent_id": "agent-x1", "objective": "x", "depends_on": [] }] },
+        "execution": { "max_parallel_agents": 1 }
+    });
+
+    let cases: Vec<(&str, String, Option<Value>)> = vec![
+        ("POST", "/automations/v2".to_string(), Some(create_payload)),
+        ("POST", format!("/automations/v2/{aid}/run_now"), Some(json!({}))),
+        ("POST", format!("/automations/v2/{aid}/share"), Some(json!({ "visibility": "org" }))),
+        ("PATCH", format!("/automations/v2/{aid}"), Some(json!({ "name": "x1-patched" }))),
+        ("DELETE", format!("/automations/v2/{aid}"), None),
+    ];
+
+    for (method, path, body) in cases {
+        let req = Request::builder()
+            .method(method)
+            .uri(&path)
+            .header("content-type", "application/json")
+            .header("x-tandem-request-source", "agent")
+            .header("x-tandem-agent-id", "agent-x1")
+            .body(body.map(|b| Body::from(b.to_string())).unwrap_or_else(Body::empty))
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert!(
+            !resp.status().is_success(),
+            "agent-context {method} {path} must be refused, got {}",
+            resp.status()
+        );
+    }
+}

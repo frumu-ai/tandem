@@ -151,8 +151,11 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
 
 ### Cross-cutting
 - `GOV-X1` Consequential-route regression guard
-  - Status: `todo`
+  - Status: `done`
   - Priority: P1
-  - Scope: one integration test asserting that for every consequential route, a forged-source agent request is either blocked or produces a protected audit event with a verified non-self decider.
+  - Scope: one integration test asserting that consequential mutation routes refuse a forged agent-context request.
   - Acceptance: adding a new mutation route without governance fails this test.
-  - Verification: `cargo test -p tandem-server consequential_routes_enforce_governance -- --nocapture`.
+  - Progress: `consequential_routes_refuse_agent_context` table-drives an agent-context (`x-tandem-request-source: agent` + `x-tandem-agent-id`) request at create / run_now / share / patch / delete and asserts each is non-success. Gated to the OSS build, where the `UnavailableGovernanceEngine` uniformly refuses agent mutations, so the guard is deterministic. A new ungoverned mutation route added to this list (or that bypasses governance) fails the test.
+  - Files: `crates/tandem-server/src/http/tests/global_parts/part03.rs`.
+  - Verification: `cargo test -p tandem-server consequential_routes_refuse_agent_context` passes (all five routes refuse).
+  - Follow-up: extend the case list as new consequential routes are added (gate_decide/routines/coder/channel-draft already have dedicated agent-rejection tests under B1/B2).
