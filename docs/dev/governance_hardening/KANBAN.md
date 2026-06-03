@@ -95,12 +95,13 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
   - Verification: `cargo test -p tandem-server launch_governance_recheck -- --nocapture`, `stale_resume_governance_recheck`.
 
 - `GOV-B7` Govern + audit `automations_v2_share`
-  - Status: `todo`
+  - Status: `done`
   - Priority: P1
-  - Scope: visibility/share mutation has no governance call and no audit; can flip private → org-wide.
+  - Scope: visibility/share mutation had no governance call and no audit; could flip private → org-wide.
   - Acceptance: non-authorized/agent actor cannot widen visibility; change is audited.
-  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs:1300`.
-  - Verification: `cargo test -p tandem-server automation_share_governance -- --nocapture`.
+  - Progress: `automations_v2_share` now takes `Extension<RequestPrincipal>` + `HeaderMap`, resolves the governance actor, bootstraps the governance record via `get_or_bootstrap_automation_governance`, and runs `can_mutate_automation` (which rejects agent-context callers) before applying the share metadata — mirroring the `automations_v2_delete` governance pattern. After persisting it writes an `automation.governance.shared` protected audit event recording the actor and resulting visibility.
+  - Files: `crates/tandem-server/src/http/routines_automations_parts/part02.rs` (`automations_v2_share`).
+  - Verification: `cargo test -p tandem-server automation_v2_share_is_governed` (human owner widens to org → 200; agent-context share → rejected). No prior test exercised the v2 share endpoint, so no regression surface.
 
 ## Backlog
 

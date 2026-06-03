@@ -2074,3 +2074,34 @@ async fn gate_decision_records_human_decider() {
         crate::automation_v2::governance::GovernanceActorKind::Human
     );
 }
+
+/// GOV-B7: sharing an automation is a governed mutation. A human owner may change
+/// visibility; an agent-context share is rejected by governance.
+#[tokio::test]
+async fn automation_v2_share_is_governed() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-share-b7").await;
+
+    // Human (control-panel) owner widens visibility to org.
+    let human_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/v2/{}/share", automation.automation_id))
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "visibility": "org" }).to_string()))
+        .expect("share request");
+    let human_resp = app.clone().oneshot(human_req).await.expect("share response");
+    assert_eq!(human_resp.status(), StatusCode::OK);
+
+    // Agent-context share is refused by the governance layer.
+    let agent_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/v2/{}/share", automation.automation_id))
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-share")
+        .body(Body::from(json!({ "visibility": "private" }).to_string()))
+        .expect("agent share request");
+    let agent_resp = app.clone().oneshot(agent_req).await.expect("agent share response");
+    assert!(!agent_resp.status().is_success());
+}

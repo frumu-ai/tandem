@@ -1355,7 +1355,9 @@ pub(super) async fn automations_v2_patch(
 pub(super) async fn automations_v2_share(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<AutomationV2ShareInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1365,8 +1367,24 @@ pub(super) async fn automations_v2_share(
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
     ensure_automation_v2_owner_or_admin(&automation, verified)?;
+    // GOV-B7: sharing changes visibility/exposure (e.g. private -> org), so it is a
+    // governed mutation rather than an ungoverned metadata write. Resolve the actor
+    // and run it through the governance layer (which rejects agent-context callers)
+    // before persisting, and write tamper-evident audit evidence.
+    let actor =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    let _ = state
+        .get_or_bootstrap_automation_governance(&automation)
+        .await;
+    state
+        .can_mutate_automation(&id, &actor, false)
+        .await
+        .map_err(super::governance::governance_error_response)?;
     apply_automation_v2_share_metadata(&mut automation, input, verified)?;
     automation.updated_at_ms = crate::now_ms();
+    let visibility = automation_v2_access_metadata(&automation)
+        .and_then(|access| access.get("visibility").and_then(Value::as_str))
+        .map(ToString::to_string);
     let stored = state.put_automation_v2(automation).await.map_err(|error| {
         (
             StatusCode::BAD_REQUEST,
@@ -1376,6 +1394,18 @@ pub(super) async fn automations_v2_share(
             })),
         )
     })?;
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.shared",
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
+        json!({
+            "automationID": stored.automation_id.clone(),
+            "visibility": visibility,
+            "actor": actor.clone(),
+        }),
+    )
+    .await;
     Ok(Json(json!({ "automation": stored })))
 }
 
