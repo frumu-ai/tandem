@@ -2,8 +2,8 @@
 
 Last updated: 2026-06-02
 Owner: Engine / Runtime Authority
-Goal: `docs/internal/governance_hardening/GOAL.md`
-Source plan: `docs/internal/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLAN.md`
+Goal: `docs/dev/governance_hardening/GOAL.md`
+Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLAN.md`
 
 ## Status Legend
 - `todo`

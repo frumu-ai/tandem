@@ -2,8 +2,8 @@
 
 Last updated: 2026-06-02
 Owner: Engine / Runtime Authority
-Goal: `docs/internal/governance_hardening/GOAL.md`
-Kanban: `docs/internal/governance_hardening/KANBAN.md`
+Goal: `docs/dev/governance_hardening/GOAL.md`
+Kanban: `docs/dev/governance_hardening/KANBAN.md`
 
 Derived from a five-surface governance-enforcement audit of the engine runtime
 (`crates/tandem-server`, `crates/tandem-governance-engine`, `crates/tandem-enterprise-*`).

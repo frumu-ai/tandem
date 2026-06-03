@@ -2,8 +2,8 @@
 
 Last updated: 2026-06-02
 Owner: Engine / Runtime Authority
-Source audit: `docs/internal/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLAN.md`
-Kanban: `docs/internal/governance_hardening/KANBAN.md`
+Source audit: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLAN.md`
+Kanban: `docs/dev/governance_hardening/KANBAN.md`
 
 ## Goal
 
