@@ -221,6 +221,34 @@ impl AppState {
         }
         command_tier_for_profile(fallback_profile) >= CommandTier::Approve
     }
+
+    /// GOV-B5b: issue a per-identity step-up valid for `ttl_ms`, returning the
+    /// expiry timestamp. Replaces any prior grant for the same channel+user.
+    pub async fn grant_channel_step_up(&self, channel: &str, user_id: &str, ttl_ms: u64) -> u64 {
+        let expires_at_ms = crate::now_ms().saturating_add(ttl_ms);
+        self.channel_step_up_grants
+            .write()
+            .await
+            .insert(channel_user_capability_key(channel, user_id), expires_at_ms);
+        expires_at_ms
+    }
+
+    /// GOV-B5b: true if the identity currently holds an unexpired step-up grant.
+    /// Expired grants are pruned on read. This is the per-user replacement for the
+    /// legacy global `TANDEM_CHANNEL_STEP_UP_PIN`, and (unlike the slash-only PIN)
+    /// is checkable on the button/interaction path.
+    pub async fn channel_step_up_active(&self, channel: &str, user_id: &str) -> bool {
+        let key = channel_user_capability_key(channel, user_id);
+        let mut guard = self.channel_step_up_grants.write().await;
+        match guard.get(&key).copied() {
+            Some(expires_at_ms) if expires_at_ms > crate::now_ms() => true,
+            Some(_) => {
+                guard.remove(&key);
+                false
+            }
+            None => false,
+        }
+    }
 }
 
 pub fn channel_security_profile_from_config(
@@ -240,6 +268,17 @@ pub fn channel_user_capability_key(channel: &str, user_id: &str) -> String {
         channel.trim().to_ascii_lowercase(),
         user_id.trim().to_ascii_lowercase()
     )
+}
+
+/// GOV-B5b: whether a channel requires an active per-identity step-up before an
+/// approval/interaction is honored. Opt-in per channel via
+/// `/channels/{channel}/require_approval_step_up` (default `false`), so existing
+/// flows are unchanged unless an operator deliberately raises the bar.
+pub fn channel_requires_approval_step_up(effective_config: &serde_json::Value, channel: &str) -> bool {
+    effective_config
+        .pointer(&format!("/channels/{channel}/require_approval_step_up"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn normalize_enrollment_code(code: &str) -> String {
@@ -396,5 +435,28 @@ mod tests {
                 )
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn step_up_grant_is_active_until_expiry() {
+        // GOV-B5b: a per-identity step-up is active while unexpired and absent
+        // otherwise (a zero-TTL grant is immediately expired).
+        let state = AppState::new_starting("test".to_string(), true);
+        assert!(!state.channel_step_up_active("slack", "U-step").await);
+        state.grant_channel_step_up("slack", "U-step", 60_000).await;
+        assert!(state.channel_step_up_active("slack", "U-step").await);
+        state.grant_channel_step_up("slack", "U-step", 0).await;
+        assert!(!state.channel_step_up_active("slack", "U-step").await);
+    }
+
+    #[test]
+    fn require_approval_step_up_config_defaults_off() {
+        // GOV-B5b: step-up is opt-in per channel; absent config means off.
+        let cfg = serde_json::json!({
+            "channels": { "slack": { "require_approval_step_up": true }, "discord": {} }
+        });
+        assert!(channel_requires_approval_step_up(&cfg, "slack"));
+        assert!(!channel_requires_approval_step_up(&cfg, "discord"));
+        assert!(!channel_requires_approval_step_up(&cfg, "telegram"));
     }
 }

@@ -30,7 +30,9 @@ use tandem_channels::discord_blocks::{parse_custom_id, ParsedCustomId};
 use tandem_channels::signing::verify_discord_signature;
 
 use crate::app::rate_limit::{ChannelRateLimitKey, ChannelRateLimitKind};
-use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
+use crate::app::state::channel_user_capabilities::{
+    channel_requires_approval_step_up, channel_security_profile_from_config,
+};
 use crate::app::state::principals::channel_identity::{
     channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution, ChannelKind,
 };
@@ -227,6 +229,20 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
         );
         return reject_forbidden("user lacks approval capability");
     }
+    // GOV-B5b: on a channel that opts into step-up, an approval requires an active
+    // per-identity step-up grant issued out-of-band by the control panel.
+    if channel_requires_approval_step_up(&effective_config, ChannelKind::Discord.as_str())
+        && !state
+            .channel_step_up_active(ChannelKind::Discord.as_str(), &user_id)
+            .await
+    {
+        tracing::warn!(
+            target: "tandem_server::discord_interactions",
+            user_id = %user_id,
+            "rejecting Discord interaction without an active step-up"
+        );
+        return reject_forbidden("step-up required");
+    }
     let rate_key = ChannelRateLimitKey {
         channel: ChannelKind::Discord.as_str().to_string(),
         user_id: user_id.clone(),
@@ -347,6 +363,20 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
             "rejecting Discord modal submission without approval capability"
         );
         return reject_forbidden("user lacks approval capability");
+    }
+    // GOV-B5b: on a channel that opts into step-up, an approval requires an active
+    // per-identity step-up grant issued out-of-band by the control panel.
+    if channel_requires_approval_step_up(&effective_config, ChannelKind::Discord.as_str())
+        && !state
+            .channel_step_up_active(ChannelKind::Discord.as_str(), &user_id)
+            .await
+    {
+        tracing::warn!(
+            target: "tandem_server::discord_interactions",
+            user_id = %user_id,
+            "rejecting Discord interaction without an active step-up"
+        );
+        return reject_forbidden("step-up required");
     }
     let rate_key = ChannelRateLimitKey {
         channel: ChannelKind::Discord.as_str().to_string(),

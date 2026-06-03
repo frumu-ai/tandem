@@ -271,6 +271,7 @@ impl AppState {
             channel_automation_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             channel_user_capabilities: Arc::new(RwLock::new(std::collections::HashMap::new())),
             channel_enrollment_codes: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            channel_step_up_grants: Arc::new(RwLock::new(std::collections::HashMap::new())),
             channel_rate_limiter: Arc::new(crate::app::rate_limit::ChannelRateLimiter::default()),
             automation_governance: Arc::new(RwLock::new(
                 crate::automation_v2::governance::GovernanceState::default(),

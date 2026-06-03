@@ -135,6 +135,11 @@ pub struct AppState {
             >,
         >,
     >,
+    /// GOV-B5b: per-identity, expiring channel step-up grants (key
+    /// `"{channel}:{user_id}"` -> `expires_at_ms`). Ephemeral / in-memory: a
+    /// step-up is an out-of-band assurance issued by the control panel and is
+    /// short-lived by design, so it is intentionally not persisted.
+    pub channel_step_up_grants: Arc<RwLock<std::collections::HashMap<String, u64>>>,
     pub channel_rate_limiter: Arc<ChannelRateLimiter>,
     pub automation_governance: Arc<RwLock<GovernanceState>>,
     pub governance_engine: Arc<dyn GovernancePolicyEngine>,

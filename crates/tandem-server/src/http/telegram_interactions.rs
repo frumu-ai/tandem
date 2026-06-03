@@ -29,7 +29,9 @@ use tandem_channels::signing::verify_telegram_secret_token;
 use tandem_channels::telegram_keyboards::{parse_callback_data, ParsedCallbackData};
 
 use crate::app::rate_limit::{ChannelRateLimitKey, ChannelRateLimitKind};
-use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
+use crate::app::state::channel_user_capabilities::{
+    channel_requires_approval_step_up, channel_security_profile_from_config,
+};
 use crate::app::state::principals::channel_identity::{
     channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution, ChannelKind,
 };
@@ -242,6 +244,20 @@ pub(crate) async fn telegram_interactions(
             "rejecting Telegram interaction without approval capability"
         );
         return reject_forbidden("user lacks approval capability");
+    }
+    // GOV-B5b: on a channel that opts into step-up, an approval requires an active
+    // per-identity step-up grant issued out-of-band by the control panel.
+    if channel_requires_approval_step_up(&effective_config, ChannelKind::Telegram.as_str())
+        && !state
+            .channel_step_up_active(ChannelKind::Telegram.as_str(), &user_id)
+            .await
+    {
+        tracing::warn!(
+            target: "tandem_server::telegram_interactions",
+            user_id = %user_id,
+            "rejecting Telegram interaction without an active step-up"
+        );
+        return reject_forbidden("step-up required");
     }
     let rate_key = ChannelRateLimitKey {
         channel: ChannelKind::Telegram.as_str().to_string(),
