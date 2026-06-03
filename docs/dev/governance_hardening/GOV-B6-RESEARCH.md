@@ -114,5 +114,82 @@ Split GOV-B6 into:
   resume-trigger decision).
 - **B6c:** capability recheck — fold into / sequence after GOV-D1.
 
+---
+
+## Analysis & decision (added after reviewing how each pause set is populated)
+
+A closer read of *how the two pause sets are written* resolves most of the open questions
+and points to a single best route.
+
+### The two pause sets have different semantics
+
+- `spend_paused_agents` — populated by the premium spend evaluation
+  (`crates/tandem-governance-engine/src/lib.rs:879`,
+  `crates/tandem-server/src/app/state/governance.rs:1669`). This is a genuine
+  **execution/spend** stop: the agent has exhausted its budget, so launching a queued run
+  would burn more. Rechecking this at launch is **correct and well-defined**.
+- `paused_agents` — populated **only** by `pause_automation_creation_for_agent`
+  (`crates/tandem-server/src/app/state/governance.rs:497-510`), driven by the
+  creation-review threshold. Despite the generic name, `is_agent_paused` means **"this agent
+  may not CREATE new automations"** — a creation-time gate consumed on the create path,
+  **not** a run-execution stop. Halting an already-queued run on it would be a semantic
+  mismatch: the automation already exists and was already cleared to run.
+- There is **no `AgentPaused` `AutomationStopKind`** (variants are `Cancelled`,
+  `OperatorStopped`, `GuardrailStopped`, `Panic`, `Shutdown`, `ServerRestart`,
+  `StaleReaped`) and **no unpause→resume reaction** anywhere, so blocking on `paused_agents`
+  would also require inventing both a stop-kind and a resume sweep.
+
+### Conclusion — best route
+
+**Implement B6a only; scope `paused_agents` (creation pause) OUT of the launch recheck;
+defer capability to D1.**
+
+- **B6a — spend-pause recheck (recommended, implement now).** A shared read-only helper
+  called from `claim_specific_automation_v2_run` (immediately before the `Queued → Running`
+  transition at `part05.rs:645`) and from `auto_resume_stale_reaped_runs` (before
+  re-queueing): collect the agent ids; if any is `is_agent_spend_paused` **and** lacks an
+  approved `has_approved_agent_quota_override`, hold the run as `Paused + GuardrailStopped`
+  (with a `pause_reason`/`detail` distinguishing "held at launch" from "stopped mid-run")
+  plus a protected audit event. This **reuses** the existing
+  `auto_resume_guardrail_stopped_runs` sweep verbatim — **no new `stop_kind`, no new resume
+  arm** — and is a **no-op in OSS/local** (the set is empty there), satisfying the
+  local-safety constraint. This answers Q1/Q2 for the spend case: **hold**, via the existing
+  `GuardrailStopped` path.
+- **Creation pause (`paused_agents`) — explicitly out of scope for B6.** It is a creation
+  gate; execution of an already-created automation is governed by spend and capability. (If
+  product later decides creation-review should be a *hard stop on all agent activity*, that
+  is a separate policy item with its own stop-kind + resume sweep — not a hardening fix, and
+  it should not ride in under B6.)
+- **B6c — capability recheck — defer to GOV-D1.** Most declared capabilities have no
+  approval record, so a naive `has_approved_agent_capability` recheck would false-positive;
+  it needs D1's "which capabilities require a runtime grant + which keys a run requires"
+  model first.
+
+### Why hold (not fail) for spend
+
+The run has not started, so `Paused` is the accurate state, and an approved quota override
+then resumes it automatically through machinery that **already exists**. Failing would
+discard queued work and force a manual re-trigger for a transient, operator-resolvable
+condition.
+
+### Test plan for B6a
+
+- **Premium** (`--features premium-governance`): drive an agent into `spend_paused_agents`,
+  enqueue a run, claim it → assert it does **not** reach `Running` but `Paused +
+  GuardrailStopped`; approve a quota override → assert the existing sweep resumes it and a
+  subsequent claim launches it.
+- **OSS** (default build): with no governance state, assert a queued run claims to `Running`
+  normally (the recheck is a no-op) — guarding the local-safety invariant.
+
+### Residual risk / notes
+
+- Minor TOCTOU: the governance snapshot is read under `automation_governance.read()` and the
+  transition takes `automation_v2_runs.write()` separately; an agent paused in that window is
+  caught on the next sweep/claim. Acceptable.
+- Keep the recheck independent of `TANDEM_DISABLE_STALE_AUTO_RESUME` (that switch governs
+  stale resume only, not governance).
+- Open product question (does **not** block B6a): should a creation-review pause also halt
+  in-flight/queued execution? Default answer here is **no** (separate item if reversed).
+
 Implement B6a first once the hold-state decision in Q1/Q2 is confirmed; B6b/B6c after the
 D1 direction is set.
