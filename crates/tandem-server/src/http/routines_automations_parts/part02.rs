@@ -475,10 +475,21 @@ pub(super) async fn automations_delete(
 
 pub(super) async fn automations_run_now(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<RoutineRunNowInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let response = routines_run_now(State(state.clone()), Path(id), Json(input)).await?;
+    let response = routines_run_now(
+        State(state.clone()),
+        Extension(tenant_context),
+        Extension(request_principal),
+        headers,
+        Path(id),
+        Json(input),
+    )
+    .await?;
     let payload = response.0;
     let run_id = payload
         .get("runID")
@@ -588,10 +599,21 @@ pub(super) async fn automations_run_get(
 
 pub(super) async fn automations_run_approve(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let response = routines_run_approve(State(state), Path(run_id), Json(input)).await?;
+    let response = routines_run_approve(
+        State(state),
+        Extension(tenant_context),
+        Extension(request_principal),
+        headers,
+        Path(run_id),
+        Json(input),
+    )
+    .await?;
     let run = response
         .0
         .get("run")
@@ -620,10 +642,21 @@ pub(super) async fn automations_run_approve(
 
 pub(super) async fn automations_run_deny(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let response = routines_run_deny(State(state), Path(run_id), Json(input)).await?;
+    let response = routines_run_deny(
+        State(state),
+        Extension(tenant_context),
+        Extension(request_principal),
+        headers,
+        Path(run_id),
+        Json(input),
+    )
+    .await?;
     let run = response
         .0
         .get("run")
@@ -652,10 +685,21 @@ pub(super) async fn automations_run_deny(
 
 pub(super) async fn automations_run_pause(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let response = routines_run_pause(State(state), Path(run_id), Json(input)).await?;
+    let response = routines_run_pause(
+        State(state),
+        Extension(tenant_context),
+        Extension(request_principal),
+        headers,
+        Path(run_id),
+        Json(input),
+    )
+    .await?;
     let run = response
         .0
         .get("run")
@@ -684,10 +728,21 @@ pub(super) async fn automations_run_pause(
 
 pub(super) async fn automations_run_resume(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let response = routines_run_resume(State(state), Path(run_id), Json(input)).await?;
+    let response = routines_run_resume(
+        State(state),
+        Extension(tenant_context),
+        Extension(request_principal),
+        headers,
+        Path(run_id),
+        Json(input),
+    )
+    .await?;
     let run = response
         .0
         .get("run")

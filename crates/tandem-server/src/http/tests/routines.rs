@@ -2329,3 +2329,82 @@ async fn automation_tool_policy_hook_denies_writes_to_read_only_source_truth_fil
         .unwrap_or_default()
         .contains("read-only source-of-truth"));
 }
+
+/// GOV-B2b: routine create and run_now from an agent context are rejected.
+/// Routines have no per-routine governance/approval record, so agent-authored
+/// routine work is refused — agents must use Automations V2.
+#[tokio::test]
+async fn routines_reject_agent_context_create_and_run() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/routines")
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-routine")
+        .body(Body::from(
+            json!({
+                "routine_id": "routine-agent",
+                "name": "Agent routine",
+                "schedule": { "interval_seconds": { "seconds": 60 } },
+                "entrypoint": "mission.default"
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::FORBIDDEN);
+    let create_body: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX).await.expect("body"),
+    )
+    .expect("json");
+    assert_eq!(
+        create_body.get("code").and_then(Value::as_str),
+        Some("ROUTINE_REQUIRES_HUMAN")
+    );
+
+    // The routine must not have been created.
+    let list_req = Request::builder()
+        .method("GET")
+        .uri("/routines")
+        .body(Body::empty())
+        .expect("list request");
+    let list_resp = app.clone().oneshot(list_req).await.expect("list response");
+    let list_body: Value =
+        serde_json::from_slice(&to_bytes(list_resp.into_body(), usize::MAX).await.expect("body"))
+            .expect("json");
+    assert_eq!(list_body.get("count").and_then(Value::as_u64), Some(0));
+
+    // A human creates a routine; an agent-context run_now is then refused.
+    let human_create = Request::builder()
+        .method("POST")
+        .uri("/routines")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "routine_id": "routine-human",
+                "name": "Human routine",
+                "schedule": { "interval_seconds": { "seconds": 60 } },
+                "entrypoint": "mission.default"
+            })
+            .to_string(),
+        ))
+        .expect("human create request");
+    assert_eq!(
+        app.clone().oneshot(human_create).await.expect("resp").status(),
+        StatusCode::OK
+    );
+
+    let run_req = Request::builder()
+        .method("POST")
+        .uri("/routines/routine-human/run_now")
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-routine")
+        .body(Body::from(json!({ "run_count": 1 }).to_string()))
+        .expect("run request");
+    let run_resp = app.clone().oneshot(run_req).await.expect("run response");
+    assert_eq!(run_resp.status(), StatusCode::FORBIDDEN);
+}

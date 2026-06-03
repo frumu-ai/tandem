@@ -47,12 +47,13 @@ Source plan: `docs/internal/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENIN
   - Verification: `cargo test -p tandem-server coder_run_governance -- --nocapture`.
 
 - `GOV-B2b` Routines + v1 wrappers through governance
-  - Status: `todo`
+  - Status: `done`
   - Priority: P0
-  - Scope: `routines_create` (`// TODO: SECURITY`), `routines_run_now`, and v1 `automations_run_*` never consult governance; approval flags are client-set body fields.
-  - Acceptance: create/run gated like V2; approve/deny/pause/resume human-only; audited.
-  - Files: `crates/tandem-server/src/http/routines_automations_parts/part01.rs:827,983,1242,1312,1382,1467`; `part02.rs:476,589`.
-  - Verification: `cargo test -p tandem-server routines_governance -- --nocapture`.
+  - Scope: `routines_create` (`// TODO: SECURITY`), `routines_run_now`, decision handlers, and v1 `automations_run_*` resolved no actor and consulted no governance; approval flags + creator fields were client-set.
+  - Acceptance: create/run/approve/deny/pause/resume require a verified human; agent-context routine work is refused; actions audited with the resolved actor.
+  - Progress: added `ensure_routine_human_actor` (resolves the governance actor from the verified principal and rejects non-human callers with `ROUTINE_REQUIRES_HUMAN`). Wired it into `routines_create` (also derives `creator_id`/`creator_type` from the actor instead of the body, replacing the `TODO: SECURITY`), `routines_run_now`, and `routines_run_approve/deny/pause/resume`; threaded the resolved actor + real tenant into their protected audit events and added a previously-missing audit event for resume. The five v1 wrappers (`automations_run_now/approve/deny/pause/resume`) now extract and forward `RequestPrincipal`/tenant/headers. Rationale: routines have no per-routine governance/approval record, so agent-authored routine work is fail-closed — agents needing governed autonomous work must use Automations V2 (which carries the capability/approval flow).
+  - Files: `crates/tandem-server/src/http/routines_automations_parts/part01.rs` (`ensure_routine_human_actor`, `routines_create`, `routines_run_now`, `routines_run_approve/deny/pause/resume`); `part02.rs` (the five `automations_run_*` wrappers).
+  - Verification: `cargo test -p tandem-server routines_reject_agent_context_create_and_run`; full `routines::` suite (state + http, incl. operator-wrapper tests) green / 0 failed.
 
 - `GOV-B2c` Channel automation draft confirm through creation governance
   - Status: `done`

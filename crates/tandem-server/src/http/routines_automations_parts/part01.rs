@@ -824,14 +824,50 @@ pub(super) fn routine_error_response(error: RoutineStoreError) -> (StatusCode, J
     }
 }
 
+/// GOV-B2b: routine mutations (create/run/approve/deny/pause/resume) require a
+/// verified human actor. Routines have no per-routine governance/approval record,
+/// so agent-authored routine work is refused here — an agent that needs governed
+/// autonomous work must use Automations V2, which carries the capability/approval
+/// flow. Resolving the actor from the verified principal also stops callers from
+/// spoofing `creator_type`/`creator_id` via the request body.
+fn ensure_routine_human_actor(
+    headers: &HeaderMap,
+    tenant_context: &TenantContext,
+    request_principal: &RequestPrincipal,
+    action: &str,
+) -> Result<crate::automation_v2::governance::GovernanceActorRef, (StatusCode, Json<Value>)> {
+    let actor =
+        super::governance::resolve_governance_actor(headers, tenant_context, request_principal);
+    if actor.kind != crate::automation_v2::governance::GovernanceActorKind::Human {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": format!(
+                    "Routine {action} requires a human actor; agents must use automations v2"
+                ),
+                "code": "ROUTINE_REQUIRES_HUMAN",
+            })),
+        ));
+    }
+    Ok(actor)
+}
+
 pub(super) async fn routines_create(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Json(input): Json<RoutineCreateInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // TODO: SECURITY - Add authorization check to verify user can create routines.
-    // The authorization pattern is not yet wired into routines handlers.
-    // This should extract Extension<RequestPrincipal> and verify permissions
-    // similar to how automation V2 handlers do it in part02.rs.
+    // GOV-B2b: enforce a verified human actor and derive the creator from it
+    // rather than trusting client-supplied creator fields.
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "creation")?;
+    let creator_id = actor
+        .actor_id
+        .clone()
+        .or(input.creator_id)
+        .unwrap_or_else(|| "unknown".to_string());
 
     let routine = RoutineSpec {
         routine_id: input
@@ -848,8 +884,8 @@ pub(super) async fn routines_create(
         args: input.args.unwrap_or_else(|| json!({})),
         allowed_tools: input.allowed_tools.unwrap_or_default(),
         output_targets: input.output_targets.unwrap_or_default(),
-        creator_type: input.creator_type.unwrap_or_else(|| "user".to_string()),
-        creator_id: input.creator_id.unwrap_or_else(|| "unknown".to_string()),
+        creator_type: "user".to_string(),
+        creator_id,
         requires_approval: input.requires_approval.unwrap_or(true),
         external_integrations_allowed: input.external_integrations_allowed.unwrap_or(false),
         next_fire_at_ms: input.next_fire_at_ms,
@@ -867,6 +903,19 @@ pub(super) async fn routines_create(
             "entrypoint": stored.entrypoint,
         }),
     ));
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "routine.created",
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
+        json!({
+            "routineID": stored.routine_id,
+            "name": stored.name,
+            "entrypoint": stored.entrypoint,
+            "actor": actor.clone(),
+        }),
+    )
+    .await;
     Ok(Json(json!({
         "routine": stored,
     })))
@@ -982,9 +1031,14 @@ pub(super) async fn routines_delete(
 
 pub(super) async fn routines_run_now(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<RoutineRunNowInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let _actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "execution")?;
     let routine = state.get_routine(&id).await.ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -1241,9 +1295,14 @@ fn clear_automation_run_execution_handles(run: &mut crate::AutomationV2RunRecord
 
 pub(super) async fn routines_run_approve(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "approval")?;
     let Some(current) = state.get_routine_run(&run_id).await else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1289,12 +1348,13 @@ pub(super) async fn routines_run_approve(
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "routine.run.approved",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
         json!({
             "runID": run_id,
             "routineID": updated.routine_id,
             "reason": reason,
+            "actor": actor.clone(),
         }),
     )
     .await;
@@ -1311,9 +1371,14 @@ pub(super) async fn routines_run_approve(
 
 pub(super) async fn routines_run_deny(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "denial")?;
     let Some(current) = state.get_routine_run(&run_id).await else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1359,12 +1424,13 @@ pub(super) async fn routines_run_deny(
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "routine.run.denied",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
         json!({
             "runID": run_id,
             "routineID": updated.routine_id,
             "reason": reason,
+            "actor": actor.clone(),
         }),
     )
     .await;
@@ -1381,9 +1447,14 @@ pub(super) async fn routines_run_deny(
 
 pub(super) async fn routines_run_pause(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "pause")?;
     let Some(current) = state.get_routine_run(&run_id).await else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1442,13 +1513,14 @@ pub(super) async fn routines_run_pause(
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "routine.run.paused",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
         json!({
             "runID": run_id,
             "routineID": updated.routine_id,
             "reason": reason,
             "cancelledSessionIDs": cancelled_sessions,
+            "actor": actor.clone(),
         }),
     )
     .await;
@@ -1466,9 +1538,14 @@ pub(super) async fn routines_run_pause(
 
 pub(super) async fn routines_run_resume(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "resume")?;
     let Some(current) = state.get_routine_run(&run_id).await else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1511,6 +1588,19 @@ pub(super) async fn routines_run_resume(
             "reason": reason,
         }),
     ));
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "routine.run.resumed",
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
+        json!({
+            "runID": run_id,
+            "routineID": updated.routine_id,
+            "reason": reason,
+            "actor": actor.clone(),
+        }),
+    )
+    .await;
     let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
         .await
         .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
