@@ -69,12 +69,14 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
 ## Next
 
 - `GOV-B3` Non-forgeable actor (human/agent) classification
-  - Status: `todo`
+  - Status: `done`
   - Priority: P1
-  - Scope: in `LocalSingleTenant`, Human-ness is derived from the unsigned `x-tandem-request-source` header, defeating all agent gates.
-  - Acceptance: a caller cannot self-elevate to Human via headers alone in local mode; hosted/enterprise JWS path unchanged; the test `automations_v2_create_and_run_now_treat_control_panel_source_as_human` is updated to the secure behavior.
-  - Files: `crates/tandem-server/src/http/governance.rs:27-126`; `crates/tandem-server/src/http/middleware.rs:392-411`.
-  - Verification: `cargo test -p tandem-server governance_actor -- --nocapture` plus `control_panel_source_requires_local_token`.
+  - Scope: an explicit `x-tandem-agent-id` could be overridden to Human by a forged `x-tandem-request-source: control_panel`, laundering an agent past every human/agent gate (worsened by the default source resolving to `local_control_panel`).
+  - Acceptance: an explicit agent identity always classifies as Agent regardless of source; a genuine control-panel request (no agent identity) is still Human; hosted/enterprise JWS path unchanged.
+  - Progress: reordered `resolve_governance_actor` and `resolve_governance_provenance` so the `x-tandem-agent-id` header is honored **before** the `control_panel`→human shortcut — an explicit agent identity is now authoritative and cannot be upgraded to a human by any (forgeable) source string. Rewrote the unit test that codified the forgery (`control_panel_request_source_is_human_even_with_agent_header` → `agent_header_is_not_overridden_by_control_panel_source`, asserting Agent) and added `control_panel_source_without_agent_header_is_human`. Updated the integration test `automations_v2_create_and_run_now_treat_control_panel_source_as_human` to drop the spoofed agent header so it tests the genuine human control-panel path.
+  - Files: `crates/tandem-server/src/http/governance.rs` (`resolve_governance_actor`, `resolve_governance_provenance`, unit tests); `crates/tandem-server/src/http/tests/governance.rs` (integration test).
+  - Verification: new unit tests + agent-rejection regression across gate/routines/coder/channel = 6 passed / 0 failed; `governance::` module with `--features premium-governance` = 15 passed / 0 failed. (The non-premium governance lifecycle tests require `--features premium-governance` to run at all — unrelated to this change.)
+  - Residual (deferred): the remaining gap — an anonymous local caller with no agent header claiming `control_panel` — is the inherent `LocalSingleTenant` trust model. Fully closing it requires binding the `control_panel`→human classification to a trusted local transport token (loopback + token), which is a deployment-posture decision tracked under GOV-B10 / the auth-mode hardening rather than this item.
 
 - `GOV-B10` OSS ownership check + enterprise admin header fallback
   - Status: `todo`

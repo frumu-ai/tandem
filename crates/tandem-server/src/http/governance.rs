@@ -36,15 +36,21 @@ pub(crate) fn resolve_governance_actor(
     tenant_context: &TenantContext,
     request_principal: &RequestPrincipal,
 ) -> GovernanceActorRef {
+    // GOV-B3: an explicit agent identity is an authoritative claim of agency and
+    // must be honored before any (forgeable) request-source string. Previously a
+    // caller could present `x-tandem-agent-id` together with
+    // `x-tandem-request-source: control_panel` and be classified as a human,
+    // laundering an agent past every human/agent governance gate. Checking the
+    // agent header first makes that impossible.
+    if let Some(agent_id) = first_header(headers, &["x-tandem-agent-id"]) {
+        return GovernanceActorRef::agent(Some(agent_id), request_principal.source.clone());
+    }
     if is_control_panel_request_source(&request_principal.source) {
         let actor_id = tenant_context
             .actor_id
             .clone()
             .or_else(|| request_principal.actor_id.clone());
         return GovernanceActorRef::human(actor_id, request_principal.source.clone());
-    }
-    if let Some(agent_id) = first_header(headers, &["x-tandem-agent-id"]) {
-        return GovernanceActorRef::agent(Some(agent_id), request_principal.source.clone());
     }
     let actor_id = tenant_context
         .actor_id
@@ -63,20 +69,9 @@ pub(crate) fn resolve_governance_provenance(
 ) -> AutomationProvenanceRecord {
     let request_source = first_header(headers, &["x-tandem-request-source"])
         .or_else(|| Some(request_principal.source.clone()));
-    if request_source
-        .as_deref()
-        .is_some_and(is_control_panel_request_source)
-    {
-        let mut provenance = AutomationProvenanceRecord::human(
-            tenant_context
-                .actor_id
-                .clone()
-                .or_else(|| request_principal.actor_id.clone()),
-            request_principal.source.clone(),
-        );
-        provenance.request_source = request_source;
-        return provenance;
-    }
+    // GOV-B3: an explicit agent identity is authoritative and is honored before any
+    // (forgeable) request-source string, so an agent cannot launder itself into a
+    // human provenance record by also claiming `control_panel`.
     let Some(agent_id) = first_header(headers, &["x-tandem-agent-id"]) else {
         let mut provenance = AutomationProvenanceRecord::human(
             tenant_context
@@ -132,11 +127,14 @@ mod tests {
     use tandem_types::TenantContext;
 
     #[test]
-    fn control_panel_request_source_is_human_even_with_agent_header() {
+    fn agent_header_is_not_overridden_by_control_panel_source() {
+        // GOV-B3: presenting an agent identity together with a forged
+        // `control_panel` source must NOT launder the agent into a human. The
+        // explicit agent identity wins.
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-tandem-agent-id",
-            HeaderValue::from_static("agent-should-not-win"),
+            HeaderValue::from_static("agent-should-win"),
         );
         headers.insert(
             "x-tandem-request-source",
@@ -148,14 +146,30 @@ mod tests {
             source: "control_panel".to_string(),
         };
         let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
-        assert_eq!(actor.kind, GovernanceActorKind::Human);
-        assert_eq!(actor.actor_id, None);
+        assert_eq!(actor.kind, GovernanceActorKind::Agent);
+        assert_eq!(actor.actor_id.as_deref(), Some("agent-should-win"));
 
         let provenance =
             resolve_governance_provenance(&headers, &tenant_context, &request_principal);
-        assert_eq!(provenance.creator.kind, GovernanceActorKind::Human);
-        assert_eq!(provenance.creator.actor_id, None);
-        assert_eq!(provenance.request_source.as_deref(), Some("control_panel"));
+        assert_eq!(provenance.creator.kind, GovernanceActorKind::Agent);
+        assert_eq!(provenance.creator.actor_id.as_deref(), Some("agent-should-win"));
+    }
+
+    #[test]
+    fn control_panel_source_without_agent_header_is_human() {
+        // A genuine control-panel request (no agent identity) is still a human.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-tandem-request-source",
+            HeaderValue::from_static("control_panel"),
+        );
+        let tenant_context = TenantContext::local_implicit();
+        let request_principal = RequestPrincipal {
+            actor_id: Some("operator-1".to_string()),
+            source: "control_panel".to_string(),
+        };
+        let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
+        assert_eq!(actor.kind, GovernanceActorKind::Human);
     }
 }
 

@@ -347,11 +347,13 @@ async fn automations_v2_create_and_run_now_treat_control_panel_source_as_human()
     let mut payload = automation_v2_payload(automation_id, agent_id, None);
     payload["creator_id"] = json!("control-panel");
 
+    // GOV-B3: a genuine control-panel request carries no agent identity, so it is
+    // classified as a human and may create. (Presenting `x-tandem-agent-id` here
+    // would now — correctly — be treated as an agent and gated.)
     let create_req = Request::builder()
         .method("POST")
         .uri("/automations/v2")
         .header("content-type", "application/json")
-        .header("x-tandem-agent-id", agent_id)
         .header("x-tandem-request-source", "control_panel")
         .body(Body::from(payload.to_string()))
         .expect("create request");
@@ -374,7 +376,6 @@ async fn automations_v2_create_and_run_now_treat_control_panel_source_as_human()
         .method("POST")
         .uri(format!("/automations/v2/{automation_id}/run_now"))
         .header("content-type", "application/json")
-        .header("x-tandem-agent-id", agent_id)
         .header("x-tandem-request-source", "control_panel")
         .body(Body::from(json!({}).to_string()))
         .expect("run now request");
