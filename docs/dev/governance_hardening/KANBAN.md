@@ -8,6 +8,7 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
 ## Status Legend
 - `todo`
 - `in_progress`
+- `research` (investigated; needs a decision before implementation)
 - `blocked`
 - `done`
 
@@ -89,12 +90,13 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
   - Deferred (part b — enterprise admin header fallback): `enterprise_admin_allowed_for_mutation` grants admin from a `request_principal.source` string when no verified context is present. This is reachable only in `LocalSingleTenant` (hosted/enterprise modes always carry a verified JWS context), and it is the affordance that lets a local-enterprise dev operator act as admin without configuring JWS — so removing it risks breaking legitimate local-enterprise operation. Closing the agent-forgery angle cleanly requires threading agent-context into 22 `require_enterprise_admin` call sites; deferred to avoid destabilizing local operation, tracked as a follow-up. Non-enterprise local users never reach these routes.
 
 - `GOV-B6` Governance recheck on launch + stale auto-resume
-  - Status: `todo`
+  - Status: `research` (needs decision before implementation — not coded)
   - Priority: P1
-  - Scope: launch and stale auto-resume transition runs to Running without rechecking agent pause / spend pause / capability approval.
-  - Acceptance: a paused or capability-revoked agent's queued/reaped run does not launch/resume; the block is recorded.
-  - Files: `crates/tandem-server/src/app/state/app_state_impl_parts/part05.rs:573,356`; `crates/tandem-server/src/app/state/automation/scheduler.rs:150,203`.
-  - Verification: `cargo test -p tandem-server launch_governance_recheck -- --nocapture`, `stale_resume_governance_recheck`.
+  - Scope: launch (`claim_specific_automation_v2_run`) and stale auto-resume transition runs to Running without rechecking agent pause / spend pause / capability approval.
+  - Acceptance: a paused or capability-revoked agent's queued/reaped run does not launch/resume; the block is recorded; **non-enterprise local single-user is never blocked**.
+  - Research: full findings + proposed design in `docs/dev/governance_hardening/GOV-B6-RESEARCH.md`. Key results: (1) the launch transition (`part05.rs:645-664`) already has the agent context in scope, and `auto_resume_guardrail_stopped_runs` (`:459-517`) is a working model that checks `has_approved_agent_quota_override`; (2) the pause accessors (`is_agent_paused`/`is_agent_spend_paused`) are membership checks on sets that are empty in OSS, so a recheck is a no-op locally (satisfies the local-safety constraint); (3) open decisions remain — hold vs fail on a failed recheck, the `stop_kind`/resume path per reason (spend-pause can reuse the existing guardrail auto-resume; agent-pause needs a new resume arm; capability overlaps GOV-D1). Recommended split: **B6a** spend-pause recheck (low-risk, reuses existing resume) first, then **B6b** agent-pause, then **B6c** capability (after D1).
+  - Files (for implementation): `crates/tandem-server/src/app/state/app_state_impl_parts/part05.rs` (`claim_specific_automation_v2_run`, `auto_resume_stale_reaped_runs`).
+  - Blocking decisions: Q1 (hold vs fail) and Q2 (resume path per reason) in the research doc.
 
 - `GOV-B7` Govern + audit `automations_v2_share`
   - Status: `done`
