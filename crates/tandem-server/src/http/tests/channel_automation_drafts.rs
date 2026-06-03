@@ -440,9 +440,12 @@ async fn channel_automation_draft_confirm_rejects_agent_context() {
         .expect("request");
     let start_resp = app.clone().oneshot(start_req).await.expect("response");
     assert_eq!(start_resp.status(), StatusCode::OK);
-    let start_payload: Value =
-        serde_json::from_slice(&to_bytes(start_resp.into_body(), usize::MAX).await.expect("body"))
-            .expect("json");
+    let start_payload: Value = serde_json::from_slice(
+        &to_bytes(start_resp.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
     let draft_id = start_payload
         .get("draft")
         .and_then(|draft| draft.get("draft_id"))
@@ -485,8 +488,13 @@ async fn channel_automation_draft_confirm_rejects_agent_context() {
     let pending_resp = app.clone().oneshot(pending_req).await.expect("response");
     assert_eq!(pending_resp.status(), StatusCode::OK);
     let pending_payload: Value = serde_json::from_slice(
-        &to_bytes(pending_resp.into_body(), usize::MAX).await.expect("body"),
+        &to_bytes(pending_resp.into_body(), usize::MAX)
+            .await
+            .expect("body"),
     )
     .expect("json");
-    assert_eq!(pending_payload.get("count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        pending_payload.get("count").and_then(Value::as_u64),
+        Some(1)
+    );
 }

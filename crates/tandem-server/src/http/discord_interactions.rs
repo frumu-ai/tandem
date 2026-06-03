@@ -34,7 +34,8 @@ use crate::app::state::channel_user_capabilities::{
     channel_requires_approval_step_up, channel_security_profile_from_config,
 };
 use crate::app::state::principals::channel_identity::{
-    channel_bound_tenant, channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+    channel_bound_tenant, channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution,
+    ChannelKind,
 };
 use crate::AppState;
 

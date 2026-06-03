@@ -274,7 +274,10 @@ pub fn channel_user_capability_key(channel: &str, user_id: &str) -> String {
 /// approval/interaction is honored. Opt-in per channel via
 /// `/channels/{channel}/require_approval_step_up` (default `false`), so existing
 /// flows are unchanged unless an operator deliberately raises the bar.
-pub fn channel_requires_approval_step_up(effective_config: &serde_json::Value, channel: &str) -> bool {
+pub fn channel_requires_approval_step_up(
+    effective_config: &serde_json::Value,
+    channel: &str,
+) -> bool {
     effective_config
         .pointer(&format!("/channels/{channel}/require_approval_step_up"))
         .and_then(serde_json::Value::as_bool)

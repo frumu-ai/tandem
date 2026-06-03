@@ -1643,7 +1643,10 @@ async fn governance_approval_approve_rejects_agent_reviewer() {
         .expect("approve response");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(
-        response_json(resp).await.get("code").and_then(Value::as_str),
+        response_json(resp)
+            .await
+            .get("code")
+            .and_then(Value::as_str),
         Some("GOVERNANCE_APPROVAL_REQUIRES_HUMAN")
     );
 }
@@ -1679,7 +1682,10 @@ async fn governance_approval_rejects_agent_self_review() {
         .expect("approve response");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(
-        response_json(resp).await.get("code").and_then(Value::as_str),
+        response_json(resp)
+            .await
+            .get("code")
+            .and_then(Value::as_str),
         Some("GOVERNANCE_APPROVAL_SELF_REVIEW")
     );
 }
@@ -1704,7 +1710,11 @@ async fn oss_mutation_denied_for_distinct_identified_non_owner() {
             automation_v2_payload("auto-v2-b10-owner", "agent-a", None).to_string(),
         ))
         .expect("create request");
-    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
     assert_eq!(create_resp.status(), StatusCode::OK);
 
     // Bob (a different identified human) cannot share/mutate Alice's automation.
@@ -1715,10 +1725,17 @@ async fn oss_mutation_denied_for_distinct_identified_non_owner() {
         .header("x-tandem-actor-id", "bob")
         .body(Body::from(json!({ "visibility": "org" }).to_string()))
         .expect("bob share request");
-    let bob_resp = app.clone().oneshot(bob_share).await.expect("bob share response");
+    let bob_resp = app
+        .clone()
+        .oneshot(bob_share)
+        .await
+        .expect("bob share response");
     assert_eq!(bob_resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(
-        response_json(bob_resp).await.get("code").and_then(Value::as_str),
+        response_json(bob_resp)
+            .await
+            .get("code")
+            .and_then(Value::as_str),
         Some("AUTOMATION_V2_NOT_OWNER")
     );
 
@@ -1730,7 +1747,11 @@ async fn oss_mutation_denied_for_distinct_identified_non_owner() {
         .header("x-tandem-actor-id", "alice")
         .body(Body::from(json!({ "visibility": "org" }).to_string()))
         .expect("alice share request");
-    let alice_resp = app.clone().oneshot(alice_share).await.expect("alice share response");
+    let alice_resp = app
+        .clone()
+        .oneshot(alice_share)
+        .await
+        .expect("alice share response");
     assert_eq!(alice_resp.status(), StatusCode::OK);
 }
 
@@ -1751,7 +1772,11 @@ async fn oss_local_anonymous_mutation_is_allowed() {
         ))
         .expect("create request");
     assert_eq!(
-        app.clone().oneshot(create_req).await.expect("resp").status(),
+        app.clone()
+            .oneshot(create_req)
+            .await
+            .expect("resp")
+            .status(),
         StatusCode::OK
     );
 
@@ -1793,7 +1818,11 @@ async fn spend_capped_agent_run_is_held_at_launch_and_resumes_after_override() {
         ))
         .expect("create request");
     assert_eq!(
-        app.clone().oneshot(create_req).await.expect("create resp").status(),
+        app.clone()
+            .oneshot(create_req)
+            .await
+            .expect("create resp")
+            .status(),
         StatusCode::OK
     );
 
@@ -1825,12 +1854,19 @@ async fn spend_capped_agent_run_is_held_at_launch_and_resumes_after_override() {
 
     // Run B is still queued; claiming it must HOLD it, not launch it.
     assert_eq!(
-        state.get_automation_v2_run(&run_b.run_id).await.expect("run b").status,
+        state
+            .get_automation_v2_run(&run_b.run_id)
+            .await
+            .expect("run b")
+            .status,
         crate::AutomationRunStatus::Queued
     );
     let claimed = state.claim_specific_automation_v2_run(&run_b.run_id).await;
     assert!(claimed.is_none(), "spend-capped run must not launch");
-    let held = state.get_automation_v2_run(&run_b.run_id).await.expect("held run");
+    let held = state
+        .get_automation_v2_run(&run_b.run_id)
+        .await
+        .expect("held run");
     assert_eq!(held.status, crate::AutomationRunStatus::Paused);
     assert_eq!(
         held.stop_kind,
@@ -1852,15 +1888,26 @@ async fn spend_capped_agent_run_is_held_at_launch_and_resumes_after_override() {
     // The guardrail-override resume sweep re-queues the held run...
     state.auto_resume_stale_reaped_runs().await;
     assert_eq!(
-        state.get_automation_v2_run(&run_b.run_id).await.expect("requeued run").status,
+        state
+            .get_automation_v2_run(&run_b.run_id)
+            .await
+            .expect("requeued run")
+            .status,
         crate::AutomationRunStatus::Queued
     );
 
     // ...and now it launches.
     let relaunched = state.claim_specific_automation_v2_run(&run_b.run_id).await;
-    assert!(relaunched.is_some(), "run should launch after override approval");
+    assert!(
+        relaunched.is_some(),
+        "run should launch after override approval"
+    );
     assert_eq!(
-        state.get_automation_v2_run(&run_b.run_id).await.expect("running run").status,
+        state
+            .get_automation_v2_run(&run_b.run_id)
+            .await
+            .expect("running run")
+            .status,
         crate::AutomationRunStatus::Running
     );
 }
@@ -1885,7 +1932,11 @@ async fn run_launches_normally_without_governance_state() {
         ))
         .expect("create request");
     assert_eq!(
-        app.clone().oneshot(create_req).await.expect("create resp").status(),
+        app.clone()
+            .oneshot(create_req)
+            .await
+            .expect("create resp")
+            .status(),
         StatusCode::OK
     );
 
@@ -1898,9 +1949,16 @@ async fn run_launches_normally_without_governance_state() {
         .await
         .expect("run");
     let claimed = state.claim_specific_automation_v2_run(&run.run_id).await;
-    assert!(claimed.is_some(), "run should launch with no governance state");
+    assert!(
+        claimed.is_some(),
+        "run should launch with no governance state"
+    );
     assert_eq!(
-        state.get_automation_v2_run(&run.run_id).await.expect("run").status,
+        state
+            .get_automation_v2_run(&run.run_id)
+            .await
+            .expect("run")
+            .status,
         crate::AutomationRunStatus::Running
     );
 }

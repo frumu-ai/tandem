@@ -107,7 +107,10 @@ pub fn channel_is_open_to_all(effective_config: &Value, kind: ChannelKind) -> bo
 /// channel is unbound and adopts the acted-upon run's tenant unchanged, so local
 /// operation is unaffected. When set, channel-originated actions must target that
 /// tenant, preventing a channel from acting on another tenant's run by id.
-pub fn channel_bound_tenant(effective_config: &Value, kind: ChannelKind) -> Option<(String, String)> {
+pub fn channel_bound_tenant(
+    effective_config: &Value,
+    kind: ChannelKind,
+) -> Option<(String, String)> {
     let tenant = effective_config.pointer(&format!("/channels/{}/tenant", kind.as_str()))?;
     let org_id = tenant
         .get("org_id")

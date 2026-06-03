@@ -187,7 +187,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(
             state
-                .channel_user_can_approve("telegram", "4242", ChannelSecurityProfile::PublicDemo, false)
+                .channel_user_can_approve(
+                    "telegram",
+                    "4242",
+                    ChannelSecurityProfile::PublicDemo,
+                    false
+                )
                 .await
         );
     }

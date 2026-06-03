@@ -152,7 +152,10 @@ mod tests {
         let provenance =
             resolve_governance_provenance(&headers, &tenant_context, &request_principal);
         assert_eq!(provenance.creator.kind, GovernanceActorKind::Agent);
-        assert_eq!(provenance.creator.actor_id.as_deref(), Some("agent-should-win"));
+        assert_eq!(
+            provenance.creator.actor_id.as_deref(),
+            Some("agent-should-win")
+        );
     }
 
     #[test]
