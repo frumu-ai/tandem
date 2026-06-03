@@ -522,13 +522,14 @@ impl AppState {
         resumed
     }
 
-    /// GOV-B6a: a queued or stale run must not transition into execution while one
-    /// of its agents is spend-paused without an approved quota override. Uses the
-    /// same coarse predicate as `auto_resume_guardrail_stopped_runs`, so a run held
-    /// here as `Paused + GuardrailStopped` is picked back up by that sweep as soon
-    /// as an override is approved. This is a no-op in the OSS/local engine, where
-    /// `spend_paused_agents` is always empty, so non-enterprise local single-user
-    /// operation is never affected.
+    /// GOV-B6a: a queued or stale run must not transition into execution while any
+    /// of its agents is spend-paused without an approved quota override *for that
+    /// agent*. Quota overrides are agent-targeted, so the check is per-agent: a run
+    /// is held if there exists a spend-paused agent that lacks its own override (an
+    /// override on a different agent does not unblock a still-paused one). A held run
+    /// is `Paused + GuardrailStopped` and is picked back up by
+    /// `auto_resume_guardrail_stopped_runs` once the override lands. No-op in the
+    /// OSS/local engine, where `spend_paused_agents` is always empty.
     async fn run_launch_blocked_by_spend_pause(
         &self,
         automation: &crate::automation_v2::types::AutomationV2Spec,
@@ -541,15 +542,10 @@ impl AppState {
             return false;
         }
         let governance = self.automation_governance.read().await;
-        let any_spend_paused = agent_ids
-            .iter()
-            .any(|agent_id| governance.is_agent_spend_paused(agent_id));
-        if !any_spend_paused {
-            return false;
-        }
-        !agent_ids
-            .iter()
-            .any(|agent_id| governance.has_approved_agent_quota_override(agent_id))
+        agent_ids.iter().any(|agent_id| {
+            governance.is_agent_spend_paused(agent_id)
+                && !governance.has_approved_agent_quota_override(agent_id)
+        })
     }
 
     pub fn is_automation_scheduler_stopping(&self) -> bool {

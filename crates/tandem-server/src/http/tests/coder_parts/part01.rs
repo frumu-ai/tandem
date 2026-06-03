@@ -1718,3 +1718,23 @@ async fn coder_run_create_rejects_agent_context() {
     let create_resp = app.clone().oneshot(create_req).await.expect("create response");
     assert_eq!(create_resp.status(), StatusCode::FORBIDDEN);
 }
+
+/// GOV-B2a: `execute-next` is governed human-only work just like `execute-all`; an
+/// agent-context caller must be refused (the human check runs before the run is
+/// even loaded, so this holds regardless of run existence).
+#[tokio::test]
+async fn coder_run_execute_next_rejects_agent_context() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/any-run/execute-next")
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-coder")
+        .body(Body::from(json!({}).to_string()))
+        .expect("execute-next request");
+    let resp = app.clone().oneshot(req).await.expect("execute-next response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
