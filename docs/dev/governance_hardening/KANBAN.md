@@ -78,13 +78,15 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
   - Verification: new unit tests + agent-rejection regression across gate/routines/coder/channel = 6 passed / 0 failed; `governance::` module with `--features premium-governance` = 15 passed / 0 failed. (The non-premium governance lifecycle tests require `--features premium-governance` to run at all — unrelated to this change.)
   - Residual (deferred): the remaining gap — an anonymous local caller with no agent header claiming `control_panel` — is the inherent `LocalSingleTenant` trust model. Fully closing it requires binding the `control_panel`→human classification to a trusted local transport token (loopback + token), which is a deployment-posture decision tracked under GOV-B10 / the auth-mode hardening rather than this item.
 
-- `GOV-B10` OSS ownership check + enterprise admin header fallback
-  - Status: `todo`
+- `GOV-B10` OSS ownership check (+ enterprise admin header fallback deferred)
+  - Status: `done` (part a — OSS ownership); part b (enterprise admin fallback) deferred — see note
   - Priority: P1
-  - Scope: OSS "Human ⇒ allow" has no owner/grant check; latent enterprise-admin fallback grants admin from a header source absent verified context.
-  - Acceptance: a human who is neither owner nor grant-holder cannot mutate another's automation; enterprise mutation under local mode is impossible or token+role gated.
-  - Files: `crates/tandem-server/src/app/state/governance.rs:17-66,554-570`; `crates/tandem-enterprise-server/src/http/routes_enterprise.rs:1140`.
-  - Verification: `cargo test -p tandem-server oss_human_ownership -- --nocapture`; `cargo test -p tandem-enterprise-server admin_fallback -- --nocapture`.
+  - Scope: OSS "Human ⇒ allow" had no owner check, so any human could mutate any automation.
+  - Acceptance: a distinct identified human cannot mutate another's automation; **non-enterprise local single-user operation is never blocked** (per the explicit constraint).
+  - Progress: `UnavailableGovernanceEngine::authorize_mutation` (the OSS/non-premium engine only) now, for a human actor, denies (`AUTOMATION_V2_NOT_OWNER`) when the record has a DISTINCT IDENTIFIED human owner — i.e. both the record's creator and the acting actor carry actor_ids and they differ. It is intentionally a **no-op for local single-user**: the local control-panel user is anonymous (no actor_id) and locally-created records carry no identified owner, so there is nothing to compare and the mutation is allowed. The check only engages when two distinct human identities are present. Premium (`DefaultGovernanceEngine`) is unaffected (it has its own ownership/grant logic).
+  - Files: `crates/tandem-server/src/app/state/governance.rs` (`UnavailableGovernanceEngine::authorize_mutation`).
+  - Verification (non-premium build): `oss_mutation_denied_for_distinct_identified_non_owner` (bob cannot share alice's automation → 403 `AUTOMATION_V2_NOT_OWNER`; alice can), `oss_local_anonymous_mutation_is_allowed` (local anonymous create+share → 200). Premium `governance::` module unregressed = 15 passed / 0 failed; local v2 lifecycle/recover/repair/run-task suite unaffected.
+  - Deferred (part b — enterprise admin header fallback): `enterprise_admin_allowed_for_mutation` grants admin from a `request_principal.source` string when no verified context is present. This is reachable only in `LocalSingleTenant` (hosted/enterprise modes always carry a verified JWS context), and it is the affordance that lets a local-enterprise dev operator act as admin without configuring JWS — so removing it risks breaking legitimate local-enterprise operation. Closing the agent-forgery angle cleanly requires threading agent-context into 22 `require_enterprise_admin` call sites; deferred to avoid destabilizing local operation, tracked as a follow-up. Non-enterprise local users never reach these routes.
 
 - `GOV-B6` Governance recheck on launch + stale auto-resume
   - Status: `todo`

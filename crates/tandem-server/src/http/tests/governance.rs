@@ -1683,3 +1683,86 @@ async fn governance_approval_rejects_agent_self_review() {
         Some("GOVERNANCE_APPROVAL_SELF_REVIEW")
     );
 }
+
+/// GOV-B10: in the OSS/local engine a human may freely mutate their own (or an
+/// unowned/local) automation, but a record with a DISTINCT identified human owner
+/// may only be mutated by that owner. Local single-user operation (no identified
+/// owner / anonymous actor) is never blocked.
+#[cfg(not(feature = "premium-governance"))]
+#[tokio::test]
+async fn oss_mutation_denied_for_distinct_identified_non_owner() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    // Alice (an identified human) creates an automation via the control panel.
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-actor-id", "alice")
+        .body(Body::from(
+            automation_v2_payload("auto-v2-b10-owner", "agent-a", None).to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    // Bob (a different identified human) cannot share/mutate Alice's automation.
+    let bob_share = Request::builder()
+        .method("POST")
+        .uri("/automations/v2/auto-v2-b10-owner/share")
+        .header("content-type", "application/json")
+        .header("x-tandem-actor-id", "bob")
+        .body(Body::from(json!({ "visibility": "org" }).to_string()))
+        .expect("bob share request");
+    let bob_resp = app.clone().oneshot(bob_share).await.expect("bob share response");
+    assert_eq!(bob_resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(bob_resp).await.get("code").and_then(Value::as_str),
+        Some("AUTOMATION_V2_NOT_OWNER")
+    );
+
+    // Alice (the owner) can mutate her own automation.
+    let alice_share = Request::builder()
+        .method("POST")
+        .uri("/automations/v2/auto-v2-b10-owner/share")
+        .header("content-type", "application/json")
+        .header("x-tandem-actor-id", "alice")
+        .body(Body::from(json!({ "visibility": "org" }).to_string()))
+        .expect("alice share request");
+    let alice_resp = app.clone().oneshot(alice_share).await.expect("alice share response");
+    assert_eq!(alice_resp.status(), StatusCode::OK);
+}
+
+/// GOV-B10: a purely local single-user flow (no identified actor on either side)
+/// is never blocked by the ownership check.
+#[cfg(not(feature = "premium-governance"))]
+#[tokio::test]
+async fn oss_local_anonymous_mutation_is_allowed() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            automation_v2_payload("auto-v2-b10-local", "agent-a", None).to_string(),
+        ))
+        .expect("create request");
+    assert_eq!(
+        app.clone().oneshot(create_req).await.expect("resp").status(),
+        StatusCode::OK
+    );
+
+    let share_req = Request::builder()
+        .method("POST")
+        .uri("/automations/v2/auto-v2-b10-local/share")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "visibility": "org" }).to_string()))
+        .expect("share request");
+    assert_eq!(
+        app.clone().oneshot(share_req).await.expect("resp").status(),
+        StatusCode::OK
+    );
+}
