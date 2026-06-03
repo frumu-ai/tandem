@@ -2191,3 +2191,31 @@ async fn consequential_routes_refuse_agent_context() {
         );
     }
 }
+
+/// GOV-B8: a governance denial of a consequential mutation writes an attributed
+/// `automation.governance.denied` protected audit event (not just an HTTP error).
+#[cfg(not(feature = "premium-governance"))]
+#[tokio::test]
+async fn governance_denial_writes_protected_audit() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-b8-deny").await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/v2/{}/share", automation.automation_id))
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-b8")
+        .body(Body::from(json!({ "visibility": "org" }).to_string()))
+        .expect("agent share request");
+    let resp = app.clone().oneshot(req).await.expect("agent share response");
+    assert!(!resp.status().is_success(), "agent mutation must be denied");
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"automation.governance.denied\""));
+    assert!(audit.contains("agent-b8"));
+    assert!(audit.contains(&automation.automation_id));
+}

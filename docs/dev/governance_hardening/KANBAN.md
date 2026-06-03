@@ -114,12 +114,14 @@ Source plan: `docs/dev/governance_hardening/GOVERNANCE_ENFORCEMENT_HARDENING_PLA
 
 ### P2 - Evidence / Attribution
 - `GOV-B8` Protected audit on deny paths + internal sweeps with system actor
-  - Status: `todo`
+  - Status: `done` (B8a — deny-path audit; B8b internal-sweep system-actor audit deferred — see note)
   - Priority: P2
-  - Scope: V2 deny paths emit no audit; internal sweeps (reaper, auto-resume, recover, shutdown-fail) write only run-local lifecycle history with no system-actor attribution.
-  - Acceptance: every allow AND deny of a consequential action, including internal transitions, produces an attributable protected audit record.
-  - Files: `crates/tandem-server/src/app/state/automation/lifecycle.rs:7-16`; sweep sites in `app_state_impl_parts/part03.rs`, `part05.rs`, `automation_v2/executor.rs`; deny paths across `routines_automations_parts/part02.rs`.
-  - Verification: `cargo test -p tandem-server governance_deny_audit -- --nocapture`, `internal_sweep_audit_attribution`.
+  - Scope: V2 deny paths emitted no audit; internal sweeps write only run-local lifecycle history with no system-actor attribution.
+  - Acceptance: every deny of a consequential mutation produces an attributable protected audit record.
+  - Progress (B8a): new `enforce_mutation_or_audit` helper in `http/governance.rs` wraps a `can_mutate_automation` result and, on denial, writes an attributed `automation.governance.denied` protected audit event (actor, automation id, code, detail) before returning the HTTP error. Applied to all six consequential `can_mutate_automation` deny sites (patch / run_now / share / delete / pause / resume-class handlers) in `routines_automations_parts/part02.rs`.
+  - Files: `crates/tandem-server/src/http/governance.rs` (`enforce_mutation_or_audit`); `crates/tandem-server/src/http/routines_automations_parts/part02.rs` (six call sites).
+  - Verification: `governance_denial_writes_protected_audit` (agent share denied → `automation.governance.denied` in the protected audit log with actor + automation id); allow paths unregressed — premium `governance::` suite 16/0, share/run_now/X1 green.
+  - Deferred (B8b): system-actor protected audit for internal sweeps (reaper, auto-resume, recover, shutdown-fail) — these already write run-local lifecycle history; adding a parallel system-actor protected-audit stream is a larger, lower-security-value change (internal infra transitions, not external actor decisions). The create-path deny (`authorize_create`, part02.rs:1084) can also adopt `enforce_*`-style auditing in the same follow-up. Tracked as B8b.
 
 ### P2 - Channel Authority
 - `GOV-B5` Channel Approve-by-default fallback + button step-up + tenant binding

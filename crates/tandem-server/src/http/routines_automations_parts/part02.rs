@@ -1227,10 +1227,14 @@ pub(super) async fn automations_v2_patch(
     let governance = state
         .get_or_bootstrap_automation_governance(&automation)
         .await;
-    state
-        .can_mutate_automation(&id, &actor, false)
-        .await
-        .map_err(super::governance::governance_error_response)?;
+    super::governance::enforce_mutation_or_audit(
+        &state,
+        &tenant_context,
+        &id,
+        &actor,
+        state.can_mutate_automation(&id, &actor, false).await,
+    )
+    .await?;
     let previous_declared_capabilities = governance.declared_capabilities.clone();
     let before = automation.clone();
     let input_agents = input.agents.clone();
@@ -1376,10 +1380,14 @@ pub(super) async fn automations_v2_share(
     let _ = state
         .get_or_bootstrap_automation_governance(&automation)
         .await;
-    state
-        .can_mutate_automation(&id, &actor, false)
-        .await
-        .map_err(super::governance::governance_error_response)?;
+    super::governance::enforce_mutation_or_audit(
+        &state,
+        &tenant_context,
+        &id,
+        &actor,
+        state.can_mutate_automation(&id, &actor, false).await,
+    )
+    .await?;
     apply_automation_v2_share_metadata(&mut automation, input, verified)?;
     automation.updated_at_ms = crate::now_ms();
     let visibility = automation_v2_access_metadata(&automation)
@@ -1427,10 +1435,14 @@ pub(super) async fn automations_v2_delete(
     let _ = state
         .get_or_bootstrap_automation_governance(&automation)
         .await;
-    state
-        .can_mutate_automation(&id, &actor, true)
-        .await
-        .map_err(super::governance::governance_error_response)?;
+    super::governance::enforce_mutation_or_audit(
+        &state,
+        &tenant_context,
+        &id,
+        &actor,
+        state.can_mutate_automation(&id, &actor, true).await,
+    )
+    .await?;
     let deleted = state
         .delete_automation_v2_with_governance(&id, actor)
         .await
@@ -1484,10 +1496,14 @@ pub(super) async fn automations_v2_run_now(
     let _ = state
         .get_or_bootstrap_automation_governance(&automation)
         .await;
-    state
-        .can_mutate_automation(&id, &actor, false)
-        .await
-        .map_err(super::governance::governance_error_response)?;
+    super::governance::enforce_mutation_or_audit(
+        &state,
+        &tenant_context,
+        &id,
+        &actor,
+        state.can_mutate_automation(&id, &actor, false).await,
+    )
+    .await?;
     let dry_run = input.dry_run;
     let requested_execution_profile = input.execution_profile;
     let run = if dry_run {
@@ -1600,10 +1616,14 @@ pub(super) async fn automations_v2_pause(
     let _ = state
         .get_or_bootstrap_automation_governance(&automation)
         .await;
-    state
-        .can_mutate_automation(&id, &actor, false)
-        .await
-        .map_err(super::governance::governance_error_response)?;
+    super::governance::enforce_mutation_or_audit(
+        &state,
+        &tenant_context,
+        &id,
+        &actor,
+        state.can_mutate_automation(&id, &actor, false).await,
+    )
+    .await?;
     automation.status = AutomationV2Status::Paused;
     let stored = state.put_automation_v2(automation).await.map_err(|error| {
         (
@@ -1683,10 +1703,14 @@ pub(super) async fn automations_v2_resume(
     let _ = state
         .get_or_bootstrap_automation_governance(&automation)
         .await;
-    state
-        .can_mutate_automation(&id, &actor, false)
-        .await
-        .map_err(super::governance::governance_error_response)?;
+    super::governance::enforce_mutation_or_audit(
+        &state,
+        &tenant_context,
+        &id,
+        &actor,
+        state.can_mutate_automation(&id, &actor, false).await,
+    )
+    .await?;
     automation.status = AutomationV2Status::Active;
     let stored = state.put_automation_v2(automation).await.map_err(|error| {
         (

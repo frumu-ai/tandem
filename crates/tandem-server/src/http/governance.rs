@@ -183,6 +183,39 @@ pub(crate) fn governance_error_response(error: GovernanceError) -> (StatusCode, 
     )
 }
 
+/// GOV-B8: a governance denial of a consequential mutation must leave tamper-evident
+/// evidence, not just an HTTP error. Wrap a `can_mutate_automation` result: on denial,
+/// write an attributed `automation.governance.denied` protected audit event before
+/// converting the error to a response.
+pub(crate) async fn enforce_mutation_or_audit<T>(
+    state: &crate::AppState,
+    tenant_context: &TenantContext,
+    automation_id: &str,
+    actor: &GovernanceActorRef,
+    result: Result<T, GovernanceError>,
+) -> Result<T, (StatusCode, Json<Value>)> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            let _ = crate::audit::append_protected_audit_event(
+                state,
+                "automation.governance.denied",
+                tenant_context,
+                actor.actor_id.clone().or_else(|| actor.source.clone()),
+                json!({
+                    "automationID": automation_id,
+                    "decision": "denied",
+                    "code": error.code,
+                    "detail": error.message,
+                    "actor": actor.clone(),
+                }),
+            )
+            .await;
+            Err(governance_error_response(error))
+        }
+    }
+}
+
 pub(crate) fn premium_governance_required(
     state: &crate::AppState,
 ) -> Result<(), (StatusCode, Json<Value>)> {
