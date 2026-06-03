@@ -1766,3 +1766,141 @@ async fn oss_local_anonymous_mutation_is_allowed() {
         StatusCode::OK
     );
 }
+
+/// GOV-B6a: a run queued before its agent hit the weekly spend cap must not
+/// launch (and burn more budget); it is held as `Paused + GuardrailStopped` and
+/// resumes once a quota override is approved.
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn spend_capped_agent_run_is_held_at_launch_and_resumes_after_override() {
+    let state = test_state().await;
+    {
+        let mut guard = state.automation_governance.write().await;
+        guard.limits.weekly_spend_cap_usd = Some(10.0);
+    }
+    let app = app_router(state.clone());
+    let agent_id = "agent-b6a-spend";
+    let automation_id = "auto-v2-b6a-spend";
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", agent_id)
+        .body(Body::from(
+            automation_v2_payload(automation_id, agent_id, None).to_string(),
+        ))
+        .expect("create request");
+    assert_eq!(
+        app.clone().oneshot(create_req).await.expect("create resp").status(),
+        StatusCode::OK
+    );
+
+    let automation = state
+        .get_automation_v2(automation_id)
+        .await
+        .expect("stored automation");
+    // Two runs queued BEFORE the cap trips.
+    let _run_a = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run a");
+    let run_b = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run b");
+
+    // Run A's spend trips the weekly cap -> agent spend-paused + override approval pending.
+    state
+        .record_automation_v2_spend(&_run_a.run_id, 6_000, 6_000, 12_000, 12.0)
+        .await
+        .expect("record cap spend");
+    assert!(state
+        .agent_spend_summary(agent_id)
+        .await
+        .expect("agent spend summary")
+        .paused_at_ms
+        .is_some());
+
+    // Run B is still queued; claiming it must HOLD it, not launch it.
+    assert_eq!(
+        state.get_automation_v2_run(&run_b.run_id).await.expect("run b").status,
+        crate::AutomationRunStatus::Queued
+    );
+    let claimed = state.claim_specific_automation_v2_run(&run_b.run_id).await;
+    assert!(claimed.is_none(), "spend-capped run must not launch");
+    let held = state.get_automation_v2_run(&run_b.run_id).await.expect("held run");
+    assert_eq!(held.status, crate::AutomationRunStatus::Paused);
+    assert_eq!(
+        held.stop_kind,
+        Some(crate::automation_v2::types::AutomationStopKind::GuardrailStopped)
+    );
+
+    // Approve the auto-created quota override.
+    let approval = state
+        .list_approval_requests(
+            Some(crate::automation_v2::governance::GovernanceApprovalRequestType::QuotaOverride),
+            Some(crate::automation_v2::governance::GovernanceApprovalStatus::Pending),
+        )
+        .await
+        .into_iter()
+        .find(|request| request.target_resource.id == agent_id)
+        .expect("quota override approval");
+    approve_quota_override_request(&app, &approval.approval_id).await;
+
+    // The guardrail-override resume sweep re-queues the held run...
+    state.auto_resume_stale_reaped_runs().await;
+    assert_eq!(
+        state.get_automation_v2_run(&run_b.run_id).await.expect("requeued run").status,
+        crate::AutomationRunStatus::Queued
+    );
+
+    // ...and now it launches.
+    let relaunched = state.claim_specific_automation_v2_run(&run_b.run_id).await;
+    assert!(relaunched.is_some(), "run should launch after override approval");
+    assert_eq!(
+        state.get_automation_v2_run(&run_b.run_id).await.expect("running run").status,
+        crate::AutomationRunStatus::Running
+    );
+}
+
+/// GOV-B6a: with no governance state (OSS/local), the launch recheck is a no-op
+/// and a queued run launches normally.
+#[cfg(not(feature = "premium-governance"))]
+#[tokio::test]
+async fn run_launches_normally_without_governance_state() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let agent_id = "agent-b6a-oss";
+    let automation_id = "auto-v2-b6a-oss";
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "control_panel")
+        .body(Body::from(
+            automation_v2_payload(automation_id, agent_id, None).to_string(),
+        ))
+        .expect("create request");
+    assert_eq!(
+        app.clone().oneshot(create_req).await.expect("create resp").status(),
+        StatusCode::OK
+    );
+
+    let automation = state
+        .get_automation_v2(automation_id)
+        .await
+        .expect("stored automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    let claimed = state.claim_specific_automation_v2_run(&run.run_id).await;
+    assert!(claimed.is_some(), "run should launch with no governance state");
+    assert_eq!(
+        state.get_automation_v2_run(&run.run_id).await.expect("run").status,
+        crate::AutomationRunStatus::Running
+    );
+}
