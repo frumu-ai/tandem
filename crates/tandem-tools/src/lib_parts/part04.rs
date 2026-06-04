@@ -409,7 +409,6 @@ fn suspicious_channel_memory_query_reason(query: &str) -> Option<&'static str> {
     let lowered = query.trim().to_ascii_lowercase();
     let broad_terms = [
         "dump",
-        "export",
         "everything",
         "entire memory",
         "all memory",
@@ -419,6 +418,21 @@ fn suspicious_channel_memory_query_reason(query: &str) -> Option<&'static str> {
         "bulk",
     ];
     if broad_terms.iter().any(|term| lowered.contains(term)) {
+        return Some("channel memory_search blocked broad export query");
+    }
+    let export_patterns = [
+        "export all",
+        "export everything",
+        "export entire",
+        "export the entire",
+        "export full",
+        "export the full",
+        "bulk export",
+    ];
+    if export_patterns
+        .iter()
+        .any(|pattern| lowered.contains(pattern))
+    {
         return Some("channel memory_search blocked broad export query");
     }
     let starts = ["list all", "show all", "give me all", "print all", "return all"];
