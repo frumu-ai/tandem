@@ -2019,18 +2019,43 @@ pub(super) async fn memory_search(
     let allow_private_results = scopes_used
         .iter()
         .any(|scope| matches!(scope, tandem_memory::GovernedMemoryTier::Session));
-    let limit = request.limit.unwrap_or(8).clamp(1, 100);
+    let gateway_limit = match validate_memory_retrieval_gateway_for_search(
+        &state,
+        &tenant_context,
+        &request,
+        &capability,
+    )
+    .await
+    {
+        Ok(limit) => limit,
+        Err((status, detail)) => {
+            return emit_blocked_memory_search_guardrail(
+                status,
+                detail,
+                capability.subject.clone(),
+                &state,
+                &tenant_context,
+                &request,
+                &requested_scopes,
+                &request.partition.key(),
+            )
+            .await
+            .map(|_| unreachable!());
+        }
+    };
+    let limit = request.limit.unwrap_or(8).clamp(1, 100).min(gateway_limit);
     let source_access_filter = verified_tenant_context
         .as_ref()
         .and_then(|context| context.strict_projection.clone())
         .map(|strict_context| MemoryAccessFilter::strict(strict_context, crate::now_ms()));
-    let hits = if scopes_used.is_empty() {
-        Vec::new()
+    let (hits, gateway_budget_exhausted) = if scopes_used.is_empty() {
+        (Vec::new(), false)
     } else {
         let db = open_global_memory_db_for_state(&state)
             .await
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        db.search_global_memory_for_tenant(
+        let hits = db
+            .search_global_memory_for_tenant(
             &tenant_context.org_id,
             &tenant_context.workspace_id,
             tenant_context.deployment_id.as_deref(),
@@ -2042,7 +2067,8 @@ pub(super) async fn memory_search(
             None,
         )
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let filtered = hits
         .into_iter()
         .filter(|hit| allow_private_results || hit.record.visibility.eq_ignore_ascii_case("shared"))
         .filter(|hit| {
@@ -2050,8 +2076,12 @@ pub(super) async fn memory_search(
                 &hit.record,
                 source_access_filter.as_ref(),
             )
+            || (request.retrieval_gateway.is_some()
+                && memory_retrieval_gateway_allows_record(&request, &hit.record))
         })
-        .collect::<Vec<_>>()
+        .filter(|hit| memory_retrieval_gateway_allows_record(&request, &hit.record))
+        .collect::<Vec<_>>();
+        apply_memory_retrieval_gateway_result_budgets(&request, filtered)
     };
     let results = hits
         .into_iter()
@@ -2100,11 +2130,13 @@ pub(super) async fn memory_search(
     let now = crate::now_ms();
     let search_status = if scopes_used.is_empty() && !blocked_scopes.is_empty() {
         "blocked"
+    } else if gateway_budget_exhausted {
+        "budget_exhausted"
     } else {
         "ok"
     };
     let search_detail = format!(
-        "query={} result_count={} result_ids={} result_kinds={} requested_scopes={} scopes_used={} blocked_scopes={}{}",
+        "query={} result_count={} result_ids={} result_kinds={} requested_scopes={} scopes_used={} blocked_scopes={} retrieval_gateway={} gateway_budget_exhausted={}{}",
         request.query,
         results.len(),
         result_ids.join(","),
@@ -2124,6 +2156,12 @@ pub(super) async fn memory_search(
             .map(|scope| scope.to_string())
             .collect::<Vec<_>>()
             .join(","),
+        request
+            .retrieval_gateway
+            .as_ref()
+            .map(|gateway| gateway.grant.grant_id.as_str())
+            .unwrap_or("none"),
+        gateway_budget_exhausted,
         memory_linkage_detail(&linkage)
     );
     append_memory_audit(
@@ -2159,6 +2197,11 @@ pub(super) async fn memory_search(
             "requestedScopes": requested_scopes,
             "scopesUsed": scopes_used.clone(),
             "blockedScopes": blocked_scopes.clone(),
+            "retrievalGatewayGrantID": request
+                .retrieval_gateway
+                .as_ref()
+                .map(|gateway| gateway.grant.grant_id.clone()),
+            "gatewayBudgetExhausted": gateway_budget_exhausted,
             "linkage": linkage,
             "status": search_status,
             "auditID": audit_id,
@@ -2170,6 +2213,164 @@ pub(super) async fn memory_search(
         blocked_scopes,
         audit_id,
     }))
+}
+
+async fn validate_memory_retrieval_gateway_for_search(
+    state: &AppState,
+    _tenant_context: &TenantContext,
+    request: &MemorySearchRequest,
+    capability: &MemoryCapabilityToken,
+) -> Result<i64, (StatusCode, &'static str)> {
+    let Some(gateway) = request.retrieval_gateway.as_ref() else {
+        if capability.subject.starts_with("channel:") {
+            return Err((StatusCode::FORBIDDEN, "channel memory search requires retrieval gateway"));
+        }
+        return Ok(100);
+    };
+    let grant = &gateway.grant;
+    if grant.revoked {
+        return Err((StatusCode::FORBIDDEN, "retrieval grant revoked"));
+    }
+    let now = crate::now_ms();
+    if grant.expires_at.is_some_and(|expires_at| expires_at <= now) {
+        return Err((StatusCode::UNAUTHORIZED, "retrieval grant expired"));
+    }
+    if grant.subject != capability.subject {
+        return Err((StatusCode::FORBIDDEN, "retrieval grant subject mismatch"));
+    }
+    if grant.org_id != request.partition.org_id || grant.workspace_id != request.partition.workspace_id {
+        return Err((StatusCode::FORBIDDEN, "retrieval grant tenant mismatch"));
+    }
+    if !grant.project_ids.is_empty()
+        && !grant
+            .project_ids
+            .iter()
+            .any(|project_id| project_id == &request.partition.project_id)
+    {
+        return Err((StatusCode::FORBIDDEN, "retrieval grant project mismatch"));
+    }
+    if let Some(max_queries) = grant.budgets.max_queries_per_window {
+        let window_ms = grant.budgets.window_ms.unwrap_or(60_000).max(1);
+        let budget_key = memory_retrieval_budget_key(gateway);
+        let mut windows = state.memory_retrieval_budget_windows.write().await;
+        let window = windows.entry(budget_key).or_insert_with(|| {
+            tandem_memory::MemoryRetrievalBudgetWindow {
+                started_at_ms: now,
+                query_count: 0,
+            }
+        });
+        if now.saturating_sub(window.started_at_ms) >= window_ms {
+            window.started_at_ms = now;
+            window.query_count = 0;
+        }
+        if window.query_count >= max_queries {
+            return Err((StatusCode::TOO_MANY_REQUESTS, "retrieval grant query budget exhausted"));
+        }
+        window.query_count = window.query_count.saturating_add(1);
+    }
+    Ok(grant.budgets.max_top_k.unwrap_or(100).clamp(1, 100) as i64)
+}
+
+fn memory_retrieval_budget_key(gateway: &tandem_memory::MemoryRetrievalGatewayRequest) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        gateway.grant.grant_id,
+        gateway.session_id.as_deref().unwrap_or("*"),
+        gateway.channel.as_deref().unwrap_or("*"),
+        gateway.user_id.as_deref().unwrap_or("*")
+    )
+}
+
+fn memory_retrieval_gateway_allows_record(
+    request: &MemorySearchRequest,
+    record: &GlobalMemoryRecord,
+) -> bool {
+    let Some(gateway) = request.retrieval_gateway.as_ref() else {
+        return true;
+    };
+    let grant = &gateway.grant;
+    if !grant.project_ids.is_empty()
+        && !record
+            .project_tag
+            .as_ref()
+            .is_some_and(|project_id| grant.project_ids.iter().any(|allowed| allowed == project_id))
+    {
+        return false;
+    }
+    let target = MemorySourceAccessTarget::from_metadata(record.metadata.as_ref());
+    if !grant.source_binding_ids.is_empty()
+        && !target.as_ref().and_then(|target| target.source_binding_id.as_ref()).is_some_and(
+            |binding_id| grant.source_binding_ids.iter().any(|allowed| allowed == binding_id),
+        )
+    {
+        return false;
+    }
+    if !grant.source_object_ids.is_empty()
+        && !target.as_ref().and_then(|target| target.source_object_id.as_ref()).is_some_and(
+            |source_object_id| {
+                grant
+                    .source_object_ids
+                    .iter()
+                    .any(|allowed| allowed == source_object_id)
+            },
+        )
+    {
+        return false;
+    }
+    if !grant.data_classes.is_empty() {
+        let Some(data_class) = memory_record_data_class(record, target.as_ref()) else {
+            return false;
+        };
+        if !grant.data_classes.contains(&data_class) {
+            return false;
+        }
+    }
+    true
+}
+
+fn memory_record_data_class(
+    record: &GlobalMemoryRecord,
+    target: Option<&MemorySourceAccessTarget>,
+) -> Option<tandem_enterprise_contract::DataClass> {
+    if let Some(target) = target {
+        return Some(target.data_class);
+    }
+    match memory_classification_label(record.metadata.as_ref()) {
+        "internal" => Some(tandem_enterprise_contract::DataClass::Internal),
+        "restricted" => Some(tandem_enterprise_contract::DataClass::Restricted),
+        "confidential" => Some(tandem_enterprise_contract::DataClass::Confidential),
+        "public" => Some(tandem_enterprise_contract::DataClass::Public),
+        _ => None,
+    }
+}
+
+fn apply_memory_retrieval_gateway_result_budgets(
+    request: &MemorySearchRequest,
+    hits: Vec<tandem_memory::types::GlobalMemorySearchHit>,
+) -> (Vec<tandem_memory::types::GlobalMemorySearchHit>, bool) {
+    let Some(gateway) = request.retrieval_gateway.as_ref() else {
+        return (hits, false);
+    };
+    let max_chars = gateway.grant.budgets.max_chars.unwrap_or(usize::MAX);
+    let max_tokens = gateway.grant.budgets.max_tokens.unwrap_or(i64::MAX);
+    let mut chars_used = 0usize;
+    let mut tokens_used = 0i64;
+    let mut budget_exhausted = false;
+    let mut allowed = Vec::new();
+    for hit in hits {
+        let char_count = hit.record.content.chars().count();
+        let token_count = hit.record.content.split_whitespace().count() as i64;
+        if chars_used.saturating_add(char_count) > max_chars
+            || tokens_used.saturating_add(token_count) > max_tokens
+        {
+            budget_exhausted = true;
+            continue;
+        }
+        chars_used = chars_used.saturating_add(char_count);
+        tokens_used = tokens_used.saturating_add(token_count);
+        allowed.push(hit);
+    }
+    (allowed, budget_exhausted)
 }
 
 fn global_memory_record_visible_to_access_filter(

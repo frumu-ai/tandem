@@ -47,7 +47,12 @@ impl Tool for MemorySearchTool {
 
         let session_id = memory_session_id(&args);
         let project_id = memory_project_id(&args);
-        let allow_global = global_memory_enabled(&args);
+        let channel_gateway = channel_memory_gateway_context(&args, session_id.clone(), project_id.clone());
+        let allow_global = if channel_gateway.is_some() {
+            false
+        } else {
+            global_memory_enabled(&args)
+        };
         if session_id.is_none() && project_id.is_none() && !allow_global {
             return Ok(ToolResult {
                 output: "memory_search requires a current session/project context or global memory enabled by policy"
@@ -85,6 +90,12 @@ impl Tool for MemorySearchTool {
                 metadata: json!({"ok": false, "reason": "missing_project_scope"}),
             });
         }
+        if channel_gateway.is_some() && (allow_global || matches!(tier, Some(MemoryTier::Global))) {
+            return Ok(ToolResult {
+                output: "channel memory_search cannot read global memory".to_string(),
+                metadata: json!({"ok": false, "reason": "channel_global_scope_blocked"}),
+            });
+        }
         if matches!(tier, Some(MemoryTier::Global)) && !allow_global {
             return Ok(ToolResult {
                 output: "tier=global requires allow_global=true".to_string(),
@@ -92,11 +103,26 @@ impl Tool for MemorySearchTool {
             });
         }
 
-        let limit = args
+        let mut limit = args
             .get("limit")
             .and_then(|v| v.as_i64())
             .unwrap_or(5)
             .clamp(1, 20);
+        if channel_gateway.is_some() {
+            limit = limit.min(CHANNEL_MEMORY_MAX_TOP_K as i64);
+        }
+        if let Some(gateway) = channel_gateway.as_ref() {
+            if !consume_channel_memory_query_budget(gateway) {
+                return Ok(ToolResult {
+                    output: "channel memory_search query budget exhausted".to_string(),
+                    metadata: json!({
+                        "ok": false,
+                        "reason": "channel_query_budget_exhausted",
+                        "retrieval_gateway": gateway.audit_value(),
+                    }),
+                });
+            }
+        }
 
         let db_path = resolve_memory_db_path(&args);
         let db_exists = db_path.exists();
@@ -207,8 +233,16 @@ impl Tool for MemorySearchTool {
             }
         }
         let mut merged = dedup.into_values().collect::<Vec<_>>();
+        if let Some(gateway) = channel_gateway.as_ref() {
+            merged.retain(|result| channel_gateway_allows_chunk(gateway, &result.chunk));
+        }
         merged.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
         merged.truncate(limit as usize);
+        let gateway_budget_exhausted = if let Some(gateway) = channel_gateway.as_ref() {
+            apply_channel_memory_result_budget(gateway, &mut merged)
+        } else {
+            false
+        };
 
         let output_rows = merged
             .iter()
@@ -239,8 +273,190 @@ impl Tool for MemorySearchTool {
                 "embedding_status": health.status,
                 "embedding_reason": health.reason,
                 "strict_scope": !allow_global,
+                "retrieval_gateway": channel_gateway.as_ref().map(ChannelMemoryGatewayContext::audit_value),
+                "gateway_budget_exhausted": gateway_budget_exhausted,
             }),
         })
+    }
+}
+
+const CHANNEL_MEMORY_QUERY_WINDOW_MS: u64 = 5 * 60 * 1000;
+const CHANNEL_MEMORY_MAX_QUERIES_PER_WINDOW: u32 = 10;
+const CHANNEL_MEMORY_MAX_TOP_K: usize = 5;
+const CHANNEL_MEMORY_MAX_TOKENS: i64 = 200;
+const CHANNEL_MEMORY_MAX_CHARS: usize = 1000;
+
+#[derive(Debug, Clone)]
+struct ChannelMemoryGatewayContext {
+    platform: String,
+    user_id: String,
+    scope_id: String,
+    session_id: Option<String>,
+    project_id: Option<String>,
+}
+
+impl ChannelMemoryGatewayContext {
+    fn budget_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}:{}",
+            self.platform,
+            self.scope_id,
+            self.user_id,
+            self.session_id.as_deref().unwrap_or("*"),
+            self.project_id.as_deref().unwrap_or("*")
+        )
+    }
+
+    fn audit_value(&self) -> Value {
+        json!({
+            "grant_id": format!(
+                "channel-{}-{}-{}",
+                sanitize_memory_gateway_segment(&self.platform),
+                sanitize_memory_gateway_segment(&self.scope_id),
+                sanitize_memory_gateway_segment(&self.user_id)
+            ),
+            "subject": format!("channel:{}:{}", self.platform, self.user_id),
+            "channel": self.platform,
+            "user_id": self.user_id,
+            "scope_id": self.scope_id,
+            "session_id": self.session_id,
+            "project_id": self.project_id,
+            "data_classes": ["public", "internal"],
+            "budgets": {
+                "max_queries_per_window": CHANNEL_MEMORY_MAX_QUERIES_PER_WINDOW,
+                "window_ms": CHANNEL_MEMORY_QUERY_WINDOW_MS,
+                "max_top_k": CHANNEL_MEMORY_MAX_TOP_K,
+                "max_tokens": CHANNEL_MEMORY_MAX_TOKENS,
+                "max_chars": CHANNEL_MEMORY_MAX_CHARS,
+            }
+        })
+    }
+}
+
+fn channel_memory_gateway_context(
+    args: &Value,
+    session_id: Option<String>,
+    project_id: Option<String>,
+) -> Option<ChannelMemoryGatewayContext> {
+    let platform = hidden_arg_string(args, "__channel_platform")?;
+    let user_id = hidden_arg_string(args, "__channel_user_id")?;
+    let scope_id = hidden_arg_string(args, "__channel_scope_id")?;
+    Some(ChannelMemoryGatewayContext {
+        platform,
+        user_id,
+        scope_id,
+        session_id,
+        project_id,
+    })
+}
+
+fn hidden_arg_string(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn channel_memory_budget_windows() -> &'static Mutex<HashMap<String, (u64, u32)>> {
+    static WINDOWS: OnceLock<Mutex<HashMap<String, (u64, u32)>>> = OnceLock::new();
+    WINDOWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn consume_channel_memory_query_budget(gateway: &ChannelMemoryGatewayContext) -> bool {
+    let now = now_ms_u64();
+    let key = gateway.budget_key();
+    let mut guard = channel_memory_budget_windows()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let window = guard.entry(key).or_insert((now, 0));
+    if now.saturating_sub(window.0) >= CHANNEL_MEMORY_QUERY_WINDOW_MS {
+        *window = (now, 0);
+    }
+    if window.1 >= CHANNEL_MEMORY_MAX_QUERIES_PER_WINDOW {
+        return false;
+    }
+    window.1 = window.1.saturating_add(1);
+    true
+}
+
+fn channel_gateway_allows_chunk(
+    gateway: &ChannelMemoryGatewayContext,
+    chunk: &tandem_memory::types::MemoryChunk,
+) -> bool {
+    channel_gateway_allows_memory_metadata(
+        gateway,
+        chunk.project_id.as_deref(),
+        chunk.metadata.as_ref(),
+    )
+}
+
+fn channel_gateway_allows_memory_metadata(
+    gateway: &ChannelMemoryGatewayContext,
+    project_id: Option<&str>,
+    metadata: Option<&Value>,
+) -> bool {
+    if let Some(project_id) = project_id {
+        if Some(project_id) != gateway.project_id.as_deref() {
+            return false;
+        }
+    }
+    matches!(memory_data_class_label(metadata), "public" | "internal")
+}
+
+fn memory_data_class_label(metadata: Option<&Value>) -> &str {
+    metadata
+        .and_then(|metadata| {
+            metadata
+                .get("enterprise_source_binding")
+                .and_then(|binding| binding.get("data_class"))
+                .or_else(|| metadata.get("classification"))
+        })
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("internal")
+}
+
+fn apply_channel_memory_result_budget(
+    _gateway: &ChannelMemoryGatewayContext,
+    results: &mut Vec<MemorySearchResult>,
+) -> bool {
+    let mut chars_used = 0usize;
+    let mut tokens_used = 0i64;
+    let original_len = results.len();
+    results.retain(|result| {
+        let char_count = result.chunk.content.chars().count();
+        let token_count = result.chunk.content.split_whitespace().count() as i64;
+        if chars_used.saturating_add(char_count) > CHANNEL_MEMORY_MAX_CHARS
+            || tokens_used.saturating_add(token_count) > CHANNEL_MEMORY_MAX_TOKENS
+        {
+            return false;
+        }
+        chars_used = chars_used.saturating_add(char_count);
+        tokens_used = tokens_used.saturating_add(token_count);
+        true
+    });
+    results.len() < original_len
+}
+
+fn sanitize_memory_gateway_segment(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
     }
 }
 

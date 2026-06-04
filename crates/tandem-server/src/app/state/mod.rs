@@ -140,6 +140,8 @@ pub struct AppState {
     /// step-up is an out-of-band assurance issued by the control panel and is
     /// short-lived by design, so it is intentionally not persisted.
     pub channel_step_up_grants: Arc<RwLock<std::collections::HashMap<String, u64>>>,
+    pub memory_retrieval_budget_windows:
+        Arc<RwLock<std::collections::HashMap<String, tandem_memory::MemoryRetrievalBudgetWindow>>>,
     pub channel_rate_limiter: Arc<ChannelRateLimiter>,
     pub automation_governance: Arc<RwLock<GovernanceState>>,
     pub governance_engine: Arc<dyn GovernancePolicyEngine>,

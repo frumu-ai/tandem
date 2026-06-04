@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tandem_enterprise_contract::DataClass;
 
 /// Governance-facing tier model for scoped memory access.
 ///
@@ -91,6 +92,59 @@ pub struct MemoryCapabilityToken {
     pub expires_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MemoryRetrievalBudgets {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_queries_per_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_top_k: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRetrievalGrant {
+    pub grant_id: String,
+    pub subject: String,
+    pub org_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub project_ids: Vec<String>,
+    #[serde(default)]
+    pub source_binding_ids: Vec<String>,
+    #[serde(default)]
+    pub source_object_ids: Vec<String>,
+    #[serde(default)]
+    pub data_classes: Vec<DataClass>,
+    #[serde(default)]
+    pub budgets: MemoryRetrievalBudgets,
+    #[serde(default)]
+    pub revoked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRetrievalGatewayRequest {
+    pub grant: MemoryRetrievalGrant,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRetrievalBudgetWindow {
+    pub started_at_ms: u64,
+    pub query_count: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryContentKind {
@@ -176,6 +230,8 @@ pub struct MemorySearchRequest {
     pub partition: MemoryPartition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_gateway: Option<MemoryRetrievalGatewayRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

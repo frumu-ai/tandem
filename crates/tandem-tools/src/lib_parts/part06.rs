@@ -791,6 +791,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_memory_search_blocks_global_tool_scope() {
+        let tool = MemorySearchTool;
+        let result = tool
+            .execute(json!({
+                "query": "global pattern",
+                "tier": "global",
+                "allow_global": true,
+                "__session_id": "session-channel-global-block",
+                "__project_id": "project-channel-global-block",
+                "__channel_platform": "discord",
+                "__channel_user_id": "user-global-block",
+                "__channel_scope_id": "room-global-block"
+            }))
+            .await
+            .expect("memory_search should return ToolResult");
+        assert_eq!(result.metadata["ok"], json!(false));
+        assert_eq!(
+            result.metadata.get("reason").and_then(|value| value.as_str()),
+            Some("channel_global_scope_blocked")
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_memory_search_enforces_query_budget_before_storage_read() {
+        let tool = MemorySearchTool;
+        let scope_id = format!("room-budget-{}", now_ms_u64());
+        let mut last_reason = String::new();
+        for _ in 0..=CHANNEL_MEMORY_MAX_QUERIES_PER_WINDOW {
+            let result = tool
+                .execute(json!({
+                    "query": "budget pattern",
+                    "tier": "project",
+                    "__session_id": "session-channel-budget",
+                    "__project_id": "project-channel-budget",
+                    "__channel_platform": "discord",
+                    "__channel_user_id": "user-budget",
+                    "__channel_scope_id": scope_id,
+                    "__memory_db_path": "/tmp/tandem-channel-budget-missing.sqlite"
+                }))
+                .await
+                .expect("memory_search should return ToolResult");
+            last_reason = result
+                .metadata
+                .get("reason")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+        }
+        assert_eq!(last_reason, "channel_query_budget_exhausted");
+    }
+
+    #[test]
+    fn channel_gateway_filters_restricted_memory_chunks() {
+        let gateway = ChannelMemoryGatewayContext {
+            platform: "discord".to_string(),
+            user_id: "user-filter".to_string(),
+            scope_id: "room-filter".to_string(),
+            session_id: Some("session-filter".to_string()),
+            project_id: Some("project-filter".to_string()),
+        };
+        let restricted_metadata = json!({
+            "enterprise_source_binding": {
+                "data_class": "financial_record"
+            }
+        });
+        assert!(!channel_gateway_allows_memory_metadata(
+            &gateway,
+            Some("project-filter"),
+            Some(&restricted_metadata),
+        ));
+        let internal_metadata = json!({
+            "enterprise_source_binding": {
+                "data_class": "internal"
+            }
+        });
+        assert!(channel_gateway_allows_memory_metadata(
+            &gateway,
+            Some("project-filter"),
+            Some(&internal_metadata),
+        ));
+        assert!(!channel_gateway_allows_memory_metadata(
+            &gateway,
+            Some("other-project"),
+            Some(&internal_metadata),
+        ));
+    }
+
+    #[tokio::test]
     async fn memory_store_uses_hidden_project_scope_by_default() {
         let tool = MemoryStoreTool;
         let result = tool
