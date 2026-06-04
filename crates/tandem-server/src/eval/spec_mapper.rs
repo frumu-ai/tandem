@@ -40,12 +40,37 @@ pub const DEFAULT_MAX_REPAIR_ITERATIONS: u32 = 3;
 
 /// Translate an `EvalTestCase` into a runnable `AutomationV2Spec`.
 pub fn test_case_to_spec(case: &EvalTestCase) -> AutomationV2Spec {
+    test_case_to_spec_with_options(case, EvalSpecOptions::default())
+}
+
+/// Translate an `EvalTestCase` into a local stub-mode `AutomationV2Spec`.
+///
+/// Stub specs include deterministic inline artifacts so the real runtime executor
+/// and validators are exercised without making model/provider calls.
+pub fn test_case_to_stub_spec(case: &EvalTestCase) -> AutomationV2Spec {
+    test_case_to_spec_with_options(
+        case,
+        EvalSpecOptions {
+            inline_artifacts: true,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct EvalSpecOptions {
+    inline_artifacts: bool,
+}
+
+fn test_case_to_spec_with_options(
+    case: &EvalTestCase,
+    options: EvalSpecOptions,
+) -> AutomationV2Spec {
     let max_repair = effective_max_repair_iterations(case);
     let nodes = case
         .automation_spec
         .nodes
         .iter()
-        .map(|n| map_node(case, n, max_repair))
+        .map(|n| map_node(case, n, max_repair, options))
         .collect();
 
     let now = current_time_ms();
@@ -91,7 +116,12 @@ pub fn test_case_to_spec(case: &EvalTestCase) -> AutomationV2Spec {
     }
 }
 
-fn map_node(case: &EvalTestCase, node: &TestNode, max_repair: u32) -> AutomationFlowNode {
+fn map_node(
+    case: &EvalTestCase,
+    node: &TestNode,
+    max_repair: u32,
+    options: EvalSpecOptions,
+) -> AutomationFlowNode {
     let validator = validator_for_node_type(&node.node_type);
     let kind_label = contract_kind_for_node_type(&node.node_type);
     let summary_guidance = if node.output_contract.is_empty() {
@@ -124,7 +154,7 @@ fn map_node(case: &EvalTestCase, node: &TestNode, max_repair: u32) -> Automation
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
-        metadata: eval_node_metadata(case, node),
+        metadata: eval_node_metadata(case, node, options),
     }
 }
 
@@ -167,7 +197,11 @@ fn eval_automation_metadata(case: &EvalTestCase) -> Option<Value> {
     }
 }
 
-fn eval_node_metadata(case: &EvalTestCase, node: &TestNode) -> Option<Value> {
+fn eval_node_metadata(
+    case: &EvalTestCase,
+    node: &TestNode,
+    options: EvalSpecOptions,
+) -> Option<Value> {
     let mut metadata = Map::new();
     copy_config_string(
         &case.automation_spec.config,
@@ -193,14 +227,19 @@ fn eval_node_metadata(case: &EvalTestCase, node: &TestNode) -> Option<Value> {
     {
         metadata.insert("fintech_strict".to_string(), Value::Bool(true));
     }
-    metadata.insert(
-        "eval".to_string(),
-        json!({
-            "test_id": case.id,
-            "node_type": node.node_type,
-            "inline_artifact": eval_inline_artifact_payload(case, node),
-        }),
-    );
+    let mut eval = json!({
+        "test_id": case.id,
+        "node_type": node.node_type,
+    });
+    if options.inline_artifacts {
+        if let Some(eval_object) = eval.as_object_mut() {
+            eval_object.insert(
+                "inline_artifact".to_string(),
+                eval_inline_artifact_payload(case, node),
+            );
+        }
+    }
+    metadata.insert("eval".to_string(), eval);
     if metadata.is_empty() {
         None
     } else {
@@ -496,24 +535,33 @@ mod tests {
     }
 
     #[test]
-    fn eval_nodes_include_deterministic_inline_artifact_metadata() {
-        let case = make_case("ev_inline", vec![make_node("research_node", "research")]);
+    fn default_eval_nodes_omit_deterministic_inline_artifacts() {
+        let case = make_case("ev_live", vec![make_node("research_node", "research")]);
         let spec = test_case_to_spec(&case);
         let node_metadata = spec.flow.nodes[0].metadata.as_ref().expect("node metadata");
         let eval_metadata = node_metadata.get("eval").expect("eval metadata");
 
         assert_eq!(
             eval_metadata.get("test_id").and_then(Value::as_str),
-            Some("ev_inline")
+            Some("ev_live")
         );
         assert_eq!(
             eval_metadata.get("node_type").and_then(Value::as_str),
             Some("research")
         );
+        assert!(eval_metadata.get("inline_artifact").is_none());
+    }
 
+    #[test]
+    fn stub_eval_nodes_include_deterministic_inline_artifact_metadata() {
+        let case = make_case("ev_inline", vec![make_node("research_node", "research")]);
+        let spec = test_case_to_stub_spec(&case);
+        let node_metadata = spec.flow.nodes[0].metadata.as_ref().expect("node metadata");
+        let eval_metadata = node_metadata.get("eval").expect("eval metadata");
         let inline_artifact = eval_metadata
             .get("inline_artifact")
             .expect("inline artifact payload");
+
         assert_eq!(
             inline_artifact.get("status").and_then(Value::as_str),
             Some("completed")

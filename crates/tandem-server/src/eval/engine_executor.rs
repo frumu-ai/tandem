@@ -21,7 +21,7 @@ use crate::app::state::AppState;
 use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
 use crate::eval::dataset::{ArtifactStatus, EvalTestCase};
 use crate::eval::metrics::EvalRunResult;
-use crate::eval::spec_mapper::{test_case_to_spec, EVAL_TRIGGER_TYPE};
+use crate::eval::spec_mapper::{test_case_to_spec, test_case_to_stub_spec, EVAL_TRIGGER_TYPE};
 use crate::failures::{classify_error_text, AIFailureMode};
 
 /// How often to poll `get_automation_v2_run` for status updates.
@@ -33,6 +33,7 @@ pub struct EngineExecutor {
     state: AppState,
     poll_interval: Duration,
     max_duration: Duration,
+    use_stub_inline_artifacts: bool,
 }
 
 impl EngineExecutor {
@@ -41,6 +42,7 @@ impl EngineExecutor {
             state,
             poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
             max_duration: Duration::from_secs(DEFAULT_MAX_DURATION_SECS),
+            use_stub_inline_artifacts: false,
         }
     }
 
@@ -54,11 +56,20 @@ impl EngineExecutor {
         self
     }
 
+    pub fn with_stub_inline_artifacts(mut self, enabled: bool) -> Self {
+        self.use_stub_inline_artifacts = enabled;
+        self
+    }
+
     /// Submit a single eval test case, wait for it to reach a terminal status, and
     /// return the resulting `EvalRunResult`.
     pub async fn run_test_case(&self, case: &EvalTestCase) -> EvalRunResult {
         let started = Instant::now();
-        let spec = test_case_to_spec(case);
+        let spec = if self.use_stub_inline_artifacts {
+            test_case_to_stub_spec(case)
+        } else {
+            test_case_to_spec(case)
+        };
 
         let initial_run = match self
             .state

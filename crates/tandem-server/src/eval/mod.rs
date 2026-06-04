@@ -31,6 +31,6 @@ pub use scripted_provider::{
     ScriptedEvalProvider, ScriptedResponse, SCRIPTED_MODEL_ID, SCRIPTED_PROVIDER_ID,
 };
 pub use spec_mapper::{
-    contract_kind_for_node_type, test_case_to_spec, validator_for_node_type, EVAL_AGENT_ID,
-    EVAL_TRIGGER_TYPE,
+    contract_kind_for_node_type, test_case_to_spec, test_case_to_stub_spec,
+    validator_for_node_type, EVAL_AGENT_ID, EVAL_TRIGGER_TYPE,
 };
