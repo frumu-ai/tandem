@@ -83,9 +83,16 @@ impl EngineExecutor {
         let deadline = Instant::now() + self.max_duration;
         loop {
             if Instant::now() > deadline {
+                let diagnostic = self
+                    .state
+                    .get_automation_v2_run(run_id)
+                    .await
+                    .map(|run| format!("; {}", run_timeout_diagnostic(&run)))
+                    .unwrap_or_default();
                 return Err(format!(
-                    "eval timeout after {}s",
-                    self.max_duration.as_secs()
+                    "eval timeout after {}s{}",
+                    self.max_duration.as_secs(),
+                    diagnostic
                 ));
             }
 
@@ -100,6 +107,32 @@ impl EngineExecutor {
             tokio::time::sleep(self.poll_interval).await;
         }
     }
+}
+
+fn run_timeout_diagnostic(run: &AutomationV2RunRecord) -> String {
+    let lifecycle_events = run
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .rev()
+        .take(5)
+        .map(|event| event.event.clone())
+        .collect::<Vec<_>>();
+    let last_failure = run
+        .checkpoint
+        .last_failure
+        .as_ref()
+        .map(|failure| failure.reason.clone());
+    format!(
+        "run_status={:?}, pending_nodes={}, completed_nodes={}, blocked_nodes={}, lifecycle_tail={:?}, last_failure={:?}, detail={:?}",
+        run.status,
+        run.checkpoint.pending_nodes.len(),
+        run.checkpoint.completed_nodes.len(),
+        run.checkpoint.blocked_nodes.len(),
+        lifecycle_events,
+        last_failure,
+        run.detail
+    )
 }
 
 /// Convert engine-native run state into an `EvalRunResult`.

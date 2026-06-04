@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use tandem_server::eval::runner::EngineMode;
-use tandem_server::eval::{EvalRunner, EvalRunnerConfig};
+use tandem_server::eval::{
+    bootstrap_eval_app_state, EvalBootstrapOptions, EvalRunner, EvalRunnerConfig,
+};
 
 const USAGE: &str = r#"
 Tandem Eval Runner - AI Quality Evaluation Tool
@@ -227,19 +229,47 @@ async fn main() -> ExitCode {
     println!();
 
     let simulation_mode = matches!(args.engine_mode, EngineMode::Simulation);
+    let engine_mode = args.engine_mode;
+    let engine_token_present = args.engine_token.is_some();
     let config = EvalRunnerConfig {
         num_workers: args.num_workers,
         default_provider: args.provider,
         default_model: args.model,
         max_test_duration_secs: args.max_duration_secs,
-        engine_mode: args.engine_mode,
+        engine_mode,
         engine_url: args.engine_url,
         engine_token: args.engine_token,
         simulation_mode,
         random_seed: None,
     };
 
-    let runner = EvalRunner::new(config);
+    let runner = match engine_mode {
+        EngineMode::Stub if !engine_token_present => {
+            println!("Bootstrapping local in-process eval engine with scripted provider...");
+            match bootstrap_eval_app_state(EvalBootstrapOptions::default()).await {
+                Ok(state) => EvalRunner::new(config).with_app_state(state),
+                Err(err) => {
+                    eprintln!("Failed to bootstrap local eval engine: {}", err);
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        EngineMode::Live if !engine_token_present => {
+            println!("Bootstrapping local in-process eval engine with configured providers...");
+            let options = EvalBootstrapOptions {
+                scripted_provider: false,
+                ..EvalBootstrapOptions::default()
+            };
+            match bootstrap_eval_app_state(options).await {
+                Ok(state) => EvalRunner::new(config).with_app_state(state),
+                Err(err) => {
+                    eprintln!("Failed to bootstrap local eval engine: {}", err);
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        _ => EvalRunner::new(config),
+    };
 
     let dataset = match runner.load_dataset(&args.dataset) {
         Ok(d) => d,

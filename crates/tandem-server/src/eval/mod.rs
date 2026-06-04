@@ -8,6 +8,7 @@
 /// - **metrics.rs**: Metric computation and aggregation
 /// - **runner.rs**: Eval execution engine (CLI binary in bin/eval_runner.rs)
 /// - **regression_detection.rs**: Baseline comparison and alerting (Phase 4)
+pub mod bootstrap;
 pub mod dataset;
 pub mod engine_executor;
 pub mod metrics;
@@ -16,6 +17,7 @@ pub mod runner;
 pub mod scripted_provider;
 pub mod spec_mapper;
 
+pub use bootstrap::{bootstrap_eval_app_state, EvalBootstrapOptions};
 pub use dataset::{ArtifactStatus, EvalDataset, EvalExpectedOutput, EvalTestCase, MetricTolerance};
 pub use engine_executor::{
     extract_eval_result, EngineExecutor, DEFAULT_MAX_DURATION_SECS, DEFAULT_POLL_INTERVAL_MS,

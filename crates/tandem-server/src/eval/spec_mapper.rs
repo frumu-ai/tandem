@@ -124,7 +124,7 @@ fn map_node(case: &EvalTestCase, node: &TestNode, max_repair: u32) -> Automation
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
-        metadata: eval_node_metadata(case),
+        metadata: eval_node_metadata(case, node),
     }
 }
 
@@ -167,7 +167,7 @@ fn eval_automation_metadata(case: &EvalTestCase) -> Option<Value> {
     }
 }
 
-fn eval_node_metadata(case: &EvalTestCase) -> Option<Value> {
+fn eval_node_metadata(case: &EvalTestCase, node: &TestNode) -> Option<Value> {
     let mut metadata = Map::new();
     copy_config_string(
         &case.automation_spec.config,
@@ -193,11 +193,70 @@ fn eval_node_metadata(case: &EvalTestCase) -> Option<Value> {
     {
         metadata.insert("fintech_strict".to_string(), Value::Bool(true));
     }
+    metadata.insert(
+        "eval".to_string(),
+        json!({
+            "test_id": case.id,
+            "node_type": node.node_type,
+            "inline_artifact": eval_inline_artifact_payload(case, node),
+        }),
+    );
     if metadata.is_empty() {
         None
     } else {
         Some(Value::Object(metadata))
     }
+}
+
+fn eval_inline_artifact_payload(case: &EvalTestCase, node: &TestNode) -> Value {
+    json!({
+        "status": "completed",
+        "summary": format!(
+            "Scripted eval artifact for `{}` in `{}`: {}",
+            node.id, case.id, node.objective
+        ),
+        "content": format!(
+            "Deterministic stub output for `{}` satisfying `{}`.",
+            node.objective, node.output_contract
+        ),
+        "decision": "pass",
+        "category": node.node_type,
+        "results": {
+            "passed": true,
+            "node_id": node.id,
+            "test_id": case.id
+        },
+        "test_results": {
+            "passed": true,
+            "errors": []
+        },
+        "available_sources": [
+            "scripted-eval-fixture"
+        ],
+        "data_quality": "sufficient",
+        "sources": [
+            "https://example.com/scripted-eval/source-1",
+            "https://example.com/scripted-eval/source-2"
+        ],
+        "citations": [
+            "https://example.com/scripted-eval/source-1",
+            "https://example.com/scripted-eval/source-2"
+        ],
+        "web_sources": [
+            "https://example.com/scripted-eval/source-1",
+            "https://example.com/scripted-eval/source-2"
+        ],
+        "web_sources_reviewed": [
+            "https://example.com/scripted-eval/source-1",
+            "https://example.com/scripted-eval/source-2"
+        ],
+        "code": "def parse_json(value):\n    import json\n    return json.loads(value)",
+        "markdown": "## Summary\n\n- Scripted eval output\n- Deterministic stub artifact",
+        "key_points": [
+            "Scripted eval output",
+            "Deterministic stub artifact"
+        ]
+    })
 }
 
 fn metadata_enables_eval_fintech_strict(metadata: &Map<String, Value>) -> bool {
@@ -434,6 +493,40 @@ mod tests {
             contract.summary_guidance.as_deref(),
             Some("Produce a research output")
         );
+    }
+
+    #[test]
+    fn eval_nodes_include_deterministic_inline_artifact_metadata() {
+        let case = make_case("ev_inline", vec![make_node("research_node", "research")]);
+        let spec = test_case_to_spec(&case);
+        let node_metadata = spec.flow.nodes[0].metadata.as_ref().expect("node metadata");
+        let eval_metadata = node_metadata.get("eval").expect("eval metadata");
+
+        assert_eq!(
+            eval_metadata.get("test_id").and_then(Value::as_str),
+            Some("ev_inline")
+        );
+        assert_eq!(
+            eval_metadata.get("node_type").and_then(Value::as_str),
+            Some("research")
+        );
+
+        let inline_artifact = eval_metadata
+            .get("inline_artifact")
+            .expect("inline artifact payload");
+        assert_eq!(
+            inline_artifact.get("status").and_then(Value::as_str),
+            Some("completed")
+        );
+        assert_eq!(
+            inline_artifact
+                .get("results")
+                .and_then(|results| results.get("node_id"))
+                .and_then(Value::as_str),
+            Some("research_node")
+        );
+        assert!(inline_artifact.get("citations").is_some());
+        assert!(inline_artifact.get("code").is_some());
     }
 
     #[test]

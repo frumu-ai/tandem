@@ -1,17 +1,21 @@
 use super::*;
 
-#[test]
-fn standard_workflow_nodes_receive_default_workspace_output_paths() {
-    let node = AutomationFlowNode {
+fn test_flow_node(
+    node_id: &str,
+    kind: &str,
+    validator: crate::AutomationOutputValidatorKind,
+    metadata: Option<serde_json::Value>,
+) -> AutomationFlowNode {
+    AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        node_id: "research_sources".to_string(),
-        agent_id: "researcher".to_string(),
-        objective: "Research sources".to_string(),
+        node_id: node_id.to_string(),
+        agent_id: "test-agent".to_string(),
+        objective: format!("Run {node_id}"),
         depends_on: Vec::new(),
         input_refs: Vec::new(),
         output_contract: Some(AutomationFlowOutputContract {
-            kind: "citations".to_string(),
-            validator: Some(crate::AutomationOutputValidatorKind::ResearchBrief),
+            kind: kind.to_string(),
+            validator: Some(validator),
             enforcement: None,
             schema: None,
             summary_guidance: None,
@@ -23,8 +27,18 @@ fn standard_workflow_nodes_receive_default_workspace_output_paths() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
-        metadata: None,
-    };
+        metadata,
+    }
+}
+
+#[test]
+fn standard_workflow_nodes_receive_default_workspace_output_paths() {
+    let node = test_flow_node(
+        "research_sources",
+        "citations",
+        crate::AutomationOutputValidatorKind::ResearchBrief,
+        None,
+    );
 
     assert_eq!(
         automation_node_required_output_path(&node).as_deref(),
@@ -34,29 +48,12 @@ fn standard_workflow_nodes_receive_default_workspace_output_paths() {
 
 #[test]
 fn compare_results_nodes_receive_default_workspace_output_paths() {
-    let node = AutomationFlowNode {
-        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        node_id: "compare_results".to_string(),
-        agent_id: "analyst".to_string(),
-        objective: "Compare the gathered evidence and write the final comparison.".to_string(),
-        depends_on: Vec::new(),
-        input_refs: Vec::new(),
-        output_contract: Some(AutomationFlowOutputContract {
-            kind: "report_markdown".to_string(),
-            validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
-            enforcement: None,
-            schema: None,
-            summary_guidance: None,
-        }),
-        tool_policy: None,
-        mcp_policy: None,
-        retry_policy: None,
-        timeout_ms: None,
-        max_tool_calls: None,
-        stage_kind: None,
-        gate: None,
-        metadata: None,
-    };
+    let node = test_flow_node(
+        "compare_results",
+        "report_markdown",
+        crate::AutomationOutputValidatorKind::GenericArtifact,
+        None,
+    );
 
     assert_eq!(
         automation_node_required_output_path(&node).as_deref(),
@@ -280,28 +277,11 @@ fn citations_nodes_do_not_require_files_reviewed_sections_by_default() {
 
 #[test]
 fn collect_inputs_nodes_write_deterministic_inline_artifacts() {
-    let node = AutomationFlowNode {
-        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        node_id: "collect_inputs".to_string(),
-        agent_id: "planner".to_string(),
-        objective: "Gather workflow inputs".to_string(),
-        depends_on: Vec::new(),
-        input_refs: Vec::new(),
-        output_contract: Some(AutomationFlowOutputContract {
-            kind: "brief".to_string(),
-            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
-            enforcement: None,
-            schema: None,
-            summary_guidance: None,
-        }),
-        tool_policy: None,
-        mcp_policy: None,
-        retry_policy: None,
-        timeout_ms: None,
-        max_tool_calls: None,
-        stage_kind: None,
-        gate: None,
-        metadata: Some(json!({
+    let node = test_flow_node(
+        "collect_inputs",
+        "brief",
+        crate::AutomationOutputValidatorKind::StructuredJson,
+        Some(json!({
             "inputs": {
                 "topic": "autonomous AI agentic workflows",
                 "delivery_email": "recipient@example.com",
@@ -309,7 +289,7 @@ fn collect_inputs_nodes_write_deterministic_inline_artifacts() {
                 "attachments_allowed": false
             }
         })),
-    };
+    );
 
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-inline-artifact-{}",
@@ -348,34 +328,50 @@ fn collect_inputs_nodes_write_deterministic_inline_artifacts() {
 
 #[test]
 fn collect_inputs_without_explicit_inputs_do_not_use_deterministic_inline_artifacts() {
-    let node = AutomationFlowNode {
-        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        node_id: "collect_inputs".to_string(),
-        agent_id: "planner".to_string(),
-        objective: "Inspect the workspace and resolve runtime values.".to_string(),
-        depends_on: Vec::new(),
-        input_refs: Vec::new(),
-        output_contract: Some(AutomationFlowOutputContract {
-            kind: "structured_json".to_string(),
-            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
-            enforcement: None,
-            schema: None,
-            summary_guidance: None,
-        }),
-        tool_policy: None,
-        mcp_policy: None,
-        retry_policy: None,
-        timeout_ms: None,
-        max_tool_calls: None,
-        stage_kind: None,
-        gate: None,
-        metadata: Some(json!({
+    let node = test_flow_node(
+        "collect_inputs",
+        "structured_json",
+        crate::AutomationOutputValidatorKind::StructuredJson,
+        Some(json!({
             "builder": {
                 "web_research_expected": false
             }
         })),
-    };
+    );
 
     assert!(automation_node_required_output_path(&node).is_some());
     assert!(automation_node_inline_artifact_payload(&node).is_none());
+}
+
+#[test]
+fn eval_nodes_use_explicit_inline_artifact_metadata() {
+    let node = test_flow_node(
+        "research_node",
+        "report",
+        crate::AutomationOutputValidatorKind::ResearchBrief,
+        Some(json!({
+            "eval": {
+                "test_id": "ev_inline",
+                "inline_artifact": {
+                    "status": "completed",
+                    "summary": "stubbed eval artifact",
+                    "citations": ["https://example.com/source"]
+                }
+            }
+        })),
+    );
+
+    let payload = automation_node_inline_artifact_payload(&node).expect("inline artifact");
+
+    assert_eq!(
+        payload.get("summary").and_then(serde_json::Value::as_str),
+        Some("stubbed eval artifact")
+    );
+    assert_eq!(
+        payload
+            .get("citations")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
 }
