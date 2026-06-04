@@ -162,6 +162,35 @@ pub enum MemoryContentKind {
     Fact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryTrustLabel {
+    ExternalUserSupplied,
+    ConnectorSourced,
+    Verified,
+    HumanApproved,
+    SystemGenerated,
+}
+
+impl MemoryTrustLabel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExternalUserSupplied => "external_user_supplied",
+            Self::ConnectorSourced => "connector_sourced",
+            Self::Verified => "verified",
+            Self::HumanApproved => "human_approved",
+            Self::SystemGenerated => "system_generated",
+        }
+    }
+
+    pub fn is_trusted_for_promotion(self) -> bool {
+        matches!(
+            self,
+            Self::Verified | Self::HumanApproved | Self::SystemGenerated
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryPutRequest {
     pub run_id: String,

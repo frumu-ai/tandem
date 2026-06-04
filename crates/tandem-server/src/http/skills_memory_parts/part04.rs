@@ -134,6 +134,19 @@ pub(super) async fn memory_promote_impl(
             audit_id,
         });
     };
+    let source_trust_label = memory_record_trust_label(source.metadata.as_ref())
+        .unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated);
+    if !source_trust_label.is_trusted_for_promotion() && !memory_review_has_evidence(&request.review) {
+        emit_blocked_memory_promote_guardrail(
+            state,
+            tenant_context,
+            &request,
+            capability.subject.clone(),
+            "untrusted memory promotion requires review evidence",
+        )
+        .await?;
+        return Err(StatusCode::FORBIDDEN);
+    }
     let scrub_report = scrub_content(&source.content);
     let audit_id = Uuid::new_v4().to_string();
     let now = crate::now_ms();

@@ -23,6 +23,12 @@ fn memory_promote_metadata(
             },
         }),
     );
+    let next_trust_label = if memory_review_has_evidence(&request.review) {
+        tandem_memory::MemoryTrustLabel::HumanApproved
+    } else {
+        memory_record_trust_label(metadata).unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated)
+    };
+    apply_memory_trust_metadata(&mut obj, next_trust_label, "promotion");
     Some(Value::Object(obj))
 }
 
@@ -48,6 +54,20 @@ fn memory_promote_provenance(
             "reviewer_id": request.review.reviewer_id,
             "approval_id": request.review.approval_id,
             "tenant_context": tenant_context,
+        }),
+    );
+    obj.insert(
+        "memory_trust".to_string(),
+        json!({
+            "label": if memory_review_has_evidence(&request.review) {
+                tandem_memory::MemoryTrustLabel::HumanApproved.as_str()
+            } else {
+                memory_record_trust_label(provenance)
+                    .unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated)
+                    .as_str()
+            },
+            "reviewer_id": request.review.reviewer_id,
+            "approval_id": request.review.approval_id,
         }),
     );
     Value::Object(obj)
@@ -150,6 +170,90 @@ fn memory_classification_label(metadata: Option<&Value>) -> &str {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("internal")
+}
+
+fn memory_review_has_evidence(review: &tandem_memory::PromotionReview) -> bool {
+    review
+        .reviewer_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && review
+            .approval_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn memory_trust_label_for_put(request: &MemoryPutRequest) -> tandem_memory::MemoryTrustLabel {
+    if let Some(label) = memory_record_trust_label(request.metadata.as_ref()) {
+        return label;
+    }
+    if request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("enterprise_source_binding"))
+        .is_some()
+    {
+        tandem_memory::MemoryTrustLabel::ConnectorSourced
+    } else {
+        tandem_memory::MemoryTrustLabel::SystemGenerated
+    }
+}
+
+fn memory_record_trust_label(metadata: Option<&Value>) -> Option<tandem_memory::MemoryTrustLabel> {
+    match metadata
+        .and_then(|row| row.get("memory_trust"))
+        .and_then(|row| row.get("label"))
+        .and_then(Value::as_str)
+    {
+        Some("external_user_supplied") => Some(tandem_memory::MemoryTrustLabel::ExternalUserSupplied),
+        Some("connector_sourced") => Some(tandem_memory::MemoryTrustLabel::ConnectorSourced),
+        Some("verified") => Some(tandem_memory::MemoryTrustLabel::Verified),
+        Some("human_approved") => Some(tandem_memory::MemoryTrustLabel::HumanApproved),
+        Some("system_generated") => Some(tandem_memory::MemoryTrustLabel::SystemGenerated),
+        _ => None,
+    }
+}
+
+fn apply_memory_trust_metadata(
+    obj: &mut serde_json::Map<String, Value>,
+    label: tandem_memory::MemoryTrustLabel,
+    source: &'static str,
+) {
+    obj.insert(
+        "memory_trust".to_string(),
+        json!({
+            "label": label.as_str(),
+            "trusted_for_promotion": label.is_trusted_for_promotion(),
+            "source": source,
+        }),
+    );
+}
+
+fn memory_metadata_with_trust_fields(
+    metadata: Option<Value>,
+    label: tandem_memory::MemoryTrustLabel,
+) -> Option<Value> {
+    let mut obj = metadata
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    apply_memory_trust_metadata(&mut obj, label, "memory_put");
+    Some(Value::Object(obj))
+}
+
+fn memory_provenance_with_trust(
+    mut provenance: Value,
+    label: tandem_memory::MemoryTrustLabel,
+) -> Value {
+    if let Some(obj) = provenance.as_object_mut() {
+        obj.insert(
+            "memory_trust".to_string(),
+            json!({
+                "label": label.as_str(),
+                "trusted_for_promotion": label.is_trusted_for_promotion(),
+            }),
+        );
+    }
+    provenance
 }
 
 pub(super) fn scrub_content(input: &str) -> ScrubReport {
@@ -1549,6 +1653,19 @@ pub(super) async fn memory_put_impl(
     }
     .to_string();
     let user_id = capability.subject.clone();
+    let trust_label = memory_trust_label_for_put(&request);
+    let metadata = memory_metadata_with_trust_fields(
+        memory_metadata_with_storage_fields(
+            request.metadata.clone(),
+            &artifact_refs,
+            request.classification,
+        ),
+        trust_label,
+    );
+    let provenance = memory_provenance_with_trust(
+        memory_put_provenance(&request, &partition_key, &artifact_refs, tenant_context),
+        trust_label,
+    );
     let record = GlobalMemoryRecord {
         id: id.clone(),
         user_id,
@@ -1562,17 +1679,8 @@ pub(super) async fn memory_put_impl(
         project_tag: Some(request.partition.project_id.clone()),
         channel_tag: None,
         host_tag: None,
-        metadata: memory_metadata_with_storage_fields(
-            request.metadata.clone(),
-            &artifact_refs,
-            request.classification,
-        ),
-        provenance: Some(memory_put_provenance(
-            &request,
-            &partition_key,
-            &artifact_refs,
-            tenant_context,
-        )),
+        metadata,
+        provenance: Some(provenance),
         redaction_status: "passed".to_string(),
         redaction_count: 0,
         visibility: "private".to_string(),
