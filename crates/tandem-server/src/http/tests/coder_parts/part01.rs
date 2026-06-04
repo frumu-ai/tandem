@@ -1685,3 +1685,56 @@ async fn coder_pr_review_execute_all_runs_to_completion() {
         .and_then(Value::as_u64)
         .is_some_and(|count| count >= 2));
 }
+
+/// GOV-B2a: creating a coder run from an agent context is rejected. Coder runs
+/// have no per-run agent-governance record, so this HTTP path is human-only;
+/// agents needing governed autonomous work use Automations V2.
+#[tokio::test]
+async fn coder_run_create_rejects_agent_context() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-coder")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-agent-rejected",
+                "workflow_mode": "merge_recommendation",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "user123/tandem"
+                },
+                "github_ref": { "kind": "pull_request", "number": 301 }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// GOV-B2a: `execute-next` is governed human-only work just like `execute-all`; an
+/// agent-context caller must be refused (the human check runs before the run is
+/// even loaded, so this holds regardless of run existence).
+#[tokio::test]
+async fn coder_run_execute_next_rejects_agent_context() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/any-run/execute-next")
+        .header("content-type", "application/json")
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-coder")
+        .body(Body::from(json!({}).to_string()))
+        .expect("execute-next request");
+    let resp = app.clone().oneshot(req).await.expect("execute-next response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}

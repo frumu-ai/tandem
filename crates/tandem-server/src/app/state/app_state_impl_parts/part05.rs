@@ -428,6 +428,12 @@ impl AppState {
             if !has_repairable_nodes {
                 continue;
             }
+            // GOV-B6a: do not resurrect a stale-reaped run whose agent is now
+            // spend-paused without an approved override; leave it paused for the
+            // guardrail-override resume path instead.
+            if self.run_launch_blocked_by_spend_pause(&automation).await {
+                continue;
+            }
             if self
                 .update_automation_v2_run(&run.run_id, |row| {
                     row.status = AutomationRunStatus::Queued;
@@ -514,6 +520,32 @@ impl AppState {
             }
         }
         resumed
+    }
+
+    /// GOV-B6a: a queued or stale run must not transition into execution while any
+    /// of its agents is spend-paused without an approved quota override *for that
+    /// agent*. Quota overrides are agent-targeted, so the check is per-agent: a run
+    /// is held if there exists a spend-paused agent that lacks its own override (an
+    /// override on a different agent does not unblock a still-paused one). A held run
+    /// is `Paused + GuardrailStopped` and is picked back up by
+    /// `auto_resume_guardrail_stopped_runs` once the override lands. No-op in the
+    /// OSS/local engine, where `spend_paused_agents` is always empty.
+    async fn run_launch_blocked_by_spend_pause(
+        &self,
+        automation: &crate::automation_v2::types::AutomationV2Spec,
+    ) -> bool {
+        let agent_ids = std::iter::once(automation.creator_id.clone())
+            .chain(automation.agents.iter().map(|agent| agent.agent_id.clone()))
+            .filter(|agent_id| !agent_id.trim().is_empty())
+            .collect::<std::collections::BTreeSet<_>>();
+        if agent_ids.is_empty() {
+            return false;
+        }
+        let governance = self.automation_governance.read().await;
+        agent_ids.iter().any(|agent_id| {
+            governance.is_agent_spend_paused(agent_id)
+                && !governance.has_approved_agent_quota_override(agent_id)
+        })
     }
 
     pub fn is_automation_scheduler_stopping(&self) -> bool {
@@ -640,6 +672,45 @@ impl AppState {
                 .await;
             let _ = self.persist_automation_v2_runs().await;
             return None;
+        }
+
+        // GOV-B6a: re-check governance at the moment of launch. A run queued before
+        // its agent hit the weekly spend cap must not transition into execution and
+        // burn more budget; hold it as `Paused + GuardrailStopped` so the existing
+        // `auto_resume_guardrail_stopped_runs` sweep resumes it once a quota override
+        // is approved.
+        if let Some(automation) = automation_for_context.as_ref() {
+            if self.run_launch_blocked_by_spend_pause(automation).await {
+                let mut guard = self.automation_v2_runs.write().await;
+                let run = guard.get_mut(run_id)?;
+                if run.status != AutomationRunStatus::Queued {
+                    return None;
+                }
+                let previous_status = run.status.clone();
+                let now = now_ms();
+                let reason =
+                    "automation run held at launch: agent weekly spend cap reached".to_string();
+                run.status = AutomationRunStatus::Paused;
+                run.updated_at_ms = now;
+                run.scheduler = None;
+                run.stop_kind = Some(AutomationStopKind::GuardrailStopped);
+                run.pause_reason = Some(reason.clone());
+                run.detail = Some(reason.clone());
+                run.stop_reason = Some(reason.clone());
+                automation::record_automation_lifecycle_event_with_metadata(
+                    run,
+                    "run_launch_held",
+                    Some(reason.clone()),
+                    Some(AutomationStopKind::GuardrailStopped),
+                    Some(json!({ "reason": "agent_spend_paused" })),
+                );
+                let held = run.clone();
+                drop(guard);
+                self.sync_automation_scheduler_for_run_transition(previous_status, &held)
+                    .await;
+                let _ = self.persist_automation_v2_runs().await;
+                return None;
+            }
         }
 
         let mut guard = self.automation_v2_runs.write().await;

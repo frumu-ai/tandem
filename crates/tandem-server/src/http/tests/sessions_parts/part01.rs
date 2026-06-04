@@ -1788,3 +1788,39 @@ async fn prompt_async_streamed_write_preserves_provider_call_id_and_args_lineage
     task.abort();
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
+
+/// GOV-B2d: aborting a session is attributed to the calling actor and written to
+/// the protected audit log.
+#[tokio::test]
+async fn abort_session_writes_attributed_protected_audit() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/session")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "title": "b2d", "directory": "." }).to_string()))
+        .expect("create request");
+    let create_resp = app.clone().oneshot(create).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let body = to_bytes(create_resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let session_id = payload.get("id").and_then(Value::as_str).expect("session id").to_string();
+
+    let abort = Request::builder()
+        .method("POST")
+        .uri(format!("/session/{session_id}/abort"))
+        .header("x-tandem-actor-id", "operator-b2d")
+        .body(Body::empty())
+        .expect("abort request");
+    let abort_resp = app.clone().oneshot(abort).await.expect("abort response");
+    assert_eq!(abort_resp.status(), StatusCode::OK);
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"session.aborted\""));
+    assert!(audit.contains("operator-b2d"));
+    assert!(audit.contains(&session_id));
+}

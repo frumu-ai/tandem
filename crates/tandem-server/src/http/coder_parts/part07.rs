@@ -250,9 +250,17 @@ async fn execute_coder_run_step(
 pub(super) async fn coder_run_execute_next(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    axum::extract::Extension(request_principal): axum::extract::Extension<
+        tandem_types::RequestPrincipal,
+    >,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<CoderRunExecuteNextInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    // GOV-B2a: executing a coder step is governed human-only work. Guard execute-next
+    // with the same check as execute-all, otherwise an agent-context caller could run
+    // the same governed work by repeatedly POSTing execute-next.
+    ensure_coder_human_actor(&headers, &tenant_context, &request_principal)?;
     let (record, _run) =
         load_coder_run_with_context_for_tenant(&state, &id, &tenant_context).await?;
     let mut record = record;
@@ -279,9 +287,14 @@ pub(super) async fn coder_run_execute_next(
 pub(super) async fn coder_run_execute_all(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    axum::extract::Extension(request_principal): axum::extract::Extension<
+        tandem_types::RequestPrincipal,
+    >,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<CoderRunExecuteAllInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    ensure_coder_human_actor(&headers, &tenant_context, &request_principal)?;
     let (record, _run) =
         load_coder_run_with_context_for_tenant(&state, &id, &tenant_context).await?;
     let mut record = record;
@@ -419,9 +432,14 @@ async fn coder_run_transition(
 pub(super) async fn coder_run_approve(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    axum::extract::Extension(request_principal): axum::extract::Extension<
+        tandem_types::RequestPrincipal,
+    >,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<CoderRunControlInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    ensure_coder_human_actor(&headers, &tenant_context, &request_principal)?;
     let (record, run) =
         load_coder_run_with_context_for_tenant(&state, &id, &tenant_context).await?;
     let mut record = record;
@@ -620,9 +638,14 @@ pub(super) async fn coder_run_approve(
 pub(super) async fn coder_run_cancel(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    axum::extract::Extension(request_principal): axum::extract::Extension<
+        tandem_types::RequestPrincipal,
+    >,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<CoderRunControlInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    ensure_coder_human_actor(&headers, &tenant_context, &request_principal)?;
     let (record, _run) =
         load_coder_run_with_context_for_tenant(&state, &id, &tenant_context).await?;
     let why = input

@@ -499,6 +499,7 @@ async fn gate_decide_409_includes_winning_decision_in_body() {
                     decision: "approve".to_string(),
                     reason: Some("looks good".to_string()),
                     decided_at_ms: crate::now_ms(),
+                    decided_by: None,
                     metadata: None,
                 });
         })

@@ -7,5 +7,7 @@ use axum::{
 use tandem_types::{RequestPrincipal, TenantContext, VerifiedTenantContext};
 
 include!("routines_automations_parts/part01.rs");
+include!("routines_automations_parts/part05.rs");
 include!("routines_automations_parts/part02.rs");
+include!("routines_automations_parts/part04.rs");
 include!("routines_automations_parts/part03.rs");

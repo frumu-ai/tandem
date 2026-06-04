@@ -44,6 +44,47 @@ enum ChannelEnrollResponse {
     },
 }
 
+/// GOV-B5b: control-panel issuance of a per-identity, expiring channel step-up.
+/// A channel configured with `require_approval_step_up` only honors an approval
+/// from an identity that holds an active grant issued here.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChannelStepUpRequest {
+    channel: String,
+    user_id: String,
+    #[serde(default)]
+    ttl_seconds: Option<u64>,
+}
+
+const DEFAULT_STEP_UP_TTL_MS: u64 = 5 * 60 * 1000;
+
+pub(crate) async fn channel_step_up(
+    State(state): State<AppState>,
+    Json(input): Json<ChannelStepUpRequest>,
+) -> Response {
+    if input.channel.trim().is_empty() || input.user_id.trim().is_empty() {
+        return enrollment_error(StatusCode::BAD_REQUEST, "channel and user_id are required");
+    }
+    let ttl_ms = input
+        .ttl_seconds
+        .map(|seconds| seconds.saturating_mul(1000))
+        .filter(|ms| *ms > 0)
+        .unwrap_or(DEFAULT_STEP_UP_TTL_MS);
+    let expires_at_ms = state
+        .grant_channel_step_up(
+            &input.channel.trim().to_ascii_lowercase(),
+            input.user_id.trim(),
+            ttl_ms,
+        )
+        .await;
+    Json(json!({
+        "status": "step_up_granted",
+        "channel": input.channel.trim().to_ascii_lowercase(),
+        "user_id": input.user_id.trim(),
+        "expires_at_ms": expires_at_ms,
+    }))
+    .into_response()
+}
+
 pub(crate) async fn channel_enroll(
     State(state): State<AppState>,
     Json(input): Json<ChannelEnrollRequest>,
@@ -146,7 +187,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(
             state
-                .channel_user_can_approve("telegram", "4242", ChannelSecurityProfile::PublicDemo)
+                .channel_user_can_approve(
+                    "telegram",
+                    "4242",
+                    ChannelSecurityProfile::PublicDemo,
+                    false
+                )
                 .await
         );
     }

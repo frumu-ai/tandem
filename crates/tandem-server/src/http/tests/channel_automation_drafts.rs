@@ -404,3 +404,97 @@ async fn channel_automation_draft_can_cancel_preview() {
     let confirm_resp = app.clone().oneshot(confirm_req).await.expect("response");
     assert_eq!(confirm_resp.status(), StatusCode::CONFLICT);
 }
+
+/// GOV-B2c: confirming a channel automation draft from an agent context is
+/// rejected by creation governance, and the draft is not applied. In the
+/// non-premium build all agent creation is refused; the premium engine instead
+/// applies per-agent quota/capability rules, so this hard-rejection assertion is
+/// scoped to the non-premium build.
+#[cfg(not(feature = "premium-governance"))]
+#[tokio::test]
+async fn channel_automation_draft_confirm_rejects_agent_context() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/automations/channel-drafts")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "text": "Create an automation",
+                "session_id": "session-b2c",
+                "thread_key": "discord:room-b2c",
+                "channel_context": {
+                    "source_platform": "discord",
+                    "scope_kind": "room",
+                    "scope_id": "room-b2c",
+                    "reply_target": "room-b2c",
+                    "sender": "alice"
+                },
+                "allowed_tools": ["websearch"],
+                "allowed_mcp_servers": []
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let start_resp = app.clone().oneshot(start_req).await.expect("response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let start_payload: Value = serde_json::from_slice(
+        &to_bytes(start_resp.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    let draft_id = start_payload
+        .get("draft")
+        .and_then(|draft| draft.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+
+    for answer in ["Post a support summary here", "daily at 9am"] {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/automations/channel-drafts/{draft_id}/answer"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "answer": answer }).to_string()))
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // Confirm from an agent context: creation governance must reject it.
+    let confirm_req = Request::builder()
+        .method("POST")
+        .uri(format!("/automations/channel-drafts/{draft_id}/confirm"))
+        .header("x-tandem-request-source", "agent")
+        .header("x-tandem-agent-id", "agent-b2c")
+        .body(Body::empty())
+        .expect("request");
+    let confirm_resp = app.clone().oneshot(confirm_req).await.expect("response");
+    // The confirm is routed through creation governance and rejected. In the
+    // non-premium build, agent-authored creation is a premium feature, so the
+    // engine returns NOT_IMPLEMENTED rather than applying the draft.
+    assert_eq!(confirm_resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(!confirm_resp.status().is_success());
+
+    // The draft must remain unapplied and no automation should have been created.
+    let pending_req = Request::builder()
+        .method("GET")
+        .uri("/automations/channel-drafts/pending?channel=discord&scope_id=room-b2c&sender=alice")
+        .body(Body::empty())
+        .expect("request");
+    let pending_resp = app.clone().oneshot(pending_req).await.expect("response");
+    assert_eq!(pending_resp.status(), StatusCode::OK);
+    let pending_payload: Value = serde_json::from_slice(
+        &to_bytes(pending_resp.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    assert_eq!(
+        pending_payload.get("count").and_then(Value::as_u64),
+        Some(1)
+    );
+}

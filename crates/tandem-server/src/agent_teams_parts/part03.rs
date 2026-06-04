@@ -807,6 +807,7 @@ mod fintech_policy_tests {
                 decision: "approve".to_string(),
                 reason: Some("approved for test".to_string()),
                 decided_at_ms: crate::now_ms(),
+                decided_by: None,
                 metadata: Some(json!({
                     "fintech_protected_action": {
                         "category": category,

@@ -8,7 +8,7 @@ use crate::app::rate_limit::{
     channel_rate_limit_key_from_session_metadata, retry_after_duration, ChannelRateLimitKind,
 };
 use sha2::{Digest, Sha256};
-use tandem_types::{Session, ToolMode, VerifiedTenantContext};
+use tandem_types::{RequestPrincipal, Session, ToolMode, VerifiedTenantContext};
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -1825,6 +1825,8 @@ pub(super) async fn get_active_run(
 pub(super) async fn abort_session(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     let session = state
@@ -1833,9 +1835,26 @@ pub(super) async fn abort_session(
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
     ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    // GOV-B2d: aborting a session cancels in-flight work, so attribute and audit it.
+    let actor =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let cancelled = state.cancellations.cancel(&id).await;
     let cancelled_run = state.run_registry.finish_active(&id).await;
     let closed_browser_sessions = state.close_browser_sessions_for_owner(&id).await;
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "session.aborted",
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
+        json!({
+            "sessionID": id,
+            "cancelled": cancelled || cancelled_run.is_some(),
+            "runID": cancelled_run.as_ref().map(|run| run.run_id.clone()),
+            "closedBrowserSessions": closed_browser_sessions,
+            "actor": actor.clone(),
+        }),
+    )
+    .await;
     if let Some(run) = cancelled_run.as_ref() {
         if let Some(session) = state.storage.get_session(&id).await {
             publish_tenant_event(
@@ -1861,6 +1880,8 @@ pub(super) async fn abort_session(
 pub(super) async fn cancel_run_by_id(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path((id, run_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, StatusCode> {
     let session = state
@@ -1872,9 +1893,28 @@ pub(super) async fn cancel_run_by_id(
     let active = state.run_registry.get(&id).await;
     if let Some(active_run) = active {
         if active_run.run_id == run_id {
+            // GOV-B2d: attribute and audit the run cancellation.
+            let actor = super::governance::resolve_governance_actor(
+                &headers,
+                &tenant_context,
+                &request_principal,
+            );
             let _cancelled = state.cancellations.cancel(&id).await;
             let _ = state.run_registry.finish_if_match(&id, &run_id).await;
             let closed_browser_sessions = state.close_browser_sessions_for_owner(&id).await;
+            let _ = crate::audit::append_protected_audit_event(
+                &state,
+                "session.run.cancelled",
+                &tenant_context,
+                actor.actor_id.clone().or_else(|| actor.source.clone()),
+                json!({
+                    "sessionID": id,
+                    "runID": run_id,
+                    "closedBrowserSessions": closed_browser_sessions,
+                    "actor": actor.clone(),
+                }),
+            )
+            .await;
             if let Some(session) = state.storage.get_session(&id).await {
                 publish_tenant_event(
                     &state,
@@ -1898,170 +1938,7 @@ pub(super) async fn cancel_run_by_id(
     Ok(Json(json!({"ok": true, "cancelled": false})))
 }
 
-pub(super) async fn fork_session(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
-    let child = state
-        .storage
-        .fork_session(&id)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(json!({"ok": true, "session": child})))
-}
-
-pub(super) async fn revert_session(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
-    let ok = state
-        .storage
-        .revert_session(&id)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({"ok": ok})))
-}
-
-pub(super) async fn unrevert_session(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
-    let ok = state
-        .storage
-        .unrevert_session(&id)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({"ok": ok})))
-}
-
-pub(super) async fn share_session(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
-    let share_id = state
-        .storage
-        .set_shared(&id, true)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({"ok": share_id.is_some(), "shareID": share_id})))
-}
-
-pub(super) async fn unshare_session(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
-    let _ = state
-        .storage
-        .set_shared(&id, false)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({"ok": true})))
-}
-
-pub(super) async fn summarize_session(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
-    let total_messages = session.messages.len();
-    let mut text_parts = Vec::new();
-    for message in session.messages.iter().rev().take(4) {
-        for part in &message.parts {
-            if let MessagePart::Text { text } = part {
-                text_parts.push(text.clone());
-            }
-        }
-    }
-    text_parts.reverse();
-    let excerpt = text_parts.join(" ");
-    let clipped = excerpt.chars().take(280).collect::<String>();
-    let summary = if clipped.is_empty() {
-        format!("Session with {total_messages} messages and no text parts.")
-    } else {
-        format!("Session with {total_messages} messages. Recent: {clipped}")
-    };
-    state
-        .storage
-        .set_summary(&id, summary.clone())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({"ok": true, "summary": summary})))
-}
-
-pub(super) async fn session_diff(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
-    let diff = state.storage.session_diff(&id).await;
-    Ok(Json(json!(diff.unwrap_or_else(|| json!({})))))
-}
-
-pub(super) async fn session_children(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
-    Ok(Json(json!(state.storage.children(&id).await)))
-}
-
-pub(super) async fn init_session() -> Json<Value> {
-    Json(json!({"ok": true}))
-}
+include!("sessions_more.rs");
 
 #[cfg(test)]
 include!("sessions_tests.rs");

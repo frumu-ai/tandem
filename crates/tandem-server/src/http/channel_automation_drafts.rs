@@ -329,6 +329,8 @@ pub(super) async fn channel_automation_drafts_answer(
 pub(super) async fn channel_automation_drafts_confirm(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    Extension(request_principal): Extension<tandem_types::RequestPrincipal>,
+    headers: axum::http::HeaderMap,
     Path(draft_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let now = crate::now_ms();
@@ -346,6 +348,23 @@ pub(super) async fn channel_automation_drafts_confirm(
     }
     let mut automation = build_channel_automation(&draft, now);
     automation.set_tenant_context(&tenant_context);
+    // GOV-B2c: confirming a channel draft creates a fully provisioned automation,
+    // so it must pass the same creation governance as the HTTP create path rather
+    // than calling put_automation_v2 directly. An agent-context confirm is rejected,
+    // and the creation is attributed and audited.
+    let provenance = super::governance::resolve_governance_provenance(
+        &headers,
+        &tenant_context,
+        &request_principal,
+    );
+    let declared_capabilities =
+        crate::automation_v2::governance::AutomationDeclaredCapabilities::from_metadata(
+            automation.metadata.as_ref(),
+        );
+    state
+        .can_create_automation_for_actor(&provenance.creator, &provenance, &declared_capabilities)
+        .await
+        .map_err(super::governance::governance_error_response)?;
     let stored = state.put_automation_v2(automation).await.map_err(|error| {
         (
             StatusCode::BAD_REQUEST,
@@ -355,6 +374,25 @@ pub(super) async fn channel_automation_drafts_confirm(
             })),
         )
     })?;
+    let _ = state
+        .set_automation_governance_provenance(&stored.automation_id, provenance.clone())
+        .await;
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "automation.governance.created",
+        &tenant_context,
+        provenance
+            .creator
+            .actor_id
+            .clone()
+            .or_else(|| provenance.creator.source.clone()),
+        json!({
+            "automationID": stored.automation_id.clone(),
+            "provenance": provenance.clone(),
+            "origin": "channel_draft",
+        }),
+    )
+    .await;
     draft.status = ChannelAutomationDraftStatus::Applied;
     draft.automation_id = Some(stored.automation_id.clone());
     draft.question = None;

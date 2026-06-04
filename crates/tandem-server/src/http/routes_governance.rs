@@ -163,6 +163,47 @@ pub(super) async fn governance_approval_create(
     })))
 }
 
+/// GOV-B4: an approval decision (approve or deny) must be made by a verified
+/// human who is not the requester. Enforced before delegating to the governance
+/// layer so the human-in-the-loop control cannot be satisfied by an agent or by
+/// the requester self-reviewing.
+async fn ensure_governance_review_authorized(
+    state: &AppState,
+    approval_id: &str,
+    reviewer: &GovernanceActorRef,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if reviewer.kind != GovernanceActorKind::Human {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Only humans can review governance approvals",
+                "code": "GOVERNANCE_APPROVAL_REQUIRES_HUMAN",
+            })),
+        ));
+    }
+    if let Some(existing) = state.get_governance_approval_request(approval_id).await {
+        // Human operators legitimately file requests on an agent's behalf and
+        // approve them, so the self-review guard is scoped to agent-filed requests.
+        if existing.requested_by.kind == GovernanceActorKind::Agent {
+            if let (Some(reviewer_id), Some(requester_id)) = (
+                reviewer.actor_id.as_deref().map(str::trim),
+                existing.requested_by.actor_id.as_deref().map(str::trim),
+            ) {
+                if !reviewer_id.is_empty() && reviewer_id.eq_ignore_ascii_case(requester_id) {
+                    return Err((
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": "An agent-filed approval request may not be reviewed by the same agent",
+                            "code": "GOVERNANCE_APPROVAL_SELF_REVIEW",
+                        })),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn governance_approval_approve(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
@@ -173,6 +214,7 @@ pub(super) async fn governance_approval_approve(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
     let reviewer = resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    ensure_governance_review_authorized(&state, &approval_id, &reviewer).await?;
     let notes = input.notes.clone();
     let Some(reviewed) = state
         .decide_approval_request(&approval_id, reviewer, true, notes.clone())
@@ -252,6 +294,7 @@ pub(super) async fn governance_approval_deny(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
     let reviewer = resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    ensure_governance_review_authorized(&state, &approval_id, &reviewer).await?;
     let Some(reviewed) = state
         .decide_approval_request(&approval_id, reviewer, false, input.notes)
         .await

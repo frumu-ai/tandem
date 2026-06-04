@@ -1509,10 +1509,33 @@ async fn coder_run_create_inner(
     .into_response())
 }
 
+/// GOV-B2a: coder runs are governed coding work with no per-run agent-governance
+/// record, so create/execute/approve/cancel over the HTTP API require a verified
+/// human actor. An agent that needs governed autonomous work uses Automations V2,
+/// which carries the capability/approval flow. (Internal flows call the run state
+/// directly and are unaffected.)
+fn ensure_coder_human_actor(
+    headers: &axum::http::HeaderMap,
+    tenant_context: &tandem_types::TenantContext,
+    request_principal: &tandem_types::RequestPrincipal,
+) -> Result<(), StatusCode> {
+    let actor =
+        super::governance::resolve_governance_actor(headers, tenant_context, request_principal);
+    if actor.kind != crate::automation_v2::governance::GovernanceActorKind::Human {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(())
+}
+
 pub(super) async fn coder_run_create(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    axum::extract::Extension(request_principal): axum::extract::Extension<
+        tandem_types::RequestPrincipal,
+    >,
+    headers: axum::http::HeaderMap,
     Json(input): Json<CoderRunCreateInput>,
 ) -> Result<Response, StatusCode> {
+    ensure_coder_human_actor(&headers, &tenant_context, &request_principal)?;
     coder_run_create_inner(state, tenant_context, input).await
 }

@@ -40,6 +40,7 @@ pub(crate) enum ShellCommandPlan {
     Blocked(ToolResult),
 }
 
+#[allow(dead_code)] // used by unix shell-sandbox paths; unused on Windows
 fn bool_env_enabled(name: &str) -> bool {
     std::env::var(name)
         .ok()
@@ -50,6 +51,7 @@ fn bool_env_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(dead_code)] // used by unix shell-sandbox paths; unused on Windows
 fn sandbox_blocked_result(reason: &str) -> ShellCommandPlan {
     ShellCommandPlan::Blocked(ToolResult {
         output: format!("Shell command blocked by sandbox policy: {reason}"),
@@ -62,6 +64,7 @@ fn sandbox_blocked_result(reason: &str) -> ShellCommandPlan {
 }
 
 #[cfg(unix)]
+#[allow(dead_code)] // used by Linux-only shell-sandbox paths; unused on other unix (e.g. macOS)
 fn find_executable_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
@@ -74,6 +77,7 @@ fn find_executable_on_path(name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
+#[allow(clippy::result_large_err, dead_code)] // used by Linux-only shell-sandbox paths; unused on other unix (e.g. macOS)
 pub(crate) fn prepare_shell_workspace(
     args: &Value,
 ) -> Result<(PathBuf, PathBuf), ShellCommandPlan> {
@@ -368,6 +372,9 @@ pub(crate) fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
     None
 }
 
+// `args` is used on unix; the Windows branch uses an early `return`. Both are
+// platform-conditional, so allow the lints rather than churn the cfg branches.
+#[allow(unused_variables, clippy::needless_return)]
 fn build_shell_command(raw_cmd: &str, args: &Value) -> ShellCommandPlan {
     #[cfg(windows)]
     {

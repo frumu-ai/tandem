@@ -29,9 +29,12 @@ use tandem_channels::signing::verify_telegram_secret_token;
 use tandem_channels::telegram_keyboards::{parse_callback_data, ParsedCallbackData};
 
 use crate::app::rate_limit::{ChannelRateLimitKey, ChannelRateLimitKind};
-use crate::app::state::channel_user_capabilities::channel_security_profile_from_config;
+use crate::app::state::channel_user_capabilities::{
+    channel_requires_approval_step_up, channel_security_profile_from_config,
+};
 use crate::app::state::principals::channel_identity::{
-    resolve_channel_user, ChannelIdentityResolution, ChannelKind,
+    channel_bound_tenant, channel_is_open_to_all, resolve_channel_user, ChannelIdentityResolution,
+    ChannelKind,
 };
 use crate::AppState;
 
@@ -228,7 +231,12 @@ pub(crate) async fn telegram_interactions(
     let profile =
         channel_security_profile_from_config(&effective_config, ChannelKind::Telegram.as_str());
     if !state
-        .channel_user_can_approve(ChannelKind::Telegram.as_str(), &user_id, profile)
+        .channel_user_can_approve(
+            ChannelKind::Telegram.as_str(),
+            &user_id,
+            profile,
+            channel_is_open_to_all(&effective_config, ChannelKind::Telegram),
+        )
         .await
     {
         tracing::warn!(
@@ -237,6 +245,20 @@ pub(crate) async fn telegram_interactions(
             "rejecting Telegram interaction without approval capability"
         );
         return reject_forbidden("user lacks approval capability");
+    }
+    // GOV-B5b: on a channel that opts into step-up, an approval requires an active
+    // per-identity step-up grant issued out-of-band by the control panel.
+    if channel_requires_approval_step_up(&effective_config, ChannelKind::Telegram.as_str())
+        && !state
+            .channel_step_up_active(ChannelKind::Telegram.as_str(), &user_id)
+            .await
+    {
+        tracing::warn!(
+            target: "tandem_server::telegram_interactions",
+            user_id = %user_id,
+            "rejecting Telegram interaction without an active step-up"
+        );
+        return reject_forbidden("step-up required");
     }
     let rate_key = ChannelRateLimitKey {
         channel: ChannelKind::Telegram.as_str().to_string(),
@@ -353,12 +375,35 @@ async fn dispatch_decision(
         .await
         .map(|run| run.tenant_context)
         .unwrap_or_else(tandem_types::TenantContext::local_implicit);
-    let result = crate::http::routines_automations::automations_v2_run_gate_decide(
-        State(state),
-        axum::extract::Extension(tenant_context),
+    // GOV-B5c: if this channel is bound to a tenant, refuse to act on a run that
+    // belongs to a different tenant. An unbound channel (single-tenant/local) is
+    // unaffected.
+    let effective_config = state.config.get_effective_value().await;
+    if let Some((org_id, workspace_id)) =
+        channel_bound_tenant(&effective_config, ChannelKind::Telegram)
+    {
+        if tenant_context.org_id != org_id || tenant_context.workspace_id != workspace_id {
+            tracing::warn!(
+                target: "tandem_server::telegram_interactions",
+                user_id = %user_id,
+                "rejecting Telegram interaction targeting a run outside the channel's bound tenant"
+            );
+            return reject_forbidden("channel not bound to this run's tenant");
+        }
+    }
+    // GOV-B1: caller is verified (secret-token + allowlist + Approve tier);
+    // attribute the decision to the Telegram identity as a human approver.
+    let decider = crate::automation_v2::governance::GovernanceActorRef::human(
+        Some(user_id.to_string()),
+        "telegram",
+    );
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state,
+        tenant_context,
         None,
-        axum::extract::Path(parsed.run_id.clone()),
-        Json(input),
+        parsed.run_id.clone(),
+        input,
+        decider,
     )
     .await;
 

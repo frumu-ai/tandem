@@ -29,6 +29,7 @@ pub(crate) fn apply_automation_gate_decision(
     gate: &AutomationPendingGate,
     decision: &str,
     reason: Option<String>,
+    decided_by: Option<crate::automation_v2::governance::GovernanceActorRef>,
 ) -> AutomationGateDecisionOutcome {
     let gate_still_pending = run.status == AutomationRunStatus::AwaitingApproval
         && run
@@ -60,6 +61,7 @@ pub(crate) fn apply_automation_gate_decision(
             decision: decision.to_string(),
             reason: reason.clone(),
             decided_at_ms: crate::now_ms(),
+            decided_by,
             metadata: gate.metadata.clone(),
         });
     run.checkpoint.awaiting_gate = None;

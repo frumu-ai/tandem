@@ -53,16 +53,43 @@ impl GovernancePolicyEngine for UnavailableGovernanceEngine {
 
     fn authorize_mutation(
         &self,
-        _record: &AutomationGovernanceRecord,
+        record: &AutomationGovernanceRecord,
         actor: &GovernanceActorRef,
         _destructive: bool,
     ) -> Result<(), GovernanceError> {
-        if actor.kind == GovernanceActorKind::Human {
-            return Ok(());
+        if actor.kind != GovernanceActorKind::Human {
+            return Err(GovernanceError::feature_unavailable(
+                "premium governance is required for agent-owned automation mutation",
+            ));
         }
-        Err(GovernanceError::feature_unavailable(
-            "premium governance is required for agent-owned automation mutation",
-        ))
+        // GOV-B10: in the OSS/local engine a human may mutate, but a record that has
+        // a DISTINCT IDENTIFIED human owner may only be mutated by that owner. This
+        // is intentionally a no-op for non-enterprise local operation: the local
+        // control-panel user is anonymous (no actor_id) and locally-created records
+        // carry no identified owner, so neither side has an id to compare and the
+        // mutation is allowed. The check only engages when two distinct human
+        // identities are present (e.g. a shared/hosted-style deployment running the
+        // OSS engine), preventing one identified human from mutating another's
+        // automation.
+        let owner = &record.provenance.creator;
+        if owner.kind == GovernanceActorKind::Human {
+            if let (Some(owner_id), Some(actor_id)) =
+                (owner.actor_id.as_deref(), actor.actor_id.as_deref())
+            {
+                let owner_id = owner_id.trim();
+                let actor_id = actor_id.trim();
+                if !owner_id.is_empty()
+                    && !actor_id.is_empty()
+                    && !owner_id.eq_ignore_ascii_case(actor_id)
+                {
+                    return Err(GovernanceError::forbidden(
+                        "AUTOMATION_V2_NOT_OWNER",
+                        "only the automation owner may mutate it in this build",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn create_approval_request(
@@ -801,6 +828,20 @@ impl AppState {
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
         rows
+    }
+
+    /// GOV-B4: fetch an approval request so callers can enforce a self-review
+    /// guard before deciding.
+    pub async fn get_governance_approval_request(
+        &self,
+        approval_id: &str,
+    ) -> Option<GovernanceApprovalRequest> {
+        self.automation_governance
+            .read()
+            .await
+            .approvals
+            .get(approval_id)
+            .cloned()
     }
 
     pub async fn decide_approval_request(

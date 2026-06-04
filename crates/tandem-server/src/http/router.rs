@@ -111,6 +111,10 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
         axum::routing::post(super::channel_enrollment::channel_enroll),
     );
     router = router.route(
+        "/channels/step-up",
+        axum::routing::post(super::channel_enrollment::channel_step_up),
+    );
+    router = router.route(
         "/channels/slack/interactions",
         axum::routing::post(super::slack_interactions::slack_interactions),
     );

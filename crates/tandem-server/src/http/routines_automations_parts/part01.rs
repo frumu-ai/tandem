@@ -824,14 +824,50 @@ pub(super) fn routine_error_response(error: RoutineStoreError) -> (StatusCode, J
     }
 }
 
+/// GOV-B2b: routine mutations (create/run/approve/deny/pause/resume) require a
+/// verified human actor. Routines have no per-routine governance/approval record,
+/// so agent-authored routine work is refused here — an agent that needs governed
+/// autonomous work must use Automations V2, which carries the capability/approval
+/// flow. Resolving the actor from the verified principal also stops callers from
+/// spoofing `creator_type`/`creator_id` via the request body.
+fn ensure_routine_human_actor(
+    headers: &HeaderMap,
+    tenant_context: &TenantContext,
+    request_principal: &RequestPrincipal,
+    action: &str,
+) -> Result<crate::automation_v2::governance::GovernanceActorRef, (StatusCode, Json<Value>)> {
+    let actor =
+        super::governance::resolve_governance_actor(headers, tenant_context, request_principal);
+    if actor.kind != crate::automation_v2::governance::GovernanceActorKind::Human {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": format!(
+                    "Routine {action} requires a human actor; agents must use automations v2"
+                ),
+                "code": "ROUTINE_REQUIRES_HUMAN",
+            })),
+        ));
+    }
+    Ok(actor)
+}
+
 pub(super) async fn routines_create(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Json(input): Json<RoutineCreateInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // TODO: SECURITY - Add authorization check to verify user can create routines.
-    // The authorization pattern is not yet wired into routines handlers.
-    // This should extract Extension<RequestPrincipal> and verify permissions
-    // similar to how automation V2 handlers do it in part02.rs.
+    // GOV-B2b: enforce a verified human actor and derive the creator from it
+    // rather than trusting client-supplied creator fields.
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "creation")?;
+    let creator_id = actor
+        .actor_id
+        .clone()
+        .or(input.creator_id)
+        .unwrap_or_else(|| "unknown".to_string());
 
     let routine = RoutineSpec {
         routine_id: input
@@ -848,8 +884,8 @@ pub(super) async fn routines_create(
         args: input.args.unwrap_or_else(|| json!({})),
         allowed_tools: input.allowed_tools.unwrap_or_default(),
         output_targets: input.output_targets.unwrap_or_default(),
-        creator_type: input.creator_type.unwrap_or_else(|| "user".to_string()),
-        creator_id: input.creator_id.unwrap_or_else(|| "unknown".to_string()),
+        creator_type: "user".to_string(),
+        creator_id,
         requires_approval: input.requires_approval.unwrap_or(true),
         external_integrations_allowed: input.external_integrations_allowed.unwrap_or(false),
         next_fire_at_ms: input.next_fire_at_ms,
@@ -867,6 +903,19 @@ pub(super) async fn routines_create(
             "entrypoint": stored.entrypoint,
         }),
     ));
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "routine.created",
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
+        json!({
+            "routineID": stored.routine_id,
+            "name": stored.name,
+            "entrypoint": stored.entrypoint,
+            "actor": actor.clone(),
+        }),
+    )
+    .await;
     Ok(Json(json!({
         "routine": stored,
     })))
@@ -982,9 +1031,14 @@ pub(super) async fn routines_delete(
 
 pub(super) async fn routines_run_now(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<RoutineRunNowInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let _actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "execution")?;
     let routine = state.get_routine(&id).await.ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -1241,9 +1295,14 @@ fn clear_automation_run_execution_handles(run: &mut crate::AutomationV2RunRecord
 
 pub(super) async fn routines_run_approve(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "approval")?;
     let Some(current) = state.get_routine_run(&run_id).await else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1289,12 +1348,13 @@ pub(super) async fn routines_run_approve(
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "routine.run.approved",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
         json!({
             "runID": run_id,
             "routineID": updated.routine_id,
             "reason": reason,
+            "actor": actor.clone(),
         }),
     )
     .await;
@@ -1311,9 +1371,14 @@ pub(super) async fn routines_run_approve(
 
 pub(super) async fn routines_run_deny(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "denial")?;
     let Some(current) = state.get_routine_run(&run_id).await else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1359,12 +1424,13 @@ pub(super) async fn routines_run_deny(
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "routine.run.denied",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
         json!({
             "runID": run_id,
             "routineID": updated.routine_id,
             "reason": reason,
+            "actor": actor.clone(),
         }),
     )
     .await;
@@ -1381,9 +1447,14 @@ pub(super) async fn routines_run_deny(
 
 pub(super) async fn routines_run_pause(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "pause")?;
     let Some(current) = state.get_routine_run(&run_id).await else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1442,13 +1513,14 @@ pub(super) async fn routines_run_pause(
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "routine.run.paused",
-        &tandem_types::TenantContext::local_implicit(),
-        None,
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
         json!({
             "runID": run_id,
             "routineID": updated.routine_id,
             "reason": reason,
             "cancelledSessionIDs": cancelled_sessions,
+            "actor": actor.clone(),
         }),
     )
     .await;
@@ -1466,9 +1538,14 @@ pub(super) async fn routines_run_pause(
 
 pub(super) async fn routines_run_resume(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let actor =
+        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "resume")?;
     let Some(current) = state.get_routine_run(&run_id).await else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1511,6 +1588,19 @@ pub(super) async fn routines_run_resume(
             "reason": reason,
         }),
     ));
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "routine.run.resumed",
+        &tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
+        json!({
+            "runID": run_id,
+            "routineID": updated.routine_id,
+            "reason": reason,
+            "actor": actor.clone(),
+        }),
+    )
+    .await;
     let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
         .await
         .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
@@ -1862,116 +1952,4 @@ pub(super) fn routine_event_to_run_event(event: &EngineEvent) -> Option<EngineEv
             .insert("phase".to_string(), Value::String("do".to_string()));
     }
     Some(EngineEvent::new(event_type, props))
-}
-
-pub(super) fn automation_create_to_routine(
-    input: AutomationCreateInput,
-) -> Result<RoutineSpec, String> {
-    if input.mission.objective.trim().is_empty() {
-        return Err("mission.objective is required".to_string());
-    }
-    let mode = normalize_automation_mode(input.mode.as_deref())?;
-    let mut args = json!({
-        "prompt": input.mission.objective.trim(),
-        "success_criteria": input.mission.success_criteria,
-        "mode": mode,
-    });
-    if let Some(briefing) = input.mission.briefing {
-        if let Some(obj) = args.as_object_mut() {
-            obj.insert("briefing".to_string(), Value::String(briefing));
-        }
-    }
-    if let Some(policy) = input.policy.as_ref() {
-        if let Some(value) = policy.tool.orchestrator_only_tool_calls {
-            if let Some(obj) = args.as_object_mut() {
-                obj.insert(
-                    "orchestrator_only_tool_calls".to_string(),
-                    Value::Bool(value),
-                );
-            }
-        }
-    }
-    if let Some(model_policy) = input.model_policy {
-        validate_model_policy(&model_policy)?;
-        if let Some(obj) = args.as_object_mut() {
-            obj.insert("model_policy".to_string(), model_policy);
-        }
-    }
-    let (allowed_tools, external_integrations_allowed, requires_approval) =
-        if let Some(policy) = input.policy {
-            (
-                policy.tool.run_allowlist.unwrap_or_default(),
-                policy.tool.external_integrations_allowed.unwrap_or(false),
-                policy.approval.requires_approval.unwrap_or(true),
-            )
-        } else {
-            (Vec::new(), false, true)
-        };
-    Ok(RoutineSpec {
-        routine_id: input
-            .automation_id
-            .unwrap_or_else(|| format!("automation-{}", uuid::Uuid::new_v4().simple())),
-        name: input.name,
-        status: RoutineStatus::Active,
-        schedule: input.schedule,
-        timezone: input.timezone.unwrap_or_else(|| "UTC".to_string()),
-        misfire_policy: input
-            .misfire_policy
-            .unwrap_or(RoutineMisfirePolicy::RunOnce),
-        entrypoint: input
-            .mission
-            .entrypoint_compat
-            .unwrap_or_else(|| "mission.default".to_string()),
-        args: Value::Object(args.as_object().cloned().unwrap_or_default()),
-        allowed_tools,
-        output_targets: input.output_targets.unwrap_or_default(),
-        creator_type: input.creator_type.unwrap_or_else(|| "user".to_string()),
-        creator_id: input.creator_id.unwrap_or_else(|| "desktop".to_string()),
-        requires_approval,
-        external_integrations_allowed,
-        next_fire_at_ms: input.next_fire_at_ms,
-        last_fired_at_ms: None,
-    })
-}
-
-pub(super) async fn automations_create(
-    State(state): State<AppState>,
-    Json(input): Json<AutomationCreateInput>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let routine = automation_create_to_routine(input).map_err(|detail| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "Invalid automation definition",
-                "code": "AUTOMATION_INVALID",
-                "detail": detail,
-            })),
-        )
-    })?;
-    let saved = state
-        .put_routine(routine)
-        .await
-        .map_err(routine_error_response)?;
-    state.event_bus.publish(EngineEvent::new(
-        "automation.updated",
-        json!({
-            "automationID": saved.routine_id,
-        }),
-    ));
-    Ok(Json(json!({
-        "automation": routine_to_automation_wire(saved)
-    })))
-}
-
-pub(super) async fn automations_list(State(state): State<AppState>) -> Json<Value> {
-    let rows = state
-        .list_routines()
-        .await
-        .into_iter()
-        .map(routine_to_automation_wire)
-        .collect::<Vec<_>>();
-    Json(json!({
-        "automations": rows,
-        "count": rows.len(),
-    }))
 }

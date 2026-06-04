@@ -87,6 +87,46 @@ pub fn resolve_channel_user(
     ChannelIdentityResolution::Resolved(build_principal(kind, user_id))
 }
 
+/// GOV-B5a: a channel is "open" when its `allowed_users` admits everyone via the
+/// `*` wildcard. On such a channel, being allowed to *talk* must not imply approval
+/// authority — approval there requires an explicit per-identity capability grant.
+pub fn channel_is_open_to_all(effective_config: &Value, kind: ChannelKind) -> bool {
+    effective_config
+        .pointer(&format!("/channels/{}/allowed_users", kind.as_str()))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .any(|entry| entry.trim() == "*")
+        })
+        .unwrap_or(false)
+}
+
+/// GOV-B5c: the `(org_id, workspace_id)` a channel is bound to, if configured via
+/// `/channels/{channel}/tenant`. When unset — the single-tenant/local default — the
+/// channel is unbound and adopts the acted-upon run's tenant unchanged, so local
+/// operation is unaffected. When set, channel-originated actions must target that
+/// tenant, preventing a channel from acting on another tenant's run by id.
+pub fn channel_bound_tenant(
+    effective_config: &Value,
+    kind: ChannelKind,
+) -> Option<(String, String)> {
+    let tenant = effective_config.pointer(&format!("/channels/{}/tenant", kind.as_str()))?;
+    let org_id = tenant
+        .get("org_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let workspace_id = tenant
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    Some((org_id, workspace_id))
+}
+
 fn user_is_allowed(allowlist: &[String], user_id: &str) -> bool {
     if allowlist.is_empty() {
         // An empty `allowed_users` list is treated as "deny all" — the
@@ -261,5 +301,38 @@ mod tests {
         assert_eq!(ChannelKind::Slack.as_str(), "slack");
         assert_eq!(ChannelKind::Discord.as_str(), "discord");
         assert_eq!(ChannelKind::Telegram.as_str(), "telegram");
+    }
+
+    #[test]
+    fn channel_is_open_to_all_detects_wildcard() {
+        let cfg = json!({
+            "channels": {
+                "slack": { "allowed_users": ["*"] },
+                "discord": { "allowed_users": ["U1", "U2"] },
+                "telegram": {}
+            }
+        });
+        assert!(channel_is_open_to_all(&cfg, ChannelKind::Slack));
+        assert!(!channel_is_open_to_all(&cfg, ChannelKind::Discord));
+        assert!(!channel_is_open_to_all(&cfg, ChannelKind::Telegram));
+    }
+
+    #[test]
+    fn channel_bound_tenant_parses_config_and_defaults_unbound() {
+        let cfg = json!({
+            "channels": {
+                "slack": { "tenant": { "org_id": "org-a", "workspace_id": "ws-a" } },
+                "discord": { "tenant": { "org_id": "", "workspace_id": "ws" } },
+                "telegram": {}
+            }
+        });
+        assert_eq!(
+            channel_bound_tenant(&cfg, ChannelKind::Slack),
+            Some(("org-a".to_string(), "ws-a".to_string()))
+        );
+        // An empty org_id is treated as unbound (not a partial binding).
+        assert_eq!(channel_bound_tenant(&cfg, ChannelKind::Discord), None);
+        // No `tenant` key -> unbound (single-tenant/local default).
+        assert_eq!(channel_bound_tenant(&cfg, ChannelKind::Telegram), None);
     }
 }
