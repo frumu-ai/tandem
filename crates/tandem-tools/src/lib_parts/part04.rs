@@ -112,6 +112,17 @@ impl Tool for MemorySearchTool {
             limit = limit.min(CHANNEL_MEMORY_MAX_TOP_K as i64);
         }
         if let Some(gateway) = channel_gateway.as_ref() {
+            if let Some(reason) = suspicious_channel_memory_query_reason(query) {
+                return Ok(ToolResult {
+                    output: reason.to_string(),
+                    metadata: json!({
+                        "ok": false,
+                        "reason": "channel_query_pattern_blocked",
+                        "detail": reason,
+                        "retrieval_gateway": gateway.audit_value(),
+                    }),
+                });
+            }
             if !consume_channel_memory_query_budget(gateway) {
                 return Ok(ToolResult {
                     output: "channel memory_search query budget exhausted".to_string(),
@@ -285,6 +296,9 @@ const CHANNEL_MEMORY_MAX_QUERIES_PER_WINDOW: u32 = 10;
 const CHANNEL_MEMORY_MAX_TOP_K: usize = 5;
 const CHANNEL_MEMORY_MAX_TOKENS: i64 = 200;
 const CHANNEL_MEMORY_MAX_CHARS: usize = 1000;
+const CHANNEL_MEMORY_MAX_RESULTS_PER_WINDOW: u32 = 20;
+const CHANNEL_MEMORY_MAX_TOKENS_PER_WINDOW: i64 = 800;
+const CHANNEL_MEMORY_MAX_CHARS_PER_WINDOW: usize = 4_000;
 
 #[derive(Debug, Clone)]
 struct ChannelMemoryGatewayContext {
@@ -328,6 +342,9 @@ impl ChannelMemoryGatewayContext {
                 "max_top_k": CHANNEL_MEMORY_MAX_TOP_K,
                 "max_tokens": CHANNEL_MEMORY_MAX_TOKENS,
                 "max_chars": CHANNEL_MEMORY_MAX_CHARS,
+                "max_results_per_window": CHANNEL_MEMORY_MAX_RESULTS_PER_WINDOW,
+                "max_tokens_per_window": CHANNEL_MEMORY_MAX_TOKENS_PER_WINDOW,
+                "max_chars_per_window": CHANNEL_MEMORY_MAX_CHARS_PER_WINDOW,
             }
         })
     }
@@ -358,9 +375,71 @@ fn hidden_arg_string(args: &Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn channel_memory_budget_windows() -> &'static Mutex<HashMap<String, (u64, u32)>> {
-    static WINDOWS: OnceLock<Mutex<HashMap<String, (u64, u32)>>> = OnceLock::new();
+#[derive(Debug, Clone, Copy)]
+struct ChannelMemoryBudgetWindow {
+    started_at_ms: u64,
+    query_count: u32,
+    result_count: u32,
+    token_count: i64,
+    char_count: usize,
+}
+
+impl ChannelMemoryBudgetWindow {
+    fn new(started_at_ms: u64) -> Self {
+        Self {
+            started_at_ms,
+            query_count: 0,
+            result_count: 0,
+            token_count: 0,
+            char_count: 0,
+        }
+    }
+
+    fn reset(&mut self, started_at_ms: u64) {
+        *self = Self::new(started_at_ms);
+    }
+}
+
+fn channel_memory_budget_windows() -> &'static Mutex<HashMap<String, ChannelMemoryBudgetWindow>> {
+    static WINDOWS: OnceLock<Mutex<HashMap<String, ChannelMemoryBudgetWindow>>> = OnceLock::new();
     WINDOWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn suspicious_channel_memory_query_reason(query: &str) -> Option<&'static str> {
+    let lowered = query.trim().to_ascii_lowercase();
+    let broad_terms = [
+        "dump",
+        "everything",
+        "entire memory",
+        "all memory",
+        "all documents",
+        "all records",
+        "full database",
+        "bulk",
+    ];
+    if broad_terms.iter().any(|term| lowered.contains(term)) {
+        return Some("channel memory_search blocked broad export query");
+    }
+    let export_patterns = [
+        "export all",
+        "export everything",
+        "export entire",
+        "export the entire",
+        "export full",
+        "export the full",
+        "bulk export",
+    ];
+    if export_patterns
+        .iter()
+        .any(|pattern| lowered.contains(pattern))
+    {
+        return Some("channel memory_search blocked broad export query");
+    }
+    let starts = ["list all", "show all", "give me all", "print all", "return all"];
+    if starts.iter().any(|term| lowered.starts_with(term)) {
+        return Some("channel memory_search blocked broad enumeration query");
+    }
+    None
 }
 
 fn consume_channel_memory_query_budget(gateway: &ChannelMemoryGatewayContext) -> bool {
@@ -369,14 +448,16 @@ fn consume_channel_memory_query_budget(gateway: &ChannelMemoryGatewayContext) ->
     let mut guard = channel_memory_budget_windows()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let window = guard.entry(key).or_insert((now, 0));
-    if now.saturating_sub(window.0) >= CHANNEL_MEMORY_QUERY_WINDOW_MS {
-        *window = (now, 0);
+    let window = guard
+        .entry(key)
+        .or_insert_with(|| ChannelMemoryBudgetWindow::new(now));
+    if now.saturating_sub(window.started_at_ms) >= CHANNEL_MEMORY_QUERY_WINDOW_MS {
+        window.reset(now);
     }
-    if window.1 >= CHANNEL_MEMORY_MAX_QUERIES_PER_WINDOW {
+    if window.query_count >= CHANNEL_MEMORY_MAX_QUERIES_PER_WINDOW {
         return false;
     }
-    window.1 = window.1.saturating_add(1);
+    window.query_count = window.query_count.saturating_add(1);
     true
 }
 
@@ -419,7 +500,7 @@ fn memory_data_class_label(metadata: Option<&Value>) -> &str {
 }
 
 fn apply_channel_memory_result_budget(
-    _gateway: &ChannelMemoryGatewayContext,
+    gateway: &ChannelMemoryGatewayContext,
     results: &mut Vec<MemorySearchResult>,
 ) -> bool {
     let mut chars_used = 0usize;
@@ -437,7 +518,35 @@ fn apply_channel_memory_result_budget(
         tokens_used = tokens_used.saturating_add(token_count);
         true
     });
-    results.len() < original_len
+    let response_budget_exhausted = results.len() < original_len;
+    let mut window_budget_exhausted = false;
+    let now = now_ms_u64();
+    let key = gateway.budget_key();
+    let mut guard = channel_memory_budget_windows()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let window = guard
+        .entry(key)
+        .or_insert_with(|| ChannelMemoryBudgetWindow::new(now));
+    if now.saturating_sub(window.started_at_ms) >= CHANNEL_MEMORY_QUERY_WINDOW_MS {
+        window.reset(now);
+    }
+    results.retain(|result| {
+        let char_count = result.chunk.content.chars().count();
+        let token_count = result.chunk.content.split_whitespace().count() as i64;
+        if window.result_count >= CHANNEL_MEMORY_MAX_RESULTS_PER_WINDOW
+            || window.token_count.saturating_add(token_count) > CHANNEL_MEMORY_MAX_TOKENS_PER_WINDOW
+            || window.char_count.saturating_add(char_count) > CHANNEL_MEMORY_MAX_CHARS_PER_WINDOW
+        {
+            window_budget_exhausted = true;
+            return false;
+        }
+        window.result_count = window.result_count.saturating_add(1);
+        window.token_count = window.token_count.saturating_add(token_count);
+        window.char_count = window.char_count.saturating_add(char_count);
+        true
+    });
+    response_budget_exhausted || window_budget_exhausted
 }
 
 fn sanitize_memory_gateway_segment(value: &str) -> String {

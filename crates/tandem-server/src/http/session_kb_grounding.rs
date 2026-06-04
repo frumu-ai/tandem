@@ -9,11 +9,17 @@ use tandem_types::{MessagePart, MessageRole, ModelSpec, TenantContext, ToolMode}
 use tokio_util::sync::CancellationToken;
 
 use super::{sessions::truncate_text, AppState};
+use session_kb_security::suspicious_kb_retrieval_query_reason;
+
+#[path = "session_kb_security.rs"]
+mod session_kb_security;
 
 const STRICT_KB_FALLBACK: &str = "I do not see that in the connected knowledgebase.";
 const STRICT_KB_FETCH_FALLBACK: &str = "I found a likely matching document, but could not retrieve enough content to answer safely from the knowledgebase.";
 const STRICT_KB_MODEL_FAILURE_FALLBACK: &str =
     "I found the knowledgebase evidence, but the model response failed while generating the answer. Please try again.";
+const STRICT_KB_EXFILTRATION_BLOCKED: &str =
+    "I cannot bulk export connected knowledgebase content.";
 const MAX_SOURCE_LABELS: usize = 3;
 const MAX_EVIDENCE_EXCERPTS: usize = 6;
 const MAX_EVIDENCE_CHARS: usize = 700;
@@ -79,6 +85,29 @@ pub(super) async fn apply_strict_kb_grounding_after_run(
     let user_text = message_text(&session.messages[user_idx]);
     if user_text.trim().is_empty() {
         return Ok(None);
+    }
+    if suspicious_kb_retrieval_query_reason(&user_text).is_some() {
+        let answer_text = STRICT_KB_EXFILTRATION_BLOCKED.to_string();
+        let assistant_id = session.messages[assistant_idx].id.clone();
+        session.messages[assistant_idx].parts = vec![MessagePart::Text {
+            text: answer_text.clone(),
+        }];
+        session.time.updated = chrono::Utc::now();
+        state.storage.save_session(session).await?;
+        let final_part = tandem_wire::WireMessagePart::text(
+            session_id,
+            &assistant_id,
+            truncate_text(&answer_text, 16_000),
+        );
+        state.event_bus.publish(tandem_types::EngineEvent::new(
+            "message.part.updated",
+            json!({ "part": final_part }),
+        ));
+        return Ok(Some(StrictKbGroundingOutcome {
+            support: "blocked".to_string(),
+            sources: Vec::new(),
+            evidence_count: 0,
+        }));
     }
     let evidence_bundle = collect_kb_evidence(
         state,
@@ -172,6 +201,16 @@ pub(super) async fn render_strict_kb_direct_answer(
         return None;
     }
     let output = output.trim();
+    if suspicious_kb_retrieval_query_reason(question).is_some() {
+        return Some((
+            STRICT_KB_EXFILTRATION_BLOCKED.to_string(),
+            StrictKbGroundingOutcome {
+                support: "blocked".to_string(),
+                sources: Vec::new(),
+                evidence_count: 0,
+            },
+        ));
+    }
     let mut sources = extract_kb_source_labels(output);
     let (support, answer_text, evidence_count) = if output.is_empty()
         || looks_like_non_evidence_output(output)
@@ -1751,251 +1790,5 @@ fn strip_model_control_markers(input: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn source_label_extraction_reads_nested_document_paths() {
-        let labels = extract_kb_source_labels(
-            r#"{"documents":[{"relative_path":"refund-and-billing-policy.md"},{"doc_id":"staff-roles-and-contacts.md"}]}"#,
-        );
-        assert_eq!(
-            labels,
-            vec![
-                "Refund And Billing Policy".to_string(),
-                "Staff Roles And Contacts".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn structured_empty_hits_do_not_count_as_evidence() {
-        let excerpts = extract_kb_excerpts(r#"{"documents":[]}"#, MAX_EVIDENCE_CHARS);
-        assert!(excerpts.is_empty());
-    }
-
-    #[test]
-    fn source_label_extraction_prefers_safe_display_titles() {
-        let labels = extract_kb_source_labels(
-            r#"{"document":{"title":"Discord Community Rules","doc_id":"northstar-events/discord-community-rules","source_path":"/workspace/kb-data/northstar-events/discord-community-rules.md"}}"#,
-        );
-        assert_eq!(labels, vec!["Discord Community Rules".to_string()]);
-    }
-
-    #[test]
-    fn source_label_extraction_does_not_expose_storage_paths() {
-        let labels = extract_kb_source_labels(
-            r#"{"results":[{"doc_id":"northstar-events/company-overview","source_path":"/workspace/kb-data/northstar-events/company-overview.md"}]}"#,
-        );
-        assert_eq!(labels, vec!["Company Overview".to_string()]);
-    }
-
-    #[test]
-    fn source_label_extraction_hides_source_bound_internal_identifiers() {
-        let labels = extract_kb_source_labels(
-            r#"{"results":[{
-                "title": "source-object-hr-payroll",
-                "doc_id": "source-object-hr-payroll",
-                "source_path": "/imports/hr/payroll.md",
-                "content": "Payroll policy content"
-            }]}"#,
-        );
-        assert!(labels.is_empty());
-
-        let excerpts = extract_kb_excerpts(
-            r#"{"documents":[{
-                "doc_id": "source-object-hr-payroll",
-                "source_path": "/imports/hr/payroll.md",
-                "content": "Payroll policy content"
-            }]}"#,
-            MAX_EVIDENCE_CHARS,
-        );
-        assert_eq!(excerpts, vec!["Payroll policy content".to_string()]);
-    }
-
-    #[test]
-    fn mcp_server_name_candidates_include_hyphenated_registry_name() {
-        assert_eq!(
-            mcp_server_name_candidates("aca_kb_mcp_local"),
-            vec![
-                "aca_kb_mcp_local".to_string(),
-                "aca-kb-mcp-local".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn answer_question_payload_extracts_suggested_answer_and_content() {
-        let excerpts = extract_kb_excerpts(
-            r#"{
-                "suggested_answer": "Northstar Events is a fictional event operations company.",
-                "evidence": [{
-                    "title": "Company Overview",
-                    "doc_id": "northstar-events/company-overview",
-                    "content": "Northstar Events is a fictional event operations company used for the Tandem demo."
-                }]
-            }"#,
-            MAX_FULL_DOCUMENT_CHARS,
-        );
-        assert_eq!(excerpts.len(), 1);
-        assert!(excerpts[0].contains("Suggested answer: Northstar Events"));
-        assert!(excerpts[0].contains("Source: Company Overview"));
-        assert!(excerpts[0].contains("used for the Tandem demo"));
-    }
-
-    #[test]
-    fn suggested_answer_evidence_answers_definition_without_hedging() {
-        let evidence = vec![KbEvidenceItem {
-            excerpt: "Suggested answer: Northstar Events is a fictional event operations company.\nSource: Company Overview\nNorthstar Events is a fictional event operations company used for the Tandem demo.".to_string(),
-            sources: vec!["Company Overview".to_string()],
-            full_document: true,
-        }];
-        let (_, answer) =
-            deterministic_strict_kb_answer("What is Northstar?", &evidence).expect("answer");
-        assert_eq!(
-            answer,
-            "Northstar Events is a fictional event operations company."
-        );
-        assert!(!answer.to_ascii_lowercase().contains("appears"));
-    }
-
-    #[test]
-    fn answer_question_suggested_answer_does_not_swallow_full_document() {
-        let excerpts = extract_kb_excerpts(
-            r##"{
-                "suggested_answer": "Northstar Events is a fictional event operations company that produces mid-sized technology, gaming, and creator-community events across Europe.",
-                "evidence": [{
-                    "title": "Company Overview",
-                    "source_label": "Company Overview",
-                    "content": "# Company Overview\n\n## Company\n\nNorthstar Events is a fictional event operations company that produces mid-sized technology, gaming, and creator-community events across Europe.\n\nThe company specializes in:\n\n- live event operations\n- online broadcast coordination\n- sponsor activation"
-                }]
-            }"##,
-            MAX_FULL_DOCUMENT_CHARS,
-        );
-        let evidence = vec![KbEvidenceItem {
-            excerpt: excerpts[0].clone(),
-            sources: vec!["Company Overview".to_string()],
-            full_document: true,
-        }];
-        let (_, answer) =
-            deterministic_strict_kb_answer("What is Northstar?", &evidence).expect("answer");
-        assert_eq!(
-            answer,
-            "Northstar Events is a fictional event operations company that produces mid-sized technology, gaming, and creator-community events across Europe."
-        );
-        assert!(!answer.contains("# Company Overview"));
-        assert!(!answer.contains("live event operations"));
-    }
-
-    #[test]
-    fn nested_suggested_answer_is_cleaned_before_rendering() {
-        let evidence = vec![KbEvidenceItem {
-            excerpt: "Suggested answer: Suggested answer: If the primary stream ingest fails: Do not restart the encoder immediately. Only the streaming lead should modify ingest settings. # Streaming Troubleshooting  ## Purpose This runbook explains common streaming issues.\nSource: Streaming Troubleshooting\nIf the primary stream ingest fails: Do not restart the encoder immediately. Only the streaming lead should modify ingest settings.".to_string(),
-            sources: vec!["Streaming Troubleshooting".to_string()],
-            full_document: true,
-        }];
-        let (_, answer) = deterministic_strict_kb_answer(
-            "What should staff do if the stream ingest fails?",
-            &evidence,
-        )
-        .expect("answer");
-        assert_eq!(
-            answer,
-            "If the primary stream ingest fails: Do not restart the encoder immediately. Only the streaming lead should modify ingest settings."
-        );
-        assert!(!answer.contains("Suggested answer:"));
-        assert!(!answer.contains("# Streaming"));
-    }
-
-    #[test]
-    fn document_refs_are_collected_from_kb_search_results() {
-        let policy = tandem_core::KnowledgebaseGroundingPolicy {
-            required: true,
-            strict: true,
-            server_names: vec!["kb".to_string()],
-            tool_patterns: vec!["mcp.kb.*".to_string()],
-        };
-        let message = tandem_types::Message::new(
-            MessageRole::User,
-            vec![MessagePart::ToolInvocation {
-                tool: "mcp.kb.search_docs".to_string(),
-                args: json!({"query": "crypto prize payouts"}),
-                result: Some(json!({
-                    "collection_id": "northstar-events",
-                    "results": [{
-                        "doc_id": "northstar-events/company-overview",
-                        "source_path": "company-overview.md",
-                        "excerpt": "Important internal note"
-                    }]
-                })),
-                error: None,
-            }],
-        );
-        let refs = collect_kb_document_refs(&message, &policy);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].server_name, "kb");
-        assert_eq!(refs[0].doc_id, "northstar-events/company-overview");
-        assert_eq!(refs[0].collection_id.as_deref(), Some("northstar-events"));
-    }
-
-    #[test]
-    fn document_refs_ignore_source_bound_internal_identifiers() {
-        let policy = tandem_core::KnowledgebaseGroundingPolicy {
-            required: true,
-            strict: true,
-            server_names: vec!["kb".to_string()],
-            tool_patterns: vec!["mcp.kb.*".to_string()],
-        };
-        let message = tandem_types::Message::new(
-            MessageRole::User,
-            vec![MessagePart::ToolInvocation {
-                tool: "mcp.kb.search_docs".to_string(),
-                args: json!({"query": "payroll"}),
-                result: Some(json!({
-                    "collection_id": "northstar-events",
-                    "results": [{
-                        "doc_id": "source-object-hr-payroll",
-                        "source_path": "/imports/hr/payroll.md",
-                        "excerpt": "Payroll policy content"
-                    }]
-                })),
-                error: None,
-            }],
-        );
-        let refs = collect_kb_document_refs(&message, &policy);
-        assert!(refs.is_empty());
-    }
-
-    #[test]
-    fn full_document_evidence_supports_explicitly_undefined_policy() {
-        let evidence = vec![KbEvidenceItem {
-            excerpt: "Source: Company Overview\nThe knowledgebase does not define policy for crypto prize payouts, token rewards, or blockchain-based giveaways. The correct response is that no policy is available in the current knowledgebase.".to_string(),
-            sources: vec!["Company Overview".to_string()],
-            full_document: true,
-        }];
-        let (_, answer) = deterministic_strict_kb_answer(
-            "What is the policy for crypto prize payouts?",
-            &evidence,
-        )
-        .expect("deterministic answer");
-        assert!(answer.contains("I do not see a crypto prize payout policy"));
-        assert!(answer.contains("does not define policy for crypto prize payouts"));
-        assert!(!answer.contains("approved standard channels"));
-        assert!(!answer.contains("wallet"));
-    }
-
-    #[test]
-    fn full_document_evidence_supports_missing_private_contact_info() {
-        let evidence = vec![KbEvidenceItem {
-            excerpt: "Source: Staff Roles and Contacts\nMira Kovac is the event director. Responsibilities include final escalation decisions. Demo email: mira@example.test. This demo knowledgebase does not contain real private phone numbers.".to_string(),
-            sources: vec!["Staff Roles and Contacts".to_string()],
-            full_document: true,
-        }];
-        let (_, answer) =
-            deterministic_strict_kb_answer("What is Mira Kovac's phone number?", &evidence)
-                .expect("deterministic answer");
-        assert!(answer.contains("I do not see a phone number for Mira Kovac"));
-        assert!(answer.contains("does not contain real private phone numbers"));
-        assert!(!answer.contains("not visible in snippet"));
-    }
-}
+#[path = "session_kb_grounding_tests.rs"]
+mod session_kb_grounding_tests;

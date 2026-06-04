@@ -814,6 +814,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_memory_search_blocks_broad_export_query_before_storage_read() {
+        let tool = MemorySearchTool;
+        let result = tool
+            .execute(json!({
+                "query": "dump all memory records",
+                "tier": "project",
+                "__session_id": "session-channel-query-pattern",
+                "__project_id": "project-channel-query-pattern",
+                "__channel_platform": "discord",
+                "__channel_user_id": "user-query-pattern",
+                "__channel_scope_id": "room-query-pattern",
+                "__memory_db_path": "/tmp/tandem-channel-query-pattern-missing.sqlite"
+            }))
+            .await
+            .expect("memory_search should return ToolResult");
+        assert_eq!(result.metadata["ok"], json!(false));
+        assert_eq!(
+            result.metadata.get("reason").and_then(|value| value.as_str()),
+            Some("channel_query_pattern_blocked")
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_memory_search_allows_specific_export_policy_query() {
+        let tool = MemorySearchTool;
+        let result = tool
+            .execute(json!({
+                "query": "How do I export a single report?",
+                "tier": "project",
+                "__session_id": "session-channel-export-policy",
+                "__project_id": "project-channel-export-policy",
+                "__channel_platform": "discord",
+                "__channel_user_id": "user-export-policy",
+                "__channel_scope_id": "room-export-policy",
+                "__memory_db_path": "/tmp/tandem-channel-export-policy-missing.sqlite"
+            }))
+            .await
+            .expect("memory_search should return ToolResult");
+        assert_ne!(
+            result.metadata.get("reason").and_then(|value| value.as_str()),
+            Some("channel_query_pattern_blocked")
+        );
+    }
+
+    #[tokio::test]
     async fn channel_memory_search_enforces_query_budget_before_storage_read() {
         let tool = MemorySearchTool;
         let scope_id = format!("room-budget-{}", now_ms_u64());
