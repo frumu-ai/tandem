@@ -26,13 +26,15 @@ Tracks the work in `PLAN.md` toward the `GOAL.md` north star. Companion: `RESEAR
 ## Now (Phase 0 — P0)
 
 - `CT-01` Wire the drafted cross-tenant denial eval into CI
-  - Status: `todo`
+  - Status: `done`
   - Priority: P0
-  - Scope: `fintech_004` ("cross-tenant source/secret access fails closed + emits audit evidence") exists but is not in the CI baseline, so it never runs in the gate.
-  - Acceptance: a `tenant_isolation` eval runs in the per-PR regression gate, asserts `blocked` + `tenant_scope`/`audit_event` validators + `cross_tenant_denied`/`audit_event_recorded` quality indicators; a baseline is committed.
-  - Files: `eval_datasets/fintech_compliance_risk.yaml:129-165` (source), new `eval_datasets/tenant_isolation.yaml`, `eval_baselines/`, `.github/workflows/eval-regression-gate.yml`, `crates/tandem-server/src/eval/*`.
-  - Verification: `cargo run --bin eval-runner -- --dataset eval_datasets/tenant_isolation.yaml --engine-mode simulation` passes; gate runs it on PRs.
-  - Decision: D-CT-1 (one dataset vs. multiple in the gate).
+  - Scope: `fintech_004` ("cross-tenant source/secret access fails closed + emits audit evidence") existed but was not in the CI baseline, so it never ran in the gate.
+  - Decision **D-CT-1 resolved:** the gate runs multiple datasets — a dedicated `tenant_isolation.yaml` runs alongside `critical_path.yaml`, each with its own baseline + regression check (rather than overloading `critical_path`).
+  - Progress: created `eval_datasets/tenant_isolation.yaml` (two platform-level cross-tenant *denial* scenarios: source/secret access `ct_isolation_001`, memory read `ct_isolation_002`), generated `eval_baselines/tenant_isolation.json`, and wired it into `.github/workflows/eval-regression-gate.yml` (run + pass-rate regression check + PR-comment line + artifact + fail-on-regression).
+  - **Honest scope (read this):** the per-PR gate runs in `--engine-mode simulation`, which **echoes** each case's `expected_output` — so a green run proves the dataset is present, well-formed, and shape-stable vs. baseline; it does NOT by itself prove the system blocks cross-tenant access. Real enforcement is proven today by the Rust integration tests (`tenant_a_cannot_*`, `tandem-memory` tenant-scoped tests). True real-engine eval coverage needs `--engine-mode stub/live`, which the eval CLI does **not** bootstrap yet (`runner.rs` doc: "CLI does not yet bootstrap an AppState"). That framework bootstrap is a separate follow-up (see note below); not touched here to avoid changing a non-functional path.
+  - Files: `eval_datasets/tenant_isolation.yaml`, `eval_baselines/tenant_isolation.json`, `.github/workflows/eval-regression-gate.yml`.
+  - Verification: `./target/release/eval-runner --dataset eval_datasets/tenant_isolation.yaml --simulation` → pass_rate 1.0, validators `[tenant_scope, audit_event]`; gate runs + regression-checks it on every PR.
+  - Follow-up (new): `CT-0X` bootstrap stub/live `AppState` in the eval CLI so cross-tenant denial runs against the real engine in CI (turns Phase 0/1 evals from shape-checks into enforcement-checks).
 
 - `CT-02` Eval: agent/tool execution must not cross tenants at runtime
   - Status: `todo`

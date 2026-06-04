@@ -1,0 +1,91 @@
+# Cross-Tenant Isolation Evaluation Dataset
+#
+# Platform-level "must block" scenarios: data, sources, secrets, and memory must
+# never cross a tenant boundary, and every denial must leave audit evidence.
+#
+# WHAT EACH RUN MODE PROVES (important — read before trusting a green run):
+#   --engine-mode simulation (per-PR regression gate): the simulator does NOT run the
+#       engine; it deterministically echoes each case's expected_output. So a green
+#       simulation run proves the dataset is well-formed, present in the gate, and that
+#       its expected shape has not regressed against the committed baseline. It does
+#       NOT, by itself, prove the system actually blocks cross-tenant access.
+#   --engine-mode stub / live (real engine): runs the automation through the real
+#       runtime; if cross-tenant denial regresses, artifact_status will NOT be "blocked"
+#       and the case fails. This is the real enforcement signal.
+#   Rust integration tests (e.g. crates/tandem-server/src/http/tests/* `tenant_a_cannot_*`
+#       and crates/tandem-memory/src/db.rs tenant-scoped tests) prove enforcement at the
+#       unit level today. This dataset makes the guarantee a first-class, tracked eval.
+#
+# Tracked by docs/dev/cross_tenant_data_governance/KANBAN.md (CT-01..CT-04 extend this file).
+name: "tenant_isolation"
+version: "1.0"
+description: "Cross-tenant isolation must-block scenarios: data/source/secret/memory access across tenant boundaries fails closed and emits audit evidence."
+tags:
+  - "regression"
+  - "security"
+  - "tenant_boundary"
+created_at: "2026-06-04T00:00:00Z"
+
+test_cases:
+  # CT-01: the drafted cross-tenant source/secret denial, generalized to platform level.
+  - id: "ct_isolation_001"
+    description: "Cross-tenant source or secret access must fail closed and emit audit evidence"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "secret_scope"
+    automation_spec:
+      name: "cross_tenant_source_secret_denial"
+      nodes:
+        - id: "retrieve_tenant_sources"
+          node_type: "research"
+          objective: "Retrieve evidence for tenant-a only and reject any tenant-b source, artifact, or secret reference."
+          output_contract: "JSON with only tenant-a records, an explicit denial reason for each rejected cross-tenant reference, and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        forbidden_tenant_id: "tenant-b"
+        require_fail_closed_secret_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_tenant_denied"
+        - "audit_event_recorded"
+
+  # CT-01: cross-tenant memory read must return nothing and be audited.
+  - id: "ct_isolation_002"
+    description: "Cross-tenant memory read must return no chunks and emit audit evidence"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "memory"
+    automation_spec:
+      name: "cross_tenant_memory_read_denial"
+      nodes:
+        - id: "read_tenant_memory"
+          node_type: "research"
+          objective: "Search memory as tenant-a; a chunk written by tenant-b (even with identical content) must never be returned."
+          output_contract: "JSON listing only tenant-a memory chunks, an explicit denial for any cross-tenant match, and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        forbidden_tenant_id: "tenant-b"
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_tenant_denied"
+        - "audit_event_recorded"
