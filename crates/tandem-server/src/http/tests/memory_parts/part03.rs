@@ -1362,6 +1362,294 @@ fn memory_capability(
 }
 
 #[tokio::test]
+async fn channel_memory_search_requires_retrieval_gateway() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let search_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "channel-gateway-required-run",
+                "query": "broad channel search",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "capability": memory_capability(
+                    "channel-gateway-required-run",
+                    "channel:slack:U123",
+                    "org-1",
+                    "ws-1",
+                    "proj-1"
+                )
+            })
+            .to_string(),
+        ))
+        .expect("channel search request");
+    let search_resp = app
+        .clone()
+        .oneshot(search_req)
+        .await
+        .expect("channel search response");
+    assert_eq!(search_resp.status(), StatusCode::FORBIDDEN);
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=channel-gateway-required-run")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app.oneshot(audit_req).await.expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    assert!(audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|row| {
+            row.get("action").and_then(Value::as_str) == Some("memory_search")
+                && row.get("status").and_then(Value::as_str) == Some("blocked")
+                && row
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .is_some_and(|detail| detail.contains("requires retrieval gateway"))
+        })));
+}
+
+#[tokio::test]
+async fn retrieval_gateway_filters_source_classification_and_query_budget() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let subject = "channel:slack:U456";
+    let capability = memory_capability("gateway-filter-run", subject, "org-1", "ws-1", "proj-1");
+    for (content, binding_id, data_class, source_object_id) in [
+        (
+            "gateway wedge needle allowed internal product plan",
+            "binding-product",
+            "internal",
+            "source-product-plan",
+        ),
+        (
+            "gateway wedge needle restricted finance plan",
+            "binding-product",
+            "financial_record",
+            "source-finance-plan",
+        ),
+        (
+            "gateway wedge needle internal support plan",
+            "binding-support",
+            "internal",
+            "source-support-plan",
+        ),
+    ] {
+        let put_req = Request::builder()
+            .method("POST")
+            .uri("/memory/put")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "gateway-filter-run",
+                    "partition": {
+                        "org_id": "org-1",
+                        "workspace_id": "ws-1",
+                        "project_id": "proj-1",
+                        "tier": "session"
+                    },
+                    "kind": "fact",
+                    "content": content,
+                    "classification": "internal",
+                    "metadata": {
+                        "enterprise_source_binding": {
+                            "binding_id": binding_id,
+                            "connector_id": "manual-upload",
+                            "resource_ref": {
+                                "organization_id": "org-1",
+                                "workspace_id": "ws-1",
+                                "resource_kind": "document_collection",
+                                "resource_id": binding_id
+                            },
+                            "data_class": data_class,
+                            "source_object_id": source_object_id,
+                            "native_object_id": format!("/imports/{source_object_id}.md"),
+                            "content_hash": format!("hash-{source_object_id}")
+                        }
+                    },
+                    "capability": capability
+                })
+                .to_string(),
+            ))
+            .expect("put request");
+        let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+    }
+
+    let gateway = json!({
+        "grant": {
+            "grant_id": "grant-product-internal",
+            "subject": subject,
+            "org_id": "org-1",
+            "workspace_id": "ws-1",
+            "project_ids": ["proj-1"],
+            "source_binding_ids": ["binding-product"],
+            "data_classes": ["internal"],
+            "budgets": {
+                "max_queries_per_window": 1,
+                "window_ms": 60000,
+                "max_top_k": 5,
+                "max_tokens": 50,
+                "max_chars": 500
+            }
+        },
+        "session_id": "kb-session-1",
+        "channel": "slack",
+        "user_id": "U456"
+    });
+
+    let search_body = json!({
+        "run_id": "gateway-filter-run",
+        "query": "gateway wedge needle",
+        "read_scopes": ["session"],
+        "partition": {
+            "org_id": "org-1",
+            "workspace_id": "ws-1",
+            "project_id": "proj-1",
+            "tier": "session"
+        },
+        "capability": capability,
+        "retrieval_gateway": gateway,
+        "limit": 10
+    });
+    let search_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(search_body.to_string()))
+        .expect("gateway search request");
+    let search_resp = app
+        .clone()
+        .oneshot(search_req)
+        .await
+        .expect("gateway search response");
+    assert_eq!(search_resp.status(), StatusCode::OK);
+    let search_body = to_bytes(search_resp.into_body(), usize::MAX)
+        .await
+        .expect("gateway search body");
+    let search_payload: Value = serde_json::from_slice(&search_body).expect("gateway search json");
+    let results = search_payload
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("results");
+    assert_eq!(results.len(), 1);
+    let serialized_results = serde_json::to_string(results).expect("results string");
+    assert!(serialized_results.contains("allowed internal product plan"));
+    assert!(!serialized_results.contains("restricted finance plan"));
+    assert!(!serialized_results.contains("internal support plan"));
+    assert!(serialized_results.contains("enterprise_source_binding"));
+    assert!(serialized_results.contains("binding-product"));
+
+    let second_search_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "gateway-filter-run",
+                "query": "gateway wedge needle",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "capability": capability,
+                "retrieval_gateway": gateway,
+                "limit": 10
+            })
+            .to_string(),
+        ))
+        .expect("second gateway search request");
+    let second_search_resp = app
+        .clone()
+        .oneshot(second_search_req)
+        .await
+        .expect("second gateway search response");
+    assert_eq!(second_search_resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=gateway-filter-run")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app.clone().oneshot(audit_req).await.expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    assert!(audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|row| {
+            row.get("action").and_then(Value::as_str) == Some("memory_search")
+                && row.get("status").and_then(Value::as_str) == Some("blocked")
+                && row
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .is_some_and(|detail| detail.contains("query budget exhausted"))
+        })));
+
+    let revoked_gateway = json!({
+        "grant": {
+            "grant_id": "grant-product-revoked",
+            "subject": subject,
+            "org_id": "org-1",
+            "workspace_id": "ws-1",
+            "project_ids": ["proj-1"],
+            "source_binding_ids": ["binding-product"],
+            "data_classes": ["internal"],
+            "revoked": true
+        },
+        "session_id": "kb-session-2",
+        "channel": "slack",
+        "user_id": "U456"
+    });
+    let revoked_search_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "gateway-filter-run",
+                "query": "gateway wedge needle",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "capability": capability,
+                "retrieval_gateway": revoked_gateway,
+                "limit": 10
+            })
+            .to_string(),
+        ))
+        .expect("revoked gateway search request");
+    let revoked_search_resp = app
+        .oneshot(revoked_search_req)
+        .await
+        .expect("revoked gateway search response");
+    assert_eq!(revoked_search_resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn tenant_a_cannot_search_list_delete_demote_or_promote_tenant_b_memory() {
     let state = test_state().await;
     let app = app_router(state.clone());

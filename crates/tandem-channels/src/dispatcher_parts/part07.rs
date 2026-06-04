@@ -580,6 +580,59 @@ mod tests {
     }
 
     #[test]
+    fn channel_memory_search_request_uses_retrieval_gateway_grant() {
+        let msg = test_channel_message("channel:room-a");
+        let body = channel_memory_search_request_body(
+            "deployment notes".to_string(),
+            &msg,
+            Some("session-123"),
+            Some(&serde_json::json!({ "project_id": "proj-channel" })),
+        );
+
+        assert_eq!(body.get("query").and_then(|value| value.as_str()), Some("deployment notes"));
+        assert_eq!(
+            body.pointer("/partition/project_id").and_then(|value| value.as_str()),
+            Some("proj-channel")
+        );
+        assert_eq!(
+            body.pointer("/capability/subject").and_then(|value| value.as_str()),
+            Some("channel:discord:user1")
+        );
+        assert_eq!(
+            body.pointer("/retrieval_gateway/grant/subject")
+                .and_then(|value| value.as_str()),
+            Some("channel:discord:user1")
+        );
+        assert_eq!(
+            body.pointer("/retrieval_gateway/session_id")
+                .and_then(|value| value.as_str()),
+            Some("session-123")
+        );
+        assert_eq!(
+            body.pointer("/retrieval_gateway/grant/project_ids")
+                .and_then(|value| value.as_array())
+                .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>()),
+            Some(vec!["proj-channel"])
+        );
+        assert_eq!(
+            body.pointer("/retrieval_gateway/grant/data_classes")
+                .and_then(|value| value.as_array())
+                .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>()),
+            Some(vec!["public", "internal"])
+        );
+        assert_eq!(
+            body.pointer("/retrieval_gateway/grant/budgets/max_top_k")
+                .and_then(|value| value.as_u64()),
+            Some(5)
+        );
+        assert_eq!(
+            body.pointer("/retrieval_gateway/grant/budgets/max_queries_per_window")
+                .and_then(|value| value.as_u64()),
+            Some(10)
+        );
+    }
+
+    #[test]
     fn public_demo_session_create_body_disables_workspace_and_shell_access() {
         let msg = test_channel_message("channel:room-a");
         let body = build_channel_session_create_body(

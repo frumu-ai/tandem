@@ -930,6 +930,25 @@ impl EngineLoop {
                     );
                 }
             }
+            if session.source_kind.as_deref() == Some("channel") {
+                if let Some(metadata) = session.source_metadata.as_ref() {
+                    for (source_key, arg_key) in [
+                        ("channel", "__channel_platform"),
+                        ("user_id", "__channel_user_id"),
+                        ("scope_id", "__channel_scope_id"),
+                        ("scope_kind", "__channel_scope_kind"),
+                    ] {
+                        if let Some(value) = metadata
+                            .get(source_key)
+                            .and_then(|value| value.as_str())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                        {
+                            obj.insert(arg_key.to_string(), Value::String(value.to_string()));
+                        }
+                    }
+                }
+            }
         }
         let tool_context = self.resolve_tool_execution_context(session_id).await;
         if let Some((workspace_root, effective_cwd, project_id)) = tool_context.as_ref() {
@@ -1121,6 +1140,22 @@ impl EngineLoop {
                 .get("__project_id")
                 .and_then(|v| v.as_str())
                 .map(ToString::to_string);
+            let ctx_channel_platform = args
+                .get("__channel_platform")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            let ctx_channel_user_id = args
+                .get("__channel_user_id")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            let ctx_channel_scope_id = args
+                .get("__channel_scope_id")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            let ctx_channel_scope_kind = args
+                .get("__channel_scope_kind")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
 
             // Process each sub-call: check governance, inject context.
             let raw_calls = args
@@ -1244,6 +1279,26 @@ impl EngineLoop {
                     if let Some(ref v) = ctx_project_id {
                         sub_obj
                             .entry("__project_id")
+                            .or_insert_with(|| Value::String(v.clone()));
+                    }
+                    if let Some(ref v) = ctx_channel_platform {
+                        sub_obj
+                            .entry("__channel_platform")
+                            .or_insert_with(|| Value::String(v.clone()));
+                    }
+                    if let Some(ref v) = ctx_channel_user_id {
+                        sub_obj
+                            .entry("__channel_user_id")
+                            .or_insert_with(|| Value::String(v.clone()));
+                    }
+                    if let Some(ref v) = ctx_channel_scope_id {
+                        sub_obj
+                            .entry("__channel_scope_id")
+                            .or_insert_with(|| Value::String(v.clone()));
+                    }
+                    if let Some(ref v) = ctx_channel_scope_kind {
+                        sub_obj
+                            .entry("__channel_scope_kind")
                             .or_insert_with(|| Value::String(v.clone()));
                     }
                 }

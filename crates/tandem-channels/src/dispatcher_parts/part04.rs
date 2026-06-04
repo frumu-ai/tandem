@@ -1260,10 +1260,17 @@ async fn memory_search_text(
         };
     }
 
+    let session_id = active_session_id(msg, session_map).await;
+    let details = active_session_details(msg, base_url, api_token, session_map).await;
     match json_request(
         reqwest::Method::POST,
         "/memory/search",
-        Some(serde_json::json!({ "query": query, "limit": 5 })),
+        Some(channel_memory_search_request_body(
+            query,
+            msg,
+            session_id.as_deref(),
+            details.as_ref(),
+        )),
         base_url,
         api_token,
     )
@@ -1294,6 +1301,109 @@ async fn memory_search_text(
             format!("🧠 Memory search results:\n{}", lines.join("\n"))
         }
         Err(error) => format!("⚠️ Could not search memory: {error}"),
+    }
+}
+
+fn channel_memory_search_request_body(
+    query: String,
+    msg: &ChannelMessage,
+    session_id: Option<&str>,
+    session_details: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let run_id = session_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("channel-memory-{value}"))
+        .unwrap_or_else(|| {
+            format!(
+                "channel-memory-{}-{}-{}",
+                sanitize_grant_segment(&msg.channel),
+                sanitize_grant_segment(&msg.scope.id),
+                sanitize_grant_segment(&msg.sender)
+            )
+        });
+    let project_id = session_details
+        .and_then(|value| value.get("project_id"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("default")
+        .to_string();
+    let subject = format!("channel:{}:{}", msg.channel, msg.sender);
+    serde_json::json!({
+        "run_id": run_id,
+        "query": query,
+        "read_scopes": ["session", "project"],
+        "partition": {
+            "org_id": "local",
+            "workspace_id": "local",
+            "project_id": project_id,
+            "tier": "session"
+        },
+        "capability": {
+            "run_id": run_id,
+            "subject": subject,
+            "org_id": "local",
+            "workspace_id": "local",
+            "project_id": project_id,
+            "memory": {
+                "read_tiers": ["session", "project"],
+                "write_tiers": [],
+                "promote_targets": [],
+                "require_review_for_promote": true,
+                "allow_auto_use_tiers": []
+            },
+            "expires_at": now_ms.saturating_add(5 * 60 * 1000)
+        },
+        "retrieval_gateway": {
+            "grant": {
+                "grant_id": format!(
+                    "channel-{}-{}-{}",
+                    sanitize_grant_segment(&msg.channel),
+                    sanitize_grant_segment(&msg.scope.id),
+                    sanitize_grant_segment(&msg.sender)
+                ),
+                "subject": subject,
+                "org_id": "local",
+                "workspace_id": "local",
+                "project_ids": [project_id],
+                "data_classes": ["public", "internal"],
+                "budgets": {
+                    "max_queries_per_window": 10,
+                    "window_ms": 300000,
+                    "max_top_k": 5,
+                    "max_tokens": 200,
+                    "max_chars": 1000
+                },
+                "expires_at": now_ms.saturating_add(5 * 60 * 1000)
+            },
+            "session_id": session_id,
+            "channel": msg.channel,
+            "user_id": msg.sender
+        },
+        "limit": 5
+    })
+}
+
+fn sanitize_grant_segment(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
     }
 }
 
