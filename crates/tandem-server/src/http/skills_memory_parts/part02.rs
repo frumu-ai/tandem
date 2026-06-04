@@ -2019,6 +2019,7 @@ pub(super) async fn memory_search(
     let allow_private_results = scopes_used
         .iter()
         .any(|scope| matches!(scope, tandem_memory::GovernedMemoryTier::Session));
+    let requested_limit = request.limit.unwrap_or(8).clamp(1, 100);
     let gateway_limit = match validate_memory_retrieval_gateway_for_search(
         &state,
         &tenant_context,
@@ -2028,26 +2029,36 @@ pub(super) async fn memory_search(
     .await
     {
         Ok(limit) => limit,
-        Err((status, detail)) => {
-            return emit_blocked_memory_search_guardrail(
-                status,
-                detail,
-                capability.subject.clone(),
-                &state,
-                &tenant_context,
-                &request,
-                &requested_scopes,
-                &request.partition.key(),
-            )
-            .await
-            .map(|_| unreachable!());
-        }
+        Err((status, detail)) => match emit_blocked_memory_search_guardrail(
+            status,
+            detail,
+            capability.subject.clone(),
+            &state,
+            &tenant_context,
+            &request,
+            &requested_scopes,
+            &request.partition.key(),
+        )
+        .await
+        {
+            Err(status_code) => return Err(status_code),
+            Ok(_) => return Err(status),
+        },
     };
-    let limit = request.limit.unwrap_or(8).clamp(1, 100).min(gateway_limit);
+    let limit = requested_limit.min(gateway_limit);
+    let candidate_limit = if request.retrieval_gateway.is_some() {
+        requested_limit
+            .max(gateway_limit)
+            .saturating_mul(4)
+            .clamp(1, 100)
+    } else {
+        limit
+    };
     let source_access_filter = verified_tenant_context
         .as_ref()
         .and_then(|context| context.strict_projection.clone())
         .map(|strict_context| MemoryAccessFilter::strict(strict_context, crate::now_ms()));
+    let strict_source_projection_active = source_access_filter.is_some();
     let (hits, gateway_budget_exhausted) = if scopes_used.is_empty() {
         (Vec::new(), false)
     } else {
@@ -2056,32 +2067,37 @@ pub(super) async fn memory_search(
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         let hits = db
             .search_global_memory_for_tenant(
-            &tenant_context.org_id,
-            &tenant_context.workspace_id,
-            tenant_context.deployment_id.as_deref(),
-            &capability.subject,
-            &request.query,
-            limit,
-            Some(&request.partition.project_id),
-            None,
-            None,
-        )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let filtered = hits
-        .into_iter()
-        .filter(|hit| allow_private_results || hit.record.visibility.eq_ignore_ascii_case("shared"))
-        .filter(|hit| {
-            global_memory_record_visible_to_access_filter(
-                &hit.record,
-                source_access_filter.as_ref(),
+                &tenant_context.org_id,
+                &tenant_context.workspace_id,
+                tenant_context.deployment_id.as_deref(),
+                &capability.subject,
+                &request.query,
+                candidate_limit,
+                Some(&request.partition.project_id),
+                None,
+                None,
             )
-            || (request.retrieval_gateway.is_some()
-                && memory_retrieval_gateway_allows_record(&request, &hit.record))
-        })
-        .filter(|hit| memory_retrieval_gateway_allows_record(&request, &hit.record))
-        .collect::<Vec<_>>();
-        apply_memory_retrieval_gateway_result_budgets(&request, filtered)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let filtered = hits
+            .into_iter()
+            .filter(|hit| {
+                allow_private_results || hit.record.visibility.eq_ignore_ascii_case("shared")
+            })
+            .filter(|hit| {
+                let source_projection_allows = global_memory_record_visible_to_access_filter(
+                    &hit.record,
+                    source_access_filter.as_ref(),
+                );
+                if strict_source_projection_active {
+                    source_projection_allows
+                } else {
+                    source_projection_allows || request.retrieval_gateway.is_some()
+                }
+            })
+            .filter(|hit| memory_retrieval_gateway_allows_record(&request, &hit.record))
+            .collect::<Vec<_>>();
+        apply_memory_retrieval_gateway_result_budgets(&request, filtered, limit)
     };
     let results = hits
         .into_iter()
@@ -2347,9 +2363,10 @@ fn memory_record_data_class(
 fn apply_memory_retrieval_gateway_result_budgets(
     request: &MemorySearchRequest,
     hits: Vec<tandem_memory::types::GlobalMemorySearchHit>,
+    limit: i64,
 ) -> (Vec<tandem_memory::types::GlobalMemorySearchHit>, bool) {
     let Some(gateway) = request.retrieval_gateway.as_ref() else {
-        return (hits, false);
+        return (hits.into_iter().take(limit as usize).collect(), false);
     };
     let max_chars = gateway.grant.budgets.max_chars.unwrap_or(usize::MAX);
     let max_tokens = gateway.grant.budgets.max_tokens.unwrap_or(i64::MAX);
@@ -2369,6 +2386,9 @@ fn apply_memory_retrieval_gateway_result_budgets(
         chars_used = chars_used.saturating_add(char_count);
         tokens_used = tokens_used.saturating_add(token_count);
         allowed.push(hit);
+        if allowed.len() >= limit as usize {
+            break;
+        }
     }
     (allowed, budget_exhausted)
 }
