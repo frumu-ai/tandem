@@ -34,7 +34,7 @@ Tracks the work in `PLAN.md` toward the `GOAL.md` north star. Companion: `RESEAR
   - **Honest scope (read this):** the per-PR gate runs in `--engine-mode simulation`, which **echoes** each case's `expected_output` — so a green run proves the dataset is present, well-formed, and shape-stable vs. baseline; it does NOT by itself prove the system blocks cross-tenant access. Real enforcement is proven today by the Rust integration tests (`tenant_a_cannot_*`, `tandem-memory` tenant-scoped tests). True real-engine eval coverage needs `--engine-mode stub/live`, which the eval CLI does **not** bootstrap yet (`runner.rs` doc: "CLI does not yet bootstrap an AppState"). That framework bootstrap is a separate follow-up (see note below); not touched here to avoid changing a non-functional path.
   - Files: `eval_datasets/tenant_isolation.yaml`, `eval_baselines/tenant_isolation.json`, `.github/workflows/eval-regression-gate.yml`.
   - Verification: `./target/release/eval-runner --dataset eval_datasets/tenant_isolation.yaml --simulation` → pass_rate 1.0, validators `[tenant_scope, audit_event]`; gate runs + regression-checks it on every PR.
-  - Follow-up (new): `CT-0X` bootstrap stub/live `AppState` in the eval CLI so cross-tenant denial runs against the real engine in CI (turns Phase 0/1 evals from shape-checks into enforcement-checks).
+  - Follow-up: `CT-16` (eval engine bootstrap) makes this and all Phase 0/1 evals run against the real engine — see `EVAL_ENGINE_BOOTSTRAP.md`.
 
 - `CT-02` Eval: agent/tool execution must not cross tenants at runtime
   - Status: `todo`
@@ -61,6 +61,16 @@ Tracks the work in `PLAN.md` toward the `GOAL.md` north star. Companion: `RESEAR
   - Verification: integration test asserts tenant-scoped audit reads.
 
 ---
+
+- `CT-16` Eval engine bootstrap (stub/live in-process) — **the enabler**
+  - Status: `research` (full implementation spec written; ready to execute)
+  - Priority: P0 (unblocks real-enforcement coverage for every Phase 0/1 eval)
+  - Scope: the eval CLI can't run `--engine-mode stub` — it builds `EvalRunner` with no `AppState`, so stub/live return `engine_mode_unavailable`. As a result the per-PR gate runs in simulation mode, which only *echoes* expected outcomes. This item bootstraps a fully-`Ready` in-process `AppState` + scripted provider + executor so evals run against the real runtime.
+  - Recommendation (decided): **in-process bootstrap** (lift the existing `test_state()` assembly + the scripted-provider automation helper) rather than a remote server. Both working recipes already exist; the lift is mechanical.
+  - Acceptance: `eval-runner --dataset eval_datasets/critical_path.yaml --engine-mode stub` drives runs to `Completed` via the scripted provider (no `unavailable`); `tandem-server` test suite stays green; then `tenant_isolation.yaml` reaches `Blocked` via a real tenant-scoped denial.
+  - Spec: **`docs/dev/cross_tenant_data_governance/EVAL_ENGINE_BOOTSTRAP.md`** — step-by-step, with file:line anchors, the `test_state` extraction, provider injection (`ProviderRegistry::replace_for_test`), executor spawn (`run_automation_v2_executor`), the single-thread-runtime caveat, and the "tenant_isolation must hit a real enforcement path" crux.
+  - Files (for implementation): new `crates/tandem-server/src/eval/bootstrap.rs`; `crates/tandem-server/src/bin/eval_runner.rs` (CLI wiring); `crates/tandem-server/src/http/tests/mod.rs` (`test_state` → delegate, optional); `eval_runner` stub-baseline workflow (rotation, after stub runs are real).
+  - Note: this is the highest-leverage item — without it, CT-01..CT-10 are shape-checks; with it, they are enforcement-checks.
 
 ## Next (Phase 1 — P1, negative eval gap list)
 
