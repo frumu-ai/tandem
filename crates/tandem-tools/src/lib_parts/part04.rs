@@ -258,6 +258,7 @@ impl Tool for MemorySearchTool {
         let output_rows = merged
             .iter()
             .map(|item| {
+                let trust_label = channel_memory_trust_label(item.chunk.metadata.as_ref());
                 json!({
                     "chunk_id": item.chunk.id,
                     "tier": item.chunk.tier.to_string(),
@@ -267,6 +268,8 @@ impl Tool for MemorySearchTool {
                     "similarity": item.similarity,
                     "content": item.chunk.content,
                     "created_at": item.chunk.created_at,
+                    "memory_trust": channel_memory_trust_payload(trust_label),
+                    "rendering_role": channel_memory_rendering_role(trust_label),
                 })
             })
             .collect::<Vec<_>>();
@@ -497,6 +500,61 @@ fn memory_data_class_label(metadata: Option<&Value>) -> &str {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("internal")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChannelMemoryTrustLabel {
+    ExternalUserSupplied,
+    ConnectorSourced,
+    Verified,
+    HumanApproved,
+    SystemGenerated,
+}
+
+impl ChannelMemoryTrustLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ExternalUserSupplied => "external_user_supplied",
+            Self::ConnectorSourced => "connector_sourced",
+            Self::Verified => "verified",
+            Self::HumanApproved => "human_approved",
+            Self::SystemGenerated => "system_generated",
+        }
+    }
+
+    fn trusted_for_promotion(self) -> bool {
+        matches!(self, Self::Verified | Self::HumanApproved | Self::SystemGenerated)
+    }
+}
+
+fn channel_memory_trust_label(metadata: Option<&Value>) -> ChannelMemoryTrustLabel {
+    match metadata
+        .and_then(|metadata| metadata.get("memory_trust"))
+        .and_then(|trust| trust.get("label"))
+        .and_then(Value::as_str)
+    {
+        Some("external_user_supplied") => ChannelMemoryTrustLabel::ExternalUserSupplied,
+        Some("connector_sourced") => ChannelMemoryTrustLabel::ConnectorSourced,
+        Some("verified") => ChannelMemoryTrustLabel::Verified,
+        Some("human_approved") => ChannelMemoryTrustLabel::HumanApproved,
+        _ => ChannelMemoryTrustLabel::SystemGenerated,
+    }
+}
+
+fn channel_memory_rendering_role(label: ChannelMemoryTrustLabel) -> &'static str {
+    if label.trusted_for_promotion() {
+        "context"
+    } else {
+        "evidence"
+    }
+}
+
+fn channel_memory_trust_payload(label: ChannelMemoryTrustLabel) -> Value {
+    json!({
+        "label": label.as_str(),
+        "trusted_for_promotion": label.trusted_for_promotion(),
+        "rendering_role": channel_memory_rendering_role(label),
+    })
 }
 
 fn apply_channel_memory_result_budget(
