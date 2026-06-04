@@ -2097,7 +2097,11 @@ pub(super) async fn memory_search(
             })
             .filter(|hit| memory_retrieval_gateway_allows_record(&request, &hit.record))
             .collect::<Vec<_>>();
-        apply_memory_retrieval_gateway_result_budgets(&request, filtered, limit)
+        let (filtered, response_budget_exhausted) =
+            apply_memory_retrieval_gateway_result_budgets(&request, filtered, limit);
+        let (filtered, window_budget_exhausted) =
+            apply_memory_retrieval_gateway_window_budgets(&state, &request, filtered).await;
+        (filtered, response_budget_exhausted || window_budget_exhausted)
     };
     let results = hits
         .into_iter()
@@ -2231,6 +2235,36 @@ pub(super) async fn memory_search(
     }))
 }
 
+const DEFAULT_MEMORY_RETRIEVAL_MAX_RESULTS_PER_WINDOW: u32 = 20;
+const DEFAULT_MEMORY_RETRIEVAL_MAX_TOKENS_PER_WINDOW: i64 = 800;
+const DEFAULT_MEMORY_RETRIEVAL_MAX_CHARS_PER_WINDOW: usize = 4_000;
+
+fn suspicious_memory_retrieval_query_reason(query: &str) -> Option<&'static str> {
+    let lowered = query.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return None;
+    }
+    let broad_terms = [
+        "dump",
+        "export",
+        "everything",
+        "entire memory",
+        "all memory",
+        "all documents",
+        "all records",
+        "full database",
+        "bulk",
+    ];
+    if broad_terms.iter().any(|term| lowered.contains(term)) {
+        return Some("retrieval query pattern blocked: broad export");
+    }
+    let starts = ["list all", "show all", "give me all", "print all", "return all"];
+    if starts.iter().any(|term| lowered.starts_with(term)) {
+        return Some("retrieval query pattern blocked: broad enumeration");
+    }
+    None
+}
+
 async fn validate_memory_retrieval_gateway_for_search(
     state: &AppState,
     _tenant_context: &TenantContext,
@@ -2265,6 +2299,9 @@ async fn validate_memory_retrieval_gateway_for_search(
     {
         return Err((StatusCode::FORBIDDEN, "retrieval grant project mismatch"));
     }
+    if let Some(reason) = suspicious_memory_retrieval_query_reason(&request.query) {
+        return Err((StatusCode::FORBIDDEN, reason));
+    }
     if let Some(max_queries) = grant.budgets.max_queries_per_window {
         let window_ms = grant.budgets.window_ms.unwrap_or(60_000).max(1);
         let budget_key = memory_retrieval_budget_key(gateway);
@@ -2273,11 +2310,17 @@ async fn validate_memory_retrieval_gateway_for_search(
             tandem_memory::MemoryRetrievalBudgetWindow {
                 started_at_ms: now,
                 query_count: 0,
+                result_count: 0,
+                token_count: 0,
+                char_count: 0,
             }
         });
         if now.saturating_sub(window.started_at_ms) >= window_ms {
             window.started_at_ms = now;
             window.query_count = 0;
+            window.result_count = 0;
+            window.token_count = 0;
+            window.char_count = 0;
         }
         if window.query_count >= max_queries {
             return Err((StatusCode::TOO_MANY_REQUESTS, "retrieval grant query budget exhausted"));
@@ -2389,6 +2432,73 @@ fn apply_memory_retrieval_gateway_result_budgets(
         if allowed.len() >= limit as usize {
             break;
         }
+    }
+    (allowed, budget_exhausted)
+}
+
+async fn apply_memory_retrieval_gateway_window_budgets(
+    state: &AppState,
+    request: &MemorySearchRequest,
+    hits: Vec<tandem_memory::types::GlobalMemorySearchHit>,
+) -> (Vec<tandem_memory::types::GlobalMemorySearchHit>, bool) {
+    let Some(gateway) = request.retrieval_gateway.as_ref() else {
+        return (hits, false);
+    };
+    let max_results = gateway
+        .grant
+        .budgets
+        .max_results_per_window
+        .unwrap_or(DEFAULT_MEMORY_RETRIEVAL_MAX_RESULTS_PER_WINDOW)
+        .max(1);
+    let max_tokens = gateway
+        .grant
+        .budgets
+        .max_tokens_per_window
+        .unwrap_or(DEFAULT_MEMORY_RETRIEVAL_MAX_TOKENS_PER_WINDOW)
+        .max(1);
+    let max_chars = gateway
+        .grant
+        .budgets
+        .max_chars_per_window
+        .unwrap_or(DEFAULT_MEMORY_RETRIEVAL_MAX_CHARS_PER_WINDOW)
+        .max(1);
+    let now = crate::now_ms();
+    let window_ms = gateway.grant.budgets.window_ms.unwrap_or(60_000).max(1);
+    let budget_key = memory_retrieval_budget_key(gateway);
+    let mut windows = state.memory_retrieval_budget_windows.write().await;
+    let window = windows.entry(budget_key).or_insert_with(|| {
+        tandem_memory::MemoryRetrievalBudgetWindow {
+            started_at_ms: now,
+            query_count: 0,
+            result_count: 0,
+            token_count: 0,
+            char_count: 0,
+        }
+    });
+    if now.saturating_sub(window.started_at_ms) >= window_ms {
+        window.started_at_ms = now;
+        window.query_count = 0;
+        window.result_count = 0;
+        window.token_count = 0;
+        window.char_count = 0;
+    }
+
+    let mut allowed = Vec::new();
+    let mut budget_exhausted = false;
+    for hit in hits {
+        let token_count = hit.record.content.split_whitespace().count() as i64;
+        let char_count = hit.record.content.chars().count();
+        if window.result_count >= max_results
+            || window.token_count.saturating_add(token_count) > max_tokens
+            || window.char_count.saturating_add(char_count) > max_chars
+        {
+            budget_exhausted = true;
+            continue;
+        }
+        window.result_count = window.result_count.saturating_add(1);
+        window.token_count = window.token_count.saturating_add(token_count);
+        window.char_count = window.char_count.saturating_add(char_count);
+        allowed.push(hit);
     }
     (allowed, budget_exhausted)
 }

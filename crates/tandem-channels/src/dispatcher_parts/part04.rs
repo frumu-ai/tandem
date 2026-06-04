@@ -1375,7 +1375,10 @@ fn channel_memory_search_request_body(
                     "window_ms": 300000,
                     "max_top_k": 5,
                     "max_tokens": 200,
-                    "max_chars": 1000
+                    "max_chars": 1000,
+                    "max_results_per_window": 20,
+                    "max_tokens_per_window": 800,
+                    "max_chars_per_window": 4000
                 },
                 "expires_at": now_ms.saturating_add(5 * 60 * 1000)
             },

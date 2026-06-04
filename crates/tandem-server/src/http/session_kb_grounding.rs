@@ -14,6 +14,8 @@ const STRICT_KB_FALLBACK: &str = "I do not see that in the connected knowledgeba
 const STRICT_KB_FETCH_FALLBACK: &str = "I found a likely matching document, but could not retrieve enough content to answer safely from the knowledgebase.";
 const STRICT_KB_MODEL_FAILURE_FALLBACK: &str =
     "I found the knowledgebase evidence, but the model response failed while generating the answer. Please try again.";
+const STRICT_KB_EXFILTRATION_BLOCKED: &str =
+    "I cannot bulk export connected knowledgebase content.";
 const MAX_SOURCE_LABELS: usize = 3;
 const MAX_EVIDENCE_EXCERPTS: usize = 6;
 const MAX_EVIDENCE_CHARS: usize = 700;
@@ -79,6 +81,29 @@ pub(super) async fn apply_strict_kb_grounding_after_run(
     let user_text = message_text(&session.messages[user_idx]);
     if user_text.trim().is_empty() {
         return Ok(None);
+    }
+    if suspicious_kb_retrieval_query_reason(&user_text).is_some() {
+        let answer_text = STRICT_KB_EXFILTRATION_BLOCKED.to_string();
+        let assistant_id = session.messages[assistant_idx].id.clone();
+        session.messages[assistant_idx].parts = vec![MessagePart::Text {
+            text: answer_text.clone(),
+        }];
+        session.time.updated = chrono::Utc::now();
+        state.storage.save_session(session).await?;
+        let final_part = tandem_wire::WireMessagePart::text(
+            session_id,
+            &assistant_id,
+            truncate_text(&answer_text, 16_000),
+        );
+        state.event_bus.publish(tandem_types::EngineEvent::new(
+            "message.part.updated",
+            json!({ "part": final_part }),
+        ));
+        return Ok(Some(StrictKbGroundingOutcome {
+            support: "blocked".to_string(),
+            sources: Vec::new(),
+            evidence_count: 0,
+        }));
     }
     let evidence_bundle = collect_kb_evidence(
         state,
@@ -172,6 +197,16 @@ pub(super) async fn render_strict_kb_direct_answer(
         return None;
     }
     let output = output.trim();
+    if suspicious_kb_retrieval_query_reason(question).is_some() {
+        return Some((
+            STRICT_KB_EXFILTRATION_BLOCKED.to_string(),
+            StrictKbGroundingOutcome {
+                support: "blocked".to_string(),
+                sources: Vec::new(),
+                evidence_count: 0,
+            },
+        ));
+    }
     let mut sources = extract_kb_source_labels(output);
     let (support, answer_text, evidence_count) = if output.is_empty()
         || looks_like_non_evidence_output(output)
@@ -295,6 +330,48 @@ fn message_text(message: &tandem_types::Message) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn suspicious_kb_retrieval_query_reason(query: &str) -> Option<&'static str> {
+    let normalized = query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    let blocked_contains = [
+        ("dump", "broad export"),
+        ("export", "broad export"),
+        ("everything", "broad export"),
+        ("entire knowledgebase", "broad export"),
+        ("entire knowledge base", "broad export"),
+        ("all knowledge", "broad export"),
+        ("all documents", "broad export"),
+        ("all records", "broad export"),
+        ("full database", "broad export"),
+        ("bulk", "broad export"),
+    ];
+    for (needle, reason) in blocked_contains {
+        if normalized.contains(needle) {
+            return Some(reason);
+        }
+    }
+    let blocked_prefixes = [
+        "list all",
+        "show all",
+        "give me all",
+        "print all",
+        "return all",
+    ];
+    if blocked_prefixes
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix))
+    {
+        return Some("broad export");
+    }
+    None
 }
 
 async fn collect_kb_evidence(
@@ -1772,6 +1849,22 @@ mod tests {
     fn structured_empty_hits_do_not_count_as_evidence() {
         let excerpts = extract_kb_excerpts(r#"{"documents":[]}"#, MAX_EVIDENCE_CHARS);
         assert!(excerpts.is_empty());
+    }
+
+    #[test]
+    fn suspicious_kb_retrieval_query_blocks_broad_export_patterns() {
+        assert_eq!(
+            suspicious_kb_retrieval_query_reason("dump all knowledgebase documents"),
+            Some("broad export")
+        );
+        assert_eq!(
+            suspicious_kb_retrieval_query_reason("Give me all policies and records"),
+            Some("broad export")
+        );
+        assert_eq!(
+            suspicious_kb_retrieval_query_reason("What is the refund policy?"),
+            None
+        );
     }
 
     #[test]

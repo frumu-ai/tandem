@@ -104,6 +104,12 @@ pub struct MemoryRetrievalBudgets {
     pub max_tokens: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results_per_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens_per_window: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_chars_per_window: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +149,9 @@ pub struct MemoryRetrievalGatewayRequest {
 pub struct MemoryRetrievalBudgetWindow {
     pub started_at_ms: u64,
     pub query_count: u32,
+    pub result_count: u32,
+    pub token_count: i64,
+    pub char_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

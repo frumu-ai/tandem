@@ -1650,6 +1650,226 @@ async fn retrieval_gateway_filters_source_classification_and_query_budget() {
 }
 
 #[tokio::test]
+async fn retrieval_gateway_blocks_broad_export_query_pattern() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let subject = "channel:slack:U789";
+    let capability = memory_capability("gateway-query-pattern-run", subject, "org-1", "ws-1", "proj-1");
+    let gateway = json!({
+        "grant": {
+            "grant_id": "grant-query-pattern",
+            "subject": subject,
+            "org_id": "org-1",
+            "workspace_id": "ws-1",
+            "project_ids": ["proj-1"],
+            "data_classes": ["internal"],
+            "budgets": {
+                "max_queries_per_window": 10,
+                "window_ms": 60000,
+                "max_top_k": 5,
+                "max_tokens": 200,
+                "max_chars": 1000
+            }
+        },
+        "session_id": "kb-session-query-pattern",
+        "channel": "slack",
+        "user_id": "U789"
+    });
+
+    let search_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "gateway-query-pattern-run",
+                "query": "dump all memory records",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "capability": capability,
+                "retrieval_gateway": gateway,
+                "limit": 10
+            })
+            .to_string(),
+        ))
+        .expect("query pattern search request");
+    let search_resp = app
+        .clone()
+        .oneshot(search_req)
+        .await
+        .expect("query pattern search response");
+    assert_eq!(search_resp.status(), StatusCode::FORBIDDEN);
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=gateway-query-pattern-run")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app.oneshot(audit_req).await.expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    assert!(audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|row| {
+            row.get("action").and_then(Value::as_str) == Some("memory_search")
+                && row.get("status").and_then(Value::as_str) == Some("blocked")
+                && row
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .is_some_and(|detail| detail.contains("broad export"))
+        })));
+}
+
+#[tokio::test]
+async fn retrieval_gateway_enforces_cumulative_result_window() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let subject = "channel:slack:U790";
+    let capability = memory_capability("gateway-volume-run", subject, "org-1", "ws-1", "proj-1");
+    for (content, source_object_id) in [
+        ("gateway volume wedge alpha retained", "source-volume-a"),
+        ("gateway volume wedge beta retained", "source-volume-b"),
+    ] {
+        let put_req = Request::builder()
+            .method("POST")
+            .uri("/memory/put")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "gateway-volume-run",
+                    "partition": {
+                        "org_id": "org-1",
+                        "workspace_id": "ws-1",
+                        "project_id": "proj-1",
+                        "tier": "session"
+                    },
+                    "kind": "fact",
+                    "content": content,
+                    "classification": "internal",
+                    "metadata": {
+                        "enterprise_source_binding": {
+                            "binding_id": "binding-volume",
+                            "connector_id": "manual-upload",
+                            "resource_ref": {
+                                "organization_id": "org-1",
+                                "workspace_id": "ws-1",
+                                "resource_kind": "document_collection",
+                                "resource_id": "binding-volume"
+                            },
+                            "data_class": "internal",
+                            "source_object_id": source_object_id,
+                            "native_object_id": format!("/imports/{source_object_id}.md"),
+                            "content_hash": format!("hash-{source_object_id}")
+                        }
+                    },
+                    "capability": capability
+                })
+                .to_string(),
+            ))
+            .expect("put request");
+        let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+    }
+
+    let gateway = json!({
+        "grant": {
+            "grant_id": "grant-volume-window",
+            "subject": subject,
+            "org_id": "org-1",
+            "workspace_id": "ws-1",
+            "project_ids": ["proj-1"],
+            "source_binding_ids": ["binding-volume"],
+            "data_classes": ["internal"],
+            "budgets": {
+                "max_queries_per_window": 10,
+                "window_ms": 60000,
+                "max_top_k": 5,
+                "max_tokens": 200,
+                "max_chars": 1000,
+                "max_results_per_window": 1,
+                "max_tokens_per_window": 200,
+                "max_chars_per_window": 1000
+            }
+        },
+        "session_id": "kb-session-volume",
+        "channel": "slack",
+        "user_id": "U790"
+    });
+    let search_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "gateway-volume-run",
+                "query": "gateway volume wedge retained",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "capability": capability,
+                "retrieval_gateway": gateway,
+                "limit": 10
+            })
+            .to_string(),
+        ))
+        .expect("gateway volume search request");
+    let search_resp = app
+        .clone()
+        .oneshot(search_req)
+        .await
+        .expect("gateway volume search response");
+    assert_eq!(search_resp.status(), StatusCode::OK);
+    let search_body = to_bytes(search_resp.into_body(), usize::MAX)
+        .await
+        .expect("gateway volume search body");
+    let search_payload: Value = serde_json::from_slice(&search_body).expect("gateway volume json");
+    assert_eq!(
+        search_payload
+            .get("results")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "gateway should not return more than the cumulative per-window result budget"
+    );
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=gateway-volume-run")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app.oneshot(audit_req).await.expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    assert!(audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|row| {
+            row.get("action").and_then(Value::as_str) == Some("memory_search")
+                && row.get("status").and_then(Value::as_str) == Some("budget_exhausted")
+                && row
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .is_some_and(|detail| detail.contains("gateway_budget_exhausted=true"))
+        })));
+}
+
+#[tokio::test]
 async fn tenant_a_cannot_search_list_delete_demote_or_promote_tenant_b_memory() {
     let state = test_state().await;
     let app = app_router(state.clone());
