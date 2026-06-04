@@ -67,6 +67,7 @@ use crate::{
 
 pub mod approval_message_map;
 pub mod channel_user_capabilities;
+mod prompt_memory_context;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -1212,28 +1213,7 @@ impl ServerPromptContextHook {
     }
 
     fn build_memory_block(hits: &[tandem_memory::types::GlobalMemorySearchHit]) -> String {
-        let mut out = vec!["<memory_context>".to_string()];
-        let mut used = 0usize;
-        for hit in hits {
-            let text = hit
-                .record
-                .content
-                .split_whitespace()
-                .take(60)
-                .collect::<Vec<_>>()
-                .join(" ");
-            let line = format!(
-                "- [{:.3}] {} (source={}, run={})",
-                hit.score, text, hit.record.source_type, hit.record.run_id
-            );
-            used = used.saturating_add(line.len());
-            if used > 2200 {
-                break;
-            }
-            out.push(line);
-        }
-        out.push("</memory_context>".to_string());
-        out.join("\n")
+        prompt_memory_context::build_memory_block(hits)
     }
 
     fn governed_memory_visible_without_source_grant(
