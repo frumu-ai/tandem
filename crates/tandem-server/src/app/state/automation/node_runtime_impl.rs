@@ -983,6 +983,16 @@ pub(crate) fn automation_node_inline_artifact_payload(node: &AutomationFlowNode)
             .filter(|value| !value.is_null())
             .cloned();
     }
+    if let Some(payload) = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("eval"))
+        .and_then(|eval| eval.get("inline_artifact"))
+        .filter(|value| !value.is_null())
+        .cloned()
+    {
+        return Some(payload);
+    }
     None
 }
 

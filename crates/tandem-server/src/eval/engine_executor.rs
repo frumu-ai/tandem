@@ -21,7 +21,7 @@ use crate::app::state::AppState;
 use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
 use crate::eval::dataset::{ArtifactStatus, EvalTestCase};
 use crate::eval::metrics::EvalRunResult;
-use crate::eval::spec_mapper::{test_case_to_spec, EVAL_TRIGGER_TYPE};
+use crate::eval::spec_mapper::{test_case_to_spec, test_case_to_stub_spec, EVAL_TRIGGER_TYPE};
 use crate::failures::{classify_error_text, AIFailureMode};
 
 /// How often to poll `get_automation_v2_run` for status updates.
@@ -33,6 +33,7 @@ pub struct EngineExecutor {
     state: AppState,
     poll_interval: Duration,
     max_duration: Duration,
+    use_stub_inline_artifacts: bool,
 }
 
 impl EngineExecutor {
@@ -41,6 +42,7 @@ impl EngineExecutor {
             state,
             poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
             max_duration: Duration::from_secs(DEFAULT_MAX_DURATION_SECS),
+            use_stub_inline_artifacts: false,
         }
     }
 
@@ -54,11 +56,20 @@ impl EngineExecutor {
         self
     }
 
+    pub fn with_stub_inline_artifacts(mut self, enabled: bool) -> Self {
+        self.use_stub_inline_artifacts = enabled;
+        self
+    }
+
     /// Submit a single eval test case, wait for it to reach a terminal status, and
     /// return the resulting `EvalRunResult`.
     pub async fn run_test_case(&self, case: &EvalTestCase) -> EvalRunResult {
         let started = Instant::now();
-        let spec = test_case_to_spec(case);
+        let spec = if self.use_stub_inline_artifacts {
+            test_case_to_stub_spec(case)
+        } else {
+            test_case_to_spec(case)
+        };
 
         let initial_run = match self
             .state
@@ -83,9 +94,16 @@ impl EngineExecutor {
         let deadline = Instant::now() + self.max_duration;
         loop {
             if Instant::now() > deadline {
+                let diagnostic = self
+                    .state
+                    .get_automation_v2_run(run_id)
+                    .await
+                    .map(|run| format!("; {}", run_timeout_diagnostic(&run)))
+                    .unwrap_or_default();
                 return Err(format!(
-                    "eval timeout after {}s",
-                    self.max_duration.as_secs()
+                    "eval timeout after {}s{}",
+                    self.max_duration.as_secs(),
+                    diagnostic
                 ));
             }
 
@@ -100,6 +118,32 @@ impl EngineExecutor {
             tokio::time::sleep(self.poll_interval).await;
         }
     }
+}
+
+fn run_timeout_diagnostic(run: &AutomationV2RunRecord) -> String {
+    let lifecycle_events = run
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .rev()
+        .take(5)
+        .map(|event| event.event.clone())
+        .collect::<Vec<_>>();
+    let last_failure = run
+        .checkpoint
+        .last_failure
+        .as_ref()
+        .map(|failure| failure.reason.clone());
+    format!(
+        "run_status={:?}, pending_nodes={}, completed_nodes={}, blocked_nodes={}, lifecycle_tail={:?}, last_failure={:?}, detail={:?}",
+        run.status,
+        run.checkpoint.pending_nodes.len(),
+        run.checkpoint.completed_nodes.len(),
+        run.checkpoint.blocked_nodes.len(),
+        lifecycle_events,
+        last_failure,
+        run.detail
+    )
 }
 
 /// Convert engine-native run state into an `EvalRunResult`.
