@@ -370,7 +370,12 @@ impl IntraTenantAuthorityGraph {
     /// 3. any matching allow grant → allow;
     /// 4. otherwise → deny (no matching grant).
     pub fn evaluate(&self, request: &AuthorityAccessRequest, now_ms: u64) -> AuthorityDecision {
-        if request.resource.organization_id != self.tenant_context.org_id {
+        // Tenant identity is (org_id, workspace_id) — matching the audit and
+        // grant scoping elsewhere — so a resource in a different workspace of
+        // the same org is just as cross-tenant as a different org.
+        if request.resource.organization_id != self.tenant_context.org_id
+            || request.resource.workspace_id != self.tenant_context.workspace_id
+        {
             return AuthorityDecision::deny_cross_tenant();
         }
 

@@ -245,6 +245,27 @@ fn resource_from_another_org_is_denied_as_cross_tenant() {
 }
 
 #[test]
+fn resource_from_another_workspace_in_same_org_is_denied_as_cross_tenant() {
+    let f = fixtures::acme_company();
+    // Same org, different workspace: tenant identity is (org, workspace), so the
+    // executive's org-wide allow must not reach into a sibling workspace.
+    let other_workspace = ResourceRef::new(
+        fixtures::ORG_ID,
+        "other-workspace",
+        ResourceKind::DataStore,
+        "finance-ledger",
+    );
+
+    let decision = f.graph.evaluate(
+        &request(&f.executive, &other_workspace, DataClass::FinancialRecord),
+        fixtures::BASE_NOW_MS,
+    );
+
+    assert!(decision.is_deny());
+    assert_eq!(decision.reason_code, "resource_outside_tenant");
+}
+
+#[test]
 fn resolved_unit_principals_include_parent_department_for_role_domain() {
     let f = fixtures::acme_company();
 
