@@ -1013,6 +1013,7 @@ async fn guardrail_stopped_run_auto_resumes_after_quota_override_approval() {
                 context: serde_json::json!({}),
                 status: crate::automation_v2::governance::GovernanceApprovalStatus::Approved,
                 expires_at_ms: now + 60_000,
+                tenant_context: None,
                 reviewed_by: Some(crate::automation_v2::governance::GovernanceActorRef {
                     kind: crate::automation_v2::governance::GovernanceActorKind::Human,
                     actor_id: Some("reviewer".to_string()),

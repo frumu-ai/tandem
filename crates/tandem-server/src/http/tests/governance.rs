@@ -1690,6 +1690,180 @@ async fn governance_approval_rejects_agent_self_review() {
     );
 }
 
+/// CT-09: an approval receipt issued in tenant A must not be approved (replayed)
+/// from tenant B. The cross-tenant caller sees the same 404 as a missing receipt so
+/// existence is not leaked, while the owning tenant can still approve its own receipt.
+#[tokio::test]
+async fn governance_approval_rejects_cross_tenant_approve_replay() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let approval_id = create_capability_approval(
+        &app,
+        "agent-ct09-approve",
+        "creates_agents",
+        &[
+            ("x-tandem-org-id", "org-a"),
+            ("x-tandem-workspace-id", "workspace-a"),
+            ("x-tandem-actor-id", "operator-a"),
+        ],
+    )
+    .await;
+
+    // Tenant B replays tenant A's receipt id.
+    let replay = Request::builder()
+        .method("POST")
+        .uri(format!("/governance/approvals/{approval_id}/approve"))
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-b")
+        .header("x-tandem-workspace-id", "workspace-b")
+        .header("x-tandem-actor-id", "operator-b")
+        .body(Body::from(json!({ "notes": "cross-tenant" }).to_string()))
+        .expect("replay request");
+    let resp = app.clone().oneshot(replay).await.expect("replay response");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response_json(resp).await.get("code").and_then(Value::as_str),
+        Some("GOVERNANCE_APPROVAL_NOT_FOUND")
+    );
+
+    // The owning tenant can still approve its own receipt (no-op-for-own-tenant).
+    let owner = Request::builder()
+        .method("POST")
+        .uri(format!("/governance/approvals/{approval_id}/approve"))
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "operator-a")
+        .body(Body::from(json!({ "notes": "owner approves" }).to_string()))
+        .expect("owner request");
+    let resp = app.clone().oneshot(owner).await.expect("owner response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(resp).await["approval"]["status"].as_str(),
+        Some("approved")
+    );
+}
+
+/// CT-09: revocation (deny) must stay tenant-scoped — tenant B cannot deny/revoke an
+/// approval receipt issued in tenant A.
+#[tokio::test]
+async fn governance_approval_rejects_cross_tenant_deny_revocation() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let approval_id = create_capability_approval(
+        &app,
+        "agent-ct09-deny",
+        "creates_agents",
+        &[
+            ("x-tandem-org-id", "org-a"),
+            ("x-tandem-workspace-id", "workspace-a"),
+            ("x-tandem-actor-id", "operator-a"),
+        ],
+    )
+    .await;
+
+    let replay = Request::builder()
+        .method("POST")
+        .uri(format!("/governance/approvals/{approval_id}/deny"))
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-b")
+        .header("x-tandem-workspace-id", "workspace-b")
+        .header("x-tandem-actor-id", "operator-b")
+        .body(Body::from(json!({ "notes": "cross-tenant revoke" }).to_string()))
+        .expect("deny request");
+    let resp = app.clone().oneshot(replay).await.expect("deny response");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response_json(resp).await.get("code").and_then(Value::as_str),
+        Some("GOVERNANCE_APPROVAL_NOT_FOUND")
+    );
+
+    // The owning tenant can still deny its own receipt.
+    let owner = Request::builder()
+        .method("POST")
+        .uri(format!("/governance/approvals/{approval_id}/deny"))
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "operator-a")
+        .body(Body::from(json!({ "notes": "owner denies" }).to_string()))
+        .expect("owner deny request");
+    let resp = app.clone().oneshot(owner).await.expect("owner deny response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(resp).await["approval"]["status"].as_str(),
+        Some("denied")
+    );
+}
+
+/// CT-09: listing approvals is tenant-scoped — one tenant's receipts must never be
+/// enumerated by another.
+#[tokio::test]
+async fn governance_approvals_list_is_tenant_scoped() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let approval_id = create_capability_approval(
+        &app,
+        "agent-ct09-list",
+        "creates_agents",
+        &[
+            ("x-tandem-org-id", "org-a"),
+            ("x-tandem-workspace-id", "workspace-a"),
+            ("x-tandem-actor-id", "operator-a"),
+        ],
+    )
+    .await;
+
+    let list_for = |org: &str, workspace: &str| {
+        Request::builder()
+            .method("GET")
+            .uri("/governance/approvals")
+            .header("x-tandem-org-id", org)
+            .header("x-tandem-workspace-id", workspace)
+            .header("x-tandem-actor-id", "operator")
+            .body(Body::empty())
+            .expect("list request")
+    };
+
+    // Tenant B must not see tenant A's approval.
+    let resp = app
+        .clone()
+        .oneshot(list_for("org-b", "workspace-b"))
+        .await
+        .expect("tenant-b list response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    let ids_b: Vec<&str> = body["approvals"]
+        .as_array()
+        .expect("approvals array")
+        .iter()
+        .filter_map(|row| row.get("approval_id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        !ids_b.contains(&approval_id.as_str()),
+        "tenant B must not see tenant A's approval: {ids_b:?}"
+    );
+
+    // Tenant A still sees its own approval.
+    let resp = app
+        .clone()
+        .oneshot(list_for("org-a", "workspace-a"))
+        .await
+        .expect("tenant-a list response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    let ids_a: Vec<&str> = body["approvals"]
+        .as_array()
+        .expect("approvals array")
+        .iter()
+        .filter_map(|row| row.get("approval_id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        ids_a.contains(&approval_id.as_str()),
+        "tenant A must see its own approval: {ids_a:?}"
+    );
+}
+
 /// GOV-B10: in the OSS/local engine a human may freely mutate their own (or an
 /// unowned/local) automation, but a record with a DISTINCT identified human owner
 /// may only be mutated by that owner. Local single-user operation (no identified

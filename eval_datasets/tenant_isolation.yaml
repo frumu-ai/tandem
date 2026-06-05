@@ -282,3 +282,15 @@ test_cases:
       quality_indicators:
         - "knowledge_retrieval_denied"
         - "cross_tenant_denied"
+
+# CT-09 (governance approval receipt replay): an approval receipt issued in tenant A
+# must not be replayed to approve/deny (revoke) an action in tenant B, and listing is
+# tenant-scoped. This guarantee is enforced in the governance approval flow
+# (crates/tandem-server/src/app/state/governance.rs `approval_receipt_matches_tenant`,
+# bound at `request_approval`, enforced in `decide_approval_request`) and proven by the
+# HTTP integration tests in crates/tandem-server/src/http/tests/governance.rs
+# (`governance_approval_rejects_cross_tenant_approve_replay`,
+# `governance_approval_rejects_cross_tenant_deny_revocation`,
+# `governance_approvals_list_is_tenant_scoped`). It is intentionally NOT an eval case
+# here: the approval flow is HTTP- and premium-governance-gated and is not reachable
+# from the simulation eval engine, so the integration tests are the enforcement signal.

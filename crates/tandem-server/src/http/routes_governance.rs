@@ -153,9 +153,12 @@ pub(super) async fn governance_policy_decisions_list(
 
 pub(super) async fn governance_approvals_list(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let rows = state.list_approval_requests(None, None).await;
+    let rows = state
+        .list_approval_requests_for_tenant(None, None, &tenant_context)
+        .await;
     Ok(Json(json!({
         "approvals": rows.iter().map(approval_request_wire).collect::<Vec<_>>(),
         "count": rows.len(),
@@ -179,6 +182,7 @@ pub(super) async fn governance_approval_create(
             input.rationale,
             input.context,
             input.expires_at_ms,
+            &tenant_context,
         )
         .await
         .map_err(|error| {
@@ -203,6 +207,7 @@ async fn ensure_governance_review_authorized(
     state: &AppState,
     approval_id: &str,
     reviewer: &GovernanceActorRef,
+    tenant_context: &TenantContext,
 ) -> Result<(), (StatusCode, Json<Value>)> {
     if reviewer.kind != GovernanceActorKind::Human {
         return Err((
@@ -213,7 +218,12 @@ async fn ensure_governance_review_authorized(
             })),
         ));
     }
-    if let Some(existing) = state.get_governance_approval_request(approval_id).await {
+    // CT-09: scope the self-review lookup to the reviewer's tenant so a cross-tenant
+    // receipt is treated as absent here; decide_approval_request is the hard gate.
+    if let Some(existing) = state
+        .get_governance_approval_request_for_tenant(approval_id, tenant_context)
+        .await
+    {
         // Human operators legitimately file requests on an agent's behalf and
         // approve them, so the self-review guard is scoped to agent-filed requests.
         if existing.requested_by.kind == GovernanceActorKind::Agent {
@@ -246,10 +256,10 @@ pub(super) async fn governance_approval_approve(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
     let reviewer = resolve_governance_actor(&headers, &tenant_context, &request_principal);
-    ensure_governance_review_authorized(&state, &approval_id, &reviewer).await?;
+    ensure_governance_review_authorized(&state, &approval_id, &reviewer, &tenant_context).await?;
     let notes = input.notes.clone();
     let Some(reviewed) = state
-        .decide_approval_request(&approval_id, reviewer, true, notes.clone())
+        .decide_approval_request(&approval_id, reviewer, true, notes.clone(), &tenant_context)
         .await
         .map_err(|error| {
             (
@@ -326,9 +336,9 @@ pub(super) async fn governance_approval_deny(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
     let reviewer = resolve_governance_actor(&headers, &tenant_context, &request_principal);
-    ensure_governance_review_authorized(&state, &approval_id, &reviewer).await?;
+    ensure_governance_review_authorized(&state, &approval_id, &reviewer, &tenant_context).await?;
     let Some(reviewed) = state
-        .decide_approval_request(&approval_id, reviewer, false, input.notes)
+        .decide_approval_request(&approval_id, reviewer, false, input.notes, &tenant_context)
         .await
         .map_err(|error| {
             (
@@ -411,6 +421,7 @@ pub(super) async fn automation_governance_get(
 
 pub(super) async fn governance_reviews_list(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
     let agent_reviews = state
@@ -453,9 +464,10 @@ pub(super) async fn governance_reviews_list(
     });
 
     let pending_approvals = state
-        .list_approval_requests(
+        .list_approval_requests_for_tenant(
             None,
             Some(crate::automation_v2::governance::GovernanceApprovalStatus::Pending),
+            &tenant_context,
         )
         .await
         .into_iter()
