@@ -67,24 +67,28 @@ pub fn classify(tool_id: &str) -> ApprovalClassification {
         return ApprovalClassification::UserConfigurable;
     }
 
-    if never_gates_table().contains(id.as_str()) {
-        return ApprovalClassification::NoApproval;
-    }
     if always_gates_table().contains(id.as_str()) {
         return ApprovalClassification::RequiresApproval;
     }
-
-    // Namespace prefix gates: every tool under these MCP-server prefixes
-    // mutates a system of record by default. Operators can carve out
-    // read-only sub-tools via scope override.
-    for prefix in ALWAYS_GATE_PREFIXES {
-        if id.starts_with(prefix) {
-            return ApprovalClassification::RequiresApproval;
-        }
+    if never_gates_table().contains(id.as_str()) {
+        return ApprovalClassification::NoApproval;
     }
+
+    // Read-prefix exceptions must run before broad write-prefix gates like
+    // `mcp.linear.` so issue-tracker read tools do not accidentally require
+    // human approval.
     for prefix in NEVER_GATE_PREFIXES {
         if id.starts_with(prefix) {
             return ApprovalClassification::NoApproval;
+        }
+    }
+
+    // Namespace prefix gates: every tool under these MCP-server prefixes
+    // mutates a system of record by default unless a read-prefix exception
+    // above matched first.
+    for prefix in ALWAYS_GATE_PREFIXES {
+        if id.starts_with(prefix) {
+            return ApprovalClassification::RequiresApproval;
         }
     }
 
@@ -243,7 +247,8 @@ const ALWAYS_GATE_PREFIXES: &[&str] = &[
     // Calendar (sends invites).
     "mcp.googlecalendar.",
     "mcp.calendly.",
-    // Issue trackers (transitions / merges affect SOR).
+    // Issue trackers (transitions / merges affect SOR). Read-only verbs are
+    // carved out in NEVER_GATE_PREFIXES and are checked before this list.
     "mcp.linear.",
     "mcp.jira.",
     "mcp.shortcut.",
@@ -286,6 +291,8 @@ const NEVER_GATE_PREFIXES: &[&str] = &[
     // Linear / Jira reads.
     "mcp.linear.list",
     "mcp.linear.get",
+    "mcp.linear.search",
+    "mcp.linear.viewer",
     "mcp.jira.search",
     "mcp.jira.get",
     // KB MCP reads.
@@ -396,6 +403,45 @@ mod tests {
         assert_eq!(
             classify("mcp.github.merge_pull_request"),
             ApprovalClassification::RequiresApproval
+        );
+    }
+
+    #[test]
+    fn linear_read_verbs_do_not_gate_but_writes_do() {
+        for tool in [
+            "mcp.linear.list_issues",
+            "mcp.linear.list_comments",
+            "mcp.linear.get_issue",
+            "mcp.linear.search_documentation",
+            "mcp.linear.viewer",
+        ] {
+            assert_eq!(classify(tool), ApprovalClassification::NoApproval, "{tool}");
+        }
+        for tool in [
+            "mcp.linear.create_issue",
+            "mcp.linear.update_issue",
+            "mcp.linear.save_issue",
+            "mcp.linear.create_comment",
+            "mcp.linear.update_comment",
+            "mcp.linear.transition_issue",
+        ] {
+            assert_eq!(
+                classify(tool),
+                ApprovalClassification::RequiresApproval,
+                "{tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn linear_read_exception_order_survives_broad_prefix_gate() {
+        let allowlist = vec![
+            "mcp.linear.list_issues".to_string(),
+            "mcp.linear.get_issue".to_string(),
+        ];
+        assert_eq!(
+            classify_node_allowlist(&allowlist),
+            ApprovalClassification::NoApproval
         );
     }
 

@@ -107,3 +107,121 @@ async fn capabilities_readiness_returns_blocking_issues_when_unbound() {
         .and_then(|v| v.as_array())
         .is_some_and(|rows| !rows.is_empty()));
 }
+
+#[tokio::test]
+async fn linear_readiness_reports_missing_connector() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/capabilities/readiness")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "workflow_id": "wf-linear-missing",
+                "required_capabilities": ["linear.get_issue"],
+                "provider_preference": ["mcp"]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let states = payload
+        .pointer("/readiness/mcp_connector_states")
+        .and_then(Value::as_array)
+        .expect("connector states");
+    assert!(states.iter().any(|state| {
+        state.get("provider").and_then(Value::as_str) == Some("linear")
+            && state.get("access").and_then(Value::as_str) == Some("missing_connector")
+            && state.get("configured").and_then(Value::as_bool) == Some(false)
+    }));
+}
+
+#[tokio::test]
+async fn linear_readiness_distinguishes_read_only_available() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/capabilities/readiness")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "workflow_id": "wf-linear-read",
+                "required_capabilities": ["linear.get_issue"],
+                "provider_preference": ["mcp"],
+                "available_tools": [
+                    {"provider":"mcp","tool_name":"mcp.linear.get_issue","schema":{}}
+                ]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let state = payload
+        .pointer("/readiness/mcp_connector_states/0")
+        .expect("linear connector state");
+    assert_eq!(
+        state.get("provider").and_then(Value::as_str),
+        Some("linear")
+    );
+    assert_eq!(
+        state.get("access").and_then(Value::as_str),
+        Some("read_only")
+    );
+    assert!(state
+        .get("read_tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty()));
+    assert!(state
+        .get("write_tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| tools.is_empty()));
+}
+
+#[tokio::test]
+async fn linear_readiness_distinguishes_write_capable() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/capabilities/readiness")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "workflow_id": "wf-linear-write",
+                "required_capabilities": ["linear.update_issue"],
+                "provider_preference": ["mcp"],
+                "available_tools": [
+                    {"provider":"mcp","tool_name":"mcp.linear.save_issue","schema":{}}
+                ]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let state = payload
+        .pointer("/readiness/mcp_connector_states/0")
+        .expect("linear connector state");
+    assert_eq!(
+        state.get("provider").and_then(Value::as_str),
+        Some("linear")
+    );
+    assert_eq!(
+        state.get("access").and_then(Value::as_str),
+        Some("write_capable")
+    );
+    assert!(state
+        .get("write_tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty()));
+}
