@@ -659,6 +659,71 @@ fn runtime_auth_mode_requires_verified_tool_context(mode: RuntimeAuthMode) -> bo
     )
 }
 
+/// CT-20: resolve a tool against the declarative approval gate matrix.
+///
+/// Classifies the tool into a risk tier and, for tiers that require approval by
+/// default (external sends, financial/credential access, destructive deletes,
+/// money movement), runs the gate matrix via `enforce_action_gate` — which
+/// records a policy decision and protected audit evidence. A non-allow outcome
+/// pauses the tool (`allowed: false`). Lower-risk tiers are not gated here and
+/// fall through to the existing capability checks.
+pub(crate) async fn evaluate_action_gate_tool_policy(
+    state: &AppState,
+    ctx: &ToolPolicyContext,
+    tool: &str,
+) -> Option<ToolPolicyDecision> {
+    let risk_tier =
+        tool_risk_tier_from_name_and_descriptor(tool, &ToolSecurityDescriptor::default());
+    if !risk_tier.approval_required_by_default() {
+        return None;
+    }
+
+    let tenant_context = ctx.tenant_context.clone().unwrap_or_default();
+    let actor_id = tenant_context.actor_id.clone();
+    let request = GateRequest::new(Some(risk_tier), None);
+    let (outcome, policy_decision_id) = state
+        .enforce_action_gate(
+            &tenant_context,
+            &request,
+            Some(tool.to_string()),
+            actor_id,
+            crate::now_ms(),
+        )
+        .await;
+
+    if outcome.is_allowed() {
+        return None;
+    }
+
+    let reason = format!(
+        "tool `{tool}` paused by runtime approval gate ({}): {}",
+        outcome.reviewer_eligibility.as_str(),
+        outcome.reason
+    );
+    if state.is_ready() {
+        state.event_bus.publish(EngineEvent::new(
+            "approval.gate.tool.gated",
+            json!({
+                "sessionID": ctx.session_id,
+                "messageID": ctx.message_id,
+                "tool": tool,
+                "riskTier": risk_tier.as_str(),
+                "effect": outcome.effect,
+                "reviewerEligibility": outcome.reviewer_eligibility.as_str(),
+                "reasonCode": outcome.reason_code,
+                "timestampMs": crate::now_ms(),
+                "tenantContext": tenant_context.clone(),
+            }),
+        ));
+    }
+
+    Some(ToolPolicyDecision {
+        allowed: false,
+        reason: Some(reason),
+        policy_decision_id,
+    })
+}
+
 fn strict_tool_context_deny_reason(
     tenant_context: Option<&TenantContext>,
     verified_tenant_context: Option<&VerifiedTenantContext>,
@@ -837,6 +902,17 @@ impl ToolPolicyHook for ServerToolPolicyHook {
             .await
             {
                 return Ok(decision);
+            }
+
+            // CT-20: resolve high-risk tools against the declarative approval
+            // gate matrix. Only enforces under strict runtime auth modes so
+            // local/single-tenant deployments remain a no-op.
+            if runtime_auth_mode_requires_verified_tool_context(resolve_runtime_auth_mode()) {
+                if let Some(decision) =
+                    evaluate_action_gate_tool_policy(&state, &ctx, &tool).await
+                {
+                    return Ok(decision);
+                }
             }
 
             let Some(instance) = state

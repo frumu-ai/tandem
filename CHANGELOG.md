@@ -46,7 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reviewer; and unclassified actions fail closed to an elevated-reviewer
   approval. Server enforcement records every gate decision as a policy decision
   and writes a tenant-attributed protected audit event for approval-required
-  and deny outcomes.
+  and deny outcomes. The runtime tool-policy hook resolves high-risk tools
+  (external sends, financial/credential access, destructive deletes, money
+  movement) through the gate and pauses them, enforced under strict runtime
+  auth modes so local/single-tenant deployments stay a no-op.
 
 ### Changed
 

@@ -140,3 +140,47 @@ async fn expired_approval_cannot_authorize_execution() {
     assert!(!approval_authorizes_execution(true, expires_at, 5_000));
     assert!(!approval_authorizes_execution(false, expires_at, 4_000));
 }
+
+#[tokio::test]
+async fn tool_policy_gate_pauses_high_risk_tool_and_skips_reads() {
+    use tandem_core::ToolPolicyContext;
+
+    let state = test_state().await;
+    let ctx = |tool: &str| ToolPolicyContext {
+        session_id: "session-gate".to_string(),
+        message_id: "message-gate".to_string(),
+        tenant_context: Some(tenant()),
+        verified_tenant_context: None,
+        tool: tool.to_string(),
+        args: json!({}),
+    };
+
+    // A customer-facing send classifies as ExternalSend and is paused.
+    let send = crate::agent_teams::evaluate_action_gate_tool_policy(
+        &state,
+        &ctx("mcp.email.send"),
+        "mcp.email.send",
+    )
+    .await
+    .expect("high-risk tool must be gated");
+    assert!(!send.allowed, "external send must be paused for approval");
+    assert!(
+        send.policy_decision_id.is_some(),
+        "gate records a policy decision"
+    );
+
+    // The gate left protected audit evidence.
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"approval.gate.approval_required\""));
+
+    // A read/discovery tool is not gated here.
+    let read = crate::agent_teams::evaluate_action_gate_tool_policy(
+        &state,
+        &ctx("mcp.search"),
+        "mcp.search",
+    )
+    .await;
+    assert!(read.is_none(), "low-risk read tools fall through the gate");
+}

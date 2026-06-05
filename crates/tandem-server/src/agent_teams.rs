@@ -9,10 +9,13 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tandem_core::{
-    any_policy_matches, SpawnAgentHook, SpawnAgentToolContext, SpawnAgentToolResult,
-    ToolPolicyContext, ToolPolicyDecision, ToolPolicyHook, FINTECH_STRICT_PROFILE,
+    any_policy_matches, tool_risk_tier_from_name_and_descriptor, SpawnAgentHook,
+    SpawnAgentToolContext, SpawnAgentToolResult, ToolPolicyContext, ToolPolicyDecision,
+    ToolPolicyHook, FINTECH_STRICT_PROFILE,
 };
-use tandem_types::{PolicyDecisionEffect, PolicyDecisionRecord};
+use tandem_types::{
+    GateRequest, PolicyDecisionEffect, PolicyDecisionRecord, ToolSecurityDescriptor,
+};
 
 include!("agent_teams_parts/part01.rs");
 include!("agent_teams_parts/part03.rs");
