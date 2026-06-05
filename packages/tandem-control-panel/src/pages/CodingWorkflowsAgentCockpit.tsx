@@ -23,6 +23,21 @@ function formatTime(value: any) {
   return new Date(timestamp).toLocaleString();
 }
 
+function timestampMs(value: any) {
+  if (value === undefined || value === null || value === "") return 0;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+  }
+  const text = String(value).trim();
+  if (!text) return 0;
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) {
+    return numeric > 0 && numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function sourceKind(eventType: string): ThreadEntry["kind"] {
   const key = eventType.toLowerCase();
   if (key.includes("linear")) return "linear";
@@ -138,7 +153,9 @@ function buildThreadEntries({
       kind: sourceKind(eventType),
       title: formatStatus(eventType),
       body: compactJson(payload).slice(0, 1400),
-      atMs: Number(event?.timestamp_ms || event?.created_at_ms || event?.at_ms || 0),
+      atMs: timestampMs(
+        event?.timestamp_ms || event?.created_at_ms || event?.at_ms || event?.timestamp || 0
+      ),
       meta: eventType,
     });
   });
