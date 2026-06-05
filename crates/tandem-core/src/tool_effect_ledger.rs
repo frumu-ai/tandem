@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tandem_types::EngineEvent;
+use tandem_types::{EngineEvent, TenantContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,16 +34,26 @@ pub struct ToolEffectLedgerRecord {
     pub error: Option<String>,
 }
 
-pub fn tool_effect_ledger_event(record: ToolEffectLedgerRecord) -> EngineEvent {
-    EngineEvent::new(
-        "tool.effect.recorded",
-        json!({
-            "sessionID": record.session_id.clone(),
-            "messageID": record.message_id.clone(),
-            "tool": record.tool.clone(),
-            "record": record,
-        }),
-    )
+pub fn tool_effect_ledger_event(
+    record: ToolEffectLedgerRecord,
+    tenant_context: Option<&TenantContext>,
+) -> EngineEvent {
+    // Tag the event with the originating tenant so the audit read path (`/audit/stream`)
+    // can scope it. Untagged tool-effect events would otherwise be hidden from explicit
+    // tenants once the audit stream fails closed.
+    let mut properties = json!({
+        "sessionID": record.session_id.clone(),
+        "messageID": record.message_id.clone(),
+        "tool": record.tool.clone(),
+        "record": record,
+    });
+    if let (Some(map), Some(tenant)) = (properties.as_object_mut(), tenant_context) {
+        map.insert(
+            "tenantContext".to_string(),
+            serde_json::to_value(tenant).unwrap_or(Value::Null),
+        );
+    }
+    EngineEvent::new("tool.effect.recorded", properties)
 }
 
 pub fn build_tool_effect_ledger_record(
@@ -224,18 +234,21 @@ mod tests {
 
     #[test]
     fn ledger_event_contains_compact_result_summary() {
-        let event = tool_effect_ledger_event(build_tool_effect_ledger_record(
-            "session-1",
-            "message-1",
+        let event = tool_effect_ledger_event(
+            build_tool_effect_ledger_record(
+                "session-1",
+                "message-1",
+                None,
+                "write",
+                ToolEffectLedgerPhase::Outcome,
+                ToolEffectLedgerStatus::Succeeded,
+                &json!({"path": "src/lib.rs"}),
+                Some(&json!({"path": "src/lib.rs", "ok": true})),
+                Some("ok"),
+                None,
+            ),
             None,
-            "write",
-            ToolEffectLedgerPhase::Outcome,
-            ToolEffectLedgerStatus::Succeeded,
-            &json!({"path": "src/lib.rs"}),
-            Some(&json!({"path": "src/lib.rs", "ok": true})),
-            Some("ok"),
-            None,
-        ));
+        );
 
         assert_eq!(event.event_type, "tool.effect.recorded");
         assert_eq!(

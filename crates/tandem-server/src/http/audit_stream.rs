@@ -54,15 +54,20 @@ fn audit_admin_allowed(principal: &RequestPrincipal) -> bool {
 }
 
 fn audit_event_matches_tenant(event: &EngineEvent, tenant: &TenantContext) -> bool {
-    let event_org = event
-        .properties
-        .get("org_id")
+    // Producers tag tenancy in one of two shapes: a nested `tenantContext` object (the
+    // canonical serialized `TenantContext`, e.g. approval/fintech/tool-effect events) or
+    // flat top-level `org_id`/`workspace_id` fields. Read the nested object first, then
+    // fall back to the flat spellings so every recognized shape is scoped.
+    let tenant_ctx = event.properties.get("tenantContext");
+    let event_org = tenant_ctx
+        .and_then(|ctx| ctx.get("org_id"))
+        .or_else(|| event.properties.get("org_id"))
         .or_else(|| event.properties.get("orgID"))
         .or_else(|| event.properties.get("organization_id"))
         .and_then(Value::as_str);
-    let event_workspace = event
-        .properties
-        .get("workspace_id")
+    let event_workspace = tenant_ctx
+        .and_then(|ctx| ctx.get("workspace_id"))
+        .or_else(|| event.properties.get("workspace_id"))
         .or_else(|| event.properties.get("workspaceID"))
         .and_then(Value::as_str);
 
@@ -348,6 +353,39 @@ mod tests {
                 "event keyed by `{org_key}` must be scoped out for a foreign tenant"
             );
         }
+    }
+
+    fn tenant_context_tagged_event(org: &str, workspace: &str) -> EngineEvent {
+        // Mirrors the canonical producer shape (approval/fintech/tool-effect events):
+        // tenancy carried as a nested serialized `TenantContext` under `tenantContext`.
+        EngineEvent::new(
+            "approval.decision.recorded",
+            json!({
+                "run_id": "run-1",
+                "automation_id": "automation-1",
+                "node_id": "approve_protected_action",
+                "decision": "approved",
+                "executed_as": "approval_gate",
+                "tenantContext": TenantContext::explicit(org, workspace, None),
+            }),
+        )
+    }
+
+    #[test]
+    fn nested_tenant_context_tag_is_scoped_to_its_tenant() {
+        // Regression guard for the review finding: events tagged via a nested
+        // `tenantContext` object (not top-level org_id) must still be tenant-scoped.
+        let event = tenant_context_tagged_event("tenant-a-org", "tenant-a-workspace");
+        let owner = tenant("tenant-a-org", "tenant-a-workspace");
+        let other = tenant("tenant-b-org", "tenant-b-workspace");
+        assert!(
+            audit_event_matches_tenant(&event, &owner),
+            "owning tenant must see its own tenantContext-tagged audit event"
+        );
+        assert!(
+            !audit_event_matches_tenant(&event, &other),
+            "a tenantContext-tagged event must not leak to another tenant"
+        );
     }
 
     #[test]

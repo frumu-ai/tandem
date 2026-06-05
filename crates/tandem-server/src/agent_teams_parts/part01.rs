@@ -428,6 +428,7 @@ async fn evaluate_fintech_strict_tool_policy(
                         "category": category.as_str(),
                         "approval": approval,
                         "timestampMs": crate::now_ms(),
+                        "tenantContext": run.tenant_context.clone(),
                     }),
                 ));
             }
@@ -450,6 +451,7 @@ async fn evaluate_fintech_strict_tool_policy(
                 "category": payload.get("category").cloned().unwrap_or(Value::Null),
                 "reason": reason,
                 "timestampMs": crate::now_ms(),
+                "tenantContext": run.tenant_context.clone(),
             }),
         ));
     }

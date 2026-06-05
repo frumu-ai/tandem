@@ -394,6 +394,13 @@ impl EngineLoop {
     ) -> anyhow::Result<Option<String>> {
         let tool = normalize_tool_name(&tool);
         let raw_args = args.clone();
+        // Resolve the originating tenant once so every tool-effect audit event is tagged
+        // and can be tenant-scoped on the `/audit/stream` read path.
+        let tool_effect_tenant_context = self
+            .storage
+            .get_session(session_id)
+            .await
+            .map(|session| session.tenant_context);
         let publish_tool_effect = |tool_call_id: Option<&str>,
                                    phase: ToolEffectLedgerPhase,
                                    status: ToolEffectLedgerStatus,
@@ -401,8 +408,8 @@ impl EngineLoop {
                                    metadata: Option<&Value>,
                                    output: Option<&str>,
                                    error: Option<&str>| {
-            self.event_bus
-                .publish(tool_effect_ledger_event(build_tool_effect_ledger_record(
+            self.event_bus.publish(tool_effect_ledger_event(
+                build_tool_effect_ledger_record(
                     session_id,
                     message_id,
                     tool_call_id,
@@ -413,7 +420,9 @@ impl EngineLoop {
                     metadata,
                     output,
                     error,
-                )));
+                ),
+                tool_effect_tenant_context.as_ref(),
+            ));
         };
         let normalized = normalize_tool_args_with_mode(
             &tool,
