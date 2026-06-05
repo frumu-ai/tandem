@@ -234,7 +234,6 @@ fn eval_node_metadata(
         "artifact_contract",
     );
     copy_config_string(&case.automation_spec.config, &mut metadata, "artifact_type");
-    copy_config_value(&case.automation_spec.config, &mut metadata, "allowed_tools");
     copy_config_value_as(
         &case.automation_spec.config,
         &mut metadata,
@@ -885,7 +884,6 @@ mod tests {
             Some("connector_preflight")
         );
         assert!(metadata.get("required_tool_calls").is_some());
-        assert!(metadata.get("allowed_tools").is_some());
         assert!(metadata.get("tool_allowlist").is_some());
     }
 }
