@@ -1,26 +1,26 @@
 {
   "dataset_name": "tenant_isolation",
   "dataset_version": "1.0",
-  "started_at_ms": 1780658462467,
-  "finished_at_ms": 1780658462468,
-  "duration_ms": 1,
-  "total_tests": 3,
-  "passed_tests": 3,
+  "started_at_ms": 1780661567941,
+  "finished_at_ms": 1780661567941,
+  "duration_ms": 0,
+  "total_tests": 4,
+  "passed_tests": 4,
   "failed_tests": 0,
   "skipped_tests": 0,
   "pass_rate": 1.0,
   "avg_repair_iterations": 1.0,
   "max_repair_iterations": 1,
-  "total_tokens": 6000,
-  "total_cost_usd": 0.018000000000000002,
-  "avg_cost_per_test": 0.006000000000000001,
+  "total_tokens": 8000,
+  "total_cost_usd": 0.024,
+  "avg_cost_per_test": 0.006,
   "provider_failure_rate": 0.0,
   "total_provider_calls": 0,
   "provider_failures": 0,
   "validator_pass_rates": {
-    "audit_event": 0.75,
+    "audit_event": 0.875,
     "mcp_required_tool_failed": 0.5,
-    "tenant_scope": 0.75
+    "tenant_scope": 0.875
   },
   "failure_modes": {},
   "test_results": [
@@ -87,6 +87,28 @@
         "security",
         "tenant_boundary",
         "runtime_tool_execution"
+      ]
+    },
+    {
+      "test_id": "ct_isolation_004",
+      "description": "Cross-tenant audit read must return no foreign events and emit audit evidence",
+      "passed": true,
+      "artifact_status": "blocked",
+      "repair_iterations": 1,
+      "tokens_used": 2000,
+      "cost_usd": 0.006,
+      "duration_ms": 0,
+      "validators_passed": [
+        "tenant_scope",
+        "audit_event"
+      ],
+      "validators_failed": [],
+      "failure_mode": null,
+      "error_message": null,
+      "tags": [
+        "security",
+        "tenant_boundary",
+        "audit"
       ]
     }
   ]

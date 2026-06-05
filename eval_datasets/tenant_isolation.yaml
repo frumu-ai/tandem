@@ -66,7 +66,7 @@ test_cases:
   # the eval engine, this case is terminal-only under --engine-mode stub (documented like
   # the other CT cases): a green simulation run proves shape; real enforcement is proven by
   # the Rust tests in crates/tandem-server/src/http/audit_stream.rs.
-  - id: "ct_isolation_003"
+  - id: "ct_isolation_004"
     description: "Cross-tenant audit read must return no foreign events and emit audit evidence"
     priority: 1
     enabled: true
