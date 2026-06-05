@@ -1,5 +1,5 @@
 import type { PlannerProviderOption } from "../features/planner/plannerShared";
-export type CodingTab = "overview" | "board" | "planning" | "manual" | "integrations";
+export type CodingTab = "overview" | "board" | "cockpit" | "planning" | "manual" | "integrations";
 export type TaskSourceType = "manual" | "kanban_board" | "github_project" | "linear" | "local_backlog";
 
 export type GithubRepoRef = {
