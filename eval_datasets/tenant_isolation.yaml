@@ -59,6 +59,43 @@ test_cases:
         - "cross_tenant_denied"
         - "audit_event_recorded"
 
+  # CT-04: tenant B must never read tenant A's audit events.
+  # Negative-visibility scenario for the audit read/query path (crates/tandem-server/src/http/audit_stream.rs).
+  # Pairs with the Rust integration/unit tests added under TAN-9; the dataset makes the
+  # guarantee a first-class tracked eval. Until the real audit read path is reachable from
+  # the eval engine, this case is terminal-only under --engine-mode stub (documented like
+  # the other CT cases): a green simulation run proves shape; real enforcement is proven by
+  # the Rust tests in crates/tandem-server/src/http/audit_stream.rs.
+  - id: "ct_isolation_003"
+    description: "Cross-tenant audit read must return no foreign events and emit audit evidence"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "audit"
+    automation_spec:
+      name: "cross_tenant_audit_read_denial"
+      nodes:
+        - id: "read_tenant_audit"
+          node_type: "research"
+          objective: "Read audit events as tenant-b; an audit event emitted under tenant-a (even with identical shape) must never be returned."
+          output_contract: "JSON listing only tenant-b audit events, an explicit denial for any cross-tenant match, and audit IDs."
+      config:
+        tenant_id: "tenant-b"
+        forbidden_tenant_id: "tenant-a"
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_tenant_denied"
+        - "audit_event_recorded"
+
   # CT-01: cross-tenant memory read must return nothing and be audited.
   - id: "ct_isolation_002"
     description: "Cross-tenant memory read must return no chunks and emit audit evidence"
