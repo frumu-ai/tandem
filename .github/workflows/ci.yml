@@ -86,6 +86,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --manifest-path apps/tandem-desktop/src-tauri/Cargo.toml -- -D warnings || true
 
+      - name: Verify memory DB blast-radius boundary
+        run: node scripts/verify-memory-db-blast-radius.mjs
+
       - name: Check touched Rust/TSX file sizes
         run: bash scripts/ci-file-size-check.sh
 
