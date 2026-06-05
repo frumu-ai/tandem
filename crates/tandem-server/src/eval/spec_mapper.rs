@@ -235,6 +235,12 @@ fn eval_node_metadata(
     );
     copy_config_string(&case.automation_spec.config, &mut metadata, "artifact_type");
     copy_config_value(&case.automation_spec.config, &mut metadata, "allowed_tools");
+    copy_config_value_as(
+        &case.automation_spec.config,
+        &mut metadata,
+        "allowed_tools",
+        "tool_allowlist",
+    );
     copy_config_value(
         &case.automation_spec.config,
         &mut metadata,
@@ -354,6 +360,17 @@ fn copy_config_value(
 ) {
     if let Some(value) = config.get(key) {
         metadata.insert(key.to_string(), value.clone());
+    }
+}
+
+fn copy_config_value_as(
+    config: &std::collections::HashMap<String, Value>,
+    metadata: &mut Map<String, Value>,
+    source_key: &str,
+    dest_key: &str,
+) {
+    if let Some(value) = config.get(source_key) {
+        metadata.insert(dest_key.to_string(), value.clone());
     }
 }
 
@@ -869,5 +886,6 @@ mod tests {
         );
         assert!(metadata.get("required_tool_calls").is_some());
         assert!(metadata.get("allowed_tools").is_some());
+        assert!(metadata.get("tool_allowlist").is_some());
     }
 }

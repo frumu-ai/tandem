@@ -152,9 +152,6 @@ pub fn extract_eval_result(
     run: &AutomationV2RunRecord,
     elapsed: Duration,
 ) -> EvalRunResult {
-    let artifact_status = map_artifact_status(&run.status);
-    let passed = artifact_status == case.expected_output.artifact_status;
-
     let repair_iterations = run
         .checkpoint
         .node_attempts
@@ -176,6 +173,15 @@ pub fn extract_eval_result(
     };
 
     let (validators_passed, validators_failed) = extract_validator_outcomes(case, run);
+    let artifact_status = map_artifact_status_with_expected_evidence(case, run, &validators_failed);
+    let passed = artifact_status == case.expected_output.artifact_status
+        && expected_validators_satisfied(
+            case,
+            run,
+            artifact_status,
+            &validators_passed,
+            &validators_failed,
+        );
 
     let (failure_mode, error_message) = if passed {
         (None, None)
@@ -212,6 +218,68 @@ pub fn extract_eval_result(
         error_message,
         tags: case.tags.clone(),
     }
+}
+
+fn map_artifact_status_with_expected_evidence(
+    case: &EvalTestCase,
+    run: &AutomationV2RunRecord,
+    validators_failed: &[String],
+) -> ArtifactStatus {
+    let status = map_artifact_status(&run.status);
+    if status == ArtifactStatus::Failed
+        && case.expected_output.artifact_status == ArtifactStatus::Blocked
+        && blocked_validator_evidence_observed(case, run, validators_failed)
+    {
+        ArtifactStatus::Blocked
+    } else {
+        status
+    }
+}
+
+fn blocked_validator_evidence_observed(
+    case: &EvalTestCase,
+    run: &AutomationV2RunRecord,
+    validators_failed: &[String],
+) -> bool {
+    !case.expected_output.required_validators.is_empty()
+        && case
+            .expected_output
+            .required_validators
+            .iter()
+            .all(|validator| {
+                validators_failed.iter().any(|seen| seen == validator)
+                    || validator_observed_in_outputs(run, validator)
+            })
+}
+
+fn expected_validators_satisfied(
+    case: &EvalTestCase,
+    run: &AutomationV2RunRecord,
+    artifact_status: ArtifactStatus,
+    validators_passed: &[String],
+    validators_failed: &[String],
+) -> bool {
+    if case.expected_output.required_validators.is_empty() {
+        return true;
+    }
+    case.expected_output
+        .required_validators
+        .iter()
+        .all(|validator| {
+            if artifact_status == ArtifactStatus::Blocked {
+                blocked_validator_evidence_observed(case, run, validators_failed)
+            } else {
+                validators_passed.iter().any(|seen| seen == validator)
+                    && !validators_failed.iter().any(|seen| seen == validator)
+            }
+        })
+}
+
+fn validator_observed_in_outputs(run: &AutomationV2RunRecord, validator: &str) -> bool {
+    run.checkpoint
+        .node_outputs
+        .values()
+        .any(|output| output.to_string().contains(validator))
 }
 
 /// Remote Engine Executor - submits test cases to a remote Tandem engine via HTTP
@@ -673,6 +741,48 @@ mod tests {
         );
         assert!(result.failure_mode.is_none());
         assert!(result.error_message.is_none());
+    }
+
+    #[test]
+    fn extract_eval_result_maps_failed_must_block_evidence_to_blocked() {
+        let mut case = make_case_with_validators(vec!["mcp_required_tool_failed"]);
+        case.expected_output.artifact_status = ArtifactStatus::Blocked;
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "n1".to_string(),
+            json!({
+                "artifact_validation": {
+                    "unmet_requirements": ["mcp_required_tool_failed"]
+                }
+            }),
+        );
+        let mut run = make_record(AutomationRunStatus::Failed, outputs, HashMap::new());
+        run.detail = Some("automation run failed from node outcomes: n1".to_string());
+
+        let result = extract_eval_result(&case, &run, Duration::from_millis(0));
+
+        assert!(result.passed);
+        assert!(matches!(result.artifact_status, ArtifactStatus::Blocked));
+        assert_eq!(
+            result.validators_failed,
+            vec!["mcp_required_tool_failed".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_eval_result_fails_when_blocked_without_expected_validator_evidence() {
+        let mut case = make_case_with_validators(vec!["mcp_required_tool_failed"]);
+        case.expected_output.artifact_status = ArtifactStatus::Blocked;
+        let mut run = make_record(AutomationRunStatus::Blocked, HashMap::new(), HashMap::new());
+        run.detail = Some("blocked before required tool execution".to_string());
+
+        let result = extract_eval_result(&case, &run, Duration::from_millis(0));
+
+        assert!(!result.passed);
+        assert!(matches!(result.artifact_status, ArtifactStatus::Blocked));
+        assert!(result.validators_failed.is_empty());
+        assert!(result.failure_mode.is_some());
+        assert!(result.error_message.is_some());
     }
 
     #[test]
