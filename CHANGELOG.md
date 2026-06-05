@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wins; no grant denies). Server enforcement records every decision as a policy
   decision and writes a tenant-attributed protected audit event on denial.
   Ships with seeded engineering/finance/sales/HR/executive/support personas.
+- Added a declarative approval gate matrix (CT-20) that maps an action's risk
+  tier and data class to a gate outcome (allow / deny / approval-required), the
+  reviewer eligibility the approval demands, and the approval TTL. External
+  customer-facing sends pause for approval by default; restricted, credential,
+  financial, executive, and regulated data classes require an elevated
+  reviewer; and unclassified actions fail closed to an elevated-reviewer
+  approval. Server enforcement records every gate decision as a policy decision
+  and writes a tenant-attributed protected audit event for approval-required
+  and deny outcomes.
 
 ### Changed
 

@@ -1,5 +1,6 @@
 pub mod approvals;
 pub mod event;
+pub mod gate_matrix;
 pub mod message;
 pub mod policy_decision;
 pub mod provider;
@@ -26,6 +27,7 @@ pub use tandem_enterprise_contract::{
 
 pub use approvals::*;
 pub use event::*;
+pub use gate_matrix::*;
 pub use message::*;
 pub use policy_decision::*;
 pub use provider::*;

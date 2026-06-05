@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) mod agent_teams;
+pub(super) mod approval_gate_matrix;
 pub(super) mod approvals_aggregator;
 pub(super) mod audit;
 pub(super) mod bug_monitor;

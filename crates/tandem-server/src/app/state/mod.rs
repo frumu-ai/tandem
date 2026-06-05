@@ -27,8 +27,8 @@ use tandem_enterprise_contract::{
 use tandem_memory::types::{MemorySourceAccessTarget, MemoryTier};
 use tandem_orchestrator::MissionState;
 use tandem_types::{
-    EngineEvent, HostRuntimeContext, MessagePart, ModelSpec, PolicyDecisionEffect,
-    PolicyDecisionRecord, TenantContext,
+    ApprovalGateMatrix, EngineEvent, GateOutcome, GateRequest, HostRuntimeContext, MessagePart,
+    ModelSpec, PolicyDecisionEffect, PolicyDecisionRecord, TenantContext,
 };
 use tokio::fs;
 use tokio::sync::RwLock;

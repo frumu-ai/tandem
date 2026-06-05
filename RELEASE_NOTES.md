@@ -72,6 +72,18 @@ is retrieved, trusted, encrypted, and key-managed.
   Server enforcement records every decision as a policy decision and writes a
   tenant-attributed protected audit event on denial. Seeded
   engineering/finance/sales/HR/executive/support personas ship as fixtures.
+- A declarative approval gate matrix maps an action's risk tier and data class
+  to a gate outcome — allow, deny, or approval-required — together with the
+  reviewer eligibility the approval demands and the TTL to apply (CT-20).
+  External customer-facing sends pause for approval by default; restricted,
+  credential, financial, executive, and regulated data classes require an
+  elevated reviewer; high-risk tiers (credential/admin, money movement,
+  destructive delete, financial access) require elevated review on a tighter
+  TTL; and an action that cannot be classified fails closed to an
+  elevated-reviewer approval rather than auto-allowing. An expired approval can
+  never authorize execution. Server enforcement records every gate decision as a
+  policy decision and writes protected audit evidence for approval-required and
+  deny outcomes.
 
 ## v0.5.13 (2026-06-02)
 

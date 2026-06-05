@@ -1,0 +1,142 @@
+use super::*;
+
+use tandem_types::{
+    approval_authorizes_execution, DataClass, GateRequest, PolicyDecisionEffect,
+    ReviewerEligibility, ToolRiskTier,
+};
+
+fn tenant() -> TenantContext {
+    TenantContext::explicit("acme", "acme", None)
+}
+
+#[tokio::test]
+async fn external_customer_send_pauses_for_approval_and_records_evidence() {
+    let state = test_state().await;
+    let tenant = tenant();
+
+    let (outcome, decision_id) = state
+        .enforce_action_gate(
+            &tenant,
+            &GateRequest::external_customer_send(),
+            Some("mcp.email.send".to_string()),
+            Some("agent-sales".to_string()),
+            1_000,
+        )
+        .await;
+
+    assert!(
+        outcome.requires_approval(),
+        "external send must pause for approval"
+    );
+    let decision_id = decision_id.expect("gate decision must be recorded");
+
+    // Policy decision evidence.
+    let decisions = state.list_policy_decisions(&tenant, 50).await;
+    let recorded = decisions
+        .iter()
+        .find(|d| d.decision_id == decision_id)
+        .expect("recorded policy decision");
+    assert_eq!(recorded.decision, PolicyDecisionEffect::ApprovalRequired);
+    assert_eq!(recorded.policy_id.as_deref(), Some("approval_gate_matrix"));
+    assert_eq!(recorded.risk_tier.as_deref(), Some("external_send"));
+
+    // Protected audit evidence.
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"approval.gate.approval_required\""));
+    assert!(audit.contains("\"org_id\":\"acme\""));
+    assert!(audit.contains("agent-sales"));
+}
+
+#[tokio::test]
+async fn sensitive_data_class_requires_elevated_reviewer_in_metadata() {
+    let state = test_state().await;
+    let tenant = tenant();
+
+    let (outcome, decision_id) = state
+        .enforce_action_gate(
+            &tenant,
+            &GateRequest::new(
+                Some(ToolRiskTier::InternalWrite),
+                Some(DataClass::FinancialRecord),
+            ),
+            Some("mcp.ledger.read".to_string()),
+            Some("agent-fin".to_string()),
+            1_000,
+        )
+        .await;
+
+    assert!(outcome.requires_approval());
+    assert_eq!(
+        outcome.reviewer_eligibility,
+        ReviewerEligibility::ElevatedReviewer
+    );
+
+    let decision_id = decision_id.expect("decision recorded");
+    let decisions = state.list_policy_decisions(&tenant, 50).await;
+    let recorded = decisions
+        .iter()
+        .find(|d| d.decision_id == decision_id)
+        .expect("recorded policy decision");
+    assert_eq!(
+        recorded.metadata["gate"]["reviewer_eligibility"],
+        "elevated_reviewer"
+    );
+    assert!(recorded.data_classes.contains(&DataClass::FinancialRecord));
+}
+
+#[tokio::test]
+async fn low_risk_action_auto_allows_without_audit() {
+    let state = test_state().await;
+    let tenant = tenant();
+
+    let (outcome, decision_id) = state
+        .enforce_action_gate(
+            &tenant,
+            &GateRequest::new(Some(ToolRiskTier::ReadDiscover), Some(DataClass::Internal)),
+            Some("mcp.search".to_string()),
+            Some("agent-x".to_string()),
+            1_000,
+        )
+        .await;
+
+    assert!(outcome.is_allowed());
+    assert!(decision_id.is_some(), "allow decisions are still recorded");
+
+    // No protected audit event is written for an auto-allow.
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .unwrap_or_default();
+    assert!(!audit.contains("approval.gate"));
+}
+
+#[tokio::test]
+async fn unclassified_action_fails_closed_to_approval() {
+    let state = test_state().await;
+    let tenant = tenant();
+
+    let (outcome, _) = state
+        .enforce_action_gate(&tenant, &GateRequest::new(None, None), None, None, 1_000)
+        .await;
+
+    assert!(
+        outcome.requires_approval(),
+        "unknown action must not auto-allow"
+    );
+    assert_eq!(
+        outcome.reviewer_eligibility,
+        ReviewerEligibility::ElevatedReviewer
+    );
+    assert_eq!(outcome.reason_code, "unresolved_policy_fail_closed");
+}
+
+#[tokio::test]
+async fn expired_approval_cannot_authorize_execution() {
+    // An approval whose TTL has elapsed cannot authorize execution even though
+    // it was approved.
+    let expires_at = 5_000;
+    assert!(approval_authorizes_execution(true, expires_at, 4_999));
+    assert!(!approval_authorizes_execution(true, expires_at, 5_000));
+    assert!(!approval_authorizes_execution(false, expires_at, 4_000));
+}

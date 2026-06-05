@@ -838,6 +838,112 @@ impl AppState {
         recorded
     }
 
+    /// Resolve an action against the strict approval gate matrix (CT-20 /
+    /// TAN-91) and record the resulting gate decision.
+    ///
+    /// Every gate decision is persisted as a [`PolicyDecisionRecord`]; gates
+    /// that require approval or deny outright also append a tenant-attributed
+    /// protected audit event. Returns the resolved outcome plus the recorded
+    /// policy decision id (when recording succeeded). Allowing execution off
+    /// the back of an approval still requires checking the approval has not
+    /// expired (see `tandem_types::gate_matrix::approval_authorizes_execution`).
+    pub async fn enforce_action_gate(
+        &self,
+        tenant_context: &TenantContext,
+        request: &GateRequest,
+        tool: Option<String>,
+        actor_id: Option<String>,
+        now_ms: u64,
+    ) -> (GateOutcome, Option<String>) {
+        let outcome = ApprovalGateMatrix::strict_default().resolve(request);
+        let decision_id = self
+            .record_action_gate_decision(tenant_context, request, &outcome, tool, actor_id, now_ms)
+            .await;
+        (outcome, decision_id)
+    }
+
+    async fn record_action_gate_decision(
+        &self,
+        tenant_context: &TenantContext,
+        request: &GateRequest,
+        outcome: &GateOutcome,
+        tool: Option<String>,
+        actor_id: Option<String>,
+        now_ms: u64,
+    ) -> Option<String> {
+        let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
+        let data_classes = request.data_class.map(|class| vec![class]).unwrap_or_default();
+        let metadata = serde_json::json!({
+            "gate": {
+                "reviewer_eligibility": outcome.reviewer_eligibility.as_str(),
+                "approval_ttl_ms": outcome.approval_ttl_ms,
+                "external_customer_facing": request.external_customer_facing,
+            }
+        });
+        let record = PolicyDecisionRecord {
+            decision_id: decision_id.clone(),
+            tenant_context: tenant_context.clone(),
+            actor_id: actor_id.clone(),
+            session_id: None,
+            message_id: None,
+            run_id: None,
+            automation_id: None,
+            node_id: None,
+            tool,
+            resource: None,
+            data_classes,
+            risk_tier: request.risk_tier.map(|tier| tier.as_str().to_string()),
+            decision: outcome.effect,
+            reason_code: outcome.reason_code.clone(),
+            reason: outcome.reason.clone(),
+            policy_id: Some("approval_gate_matrix".to_string()),
+            grant_id: None,
+            approval_id: None,
+            audit_event_id: None,
+            created_at_ms: now_ms,
+            metadata,
+        };
+        let recorded = match self.record_policy_decision(record).await {
+            Ok(record) => Some(record.decision_id),
+            Err(error) => {
+                tracing::warn!("failed to record approval gate decision: {error:?}");
+                None
+            }
+        };
+
+        // Approval-required and deny outcomes are consequential gate events and
+        // must leave durable, tenant-attributed audit evidence.
+        if !outcome.is_allowed() {
+            let event_type = if outcome.is_denied() {
+                "approval.gate.denied"
+            } else {
+                "approval.gate.approval_required"
+            };
+            if let Err(error) = crate::audit::append_protected_audit_event(
+                self,
+                event_type,
+                tenant_context,
+                actor_id,
+                serde_json::json!({
+                    "decision_id": recorded,
+                    "risk_tier": request.risk_tier.map(|tier| tier.as_str()),
+                    "data_class": request.data_class,
+                    "external_customer_facing": request.external_customer_facing,
+                    "effect": outcome.effect,
+                    "reviewer_eligibility": outcome.reviewer_eligibility.as_str(),
+                    "approval_ttl_ms": outcome.approval_ttl_ms,
+                    "reason_code": outcome.reason_code,
+                }),
+            )
+            .await
+            {
+                tracing::warn!("failed to append approval gate audit: {error:?}");
+            }
+        }
+
+        recorded
+    }
+
     pub async fn get_external_action_by_idempotency_key(
         &self,
         idempotency_key: &str,
