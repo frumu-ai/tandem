@@ -29,6 +29,12 @@ is retrieved, trusted, encrypted, and key-managed.
   remain visible to their own tenant while staying isolated from others. New
   unit, HTTP-integration, and eval coverage assert that tenant B cannot read
   tenant A's audit events (CT-04).
+- Memory promotion is now tenant-scoped, preventing untrusted memory from being
+  promoted across tenant boundaries. A new eval dataset proves the isolation
+  (CT-03).
+- Channel interactions (Discord, Slack, Telegram) now enforce tenant routing,
+  failing closed at the channel interaction audit layer when cross-tenant access
+  is attempted (CT-05).
 
 ### Memory Security Hardening
 

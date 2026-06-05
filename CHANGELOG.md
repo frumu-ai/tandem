@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added cross-tenant audit-visibility negative coverage for the `/audit/stream`
   read path, plus an eval case asserting tenant B cannot read tenant A's audit
   events (CT-04).
+- Added a tenant-scoped memory promotion eval, ensuring untrusted memory cannot
+  be promoted across tenant boundaries (CT-03).
+- Added channel tenant routing isolation, so cross-tenant interactions via
+  Discord, Slack, and Telegram must fail closed at the channel interaction
+  audit layer (CT-05).
 - Added memory poisoning trust gates: memory now carries trust labels with a
   promotion gate, and untrusted search results, channel reads, and prompt
   context are framed as trust-scoped evidence. Includes a memory-poisoning
