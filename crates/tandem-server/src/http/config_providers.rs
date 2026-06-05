@@ -10,3 +10,4 @@ use tandem_types::{RequestPrincipal, TenantContext};
 
 include!("config_providers_parts/part01.rs");
 include!("config_providers_parts/part02.rs");
+include!("config_providers_parts/part03.rs");

@@ -150,7 +150,12 @@ async fn run_automation_v2_executor_multi(state: AppState) {
                 let required_providers = queued_run_required_providers(&run);
                 let admission = {
                     let scheduler = state.automation_scheduler.read().await;
-                    scheduler.can_admit(&run.run_id, workspace_root.as_deref(), &required_providers)
+                    scheduler.can_admit_for_tenant(
+                        &run.run_id,
+                        workspace_root.as_deref(),
+                        &required_providers,
+                        &run.tenant_context,
+                    )
                 };
 
                 match admission {
@@ -165,8 +170,6 @@ async fn run_automation_v2_executor_multi(state: AppState) {
                         }
                     }
                     Err(meta) => {
-                        let mut meta = meta;
-                        meta.tenant_context = run.tenant_context.clone();
                         persist_queue_metadata_if_changed(&state, &run, meta).await;
                     }
                 }
