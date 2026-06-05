@@ -361,12 +361,26 @@ async fn evaluate_fintech_strict_tool_policy(
             || ctx.workspace_id != run.tenant_context.workspace_id
             || ctx.deployment_id != run.tenant_context.deployment_id
         {
+            let reason =
+                "tool denied by runtime policy: session tenant context does not match automation run tenant context"
+                    .to_string();
+            let policy_decision_id = record_runtime_policy_decision(
+                state,
+                &run,
+                session_id,
+                message_id,
+                tool,
+                PolicyDecisionEffect::Deny,
+                "tenant_context_mismatch",
+                &reason,
+                None,
+                json!({"runtime_profile": FINTECH_STRICT_PROFILE}),
+            )
+            .await;
             return Some(ToolPolicyDecision {
                 allowed: false,
-                reason: Some(
-                    "tool denied by runtime policy: session tenant context does not match automation run tenant context"
-                        .to_string(),
-                ),
+                reason: Some(reason),
+                policy_decision_id,
             });
         }
     }
@@ -381,9 +395,23 @@ async fn evaluate_fintech_strict_tool_policy(
             verified_tenant_context,
             crate::now_ms(),
         ) {
+            let policy_decision_id = record_runtime_policy_decision(
+                state,
+                &run,
+                session_id,
+                message_id,
+                tool,
+                PolicyDecisionEffect::Deny,
+                "strict_tenant_context_required",
+                &reason,
+                None,
+                json!({"runtime_profile": FINTECH_STRICT_PROFILE}),
+            )
+            .await;
             return Some(ToolPolicyDecision {
                 allowed: false,
                 reason: Some(reason),
+                policy_decision_id,
             });
         }
     }
@@ -432,9 +460,40 @@ async fn evaluate_fintech_strict_tool_policy(
                     }),
                 ));
             }
+            let policy_decision_id = record_runtime_policy_decision(
+                state,
+                &run,
+                session_id,
+                message_id,
+                tool,
+                PolicyDecisionEffect::Allow,
+                "matching_approval_receipt",
+                "protected action approved by matching receipt",
+                Some(&approval),
+                json!({
+                    "policy": payload,
+                    "approval_verification": {
+                        "status": "verified",
+                        "effect": "allow",
+                        "approval": approval,
+                    },
+                }),
+            )
+            .await;
+            if policy_decision_id.is_none() {
+                return Some(ToolPolicyDecision {
+                    allowed: false,
+                    reason: Some(
+                        "tool denied by runtime policy: policy decision could not be recorded"
+                            .to_string(),
+                    ),
+                    policy_decision_id: None,
+                });
+            }
             return Some(ToolPolicyDecision {
                 allowed: true,
                 reason: None,
+                policy_decision_id,
             });
         }
     }
@@ -477,18 +536,118 @@ async fn evaluate_fintech_strict_tool_policy(
     )
     .await;
 
-    Some(ToolPolicyDecision {
-        allowed: false,
-        reason: Some(match decision.classification {
+    let effect = if matches!(
+        decision.classification,
+        FintechToolPolicyClassification::RequiresApproval(_)
+    ) {
+        PolicyDecisionEffect::ApprovalRequired
+    } else {
+        PolicyDecisionEffect::Deny
+    };
+    let reason_code = if matches!(effect, PolicyDecisionEffect::ApprovalRequired) {
+        "approval_required_unverified"
+    } else {
+        "blocked_unknown_mutation"
+    };
+    let policy_reason = match decision.classification {
         FintechToolPolicyClassification::RequiresApproval(category) => format!(
             "{} Runtime denied protected fintech action `{}` fail-closed; approval gates are not treated as authorization until a matching approval/policy record can be verified at the tool call.",
             reason,
             category.as_str()
         ),
-        FintechToolPolicyClassification::BlockedUnknownMutation => reason,
-        FintechToolPolicyClassification::Safe => reason,
+        FintechToolPolicyClassification::BlockedUnknownMutation => reason.clone(),
+        FintechToolPolicyClassification::Safe => reason.clone(),
+    };
+    let policy_decision_id = record_runtime_policy_decision(
+        state,
+        &run,
+        session_id,
+        message_id,
+        tool,
+        effect,
+        reason_code,
+        &policy_reason,
+        None,
+        json!({
+            "policy": payload,
+            "approval_verification": {
+                "status": "unavailable",
+                "effect": "fail_closed",
+                "reason": "call-site protected-action approval/policy verification is not implemented"
+            },
         }),
+    )
+    .await;
+
+    Some(ToolPolicyDecision {
+        allowed: false,
+        reason: Some(policy_reason),
+        policy_decision_id,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_runtime_policy_decision(
+    state: &AppState,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    session_id: &str,
+    message_id: &str,
+    tool: &str,
+    effect: PolicyDecisionEffect,
+    reason_code: &str,
+    reason: &str,
+    approval: Option<&Value>,
+    metadata: Value,
+) -> Option<String> {
+    let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
+    let approval_id = approval
+        .and_then(|value| value.get("approval_id").or_else(|| value.get("approvalID")))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            approval
+                .and_then(|value| value.get("gate_node_id"))
+                .and_then(Value::as_str)
+        })
+        .map(str::to_string);
+    let node_id = approval
+        .and_then(|value| value.get("gate_node_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let risk_tier = metadata
+        .pointer("/policy/category")
+        .or_else(|| metadata.pointer("/policy/classification"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let record = PolicyDecisionRecord {
+        decision_id: decision_id.clone(),
+        tenant_context: run.tenant_context.clone(),
+        actor_id: run.tenant_context.actor_id.clone(),
+        session_id: Some(session_id.to_string()),
+        message_id: Some(message_id.to_string()),
+        run_id: Some(run.run_id.clone()),
+        automation_id: Some(run.automation_id.clone()),
+        node_id,
+        tool: Some(tool.to_string()),
+        resource: None,
+        data_classes: Vec::new(),
+        risk_tier,
+        decision: effect,
+        reason_code: reason_code.to_string(),
+        reason: reason.to_string(),
+        policy_id: Some(FINTECH_STRICT_PROFILE.to_string()),
+        grant_id: None,
+        approval_id,
+        audit_event_id: None,
+        created_at_ms: crate::now_ms(),
+        metadata,
+    };
+    match state.record_policy_decision(record).await {
+        Ok(record) => Some(record.decision_id),
+        Err(error) => {
+            tracing::warn!("failed to record policy decision: {error:?}");
+            None
+        }
+    }
 }
 
 fn runtime_auth_mode_requires_verified_tool_context(mode: RuntimeAuthMode) -> bool {
@@ -637,6 +796,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                     return Ok(ToolPolicyDecision {
                         allowed: false,
                         reason: Some(reason),
+                        policy_decision_id: None,
                     });
                 }
             }
@@ -658,6 +818,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 return Ok(ToolPolicyDecision {
                     allowed: false,
                     reason: Some(reason),
+                    policy_decision_id: None,
                 });
             }
 
@@ -684,6 +845,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 return Ok(ToolPolicyDecision {
                     allowed: true,
                     reason: None,
+                    policy_decision_id: None,
                 });
             };
             let caps = instance.capabilities.clone();
@@ -714,11 +876,13 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 return Ok(ToolPolicyDecision {
                     allowed: false,
                     reason: Some(reason),
+                    policy_decision_id: None,
                 });
             }
             Ok(ToolPolicyDecision {
                 allowed: true,
                 reason: None,
+                policy_decision_id: None,
             })
         })
     }

@@ -22,7 +22,9 @@ use tandem_enterprise_contract::{
 };
 use tandem_memory::types::{MemorySourceAccessTarget, MemoryTier};
 use tandem_orchestrator::MissionState;
-use tandem_types::{EngineEvent, HostRuntimeContext, MessagePart, ModelSpec, TenantContext};
+use tandem_types::{
+    EngineEvent, HostRuntimeContext, MessagePart, ModelSpec, PolicyDecisionRecord, TenantContext,
+};
 use tokio::fs;
 use tokio::sync::RwLock;
 
@@ -184,6 +186,7 @@ pub struct AppState {
         Arc<RwLock<std::collections::HashMap<String, BugMonitorProjectIntakeKey>>>,
     pub bug_monitor_intake_keys_path: PathBuf,
     pub external_actions: Arc<RwLock<std::collections::HashMap<String, ExternalActionRecord>>>,
+    pub policy_decisions: Arc<RwLock<std::collections::HashMap<String, PolicyDecisionRecord>>>,
     pub bug_monitor_runtime_status: Arc<RwLock<BugMonitorRuntimeStatus>>,
     pub(crate) provider_oauth_sessions: Arc<
         RwLock<
@@ -221,6 +224,7 @@ pub struct AppState {
     pub bug_monitor_incidents_path: PathBuf,
     pub bug_monitor_posts_path: PathBuf,
     pub external_actions_path: PathBuf,
+    pub policy_decisions_path: PathBuf,
     pub workflow_runs_path: PathBuf,
     pub workflow_planner_sessions_path: PathBuf,
     pub workflow_learning_candidates_path: PathBuf,

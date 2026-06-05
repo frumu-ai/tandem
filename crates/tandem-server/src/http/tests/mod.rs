@@ -180,6 +180,7 @@ pub(super) async fn test_state() -> AppState {
     state.bug_monitor_incidents_path = root.join("bug_monitor_incidents.json");
     state.bug_monitor_posts_path = root.join("bug_monitor_posts.json");
     state.external_actions_path = root.join("external_actions.json");
+    state.policy_decisions_path = root.join("policy_decisions.json");
     state.workflow_runs_path = root.join("workflow_runs.json");
     state.workflow_planner_sessions_path = root.join("workflow_planner_sessions.json");
     state.workflow_learning_candidates_path = root.join("workflow_learning_candidates.json");

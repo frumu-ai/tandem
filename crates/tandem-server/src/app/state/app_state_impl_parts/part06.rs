@@ -394,6 +394,30 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn load_policy_decisions(&self) -> anyhow::Result<()> {
+        if !self.policy_decisions_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.policy_decisions_path).await?;
+        let parsed =
+            serde_json::from_str::<std::collections::HashMap<String, PolicyDecisionRecord>>(&raw)
+                .unwrap_or_default();
+        *self.policy_decisions.write().await = parsed;
+        Ok(())
+    }
+
+    pub async fn persist_policy_decisions(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.policy_decisions_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.policy_decisions.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.policy_decisions_path, payload).await?;
+        Ok(())
+    }
+
     pub async fn persist_external_actions(&self) -> anyhow::Result<()> {
         if let Some(parent) = self.external_actions_path.parent() {
             fs::create_dir_all(parent).await?;
@@ -574,6 +598,74 @@ impl AppState {
 
     pub async fn get_external_action(&self, action_id: &str) -> Option<ExternalActionRecord> {
         self.external_actions.read().await.get(action_id).cloned()
+    }
+
+    pub async fn list_policy_decisions(&self, limit: usize) -> Vec<PolicyDecisionRecord> {
+        let mut rows = self
+            .policy_decisions
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        rows.truncate(limit.clamp(1, 500));
+        rows
+    }
+
+    pub async fn list_policy_decisions_for_run(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Vec<PolicyDecisionRecord> {
+        let mut rows = self
+            .policy_decisions
+            .read()
+            .await
+            .values()
+            .filter(|decision| decision.run_id.as_deref() == Some(run_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        rows.truncate(limit.clamp(1, 500));
+        rows
+    }
+
+    pub async fn get_policy_decision(&self, decision_id: &str) -> Option<PolicyDecisionRecord> {
+        self.policy_decisions
+            .read()
+            .await
+            .get(decision_id)
+            .cloned()
+    }
+
+    pub async fn record_policy_decision(
+        &self,
+        decision: PolicyDecisionRecord,
+    ) -> anyhow::Result<PolicyDecisionRecord> {
+        {
+            let mut guard = self.policy_decisions.write().await;
+            guard.insert(decision.decision_id.clone(), decision.clone());
+        }
+        self.persist_policy_decisions().await?;
+        if self.is_ready() {
+            self.event_bus.publish(EngineEvent::new(
+                "policy.decision.recorded",
+                serde_json::json!({
+                    "decisionID": decision.decision_id.clone(),
+                    "sessionID": decision.session_id.clone(),
+                    "messageID": decision.message_id.clone(),
+                    "runID": decision.run_id.clone(),
+                    "automationID": decision.automation_id.clone(),
+                    "tool": decision.tool.clone(),
+                    "decision": decision.decision,
+                    "reasonCode": decision.reason_code.clone(),
+                    "tenantContext": decision.tenant_context.clone(),
+                    "record": decision.clone(),
+                }),
+            ));
+        }
+        Ok(decision)
     }
 
     pub async fn get_external_action_by_idempotency_key(

@@ -116,6 +116,7 @@ fn fintech_audit_package_for_automation_v2_run_records_authorized(
         .map(|record| {
             json!({
                 "event_id": record.event_id,
+                "policy_decision_id": record.record.policy_decision_id,
                 "tool": record.record.tool,
                 "error": record.record.error,
             })

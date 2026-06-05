@@ -72,6 +72,7 @@ pub struct ToolPolicyContext {
 pub struct ToolPolicyDecision {
     pub allowed: bool,
     pub reason: Option<String>,
+    pub policy_decision_id: Option<String>,
 }
 
 #[derive(Clone)]
