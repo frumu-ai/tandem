@@ -1079,7 +1079,12 @@ pub(super) async fn automations_v2_create(
             metadata.as_ref(),
         );
     state
-        .can_create_automation_for_actor(&provenance.creator, &provenance, &declared_capabilities)
+        .can_create_automation_for_actor(
+            &tenant_context,
+            &provenance.creator,
+            &provenance,
+            &declared_capabilities,
+        )
         .await
         .map_err(super::governance::governance_error_response)?;
     let mut automation = AutomationV2Spec {

@@ -486,12 +486,17 @@ impl AppState {
             if agent_ids.is_empty() {
                 continue;
             }
-            let has_approved_override = {
-                let governance = self.automation_governance.read().await;
-                agent_ids
-                    .iter()
-                    .any(|agent_id| governance.has_approved_agent_quota_override(agent_id))
-            };
+            let tenant_context = automation.tenant_context();
+            let mut has_approved_override = false;
+            for agent_id in &agent_ids {
+                if self
+                    .tenant_agent_has_quota_override(&tenant_context, agent_id)
+                    .await
+                {
+                    has_approved_override = true;
+                    break;
+                }
+            }
             if !has_approved_override {
                 continue;
             }
@@ -541,11 +546,16 @@ impl AppState {
         if agent_ids.is_empty() {
             return false;
         }
-        let governance = self.automation_governance.read().await;
-        agent_ids.iter().any(|agent_id| {
-            governance.is_agent_spend_paused(agent_id)
-                && !governance.has_approved_agent_quota_override(agent_id)
-        })
+        let tenant_context = automation.tenant_context();
+        for agent_id in &agent_ids {
+            if self
+                .tenant_agent_spend_paused_without_quota_override(&tenant_context, agent_id)
+                .await
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn is_automation_scheduler_stopping(&self) -> bool {

@@ -362,7 +362,12 @@ pub(super) async fn channel_automation_drafts_confirm(
             automation.metadata.as_ref(),
         );
     state
-        .can_create_automation_for_actor(&provenance.creator, &provenance, &declared_capabilities)
+        .can_create_automation_for_actor(
+            &tenant_context,
+            &provenance.creator,
+            &provenance,
+            &declared_capabilities,
+        )
         .await
         .map_err(super::governance::governance_error_response)?;
     let stored = state.put_automation_v2(automation).await.map_err(|error| {
