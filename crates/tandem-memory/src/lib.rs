@@ -2,6 +2,7 @@ pub mod chunking;
 pub mod context_layers;
 pub mod context_uri;
 pub mod db;
+pub mod decrypt_broker;
 pub mod distillation;
 pub mod embeddings;
 pub mod envelope;
@@ -14,6 +15,7 @@ pub mod types;
 
 pub use context_layers::*;
 pub use context_uri::*;
+pub use decrypt_broker::*;
 pub use distillation::*;
 pub use governance::*;
 pub use importer::import_files;
