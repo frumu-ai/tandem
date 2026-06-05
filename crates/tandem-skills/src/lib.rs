@@ -1457,6 +1457,72 @@ Summarize important information.
         assert!(loaded.content.contains("workflow"));
     }
 
+    // CT-08: skills have no shared cross-tenant store. They resolve only from the
+    // executing workspace's filesystem root (Project) or an explicit global root.
+    // Cross-tenant isolation is therefore by construction: a SkillService rooted at
+    // tenant B's workspace can never see a skill that lives only under tenant A's
+    // workspace. This regression-locks that boundary so a future shared/DB-backed
+    // skill store cannot silently leak skills across tenants without failing here.
+    #[test]
+    fn skill_in_other_tenant_workspace_is_not_visible() {
+        let tmp = TempDir::new().expect("tempdir");
+        let shared_global = tmp.path().join("global").join("skills");
+        fs::create_dir_all(&shared_global).expect("mkdir global");
+
+        // Tenant A seeds a project skill only under its own workspace root.
+        let tenant_a_workspace = tmp.path().join("tenant-a").join("workspace");
+        fs::create_dir_all(
+            tenant_a_workspace
+                .join(".tandem")
+                .join("skill")
+                .join("tenant-a-secret-skill"),
+        )
+        .expect("mkdir tenant-a skill");
+        fs::write(
+            tenant_a_workspace
+                .join(".tandem")
+                .join("skill")
+                .join("tenant-a-secret-skill")
+                .join("SKILL.md"),
+            sample_skill("tenant-a-secret-skill", "tenant a only"),
+        )
+        .expect("write tenant-a skill");
+
+        // Tenant B's service is rooted at a separate workspace, sharing only the
+        // global discovery root (which is empty here).
+        let tenant_b_workspace = tmp.path().join("tenant-b").join("workspace");
+        fs::create_dir_all(&tenant_b_workspace).expect("mkdir tenant-b workspace");
+        let tenant_b_svc =
+            SkillService::with_roots(Some(tenant_b_workspace), shared_global.clone(), vec![]);
+
+        let tenant_b_list = tenant_b_svc.list_skills().expect("tenant-b list");
+        assert!(
+            !tenant_b_list
+                .iter()
+                .any(|s| s.name == "tenant-a-secret-skill"),
+            "tenant B must not see tenant A's project skill: {tenant_b_list:?}"
+        );
+        assert!(
+            tenant_b_svc
+                .load_skill("tenant-a-secret-skill")
+                .expect("tenant-b load")
+                .is_none(),
+            "tenant B must not be able to load tenant A's project skill"
+        );
+
+        // Tenant A, rooted at its own workspace, still sees its own skill.
+        let tenant_a_svc =
+            SkillService::with_roots(Some(tenant_a_workspace), shared_global, vec![]);
+        assert!(
+            tenant_a_svc
+                .list_skills()
+                .expect("tenant-a list")
+                .iter()
+                .any(|s| s.name == "tenant-a-secret-skill"),
+            "tenant A must still see its own project skill"
+        );
+    }
+
     #[test]
     fn import_preview_and_conflicts() {
         let tmp = TempDir::new().expect("tempdir");
