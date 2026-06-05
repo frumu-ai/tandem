@@ -2,6 +2,62 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.5.14 (Unreleased)
+
+Tandem 0.5.14 is a security- and assurance-focused release that lays the
+foundation for cross-tenant data governance and hardens the memory subsystem.
+It adds eval-backed, CI-enforced proof that tenant boundaries hold at runtime,
+tenant-scopes the audit read path, and layers defense-in-depth around how memory
+is retrieved, trusted, encrypted, and key-managed.
+
+### Cross-Tenant Data Governance
+
+- A dedicated `tenant_isolation` evaluation dataset now runs in the per-PR
+  regression gate, covering must-block scenarios: cross-tenant source/secret
+  access and cross-tenant memory reads must fail closed and emit audit evidence
+  (CT-01).
+- The local eval-runner stub mode boots a real in-process `AppState`, so the
+  cross-tenant evals exercise real tenant-scoped enforcement instead of
+  deterministically echoed output shapes (CT-16).
+- A real-engine isolation eval proves that an automation running as tenant A
+  cannot read a resource that exists only for tenant B through the runtime tool
+  path (CT-02).
+- The audit read path (`/audit/stream`) is now tenant-scoped: it fails closed
+  for explicit tenants, recognizes both nested `tenantContext` and flat tenant
+  tags, and remains a no-op for local/single-tenant deployments. `fintech` and
+  tool-effect audit events are now tagged with their originating tenant so they
+  remain visible to their own tenant while staying isolated from others. New
+  unit, HTTP-integration, and eval coverage assert that tenant B cannot read
+  tenant A's audit events (CT-04).
+- Memory promotion is now tenant-scoped, preventing untrusted memory from being
+  promoted across tenant boundaries. A new eval dataset proves the isolation
+  (CT-03).
+- Channel interactions (Discord, Slack, Telegram) now enforce tenant routing,
+  failing closed at the channel interaction audit layer when cross-tenant access
+  is attempted (CT-05).
+
+### Memory Security Hardening
+
+- A memory retrieval gateway governs channel reads, applying tenant and source
+  scoping before retrieved memory is used in channel responses.
+- Retrieval egress controls (TAN-102) restrict which retrieved memory and
+  knowledge can leave through session knowledge-base grounding and export paths.
+- Memory poisoning trust gates label memory by trust level and gate promotion;
+  untrusted search results, channel reads, and prompt context are surfaced as
+  trust-scoped evidence. A memory-poisoning eval dataset locks in the behavior.
+- A scoped memory decrypt broker brokers per-scope data-encryption-key unwrap
+  through tickets (carrying the wrapped DEK) rather than exposing keys broadly,
+  and memory envelopes now carry key-scope metadata binding ciphertext to a
+  specific key scope.
+- A memory key lifecycle evidence gate and a memory database blast-radius
+  boundary check are enforced in CI to bound and document the impact of a
+  memory-store compromise.
+
+### Governance Enforcement
+
+- Automations V2 gate decisions now require a verified human decider, closing a
+  gate-decision self-approval path (GOV-B1).
+
 ## v0.5.13 (2026-06-02)
 
 Tandem 0.5.13 combines the Linear-backed Coder intake work with a focused
