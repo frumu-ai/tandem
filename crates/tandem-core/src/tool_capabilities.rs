@@ -1,6 +1,6 @@
 use tandem_types::{
     AccessDecision, AccessPermission, DataClass, ResourceKind, ResourceRef, StrictTenantContext,
-    ToolCapabilities, ToolDefaultVisibility, ToolDomain, ToolEffect, ToolSchema,
+    ToolCapabilities, ToolDefaultVisibility, ToolDomain, ToolEffect, ToolRiskTier, ToolSchema,
     ToolSecurityDescriptor,
 };
 
@@ -28,6 +28,81 @@ pub fn tool_schema_security_descriptor(schema: &ToolSchema) -> ToolSecurityDescr
 
 pub fn tool_name_security_descriptor(tool_name: &str) -> ToolSecurityDescriptor {
     tool_security_descriptor_from_name_and_capabilities(tool_name, &ToolCapabilities::default())
+}
+
+pub fn tool_schema_risk_tier(schema: &ToolSchema) -> ToolRiskTier {
+    let descriptor = tool_schema_security_descriptor(schema);
+    tool_risk_tier_from_name_and_descriptor(&schema.name, &descriptor)
+}
+
+pub fn tool_name_risk_tier(tool_name: &str) -> ToolRiskTier {
+    let descriptor = tool_name_security_descriptor(tool_name);
+    tool_risk_tier_from_name_and_descriptor(tool_name, &descriptor)
+}
+
+pub fn tool_risk_tier_from_name_and_descriptor(
+    tool_name: &str,
+    descriptor: &ToolSecurityDescriptor,
+) -> ToolRiskTier {
+    if let Some(risk_tier) = descriptor.risk_tier {
+        return risk_tier;
+    }
+    if tool_name_looks_like_money_movement_or_contract(tool_name) {
+        return ToolRiskTier::MoneyMovementContract;
+    }
+    if descriptor.admin_surface
+        || descriptor.credential_access
+        || descriptor
+            .required_permissions
+            .contains(&AccessPermission::Admin)
+        || descriptor.data_classes.contains(&DataClass::Credential)
+    {
+        return ToolRiskTier::CredentialAdmin;
+    }
+    if tool_name_looks_like_destructive_action(tool_name) {
+        return ToolRiskTier::DestructiveDelete;
+    }
+    if descriptor
+        .data_classes
+        .contains(&DataClass::FinancialRecord)
+        || descriptor.data_classes.contains(&DataClass::Regulated)
+    {
+        return ToolRiskTier::FinancialRecordAccess;
+    }
+    if descriptor.data_classes.contains(&DataClass::CustomerData) {
+        return ToolRiskTier::CustomerDataAccess;
+    }
+    if descriptor.data_classes.contains(&DataClass::SourceCode)
+        && descriptor.required_permissions.iter().any(|permission| {
+            matches!(
+                permission,
+                AccessPermission::Edit | AccessPermission::Execute | AccessPermission::Delegate
+            )
+        })
+    {
+        return ToolRiskTier::SourceCodeMutation;
+    }
+    if tool_name_matches_profile(tool_name, ToolCapabilityProfile::EmailSend)
+        || tool_name_looks_like_external_send(tool_name)
+    {
+        return ToolRiskTier::ExternalSend;
+    }
+    if tool_name_matches_profile(tool_name, ToolCapabilityProfile::EmailDraft)
+        || tool_name_looks_like_external_draft(tool_name)
+    {
+        return ToolRiskTier::ExternalDraft;
+    }
+    if descriptor.external_side_effect
+        || descriptor.required_permissions.iter().any(|permission| {
+            matches!(
+                permission,
+                AccessPermission::Edit | AccessPermission::Execute | AccessPermission::Delegate
+            )
+        })
+    {
+        return ToolRiskTier::InternalWrite;
+    }
+    ToolRiskTier::ReadDiscover
 }
 
 pub fn tool_schema_visible_to_strict_context(
@@ -534,6 +609,52 @@ fn tool_action_looks_like_external_mutation(tool_name: &str) -> bool {
         || compact.contains("updatedraft")
 }
 
+fn tool_name_looks_like_external_send(tool_name: &str) -> bool {
+    let tokens = tool_name_tokens(tool_name);
+    ["send", "deliver", "reply", "post", "publish", "submit"]
+        .iter()
+        .any(|needle| tool_name_tokens_contains(&tokens, needle))
+}
+
+fn tool_name_looks_like_external_draft(tool_name: &str) -> bool {
+    let tokens = tool_name_tokens(tool_name);
+    ["draft", "compose", "prepare"]
+        .iter()
+        .any(|needle| tool_name_tokens_contains(&tokens, needle))
+}
+
+fn tool_name_looks_like_money_movement_or_contract(tool_name: &str) -> bool {
+    let tokens = tool_name_tokens(tool_name);
+    [
+        "payment",
+        "payout",
+        "fund",
+        "funds",
+        "transfer",
+        "wire",
+        "ach",
+        "transaction",
+        "ledger",
+        "refund",
+        "reverse",
+        "contract",
+        "commitment",
+        "invoice",
+        "billing",
+        "quote",
+        "order",
+    ]
+    .iter()
+    .any(|needle| tool_name_tokens_contains(&tokens, needle))
+}
+
+fn tool_name_looks_like_destructive_action(tool_name: &str) -> bool {
+    let tokens = tool_name_tokens(tool_name);
+    ["delete", "remove", "destroy", "wipe", "purge", "drop"]
+        .iter()
+        .any(|needle| tool_name_tokens_contains(&tokens, needle))
+}
+
 fn mcp_tool_action_name(tool_name: &str) -> Option<String> {
     let normalized = tool_name.trim().to_ascii_lowercase().replace('-', "_");
     normalized
@@ -576,7 +697,8 @@ mod tests {
     use tandem_types::{
         AccessPermission, AuthorityChain, DataBoundary, DataClass, GrantSource, PrincipalRef,
         RequestPrincipal, ResourceKind, ResourceRef, ResourceScope, ScopedGrant,
-        StrictTenantContext, ToolCapabilities, ToolDomain, ToolEffect, ToolSecurityDescriptor,
+        StrictTenantContext, ToolCapabilities, ToolDomain, ToolEffect, ToolRiskTier,
+        ToolSecurityDescriptor,
     };
 
     #[test]
@@ -741,6 +863,44 @@ mod tests {
             descriptor.default_visibility,
             tandem_types::ToolDefaultVisibility::Hidden
         ));
+    }
+
+    #[test]
+    fn tool_risk_tier_maps_descriptors_to_canonical_taxonomy() {
+        assert_eq!(
+            tool_name_risk_tier("mcp.gmail.gmail_send_email"),
+            ToolRiskTier::ExternalSend
+        );
+        assert_eq!(
+            tool_name_risk_tier("mcp.gmail.gmail_create_email_draft"),
+            ToolRiskTier::ExternalDraft
+        );
+        assert_eq!(
+            tool_name_risk_tier("mcp.google_admin.rotate_credential"),
+            ToolRiskTier::CredentialAdmin
+        );
+        assert_eq!(
+            tool_name_risk_tier("mcp.bank.release_funds"),
+            ToolRiskTier::MoneyMovementContract
+        );
+        assert_eq!(tool_name_risk_tier("read"), ToolRiskTier::ReadDiscover);
+
+        let descriptor = ToolSecurityDescriptor::new()
+            .permission(AccessPermission::Read)
+            .resource_kind(ResourceKind::McpTool)
+            .data_class(DataClass::FinancialRecord);
+        assert_eq!(
+            tool_risk_tier_from_name_and_descriptor("mcp.accounting.list_records", &descriptor),
+            ToolRiskTier::FinancialRecordAccess
+        );
+    }
+
+    #[test]
+    fn explicit_descriptor_risk_tier_overrides_inference() {
+        let schema = ToolSchema::new("mcp.finance.prepare_customer_email", "", json!({}))
+            .with_security(ToolSecurityDescriptor::new().risk_tier(ToolRiskTier::ExternalDraft));
+
+        assert_eq!(tool_schema_risk_tier(&schema), ToolRiskTier::ExternalDraft);
     }
 
     #[test]

@@ -58,6 +58,53 @@ pub enum ToolDefaultVisibility {
     Hidden,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRiskTier {
+    ReadDiscover,
+    InternalWrite,
+    ExternalDraft,
+    ExternalSend,
+    CustomerDataAccess,
+    SourceCodeMutation,
+    FinancialRecordAccess,
+    CredentialAdmin,
+    DestructiveDelete,
+    MoneyMovementContract,
+}
+
+impl ToolRiskTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadDiscover => "read_discover",
+            Self::InternalWrite => "internal_write",
+            Self::ExternalDraft => "external_draft",
+            Self::ExternalSend => "external_send",
+            Self::CustomerDataAccess => "customer_data_access",
+            Self::SourceCodeMutation => "source_code_mutation",
+            Self::FinancialRecordAccess => "financial_record_access",
+            Self::CredentialAdmin => "credential_admin",
+            Self::DestructiveDelete => "destructive_delete",
+            Self::MoneyMovementContract => "money_movement_contract",
+        }
+    }
+
+    pub fn approval_required_by_default(self) -> bool {
+        matches!(
+            self,
+            Self::ExternalSend
+                | Self::FinancialRecordAccess
+                | Self::CredentialAdmin
+                | Self::DestructiveDelete
+                | Self::MoneyMovementContract
+        )
+    }
+
+    pub fn hidden_without_grant_by_default(self) -> bool {
+        matches!(self, Self::CredentialAdmin)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSecurityDescriptor {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -74,6 +121,8 @@ pub struct ToolSecurityDescriptor {
     pub credential_access: bool,
     #[serde(default, skip_serializing_if = "is_default_visibility_visible")]
     pub default_visibility: ToolDefaultVisibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_tier: Option<ToolRiskTier>,
 }
 
 impl Default for ToolSecurityDescriptor {
@@ -86,6 +135,7 @@ impl Default for ToolSecurityDescriptor {
             external_side_effect: false,
             credential_access: false,
             default_visibility: ToolDefaultVisibility::Visible,
+            risk_tier: None,
         }
     }
 }
@@ -222,6 +272,11 @@ impl ToolSecurityDescriptor {
         self
     }
 
+    pub fn risk_tier(mut self, risk_tier: ToolRiskTier) -> Self {
+        self.risk_tier = Some(risk_tier);
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.required_permissions.is_empty()
             && self.resource_kinds.is_empty()
@@ -230,6 +285,7 @@ impl ToolSecurityDescriptor {
             && !self.external_side_effect
             && !self.credential_access
             && matches!(self.default_visibility, ToolDefaultVisibility::Visible)
+            && self.risk_tier.is_none()
     }
 }
 

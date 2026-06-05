@@ -895,6 +895,10 @@ mod fintech_policy_tests {
         assert_eq!(stored.decision, PolicyDecisionEffect::ApprovalRequired);
         assert_eq!(stored.reason_code, "approval_required_unverified");
         assert_eq!(stored.tool.as_deref(), Some("mcp.bank.release_funds"));
+        assert_eq!(
+            stored.risk_tier.as_deref(),
+            Some("money_movement_contract")
+        );
     }
 
     #[tokio::test]
@@ -936,6 +940,10 @@ mod fintech_policy_tests {
         assert_eq!(stored.decision, PolicyDecisionEffect::Allow);
         assert_eq!(stored.reason_code, "matching_approval_receipt");
         assert_eq!(stored.approval_id.as_deref(), Some("approve_protected_action"));
+        assert_eq!(
+            stored.risk_tier.as_deref(),
+            Some("money_movement_contract")
+        );
     }
 
     #[tokio::test]

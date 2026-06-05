@@ -5,9 +5,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    canonical_tool_name, tool_name_matches_profile, ToolCapabilityProfile, ToolEffectLedgerPhase,
-    ToolEffectLedgerRecord, ToolEffectLedgerStatus,
+    canonical_tool_name, tool_name_matches_profile, tool_name_risk_tier, ToolCapabilityProfile,
+    ToolEffectLedgerPhase, ToolEffectLedgerRecord, ToolEffectLedgerStatus,
 };
+use tandem_types::ToolRiskTier;
 
 pub const FINTECH_STRICT_PROFILE: &str = "fintech_strict";
 
@@ -529,6 +530,7 @@ pub fn fintech_policy_decision_payload(
     classification: &FintechToolPolicyClassification,
     reason: &str,
 ) -> Value {
+    let risk_tier = fintech_policy_risk_tier(tool, classification);
     json!({
         "runtime_profile": FINTECH_STRICT_PROFILE,
         "tool": canonical_tool_name(tool),
@@ -538,8 +540,34 @@ pub fn fintech_policy_decision_payload(
             FintechToolPolicyClassification::BlockedUnknownMutation => "blocked_unknown_mutation",
         },
         "category": classification.category().map(FintechProtectedActionCategory::as_str),
+        "risk_tier": risk_tier.as_str(),
+        "approval_required_by_default": risk_tier.approval_required_by_default(),
+        "hidden_without_grant_by_default": risk_tier.hidden_without_grant_by_default(),
         "reason": reason,
     })
+}
+
+pub fn fintech_policy_risk_tier(
+    tool: &str,
+    classification: &FintechToolPolicyClassification,
+) -> ToolRiskTier {
+    match classification {
+        FintechToolPolicyClassification::RequiresApproval(
+            FintechProtectedActionCategory::MoneyMovement,
+        ) => ToolRiskTier::MoneyMovementContract,
+        FintechToolPolicyClassification::RequiresApproval(
+            FintechProtectedActionCategory::CustomerCommunication
+            | FintechProtectedActionCategory::EvidencePublication
+            | FintechProtectedActionCategory::RegulatoryFiling,
+        ) => ToolRiskTier::ExternalSend,
+        FintechToolPolicyClassification::RequiresApproval(
+            FintechProtectedActionCategory::CreditDecision
+            | FintechProtectedActionCategory::AccountAction
+            | FintechProtectedActionCategory::SystemOfRecordUpdate,
+        ) => ToolRiskTier::FinancialRecordAccess,
+        FintechToolPolicyClassification::BlockedUnknownMutation
+        | FintechToolPolicyClassification::Safe => tool_name_risk_tier(tool),
+    }
 }
 
 #[cfg(test)]
@@ -603,6 +631,29 @@ mod tests {
             classify_fintech_tool("mcp.vendor.update_widget"),
             FintechToolPolicyClassification::BlockedUnknownMutation
         );
+    }
+
+    #[test]
+    fn policy_payload_includes_canonical_risk_tier() {
+        let money_payload = fintech_policy_decision_payload(
+            "mcp.bank.release_funds",
+            &FintechToolPolicyClassification::RequiresApproval(
+                FintechProtectedActionCategory::MoneyMovement,
+            ),
+            "approval required",
+        );
+        assert_eq!(money_payload["risk_tier"], "money_movement_contract");
+        assert_eq!(money_payload["approval_required_by_default"], true);
+
+        let send_payload = fintech_policy_decision_payload(
+            "mcp.gmail.gmail_send_email",
+            &FintechToolPolicyClassification::RequiresApproval(
+                FintechProtectedActionCategory::CustomerCommunication,
+            ),
+            "approval required",
+        );
+        assert_eq!(send_payload["risk_tier"], "external_send");
+        assert_eq!(send_payload["approval_required_by_default"], true);
     }
 
     #[test]

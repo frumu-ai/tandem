@@ -614,7 +614,9 @@ async fn record_runtime_policy_decision(
         .and_then(Value::as_str)
         .map(str::to_string);
     let risk_tier = metadata
-        .pointer("/policy/category")
+        .pointer("/policy/risk_tier")
+        .or_else(|| metadata.pointer("/risk_tier"))
+        .or_else(|| metadata.pointer("/policy/category"))
         .or_else(|| metadata.pointer("/policy/classification"))
         .and_then(Value::as_str)
         .map(str::to_string);
