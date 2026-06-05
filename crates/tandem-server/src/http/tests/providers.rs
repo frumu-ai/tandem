@@ -2,6 +2,7 @@ use super::*;
 use axum::{routing::get, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
@@ -743,4 +744,108 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
             .is_some(),
         "expected runtime-auth-backed remote catalog"
     );
+}
+
+#[tokio::test]
+async fn provider_route_uses_only_request_tenant_persisted_auth_for_remote_catalog_fetch() {
+    let seen_auth = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    let seen_auth_for_handler = seen_auth.clone();
+    let app = Router::new().route(
+        "/v1/models",
+        get(move |headers: axum::http::HeaderMap| {
+            let seen_auth = seen_auth_for_handler.clone();
+            async move {
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                seen_auth.lock().expect("seen auth lock").push(auth);
+                Json(json!({
+                    "data": [
+                        { "id": "gpt-4.1-mini", "name": "GPT 4.1 Mini", "context_length": 128000 }
+                    ]
+                }))
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test provider");
+    });
+
+    let state = test_state().await;
+    state
+        .config
+        .patch_project(json!({
+            "providers": {
+                "openai": {
+                    "url": format!("http://{addr}/v1")
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+
+    let app = app_router(state);
+    let put_b = tenant_request(
+        "PUT",
+        "/auth/openai",
+        "org-b",
+        "workspace-b",
+        "user-b",
+        Some(json!({"token": "sk-tenant-b"})),
+    );
+    let resp = app.clone().oneshot(put_b).await.expect("put b");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let provider_a = tenant_request("GET", "/provider", "org-a", "workspace-a", "user-a", None);
+    let resp = app.clone().oneshot(provider_a).await.expect("provider a");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let payload = json_body(resp).await;
+    let openai = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        })
+        .expect("openai entry for tenant a");
+    assert_eq!(
+        openai.get("catalog_status").and_then(Value::as_str),
+        Some("unavailable"),
+        "tenant A must not use tenant B provider credential for discovery"
+    );
+
+    let provider_b = tenant_request("GET", "/provider", "org-b", "workspace-b", "user-b", None);
+    let resp = app.clone().oneshot(provider_b).await.expect("provider b");
+    server.abort();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let payload = json_body(resp).await;
+    let openai = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        })
+        .expect("openai entry for tenant b");
+    assert_eq!(
+        openai.get("catalog_source").and_then(Value::as_str),
+        Some("remote")
+    );
+
+    let seen = seen_auth.lock().expect("seen auth lock").clone();
+    assert_eq!(seen, vec!["Bearer sk-tenant-b".to_string()]);
 }

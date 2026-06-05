@@ -148,11 +148,29 @@ impl AutomationScheduler {
         workspace_root: Option<&str>,
         required_providers: &[String],
     ) -> Result<(), SchedulerMetadata> {
+        self.can_admit_for_tenant(
+            run_id,
+            workspace_root,
+            required_providers,
+            &TenantContext::local_implicit(),
+        )
+    }
+
+    pub fn can_admit_for_tenant(
+        &self,
+        run_id: &str,
+        workspace_root: Option<&str>,
+        required_providers: &[String],
+        tenant_context: &TenantContext,
+    ) -> Result<(), SchedulerMetadata> {
         // 1. Check Rate Limits
         for provider in required_providers {
-            if self.rate_limits.is_provider_throttled(provider) {
+            if self
+                .rate_limits
+                .is_provider_throttled_for_tenant(tenant_context, provider)
+            {
                 return Err(SchedulerMetadata {
-                    tenant_context: TenantContext::local_implicit(),
+                    tenant_context: tenant_context.clone(),
                     queue_reason: Some(QueueReason::RateLimit),
                     resource_key: None,
                     rate_limited_provider: Some(provider.clone()),
@@ -165,7 +183,7 @@ impl AutomationScheduler {
         if let Some(root) = workspace_root {
             if self.locked_workspaces.contains_key(root) {
                 return Err(SchedulerMetadata {
-                    tenant_context: TenantContext::local_implicit(),
+                    tenant_context: tenant_context.clone(),
                     queue_reason: Some(QueueReason::WorkspaceLock),
                     resource_key: Some(root.to_string()),
                     rate_limited_provider: None,
@@ -177,7 +195,7 @@ impl AutomationScheduler {
         // 3. Check global capacity
         if self.active_runs.len() >= self.max_concurrent_runs {
             return Err(SchedulerMetadata {
-                tenant_context: TenantContext::local_implicit(),
+                tenant_context: tenant_context.clone(),
                 queue_reason: Some(QueueReason::Capacity),
                 resource_key: None,
                 rate_limited_provider: None,
@@ -287,5 +305,34 @@ impl AutomationScheduler {
 
     pub fn is_at_capacity(&self) -> bool {
         self.active_runs.len() >= self.max_concurrent_runs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_rate_limit_admission_is_tenant_scoped() {
+        let mut scheduler = AutomationScheduler::new(4);
+        let tenant_a = TenantContext::explicit("org-a", "workspace", Some("user-a".to_string()));
+        let tenant_b = TenantContext::explicit("org-b", "workspace", Some("user-b".to_string()));
+        let providers = vec!["openai".to_string()];
+
+        scheduler
+            .rate_limits
+            .record_throttle_for_tenant(&tenant_a, "openai", 60_000);
+
+        let tenant_a_meta = scheduler
+            .can_admit_for_tenant("run-a", None, &providers, &tenant_a)
+            .expect_err("tenant A should be throttled");
+        assert_eq!(tenant_a_meta.queue_reason, Some(QueueReason::RateLimit));
+        assert_eq!(tenant_a_meta.tenant_context, tenant_a);
+        assert!(
+            scheduler
+                .can_admit_for_tenant("run-b", None, &providers, &tenant_b)
+                .is_ok(),
+            "tenant B should not inherit tenant A provider throttle"
+        );
     }
 }
