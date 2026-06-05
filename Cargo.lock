@@ -7847,6 +7847,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "futures",
+ "hmac",
  "ignore",
  "image",
  "regex",

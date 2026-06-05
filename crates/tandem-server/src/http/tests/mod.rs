@@ -6,6 +6,7 @@ pub(super) mod audit;
 pub(super) mod bug_monitor;
 pub(super) mod capabilities;
 pub(super) mod channel_automation_drafts;
+pub(super) mod channel_interactions;
 pub(super) mod channels;
 pub(super) mod coder;
 pub(super) mod context_packs;

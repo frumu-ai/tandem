@@ -60,6 +60,7 @@ tandem-observability = { path = "../tandem-observability", version = "0.5.13" }
 tandem-plan-compiler = { path = "../tandem-plan-compiler", version = "0.5.13" }
 
 [dev-dependencies]
+hmac = "0.12"
 tempfile = "3"
 tower = "0.5"
 serial_test = "3"

@@ -274,6 +274,21 @@ pub(crate) async fn slack_interactions(
                 user_id = %action.user_id,
                 "rejecting Slack interaction targeting a run outside the channel's bound tenant"
             );
+            let channel_tenant = tandem_types::TenantContext::explicit_user_workspace(
+                org_id,
+                workspace_id,
+                None,
+                "slack",
+            );
+            crate::http::channel_interaction_audit::append_cross_tenant_denial(
+                &state,
+                "slack",
+                &action.user_id,
+                &run_id,
+                channel_tenant,
+                &tenant_context,
+            )
+            .await;
             return reject_forbidden("channel not bound to this run's tenant");
         }
     }
