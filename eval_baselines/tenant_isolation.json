@@ -1,25 +1,26 @@
 {
   "dataset_name": "tenant_isolation",
   "dataset_version": "1.0",
-  "started_at_ms": 1780570321711,
-  "finished_at_ms": 1780570321711,
-  "duration_ms": 0,
-  "total_tests": 2,
-  "passed_tests": 2,
+  "started_at_ms": 1780658462467,
+  "finished_at_ms": 1780658462468,
+  "duration_ms": 1,
+  "total_tests": 3,
+  "passed_tests": 3,
   "failed_tests": 0,
   "skipped_tests": 0,
   "pass_rate": 1.0,
   "avg_repair_iterations": 1.0,
   "max_repair_iterations": 1,
-  "total_tokens": 4000,
-  "total_cost_usd": 0.012,
-  "avg_cost_per_test": 0.006,
+  "total_tokens": 6000,
+  "total_cost_usd": 0.018000000000000002,
+  "avg_cost_per_test": 0.006000000000000001,
   "provider_failure_rate": 0.0,
   "total_provider_calls": 0,
   "provider_failures": 0,
   "validator_pass_rates": {
-    "tenant_scope": 0.75,
-    "audit_event": 0.75
+    "audit_event": 0.75,
+    "mcp_required_tool_failed": 0.5,
+    "tenant_scope": 0.75
   },
   "failure_modes": {},
   "test_results": [
@@ -65,6 +66,27 @@
         "security",
         "tenant_boundary",
         "memory"
+      ]
+    },
+    {
+      "test_id": "ct_isolation_003",
+      "description": "Real-engine agent/tool execution must not read a tenant-b resource from tenant-a",
+      "passed": true,
+      "artifact_status": "blocked",
+      "repair_iterations": 1,
+      "tokens_used": 2000,
+      "cost_usd": 0.006,
+      "duration_ms": 0,
+      "validators_passed": [
+        "mcp_required_tool_failed"
+      ],
+      "validators_failed": [],
+      "failure_mode": null,
+      "error_message": null,
+      "tags": [
+        "security",
+        "tenant_boundary",
+        "runtime_tool_execution"
       ]
     }
   ]

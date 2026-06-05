@@ -89,3 +89,49 @@ test_cases:
       quality_indicators:
         - "cross_tenant_denied"
         - "audit_event_recorded"
+
+  # CT-02: a real automation node executes a required tool call under tenant-a.
+  # The eval bootstrap seeds this resource only for tenant-b, so the probe must
+  # fail through AppState's tenant-scoped shared-resource boundary.
+  - id: "ct_isolation_003"
+    description: "Real-engine agent/tool execution must not read a tenant-b resource from tenant-a"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "runtime_tool_execution"
+    automation_spec:
+      name: "cross_tenant_runtime_tool_denial"
+      nodes:
+        - id: "probe_tenant_b_resource"
+          node_type: "research"
+          objective: "As tenant-a, run the declared tenant-resource probe against a resource that exists only in tenant-b."
+          output_contract: "JSON preflight artifact showing the tenant-b resource probe was blocked by runtime tenant scope."
+      validators:
+        - "mcp_required_tool_failed"
+      config:
+        tenant_id: "tenant-a"
+        forbidden_tenant_id: "tenant-b"
+        max_repair_iterations: 1
+        allowed_tools:
+          - "eval.tenant_resource_probe"
+        required_tool_calls:
+          - tool: "eval.tenant_resource_probe"
+            args:
+              resource_key: "project/eval/ct02-tenant-b-source"
+              attempted_tenant_id: "tenant-b"
+            evidence_key: "tenant_b_resource_probe"
+            required_success: true
+        builder:
+          task_class: "connector_preflight"
+          output_path: ".tandem/eval/ct_isolation_003.json"
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "mcp_required_tool_failed"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "runtime_tool_call_denied"
+        - "cross_tenant_denied"

@@ -152,8 +152,8 @@ pub fn extract_eval_result(
     run: &AutomationV2RunRecord,
     elapsed: Duration,
 ) -> EvalRunResult {
-    let passed = matches!(run.status, AutomationRunStatus::Completed);
     let artifact_status = map_artifact_status(&run.status);
+    let passed = artifact_status == case.expected_output.artifact_status;
 
     let repair_iterations = run
         .checkpoint
@@ -645,6 +645,34 @@ mod tests {
         assert!(result.validators_passed.is_empty());
         assert!(result.failure_mode.is_some());
         assert!(result.error_message.is_some());
+    }
+
+    #[test]
+    fn extract_eval_result_passes_when_blocked_status_is_expected() {
+        let mut case = make_case_with_validators(vec!["mcp_required_tool_failed"]);
+        case.expected_output.artifact_status = ArtifactStatus::Blocked;
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "n1".to_string(),
+            json!({
+                "artifact_validation": {
+                    "unmet_requirements": ["mcp_required_tool_failed"]
+                }
+            }),
+        );
+        let mut run = make_record(AutomationRunStatus::Blocked, outputs, HashMap::new());
+        run.detail = Some("required connector preflight call failed".to_string());
+
+        let result = extract_eval_result(&case, &run, Duration::from_millis(0));
+
+        assert!(result.passed);
+        assert!(matches!(result.artifact_status, ArtifactStatus::Blocked));
+        assert_eq!(
+            result.validators_failed,
+            vec!["mcp_required_tool_failed".to_string()]
+        );
+        assert!(result.failure_mode.is_none());
+        assert!(result.error_message.is_none());
     }
 
     #[test]
