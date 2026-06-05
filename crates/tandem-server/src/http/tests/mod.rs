@@ -18,6 +18,7 @@ pub(super) mod global;
 pub(super) mod governance;
 pub(super) mod governance_adversarial;
 pub(super) mod governance_policy_decisions;
+pub(super) mod intra_tenant_authority;
 pub(super) mod marketplace;
 pub(super) mod mcp;
 pub(super) mod memory;

@@ -13,17 +13,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tandem_enterprise_contract::{
-    governance::GovernancePolicyEngine, ConnectorInstance as EnterpriseConnectorInstance,
-    IngestionJob as EnterpriseIngestionJob, IngestionQuarantine as EnterpriseIngestionQuarantine,
+    authority::{
+        AuthorityAccessRequest, AuthorityDecision, AuthorityEffect, IntraTenantAuthorityGraph,
+    },
+    governance::GovernancePolicyEngine,
+    ConnectorInstance as EnterpriseConnectorInstance, IngestionJob as EnterpriseIngestionJob,
+    IngestionQuarantine as EnterpriseIngestionQuarantine,
     OrganizationUnit as EnterpriseOrganizationUnit,
     OrganizationUnitAccessGrant as EnterpriseOrganizationUnitAccessGrant,
-    OrganizationUnitMembership as EnterpriseOrganizationUnitMembership,
+    OrganizationUnitMembership as EnterpriseOrganizationUnitMembership, ScopedGrant,
     SourceBinding as EnterpriseSourceBinding,
 };
 use tandem_memory::types::{MemorySourceAccessTarget, MemoryTier};
 use tandem_orchestrator::MissionState;
 use tandem_types::{
-    EngineEvent, HostRuntimeContext, MessagePart, ModelSpec, PolicyDecisionRecord, TenantContext,
+    EngineEvent, HostRuntimeContext, MessagePart, ModelSpec, PolicyDecisionEffect,
+    PolicyDecisionRecord, TenantContext,
 };
 use tokio::fs;
 use tokio::sync::RwLock;

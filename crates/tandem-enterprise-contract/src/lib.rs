@@ -1,3 +1,4 @@
+pub mod authority;
 pub mod governance;
 
 use serde::{Deserialize, Serialize};

@@ -683,6 +683,161 @@ impl AppState {
         Ok(decision)
     }
 
+    fn intra_tenant_context_matches(candidate: &TenantContext, tenant_context: &TenantContext) -> bool {
+        candidate.org_id == tenant_context.org_id
+            && candidate.workspace_id == tenant_context.workspace_id
+            && candidate.deployment_id == tenant_context.deployment_id
+    }
+
+    /// Build the intra-tenant authority graph (CT-18 / TAN-89) for
+    /// `tenant_context` from stored enterprise org units, memberships, and
+    /// access grants, plus any `direct_grants` carried by the caller's verified
+    /// context strict projection.
+    pub async fn build_intra_tenant_authority_graph(
+        &self,
+        tenant_context: &TenantContext,
+        direct_grants: Vec<ScopedGrant>,
+    ) -> IntraTenantAuthorityGraph {
+        let units = self
+            .enterprise_org_units
+            .read()
+            .await
+            .values()
+            .filter(|unit| Self::intra_tenant_context_matches(&unit.tenant_context, tenant_context))
+            .cloned()
+            .collect::<Vec<_>>();
+        let memberships = self
+            .enterprise_org_unit_memberships
+            .read()
+            .await
+            .values()
+            .filter(|membership| {
+                Self::intra_tenant_context_matches(&membership.tenant_context, tenant_context)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let unit_access_grants = self
+            .enterprise_org_unit_access_grants
+            .read()
+            .await
+            .values()
+            .filter(|grant| Self::intra_tenant_context_matches(&grant.tenant_context, tenant_context))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut graph = IntraTenantAuthorityGraph::new(tenant_context.clone());
+        graph.extend_units(units);
+        graph.extend_memberships(memberships);
+        graph.extend_unit_access_grants(unit_access_grants);
+        graph.extend_direct_grants(direct_grants);
+        graph
+    }
+
+    /// Evaluate an intra-tenant access request and record the decision.
+    ///
+    /// Every decision is persisted as a [`PolicyDecisionRecord`]; a denial also
+    /// writes a tenant-attributed protected audit event so the denial leaves
+    /// durable evidence. Returns the decision plus the id of the recorded
+    /// policy decision (when recording succeeded).
+    pub async fn enforce_intra_tenant_access(
+        &self,
+        tenant_context: &TenantContext,
+        request: &AuthorityAccessRequest,
+        direct_grants: Vec<ScopedGrant>,
+        now_ms: u64,
+    ) -> (AuthorityDecision, Option<String>) {
+        let graph = self
+            .build_intra_tenant_authority_graph(tenant_context, direct_grants)
+            .await;
+        let decision = graph.evaluate(request, now_ms);
+        let decision_id = self
+            .record_intra_tenant_authority_decision(tenant_context, request, &decision, now_ms)
+            .await;
+        (decision, decision_id)
+    }
+
+    async fn record_intra_tenant_authority_decision(
+        &self,
+        tenant_context: &TenantContext,
+        request: &AuthorityAccessRequest,
+        decision: &AuthorityDecision,
+        now_ms: u64,
+    ) -> Option<String> {
+        let effect = match decision.effect {
+            AuthorityEffect::Allow => PolicyDecisionEffect::Allow,
+            AuthorityEffect::Deny => PolicyDecisionEffect::Deny,
+        };
+        let actor_id = request
+            .principal
+            .tenant_actor_id
+            .clone()
+            .or_else(|| tenant_context.actor_id.clone())
+            .or_else(|| Some(request.principal.id.clone()));
+        let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
+        let metadata = serde_json::json!({
+            "authority": {
+                "principal": request.principal,
+                "permission": request.permission,
+                "source_principal": decision.source_principal,
+            }
+        });
+        let record = PolicyDecisionRecord {
+            decision_id: decision_id.clone(),
+            tenant_context: tenant_context.clone(),
+            actor_id: actor_id.clone(),
+            session_id: None,
+            message_id: None,
+            run_id: None,
+            automation_id: None,
+            node_id: None,
+            tool: None,
+            resource: Some(request.resource.clone()),
+            data_classes: vec![request.data_class],
+            risk_tier: None,
+            decision: effect,
+            reason_code: decision.reason_code.clone(),
+            reason: decision.reason.clone(),
+            policy_id: Some("intra_tenant_authority".to_string()),
+            grant_id: decision.grant_id.clone(),
+            approval_id: None,
+            audit_event_id: None,
+            created_at_ms: now_ms,
+            metadata,
+        };
+        let recorded = match self.record_policy_decision(record).await {
+            Ok(record) => Some(record.decision_id),
+            Err(error) => {
+                tracing::warn!("failed to record intra-tenant authority decision: {error:?}");
+                None
+            }
+        };
+
+        if decision.is_deny() {
+            if let Err(error) = crate::audit::append_protected_audit_event(
+                self,
+                "authority.access.denied",
+                tenant_context,
+                actor_id,
+                serde_json::json!({
+                    "decision_id": recorded,
+                    "principal": request.principal,
+                    "resource": request.resource,
+                    "permission": request.permission,
+                    "data_class": request.data_class,
+                    "reason_code": decision.reason_code,
+                    "grant_id": decision.grant_id,
+                    "source_principal": decision.source_principal,
+                }),
+            )
+            .await
+            {
+                tracing::warn!("failed to append intra-tenant authority audit: {error:?}");
+            }
+        }
+
+        recorded
+    }
+
     pub async fn get_external_action_by_idempotency_key(
         &self,
         idempotency_key: &str,

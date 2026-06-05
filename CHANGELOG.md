@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   promotion gate, and untrusted search results, channel reads, and prompt
   context are framed as trust-scoped evidence. Includes a memory-poisoning
   eval dataset.
+- Added an intra-tenant authority graph (CT-18) that resolves a principal's
+  effective grants from direct grants plus organization-unit memberships —
+  honoring role-domain nesting and parent-department inheritance — and renders
+  fail-closed access decisions (allow only on a matching allow grant; deny
+  wins; no grant denies). Server enforcement records every decision as a policy
+  decision and writes a tenant-attributed protected audit event on denial.
+  Ships with seeded engineering/finance/sales/HR/executive/support personas.
 
 ### Changed
 

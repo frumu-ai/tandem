@@ -58,6 +58,21 @@ is retrieved, trusted, encrypted, and key-managed.
 - Automations V2 gate decisions now require a verified human decider, closing a
   gate-decision self-approval path (GOV-B1).
 
+### Runtime Authority
+
+- An intra-tenant authority graph models the boundaries *inside* a single
+  tenant (CT-18). It resolves a principal's effective grants from direct grants
+  plus organization-unit memberships — honoring role-domain nesting and
+  parent-department inheritance — and renders fail-closed decisions: access is
+  allowed only on a matching allow grant, an explicit deny grant always wins,
+  and the absence of any grant denies. So a junior engineer (or its agent)
+  cannot read lead/internal architecture docs without a grant, an engineer
+  cannot read finance records by default, and a finance actor can read financial
+  records but not engineering secrets unless explicitly (and expirably) shared.
+  Server enforcement records every decision as a policy decision and writes a
+  tenant-attributed protected audit event on denial. Seeded
+  engineering/finance/sales/HR/executive/support personas ship as fixtures.
+
 ## v0.5.13 (2026-06-02)
 
 Tandem 0.5.13 combines the Linear-backed Coder intake work with a focused
