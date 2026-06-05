@@ -4,6 +4,7 @@ import { AnimatedPage, Badge, LoadingState, PanelCard, StatusPulse } from "../ui
 import { EmptyState } from "./ui";
 import { useCapabilities } from "../features/system/queries.ts";
 import { subscribeSse } from "../services/sse.js";
+import { CodingWorkflowsAgentCockpit } from "./CodingWorkflowsAgentCockpit";
 import { CodingWorkflowsOverviewTab } from "./CodingWorkflowsOverviewTab";
 import { TaskPlanningPanel } from "./TaskPlanningPanel";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
@@ -573,6 +574,7 @@ export function CodingWorkflowsPage({
   const tabs: Array<{ id: CodingTab; label: string; icon: string }> = [
     { id: "overview", label: "Overview", icon: "layout-dashboard" },
     { id: "board", label: "Intake", icon: "list-checks" },
+    { id: "cockpit", label: "Cockpit", icon: "messages-square" },
     { id: "planning", label: "Planning", icon: "clipboard-list" },
     { id: "manual", label: "Manual tasks", icon: "code" },
     { id: "integrations", label: "Integrations", icon: "plug-zap" },
@@ -732,7 +734,7 @@ export function CodingWorkflowsPage({
       const nextRunId = String(result?.run_id || "").trim();
       if (nextRunId) {
         setSelectedRunId(nextRunId);
-        setTab("board");
+        setTab("cockpit");
         setRunDetailOpen(true);
         setLiveLogsOpen(true);
       }
@@ -812,7 +814,7 @@ export function CodingWorkflowsPage({
       const nextRunId = String(runs?.[0]?.run_id || "").trim();
       if (nextRunId) {
         setSelectedRunId(nextRunId);
-        setTab("board");
+        setTab("cockpit");
         setRunDetailOpen(true);
         setLiveLogsOpen(true);
       }
@@ -837,6 +839,7 @@ export function CodingWorkflowsPage({
     const id = String(runRef?.id || "").trim();
     if (!id) return;
     setSelectedRunId(id);
+    setTab("cockpit");
     setRunDetailOpen(true);
     setLiveLogsOpen(true);
     window.setTimeout(() => {
@@ -1055,6 +1058,18 @@ export function CodingWorkflowsPage({
           activeRunsCount={activeRuns.length}
           connectedMcpServersCount={mcpServers.length}
           registeredToolsCount={mcpTools.length}
+        />
+      ) : null}
+      {tab === "cockpit" ? (
+        <CodingWorkflowsAgentCockpit
+          selectedRunId={selectedRunId}
+          selectedRun={selectedRun}
+          selectedProject={selectedProject}
+          runDetailQuery={runDetailQuery}
+          coderRuns={coderRuns}
+          reconcileCoderRun={reconcileCoderRun}
+          cancelCoderRun={cancelCoderRun}
+          lastRunEvent={lastRunEvent}
         />
       ) : null}
       {tab === "board" ? (

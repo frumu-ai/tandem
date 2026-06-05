@@ -1,0 +1,439 @@
+import { useEffect, useMemo, useState } from "react";
+import { Badge, PanelCard } from "../ui/index.tsx";
+import { EmptyState } from "./ui";
+import { formatStatus, runStatus, runTitle, runUpdatedAt, toArray } from "./CodingWorkflowsHelpers";
+
+type ThreadEntry = {
+  id: string;
+  kind: "operator" | "agent" | "system" | "linear" | "github";
+  title: string;
+  body: string;
+  atMs: number;
+  meta?: string;
+};
+
+function safeText(value: any, fallback = "unknown") {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function formatTime(value: any) {
+  const timestamp = Number(value || 0);
+  if (!timestamp) return "not recorded";
+  return new Date(timestamp).toLocaleString();
+}
+
+function timestampMs(value: any) {
+  if (value === undefined || value === null || value === "") return 0;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+  }
+  const text = String(value).trim();
+  if (!text) return 0;
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) {
+    return numeric > 0 && numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sourceKind(eventType: string): ThreadEntry["kind"] {
+  const key = eventType.toLowerCase();
+  if (key.includes("linear")) return "linear";
+  if (key.includes("github") || key.includes("pull_request")) return "github";
+  if (key.includes("coder") || key.includes("agent") || key.includes("repair")) return "agent";
+  return "system";
+}
+
+function entryTone(kind: ThreadEntry["kind"]): "ok" | "warn" | "err" | "info" | "ghost" {
+  if (kind === "linear") return "ok";
+  if (kind === "github") return "info";
+  if (kind === "operator") return "warn";
+  if (kind === "agent") return "ghost";
+  return "ghost";
+}
+
+function compactJson(value: any) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function feedbackStorageKey(runId: string) {
+  return `tandem:coding-cockpit-feedback:${runId}`;
+}
+
+function loadFeedback(runId: string): ThreadEntry[] {
+  if (!runId || typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(feedbackStorageKey(runId)) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((entry) => entry && typeof entry === "object") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFeedback(runId: string, entries: ThreadEntry[]) {
+  if (!runId || typeof window === "undefined") return;
+  window.localStorage.setItem(feedbackStorageKey(runId), JSON.stringify(entries.slice(-25)));
+}
+
+function taskSourceLabel(source: any) {
+  const type = String(source?.type || "").trim();
+  if (type === "linear") return "Linear issue";
+  if (type === "github_project") return "GitHub Project item";
+  if (type === "kanban_board") return "Kanban card";
+  if (type === "manual") return "Manual task";
+  return type ? formatStatus(type) : "Task source";
+}
+
+function buildThreadEntries({
+  runId,
+  run,
+  events,
+  summary,
+  blackboard,
+  localFeedback,
+}: {
+  runId: string;
+  run: any;
+  events: any[];
+  summary: string;
+  blackboard: any;
+  localFeedback: ThreadEntry[];
+}) {
+  const rows: ThreadEntry[] = [];
+  const createdAt = Number(run?.created_at_ms || run?.snapshot?.created_at_ms || 0);
+  rows.push({
+    id: `${runId}:run`,
+    kind: "system",
+    title: "ACA run selected",
+    body: `${runTitle(run)} is ${formatStatus(runStatus(run))}.`,
+    atMs: createdAt || runUpdatedAt(run),
+    meta: runId,
+  });
+  const task = blackboard?.task || run?.blackboard?.task || run?.snapshot?.blackboard?.task || {};
+  const source = task?.source || {};
+  if (source?.identifier || source?.issue_url || source?.issueUrl || source?.project_item_id) {
+    rows.push({
+      id: `${runId}:source`,
+      kind: String(source?.type || "") === "linear" ? "linear" : "github",
+      title: taskSourceLabel(source),
+      body: [
+        source?.identifier ? `Identifier: ${source.identifier}` : "",
+        source?.status ? `Status: ${source.status}` : "",
+        source?.issue_url || source?.issueUrl ? `URL: ${source.issue_url || source.issueUrl}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      atMs: createdAt || runUpdatedAt(run),
+      meta: safeText(source?.type, "source"),
+    });
+  }
+  if (summary) {
+    rows.push({
+      id: `${runId}:summary`,
+      kind: "agent",
+      title: "Agent summary",
+      body: summary,
+      atMs: runUpdatedAt(run),
+      meta: "handoff",
+    });
+  }
+  events.forEach((event, index) => {
+    const eventType = String(event?.type || event?.event_type || event?.event || "event").trim();
+    const payload = event?.payload ?? event?.properties ?? event?.metadata ?? event;
+    rows.push({
+      id: `${runId}:event:${index}:${eventType}`,
+      kind: sourceKind(eventType),
+      title: formatStatus(eventType),
+      body: compactJson(payload).slice(0, 1400),
+      atMs: timestampMs(
+        event?.timestamp_ms || event?.created_at_ms || event?.at_ms || event?.timestamp || 0
+      ),
+      meta: eventType,
+    });
+  });
+  return [...rows, ...localFeedback].sort((a, b) => {
+    const left = Number(a.atMs || 0);
+    const right = Number(b.atMs || 0);
+    if (left !== right) return left - right;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+export function CodingWorkflowsAgentCockpit({
+  selectedRunId,
+  selectedRun,
+  selectedProject,
+  runDetailQuery,
+  coderRuns,
+  reconcileCoderRun,
+  cancelCoderRun,
+  lastRunEvent,
+}: {
+  selectedRunId: string;
+  selectedRun: any;
+  selectedProject: any;
+  runDetailQuery: any;
+  coderRuns: any[];
+  reconcileCoderRun: (runId: string) => void;
+  cancelCoderRun: (runId: string) => void;
+  lastRunEvent: string;
+}) {
+  const [draft, setDraft] = useState("");
+  const [localFeedback, setLocalFeedback] = useState<ThreadEntry[]>([]);
+  const runId = String(selectedRunId || "").trim();
+
+  useEffect(() => {
+    setDraft("");
+    setLocalFeedback(loadFeedback(runId));
+  }, [runId]);
+
+  const detail = runDetailQuery.data || {};
+  const blackboard = detail.blackboard || selectedRun?.blackboard || selectedRun?.snapshot?.blackboard || {};
+  const task = blackboard?.task || selectedRun?.blackboard?.task || selectedRun?.snapshot?.blackboard?.task || {};
+  const source = task?.source || {};
+  const repo = task?.repo || blackboard?.repo || selectedRun?.repo || {};
+  const pullRequest = blackboard?.pull_request_lifecycle || detail.pull_request_lifecycle || {};
+  const merge = blackboard?.pull_request_merge || detail.pull_request_merge || {};
+  const coderRun = coderRuns.find((row: any) => {
+    const acaRunId = String(row?.run_id || row?.aca_run_id || "").trim();
+    const tandemRunId = String(row?.coder_run_id || row?.tandem_run_id || "").trim();
+    return acaRunId === runId || tandemRunId === runId;
+  });
+  const events = useMemo(() => toArray(detail, "events"), [detail]);
+  const summary = String(detail.summary || "").trim();
+  const threadEntries = useMemo(
+    () =>
+      runId && selectedRun
+        ? buildThreadEntries({
+            runId,
+            run: selectedRun,
+            events,
+            summary,
+            blackboard,
+            localFeedback,
+          })
+        : [],
+    [blackboard, events, localFeedback, runId, selectedRun, summary]
+  );
+
+  function addFeedback() {
+    const text = draft.trim();
+    if (!text || !runId) return;
+    const next = [
+      ...localFeedback,
+      {
+        id: `${runId}:operator:${Date.now()}`,
+        kind: "operator" as const,
+        title: "Operator feedback",
+        body: text,
+        atMs: Date.now(),
+        meta: "local draft",
+      },
+    ];
+    setLocalFeedback(next);
+    saveFeedback(runId, next);
+    setDraft("");
+  }
+
+  if (!runId || !selectedRun) {
+    return (
+      <PanelCard title="Agent cockpit" subtitle="Select an ACA run to inspect its operational thread.">
+        <EmptyState text="No run selected. Start or select a Coder run from Intake or Overview." />
+      </PanelCard>
+    );
+  }
+
+  const sourceType = String(source?.type || selectedProject?.taskSource?.type || "").trim();
+  const prUrl = String(pullRequest?.url || blackboard?.pull_request || "").trim();
+  const prState = String(pullRequest?.lifecycle_state || pullRequest?.state || "").trim();
+  const runState = runStatus(selectedRun);
+  const live = !["completed", "done", "failed", "cancelled", "canceled", "blocked"].includes(runState);
+  const actionUnavailable = "Backend action route not connected yet";
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid gap-4 min-w-0">
+        <PanelCard
+          title="Agent cockpit"
+          subtitle="Operational thread for the selected ACA task and run"
+          actions={
+            <div className="flex flex-wrap gap-2">
+              <Badge tone={live ? "info" : "ghost"}>{formatStatus(runState)}</Badge>
+              {lastRunEvent ? <Badge tone="ghost">Live {formatStatus(lastRunEvent)}</Badge> : null}
+            </div>
+          }
+        >
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="tcp-kpi-label text-xs">Linear / source</div>
+              <div className="mt-2 text-sm font-semibold">
+                {safeText(source?.identifier || source?.issue_id || source?.project_item_id, "No issue linked")}
+              </div>
+              <div className="tcp-subtle mt-1 text-xs">{taskSourceLabel(source)}</div>
+              {source?.issue_url || source?.issueUrl ? (
+                <a
+                  className="mt-2 block truncate text-xs text-sky-200 hover:text-sky-100"
+                  href={String(source.issue_url || source.issueUrl)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {String(source.issue_url || source.issueUrl)}
+                </a>
+              ) : null}
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="tcp-kpi-label text-xs">ACA run</div>
+              <div className="mt-2 truncate text-sm font-semibold">{runId}</div>
+              <div className="tcp-subtle mt-1 text-xs">
+                {formatStatus(runState)} · {formatTime(runUpdatedAt(selectedRun))}
+              </div>
+              <div className="tcp-subtle mt-1 truncate text-xs">
+                {safeText(coderRun?.coder_run_id || coderRun?.tandem_run_id, "No Tandem coder id")}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="tcp-kpi-label text-xs">GitHub PR</div>
+              <div className="mt-2 text-sm font-semibold">{prState ? formatStatus(prState) : "No PR state"}</div>
+              {prUrl ? (
+                <a
+                  className="mt-1 block truncate text-xs text-sky-200 hover:text-sky-100"
+                  href={prUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {prUrl}
+                </a>
+              ) : (
+                <div className="tcp-subtle mt-1 text-xs">PR link appears after ACA opens one.</div>
+              )}
+              {merge?.status ? (
+                <div className="tcp-subtle mt-1 text-xs">Merge {formatStatus(String(merge.status))}</div>
+              ) : null}
+            </div>
+          </div>
+        </PanelCard>
+
+        <PanelCard
+          title="Thread"
+          subtitle="System, agent, Linear, GitHub, and local operator messages"
+          actions={<Badge tone={threadEntries.length ? "info" : "ghost"}>{threadEntries.length} entries</Badge>}
+        >
+          {runDetailQuery.isLoading ? (
+            <div className="tcp-subtle text-sm">Loading run thread...</div>
+          ) : runDetailQuery.isError ? (
+            <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
+              {runDetailQuery.error instanceof Error
+                ? runDetailQuery.error.message
+                : "Could not load run detail."}
+            </div>
+          ) : threadEntries.length ? (
+            <div className="grid gap-3">
+              {threadEntries.map((entry) => (
+                <article key={entry.id} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold">{entry.title}</div>
+                      <div className="tcp-subtle mt-1 text-xs">
+                        {formatTime(entry.atMs)}
+                        {entry.meta ? ` · ${entry.meta}` : ""}
+                      </div>
+                    </div>
+                    <Badge tone={entryTone(entry.kind)}>{formatStatus(entry.kind)}</Badge>
+                  </div>
+                  {entry.body ? (
+                    <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-200">
+                      {entry.body}
+                    </pre>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState text="No run events are available yet." />
+          )}
+        </PanelCard>
+      </div>
+
+      <div className="grid gap-4 content-start">
+        <PanelCard title="Operator feedback" subtitle="Attach a local note to this run thread">
+          <div className="grid gap-3">
+            <textarea
+              className="tcp-input min-h-[112px] resize-y"
+              value={draft}
+              onChange={(event) => setDraft((event.target as HTMLTextAreaElement).value)}
+              placeholder="Leave task/run feedback for the active agent handoff."
+            />
+            <button
+              type="button"
+              className="tcp-btn-primary"
+              onClick={addFeedback}
+              disabled={!draft.trim()}
+            >
+              <i data-lucide="send"></i>
+              Add feedback
+            </button>
+            <div className="tcp-subtle text-xs">
+              Feedback is kept in this browser until the feedback API is connected.
+            </div>
+          </div>
+        </PanelCard>
+
+        <PanelCard title="Actions" subtitle="Controls for the selected task/run">
+          <div className="grid gap-2">
+            <button type="button" className="tcp-btn" onClick={() => reconcileCoderRun(runId)}>
+              <i data-lucide="refresh-cw"></i>
+              Refresh state
+            </button>
+            <button
+              type="button"
+              className="tcp-btn"
+              onClick={() => cancelCoderRun(runId)}
+              disabled={!live}
+            >
+              <i data-lucide="pause"></i>
+              Pause / cancel run
+            </button>
+            {[
+              ["play", "Resume", actionUnavailable],
+              ["wrench", "Request repair", actionUnavailable],
+              ["badge-check", "Approve merge", actionUnavailable],
+              ["x-circle", "Block task", actionUnavailable],
+            ].map(([icon, label, reason]) => (
+              <button key={label} type="button" className="tcp-btn" disabled title={reason}>
+                <i data-lucide={icon}></i>
+                {label}
+              </button>
+            ))}
+          </div>
+        </PanelCard>
+
+        <PanelCard title="Context" subtitle="Bound task and repository">
+          <div className="grid gap-3 text-xs">
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+              <div className="tcp-kpi-label">Task</div>
+              <div className="mt-1 font-semibold text-slate-100">
+                {safeText(task?.title || selectedRun?.task_title || runTitle(selectedRun), "Untitled")}
+              </div>
+              <div className="tcp-subtle mt-1">{safeText(sourceType, "unknown source")}</div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+              <div className="tcp-kpi-label">Repository</div>
+              <div className="mt-1 break-words font-semibold text-slate-100">
+                {safeText(repo?.slug || selectedProject?.slug, "No repo binding")}
+              </div>
+              <div className="tcp-subtle mt-1 break-words">{safeText(repo?.path, "No path recorded")}</div>
+            </div>
+          </div>
+        </PanelCard>
+      </div>
+    </div>
+  );
+}
