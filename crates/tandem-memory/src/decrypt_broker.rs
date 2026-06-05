@@ -1,4 +1,8 @@
 use crate::envelope::{hosted_memory_encryption_required, MemoryEnvelopeMetadata};
+use crate::key_lifecycle::{
+    evaluate_memory_key_lifecycle, MemoryKeyLifecycleDecision, MemoryKeyLifecycleOutcome,
+    MemoryKeyLifecyclePolicy,
+};
 use crate::types::{MemoryError, MemoryResult, MemoryTenantScope};
 use serde::{Deserialize, Serialize};
 use tandem_enterprise_contract::DataClass;
@@ -156,6 +160,10 @@ pub struct MemoryDecryptRequest {
     pub principal: MemoryDecryptPrincipal,
     pub policy_decision_id: String,
     pub audit_id: String,
+    #[serde(default)]
+    pub break_glass_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_lifecycle_policy: Option<MemoryKeyLifecyclePolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +180,8 @@ pub struct MemoryDekUnwrapTicket {
     pub encryption_context_hash: String,
     pub policy_decision_id: String,
     pub audit_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_lifecycle_decision: Option<MemoryKeyLifecycleDecision>,
 }
 
 pub trait MemoryDekUnwrapProvider {
@@ -291,6 +301,29 @@ impl MemoryDecryptBroker {
             });
         }
 
+        let lifecycle_decision = match request.key_lifecycle_policy.as_ref() {
+            Some(policy) => {
+                let decision = evaluate_memory_key_lifecycle(
+                    &request.envelope,
+                    &request.principal.principal_id,
+                    request.break_glass_requested,
+                    policy,
+                );
+                if decision.outcome == MemoryKeyLifecycleOutcome::Denied {
+                    return Ok(MemoryDecryptAuthorization {
+                        ticket: None,
+                        audit_event: self.audit_event(
+                            &request,
+                            MemoryDecryptAuditOutcome::Denied,
+                            &decision.reason,
+                        ),
+                    });
+                }
+                Some(decision)
+            }
+            None => None,
+        };
+
         let audit_event = self.audit_event(
             &request,
             MemoryDecryptAuditOutcome::Allowed,
@@ -310,6 +343,7 @@ impl MemoryDecryptBroker {
                 encryption_context_hash: request.envelope.encryption_context_hash,
                 policy_decision_id: request.policy_decision_id,
                 audit_id: request.audit_id,
+                key_lifecycle_decision: lifecycle_decision,
             }),
             audit_event,
         })
@@ -448,6 +482,10 @@ fn non_empty_string(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::envelope::{MemoryEnvelopeMetadata, MemoryKeyScope};
+    use crate::key_lifecycle::{
+        MemoryBreakGlassGrant, MemoryKeyLifecycleOutcome, MemoryKeyLifecyclePolicy,
+        MemoryKeyScopeRevocation, MemoryKeyVersionEvidence, MemoryKeyVersionState,
+    };
 
     fn tenant_scope() -> MemoryTenantScope {
         MemoryTenantScope {
@@ -502,6 +540,25 @@ mod tests {
             principal,
             policy_decision_id: "decision-1".to_string(),
             audit_id: "audit-1".to_string(),
+            break_glass_requested: false,
+            key_lifecycle_policy: None,
+        }
+    }
+
+    fn active_lifecycle_policy() -> MemoryKeyLifecyclePolicy {
+        MemoryKeyLifecyclePolicy {
+            key_versions: vec![MemoryKeyVersionEvidence {
+                kek_id: "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance"
+                    .to_string(),
+                kek_version: "1".to_string(),
+                state: MemoryKeyVersionState::Primary,
+                rotation_epoch: 0,
+                evidence_id: "key-evidence-1".to_string(),
+            }],
+            revoked_scopes: vec![],
+            break_glass_grants: vec![],
+            minimum_rotation_epoch: 0,
+            now_ms: 1_000,
         }
     }
 
@@ -651,6 +708,87 @@ mod tests {
         assert!(ticket
             .key_scope_id
             .contains("/confidential/source/drive-finance"));
+    }
+
+    #[test]
+    fn hosted_unwrap_denies_revoked_key_scope() {
+        let envelope = envelope(DataClass::Confidential, Some("drive-finance"));
+        let mut lifecycle = active_lifecycle_policy();
+        lifecycle.revoked_scopes.push(MemoryKeyScopeRevocation {
+            key_scope: envelope.key_scope.clone(),
+            reason: "source revoked".to_string(),
+            revoked_by: "security-admin".to_string(),
+            revoked_at_ms: 900,
+            evidence_id: "revocation-1".to_string(),
+        });
+        let mut request = request(
+            envelope,
+            principal(vec![DataClass::Confidential], vec!["drive-finance"]),
+        );
+        request.key_lifecycle_policy = Some(lifecycle);
+
+        let authorization = broker()
+            .authorize_unwrap_with_audit(request)
+            .expect("authorization");
+        assert!(authorization.ticket.is_none());
+        assert_eq!(
+            authorization.audit_event.outcome,
+            MemoryDecryptAuditOutcome::Denied
+        );
+        assert!(authorization
+            .audit_event
+            .reason
+            .contains("scope is revoked"));
+    }
+
+    #[test]
+    fn hosted_unwrap_denies_disabled_key_without_break_glass() {
+        let mut lifecycle = active_lifecycle_policy();
+        lifecycle.key_versions[0].state = MemoryKeyVersionState::Disabled;
+        let mut request = request(
+            envelope(DataClass::Confidential, Some("drive-finance")),
+            principal(vec![DataClass::Confidential], vec!["drive-finance"]),
+        );
+        request.key_lifecycle_policy = Some(lifecycle);
+
+        let err = broker()
+            .authorize_unwrap(request)
+            .expect_err("disabled key denied");
+        assert!(err.to_string().contains("not active"));
+    }
+
+    #[test]
+    fn hosted_unwrap_allows_scoped_break_glass_for_disabled_key() {
+        let envelope = envelope(DataClass::Confidential, Some("drive-finance"));
+        let mut lifecycle = active_lifecycle_policy();
+        lifecycle.key_versions[0].state = MemoryKeyVersionState::Disabled;
+        lifecycle.break_glass_grants.push(MemoryBreakGlassGrant {
+            actor_id: "kb-mcp-retrieval-gateway".to_string(),
+            approval_id: "approval-1".to_string(),
+            reason: "customer incident".to_string(),
+            key_scope: envelope.key_scope.clone(),
+            expires_at_ms: 2_000,
+            max_export_items: 5,
+            evidence_id: "break-glass-1".to_string(),
+        });
+        let mut request = request(
+            envelope,
+            principal(vec![DataClass::Confidential], vec!["drive-finance"]),
+        );
+        request.break_glass_requested = true;
+        request.key_lifecycle_policy = Some(lifecycle);
+
+        let ticket = broker()
+            .authorize_unwrap(request)
+            .expect("break-glass authorized")
+            .expect("ticket");
+        assert_eq!(
+            ticket
+                .key_lifecycle_decision
+                .as_ref()
+                .map(|decision| decision.outcome),
+            Some(MemoryKeyLifecycleOutcome::BreakGlassAllowed)
+        );
     }
 
     #[test]

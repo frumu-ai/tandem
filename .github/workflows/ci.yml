@@ -89,6 +89,9 @@ jobs:
       - name: Verify memory DB blast-radius boundary
         run: node scripts/verify-memory-db-blast-radius.mjs
 
+      - name: Verify memory key lifecycle evidence
+        run: node scripts/verify-memory-key-lifecycle.mjs
+
       - name: Check touched Rust/TSX file sizes
         run: bash scripts/ci-file-size-check.sh
 
