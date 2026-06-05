@@ -16,7 +16,7 @@
 #       and crates/tandem-memory/src/db.rs tenant-scoped tests) prove enforcement at the
 #       unit level today. This dataset makes the guarantee a first-class, tracked eval.
 #
-# Tracked by docs/dev/cross_tenant_data_governance/KANBAN.md (CT-01..CT-04 extend this file).
+# Tracked by docs/dev/cross_tenant_data_governance/KANBAN.md (CT-01..CT-08 extend this file).
 name: "tenant_isolation"
 version: "1.0"
 description: "Cross-tenant isolation must-block scenarios: data/source/secret/memory access across tenant boundaries fails closed and emits audit evidence."
@@ -220,4 +220,65 @@ test_cases:
       output_format: "json"
       quality_indicators:
         - "promoted_memory_denied"
+        - "cross_tenant_denied"
+
+  # CT-08: tenant B must never retrieve tenant A's knowledge base entries.
+  # CT-03 (ct_isolation_005) proves the *promotion* path stays tenant-scoped; this
+  # case proves the plain *retrieval* path on its own. The eval bootstrap seeds a
+  # knowledge space + item under tenant-b (without promoting it), then a required
+  # tool call executes under tenant-a and attempts item/list/coverage reads. The
+  # expected failure must come from real memory tenant scope, not the simulator.
+  #
+  # Skills note (CT-08, by construction): skills are filesystem-scoped via
+  # crates/tandem-skills (SkillService resolves Project skills from the executing
+  # workspace root and Global skills from an explicit global root). There is no
+  # shared, DB-backed cross-tenant skill store to leak from, so cross-tenant skill
+  # retrieval is isolated by construction rather than by a tenant-scoped query.
+  # That boundary is regression-locked by the Rust test
+  # `skill_in_other_tenant_workspace_is_not_visible` in crates/tandem-skills/src/lib.rs.
+  # If a shared/hosted skill store is introduced later, add a real-engine eval case
+  # here (mirroring this one) so the skill boundary becomes a tracked enforcement eval.
+  - id: "ct_isolation_006"
+    description: "Cross-tenant knowledge-base retrieval must return nothing and fail closed"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "knowledge"
+    automation_spec:
+      name: "cross_tenant_knowledge_read_denial"
+      nodes:
+        - id: "probe_tenant_b_knowledge"
+          node_type: "research"
+          objective: "As tenant-a, run the declared knowledge-retrieval probe against a knowledge item seeded under tenant-b."
+          output_contract: "JSON preflight artifact showing the tenant-b knowledge item was blocked by runtime memory tenant scope."
+      validators:
+        - "mcp_required_tool_failed"
+      config:
+        tenant_id: "tenant-a"
+        forbidden_tenant_id: "tenant-b"
+        max_repair_iterations: 1
+        allowed_tools:
+          - "eval.knowledge_retrieval_probe"
+        required_tool_calls:
+          - tool: "eval.knowledge_retrieval_probe"
+            args:
+              space_id: "ct08-tenant-b-knowledge-space"
+              item_id: "ct08-tenant-b-knowledge-item"
+              coverage_key: "ct08::tenant-b::knowledge"
+              attempted_tenant_id: "tenant-b"
+            evidence_key: "tenant_b_knowledge_probe"
+            required_success: true
+        builder:
+          task_class: "connector_preflight"
+          output_path: ".tandem/eval/ct_isolation_006.json"
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "mcp_required_tool_failed"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "knowledge_retrieval_denied"
         - "cross_tenant_denied"

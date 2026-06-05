@@ -9,8 +9,8 @@ use tandem_core::{
     PluginRegistry, Storage,
 };
 use tandem_memory::types::{
-    KnowledgeItemRecord, KnowledgeItemStatus, KnowledgePromotionRequest, KnowledgeSpaceRecord,
-    MemoryTenantScope,
+    KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus, KnowledgePromotionRequest,
+    KnowledgeSpaceRecord, MemoryTenantScope,
 };
 use tandem_orchestrator::{KnowledgeScope, KnowledgeTrustLevel};
 use tandem_providers::{Provider, ProviderRegistry};
@@ -154,6 +154,13 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
         .register_tool(
             EvalMemoryPromotionProbeTool::NAME.to_string(),
             Arc::new(EvalMemoryPromotionProbeTool::new(state.clone())),
+        )
+        .await;
+    state
+        .tools
+        .register_tool(
+            EvalKnowledgeRetrievalProbeTool::NAME.to_string(),
+            Arc::new(EvalKnowledgeRetrievalProbeTool::new(state.clone())),
         )
         .await;
 
@@ -426,6 +433,189 @@ impl Tool for EvalMemoryPromotionProbeTool {
 
         anyhow::bail!(
             "promoted knowledge item `{}` is denied or not visible to executing tenant {}/{} while attempting {}",
+            item_id,
+            tenant_context.org_id,
+            tenant_context.workspace_id,
+            attempted_tenant_id
+        )
+    }
+}
+
+struct EvalKnowledgeRetrievalProbeTool {
+    state: AppState,
+}
+
+impl EvalKnowledgeRetrievalProbeTool {
+    const NAME: &'static str = "eval.knowledge_retrieval_probe";
+
+    fn new(state: AppState) -> Self {
+        Self { state }
+    }
+
+    async fn open_memory_manager(&self) -> anyhow::Result<tandem_memory::MemoryManager> {
+        if let Some(parent) = self.state.memory_db_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tandem_memory::MemoryManager::new(&self.state.memory_db_path)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to open eval memory manager: {err}"))
+    }
+}
+
+#[async_trait]
+impl Tool for EvalKnowledgeRetrievalProbeTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            Self::NAME,
+            "Eval-only knowledge-base retrieval tenant-scope probe.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "space_id": {
+                        "type": "string",
+                        "description": "Knowledge space id seeded under the attempted tenant."
+                    },
+                    "item_id": {
+                        "type": "string",
+                        "description": "Knowledge item id seeded under the attempted tenant."
+                    },
+                    "coverage_key": {
+                        "type": "string",
+                        "description": "Coverage key for the seeded knowledge item."
+                    },
+                    "attempted_tenant_id": {
+                        "type": "string",
+                        "description": "Human-readable tenant the eval is attempting to cross into."
+                    }
+                },
+                "required": ["space_id", "item_id", "coverage_key", "attempted_tenant_id"]
+            }),
+        )
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        self.execute_for_tenant(args, TenantContext::local_implicit())
+            .await
+    }
+
+    async fn execute_for_tenant(
+        &self,
+        args: Value,
+        tenant_context: TenantContext,
+    ) -> anyhow::Result<ToolResult> {
+        let space_id = args
+            .get("space_id")
+            .and_then(Value::as_str)
+            .unwrap_or("ct08-tenant-b-knowledge-space");
+        let item_id = args
+            .get("item_id")
+            .and_then(Value::as_str)
+            .unwrap_or("ct08-tenant-b-knowledge-item");
+        let coverage_key = args
+            .get("coverage_key")
+            .and_then(Value::as_str)
+            .unwrap_or("ct08::tenant-b::knowledge");
+        let attempted_tenant_id = args
+            .get("attempted_tenant_id")
+            .and_then(Value::as_str)
+            .unwrap_or("tenant-b");
+
+        let manager = self.open_memory_manager().await?;
+        let owner_scope = eval_memory_scope(attempted_tenant_id);
+        let executing_scope = memory_scope_from_tenant_context(&tenant_context);
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+
+        // Seed a knowledge space + item owned by the attempted tenant. Unlike the
+        // CT-03 promotion probe, this case never promotes: it proves the plain
+        // retrieval path (item/list/coverage reads) is tenant-scoped on its own.
+        let space = KnowledgeSpaceRecord {
+            id: space_id.to_string(),
+            scope: KnowledgeScope::Project,
+            project_id: Some("eval-shared-project".to_string()),
+            namespace: Some("eval/tenant-isolation".to_string()),
+            title: Some(format!("{attempted_tenant_id} eval knowledge base")),
+            description: None,
+            trust_level: KnowledgeTrustLevel::Working,
+            metadata: Some(json!({"eval_case": "ct-08"})),
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        manager
+            .upsert_knowledge_space_for_tenant(&space, &owner_scope)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to seed eval knowledge space: {err}"))?;
+
+        let item = KnowledgeItemRecord {
+            id: item_id.to_string(),
+            space_id: space_id.to_string(),
+            coverage_key: coverage_key.to_string(),
+            dedupe_key: format!("{coverage_key}::dedupe"),
+            item_type: "runbook".to_string(),
+            title: format!("{attempted_tenant_id} eval knowledge entry"),
+            summary: Some("Tenant-owned knowledge-base fixture.".to_string()),
+            payload: json!({
+                "tenant": attempted_tenant_id,
+                "fixture": "ct-08 knowledge retrieval must remain tenant scoped"
+            }),
+            trust_level: KnowledgeTrustLevel::Working,
+            status: KnowledgeItemStatus::Working,
+            run_id: Some("ct-08-eval-bootstrap".to_string()),
+            artifact_refs: vec![format!("artifact://{attempted_tenant_id}/ct-08")],
+            source_memory_ids: vec![format!("memory://{attempted_tenant_id}/ct-08")],
+            freshness_expires_at_ms: None,
+            metadata: Some(json!({"eval_case": "ct-08"})),
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        manager
+            .upsert_knowledge_item_for_tenant(&item, &owner_scope)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to seed eval knowledge item: {err}"))?;
+
+        let coverage = KnowledgeCoverageRecord {
+            coverage_key: coverage_key.to_string(),
+            space_id: space_id.to_string(),
+            latest_item_id: Some(item_id.to_string()),
+            latest_dedupe_key: Some(format!("{coverage_key}::dedupe")),
+            last_seen_at_ms: now,
+            last_promoted_at_ms: None,
+            freshness_expires_at_ms: None,
+            metadata: Some(json!({"eval_case": "ct-08"})),
+        };
+        manager
+            .upsert_knowledge_coverage_for_tenant(&coverage, &owner_scope)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to seed eval knowledge coverage: {err}"))?;
+
+        let visible_item = manager
+            .get_knowledge_item_for_tenant(item_id, &executing_scope)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to read eval knowledge item: {err}"))?;
+        let visible_items = manager
+            .list_knowledge_items_for_tenant(space_id, Some(coverage_key), &executing_scope)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to list eval knowledge items: {err}"))?;
+        let visible_coverage = manager
+            .get_knowledge_coverage_for_tenant(coverage_key, space_id, &executing_scope)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to read eval knowledge coverage: {err}"))?;
+
+        if visible_item.is_some() || !visible_items.is_empty() || visible_coverage.is_some() {
+            return Ok(ToolResult {
+                output: "tenant-scoped knowledge item visible to executing tenant".to_string(),
+                metadata: json!({
+                    "space_id": space_id,
+                    "item_id": item_id,
+                    "coverage_key": coverage_key,
+                    "executing_tenant": tenant_context,
+                    "attempted_tenant_id": attempted_tenant_id,
+                    "visible": true,
+                }),
+            });
+        }
+
+        anyhow::bail!(
+            "tenant-scoped knowledge item `{}` is denied or not visible to executing tenant {}/{} while attempting {}",
             item_id,
             tenant_context.org_id,
             tenant_context.workspace_id,
