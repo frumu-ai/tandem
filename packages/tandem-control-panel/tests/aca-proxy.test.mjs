@@ -326,13 +326,22 @@ test("ACA proxy forwards authenticated project requests through the control pane
   );
 
   holdFeedbackDelivery = false;
-  const replayed = await request(baseUrl, "/api/aca/runs/run-1/feedback/replay", {
-    cookie,
-    method: "POST",
-  });
+  const [replayed, racingReplay] = await Promise.all([
+    request(baseUrl, "/api/aca/runs/run-1/feedback/replay", {
+      cookie,
+      method: "POST",
+    }),
+    request(baseUrl, "/api/aca/runs/run-1/feedback/replay", {
+      cookie,
+      method: "POST",
+    }),
+  ]);
   assert.equal(replayed.status, 200);
-  assert.equal(replayed.json().messages[0].seq, 2);
-  assert.equal(replayed.json().messages[0].delivery_state, "delivered");
+  assert.equal(racingReplay.status, 200);
+  const replayedMessages = [...replayed.json().messages, ...racingReplay.json().messages];
+  assert.equal(replayedMessages.length, 1);
+  assert.equal(replayedMessages[0].seq, 2);
+  assert.equal(replayedMessages[0].delivery_state, "delivered");
   assert.deepEqual(
     deliveredFeedback.map((message) => [message.seq, message.body]),
     [

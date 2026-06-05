@@ -182,9 +182,30 @@ function createFeedbackStore(options = {}) {
         return record.messages[index];
       });
     },
-    async pending(runId) {
-      const record = await readRun(runId);
-      return record.messages.filter((message) => message?.delivery_state !== "delivered");
+    async claimDelivery(runId, messageId = "") {
+      return withRunLock(runId, async () => {
+        const record = await readRun(runId);
+        const index = record.messages.findIndex((message) => {
+          if (messageId && message?.id !== messageId) return false;
+          return message?.delivery_state === "pending";
+        });
+        if (index < 0) return null;
+        record.messages[index] = {
+          ...record.messages[index],
+          delivery_state: "delivering",
+          delivery_started_at_ms: Date.now(),
+          updated_at_ms: Date.now(),
+        };
+        await writeRun(runId, record);
+        publish(runId, {
+          event_type: "operator_feedback_delivery",
+          seq: Number(record.messages[index].seq || 0),
+          run_id: runId,
+          timestamp_ms: Date.now(),
+          payload: { message: record.messages[index] },
+        });
+        return record.messages[index];
+      });
     },
     subscribe,
   };
@@ -217,9 +238,10 @@ export function createAcaApiHandler(deps) {
   }
 
   async function replayPendingFeedback(baseUrl, runId) {
-    const pending = await feedbackStore.pending(runId);
     const delivered = [];
-    for (const message of pending.sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0))) {
+    for (;;) {
+      const message = await feedbackStore.claimDelivery(runId);
+      if (!message) break;
       const delivery = await deliverFeedback(baseUrl, message);
       const next = await feedbackStore.updateDelivery(runId, message.id, {
         delivery_state: delivery.state,
@@ -254,7 +276,10 @@ export function createAcaApiHandler(deps) {
       if (!mode && req.method === "POST") {
         const body = await readJsonBody(req);
         const message = await feedbackStore.add(runId, body);
-        const delivery = await deliverFeedback(baseUrl, message);
+        const claimed = await feedbackStore.claimDelivery(runId, message.id);
+        const delivery = claimed
+          ? await deliverFeedback(baseUrl, claimed)
+          : { ok: false, state: "pending", error: "feedback_delivery_already_claimed" };
         const delivered = await feedbackStore.updateDelivery(runId, message.id, {
           delivery_state: delivery.state,
           delivered_at_ms: delivery.ok ? Date.now() : null,

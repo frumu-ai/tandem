@@ -1062,7 +1062,6 @@ export function CodingWorkflowsPage({
       ) : null}
       {tab === "cockpit" ? (
         <CodingWorkflowsAgentCockpit
-          api={api}
           selectedRunId={selectedRunId}
           selectedRun={selectedRun}
           selectedProject={selectedProject}

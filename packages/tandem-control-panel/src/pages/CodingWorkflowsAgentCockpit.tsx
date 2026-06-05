@@ -3,6 +3,7 @@ import { Badge, PanelCard } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { formatStatus, runStatus, runTitle, runUpdatedAt, toArray } from "./CodingWorkflowsHelpers";
 import { subscribeSse } from "../services/sse.js";
+import { api } from "../lib/api.ts";
 
 type ThreadEntry = {
   id: string;
@@ -168,7 +169,6 @@ function buildThreadEntries({
 }
 
 export function CodingWorkflowsAgentCockpit({
-  api,
   selectedRunId,
   selectedRun,
   selectedProject,
@@ -178,7 +178,6 @@ export function CodingWorkflowsAgentCockpit({
   cancelCoderRun,
   lastRunEvent,
 }: {
-  api: (path: string, init?: RequestInit) => Promise<any>;
   selectedRunId: string;
   selectedRun: any;
   selectedProject: any;
