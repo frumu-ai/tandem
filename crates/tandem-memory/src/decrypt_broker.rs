@@ -167,6 +167,8 @@ pub struct MemoryDekUnwrapTicket {
     pub key_scope_id: String,
     pub kek_id: String,
     pub kek_version: String,
+    pub wrapped_dek: String,
+    pub algorithm: String,
     pub encryption_context_hash: String,
     pub policy_decision_id: String,
     pub audit_id: String,
@@ -303,6 +305,8 @@ impl MemoryDecryptBroker {
                 key_scope_id: request.envelope.key_scope.canonical_id(),
                 kek_id: request.envelope.kek_id,
                 kek_version: request.envelope.kek_version,
+                wrapped_dek: request.envelope.wrapped_dek,
+                algorithm: request.envelope.algorithm,
                 encryption_context_hash: request.envelope.encryption_context_hash,
                 policy_decision_id: request.policy_decision_id,
                 audit_id: request.audit_id,
@@ -642,6 +646,8 @@ mod tests {
         assert_eq!(ticket.principal_id, "kb-mcp-retrieval-gateway");
         assert_eq!(ticket.policy_decision_id, "decision-1");
         assert_eq!(ticket.audit_id, "audit-1");
+        assert_eq!(ticket.wrapped_dek, "wrapped");
+        assert_eq!(ticket.algorithm, "AES-256-GCM");
         assert!(ticket
             .key_scope_id
             .contains("/confidential/source/drive-finance"));
