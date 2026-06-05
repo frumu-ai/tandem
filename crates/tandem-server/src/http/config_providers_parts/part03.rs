@@ -23,7 +23,7 @@ fn provider_config_api_key(
     persisted_auth: &HashMap<String, String>,
     allow_shared_auth_sources: bool,
 ) -> Option<String> {
-    let shared_auth = allow_shared_auth_sources
+    allow_shared_auth_sources
         .then(|| {
             provider_config_value(cfg, provider_id)
                 .and_then(|entry| entry.get("api_key").or_else(|| entry.get("apiKey")))
@@ -31,17 +31,8 @@ fn provider_config_api_key(
                 .map(str::trim)
                 .filter(|value| !value.is_empty() && *value != "x")
                 .map(str::to_string)
-                .or_else(|| {
-                    provider_env_candidates(provider_id)
-                        .into_iter()
-                        .find_map(|key| std::env::var(&key).ok())
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty())
-                })
         })
-        .flatten();
-
-    shared_auth
+        .flatten()
         .or_else(|| {
             runtime_auth
                 .get(&provider_id.to_ascii_lowercase())
@@ -58,6 +49,59 @@ fn provider_config_api_key(
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
+        .or_else(|| {
+            allow_shared_auth_sources
+                .then(|| {
+                    provider_env_candidates(provider_id)
+                        .into_iter()
+                        .find_map(|key| std::env::var(&key).ok())
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                })
+                .flatten()
+        })
+}
+
+#[cfg(test)]
+mod provider_auth_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn provider_api_key_resolution_preserves_runtime_precedence_over_env_fallback() {
+        let provider_id = format!("review-precedence-{}", uuid::Uuid::new_v4());
+        let env_key = provider_env_candidates(&provider_id)
+            .into_iter()
+            .next()
+            .expect("provider env key");
+        std::env::set_var(&env_key, "env-key");
+
+        let runtime_auth = HashMap::from([(provider_id.to_ascii_lowercase(), "runtime-key".to_string())]);
+        let persisted_auth =
+            HashMap::from([(provider_id.to_ascii_lowercase(), "persisted-key".to_string())]);
+        assert_eq!(
+            provider_config_api_key(&json!({}), &provider_id, &runtime_auth, &persisted_auth, true)
+                .as_deref(),
+            Some("runtime-key")
+        );
+        assert_eq!(
+            provider_config_api_key(&json!({}), &provider_id, &HashMap::new(), &persisted_auth, true)
+                .as_deref(),
+            Some("persisted-key")
+        );
+        assert!(
+            provider_config_api_key(
+                &json!({}),
+                &provider_id,
+                &HashMap::new(),
+                &HashMap::new(),
+                false,
+            )
+            .is_none(),
+            "explicit tenants must not use shared env fallback keys"
+        );
+
+        std::env::remove_var(env_key);
+    }
 }
 
 /// Validate provider base URL to prevent SSRF attacks.

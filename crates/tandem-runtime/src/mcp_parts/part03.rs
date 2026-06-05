@@ -747,4 +747,48 @@ mod tests {
             "mcp_header::tenant-server::authorization",
         );
     }
+
+    #[tokio::test]
+    async fn call_tool_for_tenant_rejects_mismatched_secret_before_reconnect() {
+        let (endpoint, server) =
+            spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
+        let tenant_b = TenantContext::explicit("tenant-b", "workspace-b", None);
+        registry
+            .add_or_update_with_secret_refs(
+                "tenant-server".to_string(),
+                endpoint,
+                HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer tenant-a-secret".to_string(),
+                )]),
+                HashMap::new(),
+                &tenant_a,
+                true,
+            )
+            .await;
+
+        let err = registry
+            .call_tool_for_tenant("tenant-server", "get_me", json!({}), &tenant_b)
+            .await
+            .expect_err("tenant B must be denied before reconnecting tenant A server");
+        assert!(err.contains("ToolDenied { reason: TenantScope }"));
+        let tenant_server = registry
+            .list()
+            .await
+            .get("tenant-server")
+            .cloned()
+            .expect("tenant server row");
+        assert!(
+            !tenant_server.connected,
+            "tenant mismatch should deny before readiness reconnect"
+        );
+        server.abort();
+        let _ = tandem_core::delete_provider_auth_for_tenant(
+            &tenant_a,
+            "mcp_header::tenant-server::authorization",
+        );
+    }
 }

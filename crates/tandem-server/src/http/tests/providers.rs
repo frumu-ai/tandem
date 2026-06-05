@@ -54,11 +54,7 @@ fn provider_status<'a>(payload: &'a Value, provider_id: &str) -> &'a Value {
 async fn provider_route_returns_known_providers_without_synthetic_default_models() {
     let state = test_state().await;
     let app = app_router(state);
-    let req = Request::builder()
-        .method("GET")
-        .uri("/provider")
-        .body(Body::empty())
-        .expect("request");
+    let req = tenant_request("GET", "/provider", "org-a", "workspace-a", "user-a", None);
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
