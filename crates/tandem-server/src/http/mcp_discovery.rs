@@ -143,7 +143,7 @@ fn annotate_catalog_entry(entry: &Value, inventory: Option<&Value>) -> Value {
 
 pub(crate) async fn mcp_catalog_overlay_snapshot(state: &AppState) -> Option<Value> {
     let mut catalog = mcp_catalog::index()?.clone();
-    let inventory = super::mcp::mcp_inventory_snapshot(state).await;
+    let inventory = super::mcp_inventory::mcp_inventory_snapshot(state).await;
     let inventory_servers = inventory
         .get("servers")
         .and_then(Value::as_array)

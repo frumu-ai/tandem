@@ -691,7 +691,7 @@ async fn planner_mcp_inventory_snapshot(state: &AppState) -> (Value, &'static st
         }
     }
     (
-        crate::http::mcp::mcp_inventory_snapshot(state).await,
+        crate::http::mcp_inventory::mcp_inventory_snapshot(state).await,
         "runtime_snapshot",
     )
 }
