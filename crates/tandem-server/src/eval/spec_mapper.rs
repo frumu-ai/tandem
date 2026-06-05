@@ -18,6 +18,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
+use tandem_types::TenantContext;
 
 use crate::eval::dataset::{EvalTestCase, TestNode};
 use crate::{
@@ -51,7 +52,7 @@ pub fn test_case_to_stub_spec(case: &EvalTestCase) -> AutomationV2Spec {
     test_case_to_spec_with_options(
         case,
         EvalSpecOptions {
-            inline_artifacts: true,
+            inline_artifacts: stub_case_should_use_inline_artifact(case),
         },
     )
 }
@@ -116,6 +117,29 @@ fn test_case_to_spec_with_options(
     }
 }
 
+fn stub_case_should_use_inline_artifact(case: &EvalTestCase) -> bool {
+    if case
+        .automation_spec
+        .config
+        .get("required_tool_calls")
+        .is_some()
+    {
+        return false;
+    }
+    !case
+        .automation_spec
+        .config
+        .get("builder")
+        .and_then(Value::as_object)
+        .and_then(|builder| {
+            builder
+                .get("task_class")
+                .or_else(|| builder.get("task_kind"))
+        })
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("connector_preflight"))
+}
+
 fn map_node(
     case: &EvalTestCase,
     node: &TestNode,
@@ -176,6 +200,7 @@ fn eval_automation_metadata(case: &EvalTestCase) -> Option<Value> {
         "fintech_profile",
     );
     copy_config_string(&case.automation_spec.config, &mut metadata, "tenant_id");
+    copy_eval_tenant_context(case, &mut metadata);
     if metadata_enables_eval_fintech_strict(&metadata) {
         metadata
             .entry("runtime_profile".to_string())
@@ -209,6 +234,18 @@ fn eval_node_metadata(
         "artifact_contract",
     );
     copy_config_string(&case.automation_spec.config, &mut metadata, "artifact_type");
+    copy_config_value_as(
+        &case.automation_spec.config,
+        &mut metadata,
+        "allowed_tools",
+        "tool_allowlist",
+    );
+    copy_config_value(
+        &case.automation_spec.config,
+        &mut metadata,
+        "required_tool_calls",
+    );
+    copy_config_value(&case.automation_spec.config, &mut metadata, "builder");
     if let Some(contract) = metadata
         .get("artifact_contract")
         .and_then(Value::as_str)
@@ -313,6 +350,54 @@ fn copy_config_string(
             metadata.insert(key.to_string(), Value::String(value.to_string()));
         }
     }
+}
+
+fn copy_config_value(
+    config: &std::collections::HashMap<String, Value>,
+    metadata: &mut Map<String, Value>,
+    key: &str,
+) {
+    if let Some(value) = config.get(key) {
+        metadata.insert(key.to_string(), value.clone());
+    }
+}
+
+fn copy_config_value_as(
+    config: &std::collections::HashMap<String, Value>,
+    metadata: &mut Map<String, Value>,
+    source_key: &str,
+    dest_key: &str,
+) {
+    if let Some(value) = config.get(source_key) {
+        metadata.insert(dest_key.to_string(), value.clone());
+    }
+}
+
+fn copy_eval_tenant_context(case: &EvalTestCase, metadata: &mut Map<String, Value>) {
+    if let Some(value) = case.automation_spec.config.get("tenant_context") {
+        metadata.insert("tenant_context".to_string(), value.clone());
+        return;
+    }
+    let Some(tenant_id) = case
+        .automation_spec
+        .config
+        .get("tenant_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let tenant_context = TenantContext::explicit_user_workspace(
+        tenant_id,
+        "eval-workspace",
+        Some("eval-deployment".to_string()),
+        format!("{tenant_id}-eval-actor"),
+    );
+    metadata.insert(
+        "tenant_context".to_string(),
+        serde_json::to_value(tenant_context).unwrap_or(Value::Null),
+    );
 }
 
 fn default_agent() -> AutomationAgentProfile {
@@ -578,6 +663,25 @@ mod tests {
     }
 
     #[test]
+    fn stub_preflight_eval_nodes_do_not_use_inline_artifact_shortcut() {
+        let mut case = make_case("ev_preflight_stub", vec![make_node("n1", "research")]);
+        case.automation_spec.config.insert(
+            "required_tool_calls".to_string(),
+            json!([{"tool": "eval.tenant_resource_probe"}]),
+        );
+        case.automation_spec.config.insert(
+            "builder".to_string(),
+            json!({"task_class": "connector_preflight"}),
+        );
+
+        let spec = test_case_to_stub_spec(&case);
+        let node_metadata = spec.flow.nodes[0].metadata.as_ref().expect("node metadata");
+        let eval_metadata = node_metadata.get("eval").expect("eval metadata");
+
+        assert!(eval_metadata.get("inline_artifact").is_none());
+    }
+
+    #[test]
     fn produces_valid_spec_with_multiple_nodes() {
         let case = make_case(
             "ev_002",
@@ -655,6 +759,13 @@ mod tests {
         assert!(tandem_core::metadata_enables_fintech_strict(Some(metadata)));
         assert_eq!(
             metadata.get("tenant_id").and_then(Value::as_str),
+            Some("tenant-a")
+        );
+        assert_eq!(
+            metadata
+                .get("tenant_context")
+                .and_then(|value| value.get("org_id"))
+                .and_then(Value::as_str),
             Some("tenant-a")
         );
         let node_metadata = spec.flow.nodes[0].metadata.as_ref().expect("node metadata");
@@ -736,5 +847,43 @@ mod tests {
         assert_eq!(spec.execution.max_parallel_agents, Some(1));
         assert!(spec.execution.max_total_runtime_ms.unwrap() > 0);
         assert_eq!(spec.execution.profile, None);
+    }
+
+    #[test]
+    fn eval_config_copies_preflight_metadata_to_nodes() {
+        let mut case = make_case("ev_preflight", vec![make_node("n1", "research")]);
+        case.automation_spec.config.insert(
+            "allowed_tools".to_string(),
+            json!(["eval.tenant_resource_probe"]),
+        );
+        case.automation_spec.config.insert(
+            "required_tool_calls".to_string(),
+            json!([{
+                "tool": "eval.tenant_resource_probe",
+                "args": {
+                    "resource_key": "project/eval/ct02-tenant-b-source",
+                    "attempted_tenant_id": "tenant-b"
+                }
+            }]),
+        );
+        case.automation_spec.config.insert(
+            "builder".to_string(),
+            json!({
+                "task_class": "connector_preflight",
+                "output_path": ".tandem/eval/ct02.json"
+            }),
+        );
+
+        let spec = test_case_to_spec(&case);
+        let metadata = spec.flow.nodes[0].metadata.as_ref().expect("metadata");
+
+        assert_eq!(
+            metadata
+                .pointer("/builder/task_class")
+                .and_then(Value::as_str),
+            Some("connector_preflight")
+        );
+        assert!(metadata.get("required_tool_calls").is_some());
+        assert!(metadata.get("tool_allowlist").is_some());
     }
 }

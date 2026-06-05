@@ -2,13 +2,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use serde_json::{json, Value};
 use tandem_core::{
     AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
     PluginRegistry, Storage,
 };
 use tandem_providers::{Provider, ProviderRegistry};
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
-use tandem_tools::ToolRegistry;
+use tandem_tools::{Tool, ToolRegistry};
+use tandem_types::{TenantContext, ToolResult, ToolSchema};
 
 use crate::app::state::AppState;
 use crate::eval::{ScriptedEvalProvider, SCRIPTED_PROVIDER_ID};
@@ -133,6 +136,15 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
         })
         .await?;
 
+    seed_eval_tenant_resources(&state).await?;
+    state
+        .tools
+        .register_tool(
+            EvalTenantResourceProbeTool::NAME.to_string(),
+            Arc::new(EvalTenantResourceProbeTool::new(state.clone())),
+        )
+        .await;
+
     if options.spawn_executor {
         let executor_state = state.clone();
         tokio::spawn(async move {
@@ -141,6 +153,115 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     }
 
     Ok(state)
+}
+
+struct EvalTenantResourceProbeTool {
+    state: AppState,
+}
+
+impl EvalTenantResourceProbeTool {
+    const NAME: &'static str = "eval.tenant_resource_probe";
+    const SEEDED_KEY: &'static str = "project/eval/ct02-tenant-b-source";
+
+    fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Tool for EvalTenantResourceProbeTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            Self::NAME,
+            "Eval-only tenant scoped shared-resource probe.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "resource_key": {
+                        "type": "string",
+                        "description": "Shared resource key to read through the executing tenant context."
+                    },
+                    "attempted_tenant_id": {
+                        "type": "string",
+                        "description": "Human-readable tenant the eval is attempting to cross into."
+                    }
+                },
+                "required": ["resource_key", "attempted_tenant_id"]
+            }),
+        )
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        self.execute_for_tenant(args, TenantContext::local_implicit())
+            .await
+    }
+
+    async fn execute_for_tenant(
+        &self,
+        args: Value,
+        tenant_context: TenantContext,
+    ) -> anyhow::Result<ToolResult> {
+        let resource_key = args
+            .get("resource_key")
+            .and_then(Value::as_str)
+            .unwrap_or(Self::SEEDED_KEY);
+        let attempted_tenant_id = args
+            .get("attempted_tenant_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+
+        if let Some(record) = self
+            .state
+            .get_shared_resource_for_tenant(resource_key, &tenant_context)
+            .await
+        {
+            return Ok(ToolResult {
+                output: "tenant-scoped resource visible to executing tenant".to_string(),
+                metadata: json!({
+                    "resource_key": record.key,
+                    "executing_tenant": tenant_context,
+                    "attempted_tenant_id": attempted_tenant_id,
+                    "visible": true,
+                }),
+            });
+        }
+
+        anyhow::bail!(
+            "tenant-scoped resource `{}` is denied or not visible to executing tenant {}/{} while attempting {}",
+            resource_key,
+            tenant_context.org_id,
+            tenant_context.workspace_id,
+            attempted_tenant_id
+        )
+    }
+}
+
+async fn seed_eval_tenant_resources(state: &AppState) -> anyhow::Result<()> {
+    state
+        .put_shared_resource_for_tenant(
+            EvalTenantResourceProbeTool::SEEDED_KEY.to_string(),
+            json!({
+                "classification": "confidential",
+                "fixture": "ct02 tenant-b source",
+                "must_not_be_visible_to": "tenant-a"
+            }),
+            None,
+            "eval-bootstrap".to_string(),
+            None,
+            &eval_tenant_context("tenant-b"),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to seed eval tenant resource: {:?}", err))?;
+    Ok(())
+}
+
+fn eval_tenant_context(tenant_id: &str) -> TenantContext {
+    TenantContext::explicit_user_workspace(
+        tenant_id,
+        "eval-workspace",
+        Some("eval-deployment".to_string()),
+        format!("{tenant_id}-eval-actor"),
+    )
 }
 
 fn default_state_root() -> PathBuf {
