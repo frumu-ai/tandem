@@ -1,8 +1,8 @@
 {
   "dataset_name": "tenant_isolation",
   "dataset_version": "1.0",
-  "started_at_ms": 1780667883331,
-  "finished_at_ms": 1780667883331,
+  "started_at_ms": 1780669613845,
+  "finished_at_ms": 1780669613845,
   "duration_ms": 0,
   "total_tests": 6,
   "passed_tests": 6,
@@ -18,8 +18,8 @@
   "total_provider_calls": 0,
   "provider_failures": 0,
   "validator_pass_rates": {
-    "tenant_scope": 0.875,
     "audit_event": 0.875,
+    "tenant_scope": 0.875,
     "mcp_required_tool_failed": 0.875
   },
   "failure_modes": {},

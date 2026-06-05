@@ -9,8 +9,8 @@ use tandem_core::{
     PluginRegistry, Storage,
 };
 use tandem_memory::types::{
-    KnowledgeItemRecord, KnowledgeItemStatus, KnowledgePromotionRequest, KnowledgeSpaceRecord,
-    MemoryTenantScope,
+    KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus, KnowledgePromotionRequest,
+    KnowledgeSpaceRecord, MemoryTenantScope,
 };
 use tandem_orchestrator::{KnowledgeScope, KnowledgeTrustLevel};
 use tandem_providers::{Provider, ProviderRegistry};
@@ -571,6 +571,21 @@ impl Tool for EvalKnowledgeRetrievalProbeTool {
             .upsert_knowledge_item_for_tenant(&item, &owner_scope)
             .await
             .map_err(|err| anyhow::anyhow!("failed to seed eval knowledge item: {err}"))?;
+
+        let coverage = KnowledgeCoverageRecord {
+            coverage_key: coverage_key.to_string(),
+            space_id: space_id.to_string(),
+            latest_item_id: Some(item_id.to_string()),
+            latest_dedupe_key: Some(format!("{coverage_key}::dedupe")),
+            last_seen_at_ms: now,
+            last_promoted_at_ms: None,
+            freshness_expires_at_ms: None,
+            metadata: Some(json!({"eval_case": "ct-08"})),
+        };
+        manager
+            .upsert_knowledge_coverage_for_tenant(&coverage, &owner_scope)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to seed eval knowledge coverage: {err}"))?;
 
         let visible_item = manager
             .get_knowledge_item_for_tenant(item_id, &executing_scope)
