@@ -5,10 +5,16 @@ pub(super) async fn evaluate_capability_readiness(
     state: &AppState,
     input: &CapabilityReadinessInput,
 ) -> Result<CapabilityReadinessOutput, StatusCode> {
+    let runtime_mcp_tools = state.mcp.list_tools().await;
     let discovered = state
         .capability_resolver
-        .discover_from_runtime(state.mcp.list_tools().await, state.tools.list().await)
+        .discover_from_runtime(runtime_mcp_tools, state.tools.list().await)
         .await;
+    let available_for_readiness = if input.available_tools.is_empty() {
+        discovered.clone()
+    } else {
+        input.available_tools.clone()
+    };
     let resolve_input = CapabilityResolveInput {
         workflow_id: input.workflow_id.clone(),
         required_capabilities: input.required_capabilities.clone(),
@@ -100,6 +106,12 @@ pub(super) async fn evaluate_capability_readiness(
     auth_pending_tools.dedup();
 
     let missing_secret_refs = Vec::<String>::new();
+    let mcp_connector_states = mcp_connector_readiness_states(
+        input,
+        &available_for_readiness,
+        &mcp_servers,
+        &result.resolved,
+    );
     let mut blocking_issues = Vec::<CapabilityBlockingIssue>::new();
     if !missing_required_capabilities.is_empty() {
         blocking_issues.push(CapabilityBlockingIssue {
@@ -188,10 +200,132 @@ pub(super) async fn evaluate_capability_readiness(
         disconnected_servers,
         auth_pending_tools,
         missing_secret_refs,
+        mcp_connector_states,
         considered_bindings: result.considered_bindings,
         recommendations,
         blocking_issues,
     })
+}
+
+fn capability_connector_id(capability_id: &str) -> Option<&'static str> {
+    if capability_id.starts_with("linear.") {
+        Some("linear")
+    } else {
+        None
+    }
+}
+
+const LINEAR_MCP_TOOL_PREFIXES: &[&str] = &["mcp.linear.", "mcp.app_linear_linear."];
+
+fn mcp_tool_is_connector_tool(tool_name: &str, connector: &str) -> bool {
+    if connector == "linear" {
+        return linear_tool_slug(tool_name).is_some();
+    }
+    let prefix = format!("mcp.{connector}.");
+    tool_name
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with(prefix.as_str())
+}
+
+fn mcp_server_is_connector(server_name: &str, connector: &str) -> bool {
+    if connector == "linear" {
+        let name = server_name.trim().to_ascii_lowercase();
+        return name == "linear" || name == "app.linear/linear" || name == "app_linear_linear";
+    }
+    server_name.eq_ignore_ascii_case(connector)
+}
+
+fn linear_tool_slug(tool_name: &str) -> Option<String> {
+    let tool = tool_name.trim().to_ascii_lowercase();
+    LINEAR_MCP_TOOL_PREFIXES
+        .iter()
+        .find_map(|prefix| tool.strip_prefix(prefix).map(ToOwned::to_owned))
+}
+
+fn linear_tool_is_read(tool_name: &str) -> bool {
+    let Some(slug) = linear_tool_slug(tool_name) else {
+        return false;
+    };
+    slug.starts_with("list")
+        || slug.starts_with("get")
+        || slug.starts_with("search")
+        || slug == "viewer"
+}
+
+fn linear_tool_is_write(tool_name: &str) -> bool {
+    mcp_tool_is_connector_tool(tool_name, "linear") && !linear_tool_is_read(tool_name)
+}
+
+fn mcp_connector_readiness_states(
+    input: &CapabilityReadinessInput,
+    available_tools: &[crate::capability_resolver::CapabilityToolAvailability],
+    mcp_servers: &HashMap<String, tandem_runtime::McpServer>,
+    resolved: &[crate::capability_resolver::CapabilityResolution],
+) -> Vec<crate::capability_resolver::McpConnectorReadiness> {
+    let mut connectors = input
+        .required_capabilities
+        .iter()
+        .chain(input.optional_capabilities.iter())
+        .filter_map(|capability| capability_connector_id(capability))
+        .collect::<Vec<_>>();
+    connectors.sort();
+    connectors.dedup();
+
+    connectors
+        .into_iter()
+        .map(|connector| {
+            let configured_server = mcp_servers
+                .values()
+                .find(|server| mcp_server_is_connector(&server.name, connector));
+            let configured = configured_server.is_some()
+                || available_tools
+                    .iter()
+                    .any(|tool| mcp_tool_is_connector_tool(&tool.tool_name, connector));
+            let connected = configured_server.is_some_and(|server| server.connected);
+            let mut read_tools = Vec::new();
+            let mut write_tools = Vec::new();
+            for tool in available_tools {
+                if connector == "linear" && linear_tool_is_read(&tool.tool_name) {
+                    read_tools.push(tool.tool_name.clone());
+                } else if connector == "linear" && linear_tool_is_write(&tool.tool_name) {
+                    write_tools.push(tool.tool_name.clone());
+                }
+            }
+            for row in resolved {
+                if connector == "linear" && row.capability_id.starts_with("linear.") {
+                    if row.capability_id.contains("list") || row.capability_id.contains("get") {
+                        read_tools.push(row.tool_name.clone());
+                    } else {
+                        write_tools.push(row.tool_name.clone());
+                    }
+                }
+            }
+            read_tools.sort();
+            read_tools.dedup();
+            write_tools.sort();
+            write_tools.dedup();
+            let access = if !configured {
+                "missing_connector"
+            } else if !write_tools.is_empty() {
+                "write_capable"
+            } else if !read_tools.is_empty() {
+                "read_only"
+            } else if !connected {
+                "disconnected"
+            } else {
+                "connected_no_matching_tools"
+            };
+            crate::capability_resolver::McpConnectorReadiness {
+                provider: connector.to_string(),
+                configured,
+                connected,
+                access: access.to_string(),
+                read_tools,
+                write_tools,
+            }
+        })
+        .collect()
 }
 
 pub(super) async fn capabilities_bindings_get(

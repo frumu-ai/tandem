@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-pub const BUILTIN_CAPABILITY_BINDINGS_VERSION: &str = "2026-03-07-github-mcp-v1";
+pub const BUILTIN_CAPABILITY_BINDINGS_VERSION: &str = "2026-06-05-linear-mcp-v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CapabilityBinding {
@@ -133,6 +133,18 @@ pub struct CapabilityBlockingIssue {
     pub tools: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpConnectorReadiness {
+    pub provider: String,
+    pub configured: bool,
+    pub connected: bool,
+    pub access: String,
+    #[serde(default)]
+    pub read_tools: Vec<String>,
+    #[serde(default)]
+    pub write_tools: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityReadinessOutput {
     pub workflow_id: String,
@@ -153,6 +165,8 @@ pub struct CapabilityReadinessOutput {
     pub auth_pending_tools: Vec<String>,
     #[serde(default)]
     pub missing_secret_refs: Vec<String>,
+    #[serde(default)]
+    pub mcp_connector_states: Vec<McpConnectorReadiness>,
     pub considered_bindings: usize,
     #[serde(default)]
     pub recommendations: Vec<String>,
@@ -861,6 +875,85 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             "mcp.composio.github_list_repositories",
             &["mcp.composio.github.list_repositories"],
         ),
+        make_binding_with_access(
+            "linear.list_issues",
+            "mcp",
+            "mcp.linear.list_issues",
+            &[
+                "mcp.linear.list",
+                "mcp.linear.list_my_issues",
+                "mcp.app_linear_linear.list_issues",
+                "mcp.app_linear_linear.list_my_issues",
+                "linear_list_issues",
+            ],
+            "read",
+        ),
+        make_binding_with_access(
+            "linear.get_issue",
+            "mcp",
+            "mcp.linear.get_issue",
+            &[
+                "mcp.linear.get",
+                "mcp.app_linear_linear.get_issue",
+                "linear_get_issue",
+            ],
+            "read",
+        ),
+        make_binding_with_access(
+            "linear.list_comments",
+            "mcp",
+            "mcp.linear.list_comments",
+            &[
+                "mcp.app_linear_linear.list_comments",
+                "linear_list_comments",
+            ],
+            "read",
+        ),
+        make_binding_with_access(
+            "linear.create_issue",
+            "mcp",
+            "mcp.linear.create_issue",
+            &[
+                "mcp.linear.save_issue",
+                "mcp.linear.update_issue",
+                "mcp.app_linear_linear.create_issue",
+                "mcp.app_linear_linear.save_issue",
+                "mcp.app_linear_linear.update_issue",
+                "linear_create_issue",
+                "linear_save_issue",
+            ],
+            "write",
+        ),
+        make_binding_with_access(
+            "linear.update_issue",
+            "mcp",
+            "mcp.linear.update_issue",
+            &[
+                "mcp.linear.save_issue",
+                "mcp.linear.transition_issue",
+                "mcp.app_linear_linear.update_issue",
+                "mcp.app_linear_linear.save_issue",
+                "mcp.app_linear_linear.transition_issue",
+                "linear_update_issue",
+                "linear_save_issue",
+            ],
+            "write",
+        ),
+        make_binding_with_access(
+            "linear.create_comment",
+            "mcp",
+            "mcp.linear.create_comment",
+            &[
+                "mcp.linear.save_comment",
+                "mcp.linear.update_comment",
+                "mcp.app_linear_linear.create_comment",
+                "mcp.app_linear_linear.save_comment",
+                "mcp.app_linear_linear.update_comment",
+                "linear_create_comment",
+                "linear_save_comment",
+            ],
+            "write",
+        ),
         make_binding(
             "slack.post_message",
             "composio",
@@ -923,6 +1016,20 @@ fn make_binding(
             "binding_key": binding_key,
         }),
     }
+}
+
+fn make_binding_with_access(
+    capability_id: &str,
+    provider: &str,
+    tool_name: &str,
+    aliases: &[&str],
+    access: &str,
+) -> CapabilityBinding {
+    let mut binding = make_binding(capability_id, provider, tool_name, aliases);
+    if let Some(metadata) = binding.metadata.as_object_mut() {
+        metadata.insert("access".to_string(), json!(access));
+    }
+    binding
 }
 
 fn canonical_tool_name(name: &str) -> String {
@@ -1187,6 +1294,49 @@ mod tests {
             .expect("resolve");
         assert_eq!(result.missing_required, Vec::<String>::new());
         assert_eq!(result.resolved.len(), 4);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn resolve_matches_linear_catalog_namespace_tools() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-cap-resolver-{}", uuid::Uuid::new_v4()));
+        let resolver = CapabilityResolver::new(root.clone());
+        let result = resolver
+            .resolve(
+                CapabilityResolveInput {
+                    workflow_id: Some("wf-linear-catalog".to_string()),
+                    required_capabilities: vec![
+                        "linear.get_issue".to_string(),
+                        "linear.update_issue".to_string(),
+                        "linear.create_comment".to_string(),
+                    ],
+                    optional_capabilities: vec![],
+                    provider_preference: vec!["mcp".to_string()],
+                    available_tools: vec![
+                        CapabilityToolAvailability {
+                            provider: "mcp".to_string(),
+                            tool_name: "mcp.app_linear_linear.get_issue".to_string(),
+                            schema: Value::Null,
+                        },
+                        CapabilityToolAvailability {
+                            provider: "mcp".to_string(),
+                            tool_name: "mcp.app_linear_linear.update_issue".to_string(),
+                            schema: Value::Null,
+                        },
+                        CapabilityToolAvailability {
+                            provider: "mcp".to_string(),
+                            tool_name: "mcp.app_linear_linear.create_comment".to_string(),
+                            schema: Value::Null,
+                        },
+                    ],
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("resolve");
+        assert_eq!(result.missing_required, Vec::<String>::new());
+        assert_eq!(result.resolved.len(), 3);
         let _ = std::fs::remove_dir_all(root);
     }
 
