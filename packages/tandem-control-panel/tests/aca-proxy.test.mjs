@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 function getFreePort() {
@@ -61,6 +64,10 @@ test("ACA proxy forwards authenticated project requests through the control pane
   const panelPort = await getFreePort();
   const engineToken = "engine-token";
   const acaToken = "aca-token";
+  const stateDir = await mkdtemp(join(tmpdir(), "tandem-panel-aca-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const deliveredFeedback = [];
+  let holdFeedbackDelivery = true;
 
   const fakeEngine = await new Promise((resolve) => {
     const server = createServer((req, res) => {
@@ -144,6 +151,30 @@ test("ACA proxy forwards authenticated project requests through the control pane
         res.end(JSON.stringify({ run_id: "run-1", status: "cancelled" }));
         return;
       }
+      if ((req.url || "") === "/operator/feedback" && req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          let parsed = {};
+          try {
+            parsed = JSON.parse(body || "{}");
+          } catch {
+            parsed = {};
+          }
+          const message = parsed?.message || {};
+          if (message.body === "hold for replay" && holdFeedbackDelivery) {
+            res.writeHead(503, { "content-type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "not ready" }));
+            return;
+          }
+          deliveredFeedback.push(message);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, accepted_seq: message.seq }));
+        });
+        return;
+      }
       if ((req.url || "").startsWith("/mcp")) {
         let body = "";
         req.on("data", (chunk) => {
@@ -207,6 +238,7 @@ test("ACA proxy forwards authenticated project requests through the control pane
       TANDEM_API_TOKEN: engineToken,
       ACA_BASE_URL: `http://127.0.0.1:${acaPort}`,
       ACA_API_TOKEN: acaToken,
+      TANDEM_CONTROL_PANEL_STATE_DIR: stateDir,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -256,4 +288,56 @@ test("ACA proxy forwards authenticated project requests through the control pane
   });
   assert.equal(cancelled.status, 200);
   assert.equal(cancelled.json().status, "cancelled");
+
+  const firstFeedback = await request(baseUrl, "/api/aca/runs/run-1/feedback", {
+    cookie,
+    method: "POST",
+    body: {
+      body: "check the failing test",
+      actor: "operator",
+      kind: "operator_feedback",
+      task_id: "TAN-124",
+      thread_id: "run-1",
+      source_refs: { issue: "TAN-124" },
+    },
+  });
+  assert.equal(firstFeedback.status, 201);
+  assert.equal(firstFeedback.json().message.seq, 1);
+  assert.equal(firstFeedback.json().message.delivery_state, "delivered");
+  assert.equal(deliveredFeedback[0].body, "check the failing test");
+
+  const pendingFeedback = await request(baseUrl, "/api/aca/runs/run-1/feedback", {
+    cookie,
+    method: "POST",
+    body: { body: "hold for replay", actor: "operator", kind: "operator_feedback" },
+  });
+  assert.equal(pendingFeedback.status, 201);
+  assert.equal(pendingFeedback.json().message.seq, 2);
+  assert.equal(pendingFeedback.json().message.delivery_state, "pending");
+
+  const persistedFeedback = await request(baseUrl, "/api/aca/runs/run-1/feedback", { cookie });
+  assert.equal(persistedFeedback.status, 200);
+  assert.deepEqual(
+    persistedFeedback.json().messages.map((message) => [message.seq, message.body]),
+    [
+      [1, "check the failing test"],
+      [2, "hold for replay"],
+    ]
+  );
+
+  holdFeedbackDelivery = false;
+  const replayed = await request(baseUrl, "/api/aca/runs/run-1/feedback/replay", {
+    cookie,
+    method: "POST",
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.json().messages[0].seq, 2);
+  assert.equal(replayed.json().messages[0].delivery_state, "delivered");
+  assert.deepEqual(
+    deliveredFeedback.map((message) => [message.seq, message.body]),
+    [
+      [1, "check the failing test"],
+      [2, "hold for replay"],
+    ]
+  );
 });

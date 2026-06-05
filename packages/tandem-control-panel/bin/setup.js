@@ -5798,6 +5798,7 @@ const handleAcaApi = createAcaApiHandler({
   ACA_BASE_URL,
   getAcaToken,
   sendJson,
+  TANDEM_CONTROL_PANEL_STATE_DIR: process.env.TANDEM_CONTROL_PANEL_STATE_DIR || "",
 });
 
 const handleControlPanelConfig = createControlPanelConfigHandler({

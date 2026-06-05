@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Badge, PanelCard } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { formatStatus, runStatus, runTitle, runUpdatedAt, toArray } from "./CodingWorkflowsHelpers";
+import { subscribeSse } from "../services/sse.js";
 
 type ThreadEntry = {
   id: string;
@@ -64,25 +65,6 @@ function compactJson(value: any) {
   }
 }
 
-function feedbackStorageKey(runId: string) {
-  return `tandem:coding-cockpit-feedback:${runId}`;
-}
-
-function loadFeedback(runId: string): ThreadEntry[] {
-  if (!runId || typeof window === "undefined") return [];
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(feedbackStorageKey(runId)) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((entry) => entry && typeof entry === "object") : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveFeedback(runId: string, entries: ThreadEntry[]) {
-  if (!runId || typeof window === "undefined") return;
-  window.localStorage.setItem(feedbackStorageKey(runId), JSON.stringify(entries.slice(-25)));
-}
-
 function taskSourceLabel(source: any) {
   const type = String(source?.type || "").trim();
   if (type === "linear") return "Linear issue";
@@ -92,20 +74,38 @@ function taskSourceLabel(source: any) {
   return type ? formatStatus(type) : "Task source";
 }
 
+function feedbackMessageEntry(message: any): ThreadEntry {
+  const state = String(message?.delivery_state || "pending").trim();
+  return {
+    id: String(message?.id || `${message?.run_id || "run"}:${message?.seq || Date.now()}`),
+    kind: "operator",
+    title: "Operator feedback",
+    body: String(message?.body || "").trim(),
+    atMs: timestampMs(message?.created_at_ms || message?.timestamp_ms || 0),
+    meta: [
+      `seq ${message?.seq || "?"}`,
+      state ? `delivery ${formatStatus(state)}` : "",
+      message?.actor ? `actor ${message.actor}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  };
+}
+
 function buildThreadEntries({
   runId,
   run,
   events,
   summary,
   blackboard,
-  localFeedback,
+  feedbackMessages,
 }: {
   runId: string;
   run: any;
   events: any[];
   summary: string;
   blackboard: any;
-  localFeedback: ThreadEntry[];
+  feedbackMessages: any[];
 }) {
   const rows: ThreadEntry[] = [];
   const createdAt = Number(run?.created_at_ms || run?.snapshot?.created_at_ms || 0);
@@ -159,7 +159,7 @@ function buildThreadEntries({
       meta: eventType,
     });
   });
-  return [...rows, ...localFeedback].sort((a, b) => {
+  return [...rows, ...feedbackMessages.map(feedbackMessageEntry)].sort((a, b) => {
     const left = Number(a.atMs || 0);
     const right = Number(b.atMs || 0);
     if (left !== right) return left - right;
@@ -168,6 +168,7 @@ function buildThreadEntries({
 }
 
 export function CodingWorkflowsAgentCockpit({
+  api,
   selectedRunId,
   selectedRun,
   selectedProject,
@@ -177,6 +178,7 @@ export function CodingWorkflowsAgentCockpit({
   cancelCoderRun,
   lastRunEvent,
 }: {
+  api: (path: string, init?: RequestInit) => Promise<any>;
   selectedRunId: string;
   selectedRun: any;
   selectedProject: any;
@@ -187,12 +189,54 @@ export function CodingWorkflowsAgentCockpit({
   lastRunEvent: string;
 }) {
   const [draft, setDraft] = useState("");
-  const [localFeedback, setLocalFeedback] = useState<ThreadEntry[]>([]);
+  const [feedbackMessages, setFeedbackMessages] = useState<any[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState("");
+  const [sendingFeedback, setSendingFeedback] = useState(false);
   const runId = String(selectedRunId || "").trim();
 
   useEffect(() => {
     setDraft("");
-    setLocalFeedback(loadFeedback(runId));
+    setFeedbackMessages([]);
+    setFeedbackError("");
+    if (!runId) return;
+    let cancelled = false;
+    setFeedbackLoading(true);
+    api(`/api/aca/runs/${encodeURIComponent(runId)}/feedback`)
+      .then((payload: any) => {
+        if (!cancelled) setFeedbackMessages(toArray(payload, "messages"));
+      })
+      .catch((error: any) => {
+        if (!cancelled) setFeedbackError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setFeedbackLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, runId]);
+
+  useEffect(() => {
+    if (!runId) return;
+    const url = `/api/aca/runs/${encodeURIComponent(runId)}/feedback/events`;
+    const unsubscribe = subscribeSse(url, (event: MessageEvent) => {
+      let envelope: any = null;
+      try {
+        envelope = JSON.parse(String(event?.data || "{}"));
+      } catch {
+        envelope = null;
+      }
+      if (!envelope || envelope.event_type === "hello" || envelope.event_type === "ping") return;
+      const message = envelope?.payload?.message;
+      if (!message?.id) return;
+      setFeedbackMessages((current) => {
+        const next = current.filter((entry: any) => String(entry?.id || "") !== String(message.id));
+        next.push(message);
+        return next.sort((a: any, b: any) => Number(a?.seq || 0) - Number(b?.seq || 0));
+      });
+    });
+    return () => unsubscribe();
   }, [runId]);
 
   const detail = runDetailQuery.data || {};
@@ -218,29 +262,50 @@ export function CodingWorkflowsAgentCockpit({
             events,
             summary,
             blackboard,
-            localFeedback,
+            feedbackMessages,
           })
         : [],
-    [blackboard, events, localFeedback, runId, selectedRun, summary]
+    [blackboard, events, feedbackMessages, runId, selectedRun, summary]
   );
+  const sourceType = String(source?.type || selectedProject?.taskSource?.type || "").trim();
+  const prUrl = String(pullRequest?.url || blackboard?.pull_request || "").trim();
 
-  function addFeedback() {
+  async function addFeedback() {
     const text = draft.trim();
-    if (!text || !runId) return;
-    const next = [
-      ...localFeedback,
-      {
-        id: `${runId}:operator:${Date.now()}`,
-        kind: "operator" as const,
-        title: "Operator feedback",
-        body: text,
-        atMs: Date.now(),
-        meta: "local draft",
-      },
-    ];
-    setLocalFeedback(next);
-    saveFeedback(runId, next);
-    setDraft("");
+    if (!text || !runId || sendingFeedback) return;
+    setSendingFeedback(true);
+    setFeedbackError("");
+    try {
+      const payload = await api(`/api/aca/runs/${encodeURIComponent(runId)}/feedback`, {
+        method: "POST",
+        body: JSON.stringify({
+          body: text,
+          actor: "operator",
+          kind: "operator_feedback",
+          task_id: task?.id || task?.identifier || source?.identifier || "",
+          thread_id: runId,
+          source_refs: {
+            source_type: source?.type || "",
+            source_identifier: source?.identifier || source?.issue_id || "",
+            source_url: source?.issue_url || source?.issueUrl || "",
+            pull_request_url: prUrl || "",
+          },
+        }),
+      });
+      const message = payload?.message;
+      if (message?.id) {
+        setFeedbackMessages((current) => {
+          const next = current.filter((entry: any) => String(entry?.id || "") !== String(message.id));
+          next.push(message);
+          return next.sort((a: any, b: any) => Number(a?.seq || 0) - Number(b?.seq || 0));
+        });
+      }
+      setDraft("");
+    } catch (error: any) {
+      setFeedbackError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSendingFeedback(false);
+    }
   }
 
   if (!runId || !selectedRun) {
@@ -251,8 +316,6 @@ export function CodingWorkflowsAgentCockpit({
     );
   }
 
-  const sourceType = String(source?.type || selectedProject?.taskSource?.type || "").trim();
-  const prUrl = String(pullRequest?.url || blackboard?.pull_request || "").trim();
   const prState = String(pullRequest?.lifecycle_state || pullRequest?.state || "").trim();
   const runState = runStatus(selectedRun);
   const live = !["completed", "done", "failed", "cancelled", "canceled", "blocked"].includes(runState);
@@ -323,7 +386,7 @@ export function CodingWorkflowsAgentCockpit({
 
         <PanelCard
           title="Thread"
-          subtitle="System, agent, Linear, GitHub, and local operator messages"
+          subtitle="System, agent, Linear, GitHub, and operator messages"
           actions={<Badge tone={threadEntries.length ? "info" : "ghost"}>{threadEntries.length} entries</Badge>}
         >
           {runDetailQuery.isLoading ? (
@@ -363,7 +426,7 @@ export function CodingWorkflowsAgentCockpit({
       </div>
 
       <div className="grid gap-4 content-start">
-        <PanelCard title="Operator feedback" subtitle="Attach a local note to this run thread">
+        <PanelCard title="Operator feedback" subtitle="Send feedback to the active run thread">
           <div className="grid gap-3">
             <textarea
               className="tcp-input min-h-[112px] resize-y"
@@ -375,14 +438,13 @@ export function CodingWorkflowsAgentCockpit({
               type="button"
               className="tcp-btn-primary"
               onClick={addFeedback}
-              disabled={!draft.trim()}
+              disabled={!draft.trim() || sendingFeedback}
             >
               <i data-lucide="send"></i>
-              Add feedback
+              {sendingFeedback ? "Sending..." : "Send feedback"}
             </button>
-            <div className="tcp-subtle text-xs">
-              Feedback is kept in this browser until the feedback API is connected.
-            </div>
+            {feedbackLoading ? <div className="tcp-subtle text-xs">Loading feedback...</div> : null}
+            {feedbackError ? <div className="text-xs text-red-200">{feedbackError}</div> : null}
           </div>
         </PanelCard>
 
