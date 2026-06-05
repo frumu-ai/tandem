@@ -388,6 +388,21 @@ async fn dispatch_decision(
                 user_id = %user_id,
                 "rejecting Telegram interaction targeting a run outside the channel's bound tenant"
             );
+            let channel_tenant = tandem_types::TenantContext::explicit_user_workspace(
+                org_id,
+                workspace_id,
+                None,
+                "telegram",
+            );
+            crate::http::channel_interaction_audit::append_cross_tenant_denial(
+                &state,
+                "telegram",
+                user_id,
+                &parsed.run_id,
+                channel_tenant,
+                &tenant_context,
+            )
+            .await;
             return reject_forbidden("channel not bound to this run's tenant");
         }
     }

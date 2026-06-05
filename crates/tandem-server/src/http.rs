@@ -58,6 +58,7 @@ pub(crate) mod bug_monitor;
 mod capabilities;
 pub(crate) mod channel_automation_drafts;
 mod channel_enrollment;
+mod channel_interaction_audit;
 mod channels_api;
 mod coder;
 pub(crate) mod config_providers;
