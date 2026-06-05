@@ -747,6 +747,84 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
 }
 
 #[tokio::test]
+async fn explicit_tenant_provider_route_ignores_shared_config_api_key_for_remote_catalog_fetch() {
+    let seen_auth = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    let seen_auth_for_handler = seen_auth.clone();
+    let app = Router::new().route(
+        "/v1/models",
+        get(move |headers: axum::http::HeaderMap| {
+            let seen_auth = seen_auth_for_handler.clone();
+            async move {
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                seen_auth.lock().expect("seen auth lock").push(auth);
+                Json(json!({
+                    "data": [
+                        { "id": "gpt-4.1-mini", "name": "GPT 4.1 Mini", "context_length": 128000 }
+                    ]
+                }))
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test provider");
+    });
+
+    let state = test_state().await;
+    state
+        .config
+        .patch_project(json!({
+            "providers": {
+                "openai": {
+                    "url": format!("http://{addr}/v1"),
+                    "api_key": "sk-shared-config"
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+
+    let app = app_router(state);
+    let req = tenant_request("GET", "/provider", "org-a", "workspace-a", "user-a", None);
+    let resp = app.oneshot(req).await.expect("response");
+    server.abort();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let payload = json_body(resp).await;
+    let openai = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        })
+        .expect("openai entry");
+    assert_eq!(
+        openai.get("catalog_status").and_then(Value::as_str),
+        Some("unavailable"),
+        "explicit tenant must not use shared config provider key for discovery"
+    );
+    assert!(
+        seen_auth.lock().expect("seen auth lock").is_empty(),
+        "shared config key should not trigger a remote catalog request for explicit tenants"
+    );
+}
+
+#[tokio::test]
 async fn provider_route_uses_only_request_tenant_persisted_auth_for_remote_catalog_fetch() {
     let seen_auth = Arc::new(Mutex::new(Vec::<String>::new()));
     let listener = TcpListener::bind("127.0.0.1:0")

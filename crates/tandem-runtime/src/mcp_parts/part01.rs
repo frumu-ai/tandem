@@ -810,6 +810,15 @@ impl McpRegistry {
         })?;
         let canonical_tool = canonical_tool_key(tool_name);
         let now = now_ms();
+        let mismatched_headers =
+            mismatched_store_secret_headers(&server.secret_headers, current_tenant);
+        if !mismatched_headers.is_empty() {
+            return Err(store_secret_tenant_denial_error(
+                server_name,
+                tool_name,
+                &mismatched_headers,
+            ));
+        }
         let _ = self
             .ensure_oauth_bearer_token_fresh(server_name, false)
             .await;

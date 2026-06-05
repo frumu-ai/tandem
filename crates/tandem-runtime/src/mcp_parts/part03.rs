@@ -605,9 +605,11 @@ mod tests {
 
     #[test]
     fn store_secret_ref_requires_matching_tenant_context() {
-        let secret_id = "mcp_header::tenant::authorization".to_string();
+        let suffix = Uuid::new_v4();
+        let secret_id = format!("mcp_header::tenant::{suffix}::authorization");
 
-        let current_tenant = TenantContext::explicit("tenant", "workspace", None);
+        let current_tenant =
+            TenantContext::explicit(format!("tenant-{suffix}"), "workspace", None);
         tandem_core::set_provider_auth_for_tenant(&current_tenant, &secret_id, "tenant-secret")
             .expect("store secret");
         let matching_ref = McpSecretRef::Store {
@@ -737,7 +739,8 @@ mod tests {
             .call_tool_for_tenant("tenant-server", "get_me", json!({}), &tenant_b)
             .await
             .expect_err("tenant B must not execute with tenant A secret");
-        assert!(err.contains("unauthorized"));
+        assert!(err.contains("ToolDenied { reason: TenantScope }"));
+        assert!(err.contains("Authorization"));
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &tenant_a,

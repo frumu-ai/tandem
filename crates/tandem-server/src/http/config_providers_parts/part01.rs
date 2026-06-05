@@ -296,6 +296,7 @@ pub(super) async fn list_providers(
     } else {
         HashMap::new()
     };
+    let allow_shared_auth_sources = tenant_context.is_local_implicit();
     let config_model_provider_set = merge_provider_models_from_config(&mut wire, &effective_cfg)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
@@ -315,10 +316,16 @@ pub(super) async fn list_providers(
         let effective_cfg = &effective_cfg;
         let runtime_auth = &runtime_auth;
         let persisted_auth = &persisted_auth;
+        let allow_shared_auth_sources = allow_shared_auth_sources;
         async move {
-            let has_discovery_key =
-                provider_config_api_key(effective_cfg, &provider_id, runtime_auth, persisted_auth)
-                    .is_some();
+            let has_discovery_key = provider_config_api_key(
+                effective_cfg,
+                &provider_id,
+                runtime_auth,
+                persisted_auth,
+                allow_shared_auth_sources,
+            )
+            .is_some();
             let result = if provider_requires_api_key(&provider_id) && !has_discovery_key {
                 if canonical_provider_id(&provider_id) == OPENAI_CODEX_PROVIDER_ID {
                     ProviderCatalogFetchResult::Static {
@@ -338,6 +345,7 @@ pub(super) async fn list_providers(
                     &effective_cfg,
                     &runtime_auth,
                     &persisted_auth,
+                    allow_shared_auth_sources,
                 )
                 .await
             };

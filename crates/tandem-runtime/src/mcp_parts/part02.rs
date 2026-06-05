@@ -38,6 +38,38 @@ fn resolve_secret_ref_value(
     }
 }
 
+fn mismatched_store_secret_headers(
+    secret_headers: &HashMap<String, McpSecretRef>,
+    current_tenant: &TenantContext,
+) -> Vec<String> {
+    if current_tenant.is_local_implicit() {
+        return Vec::new();
+    }
+
+    let mut out = secret_headers
+        .iter()
+        .filter_map(|(header_name, secret_ref)| match secret_ref {
+            McpSecretRef::Store { tenant_context, .. } if tenant_context != current_tenant => {
+                Some(header_name.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out
+}
+
+fn store_secret_tenant_denial_error(
+    server_name: &str,
+    tool_name: &str,
+    header_names: &[String],
+) -> String {
+    format!(
+        "ToolDenied {{ reason: TenantScope }}: blocked MCP tool `{server_name}.{tool_name}` because store-backed secret header(s) [{}] belong to a different tenant context.",
+        header_names.join(", ")
+    )
+}
+
 fn local_tenant_context() -> TenantContext {
     LocalImplicitTenant.into()
 }
