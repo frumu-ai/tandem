@@ -154,7 +154,7 @@ async fn linear_readiness_distinguishes_read_only_available() {
                 "required_capabilities": ["linear.get_issue"],
                 "provider_preference": ["mcp"],
                 "available_tools": [
-                    {"provider":"mcp","tool_name":"mcp.linear.get_issue","schema":{}}
+                    {"provider":"mcp","tool_name":"mcp.app_linear_linear.get_issue","schema":{}}
                 ]
             })
             .to_string(),
@@ -199,7 +199,7 @@ async fn linear_readiness_distinguishes_write_capable() {
                 "required_capabilities": ["linear.update_issue"],
                 "provider_preference": ["mcp"],
                 "available_tools": [
-                    {"provider":"mcp","tool_name":"mcp.linear.save_issue","schema":{}}
+                    {"provider":"mcp","tool_name":"mcp.app_linear_linear.update_issue","schema":{}}
                 ]
             })
             .to_string(),

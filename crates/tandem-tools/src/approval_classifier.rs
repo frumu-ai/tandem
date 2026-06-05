@@ -250,6 +250,7 @@ const ALWAYS_GATE_PREFIXES: &[&str] = &[
     // Issue trackers (transitions / merges affect SOR). Read-only verbs are
     // carved out in NEVER_GATE_PREFIXES and are checked before this list.
     "mcp.linear.",
+    "mcp.app_linear_linear.",
     "mcp.jira.",
     "mcp.shortcut.",
     // GitHub mutating verbs.
@@ -293,6 +294,10 @@ const NEVER_GATE_PREFIXES: &[&str] = &[
     "mcp.linear.get",
     "mcp.linear.search",
     "mcp.linear.viewer",
+    "mcp.app_linear_linear.list",
+    "mcp.app_linear_linear.get",
+    "mcp.app_linear_linear.search",
+    "mcp.app_linear_linear.viewer",
     "mcp.jira.search",
     "mcp.jira.get",
     // KB MCP reads.
@@ -414,6 +419,11 @@ mod tests {
             "mcp.linear.get_issue",
             "mcp.linear.search_documentation",
             "mcp.linear.viewer",
+            "mcp.app_linear_linear.list_issues",
+            "mcp.app_linear_linear.list_comments",
+            "mcp.app_linear_linear.get_issue",
+            "mcp.app_linear_linear.search_documentation",
+            "mcp.app_linear_linear.viewer",
         ] {
             assert_eq!(classify(tool), ApprovalClassification::NoApproval, "{tool}");
         }
@@ -424,6 +434,12 @@ mod tests {
             "mcp.linear.create_comment",
             "mcp.linear.update_comment",
             "mcp.linear.transition_issue",
+            "mcp.app_linear_linear.create_issue",
+            "mcp.app_linear_linear.update_issue",
+            "mcp.app_linear_linear.save_issue",
+            "mcp.app_linear_linear.create_comment",
+            "mcp.app_linear_linear.update_comment",
+            "mcp.app_linear_linear.transition_issue",
         ] {
             assert_eq!(
                 classify(tool),
@@ -438,6 +454,8 @@ mod tests {
         let allowlist = vec![
             "mcp.linear.list_issues".to_string(),
             "mcp.linear.get_issue".to_string(),
+            "mcp.app_linear_linear.list_issues".to_string(),
+            "mcp.app_linear_linear.get_issue".to_string(),
         ];
         assert_eq!(
             classify_node_allowlist(&allowlist),

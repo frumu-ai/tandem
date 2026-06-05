@@ -882,6 +882,8 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             &[
                 "mcp.linear.list",
                 "mcp.linear.list_my_issues",
+                "mcp.app_linear_linear.list_issues",
+                "mcp.app_linear_linear.list_my_issues",
                 "linear_list_issues",
             ],
             "read",
@@ -890,14 +892,21 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             "linear.get_issue",
             "mcp",
             "mcp.linear.get_issue",
-            &["mcp.linear.get", "linear_get_issue"],
+            &[
+                "mcp.linear.get",
+                "mcp.app_linear_linear.get_issue",
+                "linear_get_issue",
+            ],
             "read",
         ),
         make_binding_with_access(
             "linear.list_comments",
             "mcp",
             "mcp.linear.list_comments",
-            &["linear_list_comments"],
+            &[
+                "mcp.app_linear_linear.list_comments",
+                "linear_list_comments",
+            ],
             "read",
         ),
         make_binding_with_access(
@@ -907,6 +916,9 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             &[
                 "mcp.linear.save_issue",
                 "mcp.linear.update_issue",
+                "mcp.app_linear_linear.create_issue",
+                "mcp.app_linear_linear.save_issue",
+                "mcp.app_linear_linear.update_issue",
                 "linear_create_issue",
                 "linear_save_issue",
             ],
@@ -919,6 +931,9 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             &[
                 "mcp.linear.save_issue",
                 "mcp.linear.transition_issue",
+                "mcp.app_linear_linear.update_issue",
+                "mcp.app_linear_linear.save_issue",
+                "mcp.app_linear_linear.transition_issue",
                 "linear_update_issue",
                 "linear_save_issue",
             ],
@@ -931,6 +946,9 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             &[
                 "mcp.linear.save_comment",
                 "mcp.linear.update_comment",
+                "mcp.app_linear_linear.create_comment",
+                "mcp.app_linear_linear.save_comment",
+                "mcp.app_linear_linear.update_comment",
                 "linear_create_comment",
                 "linear_save_comment",
             ],
@@ -1276,6 +1294,49 @@ mod tests {
             .expect("resolve");
         assert_eq!(result.missing_required, Vec::<String>::new());
         assert_eq!(result.resolved.len(), 4);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn resolve_matches_linear_catalog_namespace_tools() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-cap-resolver-{}", uuid::Uuid::new_v4()));
+        let resolver = CapabilityResolver::new(root.clone());
+        let result = resolver
+            .resolve(
+                CapabilityResolveInput {
+                    workflow_id: Some("wf-linear-catalog".to_string()),
+                    required_capabilities: vec![
+                        "linear.get_issue".to_string(),
+                        "linear.update_issue".to_string(),
+                        "linear.create_comment".to_string(),
+                    ],
+                    optional_capabilities: vec![],
+                    provider_preference: vec!["mcp".to_string()],
+                    available_tools: vec![
+                        CapabilityToolAvailability {
+                            provider: "mcp".to_string(),
+                            tool_name: "mcp.app_linear_linear.get_issue".to_string(),
+                            schema: Value::Null,
+                        },
+                        CapabilityToolAvailability {
+                            provider: "mcp".to_string(),
+                            tool_name: "mcp.app_linear_linear.update_issue".to_string(),
+                            schema: Value::Null,
+                        },
+                        CapabilityToolAvailability {
+                            provider: "mcp".to_string(),
+                            tool_name: "mcp.app_linear_linear.create_comment".to_string(),
+                            schema: Value::Null,
+                        },
+                    ],
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("resolve");
+        assert_eq!(result.missing_required, Vec::<String>::new());
+        assert_eq!(result.resolved.len(), 3);
         let _ = std::fs::remove_dir_all(root);
     }
 

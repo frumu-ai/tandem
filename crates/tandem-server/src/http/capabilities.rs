@@ -215,7 +215,12 @@ fn capability_connector_id(capability_id: &str) -> Option<&'static str> {
     }
 }
 
+const LINEAR_MCP_TOOL_PREFIXES: &[&str] = &["mcp.linear.", "mcp.app_linear_linear."];
+
 fn mcp_tool_is_connector_tool(tool_name: &str, connector: &str) -> bool {
+    if connector == "linear" {
+        return linear_tool_slug(tool_name).is_some();
+    }
     let prefix = format!("mcp.{connector}.");
     tool_name
         .trim()
@@ -223,12 +228,29 @@ fn mcp_tool_is_connector_tool(tool_name: &str, connector: &str) -> bool {
         .starts_with(prefix.as_str())
 }
 
-fn linear_tool_is_read(tool_name: &str) -> bool {
+fn mcp_server_is_connector(server_name: &str, connector: &str) -> bool {
+    if connector == "linear" {
+        let name = server_name.trim().to_ascii_lowercase();
+        return name == "linear" || name == "app.linear/linear" || name == "app_linear_linear";
+    }
+    server_name.eq_ignore_ascii_case(connector)
+}
+
+fn linear_tool_slug(tool_name: &str) -> Option<String> {
     let tool = tool_name.trim().to_ascii_lowercase();
-    tool.starts_with("mcp.linear.list")
-        || tool.starts_with("mcp.linear.get")
-        || tool.starts_with("mcp.linear.search")
-        || tool == "mcp.linear.viewer"
+    LINEAR_MCP_TOOL_PREFIXES
+        .iter()
+        .find_map(|prefix| tool.strip_prefix(prefix).map(ToOwned::to_owned))
+}
+
+fn linear_tool_is_read(tool_name: &str) -> bool {
+    let Some(slug) = linear_tool_slug(tool_name) else {
+        return false;
+    };
+    slug.starts_with("list")
+        || slug.starts_with("get")
+        || slug.starts_with("search")
+        || slug == "viewer"
 }
 
 fn linear_tool_is_write(tool_name: &str) -> bool {
@@ -255,7 +277,7 @@ fn mcp_connector_readiness_states(
         .map(|connector| {
             let configured_server = mcp_servers
                 .values()
-                .find(|server| server.name.eq_ignore_ascii_case(connector));
+                .find(|server| mcp_server_is_connector(&server.name, connector));
             let configured = configured_server.is_some()
                 || available_tools
                     .iter()
