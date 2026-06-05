@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.14] - Unreleased
+
+### Added
+
+- Wired a cross-tenant isolation evaluation dataset into the per-PR regression
+  gate, with must-block scenarios for cross-tenant source/secret access and
+  cross-tenant memory reads (CT-01). Multiple datasets now run in the gate
+  alongside `critical_path` rather than overloading it.
+- Bootstrapped the local eval-runner stub mode with a real in-process
+  `AppState`, so cross-tenant evals exercise real tenant-scoped enforcement
+  instead of simulated output shapes (CT-16).
+- Added a real-engine tenant tool-execution isolation eval proving that an
+  automation running as tenant A cannot read a tenant-B-only resource through
+  the runtime tool path (CT-02).
+- Added cross-tenant audit-visibility negative coverage for the `/audit/stream`
+  read path, plus an eval case asserting tenant B cannot read tenant A's audit
+  events (CT-04).
+- Added memory poisoning trust gates: memory now carries trust labels with a
+  promotion gate, and untrusted search results, channel reads, and prompt
+  context are framed as trust-scoped evidence. Includes a memory-poisoning
+  eval dataset.
+
+### Changed
+
+- Tagged `fintech.protected_action` and `tool.effect.recorded` audit events
+  with their originating tenant context so consequential actions are
+  attributable on the tenant-scoped audit stream.
+
+### Security
+
+- Enforced a verified human decider on Automations V2 gate decisions, closing a
+  gate-decision self-approval path (GOV-B1).
+- Tenant-scoped the audit read path (`/audit/stream`): it now fails closed for
+  explicit tenants and recognizes both nested `tenantContext` and flat tenant
+  tags, while remaining a no-op for local/single-tenant deployments.
+- Added a memory retrieval gateway that governs channel reads, so memory pulled
+  into channel responses passes tenant and source scoping before egress.
+- Added retrieval egress controls (TAN-102) restricting which retrieved memory
+  and knowledge can leave through session knowledge-base grounding and export
+  paths.
+- Added a scoped memory decrypt broker that brokers per-scope data-encryption-key
+  unwrap through tickets (including the wrapped DEK) instead of exposing keys
+  broadly.
+- Added key-scope metadata to memory envelopes, binding encrypted memory to a
+  specific key scope.
+- Added a memory key lifecycle evidence gate, enforced by a CI verification
+  check.
+- Added a memory database blast-radius boundary check, enforced in CI, to bound
+  the impact of a memory-store compromise.
+
 ## [0.5.13] - 2026-06-02
 
 ### Added
