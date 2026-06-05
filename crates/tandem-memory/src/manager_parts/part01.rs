@@ -6,6 +6,7 @@ use crate::context_layers::ContextLayerGenerator;
 use crate::context_uri::ContextUri;
 use crate::db::MemoryDatabase;
 use crate::embeddings::EmbeddingService;
+use crate::envelope::validate_memory_envelope_for_write;
 use crate::types::{
     CleanupLogEntry, DirectoryListing, EmbeddingHealth, KnowledgeCoverageRecord,
     KnowledgeItemRecord, KnowledgePromotionRequest, KnowledgePromotionResult, KnowledgeSpaceRecord,
@@ -95,6 +96,8 @@ impl MemoryManager {
     /// 2. Generate embeddings for each chunk
     /// 3. Store chunks and embeddings in the database
     pub async fn store_message(&self, request: StoreMessageRequest) -> MemoryResult<Vec<String>> {
+        validate_memory_envelope_for_write(&request.tenant_scope, request.metadata.as_ref())?;
+
         if self
             .db
             .ensure_vector_tables_healthy()
@@ -362,6 +365,7 @@ impl MemoryManager {
     }
 
     pub async fn upsert_knowledge_space(&self, space: &KnowledgeSpaceRecord) -> MemoryResult<()> {
+        validate_memory_envelope_for_write(&MemoryTenantScope::local(), space.metadata.as_ref())?;
         self.db.upsert_knowledge_space(space).await
     }
 
@@ -370,6 +374,7 @@ impl MemoryManager {
         space: &KnowledgeSpaceRecord,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<()> {
+        validate_memory_envelope_for_write(tenant_scope, space.metadata.as_ref())?;
         self.db
             .upsert_knowledge_space_for_tenant(space, tenant_scope)
             .await
@@ -410,6 +415,7 @@ impl MemoryManager {
     }
 
     pub async fn upsert_knowledge_item(&self, item: &KnowledgeItemRecord) -> MemoryResult<()> {
+        validate_memory_envelope_for_write(&MemoryTenantScope::local(), item.metadata.as_ref())?;
         self.db.upsert_knowledge_item(item).await
     }
 
@@ -418,6 +424,7 @@ impl MemoryManager {
         item: &KnowledgeItemRecord,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<()> {
+        validate_memory_envelope_for_write(tenant_scope, item.metadata.as_ref())?;
         self.db
             .upsert_knowledge_item_for_tenant(item, tenant_scope)
             .await
@@ -460,6 +467,10 @@ impl MemoryManager {
         &self,
         coverage: &KnowledgeCoverageRecord,
     ) -> MemoryResult<()> {
+        validate_memory_envelope_for_write(
+            &MemoryTenantScope::local(),
+            coverage.metadata.as_ref(),
+        )?;
         self.db.upsert_knowledge_coverage(coverage).await
     }
 
@@ -468,6 +479,7 @@ impl MemoryManager {
         coverage: &KnowledgeCoverageRecord,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<()> {
+        validate_memory_envelope_for_write(tenant_scope, coverage.metadata.as_ref())?;
         self.db
             .upsert_knowledge_coverage_for_tenant(coverage, tenant_scope)
             .await

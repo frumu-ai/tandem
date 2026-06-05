@@ -4,6 +4,7 @@ pub mod context_uri;
 pub mod db;
 pub mod distillation;
 pub mod embeddings;
+pub mod envelope;
 pub mod governance;
 pub mod importer;
 pub mod manager;
