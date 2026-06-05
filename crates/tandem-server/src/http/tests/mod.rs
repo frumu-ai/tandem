@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) mod agent_teams;
 pub(super) mod approvals_aggregator;
+pub(super) mod audit;
 pub(super) mod bug_monitor;
 pub(super) mod capabilities;
 pub(super) mod channel_automation_drafts;

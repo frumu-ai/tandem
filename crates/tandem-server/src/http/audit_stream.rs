@@ -66,11 +66,23 @@ fn audit_event_matches_tenant(event: &EngineEvent, tenant: &TenantContext) -> bo
         .or_else(|| event.properties.get("workspaceID"))
         .and_then(Value::as_str);
 
-    if let Some(org_id) = event_org {
-        if org_id != tenant.org_id {
-            return false;
-        }
+    // Local/single-tenant deployments are a no-op: there is exactly one tenant, so the
+    // implicit-local admin sees every event regardless of whether it carries an org tag.
+    if tenant.is_local_implicit() {
+        return true;
     }
+
+    // Explicit (multi-tenant) context: fail closed. An event is only visible to a reader
+    // that can be positively matched to it. An untagged event (no org_id) cannot be proven
+    // to belong to this tenant, so it is hidden rather than leaked to every tenant (TAN-9).
+    let Some(org_id) = event_org else {
+        return false;
+    };
+    if org_id != tenant.org_id {
+        return false;
+    }
+    // Workspace is a second isolation axis. When the event carries a workspace, it must
+    // match; when it omits one, org-level scoping above is sufficient to attribute it.
     if let Some(workspace_id) = event_workspace {
         if workspace_id != tenant.workspace_id {
             return false;
@@ -339,53 +351,39 @@ mod tests {
     }
 
     #[test]
-    fn untagged_event_currently_matches_any_tenant_fail_open_gap() {
-        // KNOWN GAP (TAN-9): when an event carries no org_id/workspace_id property,
-        // `audit_event_matches_tenant` returns true and the event is visible to EVERY
-        // tenant. This contradicts the "fail closed" invariant for the audit read path.
-        //
-        // This test PINS the current (fail-open) behavior so the gap is tracked and a
-        // follow-up fix flips this to `!matches` deliberately rather than silently. If
-        // CT-04's hardening lands here, update this assertion (and add a regression test
-        // that an untagged event is hidden from a non-owning tenant).
+    fn untagged_event_is_hidden_from_explicit_tenant_fail_closed() {
+        // TAN-9 hardening: an event with no org_id/workspace_id cannot be attributed to
+        // any tenant, so under an explicit (multi-tenant) context it must be hidden rather
+        // than leaked to every reader. Regression guard for the former fail-open gap.
         let event = EngineEvent::new(
             "fintech.protected_action.denied",
             json!({ "tool": "mcp.bank.release_funds", "category": "money_movement" }),
         );
         let reader = tenant("tenant-b-org", "tenant-b-workspace");
         assert!(
-            audit_event_matches_tenant(&event, &reader),
-            "documents the current fail-open behavior for untagged audit events; \
-             see TAN-9 — tighten to fail-closed and invert this assertion"
+            !audit_event_matches_tenant(&event, &reader),
+            "an untagged audit event must fail closed for an explicit tenant reader"
         );
     }
 
-    // SCAFFOLD — full HTTP-path negative test for `/audit/stream`.
-    //
-    // Left #[ignore] intentionally. Two harness gotchas must be handled before this is
-    // a reliable test (both surfaced during TAN-9 investigation):
-    //
-    //   1. ORDERING: `audit_stream` subscribes to `state.event_bus` only when the handler
-    //      runs. The broadcast channel does not replay history, so the tenant A audit
-    //      event must be PUBLISHED ONTO `state.event_bus` AFTER the request handler has
-    //      subscribed — not written ahead of time via `append_protected_audit_event`.
-    //
-    //   2. UNBOUNDED STREAM: the response is an infinite `application/x-ndjson` stream that
-    //      stays open as long as the `event_bus` sender lives (it lives with `state`).
-    //      `to_bytes(body, usize::MAX)` will HANG. Read a bounded number of frames with a
-    //      timeout (e.g. `tokio::time::timeout` around a `Frame` poll), then drop the body.
-    //
-    // Intended assertion once wired:
-    //   - reader scoped to tenant-b receives ZERO records for a tenant-a-tagged event;
-    //   - reader scoped to tenant-a receives the record, mapped via
-    //     `audit_event_to_stream_record` (command == "fintech_protected_action_denied").
-    //
-    // Until then, the unit tests above provide the real enforcement signal for CT-04.
-    #[tokio::test]
-    #[ignore = "TAN-9 scaffold: needs subscribe-then-publish ordering + bounded stream read (see notes above)"]
-    async fn tenant_b_cannot_read_tenant_a_audit_events() {
-        // Deliberately unimplemented scaffold — see the module notes above for the
-        // harness pattern (test_state / app_router / x-tandem-org-id headers, plus an
-        // `Authorization: Bearer` header so `audit_admin_allowed` passes).
+    #[test]
+    fn local_implicit_reader_sees_untagged_events_no_op() {
+        // The "local/single-tenant no-op" invariant: with exactly one (implicit-local)
+        // tenant, the admin must still see untagged events. Fail-closed only applies to
+        // explicit multi-tenant contexts.
+        let event = EngineEvent::new(
+            "fintech.protected_action.denied",
+            json!({ "tool": "mcp.bank.release_funds", "category": "money_movement" }),
+        );
+        let reader = TenantContext::local_implicit();
+        assert!(
+            audit_event_matches_tenant(&event, &reader),
+            "local/single-tenant deployments must remain a no-op (see untagged events)"
+        );
     }
+
+    // The full HTTP-path negative tests for `/audit/stream` (subscribe-then-publish
+    // ordering + bounded stream reads) live in
+    // `crate::http::tests::audit` — see `audit_stream_hides_other_tenants_events` and
+    // `audit_stream_hides_untagged_events_from_explicit_tenant`.
 }
