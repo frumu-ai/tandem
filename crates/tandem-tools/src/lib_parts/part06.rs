@@ -923,6 +923,36 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn channel_memory_trust_label_marks_untrusted_chunks_as_evidence() {
+        let external_metadata = json!({
+            "memory_trust": {
+                "label": "external_user_supplied"
+            }
+        });
+        let external_label = channel_memory_trust_label(Some(&external_metadata));
+        assert_eq!(
+            external_label,
+            ChannelMemoryTrustLabel::ExternalUserSupplied
+        );
+        assert_eq!(channel_memory_rendering_role(external_label), "evidence");
+        assert_eq!(
+            channel_memory_trust_payload(external_label)
+                .get("trusted_for_promotion")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let verified_metadata = json!({
+            "memory_trust": {
+                "label": "verified"
+            }
+        });
+        let verified_label = channel_memory_trust_label(Some(&verified_metadata));
+        assert_eq!(verified_label, ChannelMemoryTrustLabel::Verified);
+        assert_eq!(channel_memory_rendering_role(verified_label), "context");
+    }
+
     #[tokio::test]
     async fn memory_store_uses_hidden_project_scope_by_default() {
         let tool = MemoryStoreTool;

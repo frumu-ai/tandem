@@ -134,6 +134,19 @@ pub(super) async fn memory_promote_impl(
             audit_id,
         });
     };
+    let source_trust_label = memory_record_trust_label(source.metadata.as_ref())
+        .unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated);
+    if !source_trust_label.is_trusted_for_promotion() && !memory_review_has_evidence(&request.review) {
+        emit_blocked_memory_promote_guardrail(
+            state,
+            tenant_context,
+            &request,
+            capability.subject.clone(),
+            "untrusted memory promotion requires review evidence",
+        )
+        .await?;
+        return Err(StatusCode::FORBIDDEN);
+    }
     let scrub_report = scrub_content(&source.content);
     let audit_id = Uuid::new_v4().to_string();
     let now = crate::now_ms();
@@ -325,6 +338,22 @@ pub(super) async fn memory_promote_impl(
     })
 }
 
+fn memory_search_rendering_role(label: tandem_memory::MemoryTrustLabel) -> &'static str {
+    if label.is_trusted_for_promotion() {
+        "context"
+    } else {
+        "evidence"
+    }
+}
+
+fn memory_trust_result_payload(label: tandem_memory::MemoryTrustLabel) -> Value {
+    json!({
+        "label": label.as_str(),
+        "trusted_for_promotion": label.is_trusted_for_promotion(),
+        "rendering_role": memory_search_rendering_role(label),
+    })
+}
+
 pub(super) async fn memory_search(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
@@ -443,6 +472,8 @@ pub(super) async fn memory_search(
     let results = hits
         .into_iter()
         .map(|hit| {
+            let trust_label = memory_record_trust_label(hit.record.metadata.as_ref())
+                .unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated);
             json!({
                 "id": hit.record.id,
                 "tier": memory_tier_for_visibility(&hit.record.visibility),
@@ -456,6 +487,8 @@ pub(super) async fn memory_search(
                 "visibility": hit.record.visibility,
                 "artifact_refs": memory_artifact_refs(hit.record.metadata.as_ref()),
                 "linkage": memory_linkage(&hit.record),
+                "memory_trust": memory_trust_result_payload(trust_label),
+                "rendering_role": memory_search_rendering_role(trust_label),
                 "metadata": hit.record.metadata,
                 "provenance": hit.record.provenance,
             })
