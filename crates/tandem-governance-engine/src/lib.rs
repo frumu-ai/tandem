@@ -299,6 +299,9 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
             context: input.context,
             status: GovernanceApprovalStatus::Pending,
             expires_at_ms,
+            // Tenant binding is applied by the app-state wrapper after creation so
+            // the engine stays tenant-agnostic; defaults to unscoped here.
+            tenant_context: None,
             reviewed_by: None,
             reviewed_at_ms: None,
             review_notes: None,

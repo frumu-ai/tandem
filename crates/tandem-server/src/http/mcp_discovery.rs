@@ -252,6 +252,7 @@ async fn mcp_request_capability_impl(
     state: &AppState,
     requested_by: crate::automation_v2::governance::GovernanceActorRef,
     input: McpCapabilityRequestInput,
+    tenant_context: &TenantContext,
 ) -> anyhow::Result<Value> {
     if !state.premium_governance_enabled() {
         anyhow::bail!(
@@ -311,6 +312,7 @@ async fn mcp_request_capability_impl(
             rationale,
             approval_context,
             input.expires_at_ms,
+            tenant_context,
         )
         .await
         .map_err(anyhow::Error::msg)?;
@@ -409,7 +411,13 @@ impl Tool for McpRequestCapabilityTool {
             Some(input.agent_id.clone()),
             session_source,
         );
-        let output = mcp_request_capability_impl(&self.state, requested_by, input).await?;
+        let output = mcp_request_capability_impl(
+            &self.state,
+            requested_by,
+            input,
+            &TenantContext::local_implicit(),
+        )
+        .await?;
         Ok(ToolResult {
             output: serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string()),
             metadata: output,
@@ -435,7 +443,7 @@ pub(super) async fn mcp_request_capability(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let requested_by =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
-    let response = mcp_request_capability_impl(&state, requested_by, input)
+    let response = mcp_request_capability_impl(&state, requested_by, input, &tenant_context)
         .await
         .map_err(|error| {
             let message = error.to_string();

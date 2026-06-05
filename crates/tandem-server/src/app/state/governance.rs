@@ -66,6 +66,21 @@ fn display_agent_id(agent_id: &str, scoped_to_raw: &HashMap<String, String>) -> 
         .unwrap_or_else(|| agent_id.to_string())
 }
 
+/// CT-09: decide whether an approval receipt is actionable by / visible to a caller.
+/// Tenant identity is `(org_id, workspace_id)` — the same isolation axis the audit read
+/// path scopes on (CT-04). A receipt with no bound tenant was issued under the local
+/// default tenant, so it is compared against the local-implicit org/workspace; this keeps
+/// single-tenant deployments a no-op (every caller shares that org/workspace) while a real
+/// explicit tenant can never consume a receipt issued by a different org/workspace.
+fn approval_receipt_matches_tenant(
+    approval: &GovernanceApprovalRequest,
+    caller: &tandem_types::TenantContext,
+) -> bool {
+    let local = tandem_types::TenantContext::local_implicit();
+    let owner = approval.tenant_context.as_ref().unwrap_or(&local);
+    owner.org_id == caller.org_id && owner.workspace_id == caller.workspace_id
+}
+
 #[derive(Default)]
 pub struct UnavailableGovernanceEngine;
 
@@ -837,13 +852,14 @@ impl AppState {
         rationale: String,
         context: Value,
         expires_at_ms: Option<u64>,
+        tenant_context: &tandem_types::TenantContext,
     ) -> anyhow::Result<GovernanceApprovalRequest> {
         let now = now_ms();
         let snapshot = {
             let guard = self.automation_governance.read().await;
             self.governance_snapshot(&guard)
         };
-        let request = self
+        let mut request = self
             .governance_engine
             .create_approval_request(
                 &snapshot,
@@ -858,6 +874,12 @@ impl AppState {
                 now,
             )
             .map_err(|error| anyhow::anyhow!(error.message))?;
+        // CT-09: bind the issuing tenant to the receipt so it cannot later be
+        // replayed (approved or revoked) from a different tenant. Local/single-tenant
+        // receipts stay unbound (None), keeping the tenant check a no-op there.
+        if !tenant_context.is_local_implicit() {
+            request.tenant_context = Some(tenant_context.clone());
+        }
         {
             let mut guard = self.automation_governance.write().await;
             guard
@@ -869,7 +891,7 @@ impl AppState {
         let _ = append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
-            &tandem_types::TenantContext::local_implicit(),
+            tenant_context,
             request
                 .requested_by
                 .actor_id
@@ -921,12 +943,40 @@ impl AppState {
             .cloned()
     }
 
+    /// CT-09: tenant-scoped lookup. An explicit (multi-tenant) caller only sees an
+    /// approval that is bound to its own tenant; local/single-tenant is a no-op.
+    pub async fn get_governance_approval_request_for_tenant(
+        &self,
+        approval_id: &str,
+        tenant_context: &tandem_types::TenantContext,
+    ) -> Option<GovernanceApprovalRequest> {
+        self.get_governance_approval_request(approval_id)
+            .await
+            .filter(|request| approval_receipt_matches_tenant(request, tenant_context))
+    }
+
+    /// CT-09: tenant-scoped listing so one tenant's approvals are never enumerated
+    /// by another. Local/single-tenant returns the full list unchanged.
+    pub async fn list_approval_requests_for_tenant(
+        &self,
+        request_type: Option<GovernanceApprovalRequestType>,
+        status: Option<GovernanceApprovalStatus>,
+        tenant_context: &tandem_types::TenantContext,
+    ) -> Vec<GovernanceApprovalRequest> {
+        self.list_approval_requests(request_type, status)
+            .await
+            .into_iter()
+            .filter(|request| approval_receipt_matches_tenant(request, tenant_context))
+            .collect()
+    }
+
     pub async fn decide_approval_request(
         &self,
         approval_id: &str,
         reviewer: GovernanceActorRef,
         approved: bool,
         notes: Option<String>,
+        tenant_context: &tandem_types::TenantContext,
     ) -> anyhow::Result<Option<GovernanceApprovalRequest>> {
         let existing = {
             let guard = self.automation_governance.read().await;
@@ -935,6 +985,28 @@ impl AppState {
             };
             request
         };
+        // CT-09: reject cross-tenant receipt replay. A receipt issued in tenant A
+        // must not be approved or revoked from tenant B. The denial is audited under
+        // the requesting tenant, and the caller sees the same `None` (HTTP 404) as a
+        // missing receipt so existence is not leaked across the tenant boundary.
+        if !approval_receipt_matches_tenant(&existing, tenant_context) {
+            let _ = append_protected_audit_event(
+                self,
+                format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.cross_tenant_denied"),
+                tenant_context,
+                reviewer
+                    .actor_id
+                    .clone()
+                    .or_else(|| reviewer.source.clone()),
+                json!({
+                    "approvalID": approval_id,
+                    "decision": if approved { "approve" } else { "deny" },
+                    "reason": "cross_tenant_receipt_replay",
+                }),
+            )
+            .await;
+            return Ok(None);
+        }
         let stored = self
             .governance_engine
             .decide_approval_request(
@@ -959,7 +1031,7 @@ impl AppState {
                 "{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.{}",
                 if approved { "approved" } else { "denied" }
             ),
-            &tandem_types::TenantContext::local_implicit(),
+            tenant_context,
             reviewer
                 .actor_id
                 .clone()

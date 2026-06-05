@@ -652,6 +652,17 @@ pub struct GovernanceApprovalRequest {
     pub context: Value,
     pub status: GovernanceApprovalStatus,
     pub expires_at_ms: u64,
+    /// Tenant that issued this approval receipt. Bound at creation so a receipt
+    /// cannot be replayed to authorize (or be revoked from) a different tenant.
+    /// `None`/local-implicit for single-tenant deployments, where the tenant
+    /// check is a no-op. Serialized as `tenantContext` so the audit read path
+    /// recognizes the same nested shape it scopes for other producers (CT-04).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "tenantContext"
+    )]
+    pub tenant_context: Option<crate::TenantContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_by: Option<GovernanceActorRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
