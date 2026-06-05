@@ -47,9 +47,6 @@ pub fn tool_risk_tier_from_name_and_descriptor(
     if let Some(risk_tier) = descriptor.risk_tier {
         return risk_tier;
     }
-    if tool_name_looks_like_money_movement_or_contract(tool_name) {
-        return ToolRiskTier::MoneyMovementContract;
-    }
     if descriptor.admin_surface
         || descriptor.credential_access
         || descriptor
@@ -58,6 +55,9 @@ pub fn tool_risk_tier_from_name_and_descriptor(
         || descriptor.data_classes.contains(&DataClass::Credential)
     {
         return ToolRiskTier::CredentialAdmin;
+    }
+    if tool_name_looks_like_money_movement_or_contract(tool_name) {
+        return ToolRiskTier::MoneyMovementContract;
     }
     if tool_name_looks_like_destructive_action(tool_name) {
         return ToolRiskTier::DestructiveDelete;
@@ -877,6 +877,14 @@ mod tests {
         );
         assert_eq!(
             tool_name_risk_tier("mcp.google_admin.rotate_credential"),
+            ToolRiskTier::CredentialAdmin
+        );
+        assert_eq!(
+            tool_name_risk_tier("mcp.billing.rotate_credential"),
+            ToolRiskTier::CredentialAdmin
+        );
+        assert_eq!(
+            tool_name_risk_tier("mcp.payment.rotate_key"),
             ToolRiskTier::CredentialAdmin
         );
         assert_eq!(
