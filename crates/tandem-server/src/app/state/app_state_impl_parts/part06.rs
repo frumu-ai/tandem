@@ -600,12 +600,21 @@ impl AppState {
         self.external_actions.read().await.get(action_id).cloned()
     }
 
-    pub async fn list_policy_decisions(&self, limit: usize) -> Vec<PolicyDecisionRecord> {
+    pub async fn list_policy_decisions(
+        &self,
+        tenant_context: &TenantContext,
+        limit: usize,
+    ) -> Vec<PolicyDecisionRecord> {
         let mut rows = self
             .policy_decisions
             .read()
             .await
             .values()
+            .filter(|decision| {
+                decision.tenant_context.org_id == tenant_context.org_id
+                    && decision.tenant_context.workspace_id == tenant_context.workspace_id
+                    && decision.tenant_context.deployment_id == tenant_context.deployment_id
+            })
             .cloned()
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
@@ -615,6 +624,7 @@ impl AppState {
 
     pub async fn list_policy_decisions_for_run(
         &self,
+        tenant_context: &TenantContext,
         run_id: &str,
         limit: usize,
     ) -> Vec<PolicyDecisionRecord> {
@@ -623,7 +633,12 @@ impl AppState {
             .read()
             .await
             .values()
-            .filter(|decision| decision.run_id.as_deref() == Some(run_id))
+            .filter(|decision| {
+                decision.run_id.as_deref() == Some(run_id)
+                    && decision.tenant_context.org_id == tenant_context.org_id
+                    && decision.tenant_context.workspace_id == tenant_context.workspace_id
+                    && decision.tenant_context.deployment_id == tenant_context.deployment_id
+            })
             .cloned()
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));

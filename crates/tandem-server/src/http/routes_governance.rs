@@ -136,15 +136,15 @@ pub(super) async fn governance_policy_decisions_list(
     Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<PolicyDecisionListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    premium_governance_required(&state)?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let rows = if let Some(run_id) = query.run_id.as_deref() {
-        state.list_policy_decisions_for_run(run_id, limit).await
+        state
+            .list_policy_decisions_for_run(&tenant_context, run_id, limit)
+            .await
     } else {
-        state.list_policy_decisions(limit).await
-    }
-    .into_iter()
-    .filter(|decision| super::tenant_matches(&tenant_context, &decision.tenant_context))
-    .collect::<Vec<_>>();
+        state.list_policy_decisions(&tenant_context, limit).await
+    };
     Ok(Json(json!({
         "policy_decisions": rows,
         "count": rows.len(),
