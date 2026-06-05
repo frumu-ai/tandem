@@ -604,6 +604,7 @@ impl AppState {
     ) -> Result<(), GovernanceError> {
         let snapshot = {
             let guard = self.automation_governance.read().await;
+            let mut snapshot = self.governance_snapshot(&guard);
             if !tenant_context.is_local_implicit() && actor.kind == GovernanceActorKind::Agent {
                 if let Some(agent_id) = actor
                     .actor_id
@@ -619,9 +620,12 @@ impl AppState {
                             "this agent is paused after reaching its spend cap",
                         ));
                     }
+                    snapshot
+                        .spend_paused_agents
+                        .retain(|paused_agent_id| paused_agent_id != agent_id);
                 }
             }
-            self.governance_snapshot(&guard)
+            snapshot
         };
         self.governance_engine.authorize_create(
             &snapshot,

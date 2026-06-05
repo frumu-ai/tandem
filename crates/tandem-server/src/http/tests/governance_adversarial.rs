@@ -98,6 +98,10 @@ async fn tenant_spend_pause_does_not_cross_to_same_named_agent() {
         .expect("tenant a spend summary")
         .paused_at_ms
         .is_some());
+    {
+        let mut guard = state.automation_governance.write().await;
+        guard.spend_paused_agents.push(agent_id.to_string());
+    }
 
     let tenant_a_retry = app
         .clone()
