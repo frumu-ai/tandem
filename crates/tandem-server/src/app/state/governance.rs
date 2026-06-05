@@ -11,6 +11,61 @@ use crate::{now_ms, AppState};
 
 const GOVERNANCE_AUDIT_EVENT_PREFIX: &str = "automation.governance";
 
+fn governance_agent_scope_key(
+    tenant_context: &tandem_types::TenantContext,
+    agent_id: &str,
+) -> String {
+    let agent_id = agent_id.trim();
+    if tenant_context.is_local_implicit() {
+        return agent_id.to_string();
+    }
+    let deployment_id = tenant_context.deployment_id.as_deref().unwrap_or("");
+    format!(
+        "tenant:{}",
+        serde_json::to_string(&(
+            tenant_context.org_id.as_str(),
+            tenant_context.workspace_id.as_str(),
+            deployment_id,
+            agent_id
+        ))
+        .unwrap_or_else(|_| agent_id.to_string())
+    )
+}
+
+fn scoped_agent_id_maps(
+    tenant_context: &tandem_types::TenantContext,
+    agent_ids: &[String],
+) -> (
+    Vec<String>,
+    HashMap<String, String>,
+    HashMap<String, String>,
+) {
+    let mut scoped_ids = Vec::with_capacity(agent_ids.len());
+    let mut raw_to_scoped = HashMap::new();
+    let mut scoped_to_raw = HashMap::new();
+    for agent_id in agent_ids {
+        let scoped_id = governance_agent_scope_key(tenant_context, agent_id);
+        scoped_ids.push(scoped_id.clone());
+        raw_to_scoped.insert(agent_id.clone(), scoped_id.clone());
+        scoped_to_raw.insert(scoped_id, agent_id.clone());
+    }
+    (scoped_ids, raw_to_scoped, scoped_to_raw)
+}
+
+fn scoped_agent_id_for_storage(agent_id: &str, raw_to_scoped: &HashMap<String, String>) -> String {
+    raw_to_scoped
+        .get(agent_id)
+        .cloned()
+        .unwrap_or_else(|| agent_id.to_string())
+}
+
+fn display_agent_id(agent_id: &str, scoped_to_raw: &HashMap<String, String>) -> String {
+    scoped_to_raw
+        .get(agent_id)
+        .cloned()
+        .unwrap_or_else(|| agent_id.to_string())
+}
+
 #[derive(Default)]
 pub struct UnavailableGovernanceEngine;
 
@@ -542,12 +597,30 @@ impl AppState {
 
     pub async fn can_create_automation_for_actor(
         &self,
+        tenant_context: &tandem_types::TenantContext,
         actor: &GovernanceActorRef,
         provenance: &AutomationProvenanceRecord,
         declared_capabilities: &AutomationDeclaredCapabilities,
     ) -> Result<(), GovernanceError> {
         let snapshot = {
             let guard = self.automation_governance.read().await;
+            if !tenant_context.is_local_implicit() && actor.kind == GovernanceActorKind::Agent {
+                if let Some(agent_id) = actor
+                    .actor_id
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    let scoped_agent_id = governance_agent_scope_key(tenant_context, agent_id);
+                    if guard.is_agent_spend_paused(&scoped_agent_id)
+                        && !guard.has_approved_agent_quota_override(&scoped_agent_id)
+                    {
+                        return Err(GovernanceError::too_many_requests(
+                            "AUTOMATION_V2_AGENT_SPEND_CAP_EXCEEDED",
+                            "this agent is paused after reaching its spend cap",
+                        ));
+                    }
+                }
+            }
             self.governance_snapshot(&guard)
         };
         self.governance_engine.authorize_create(
@@ -1007,6 +1080,41 @@ impl AppState {
             .read()
             .await
             .agent_spend_summary(agent_id)
+    }
+
+    pub async fn tenant_agent_spend_summary(
+        &self,
+        tenant_context: &tandem_types::TenantContext,
+        agent_id: &str,
+    ) -> Option<AgentSpendSummary> {
+        let scoped_agent_id = governance_agent_scope_key(tenant_context, agent_id);
+        self.automation_governance
+            .read()
+            .await
+            .agent_spend_summary(&scoped_agent_id)
+    }
+
+    pub async fn tenant_agent_has_quota_override(
+        &self,
+        tenant_context: &tandem_types::TenantContext,
+        agent_id: &str,
+    ) -> bool {
+        let scoped_agent_id = governance_agent_scope_key(tenant_context, agent_id);
+        self.automation_governance
+            .read()
+            .await
+            .has_approved_agent_quota_override(&scoped_agent_id)
+    }
+
+    pub async fn tenant_agent_spend_paused_without_quota_override(
+        &self,
+        tenant_context: &tandem_types::TenantContext,
+        agent_id: &str,
+    ) -> bool {
+        let scoped_agent_id = governance_agent_scope_key(tenant_context, agent_id);
+        let governance = self.automation_governance.read().await;
+        governance.is_agent_spend_paused(&scoped_agent_id)
+            && !governance.has_approved_agent_quota_override(&scoped_agent_id)
     }
 
     pub async fn list_agent_spend_summaries(&self) -> Vec<AgentSpendSummary> {
@@ -1658,6 +1766,9 @@ impl AppState {
         if agent_ids.is_empty() {
             return Ok(());
         }
+        let tenant_context = automation.tenant_context();
+        let (scoped_agent_ids, raw_to_scoped, scoped_to_raw) =
+            scoped_agent_id_maps(&tenant_context, &agent_ids);
 
         let now = now_ms();
         let snapshot = {
@@ -1671,7 +1782,7 @@ impl AppState {
                 &GovernanceSpendInput {
                     automation_id: automation.automation_id.clone(),
                     run_id: run_id.to_string(),
-                    agent_ids: agent_ids.clone(),
+                    agent_ids: scoped_agent_ids.clone(),
                     prompt_tokens,
                     completion_tokens,
                     total_tokens,
@@ -1683,9 +1794,11 @@ impl AppState {
         {
             let mut guard = self.automation_governance.write().await;
             for summary in &evaluation.updated_summaries {
-                guard
-                    .agent_spend
-                    .insert(summary.agent_id.clone(), summary.clone());
+                let storage_agent_id =
+                    scoped_agent_id_for_storage(&summary.agent_id, &raw_to_scoped);
+                let mut stored_summary = summary.clone();
+                stored_summary.agent_id = display_agent_id(&summary.agent_id, &scoped_to_raw);
+                guard.agent_spend.insert(storage_agent_id, stored_summary);
             }
             for agent_id in &evaluation.spend_paused_agents {
                 if !guard
@@ -1709,7 +1822,7 @@ impl AppState {
             let _ = append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.spend.warning"),
-                &tandem_types::TenantContext::local_implicit(),
+                &tenant_context,
                 governance
                     .provenance
                     .creator
@@ -1719,7 +1832,7 @@ impl AppState {
                 json!({
                     "automationID": automation.automation_id,
                     "runID": run_id,
-                    "agentID": warning.agent_id,
+                    "agentID": display_agent_id(&warning.agent_id, &scoped_to_raw),
                     "weeklyCostUsd": warning.weekly_cost_usd,
                     "weeklySpendCapUsd": warning.weekly_spend_cap_usd,
                 }),
@@ -1736,7 +1849,7 @@ impl AppState {
             let _ = append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
-                &tandem_types::TenantContext::local_implicit(),
+                &tenant_context,
                 approval
                     .requested_by
                     .actor_id
@@ -1767,9 +1880,10 @@ impl AppState {
                 .hard_stops
                 .iter()
                 .map(|entry| {
+                    let agent_id = display_agent_id(&entry.agent_id, &scoped_to_raw);
                     format!(
                         "{} ({:.4}/{:.4} USD)",
-                        entry.agent_id, entry.weekly_cost_usd, entry.weekly_spend_cap_usd
+                        agent_id, entry.weekly_cost_usd, entry.weekly_spend_cap_usd
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1796,7 +1910,7 @@ impl AppState {
             let _ = append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.spend.paused"),
-                &tandem_types::TenantContext::local_implicit(),
+                &tenant_context,
                 governance
                     .provenance
                     .creator
@@ -1809,7 +1923,7 @@ impl AppState {
                     "pausedAgents": evaluation
                         .hard_stops
                         .iter()
-                        .map(|entry| entry.agent_id.clone())
+                        .map(|entry| display_agent_id(&entry.agent_id, &scoped_to_raw))
                         .collect::<Vec<_>>(),
                     "requestedApprovals": requested_approvals,
                     "detail": detail,

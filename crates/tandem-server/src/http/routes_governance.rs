@@ -338,9 +338,17 @@ pub(super) async fn automation_governance_get(
         ));
     };
     let spend_agent_ids = record.agent_lineage_ids();
+    let automation = state.get_automation_v2(&id).await;
+    let tenant_context = automation
+        .as_ref()
+        .map(|automation| automation.tenant_context())
+        .unwrap_or_else(tandem_types::TenantContext::local_implicit);
     let mut spend = Vec::new();
     for agent_id in spend_agent_ids {
-        if let Some(summary) = state.agent_spend_summary(&agent_id).await {
+        if let Some(summary) = state
+            .tenant_agent_spend_summary(&tenant_context, &agent_id)
+            .await
+        {
             spend.push(agent_spend_wire(&summary));
         }
     }

@@ -16,6 +16,7 @@ pub(super) mod context_runs;
 pub(super) mod enterprise;
 pub(super) mod global;
 pub(super) mod governance;
+pub(super) mod governance_adversarial;
 pub(super) mod marketplace;
 pub(super) mod mcp;
 pub(super) mod memory;
