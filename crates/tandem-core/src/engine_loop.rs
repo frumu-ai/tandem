@@ -602,6 +602,7 @@ impl EngineLoop {
                 })
                 .await?;
             if !decision.allowed {
+                let policy_decision_id = decision.policy_decision_id.clone();
                 let reason = decision
                     .reason
                     .unwrap_or_else(|| "Tool denied by runtime policy".to_string());
@@ -618,8 +619,11 @@ impl EngineLoop {
                     "message.part.updated",
                     json!({"part": blocked_part}),
                 ));
-                publish_tool_effect(
+                let mut record = build_tool_effect_ledger_record(
+                    session_id,
+                    message_id,
                     None,
+                    &tool,
                     ToolEffectLedgerPhase::Outcome,
                     ToolEffectLedgerStatus::Blocked,
                     &args,
@@ -627,6 +631,11 @@ impl EngineLoop {
                     None,
                     Some(&reason),
                 );
+                record.policy_decision_id = policy_decision_id;
+                self.event_bus.publish(tool_effect_ledger_event(
+                    record,
+                    tool_effect_tenant_context.as_ref(),
+                ));
                 if write_required {
                     return Err(anyhow::anyhow!(reason));
                 }

@@ -309,6 +309,7 @@ impl AppState {
             bug_monitor_intake_keys: Arc::new(RwLock::new(std::collections::HashMap::new())),
             bug_monitor_intake_keys_path: config::paths::resolve_bug_monitor_intake_keys_path(),
             external_actions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            policy_decisions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             bug_monitor_runtime_status: Arc::new(RwLock::new(BugMonitorRuntimeStatus::default())),
             provider_oauth_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             mcp_oauth_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -338,6 +339,7 @@ impl AppState {
             bug_monitor_incidents_path: config::paths::resolve_bug_monitor_incidents_path(),
             bug_monitor_posts_path: config::paths::resolve_bug_monitor_posts_path(),
             external_actions_path: config::paths::resolve_external_actions_path(),
+            policy_decisions_path: config::paths::resolve_policy_decisions_path(),
             workflow_runs_path: config::paths::resolve_workflow_runs_path(),
             workflow_planner_sessions_path: config::paths::resolve_workflow_planner_sessions_path(),
             workflow_learning_candidates_path:
@@ -528,6 +530,7 @@ impl AppState {
         let _ = self.load_bug_monitor_log_watcher_state().await;
         let _ = self.load_bug_monitor_intake_keys().await;
         let _ = self.load_external_actions().await;
+        let _ = self.load_policy_decisions().await;
         let _ = self.load_workflow_planner_sessions().await;
         let _ = self.load_workflow_learning_candidates().await;
         let _ = self.load_context_packs().await;

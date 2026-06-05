@@ -1,4 +1,4 @@
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Deserialize;
@@ -63,8 +63,20 @@ pub(super) struct AutomationExtendInput {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PolicyDecisionListQuery {
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 pub(super) fn apply(router: axum::Router<AppState>) -> axum::Router<AppState> {
     router
+        .route(
+            "/governance/policy-decisions",
+            axum::routing::get(governance_policy_decisions_list),
+        )
         .route(
             "/governance/approvals",
             axum::routing::get(governance_approvals_list),
@@ -117,6 +129,26 @@ pub(super) fn apply(router: axum::Router<AppState>) -> axum::Router<AppState> {
             "/automations/v2/{id}/extend",
             axum::routing::post(automation_extend),
         )
+}
+
+pub(super) async fn governance_policy_decisions_list(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Query(query): Query<PolicyDecisionListQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    premium_governance_required(&state)?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let rows = if let Some(run_id) = query.run_id.as_deref() {
+        state
+            .list_policy_decisions_for_run(&tenant_context, run_id, limit)
+            .await
+    } else {
+        state.list_policy_decisions(&tenant_context, limit).await
+    };
+    Ok(Json(json!({
+        "policy_decisions": rows,
+        "count": rows.len(),
+    })))
 }
 
 pub(super) async fn governance_approvals_list(

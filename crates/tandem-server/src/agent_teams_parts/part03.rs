@@ -767,7 +767,11 @@ mod fintech_policy_tests {
     }
 
     async fn fintech_policy_state(metadata: Value) -> AppState {
-        let state = AppState::new_starting("test".to_string(), true);
+        let mut state = AppState::new_starting("test".to_string(), true);
+        state.policy_decisions_path = std::env::temp_dir().join(format!(
+            "tandem-policy-decisions-{}.json",
+            Uuid::new_v4()
+        ));
         let automation = fintech_test_automation(metadata);
         let run = fintech_test_run(automation);
         state
@@ -852,7 +856,7 @@ mod fintech_policy_tests {
     #[tokio::test]
     async fn fintech_strict_blocks_protected_action_tools() {
         let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
-        let hook = ServerToolPolicyHook::new(state);
+        let hook = ServerToolPolicyHook::new(state.clone());
         let decision = hook
             .evaluate_tool(ToolPolicyContext {
                 session_id: "session-fintech".to_string(),
@@ -880,6 +884,17 @@ mod fintech_policy_tests {
             .as_deref()
             .unwrap_or_default()
             .contains("approval gates are not treated as authorization"));
+        let decision_id = decision
+            .policy_decision_id
+            .as_deref()
+            .expect("policy decision id");
+        let stored = state
+            .get_policy_decision(decision_id)
+            .await
+            .expect("stored policy decision");
+        assert_eq!(stored.decision, PolicyDecisionEffect::ApprovalRequired);
+        assert_eq!(stored.reason_code, "approval_required_unverified");
+        assert_eq!(stored.tool.as_deref(), Some("mcp.bank.release_funds"));
     }
 
     #[tokio::test]
@@ -895,7 +910,7 @@ mod fintech_policy_tests {
             None,
         )
         .await;
-        let hook = ServerToolPolicyHook::new(state);
+        let hook = ServerToolPolicyHook::new(state.clone());
 
         let decision = hook
             .evaluate_tool(ToolPolicyContext {
@@ -910,6 +925,17 @@ mod fintech_policy_tests {
             .expect("policy decision");
 
         assert!(decision.allowed, "{:?}", decision.reason);
+        let decision_id = decision
+            .policy_decision_id
+            .as_deref()
+            .expect("policy decision id");
+        let stored = state
+            .get_policy_decision(decision_id)
+            .await
+            .expect("stored policy decision");
+        assert_eq!(stored.decision, PolicyDecisionEffect::Allow);
+        assert_eq!(stored.reason_code, "matching_approval_receipt");
+        assert_eq!(stored.approval_id.as_deref(), Some("approve_protected_action"));
     }
 
     #[tokio::test]

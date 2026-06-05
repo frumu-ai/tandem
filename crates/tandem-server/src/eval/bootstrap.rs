@@ -111,6 +111,7 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     state.routine_history_path = data_dir.join("routine_history.json");
     state.routine_runs_path = data_dir.join("routine_runs.json");
     state.external_actions_path = data_dir.join("external_actions.json");
+    state.policy_decisions_path = data_dir.join("policy_decisions.json");
     state.channel_user_capabilities_path = data_dir.join("channel_user_capabilities.json");
     state.automations_v2_path = data_dir.join("automations_v2.json");
     state.automation_v2_runs_path = data_dir.join("automation_v2_runs.json");

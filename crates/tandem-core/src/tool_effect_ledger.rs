@@ -27,6 +27,8 @@ pub struct ToolEffectLedgerRecord {
     pub tool: String,
     pub phase: ToolEffectLedgerPhase,
     pub status: ToolEffectLedgerStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_decision_id: Option<String>,
     pub args_summary: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_summary: Option<Value>,
@@ -75,6 +77,7 @@ pub fn build_tool_effect_ledger_record(
         tool: tool.to_string(),
         phase,
         status,
+        policy_decision_id: None,
         args_summary: summarize_args(args),
         result_summary: summarize_result(metadata, output),
         error: error

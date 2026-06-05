@@ -297,6 +297,42 @@ fn session_context_run_event_input(event: &EngineEvent) -> Option<ContextRunEven
                 }),
             })
         }
+        "policy.decision.recorded" => {
+            let record = event.properties.get("record")?;
+            let decision = record
+                .get("decision")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let tool = record
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("runtime");
+            Some(ContextRunEventAppendInput {
+                event_type: "policy_decision_recorded".to_string(),
+                status: if decision == "allow" {
+                    ContextRunStatus::Running
+                } else {
+                    ContextRunStatus::Blocked
+                },
+                step_id: Some("policy-decision".to_string()),
+                payload: serde_json::json!({
+                    "sessionID": event.properties.get("sessionID").cloned().unwrap_or(Value::Null),
+                    "messageID": event.properties.get("messageID").cloned().unwrap_or(Value::Null),
+                    "runID": event.properties.get("runID").cloned().unwrap_or(Value::Null),
+                    "automationID": event.properties.get("automationID").cloned().unwrap_or(Value::Null),
+                    "tool": event.properties.get("tool").cloned().unwrap_or(Value::Null),
+                    "decisionID": event.properties.get("decisionID").cloned().unwrap_or(Value::Null),
+                    "record": record.clone(),
+                    "tenantContext": event_tenant_context_value(event),
+                    "why_next_step": format!("policy decision `{decision}` recorded for `{tool}`"),
+                    "step_status": if decision == "allow" {
+                        "in_progress"
+                    } else {
+                        "blocked"
+                    },
+                }),
+            })
+        }
         "mutation.checkpoint.recorded" => {
             let record = event.properties.get("record")?;
             let tool = record

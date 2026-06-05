@@ -276,6 +276,10 @@ pub(crate) fn resolve_external_actions_path() -> PathBuf {
     resolve_canonical_data_file_path("actions/external_actions.json")
 }
 
+pub(crate) fn resolve_policy_decisions_path() -> PathBuf {
+    resolve_canonical_data_file_path("governance/policy_decisions.json")
+}
+
 pub(crate) fn legacy_failure_reporter_path(file_name: &str) -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();
