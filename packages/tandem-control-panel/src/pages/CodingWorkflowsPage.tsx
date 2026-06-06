@@ -7,6 +7,7 @@ import { subscribeSse } from "../services/sse.js";
 import { CodingWorkflowsAgentCockpit } from "./CodingWorkflowsAgentCockpit";
 import { CodingWorkflowsOverviewTab } from "./CodingWorkflowsOverviewTab";
 import { CodingWorkflowsRegisterProjectPanel } from "./CodingWorkflowsRegisterProjectPanel";
+import { CodingWorkflowsLinearTaskStateSelect } from "./CodingWorkflowsLinearTaskStateSelect";
 import { TaskPlanningPanel } from "./TaskPlanningPanel";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
@@ -90,6 +91,7 @@ export function CodingWorkflowsPage({
   const [selectedGithubItemIds, setSelectedGithubItemIds] = useState<string[]>([]);
   const [launchingGithubItemIds, setLaunchingGithubItemIds] = useState<Record<string, number>>({});
   const [batchTriggering, setBatchTriggering] = useState(false);
+  const [movingTaskStates, setMovingTaskStates] = useState<Record<string, string>>({});
   const caps = useCapabilities();
   const acaAvailable = caps.data?.aca_integration === true;
   const engineAvailable = caps.data?.engine_healthy === true;
@@ -803,6 +805,38 @@ export function CodingWorkflowsPage({
   function clearGithubSelection() {
     setSelectedGithubItemIds([]);
   }
+  async function moveLinearTaskState(item: any, state: string) {
+    if (!selectedProjectSlug) {
+      toast("warn", "Select a project before moving a task.");
+      return;
+    }
+    if (selectedProjectTaskSourceType !== "linear") return;
+    const itemId = String(item?.id || "").trim();
+    const itemRef = String(
+      item?.identifier || item?.issueNumber || item?.issue_number || item?.selector || itemId || ""
+    ).trim();
+    const targetState = String(state || "").trim();
+    if (!itemRef || !targetState) return;
+    const movingKey = `${itemId || itemRef}:${targetState}`;
+    setMovingTaskStates((current) => ({ ...current, [movingKey]: targetState }));
+    try {
+      const path = `/api/aca/projects/${encodeURIComponent(selectedProjectSlug)}/tasks/${encodeURIComponent(itemRef)}/state`;
+      await api(path, { method: "POST", body: JSON.stringify({ state: targetState }) });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug] }),
+        queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-project-tasks", selectedProjectSlug] }),
+      ]);
+      toast("ok", `Moved ${itemRef} to ${formatStatus(targetState)}.`);
+    } catch (error) {
+      toast("err", error instanceof Error ? error.message : String(error));
+    } finally {
+      setMovingTaskStates((current) => {
+        const next = { ...current };
+        delete next[movingKey];
+        return next;
+      });
+    }
+  }
   async function triggerGithubItems(items: any[]) {
     if (!selectedProjectSlug) {
       toast("warn", "Select a project before starting ACA runs.");
@@ -1397,6 +1431,14 @@ export function CodingWorkflowsPage({
                                                   ? "Starting..."
                                                   : "Run task"}
                                           </button>
+                                          {selectedProjectTaskSourceType === "linear" ? (
+                                            <CodingWorkflowsLinearTaskStateSelect
+                                              item={item}
+                                              itemId={itemId}
+                                              movingTaskStates={movingTaskStates}
+                                              onMove={moveLinearTaskState}
+                                            />
+                                          ) : null}
                                           {activeGithubRun ? (
                                             <button
                                               type="button"
