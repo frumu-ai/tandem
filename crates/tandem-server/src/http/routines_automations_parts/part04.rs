@@ -840,7 +840,12 @@ fn authorize_gate_decider(
             gate_requester_actor_id(run, automation).as_deref(),
             decider.actor_id.as_deref(),
         ) {
-            if !requester.trim().is_empty() && requester.eq_ignore_ascii_case(reviewer.trim()) {
+            if actor_identity_matches(
+                requester,
+                None,
+                reviewer,
+                decider.source.as_deref(),
+            ) {
                 return Err((
                     "AUTOMATION_V2_GATE_SELF_APPROVAL_FORBIDDEN",
                     "Requester cannot approve their own consequential action",
@@ -850,6 +855,9 @@ fn authorize_gate_decider(
     }
 
     if !policy.requires_reviewer_authority() {
+        return Ok(());
+    }
+    if channel_verified_decider_satisfies_reviewer_authority(decider) {
         return Ok(());
     }
     if run.tenant_context.is_local_implicit() && verified_tenant_context.is_none() {
@@ -883,6 +891,54 @@ fn authorize_gate_decider(
             "AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_DENIED",
             "Reviewer lacks matching authority for this approval",
         ))
+}
+
+fn actor_identity_matches(
+    left_actor_id: &str,
+    left_source: Option<&str>,
+    right_actor_id: &str,
+    right_source: Option<&str>,
+) -> bool {
+    let left = canonical_actor_identity(left_actor_id, left_source);
+    let right = canonical_actor_identity(right_actor_id, right_source);
+    !left.is_empty() && left == right
+}
+
+fn canonical_actor_identity(actor_id: &str, source: Option<&str>) -> String {
+    let actor_id = actor_id.trim();
+    if actor_id.is_empty() {
+        return String::new();
+    }
+    if actor_id
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("channel:"))
+    {
+        return actor_id.to_ascii_lowercase();
+    }
+    if let Some(kind) = channel_kind_from_source(source) {
+        return format!("channel:{kind}:{}", actor_id.to_ascii_lowercase());
+    }
+    actor_id.to_ascii_lowercase()
+}
+
+fn channel_kind_from_source(source: Option<&str>) -> Option<&'static str> {
+    match source?.trim().to_ascii_lowercase().as_str() {
+        "slack" | "channel:slack" => Some("slack"),
+        "discord" | "channel:discord" => Some("discord"),
+        "telegram" | "channel:telegram" => Some("telegram"),
+        _ => None,
+    }
+}
+
+fn channel_verified_decider_satisfies_reviewer_authority(
+    decider: &crate::automation_v2::governance::GovernanceActorRef,
+) -> bool {
+    decider.kind == crate::automation_v2::governance::GovernanceActorKind::Human
+        && decider
+            .actor_id
+            .as_deref()
+            .is_some_and(|actor_id| !actor_id.trim().is_empty())
+        && channel_kind_from_source(decider.source.as_deref()).is_some()
 }
 
 struct GateReviewerPolicy {

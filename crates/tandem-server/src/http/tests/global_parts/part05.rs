@@ -88,9 +88,16 @@ async fn arrange_governed_awaiting_publish_gate(
 }
 
 fn reviewer_decider(actor_id: &str) -> crate::automation_v2::governance::GovernanceActorRef {
+    reviewer_decider_from_source(actor_id, "test")
+}
+
+fn reviewer_decider_from_source(
+    actor_id: &str,
+    source: &str,
+) -> crate::automation_v2::governance::GovernanceActorRef {
     crate::automation_v2::governance::GovernanceActorRef::human(
         Some(actor_id.to_string()),
-        "test".to_string(),
+        source.to_string(),
     )
 }
 
@@ -248,6 +255,46 @@ async fn governed_gate_rejects_requester_self_approval_and_audits() {
 }
 
 #[tokio::test]
+async fn governed_gate_normalizes_channel_identity_for_self_approval() {
+    let state = test_state().await;
+    let tenant = explicit_tenant("channel:slack:U123");
+    let resource = tandem_types::ResourceRef::new(
+        "acme",
+        "finance",
+        tandem_types::ResourceKind::Approval,
+        "auto-v2-channel-self-approval:publish",
+    );
+    let run = arrange_governed_awaiting_publish_gate(
+        &state,
+        "auto-v2-channel-self-approval",
+        tenant.clone(),
+        "requester",
+        elevated_gate_metadata(&resource),
+    )
+    .await;
+
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        tenant,
+        None,
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: None,
+        },
+        reviewer_decider_from_source("U123", "slack"),
+    )
+    .await;
+
+    let (status, body) = result.expect_err("channel self approval rejected");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body.0.get("code").and_then(serde_json::Value::as_str),
+        Some("AUTOMATION_V2_GATE_SELF_APPROVAL_FORBIDDEN")
+    );
+}
+
+#[tokio::test]
 async fn governed_gate_rejects_elevated_reviewer_without_matching_authority() {
     let state = test_state().await;
     let requester_tenant = explicit_tenant("requester");
@@ -286,6 +333,51 @@ async fn governed_gate_rejects_elevated_reviewer_without_matching_authority() {
         body.0.get("code").and_then(serde_json::Value::as_str),
         Some("AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_REQUIRED")
     );
+}
+
+#[tokio::test]
+async fn governed_gate_allows_channel_verified_elevated_reviewer() {
+    let state = test_state().await;
+    let requester_tenant = explicit_tenant("requester");
+    let channel_tenant = explicit_tenant("channel:slack:U999");
+    let resource = tandem_types::ResourceRef::new(
+        "acme",
+        "finance",
+        tandem_types::ResourceKind::Approval,
+        "auto-v2-channel-reviewer-allowed:publish",
+    );
+    let run = arrange_governed_awaiting_publish_gate(
+        &state,
+        "auto-v2-channel-reviewer-allowed",
+        requester_tenant,
+        "requester",
+        elevated_gate_metadata(&resource),
+    )
+    .await;
+
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        channel_tenant,
+        None,
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: Some("channel approve-tier reviewer".to_string()),
+        },
+        reviewer_decider_from_source("U999", "slack"),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "channel verified reviewer can approve elevated gate"
+    );
+    let after = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after approved channel decision");
+    assert_eq!(after.status, crate::AutomationRunStatus::Queued);
+    assert_eq!(after.checkpoint.gate_history.len(), 1);
 }
 
 #[tokio::test]
