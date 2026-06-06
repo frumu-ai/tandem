@@ -131,6 +131,7 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
     router = super::routes_sessions::apply(router);
     router = super::routes_bug_monitor::apply(router);
     router = super::routes_external_actions::apply(router);
+    router = super::routes_goal_capability_learning::apply(router);
     // ensure modules wired exactly once
     // routes_mcp already applied above
     router = super::routes_skills_memory::apply(router);

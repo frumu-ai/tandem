@@ -54,6 +54,7 @@ use crate::automation_v2::types::*;
 use crate::bug_monitor::types::*;
 use crate::capability_resolver::CapabilityResolver;
 use crate::config::{self, channels::ChannelsConfigFile, webui::WebUiConfig};
+use crate::goal_capability_learning::GoalCapabilityLearningDecisionStore;
 use crate::memory::types::{GovernedMemoryRecord, MemoryAuditEvent};
 use crate::pack_manager::PackManager;
 use crate::preset_registry::PresetRegistry;
@@ -192,6 +193,7 @@ pub struct AppState {
     pub bug_monitor_intake_keys_path: PathBuf,
     pub external_actions: Arc<RwLock<std::collections::HashMap<String, ExternalActionRecord>>>,
     pub policy_decisions: Arc<RwLock<std::collections::HashMap<String, PolicyDecisionRecord>>>,
+    pub goal_capability_learning_store: Arc<GoalCapabilityLearningDecisionStore>,
     pub bug_monitor_runtime_status: Arc<RwLock<BugMonitorRuntimeStatus>>,
     pub(crate) provider_oauth_sessions: Arc<
         RwLock<
@@ -1937,6 +1939,7 @@ pub fn derive_status_index_update(event: &EngineEvent) -> Option<StatusIndexUpda
 
 include!("app_state_impl_parts/part06.rs");
 include!("app_state_impl_parts/part07.rs");
+include!("app_state_impl_parts/part08.rs");
 
 // NOTE: submodule declarations must live in this module-root file (`mod X;` path
 // resolution is relative to the declaring file), so they stay here rather than in

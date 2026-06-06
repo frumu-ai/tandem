@@ -310,6 +310,9 @@ impl AppState {
             bug_monitor_intake_keys_path: config::paths::resolve_bug_monitor_intake_keys_path(),
             external_actions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             policy_decisions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            goal_capability_learning_store: Arc::new(
+                crate::goal_capability_learning::GoalCapabilityLearningDecisionStore::new(),
+            ),
             bug_monitor_runtime_status: Arc::new(RwLock::new(BugMonitorRuntimeStatus::default())),
             provider_oauth_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             mcp_oauth_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
