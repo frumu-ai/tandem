@@ -1098,6 +1098,7 @@ export function AgentAutomationPage({
       new Map(
         providers
           .map((provider) => [provider.id, provider.models] as const)
+          .sort((a, b) => a[0].localeCompare(b[0]))
       ),
     [providers]
   );
