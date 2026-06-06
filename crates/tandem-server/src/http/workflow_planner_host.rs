@@ -915,6 +915,7 @@ fn filter_mcp_inventory_to_allowed(inventory: Value, allowed_mcp_servers: &[Stri
     let mut enabled_server_names = Vec::new();
     let mut registered_tools = BTreeSet::new();
     let mut remote_tools = BTreeSet::new();
+    let mut allowed_tool_names = BTreeSet::new();
     for server in filtered_servers.iter() {
         let Some(name) = server.get("name").and_then(Value::as_str).map(str::trim) else {
             continue;
@@ -943,6 +944,7 @@ fn filter_mcp_inventory_to_allowed(inventory: Value, allowed_mcp_servers: &[Stri
             .filter(|value| !value.is_empty())
         {
             registered_tools.insert(tool_name.to_string());
+            allowed_tool_names.insert(tool_name.to_string());
         }
         for tool_name in server
             .get("remote_tools")
@@ -954,13 +956,30 @@ fn filter_mcp_inventory_to_allowed(inventory: Value, allowed_mcp_servers: &[Stri
             .filter(|value| !value.is_empty())
         {
             remote_tools.insert(tool_name.to_string());
+            allowed_tool_names.insert(tool_name.to_string());
         }
     }
+    let governed_tool_registry = inventory
+        .get("governed_tool_registry")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| {
+                    row.get("namespaced_name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|tool_name| allowed_tool_names.contains(tool_name))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     json!({
         "connected_server_names": connected_server_names,
         "enabled_server_names": enabled_server_names,
         "inventory_version": inventory.get("inventory_version").and_then(Value::as_u64).unwrap_or(1),
+        "registry_version": inventory.get("registry_version").and_then(Value::as_u64).unwrap_or(1),
+        "governed_tool_registry": governed_tool_registry,
         "registered_tools": registered_tools.into_iter().collect::<Vec<_>>(),
         "remote_tools": remote_tools.into_iter().collect::<Vec<_>>(),
         "servers": filtered_servers,
@@ -1011,6 +1030,62 @@ mod tests {
         assert_eq!(
             servers[0].get("name").and_then(Value::as_str),
             Some("github")
+        );
+    }
+
+    #[test]
+    fn planner_mcp_allowlist_preserves_governed_registry_metadata() {
+        let inventory = json!({
+            "inventory_version": 1,
+            "registry_version": 1,
+            "connected_server_names": ["github", "slack"],
+            "enabled_server_names": ["github", "slack"],
+            "registered_tools": ["mcp.github.search", "mcp.slack.send"],
+            "remote_tools": ["mcp.github.search", "mcp.slack.send"],
+            "governed_tool_registry": [
+                {
+                    "namespaced_name": "mcp.github.search",
+                    "server_name": "github",
+                    "default_policy": "allow"
+                },
+                {
+                    "namespaced_name": "mcp.slack.send",
+                    "server_name": "slack",
+                    "default_policy": "approval_required"
+                }
+            ],
+            "servers": [
+                {
+                    "name": "github",
+                    "connected": true,
+                    "enabled": true,
+                    "registered_tools": ["mcp.github.search"],
+                    "remote_tools": ["mcp.github.search"]
+                },
+                {
+                    "name": "slack",
+                    "connected": true,
+                    "enabled": true,
+                    "registered_tools": ["mcp.slack.send"],
+                    "remote_tools": ["mcp.slack.send"]
+                }
+            ]
+        });
+
+        let filtered = filter_mcp_inventory_to_allowed(inventory, &["github".to_string()]);
+
+        assert_eq!(
+            filtered.get("registry_version").and_then(Value::as_u64),
+            Some(1)
+        );
+        let registry = filtered
+            .get("governed_tool_registry")
+            .and_then(Value::as_array)
+            .expect("governed registry");
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry[0].get("namespaced_name").and_then(Value::as_str),
+            Some("mcp.github.search")
         );
     }
 

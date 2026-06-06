@@ -649,9 +649,11 @@ fn mcp_tool_authorized_for_discovery(
         descriptor.resource_kinds.clone()
     };
 
+    let risk_tier = tool_risk_tier_from_name_and_descriptor(tool_name, &descriptor);
     let hidden_by_default = matches!(descriptor.default_visibility, ToolDefaultVisibility::Hidden)
         || descriptor.admin_surface
-        || descriptor.credential_access;
+        || descriptor.credential_access
+        || risk_tier.hidden_without_grant_by_default();
 
     let all_permissions_allowed = required_permissions.iter().all(|permission| {
         resource_kinds.iter().any(|resource_kind| {
@@ -899,5 +901,53 @@ mod tests {
         assert_eq!(metadata["default_policy"], "approval_required");
         assert_eq!(metadata["approval_required_by_default"], true);
         assert_eq!(metadata["hidden_without_grant_by_default"], false);
+    }
+
+    #[test]
+    fn discovery_hides_risk_tier_only_credential_admin_without_grant() {
+        let tool_name = "mcp.enterprise_admin.rotate_credential";
+        let resource = tandem_types::ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            tandem_types::ResourceKind::McpTool,
+            tool_name,
+        );
+        let tenant_context =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
+        let principal = tandem_types::PrincipalRef::human_user("actor-a");
+        let grant = tandem_types::ScopedGrant::new(
+            "grant-read-only",
+            principal.clone(),
+            resource.clone(),
+            tandem_types::GrantSource::Direct,
+        )
+        .with_permissions(vec![tandem_types::AccessPermission::Read])
+        .with_data_classes(vec![tandem_types::DataClass::Internal]);
+        let strict_context = tandem_types::StrictTenantContext::new(
+            tenant_context,
+            principal.clone(),
+            tandem_types::AuthorityChain::from_request(
+                tandem_types::RequestPrincipal::authenticated_user(principal.id, "tandem-web"),
+            ),
+            tandem_types::ResourceScope::root(resource),
+            tandem_types::AssertionMetadata::new(
+                "tandem-web",
+                "tandem-runtime",
+                1_000,
+                9_999_999_999_999,
+                "assertion-risk-tier-only",
+            ),
+        )
+        .with_grants(vec![grant]);
+        let descriptor =
+            ToolSecurityDescriptor::new().risk_tier(tandem_types::ToolRiskTier::CredentialAdmin);
+        let security = serde_json::to_value(descriptor).unwrap();
+
+        assert!(!mcp_tool_authorized_for_discovery(
+            Some(&strict_context),
+            tool_name,
+            Some(&security),
+            2_000,
+        ));
     }
 }
