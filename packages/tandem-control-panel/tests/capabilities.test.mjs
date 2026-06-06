@@ -155,6 +155,33 @@ test("ACA available returns aca_integration true", async () => {
   assert.equal(body.coder, true);
 });
 
+test("capabilities refresh query bypasses cached probe result", async () => {
+  let probeCount = 0;
+  const server = await new Promise((resolve) => {
+    const s = createServer(async (req, res) => {
+      probeCount += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+    });
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const port = server.address().port;
+
+  const handler = createCapabilitiesHandler({
+    ACA_BASE_URL: `http://127.0.0.1:${port}`,
+    engineHealth: async () => ({ engine: { ready: true, healthy: true } }),
+    sendJson: () => {},
+  });
+
+  const fakeRes = { statusCode: 0, end: () => {}, destroy: () => {} };
+  await handler({ url: "/api/capabilities" }, fakeRes);
+  await handler({ url: "/api/capabilities" }, fakeRes);
+  await handler({ url: "/api/capabilities?refresh=1" }, fakeRes);
+  server.close();
+
+  assert.equal(probeCount, 2);
+});
+
 test("Engine unhealthy returns all coding features false", async () => {
   let body = null;
   const handler = createCapabilitiesHandler({

@@ -212,6 +212,46 @@ type SettingsSection =
   | "browser"
   | "maintenance";
 
+const SETTINGS_SECTIONS: SettingsSection[] = [
+  "install",
+  "navigation",
+  "providers",
+  "search",
+  "scheduler",
+  "identity",
+  "theme",
+  "channels",
+  "mcp",
+  "bug_monitor",
+  "browser",
+  "maintenance",
+];
+
+function normalizeSettingsSection(value: string | null | undefined): SettingsSection | null {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, "_");
+  return SETTINGS_SECTIONS.includes(normalized as SettingsSection)
+    ? (normalized as SettingsSection)
+    : null;
+}
+
+function settingsSectionFromHash(): SettingsSection | null {
+  if (typeof window === "undefined") return null;
+  const raw = String(window.location.hash || "");
+  const query = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : "";
+  if (!query) return null;
+  const params = new URLSearchParams(query);
+  return normalizeSettingsSection(params.get("section") || params.get("tab"));
+}
+
+function writeSettingsSectionHash(section: SettingsSection) {
+  if (typeof window === "undefined") return;
+  const next = `#/settings?section=${section}`;
+  if (window.location.hash !== next) window.history.replaceState(null, "", next);
+}
+
 type SearchSettingsResponse = {
   available?: boolean;
   local_engine?: boolean;
@@ -1157,7 +1197,9 @@ export function useSettingsPageController({
   const [botAvatarUrl, setBotAvatarUrl] = useState(String(identity?.botAvatarUrl || ""));
   const [botControlPanelAlias, setBotControlPanelAlias] = useState("Control Center");
   const [activeSection, setActiveSection] = useState<SettingsSection>(
-    providerStatus?.needsOnboarding ? "providers" : navigation?.acaMode ? "navigation" : "install"
+    () =>
+      settingsSectionFromHash() ||
+      (providerStatus?.needsOnboarding ? "providers" : navigation?.acaMode ? "navigation" : "install")
   );
   const [navigationVisibilityDraft, setNavigationVisibilityDraft] = useState<NavigationVisibility>(
     () => navigation?.routeVisibility || getDefaultNavigationVisibility(!!navigation?.acaMode)
@@ -1293,6 +1335,17 @@ export function useSettingsPageController({
     if (currentRoute === "bug-monitor") setActiveSection("bug_monitor");
   }, [currentRoute]);
 
+  useEffect(() => {
+    if (currentRoute !== "settings") return;
+    const applyHashSection = () => {
+      const section = settingsSectionFromHash();
+      if (section) setActiveSection(section);
+    };
+    applyHashSection();
+    window.addEventListener("hashchange", applyHashSection);
+    return () => window.removeEventListener("hashchange", applyHashSection);
+  }, [currentRoute]);
+
   const installProfileQuery = useQuery({
     queryKey: ["settings", "install", "profile"],
     queryFn: () =>
@@ -1318,6 +1371,7 @@ export function useSettingsPageController({
 
   useEffect(() => {
     if (currentRoute !== "settings") return;
+    if (settingsSectionFromHash()) return;
     if (providerStatus?.needsOnboarding) {
       setActiveSection("providers");
       setProviderDefaultsOpen(true);
@@ -3297,6 +3351,13 @@ export function useSettingsPageController({
     () => isGithubCopilotMcpTransport(mcpTransport),
     [mcpTransport]
   );
+  const selectActiveSection = useCallback(
+    (section: SettingsSection) => {
+      setActiveSection(section);
+      if (currentRoute === "settings") writeSettingsSectionHash(section);
+    },
+    [currentRoute]
+  );
   useEffect(() => {
     if (!navigation?.routeVisibility) return;
     setNavigationVisibilityDraft(navigation.routeVisibility);
@@ -3557,7 +3618,7 @@ export function useSettingsPageController({
     sectionTabs: sectionTabs,
     selectedBugMonitorProvider: selectedBugMonitorProvider,
     selectedBugMonitorServer: selectedBugMonitorServer,
-    setActiveSection: setActiveSection,
+    setActiveSection: selectActiveSection,
     setApiKeyMutation: setApiKeyMutation,
     setBotAvatarUrl: setBotAvatarUrl,
     setBotControlPanelAlias: setBotControlPanelAlias,

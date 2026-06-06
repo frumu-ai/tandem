@@ -120,7 +120,11 @@ export function createCapabilitiesHandler(deps) {
 
   return async function handleCapabilities(req, res) {
     const now = Date.now();
-    if (_cache.value && now < _cache.expiresAt) {
+    const incoming = new URL(req?.url || "/", "http://127.0.0.1");
+    const refresh = ["1", "true", "yes"].includes(
+      String(incoming.searchParams.get("refresh") || "").trim().toLowerCase()
+    );
+    if (!refresh && _cache.value && now < _cache.expiresAt) {
       deps.sendJson(res, 200, _cache.value);
       return;
     }

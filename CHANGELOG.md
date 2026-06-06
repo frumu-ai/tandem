@@ -27,10 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added channel tenant routing isolation, so cross-tenant interactions via
   Discord, Slack, and Telegram must fail closed at the channel interaction
   audit layer (CT-05).
+- Added a cross-tenant knowledge retrieval eval and skills isolation coverage,
+  proving tenant B cannot retrieve tenant A's knowledge-base items and that
+  project skills remain scoped to the executing workspace root (CT-08).
 - Added memory poisoning trust gates: memory now carries trust labels with a
   promotion gate, and untrusted search results, channel reads, and prompt
   context are framed as trust-scoped evidence. Includes a memory-poisoning
   eval dataset.
+- Added a source-verified Rust runtime security analysis across command
+  execution, HTTP APIs, secrets/crypto, permissions/governance, and external
+  integrations, with remediation findings tied to source locations.
 - Added an intra-tenant authority graph (CT-18) that resolves a principal's
   effective grants from direct grants plus organization-unit memberships —
   honoring role-domain nesting and parent-department inheritance — and renders
@@ -50,20 +56,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (external sends, financial/credential access, destructive deletes, money
   movement) through the gate and pauses them, enforced under strict runtime
   auth modes so local/single-tenant deployments stay a no-op.
+- Added a first-class runtime policy decision store and
+  `GET /governance/policy-decisions`, with tenant/run filtering, context-run
+  journal events, tool-effect ledger links, and fintech protected-action
+  decision records for allow, deny, and approval-required outcomes (CT-17).
+- Added a shared tool risk-tier taxonomy with descriptor- and heuristic-based
+  inference, plus canonical risk/default gate hints in policy payloads and
+  stored policy decisions (CT-19).
+- Added governed MCP tool registry metadata to MCP inventory output and
+  per-tool security rows, including redacted credential binding, tenant
+  binding, owner, resource scope, risk tier, default access/policy, and
+  explanatory reasons.
+- Added Goal Capability Learning (GCL) as an additive demo slice: goal and
+  capability schemas, fail-closed strategy proposal lifecycle, tenant-scoped
+  discovery decisions, REST discovery/read/list endpoints, audit event names,
+  and documentation for the "read and parse a CSV file" demo goal.
+- Added a Coding Workflows Cockpit tab for selected ACA runs, showing source
+  identity, run state, GitHub PR/merge state, repository context, summaries,
+  and an operational thread with run actions.
+- Added a control-panel ACA feedback coordination API with run/thread-scoped
+  file-backed audit storage, `/operator/feedback` delivery, pending-message
+  replay, and cockpit SSE updates.
 
 ### Changed
 
 - Tagged `fintech.protected_action` and `tool.effect.recorded` audit events
   with their originating tenant context so consequential actions are
   attributable on the tenant-scoped audit stream.
+- Scoped provider live catalog discovery to the request tenant's persisted
+  provider auth, prevented explicit hosted tenants from inheriting shared
+  runtime provider credentials, and tenant-scoped provider throttles so one
+  tenant's backoff cannot queue another tenant's runs.
+- Scoped automation spend/quota guardrail keys and pause checks by tenant for
+  explicit tenants while preserving local/single-tenant raw agent behavior.
+- Tenant-scoped governance approval receipts and listing: approval requests now
+  carry the issuing tenant, cross-tenant approval/denial attempts fail closed
+  without leaking receipt existence, and approval audit events use the real
+  tenant context (CT-09).
+- Fixed Linear MCP approval classification so Linear read tools are not caught
+  by the broader write gate, added Linear read/write coverage and built-in
+  bindings, and exposed connector readiness state for missing/read-only/write
+  Linear capability states.
 
 ### Security
 
 - Enforced a verified human decider on Automations V2 gate decisions, closing a
   gate-decision self-approval path (GOV-B1).
+- Enforced governed approval reviewer eligibility for explicit approval gates:
+  non-human decisions are rejected and audited, self-approval is blocked,
+  reviewer authority is verified against approval metadata, and data-class or
+  resource grants are required when the gate demands them.
 - Tenant-scoped the audit read path (`/audit/stream`): it now fails closed for
   explicit tenants and recognizes both nested `tenantContext` and flat tenant
   tags, while remaining a no-op for local/single-tenant deployments.
+- Blocked explicit tenants from using store-backed MCP secret headers owned by
+  another tenant before OAuth refresh or outbound MCP calls, and returned
+  tenant-scope denials for cross-tenant MCP secret attempts.
 - Added a memory retrieval gateway that governs channel reads, so memory pulled
   into channel responses passes tenant and source scoping before egress.
 - Added retrieval egress controls (TAN-102) restricting which retrieved memory

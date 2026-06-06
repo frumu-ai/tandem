@@ -93,6 +93,16 @@ export function SettingsPageNavigationProvidersSections({
     ? customConfiguredProviders
     : [];
   const safeProviders = Array.isArray(providers) ? providers : [];
+  const installMissing = Array.isArray(installProfileQuery.data?.control_panel_config_missing)
+    ? installProfileQuery.data.control_panel_config_missing
+    : [];
+  const acaDetected = installProfileQuery.data?.aca_integration === true;
+  const acaReason = String(installProfileQuery.data?.aca_reason || "").trim();
+  const installConfig = (installConfigQuery.data as any)?.config || {};
+  const repositoryPath = String(installConfig?.repository?.path || "").trim();
+  const repositorySlug = String(installConfig?.repository?.slug || "").trim();
+  const repositoryCloneUrl = String(installConfig?.repository?.clone_url || "").trim();
+  const repositoryConfigured = !!(repositoryPath || repositorySlug || repositoryCloneUrl);
 
   return (
     <>
@@ -282,6 +292,67 @@ export function SettingsPageNavigationProvidersSections({
           }
         >
           <div className="grid gap-4">
+            <div className="grid gap-3 xl:grid-cols-3">
+              <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-medium">ACA connection</div>
+                  <Badge tone={acaDetected ? "ok" : "warn"}>
+                    {acaDetected ? "Detected" : "Disconnected"}
+                  </Badge>
+                </div>
+                <div className="tcp-subtle mt-2 text-xs">
+                  {acaDetected
+                    ? "The control panel can reach the ACA service."
+                    : "Set the control panel service environment, then restart the service."}
+                </div>
+                {!acaDetected ? (
+                  <div className="mt-3 grid gap-1 rounded-xl border border-yellow-500/20 bg-yellow-500/10 px-3 py-2 font-mono text-xs text-yellow-100">
+                    <span>ACA_BASE_URL=http://127.0.0.1:39735</span>
+                    <span>ACA_API_TOKEN_FILE=/home/evan/tandem-agents/tandem-data/aca_api_token</span>
+                  </div>
+                ) : null}
+                {acaReason ? (
+                  <div className="mt-2 text-xs text-yellow-200">Probe: {acaReason}</div>
+                ) : null}
+              </div>
+
+              <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-medium">Repository binding</div>
+                  <Badge tone={repositoryConfigured ? "ok" : "warn"}>
+                    {repositoryConfigured ? "Configured" : "Missing"}
+                  </Badge>
+                </div>
+                <div className="tcp-subtle mt-2 text-xs">
+                  {repositoryConfigured
+                    ? "Coder has a default repository context for intake and run handoff."
+                    : "Add repository.path, repository.slug, or repository.clone_url in the config JSON, or register a project from Coder after ACA connects."}
+                </div>
+                {repositoryConfigured ? (
+                  <div className="tcp-subtle mt-3 break-all text-xs">
+                    {repositoryPath || repositorySlug || repositoryCloneUrl}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-medium">Install readiness</div>
+                  <Badge tone={installProfileQuery.data?.control_panel_config_ready ? "ok" : "warn"}>
+                    {installProfileQuery.data?.control_panel_config_ready ? "Ready" : "Needs setup"}
+                  </Badge>
+                </div>
+                <div className="tcp-subtle mt-2 text-xs">
+                  {installProfileQuery.data?.control_panel_config_ready
+                    ? "All required non-secret install fields are present."
+                    : "Complete the missing fields, save the config, then refresh."}
+                </div>
+                <div className="mt-3 text-xs">
+                  Missing: {installMissing.length ? installMissing.join(", ") : "none"}
+                </div>
+              </div>
+            </div>
+
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
                 <div className="font-medium">Startup profile</div>
