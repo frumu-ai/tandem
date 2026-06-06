@@ -77,6 +77,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a control-panel ACA feedback coordination API with run/thread-scoped
   file-backed audit storage, `/operator/feedback` delivery, pending-message
   replay, and cockpit SSE updates.
+- Added a first slice of Goal Capability Learning (GCL-01/02/03): the front end
+  for composing a new workflow toward a goal, distinct from Workflow Learning's
+  repair of existing workflows. A `GoalSpec` is decomposed into tool-agnostic
+  `CapabilityRequirement`s, resolved to available capabilities, and assembled
+  into a ranked `CompositionPath` (demonstrated on the demo goal "read and parse
+  a CSV file"). A `StrategyCandidate` carries a fail-closed review lifecycle
+  (`Proposed → Approved → Applied`, with `Rejected`/`Superseded` terminals) and,
+  once approved, materializes into a `WorkflowProposalDraft` that links into the
+  existing planner plan-draft and Automation V2 preview surfaces; goal-planning
+  and strategy/proposal review emit namespaced audit events. Discovery decisions
+  are persisted per tenant and exposed through tenant-scoped HTTP endpoints.
+- Decided and enforced the Workflow Learning v1 production-validation and
+  auto-apply policy (GCL-04). A single declarative
+  `WorkflowLearningPromotionPolicy` now governs whether a proposed learning
+  candidate may be auto-applied (`AutoApply` / `RequireHumanReview` / `Block`)
+  and whether an applied candidate has regressed against its baseline
+  (`Insufficient` / `Healthy` / `Regressed`). Auto-apply is off by default and
+  fails closed to human review; structural graph patches and plan-bundle changes
+  are categorically blocked from auto-apply; and the previously-inlined
+  before/after regression check is centralized behind the policy with identical
+  default thresholds. Configurable via `TANDEM_WORKFLOW_LEARNING_*` env knobs.
 
 ### Changed
 
@@ -100,6 +121,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Added a CI guard (EAA-11) proving the public engine build (`tandem-ai`)
+  excludes enterprise-only and heavyweight crates (`tandem-enterprise-server`,
+  `tandem-governance-engine`, `fastembed`, `ort-sys`). It checks the exact
+  feature sets the public artifacts ship with — default features and the
+  `browser` feature used by the release/desktop/engine builds — fails closed,
+  and prints the offending dependency path so enterprise/governance code cannot
+  silently leak into public builds.
+- Scoped the Goal Capability Learning endpoints to the authenticated tenant:
+  the discover/list/get handlers derive the tenant from the request's
+  `TenantContext` instead of a caller-supplied `tenant_id`, and reading a
+  discovery decision owned by another tenant fails closed as not-found, so an
+  authenticated client cannot enumerate or read another tenant's discovery
+  history.
 - Enforced a verified human decider on Automations V2 gate decisions, closing a
   gate-decision self-approval path (GOV-B1).
 - Enforced governed approval reviewer eligibility for explicit approval gates:

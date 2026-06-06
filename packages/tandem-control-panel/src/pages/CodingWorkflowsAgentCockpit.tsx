@@ -262,6 +262,19 @@ export function CodingWorkflowsAgentCockpit({
     return acaRunId === runId || tandemRunId === runId;
   });
   const events = useMemo(() => toArray(detail, "events"), [detail]);
+  const approvals = useMemo(() => toArray(approvalsQuery.data || {}, "approvals"), [approvalsQuery.data]);
+  const pendingApprovals = useMemo(
+    () => approvals.filter((approval: any) => String(approval?.status || "") === "pending"),
+    [approvals]
+  );
+  const failedApprovals = useMemo(
+    () => approvals.filter((approval: any) => String(approval?.status || "") === "failed"),
+    [approvals]
+  );
+  const approvalHistory = useMemo(
+    () => approvals.filter((approval: any) => String(approval?.status || "") !== "pending"),
+    [approvals]
+  );
   const summary = String(detail.summary || "").trim();
   const threadEntries = useMemo(
     () =>
@@ -481,59 +494,108 @@ export function CodingWorkflowsAgentCockpit({
           </div>
         </PanelCard>
 
-        <PanelCard title="External approvals" subtitle="Approval-gated MCP actions for this run">
+        <PanelCard
+          title="External approvals"
+          subtitle="Approval-gated MCP actions for this run"
+          actions={
+            approvals.length ? (
+              <div className="flex flex-wrap gap-2">
+                <Badge tone={pendingApprovals.length ? "warn" : "ghost"}>{pendingApprovals.length} pending</Badge>
+                {failedApprovals.length ? <Badge tone="err">{failedApprovals.length} failed</Badge> : null}
+              </div>
+            ) : null
+          }
+        >
           {approvalsQuery.isLoading ? (
             <div className="tcp-subtle text-sm">Checking approvals...</div>
-          ) : toArray(approvalsQuery.data || {}, "approvals").length ? (
+          ) : approvals.length ? (
             <div className="grid gap-3">
-              {toArray(approvalsQuery.data || {}, "approvals").map((approval: any) => {
-                const approvalId = String(approval?.approval_id || "");
-                const target = approval?.target || {};
-                const payload = approval?.payload || {};
-                const pending = String(approval?.status || "") === "pending";
-                return (
-                  <article key={approvalId} className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-semibold text-slate-100">{formatStatus(String(approval?.action_type || "action"))}</div>
-                        <div className="tcp-subtle mt-1 truncate">
-                          {safeText(target.base_repo || target.identifier)}
-                          {target.pr_number ? `#${target.pr_number}` : ""}
+              {pendingApprovals.length ? (
+                <div className="grid max-h-80 gap-3 overflow-auto pr-1">
+                  {pendingApprovals.map((approval: any) => {
+                    const approvalId = String(approval?.approval_id || "");
+                    const target = approval?.target || {};
+                    const payload = approval?.payload || {};
+                    return (
+                      <article key={approvalId} className="rounded-lg border border-amber-400/30 bg-amber-950/15 p-3 text-xs">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-100">{formatStatus(String(approval?.action_type || "action"))}</div>
+                            <div className="tcp-subtle mt-1 truncate">
+                              {safeText(target.base_repo || target.identifier)}
+                              {target.pr_number ? `#${target.pr_number}` : ""}
+                            </div>
+                          </div>
+                          <Badge tone="warn">Pending</Badge>
                         </div>
-                      </div>
-                      <Badge tone={pending ? "warn" : approval?.status === "executed" ? "ok" : "ghost"}>
-                        {formatStatus(String(approval?.status || "unknown"))}
-                      </Badge>
-                    </div>
-                    {payload.body ? (
-                      <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-300">
-                        {String(payload.body).slice(0, 1200)}
-                      </pre>
-                    ) : null}
-                    {pending ? (
-                      <div className="mt-3 flex gap-2">
-                        <button
-                          type="button"
-                          className="tcp-btn-primary h-8 px-3 text-xs"
-                          disabled={Boolean(approvalBusyId)}
-                          onClick={() => decideApproval(approvalId, "approve")}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          className="tcp-btn h-8 px-3 text-xs"
-                          disabled={Boolean(approvalBusyId)}
-                          onClick={() => decideApproval(approvalId, "reject")}
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    ) : null}
-                    {approval?.error ? <div className="mt-2 text-red-200">{String(approval.error)}</div> : null}
-                  </article>
-                );
-              })}
+                        {payload.body ? (
+                          <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-300">
+                            {String(payload.body).slice(0, 700)}
+                          </pre>
+                        ) : null}
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            className="tcp-btn-primary h-8 px-3 text-xs"
+                            disabled={Boolean(approvalBusyId)}
+                            onClick={() => decideApproval(approvalId, "approve")}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            className="tcp-btn h-8 px-3 text-xs"
+                            disabled={Boolean(approvalBusyId)}
+                            onClick={() => decideApproval(approvalId, "reject")}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                  No pending approvals.
+                </div>
+              )}
+
+              {approvalHistory.length ? (
+                <details className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs" open={failedApprovals.length > 0}>
+                  <summary className="cursor-pointer select-none font-semibold text-slate-200">
+                    History ({approvalHistory.length})
+                  </summary>
+                  <div className="mt-3 grid max-h-48 gap-2 overflow-auto pr-1">
+                    {approvalHistory.map((approval: any) => {
+                      const approvalId = String(approval?.approval_id || "");
+                      const target = approval?.target || {};
+                      const status = String(approval?.status || "unknown");
+                      return (
+                        <div key={approvalId} className="border border-white/10 bg-black/20 p-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate font-semibold text-slate-200">
+                                {formatStatus(String(approval?.action_type || "action"))}
+                              </div>
+                              <div className="tcp-subtle mt-1 truncate">
+                                {safeText(target.base_repo || target.identifier)}
+                                {target.pr_number ? `#${target.pr_number}` : ""}
+                              </div>
+                            </div>
+                            <Badge tone={status === "executed" ? "ok" : status === "failed" ? "err" : "ghost"}>
+                              {formatStatus(status)}
+                            </Badge>
+                          </div>
+                          {approval?.error ? (
+                            <div className="mt-2 line-clamp-2 break-words text-red-200">{String(approval.error)}</div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
+              ) : null}
             </div>
           ) : (
             <EmptyState text="No external approvals for this run." />

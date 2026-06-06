@@ -95,6 +95,9 @@ jobs:
       - name: Check touched Rust/TSX file sizes
         run: bash scripts/ci-file-size-check.sh
 
+      - name: Verify public build excludes enterprise/heavyweight crates
+        run: bash scripts/check-public-build-exclusions.sh
+
   test-sdks:
     name: Test SDKs
     runs-on: ubuntu-latest

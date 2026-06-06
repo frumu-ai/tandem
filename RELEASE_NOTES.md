@@ -125,20 +125,33 @@ feedback surfaces.
 
 ### Goal Capability Learning
 
-- Goal Capability Learning (GCL) lands as an additive demo slice for composing
-  capabilities toward a declarative goal, distinct from Workflow Learning's
-  repair of existing workflows.
-- New shared schemas cover `GoalSpec`, capability requirements, available
-  capabilities, composition paths, gaps, discovery reports, strategy candidates,
-  workflow proposal drafts, and namespaced audit event constants.
-- Strategy proposal lifecycle transitions are fail-closed: proposed strategies
-  must be reviewed before approval/application, applied strategies cannot be
-  reopened, and terminal states accept no further transitions.
-- The server includes hardcoded capability fixtures and tenant-scoped in-memory
-  discovery decisions for the demo goal "read and parse a CSV file"
-  (`file_read -> csv_parse`), exposed through discover/read/list REST endpoints.
-- `docs/GOAL_CAPABILITY_LEARNING.md` documents product language, scope,
-  lifecycle, review-surface reuse, and follow-up boundaries.
+- A first slice of Goal Capability Learning (GCL) lands as the front end for
+  *composing a new workflow toward a goal*, distinct from Workflow Learning,
+  which repairs an existing workflow from execution traces (GCL-01). A goal is
+  expressed as a `GoalSpec`; discovery decomposes it into tool-agnostic
+  `CapabilityRequirement`s, resolves those to available capabilities, and
+  produces a ranked `CompositionPath` — demonstrated end-to-end on the smallest
+  demo goal, "read and parse a CSV file" (`file_read → csv_parse`) (GCL-02).
+- Strategy review reuses the existing governance shape rather than inventing a
+  parallel one (GCL-03). A `StrategyCandidate` moves through a fail-closed
+  lifecycle (`Proposed → Approved → Applied`, with `Rejected`/`Superseded`
+  terminals) — it cannot skip review or re-open once applied — and an approved
+  strategy materializes into a `WorkflowProposalDraft` that links into the
+  existing planner plan-draft and Automation V2 preview surfaces. Goal-planning
+  and strategy/proposal review emit namespaced audit events. Discovery decisions
+  are recorded per tenant and exposed through tenant-scoped endpoints that derive
+  the tenant from the authenticated context, never from caller input.
+- The Workflow Learning v1 production-validation and auto-apply policy is now
+  decided and enforced (GCL-04). A declarative policy governs whether a proposed
+  learning candidate may be auto-applied and whether an applied candidate has
+  regressed against its baseline. Auto-apply is off by default and fails closed
+  to human review; structural graph rewrites and plan-bundle changes always
+  require a human; confidence, evidence (minimum recent-run sample), and a
+  recent human-intervention ceiling gate eligibility; and the before/after
+  regression check (post-apply minimum sample, completion- and
+  validation-rate thresholds) is centralized and unit-tested with behavior
+  identical to the previous inline check. All knobs are configurable via
+  `TANDEM_WORKFLOW_LEARNING_*` environment variables.
 
 ### Coding Workflows
 
