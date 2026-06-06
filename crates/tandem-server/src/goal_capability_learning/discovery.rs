@@ -1,7 +1,10 @@
 //! Capability discovery: match goals to available capabilities and compose solutions.
 
 use serde_json::json;
-use tandem_types::{AvailableCapability, CapabilityDiscoveryReport, CompositionPath, GoalSpec};
+use tandem_types::{
+    AvailableCapability, CapabilityDiscoveryReport, CapabilityRequirement, CompositionPath,
+    GoalSpec,
+};
 
 /// Hardcoded capabilities for MVP discovery.
 fn all_capabilities() -> Vec<AvailableCapability> {
@@ -69,9 +72,16 @@ pub fn discover_capabilities_for_goal(goal: &GoalSpec) -> CapabilityDiscoveryRep
 
     let mut discovered = Vec::new();
     let mut required_ids = Vec::new();
+    let mut requirements = Vec::new();
 
     // Keyword matching for file_read.
     if text.contains("read") || text.contains("file") || text.contains("open") {
+        requirements.push(CapabilityRequirement {
+            requirement_id: "read_source".to_string(),
+            description: "Read the source content from a file".to_string(),
+            required_tags: vec!["file_io".to_string(), "read".to_string()],
+            mandatory: true,
+        });
         if let Some(cap) = all_caps.iter().find(|c| c.capability_id == "file_read") {
             discovered.push(cap.clone());
             required_ids.push("file_read".to_string());
@@ -80,6 +90,12 @@ pub fn discover_capabilities_for_goal(goal: &GoalSpec) -> CapabilityDiscoveryRep
 
     // Keyword matching for csv_parse.
     if text.contains("csv") || text.contains("parse") {
+        requirements.push(CapabilityRequirement {
+            requirement_id: "parse_csv".to_string(),
+            description: "Parse CSV content into structured records".to_string(),
+            required_tags: vec!["parse".to_string(), "csv".to_string()],
+            mandatory: true,
+        });
         if let Some(cap) = all_caps.iter().find(|c| c.capability_id == "csv_parse") {
             discovered.push(cap.clone());
             required_ids.push("csv_parse".to_string());
@@ -113,6 +129,7 @@ pub fn discover_capabilities_for_goal(goal: &GoalSpec) -> CapabilityDiscoveryRep
 
     CapabilityDiscoveryReport {
         goal_id: goal.goal_id.clone(),
+        requirements,
         discovered_capabilities: discovered,
         composition_candidates: candidates,
         gaps: vec![],
