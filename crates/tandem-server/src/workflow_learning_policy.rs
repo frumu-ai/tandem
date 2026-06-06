@@ -242,13 +242,20 @@ impl WorkflowLearningPromotionPolicy {
 
     /// Render the before/after regression verdict for an applied candidate by
     /// comparing the `latest` metrics against the `baseline` captured at apply.
+    ///
+    /// `post_apply_sample_size` is the count of terminal runs that completed
+    /// *after* the baseline was captured. It is passed in explicitly rather than
+    /// derived from the snapshot sample sizes: both snapshots come from a rolling
+    /// window (capped at 50 recent runs), so on a mature workflow
+    /// `latest.sample_size - baseline.sample_size` is pinned at 0 and a candidate
+    /// could never accumulate enough post-apply evidence to be judged.
     pub fn evaluate_regression(
         &self,
         baseline: &WorkflowLearningMetricsSnapshot,
         latest: &WorkflowLearningMetricsSnapshot,
+        post_apply_sample_size: usize,
     ) -> RegressionVerdict {
-        let post_change_sample_size = latest.sample_size.saturating_sub(baseline.sample_size);
-        if post_change_sample_size < self.post_apply_min_sample_size {
+        if post_apply_sample_size < self.post_apply_min_sample_size {
             return RegressionVerdict::Insufficient;
         }
 

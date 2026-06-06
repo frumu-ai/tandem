@@ -80,7 +80,12 @@ terminal runs arrive:
 
 - **Minimum post-apply sample.** No verdict is rendered until at least
   `post_apply_min_sample_size` (default 3) runs have completed *after* the
-  baseline. Until then the verdict is `Insufficient` (hold).
+  baseline. This count is taken from run timestamps (terminal runs whose
+  `finished_at_ms` is later than the baseline's `computed_at_ms`), **not** by
+  subtracting snapshot sample sizes — both snapshots come from a rolling window
+  capped at 50 recent runs, so on a mature workflow that subtraction would be
+  pinned at 0 and a candidate could never accumulate post-apply evidence. Until
+  the minimum is reached the verdict is `Insufficient` (hold).
 - **Guarded metrics.** A candidate is marked `Regressed` if either
   `completion_rate` **or** `validation_pass_rate` falls below its baseline by
   more than `regression_margin` (default `f64::EPSILON`). Equal-or-better metrics

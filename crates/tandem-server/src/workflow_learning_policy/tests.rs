@@ -139,12 +139,25 @@ fn auto_apply_when_all_gates_met() {
 fn regression_insufficient_until_min_post_apply_sample() {
     let policy = WorkflowLearningPromotionPolicy::default();
     let baseline = metrics(10, 0.9, 0.9, 0);
-    // Only 2 new runs since baseline (< 3) -> no verdict yet.
+    // Only 2 post-apply runs (< 3) -> no verdict yet, even with a sharp drop.
     let latest = metrics(12, 0.1, 0.1, 0);
     assert_eq!(
-        policy.evaluate_regression(&baseline, &latest),
+        policy.evaluate_regression(&baseline, &latest, 2),
         RegressionVerdict::Insufficient
     );
+}
+
+#[test]
+fn regression_verdict_uses_post_apply_count_not_capped_sample_delta() {
+    // Mature workflow: baseline and latest are both pinned at the rolling-window
+    // cap (50), so a naive `latest - baseline` would be 0 forever. With an
+    // explicit post-apply count above the minimum, a real drop is still caught.
+    let policy = WorkflowLearningPromotionPolicy::default();
+    let baseline = metrics(50, 0.9, 0.9, 0);
+    let latest = metrics(50, 0.5, 0.9, 0);
+    assert!(policy
+        .evaluate_regression(&baseline, &latest, 8)
+        .is_regressed());
 }
 
 #[test]
@@ -152,7 +165,7 @@ fn regression_detected_on_completion_rate_drop() {
     let policy = WorkflowLearningPromotionPolicy::default();
     let baseline = metrics(10, 0.9, 0.9, 0);
     let latest = metrics(15, 0.5, 0.9, 0);
-    let verdict = policy.evaluate_regression(&baseline, &latest);
+    let verdict = policy.evaluate_regression(&baseline, &latest, 5);
     assert!(verdict.is_regressed());
     assert_eq!(
         match verdict {
@@ -168,7 +181,7 @@ fn regression_detected_on_validation_pass_rate_drop() {
     let policy = WorkflowLearningPromotionPolicy::default();
     let baseline = metrics(10, 0.9, 0.9, 0);
     let latest = metrics(15, 0.9, 0.4, 0);
-    let verdict = policy.evaluate_regression(&baseline, &latest);
+    let verdict = policy.evaluate_regression(&baseline, &latest, 5);
     assert!(verdict.is_regressed());
 }
 
@@ -178,7 +191,7 @@ fn healthy_when_metrics_hold_or_improve() {
     let baseline = metrics(10, 0.9, 0.9, 0);
     let latest = metrics(15, 0.95, 0.92, 0);
     assert_eq!(
-        policy.evaluate_regression(&baseline, &latest),
+        policy.evaluate_regression(&baseline, &latest, 5),
         RegressionVerdict::Healthy
     );
 }
@@ -191,7 +204,7 @@ fn default_regression_matches_legacy_epsilon_behavior() {
     let baseline = metrics(10, 0.9, 0.9, 0);
     let equal = metrics(15, 0.9, 0.9, 0);
     assert_eq!(
-        policy.evaluate_regression(&baseline, &equal),
+        policy.evaluate_regression(&baseline, &equal, 5),
         RegressionVerdict::Healthy
     );
 }
