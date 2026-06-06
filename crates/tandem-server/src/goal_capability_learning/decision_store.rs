@@ -143,4 +143,24 @@ mod tests {
         assert_eq!(t1_decisions.len(), 2);
         assert_eq!(t2_decisions.len(), 1);
     }
+
+    #[tokio::test]
+    async fn decision_carries_owning_tenant_for_scoped_reads() {
+        // The HTTP layer scopes get-by-id by comparing the authenticated tenant
+        // against the decision's recorded tenant. This guards that the store
+        // records the owning tenant so that comparison is possible: a decision
+        // created by tenant_a must not report tenant_b as its owner.
+        let store = GoalCapabilityLearningDecisionStore::new();
+        let response = store
+            .discover_for_goal(demo_goal(), "tenant_a".to_string())
+            .await;
+
+        let decision = store
+            .get_decision(&response.request_id)
+            .await
+            .expect("decision exists");
+
+        assert_eq!(decision.tenant_id, "tenant_a");
+        assert_ne!(decision.tenant_id, "tenant_b");
+    }
 }
