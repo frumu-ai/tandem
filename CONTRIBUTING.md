@@ -131,6 +131,39 @@ cargo test       # Run tests
 - [ ] No secrets or sensitive data committed
 - [ ] Commit messages follow conventions
 
+### Generated / Automated Optimization PRs
+
+Automated tools (e.g. Bolt/Jules) can open large numbers of small,
+overlapping "performance" PRs — typically micro-optimizations like replacing
+`[...arr].sort(...)[0]` with a `maxBy`/`minBy` helper, or consolidating
+`useMemo` hooks. Left untriaged, these accumulate into a pile of stale,
+duplicate, conflicting branches. To keep this from recurring:
+
+**When a generated optimization PR is acceptable**
+
+- It makes **one** focused change with a clear, measurable benefit.
+- It is **rebased on current `main`** with **green CI** (not an old base SHA).
+- It touches only the files relevant to the optimization — no unrelated
+  server/Rust edits, lockfile churn, generated-catalog changes, `.patch`
+  files, or tool-config files (e.g. `.jules/bolt.md`) bundled into a
+  "performance" PR.
+- A human owner has reviewed it. Generated PRs are **not** auto-merged.
+
+**Prefer consolidation over a train of one-offs**
+
+- If several generated branches make the *same* change to the *same* files,
+  do **not** merge them one-by-one by age. Cherry-pick the worthwhile change
+  **once** into a single intentional PR and close the rest as superseded.
+
+**Auto-close criteria** (close with a concise comment explaining why)
+
+- Duplicates or supersedes another open PR making the same change.
+- Failing CI or based on a stale `main` with no recent updates.
+- Bundles unrelated or server-touching changes into a micro-optimization PR
+  (treat large or server-touching generated PRs as suspect until reviewed).
+
+Keep this repo-hygiene triage separate from active feature/security work.
+
 ## Architecture Overview
 
 ```
