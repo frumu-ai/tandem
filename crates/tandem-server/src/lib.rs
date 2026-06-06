@@ -14,6 +14,7 @@ pub mod capability_resolver;
 pub mod config;
 pub mod eval;
 pub mod failures;
+pub mod goal_capability_learning;
 pub mod http;
 pub mod mcp_catalog;
 pub mod mcp_catalog_generated;
