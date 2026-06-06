@@ -354,6 +354,48 @@ export function CodingWorkflowsAgentCockpit({
     }
   }
 
+  async function approvePendingApprovals() {
+    if (!runId || approvalBusyId || !pendingApprovals.length) return;
+    setApprovalBusyId("batch-approve");
+    setFeedbackError("");
+    try {
+      await api(`/api/aca/runs/${encodeURIComponent(runId)}/approvals/approve-pending`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "operator" }),
+      });
+      await api(`/api/aca/runs/${encodeURIComponent(runId)}/resume-approved-actions`, {
+        method: "POST",
+      }).catch(() => ({}));
+      await approvalsQuery.refetch();
+      await runDetailQuery.refetch?.();
+    } catch (error: any) {
+      setFeedbackError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApprovalBusyId("");
+    }
+  }
+
+  async function retryFailedApprovals() {
+    if (!runId || approvalBusyId || !failedApprovals.length) return;
+    setApprovalBusyId("retry-failed");
+    setFeedbackError("");
+    try {
+      await api(`/api/aca/runs/${encodeURIComponent(runId)}/approvals/retry-failed`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "operator" }),
+      });
+      await api(`/api/aca/runs/${encodeURIComponent(runId)}/resume-approved-actions`, {
+        method: "POST",
+      }).catch(() => ({}));
+      await approvalsQuery.refetch();
+      await runDetailQuery.refetch?.();
+    } catch (error: any) {
+      setFeedbackError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApprovalBusyId("");
+    }
+  }
+
   if (!runId || !selectedRun) {
     return (
       <PanelCard title="Agent cockpit" subtitle="Select an ACA run to inspect its operational thread.">
@@ -510,6 +552,31 @@ export function CodingWorkflowsAgentCockpit({
             <div className="tcp-subtle text-sm">Checking approvals...</div>
           ) : approvals.length ? (
             <div className="grid gap-3">
+              {pendingApprovals.length || failedApprovals.length ? (
+                <div className="flex flex-wrap gap-2">
+                  {pendingApprovals.length ? (
+                    <button
+                      type="button"
+                      className="tcp-btn-primary h-8 px-3 text-xs"
+                      disabled={Boolean(approvalBusyId)}
+                      onClick={approvePendingApprovals}
+                    >
+                      Approve pending ({pendingApprovals.length})
+                    </button>
+                  ) : null}
+                  {failedApprovals.length ? (
+                    <button
+                      type="button"
+                      className="tcp-btn h-8 px-3 text-xs"
+                      disabled={Boolean(approvalBusyId)}
+                      onClick={retryFailedApprovals}
+                    >
+                      Retry failed ({failedApprovals.length})
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
               {pendingApprovals.length ? (
                 <div className="grid max-h-80 gap-3 overflow-auto pr-1">
                   {pendingApprovals.map((approval: any) => {
