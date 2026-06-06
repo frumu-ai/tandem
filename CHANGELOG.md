@@ -80,6 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Added a CI guard (EAA-11) proving the public engine build (`tandem-ai`,
+  default features) excludes enterprise-only and heavyweight crates
+  (`tandem-enterprise-server`, `tandem-governance-engine`, `fastembed`,
+  `ort-sys`). The guard fails closed and prints the offending dependency path so
+  enterprise/governance code cannot silently leak into public builds.
 - Scoped the Goal Capability Learning endpoints to the authenticated tenant:
   the discover/list/get handlers derive the tenant from the request's
   `TenantContext` instead of a caller-supplied `tenant_id`, and reading a
