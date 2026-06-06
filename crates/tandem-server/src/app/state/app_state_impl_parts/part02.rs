@@ -1540,7 +1540,8 @@ impl AppState {
         &self,
         run: &AutomationV2RunRecord,
     ) -> anyhow::Result<()> {
-        const WORKFLOW_LEARNING_POST_APPLY_MIN_SAMPLE_SIZE: usize = 3;
+        let learning_policy =
+            crate::workflow_learning_policy::WorkflowLearningPromotionPolicy::from_env();
         let automation = if let Some(snapshot) = run.automation_snapshot.clone() {
             snapshot
         } else if let Some(current) = self.get_automation_v2(&run.automation_id).await {
@@ -1566,6 +1567,34 @@ impl AppState {
         let mut generated_candidate_ids = Vec::new();
         for candidate in generated {
             let stored = self.upsert_workflow_learning_candidate(candidate).await?;
+            // Consult the promotion policy. Fail closed: with the default
+            // (auto-apply disabled) this is always RequireHumanReview/Block, so
+            // candidates stay `Proposed` for the human review endpoint exactly as
+            // before. Only an explicit opt-in can auto-apply a low-risk candidate.
+            if stored.status == WorkflowLearningCandidateStatus::Proposed
+                && learning_policy
+                    .evaluate_promotion(&stored, &metrics)
+                    .is_auto_apply()
+            {
+                let baseline = metrics.clone();
+                let _ = self
+                    .update_workflow_learning_candidate(&stored.candidate_id, |candidate| {
+                        candidate.status = WorkflowLearningCandidateStatus::Applied;
+                        // Capture the baseline the same way the review endpoint
+                        // does, so the before/after regression gate can run.
+                        candidate.baseline_before = Some(baseline.clone());
+                    })
+                    .await;
+                self.event_bus.publish(EngineEvent::new(
+                    "workflow_learning.candidate.auto_applied",
+                    serde_json::json!({
+                        "candidate_id": stored.candidate_id,
+                        "workflow_id": stored.workflow_id,
+                        "kind": format!("{:?}", stored.kind),
+                        "confidence": stored.confidence,
+                    }),
+                ));
+            }
             generated_candidate_ids.push(stored.candidate_id);
         }
         let candidate_ids = self
@@ -1587,16 +1616,12 @@ impl AppState {
                     candidate.latest_observed_metrics = Some(metrics.clone());
                     if candidate.status == WorkflowLearningCandidateStatus::Applied {
                         if let Some(baseline) = candidate.baseline_before.as_ref() {
-                            let post_change_sample_size =
-                                metrics.sample_size.saturating_sub(baseline.sample_size);
-                            if post_change_sample_size
-                                < WORKFLOW_LEARNING_POST_APPLY_MIN_SAMPLE_SIZE
-                            {
-                                return;
-                            }
-                            if metrics.completion_rate + f64::EPSILON < baseline.completion_rate
-                                || metrics.validation_pass_rate + f64::EPSILON
-                                    < baseline.validation_pass_rate
+                            // Route the before/after gate through the policy so the
+                            // thresholds are centralized and testable. Default
+                            // thresholds reproduce the prior inline behavior.
+                            if learning_policy
+                                .evaluate_regression(baseline, &metrics)
+                                .is_regressed()
                             {
                                 candidate.status = WorkflowLearningCandidateStatus::Regressed;
                             }

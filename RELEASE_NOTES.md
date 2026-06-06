@@ -103,6 +103,17 @@ is retrieved, trusted, encrypted, and key-managed.
   and strategy/proposal review emit namespaced audit events. Discovery decisions
   are recorded per tenant and exposed through tenant-scoped endpoints that derive
   the tenant from the authenticated context, never from caller input.
+- The Workflow Learning v1 production-validation and auto-apply policy is now
+  decided and enforced (GCL-04). A declarative policy governs whether a proposed
+  learning candidate may be auto-applied and whether an applied candidate has
+  regressed against its baseline. Auto-apply is off by default and fails closed
+  to human review; structural graph rewrites and plan-bundle changes always
+  require a human; confidence, evidence (minimum recent-run sample), and a
+  recent human-intervention ceiling gate eligibility; and the before/after
+  regression check (post-apply minimum sample, completion- and
+  validation-rate thresholds) is centralized and unit-tested with behavior
+  identical to the previous inline check. All knobs are configurable via
+  `TANDEM_WORKFLOW_LEARNING_*` environment variables.
 
 ## v0.5.13 (2026-06-02)
 

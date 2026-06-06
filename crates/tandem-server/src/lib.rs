@@ -30,6 +30,7 @@ pub mod runtime;
 pub mod shared_resources;
 pub mod util;
 pub mod webui;
+pub mod workflow_learning_policy;
 pub mod workflows;
 
 pub use app::startup::*;

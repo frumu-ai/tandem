@@ -61,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing planner plan-draft and Automation V2 preview surfaces; goal-planning
   and strategy/proposal review emit namespaced audit events. Discovery decisions
   are persisted per tenant and exposed through tenant-scoped HTTP endpoints.
+- Decided and enforced the Workflow Learning v1 production-validation and
+  auto-apply policy (GCL-04). A single declarative
+  `WorkflowLearningPromotionPolicy` now governs whether a proposed learning
+  candidate may be auto-applied (`AutoApply` / `RequireHumanReview` / `Block`)
+  and whether an applied candidate has regressed against its baseline
+  (`Insufficient` / `Healthy` / `Regressed`). Auto-apply is off by default and
+  fails closed to human review; structural graph patches and plan-bundle changes
+  are categorically blocked from auto-apply; and the previously-inlined
+  before/after regression check is centralized behind the policy with identical
+  default thresholds. Configurable via `TANDEM_WORKFLOW_LEARNING_*` env knobs.
 
 ### Changed
 
