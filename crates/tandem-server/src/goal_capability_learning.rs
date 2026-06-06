@@ -3,7 +3,7 @@
 mod decision_store;
 mod discovery;
 
-pub use decision_store::GoalCapabilityLearningDecisionStore;
+pub use decision_store::{DiscoveryDecision, GoalCapabilityLearningDecisionStore};
 pub use discovery::discover_capabilities_for_goal;
 
 #[cfg(test)]

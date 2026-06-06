@@ -10,7 +10,7 @@ use crate::goal_capability_learning::discovery::discover_capabilities_for_goal;
 use crate::util::time::now_ms;
 
 /// A recorded discovery decision.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveryDecision {
     pub decision_id: String,
     pub goal: GoalSpec,
