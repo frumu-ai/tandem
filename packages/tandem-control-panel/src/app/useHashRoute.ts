@@ -20,7 +20,7 @@ export function useHashRoute(options: HashRouteOptions = {}) {
 
   useEffect(() => {
     const canonical = routeFromHash(routeRef.current);
-    if (window.location.hash !== `#/${canonical}`) {
+    if (routeFromHash(canonical) !== canonical) {
       setHashRoute(canonical);
     }
   }, []);
@@ -28,7 +28,7 @@ export function useHashRoute(options: HashRouteOptions = {}) {
   const commitRoute = useCallback((next: RouteId, source: "navigate" | "hashchange") => {
     const current = routeRef.current;
     if (next === current) {
-      if (window.location.hash !== `#/${current}`) {
+      if (routeFromHash(current) !== current) {
         setHashRoute(current);
         return true;
       }

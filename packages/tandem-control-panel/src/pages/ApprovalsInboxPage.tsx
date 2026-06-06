@@ -49,6 +49,47 @@ type PendingResponse = {
   count?: number;
 };
 
+function externalApprovalPreview(row: any): string {
+  const target = row?.target || {};
+  const payload = row?.payload || {};
+  const targetLabel = `${String(target.base_repo || target.identifier || "unknown")}${
+    target.pr_number ? `#${target.pr_number}` : ""
+  }`;
+  const lines = [
+    `**${String(row?.action_type || "external_action")}**`,
+    "",
+    `Target: \`${targetLabel}\``,
+    `Risk: \`${String(row?.risk_level || "unknown")}\``,
+  ];
+  const body = String(payload.body || "").trim();
+  if (body) lines.push("", "Payload:", "```text", body.slice(0, 2000), "```");
+  return lines.join("\n");
+}
+
+function normalizeExternalApproval(row: any): ApprovalRequest {
+  const approvalId = String(row?.approval_id || row?.id || "");
+  const runId = String(row?.run_id || "");
+  return {
+    request_id: approvalId,
+    source: "aca_external_action",
+    tenant: { org_id: "local", workspace_id: "aca" },
+    run_id: runId,
+    workflow_name: `ACA ${String(row?.adapter || "external action")}`,
+    action_kind: String(row?.action_type || "external_action"),
+    action_preview_markdown: externalApprovalPreview(row),
+    surface_payload: {
+      approve_endpoint: `/api/aca/approvals/${encodeURIComponent(approvalId)}/approve`,
+      reject_endpoint: `/api/aca/approvals/${encodeURIComponent(approvalId)}/reject`,
+      resume_endpoint: `/api/aca/runs/${encodeURIComponent(runId)}/resume-approved-actions`,
+      raw: row,
+    },
+    requested_at_ms: Number(row?.created_at_ms || Date.now()),
+    decisions: ["approve", "cancel"],
+    instructions:
+      "Review and approve this ACA external action. Approval executes it through the connected MCP server and verifies it afterwards.",
+  };
+}
+
 function formatRelativeTime(ms: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (seconds < 60) return `${seconds}s ago`;
@@ -61,6 +102,11 @@ function formatRelativeTime(ms: number): string {
 }
 
 function decideEndpointFor(request: ApprovalRequest): string | null {
+  if (request.source === "aca_external_action") {
+    const payload = request.surface_payload as any;
+    const endpoint = payload?.approve_endpoint || payload?.reject_endpoint;
+    return typeof endpoint === "string" ? endpoint : null;
+  }
   const explicit = (request.surface_payload as any)?.decide_endpoint;
   if (typeof explicit === "string" && explicit.startsWith("/")) {
     return explicit.startsWith("/api/engine") ? explicit : `/api/engine${explicit}`;
@@ -76,7 +122,11 @@ async function postDecision(
   decision: DecisionKind,
   reason?: string
 ): Promise<{ ok: boolean; alreadyDecidedBy?: string; conflictBody?: any }> {
-  const endpoint = decideEndpointFor(request);
+  let endpoint = decideEndpointFor(request);
+  if (request.source === "aca_external_action") {
+    const payload = request.surface_payload as any;
+    endpoint = decision === "approve" ? payload?.approve_endpoint : payload?.reject_endpoint;
+  }
   if (!endpoint) {
     throw new Error(`No decide endpoint known for source=${request.source}`);
   }
@@ -85,6 +135,10 @@ async function postDecision(
       method: "POST",
       body: JSON.stringify({ decision, reason: reason || undefined }),
     });
+    const resumeEndpoint = (request.surface_payload as any)?.resume_endpoint;
+    if (decision === "approve" && typeof resumeEndpoint === "string" && resumeEndpoint.startsWith("/")) {
+      await api(resumeEndpoint, { method: "POST" }).catch(() => ({}));
+    }
     return { ok: true };
   } catch (error: any) {
     // Surface the W2.6 race body when a 409 lands.
@@ -150,6 +204,19 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
     staleTime: 0,
   });
 
+  const acaPendingQuery = useQuery<PendingResponse>({
+    queryKey: ["approvals", "aca-external-actions", "pending"],
+    queryFn: async () => {
+      const res = await api("/api/aca/approvals/pending").catch(() => ({ approvals: [] }));
+      const approvals = Array.isArray((res as any)?.approvals)
+        ? (res as any).approvals.map(normalizeExternalApproval)
+        : [];
+      return { approvals, count: approvals.length };
+    },
+    refetchInterval: 5000,
+    staleTime: 0,
+  });
+
   const decideMutation = useMutation({
     mutationFn: async (vars: {
       request: ApprovalRequest;
@@ -170,6 +237,7 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
         toast("warn", `Already decided by ${result.alreadyDecidedBy || "another operator"}.`);
       }
       await queryClient.invalidateQueries({ queryKey: ["approvals", "pending"] });
+      await queryClient.invalidateQueries({ queryKey: ["approvals", "aca-external-actions", "pending"] });
       setShowReasonForm(null);
     },
     onError: (error: any) => {
@@ -178,8 +246,13 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
   });
 
   const approvals = pendingQuery.data?.approvals ?? [];
-  const count = approvals.length;
-  const loadingApprovals = pendingQuery.isLoading || (pendingQuery.isFetching && count === 0);
+  const acaApprovals = acaPendingQuery.data?.approvals ?? [];
+  const allApprovals = [...acaApprovals, ...approvals];
+  const count = allApprovals.length;
+  const loadingApprovals =
+    pendingQuery.isLoading ||
+    acaPendingQuery.isLoading ||
+    ((pendingQuery.isFetching || acaPendingQuery.isFetching) && count === 0);
 
   return (
     <AnimatedPage className="grid h-full min-h-0 gap-4">
@@ -216,14 +289,14 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
             title="Checking for pending approvals…"
             text="Polling /api/engine/approvals/pending"
           />
-        ) : approvals.length === 0 ? (
+        ) : allApprovals.length === 0 ? (
           <EmptyState
             title="No approvals waiting"
             text="Workflows with auto-injected approval gates pause here when they reach an external action."
           />
         ) : (
           <div className="grid gap-4">
-            {approvals.map((request) => (
+            {allApprovals.map((request) => (
               <ApprovalRequestCard
                 key={request.request_id}
                 request={request}
@@ -421,6 +494,8 @@ function dedupeMarkdown(markdown?: string, instructions?: string): string | unde
 
 function sourceLabel(source: string): string {
   switch (source) {
+    case "aca_external_action":
+      return "ACA external action";
     case "automation_v2":
       return "automation v2";
     case "coder":

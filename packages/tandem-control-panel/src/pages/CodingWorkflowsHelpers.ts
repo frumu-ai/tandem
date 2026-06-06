@@ -424,6 +424,8 @@ export function buildTaskSourcePayload(
     projectNumber,
     linearTeam,
     linearProject,
+    linearProjectName,
+    linearTeamName,
     linearStatuses,
     linearLabels,
     linearQuery,
@@ -434,6 +436,8 @@ export function buildTaskSourcePayload(
     projectNumber: string;
     linearTeam: string;
     linearProject: string;
+    linearProjectName?: string;
+    linearTeamName?: string;
     linearStatuses: string;
     linearLabels: string;
     linearQuery: string;
@@ -456,6 +460,10 @@ export function buildTaskSourcePayload(
       statuses: linearStatuses.trim(),
       labels: linearLabels.trim(),
       query: linearQuery.trim(),
+      payload: {
+        team_name: String(linearTeamName || "").trim(),
+        project_name: String(linearProjectName || "").trim(),
+      },
     };
   }
   return {
@@ -464,6 +472,19 @@ export function buildTaskSourcePayload(
     repo: repoRef?.repo || "",
     project: projectNumber.trim(),
   };
+}
+
+export function findLinearCatalogEntry(entries: any, selected: string) {
+  const needle = String(selected || "").trim();
+  const rows = Array.isArray(entries) ? entries : [];
+  if (!needle) return null;
+  return (
+    rows.find((entry: any) =>
+      [entry?.key, entry?.id, entry?.name, entry?.slug]
+        .map((value) => String(value || "").trim())
+        .includes(needle)
+    ) || null
+  );
 }
 
 export function isSafeManagedPath(raw: string) {

@@ -6,11 +6,13 @@ import { useCapabilities } from "../features/system/queries.ts";
 import { subscribeSse } from "../services/sse.js";
 import { CodingWorkflowsAgentCockpit } from "./CodingWorkflowsAgentCockpit";
 import { CodingWorkflowsOverviewTab } from "./CodingWorkflowsOverviewTab";
+import { CodingWorkflowsRegisterProjectPanel } from "./CodingWorkflowsRegisterProjectPanel";
 import { TaskPlanningPanel } from "./TaskPlanningPanel";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import type { AppPageProps } from "./pageTypes";
 import { LazyJson } from "../features/automations/LazyJson";
+import { CodingWorkflowsDisconnectedState } from "./CodingWorkflowsDisconnectedState";
 import {
   type CodingTab,
   type GithubRepoRef,
@@ -21,6 +23,7 @@ import {
   buildTaskSourcePayload,
   dedupeRuns,
   formatStatus,
+  findLinearCatalogEntry,
   githubBoardItemCanRun,
   githubBoardItemIdentity,
   githubBoardItemLaunchLabel,
@@ -90,6 +93,22 @@ export function CodingWorkflowsPage({
   const caps = useCapabilities();
   const acaAvailable = caps.data?.aca_integration === true;
   const engineAvailable = caps.data?.engine_healthy === true;
+  const acaReason = String(caps.data?.aca_reason || "").trim();
+  const acaStatusText =
+    acaReason === "aca_not_configured"
+      ? "ACA_BASE_URL is not configured for this control panel service."
+      : acaReason === "aca_endpoint_not_found"
+        ? "The configured ACA service did not expose the expected health endpoint."
+        : acaReason === "aca_probe_timeout"
+          ? "The ACA health probe timed out."
+          : acaReason === "aca_probe_error"
+            ? "The ACA health probe failed before it could read a response."
+            : acaReason.match(/^aca_health_failed_\d+$/)
+              ? `The ACA health probe returned ${acaReason.replace("aca_health_failed_", "HTTP ")}.`
+              : "ACA has not been detected by the control panel yet.";
+  const controlPanelConfigMissing = Array.isArray(caps.data?.control_panel_config_missing)
+    ? caps.data.control_panel_config_missing
+    : [];
   const hostedManaged = caps.data?.hosted_managed === true;
   const integrationsEnabled = acaAvailable || engineAvailable;
   const health = useQuery({
@@ -117,6 +136,16 @@ export function CodingWorkflowsPage({
     queryKey: ["coding-workflows", "aca-workspace-guide"],
     queryFn: () => api("/api/aca/workspace/guide"),
     enabled: acaAvailable,
+  });
+  const linearCatalogQuery = useQuery({
+    queryKey: ["coding-workflows", "linear-catalog", taskSourceLinearTeam],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (taskSourceLinearTeam.trim()) params.set("team", taskSourceLinearTeam.trim());
+      return api(`/api/aca/linear/catalog${params.toString() ? `?${params.toString()}` : ""}`);
+    },
+    enabled: acaAvailable && taskSourceType === "linear",
+    staleTime: 60_000,
   });
   const runsQuery = useQuery({
     queryKey: ["coding-workflows", "aca-runs"],
@@ -319,10 +348,20 @@ export function CodingWorkflowsPage({
     () => new Set(Object.keys(launchingGithubItemIds)),
     [launchingGithubItemIds]
   );
+  const controlPanelDefaultProvider = String(providerStatus.defaultProvider || "").trim();
+  const controlPanelDefaultModel = String(providerStatus.defaultModel || "").trim();
   const inheritedAcaModelLabel =
-    providerStatus.defaultProvider && providerStatus.defaultModel
-      ? `ACA default (${providerStatus.defaultProvider} / ${providerStatus.defaultModel})`
-      : "ACA default";
+    controlPanelDefaultProvider && controlPanelDefaultModel
+      ? `Control panel default (${controlPanelDefaultProvider} / ${controlPanelDefaultModel})`
+      : "Control panel default";
+  const buildAcaProviderOverrides = () => {
+    const provider = String(overrideProvider || controlPanelDefaultProvider).trim();
+    const model = String(overrideModel || controlPanelDefaultModel).trim();
+    const overrides: Record<string, string> = {};
+    if (provider) overrides.ACA_PROVIDER = provider;
+    if (model) overrides.ACA_MODEL = model;
+    return overrides;
+  };
   const renderAcaModelSelector = (disabled = false) => (
     <div className="grid gap-2">
       {/* Keep run launch overrides on the shared selector used by planner/settings screens. */}
@@ -339,7 +378,7 @@ export function CodingWorkflowsPage({
         disabled={disabled}
       />
       <div className="tcp-subtle text-xs">
-        Leave blank to inherit the base ACA provider and model for this run.
+        Leave blank to inherit the control panel provider and model for this run.
       </div>
     </div>
   );
@@ -573,10 +612,10 @@ export function CodingWorkflowsPage({
   }, [githubBoard.items]);
   const tabs: Array<{ id: CodingTab; label: string; icon: string }> = [
     { id: "overview", label: "Overview", icon: "layout-dashboard" },
+    { id: "manual", label: "Launch", icon: "rocket" },
     { id: "board", label: "Intake", icon: "list-checks" },
     { id: "cockpit", label: "Cockpit", icon: "messages-square" },
     { id: "planning", label: "Planning", icon: "clipboard-list" },
-    { id: "manual", label: "Manual tasks", icon: "code" },
     { id: "integrations", label: "Integrations", icon: "plug-zap" },
   ];
   async function reconcileCoderRun(runId: string) {
@@ -630,6 +669,14 @@ export function CodingWorkflowsPage({
     const defaultBranch = newDefaultBranch.trim();
     const remoteName = newRemoteName.trim();
     const credentialFile = newCredentialFile.trim();
+    const selectedLinearTeam = findLinearCatalogEntry(
+      linearCatalogQuery.data?.teams,
+      taskSourceLinearTeam
+    );
+    const selectedLinearProject = findLinearCatalogEntry(
+      linearCatalogQuery.data?.projects,
+      taskSourceLinearProject
+    );
     if (taskSourceType === "github_project" && !repoRef) {
       toast("warn", "Paste a GitHub repository URL like https://github.com/owner/repo.");
       return;
@@ -652,6 +699,8 @@ export function CodingWorkflowsPage({
       projectNumber: taskSourceProject,
       linearTeam: taskSourceLinearTeam,
       linearProject: taskSourceLinearProject,
+      linearTeamName: selectedLinearTeam?.name || "",
+      linearProjectName: selectedLinearProject?.name || "",
       linearStatuses: taskSourceLinearStatuses,
       linearLabels: taskSourceLinearLabels,
       linearQuery: taskSourceLinearQuery,
@@ -719,9 +768,7 @@ export function CodingWorkflowsPage({
       toast("warn", "Select a project before triggering a run.");
       return;
     }
-    const overrides: Record<string, string> = {};
-    if (overrideProvider.trim()) overrides.ACA_PROVIDER = overrideProvider.trim();
-    if (overrideModel.trim()) overrides.ACA_MODEL = overrideModel.trim();
+    const overrides = buildAcaProviderOverrides();
     setTriggering(true);
     try {
       const params = new URLSearchParams({ project_slug: selectedProjectSlug });
@@ -777,9 +824,7 @@ export function CodingWorkflowsPage({
       );
       return;
     }
-    const overrides: Record<string, string> = {};
-    if (overrideProvider.trim()) overrides.ACA_PROVIDER = overrideProvider.trim();
-    if (overrideModel.trim()) overrides.ACA_MODEL = overrideModel.trim();
+    const overrides = buildAcaProviderOverrides();
     setLaunchingGithubItemIds((current) => {
       const next = { ...current };
       const launchedAt = Date.now();
@@ -908,38 +953,29 @@ export function CodingWorkflowsPage({
       setRepoSyncing(false);
     }
   }
+  async function refreshAcaConnection() {
+    try {
+      const data = await api("/api/capabilities?refresh=1");
+      queryClient.setQueryData(["system", "capabilities"], data);
+      toast(
+        data?.aca_integration ? "ok" : "warn",
+        data?.aca_integration ? "ACA connection detected." : "ACA is still disconnected."
+      );
+    } catch (error) {
+      toast("err", error instanceof Error ? error.message : String(error));
+    }
+  }
   if (!acaAvailable) {
     return (
-      <AnimatedPage className="grid gap-4">
-        <PanelCard className="overflow-hidden">
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)] xl:items-start">
-            <div className="min-w-0">
-              <div className="tcp-page-eyebrow">Coder</div>
-              <h1 className="tcp-page-title">Coder dashboard</h1>
-              <p className="tcp-subtle mt-2 max-w-3xl">
-                ACA integration is required for Coder. Connect the ACA control plane so this
-                workspace can load registered projects, task intake, and live run details.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Badge tone={engineAvailable ? "ok" : "warn"}>
-                  {engineAvailable ? "Engine healthy" : "Engine unavailable"}
-                </Badge>
-                <Badge tone="warn">ACA disconnected</Badge>
-              </div>
-              <div className="mt-4 rounded-2xl border border-yellow-500/20 bg-yellow-500/10 p-4">
-                <p className="text-sm text-yellow-200">
-                  <strong>ACA integration required.</strong> Set `ACA_BASE_URL` and make sure the
-                  control panel can authenticate to ACA with `ACA_API_TOKEN` or
-                  `ACA_API_TOKEN_FILE`.
-                </p>
-                <button type="button" className="tcp-btn mt-3" onClick={() => navigate("settings")}>
-                  Open ACA setup
-                </button>
-              </div>
-            </div>
-          </div>
-        </PanelCard>
-      </AnimatedPage>
+      <CodingWorkflowsDisconnectedState
+        acaReason={acaReason}
+        acaStatusText={acaStatusText}
+        configPath={String(caps.data?.control_panel_config_path || "")}
+        engineAvailable={engineAvailable}
+        missingFields={controlPanelConfigMissing}
+        navigateSettings={() => navigate("settings")}
+        refreshAcaConnection={refreshAcaConnection}
+      />
     );
   }
   return (
@@ -1729,208 +1765,52 @@ export function CodingWorkflowsPage({
       {tab === "manual" ? (
         <div className="grid gap-4">
           <div className="grid gap-4 xl:grid-cols-2">
-            <PanelCard
-              title="Register project"
-              subtitle="Bind a repository, managed checkout, and task source into ACA"
-            >
-              <div className="grid gap-3">
-                {taskSourceType === "github_project" ? (
-                  <>
-                    <input
-                      className="tcp-input"
-                      placeholder="GitHub repo URL, e.g. https://github.com/frumu-ai/tandem"
-                      value={newRepoUrl}
-                      onInput={(event) => setNewRepoUrl((event.target as HTMLInputElement).value)}
-                    />
-                    <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
-                      {newRepoRef
-                        ? `Detected ${newRepoRef.owner}/${newRepoRef.repo}. ACA will use this for the GitHub Project owner/repo binding.`
-                        : "Paste a GitHub repository URL and ACA will derive the owner, repo, and default project slug."}
-                    </div>
-                  </>
-                ) : (
-                  <input
-                    className="tcp-input"
-                    placeholder="Repo URL (optional)"
-                    value={newRepoUrl}
-                    onInput={(event) => setNewRepoUrl((event.target as HTMLInputElement).value)}
-                  />
-                )}
-                {hostedManaged ? (
-                  <>
-                    <input
-                      className="tcp-input"
-                      placeholder="Managed checkout path, e.g. repos/team-alpha"
-                      value={newRepoPath}
-                      onInput={(event) => setNewRepoPath((event.target as HTMLInputElement).value)}
-                    />
-                    <input
-                      className="tcp-input"
-                      placeholder="Worktree root (optional)"
-                      value={newWorktreeRoot}
-                      onInput={(event) =>
-                        setNewWorktreeRoot((event.target as HTMLInputElement).value)
-                      }
-                    />
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <input
-                        className="tcp-input"
-                        placeholder="Default branch (optional)"
-                        value={newDefaultBranch}
-                        onInput={(event) =>
-                          setNewDefaultBranch((event.target as HTMLInputElement).value)
-                        }
-                      />
-                      <input
-                        className="tcp-input"
-                        placeholder="Remote name (optional)"
-                        value={newRemoteName}
-                        onInput={(event) =>
-                          setNewRemoteName((event.target as HTMLInputElement).value)
-                        }
-                      />
-                    </div>
-                    <input
-                      className="tcp-input"
-                      placeholder="Token file for private repos (optional)"
-                      value={newCredentialFile}
-                      onInput={(event) =>
-                        setNewCredentialFile((event.target as HTMLInputElement).value)
-                      }
-                    />
-                  </>
-                ) : null}
-                {hostedManaged ? (
-                  <div className="rounded-2xl border border-lime-500/20 bg-lime-500/10 px-3 py-2 text-xs text-lime-100">
-                    Hosted installs can use these fields to register named repos and managed
-                    checkout directories without exposing an interactive shell.
-                  </div>
-                ) : null}
-                <input
-                  className="tcp-input"
-                  placeholder={
-                    taskSourceType === "github_project"
-                      ? "Project slug (optional, defaults to owner/repo)"
-                      : taskSourceType === "linear"
-                        ? "Project slug (optional, defaults to linear-team-project)"
-                      : "Project slug"
-                  }
-                  value={newProjectSlug}
-                  onInput={(event) => setNewProjectSlug((event.target as HTMLInputElement).value)}
-                />
-                <input
-                  className="tcp-input"
-                  placeholder="Project display name (optional)"
-                  value={newProjectName}
-                  onInput={(event) => setNewProjectName((event.target as HTMLInputElement).value)}
-                />
-                <select
-                  className="tcp-input"
-                  value={taskSourceType}
-                  onChange={(event) =>
-                    setTaskSourceType((event.target as HTMLSelectElement).value as TaskSourceType)
-                  }
-                >
-                  <option value="manual">Manual prompt</option>
-                  <option value="kanban_board">Kanban board</option>
-                  <option value="local_backlog">Local backlog</option>
-                  <option value="github_project">GitHub Project</option>
-                  <option value="linear">Linear team/project</option>
-                </select>
-                {taskSourceType === "manual" ? (
-                  <textarea
-                    className="tcp-input min-h-[120px]"
-                    placeholder="Manual task prompt"
-                    value={taskSourcePrompt}
-                    onInput={(event) =>
-                      setTaskSourcePrompt((event.target as HTMLTextAreaElement).value)
-                    }
-                  />
-                ) : null}
-                {taskSourceType === "kanban_board" || taskSourceType === "local_backlog" ? (
-                  <input
-                    className="tcp-input"
-                    placeholder="Absolute file path"
-                    value={taskSourcePath}
-                    onInput={(event) => setTaskSourcePath((event.target as HTMLInputElement).value)}
-                  />
-                ) : null}
-                {taskSourceType === "github_project" ? (
-                  <>
-                    <input
-                      className="tcp-input"
-                      placeholder="GitHub Project number"
-                      value={taskSourceProject}
-                      onInput={(event) =>
-                        setTaskSourceProject((event.target as HTMLInputElement).value)
-                      }
-                    />
-                    <div className="tcp-subtle text-xs">
-                      Only GitHub Project board tasks are imported. Public issues that are not on
-                      this project board remain outside ACA intake.
-                    </div>
-                  </>
-                ) : null}
-                {taskSourceType === "linear" ? (
-                  <>
-                    <input
-                      className="tcp-input"
-                      placeholder="Linear team key or name, e.g. ENG"
-                      value={taskSourceLinearTeam}
-                      onInput={(event) =>
-                        setTaskSourceLinearTeam((event.target as HTMLInputElement).value)
-                      }
-                    />
-                    <input
-                      className="tcp-input"
-                      placeholder="Linear project name or id (optional)"
-                      value={taskSourceLinearProject}
-                      onInput={(event) =>
-                        setTaskSourceLinearProject((event.target as HTMLInputElement).value)
-                      }
-                    />
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <input
-                        className="tcp-input"
-                        placeholder="Launch statuses, comma-separated"
-                        value={taskSourceLinearStatuses}
-                        onInput={(event) =>
-                          setTaskSourceLinearStatuses((event.target as HTMLInputElement).value)
-                        }
-                      />
-                      <input
-                        className="tcp-input"
-                        placeholder="Required labels, comma-separated (optional)"
-                        value={taskSourceLinearLabels}
-                        onInput={(event) =>
-                          setTaskSourceLinearLabels((event.target as HTMLInputElement).value)
-                        }
-                      />
-                    </div>
-                    <input
-                      className="tcp-input"
-                      placeholder="Linear search query (optional)"
-                      value={taskSourceLinearQuery}
-                      onInput={(event) =>
-                        setTaskSourceLinearQuery((event.target as HTMLInputElement).value)
-                      }
-                    />
-                    <div className="tcp-subtle text-xs">
-                      Connect Linear in the Integrations tab first. ACA will use the `linear` MCP
-                      server from Tandem and sync status, labels, and a run summary comment.
-                    </div>
-                  </>
-                ) : null}
-                <button
-                  type="button"
-                  className="tcp-btn"
-                  disabled={registering}
-                  onClick={registerProject}
-                >
-                  {registering ? "Registering..." : "Register Project"}
-                </button>
-              </div>
-            </PanelCard>
+            <CodingWorkflowsRegisterProjectPanel
+              hostedManaged={hostedManaged}
+              linearCatalog={linearCatalogQuery.data || null}
+              linearCatalogError={
+                linearCatalogQuery.error instanceof Error ? linearCatalogQuery.error.message : ""
+              }
+              linearCatalogLoading={linearCatalogQuery.isLoading || linearCatalogQuery.isFetching}
+              newCredentialFile={newCredentialFile}
+              newDefaultBranch={newDefaultBranch}
+              newProjectName={newProjectName}
+              newProjectSlug={newProjectSlug}
+              newRemoteName={newRemoteName}
+              newRepoPath={newRepoPath}
+              newRepoRef={newRepoRef}
+              newRepoUrl={newRepoUrl}
+              newWorktreeRoot={newWorktreeRoot}
+              registering={registering}
+              registerProject={registerProject}
+              refreshLinearCatalog={() => linearCatalogQuery.refetch()}
+              setNewCredentialFile={setNewCredentialFile}
+              setNewDefaultBranch={setNewDefaultBranch}
+              setNewProjectName={setNewProjectName}
+              setNewProjectSlug={setNewProjectSlug}
+              setNewRemoteName={setNewRemoteName}
+              setNewRepoPath={setNewRepoPath}
+              setNewRepoUrl={setNewRepoUrl}
+              setNewWorktreeRoot={setNewWorktreeRoot}
+              setTaskSourceLinearLabels={setTaskSourceLinearLabels}
+              setTaskSourceLinearProject={setTaskSourceLinearProject}
+              setTaskSourceLinearQuery={setTaskSourceLinearQuery}
+              setTaskSourceLinearStatuses={setTaskSourceLinearStatuses}
+              setTaskSourceLinearTeam={setTaskSourceLinearTeam}
+              setTaskSourcePath={setTaskSourcePath}
+              setTaskSourceProject={setTaskSourceProject}
+              setTaskSourcePrompt={setTaskSourcePrompt}
+              setTaskSourceType={setTaskSourceType}
+              taskSourceLinearLabels={taskSourceLinearLabels}
+              taskSourceLinearProject={taskSourceLinearProject}
+              taskSourceLinearQuery={taskSourceLinearQuery}
+              taskSourceLinearStatuses={taskSourceLinearStatuses}
+              taskSourceLinearTeam={taskSourceLinearTeam}
+              taskSourcePath={taskSourcePath}
+              taskSourceProject={taskSourceProject}
+              taskSourcePrompt={taskSourcePrompt}
+              taskSourceType={taskSourceType}
+            />
             <PanelCard
               title="Trigger run"
               subtitle="Launch an ACA coding session for the selected project"

@@ -118,3 +118,72 @@ test("control panel engine proxy strips browser agent headers", async (t) => {
   assert.equal(forwarded?.agentId, "");
   assert.equal(forwarded?.requestSource, "control_panel");
 });
+
+test("control panel engine proxy forwards public origin for MCP OAuth", async (t) => {
+  const enginePort = await getFreePort();
+  const panelPort = await getFreePort();
+  const engineToken = "engine-token";
+  const seenRequests = [];
+
+  const fakeEngine = await new Promise((resolve) => {
+    const server = createServer((req, res) => {
+      const url = new URL(req.url || "/", `http://127.0.0.1:${enginePort}`);
+      seenRequests.push({
+        path: url.pathname,
+        forwardedHost: String(req.headers["x-forwarded-host"] || ""),
+        forwardedProto: String(req.headers["x-forwarded-proto"] || ""),
+        origin: String(req.headers.origin || ""),
+        referer: String(req.headers.referer || ""),
+      });
+
+      if (url.pathname === "/global/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ready: true, healthy: true, version: "fake-engine" }));
+        return;
+      }
+
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, pendingAuth: true }));
+    });
+    server.listen(enginePort, "127.0.0.1", () => resolve(server));
+  });
+  t.after(() => fakeEngine.close());
+
+  const baseUrl = `http://127.0.0.1:${panelPort}`;
+  const panel = spawn(process.execPath, ["bin/setup.js"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      TANDEM_CONTROL_PANEL_PORT: String(panelPort),
+      TANDEM_CONTROL_PANEL_PUBLIC_URL: "https://testing.tandem.ac",
+      TANDEM_ENGINE_URL: `http://127.0.0.1:${enginePort}`,
+      TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0",
+      TANDEM_API_TOKEN: engineToken,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => {
+    if (!panel.killed) panel.kill("SIGTERM");
+  });
+
+  await waitForReady(baseUrl);
+
+  const login = await request(baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: { token: engineToken },
+  });
+  assert.equal(login.status, 200);
+  const cookie = extractCookie(login);
+
+  const response = await request(baseUrl, "/api/engine/mcp/linear/auth/authenticate", {
+    method: "POST",
+    cookie,
+  });
+  assert.equal(response.status, 200);
+
+  const forwarded = seenRequests.find((row) => row.path === "/mcp/linear/auth/authenticate");
+  assert.equal(forwarded?.forwardedHost, "testing.tandem.ac");
+  assert.equal(forwarded?.forwardedProto, "https");
+  assert.equal(forwarded?.origin, "https://testing.tandem.ac");
+  assert.equal(forwarded?.referer, "https://testing.tandem.ac/");
+});

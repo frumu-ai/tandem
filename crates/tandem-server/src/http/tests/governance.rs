@@ -231,6 +231,85 @@ async fn governance_routes_fail_closed_without_premium_governance() {
     );
 }
 
+#[cfg(not(feature = "premium-governance"))]
+#[tokio::test]
+async fn automations_v2_update_allows_mcp_narrowing_without_premium_governance() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation_id = "auto-v2-nonpremium-mcp-narrowing";
+    let agent_id = "agent-nonpremium-mcp-narrowing";
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-actor-id", "governance-operator")
+        .body(Body::from(
+            automation_v2_payload_with_mcp_servers(automation_id, agent_id, &["linear", "github"])
+                .to_string(),
+        ))
+        .expect("nonpremium mcp narrowing create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("nonpremium mcp narrowing create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let patch_req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/automations/v2/{automation_id}"))
+        .header("content-type", "application/json")
+        .header("x-tandem-actor-id", "governance-operator")
+        .body(Body::from(
+            json!({
+                "schedule": {
+                    "type": "manual",
+                    "timezone": "Europe/Budapest",
+                    "misfire_policy": { "type": "skip" }
+                },
+                "agents": [
+                    {
+                        "agent_id": agent_id,
+                        "display_name": "Agent One",
+                        "skills": [],
+                        "tool_policy": { "allowlist": ["read"], "denylist": [] },
+                        "mcp_policy": { "allowed_servers": ["linear"] }
+                    }
+                ]
+            })
+            .to_string(),
+        ))
+        .expect("nonpremium mcp narrowing patch request");
+    let patch_resp = app
+        .clone()
+        .oneshot(patch_req)
+        .await
+        .expect("nonpremium mcp narrowing patch response");
+    assert_eq!(patch_resp.status(), StatusCode::OK);
+    let patch_payload = response_json(patch_resp).await;
+    assert_eq!(
+        patch_payload
+            .get("automation")
+            .and_then(|value| value.get("schedule"))
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str),
+        Some("manual")
+    );
+    assert_eq!(
+        patch_payload
+            .get("automation")
+            .and_then(|value| value.get("agents"))
+            .and_then(Value::as_array)
+            .and_then(|agents| agents.first())
+            .and_then(|agent| agent.get("mcp_policy"))
+            .and_then(|policy| policy.get("allowed_servers"))
+            .and_then(Value::as_array)
+            .map(|servers| { servers.iter().filter_map(Value::as_str).collect::<Vec<_>>() }),
+        Some(vec!["linear"])
+    );
+}
+
 #[tokio::test]
 async fn automations_v2_create_rejects_lineage_depth_over_limit() {
     let state = test_state().await;

@@ -1341,22 +1341,40 @@ pub(super) async fn automations_v2_patch(
     )
     .await;
     if let Some(evidence) = dependency_revocation_evidence {
-        state
+        if let Err(error) = state
             .pause_automation_for_dependency_revocation(
                 &id,
                 "mcp capabilities were narrowed".to_string(),
                 evidence,
             )
             .await
-            .map_err(|error| {
-                (
+        {
+            if error
+                .to_string()
+                .contains("premium governance dependency revocation is not available in this build")
+            {
+                let _ = crate::audit::append_protected_audit_event(
+                    &state,
+                    "automation.governance.dependency_revocation_pause_skipped",
+                    &tenant_context,
+                    actor.actor_id.clone().or_else(|| actor.source.clone()),
+                    json!({
+                        "automationID": id,
+                        "reason": "premium governance dependency revocation is not available in this build",
+                        "code": "PREMIUM_FEATURE_REQUIRED",
+                    }),
+                )
+                .await;
+            } else {
+                return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({
                         "error": error.to_string(),
                         "code": "AUTOMATION_GOVERNANCE_DEPENDENCY_PAUSE_FAILED",
                     })),
-                )
-            })?;
+                ));
+            }
+        }
     }
     Ok(Json(json!({ "automation": stored })))
 }

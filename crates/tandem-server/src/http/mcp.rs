@@ -567,6 +567,14 @@ fn mcp_oauth_redirect_uri_for_base(base_url: &str, server_name: &str) -> String 
     )
 }
 
+fn mcp_oauth_redirect_uri_from_authorization_url(authorization_url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(authorization_url).ok()?;
+    parsed
+        .query_pairs()
+        .find(|(key, _)| key == "redirect_uri")
+        .map(|(_, value)| value.into_owned())
+}
+
 fn generate_mcp_oauth_state() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
         "{}:{}",
@@ -810,12 +818,6 @@ async fn start_mcp_oauth_session(
     if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
         return Err("MCP OAuth is only supported for HTTP/S transports".to_string());
     }
-    if let Some(existing) = current_mcp_auth_challenge(state, name).await {
-        return Ok(existing);
-    }
-
-    let bootstrap =
-        discover_mcp_oauth_bootstrap(&endpoint, &effective_mcp_headers(&server)).await?;
     let effective_cfg = state.config.get_effective_value().await;
     let public_base_url = public_base_url_hint
         .map(str::trim)
@@ -823,6 +825,27 @@ async fn start_mcp_oauth_session(
         .map(str::to_string)
         .unwrap_or_else(|| mcp_public_base_url(state, &effective_cfg));
     let redirect_uri = mcp_oauth_redirect_uri_for_base(&public_base_url, name);
+    if let Some(existing) = current_mcp_auth_challenge(state, name).await {
+        let existing_redirect =
+            mcp_oauth_redirect_uri_from_authorization_url(&existing.authorization_url);
+        if public_base_url_hint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+            || existing_redirect.as_deref() == Some(redirect_uri.as_str())
+        {
+            return Ok(existing);
+        }
+        let _ = state.mcp.clear_server_auth_challenge(name).await;
+        state
+            .mcp_oauth_sessions
+            .write()
+            .await
+            .retain(|_, session| session.server_name != name);
+    }
+
+    let bootstrap =
+        discover_mcp_oauth_bootstrap(&endpoint, &effective_mcp_headers(&server)).await?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent(format!("tandem/{}", env!("CARGO_PKG_VERSION")))
@@ -1480,14 +1503,46 @@ pub(super) async fn refresh_mcp(
 pub(super) async fn auth_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    headers: HeaderMap,
 ) -> Json<Value> {
+    let public_base_url = mcp_public_base_url_from_headers(&headers);
     if let Some(auth_challenge) = current_mcp_auth_challenge(&state, &name).await {
-        return Json(json!({
-            "ok": true,
-            "pending": true,
-            "lastAuthChallenge": auth_challenge,
-            "authorizationUrl": auth_challenge.authorization_url,
-        }));
+        let existing_redirect =
+            mcp_oauth_redirect_uri_from_authorization_url(&auth_challenge.authorization_url);
+        let desired_redirect = public_base_url
+            .as_deref()
+            .map(|base_url| mcp_oauth_redirect_uri_for_base(base_url, &name));
+        let redirect_matches = match desired_redirect.as_deref() {
+            Some(redirect_uri) => existing_redirect.as_deref() == Some(redirect_uri),
+            None => true,
+        };
+        if redirect_matches {
+            return Json(json!({
+                "ok": true,
+                "pending": true,
+                "lastAuthChallenge": auth_challenge,
+                "authorizationUrl": auth_challenge.authorization_url,
+            }));
+        }
+        let _ = state.mcp.clear_server_auth_challenge(&name).await;
+        state
+            .mcp_oauth_sessions
+            .write()
+            .await
+            .retain(|_, pending| pending.server_name != name);
+    }
+    let server = state.mcp.list().await.get(&name).cloned();
+    if server.as_ref().is_some_and(mcp_uses_oauth) {
+        if let Ok(auth_challenge) =
+            start_mcp_oauth_session(&state, &name, public_base_url.as_deref()).await
+        {
+            return Json(json!({
+                "ok": true,
+                "pending": true,
+                "lastAuthChallenge": auth_challenge,
+                "authorizationUrl": auth_challenge.authorization_url,
+            }));
+        }
     }
     Json(json!({
         "ok": false,
@@ -1530,15 +1585,30 @@ pub(super) async fn authenticate_mcp(
 ) -> Json<Value> {
     let public_base_url = mcp_public_base_url_from_headers(&headers);
     if let Some(session) = find_pending_mcp_oauth_session(&state, &name).await {
-        let last_auth_challenge = current_mcp_auth_challenge(&state, &name).await;
-        return Json(json!({
-            "ok": true,
-            "authenticated": false,
-            "connected": false,
-            "pendingAuth": true,
-            "lastAuthChallenge": last_auth_challenge,
-            "authorizationUrl": last_auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()).unwrap_or(session.authorization_url),
-        }));
+        let desired_redirect_uri = public_base_url
+            .as_deref()
+            .map(|base_url| mcp_oauth_redirect_uri_for_base(base_url, &name));
+        if desired_redirect_uri
+            .as_deref()
+            .is_some_and(|redirect_uri| redirect_uri != session.redirect_uri)
+        {
+            let _ = state.mcp.clear_server_auth_challenge(&name).await;
+            state
+                .mcp_oauth_sessions
+                .write()
+                .await
+                .retain(|_, pending| pending.server_name != name);
+        } else {
+            let last_auth_challenge = current_mcp_auth_challenge(&state, &name).await;
+            return Json(json!({
+                "ok": true,
+                "authenticated": false,
+                "connected": false,
+                "pendingAuth": true,
+                "lastAuthChallenge": last_auth_challenge,
+                "authorizationUrl": last_auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()).unwrap_or(session.authorization_url),
+            }));
+        }
     }
 
     let refresh = state.mcp.refresh(&name).await;

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Badge, PanelCard } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { formatStatus, runStatus, runTitle, runUpdatedAt, toArray } from "./CodingWorkflowsHelpers";
@@ -192,6 +193,7 @@ export function CodingWorkflowsAgentCockpit({
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
   const [sendingFeedback, setSendingFeedback] = useState(false);
+  const [approvalBusyId, setApprovalBusyId] = useState("");
   const runId = String(selectedRunId || "").trim();
 
   useEffect(() => {
@@ -239,6 +241,15 @@ export function CodingWorkflowsAgentCockpit({
   }, [runId]);
 
   const detail = runDetailQuery.data || {};
+  const approvalsQuery = useQuery({
+    queryKey: ["aca", "run-approvals", runId],
+    queryFn: async () => {
+      if (!runId) return { approvals: [] };
+      return api(`/api/aca/runs/${encodeURIComponent(runId)}/approvals`).catch(() => ({ approvals: [] }));
+    },
+    enabled: Boolean(runId),
+    refetchInterval: 5000,
+  });
   const blackboard = detail.blackboard || selectedRun?.blackboard || selectedRun?.snapshot?.blackboard || {};
   const task = blackboard?.task || selectedRun?.blackboard?.task || selectedRun?.snapshot?.blackboard?.task || {};
   const source = task?.source || {};
@@ -251,6 +262,19 @@ export function CodingWorkflowsAgentCockpit({
     return acaRunId === runId || tandemRunId === runId;
   });
   const events = useMemo(() => toArray(detail, "events"), [detail]);
+  const approvals = useMemo(() => toArray(approvalsQuery.data || {}, "approvals"), [approvalsQuery.data]);
+  const pendingApprovals = useMemo(
+    () => approvals.filter((approval: any) => String(approval?.status || "") === "pending"),
+    [approvals]
+  );
+  const failedApprovals = useMemo(
+    () => approvals.filter((approval: any) => String(approval?.status || "") === "failed"),
+    [approvals]
+  );
+  const approvalHistory = useMemo(
+    () => approvals.filter((approval: any) => String(approval?.status || "") !== "pending"),
+    [approvals]
+  );
   const summary = String(detail.summary || "").trim();
   const threadEntries = useMemo(
     () =>
@@ -304,6 +328,71 @@ export function CodingWorkflowsAgentCockpit({
       setFeedbackError(error instanceof Error ? error.message : String(error));
     } finally {
       setSendingFeedback(false);
+    }
+  }
+
+  async function decideApproval(approvalId: string, decision: "approve" | "reject") {
+    if (!approvalId || approvalBusyId) return;
+    setApprovalBusyId(approvalId);
+    setFeedbackError("");
+    try {
+      await api(`/api/aca/approvals/${encodeURIComponent(approvalId)}/${decision}`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "operator" }),
+      });
+      if (decision === "approve") {
+        await api(`/api/aca/runs/${encodeURIComponent(runId)}/resume-approved-actions`, {
+          method: "POST",
+        }).catch(() => ({}));
+      }
+      await approvalsQuery.refetch();
+      await runDetailQuery.refetch?.();
+    } catch (error: any) {
+      setFeedbackError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApprovalBusyId("");
+    }
+  }
+
+  async function approvePendingApprovals() {
+    if (!runId || approvalBusyId || !pendingApprovals.length) return;
+    setApprovalBusyId("batch-approve");
+    setFeedbackError("");
+    try {
+      await api(`/api/aca/runs/${encodeURIComponent(runId)}/approvals/approve-pending`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "operator" }),
+      });
+      await api(`/api/aca/runs/${encodeURIComponent(runId)}/resume-approved-actions`, {
+        method: "POST",
+      }).catch(() => ({}));
+      await approvalsQuery.refetch();
+      await runDetailQuery.refetch?.();
+    } catch (error: any) {
+      setFeedbackError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApprovalBusyId("");
+    }
+  }
+
+  async function retryFailedApprovals() {
+    if (!runId || approvalBusyId || !failedApprovals.length) return;
+    setApprovalBusyId("retry-failed");
+    setFeedbackError("");
+    try {
+      await api(`/api/aca/runs/${encodeURIComponent(runId)}/approvals/retry-failed`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "operator" }),
+      });
+      await api(`/api/aca/runs/${encodeURIComponent(runId)}/resume-approved-actions`, {
+        method: "POST",
+      }).catch(() => ({}));
+      await approvalsQuery.refetch();
+      await runDetailQuery.refetch?.();
+    } catch (error: any) {
+      setFeedbackError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApprovalBusyId("");
     }
   }
 
@@ -445,6 +534,139 @@ export function CodingWorkflowsAgentCockpit({
             {feedbackLoading ? <div className="tcp-subtle text-xs">Loading feedback...</div> : null}
             {feedbackError ? <div className="text-xs text-red-200">{feedbackError}</div> : null}
           </div>
+        </PanelCard>
+
+        <PanelCard
+          title="External approvals"
+          subtitle="Approval-gated MCP actions for this run"
+          actions={
+            approvals.length ? (
+              <div className="flex flex-wrap gap-2">
+                <Badge tone={pendingApprovals.length ? "warn" : "ghost"}>{pendingApprovals.length} pending</Badge>
+                {failedApprovals.length ? <Badge tone="err">{failedApprovals.length} failed</Badge> : null}
+              </div>
+            ) : null
+          }
+        >
+          {approvalsQuery.isLoading ? (
+            <div className="tcp-subtle text-sm">Checking approvals...</div>
+          ) : approvals.length ? (
+            <div className="grid gap-3">
+              {pendingApprovals.length || failedApprovals.length ? (
+                <div className="flex flex-wrap gap-2">
+                  {pendingApprovals.length ? (
+                    <button
+                      type="button"
+                      className="tcp-btn-primary h-8 px-3 text-xs"
+                      disabled={Boolean(approvalBusyId)}
+                      onClick={approvePendingApprovals}
+                    >
+                      Approve pending ({pendingApprovals.length})
+                    </button>
+                  ) : null}
+                  {failedApprovals.length ? (
+                    <button
+                      type="button"
+                      className="tcp-btn h-8 px-3 text-xs"
+                      disabled={Boolean(approvalBusyId)}
+                      onClick={retryFailedApprovals}
+                    >
+                      Retry failed ({failedApprovals.length})
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {pendingApprovals.length ? (
+                <div className="grid max-h-80 gap-3 overflow-auto pr-1">
+                  {pendingApprovals.map((approval: any) => {
+                    const approvalId = String(approval?.approval_id || "");
+                    const target = approval?.target || {};
+                    const payload = approval?.payload || {};
+                    return (
+                      <article key={approvalId} className="rounded-lg border border-amber-400/30 bg-amber-950/15 p-3 text-xs">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-100">{formatStatus(String(approval?.action_type || "action"))}</div>
+                            <div className="tcp-subtle mt-1 truncate">
+                              {safeText(target.base_repo || target.identifier)}
+                              {target.pr_number ? `#${target.pr_number}` : ""}
+                            </div>
+                          </div>
+                          <Badge tone="warn">Pending</Badge>
+                        </div>
+                        {payload.body ? (
+                          <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-300">
+                            {String(payload.body).slice(0, 700)}
+                          </pre>
+                        ) : null}
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            className="tcp-btn-primary h-8 px-3 text-xs"
+                            disabled={Boolean(approvalBusyId)}
+                            onClick={() => decideApproval(approvalId, "approve")}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            className="tcp-btn h-8 px-3 text-xs"
+                            disabled={Boolean(approvalBusyId)}
+                            onClick={() => decideApproval(approvalId, "reject")}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                  No pending approvals.
+                </div>
+              )}
+
+              {approvalHistory.length ? (
+                <details className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs" open={failedApprovals.length > 0}>
+                  <summary className="cursor-pointer select-none font-semibold text-slate-200">
+                    History ({approvalHistory.length})
+                  </summary>
+                  <div className="mt-3 grid max-h-48 gap-2 overflow-auto pr-1">
+                    {approvalHistory.map((approval: any) => {
+                      const approvalId = String(approval?.approval_id || "");
+                      const target = approval?.target || {};
+                      const status = String(approval?.status || "unknown");
+                      return (
+                        <div key={approvalId} className="border border-white/10 bg-black/20 p-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate font-semibold text-slate-200">
+                                {formatStatus(String(approval?.action_type || "action"))}
+                              </div>
+                              <div className="tcp-subtle mt-1 truncate">
+                                {safeText(target.base_repo || target.identifier)}
+                                {target.pr_number ? `#${target.pr_number}` : ""}
+                              </div>
+                            </div>
+                            <Badge tone={status === "executed" ? "ok" : status === "failed" ? "err" : "ghost"}>
+                              {formatStatus(status)}
+                            </Badge>
+                          </div>
+                          {approval?.error ? (
+                            <div className="mt-2 line-clamp-2 break-words text-red-200">{String(approval.error)}</div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
+              ) : null}
+            </div>
+          ) : (
+            <EmptyState text="No external approvals for this run." />
+          )}
         </PanelCard>
 
         <PanelCard title="Actions" subtitle="Controls for the selected task/run">

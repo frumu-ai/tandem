@@ -5,10 +5,11 @@ This is the canonical release-notes file used by release tooling.
 ## v0.5.14 (Unreleased)
 
 Tandem 0.5.14 is a security- and assurance-focused release that lays the
-foundation for cross-tenant data governance and hardens the memory subsystem.
-It adds eval-backed, CI-enforced proof that tenant boundaries hold at runtime,
-tenant-scopes the audit read path, and layers defense-in-depth around how memory
-is retrieved, trusted, encrypted, and key-managed.
+foundation for cross-tenant data governance, governed runtime decisions, and
+goal-driven capability composition. It adds eval-backed, CI-enforced proof that
+tenant boundaries hold at runtime, tenant-scopes approval/audit/provider paths,
+hardens MCP and memory egress, and gives operators better ACA cockpit and
+feedback surfaces.
 
 ### Cross-Tenant Data Governance
 
@@ -35,6 +36,24 @@ is retrieved, trusted, encrypted, and key-managed.
 - Channel interactions (Discord, Slack, Telegram) now enforce tenant routing,
   failing closed at the channel interaction audit layer when cross-tenant access
   is attempted (CT-05).
+- Knowledge retrieval now has a dedicated negative eval proving tenant B cannot
+  retrieve tenant A's knowledge-base items, and skills isolation is locked by a
+  regression test showing project skills resolve only from the executing
+  workspace root (CT-08).
+- Provider catalog discovery and provider throttles are tenant-scoped. Explicit
+  hosted tenants use only their own persisted provider auth, cannot inherit
+  shared config/env/local runtime provider keys, and do not get queued behind
+  another tenant's provider backoff.
+- Store-backed MCP secret headers are checked against the executing tenant
+  before OAuth refresh or outbound MCP calls, returning tenant-scope denials for
+  cross-tenant secret attempts.
+- Governance approval receipts now carry the issuing tenant. Cross-tenant
+  approve/deny attempts fail closed without leaking receipt existence, approval
+  listing is tenant-scoped, and approval audit events use the real tenant
+  context (CT-09).
+- Automation spend/quota guards are keyed by tenant for explicit tenants, so
+  one tenant's same-named agent cannot pause or block another tenant's run
+  lifecycle (CT-10).
 
 ### Memory Security Hardening
 
@@ -57,6 +76,25 @@ is retrieved, trusted, encrypted, and key-managed.
 
 - Automations V2 gate decisions now require a verified human decider, closing a
   gate-decision self-approval path (GOV-B1).
+- Governed approval gates now enforce reviewer eligibility from approval
+  metadata. Non-human decisions are rejected and audited, self-approval is
+  blocked, reviewer authority is verified, and data-class/resource grants are
+  required when the gate demands them.
+- A first-class policy decision store records runtime authorization decisions
+  with tenant, actor, tool, approval evidence, audit/evidence export, and run
+  trace context (CT-17). `GET /governance/policy-decisions` supports tenant and
+  run filtering, context-run journaling emits policy decision events, and
+  tool-effect ledger records can link back to the policy decision that governed
+  execution.
+- A shared tool risk-tier taxonomy gives policy gates, approval cards, run
+  traces, and evidence exports a stable vocabulary for categories such as
+  credential access, destructive delete, money movement, and financial access
+  (CT-19). Risk tiers are inferred from tool security descriptors and tool
+  profile/name heuristics, with explicit descriptors taking precedence.
+- MCP inventory now exposes governed tool registry metadata, including redacted
+  credential binding, tenant binding, owner, resource scope, risk tier, default
+  access/policy, and explanatory reasons. Scoped `mcp_list` filtering stays
+  aligned with those governed registry rows.
 
 ### Runtime Authority
 
@@ -114,6 +152,27 @@ is retrieved, trusted, encrypted, and key-managed.
   validation-rate thresholds) is centralized and unit-tested with behavior
   identical to the previous inline check. All knobs are configurable via
   `TANDEM_WORKFLOW_LEARNING_*` environment variables.
+
+### Coding Workflows
+
+- The control panel has a Coding Workflows Cockpit tab for selected ACA runs,
+  showing source identity, run state, GitHub PR/merge state, repository context,
+  event summaries, and an operational thread.
+- Operators can send run/thread-scoped feedback from the cockpit. Feedback is
+  stored in ordered file-backed audit records, delivered to ACA via
+  `/operator/feedback`, replayed when pending, and streamed back into the
+  cockpit through SSE updates.
+- Linear MCP approval classification now distinguishes read tools from write
+  gates, adds explicit Linear read/write capability bindings, and reports
+  connector readiness states for missing, read-only, and write-capable Linear
+  setups.
+
+### Security Review
+
+- Added a source-verified Rust runtime security analysis covering command
+  execution, HTTP API exposure, secrets/crypto, permission/governance defaults,
+  and external integration risks. The report records source-location-backed
+  remediation findings that informed the 0.5.14 hardening work.
 
 ## v0.5.13 (2026-06-02)
 

@@ -1412,6 +1412,37 @@ function hostedPanelReturnUrl() {
   return `${base.replace(/\/+$/, "")}/`;
 }
 
+function controlPanelPublicBaseUrl() {
+  const hostedPublicUrl = getHostedPanelAuthConfig().publicUrl;
+  return String(hostedPublicUrl || PANEL_PUBLIC_URL || "").trim().replace(/\/+$/, "");
+}
+
+function forwardedPublicParts(req) {
+  const publicBase = controlPanelPublicBaseUrl();
+  if (publicBase) {
+    try {
+      const parsed = new URL(publicBase);
+      return {
+        base: `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, ""),
+        host: parsed.host,
+        proto: parsed.protocol.replace(/:$/, "") || "https",
+      };
+    } catch {}
+  }
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+    .split(",")[0]
+    .trim();
+  const proto =
+    String(req.headers["x-forwarded-proto"] || "")
+      .split(",")[0]
+      .trim() || (req.socket && req.socket.encrypted ? "https" : "http");
+  return {
+    base: host ? `${proto}://${host}` : "",
+    host,
+    proto,
+  };
+}
+
 function hostedPanelAuthorizeUrl() {
   const auth = getHostedPanelAuthConfig();
   if (!auth.managed || !auth.deploymentId || !auth.panelLoginUrl) return "";
@@ -2728,10 +2759,9 @@ async function proxyEngineRequest(req, res, session) {
     return;
   }
   const targetUrl = `${ENGINE_URL}${targetPath}${incoming.search}`;
-  const forwardedHost = String(req.headers.host || "").trim();
-  const forwardedProto =
-    String(req.headers["x-forwarded-proto"] || "").trim() ||
-    (req.socket && req.socket.encrypted ? "https" : "http");
+  const forwarded = forwardedPublicParts(req);
+  const forwardedHost = forwarded.host;
+  const forwardedProto = forwarded.proto;
   const requestedSource = String(req.headers["x-tandem-request-source"] || "").trim();
   const requestedAgentId = String(req.headers["x-tandem-agent-id"] || "").trim();
   const agentTestMode = (() => {
@@ -2755,6 +2785,8 @@ async function proxyEngineRequest(req, res, session) {
         "content-length",
         "cookie",
         "authorization",
+        "origin",
+        "referer",
         "x-tandem-token",
         "x-tandem-agent-id",
         "x-tandem-agent-ancestor-ids",
@@ -2778,6 +2810,10 @@ async function proxyEngineRequest(req, res, session) {
   }
   if (forwardedHost) headers.set("x-forwarded-host", forwardedHost);
   if (forwardedProto) headers.set("x-forwarded-proto", forwardedProto);
+  if (targetPath.startsWith("/mcp/") && forwarded.base) {
+    headers.set("origin", forwarded.base);
+    headers.set("referer", `${forwarded.base}/`);
+  }
 
   const hasBody = !["GET", "HEAD"].includes(req.method || "GET");
 
@@ -6104,7 +6140,16 @@ function serveStatic(req, res) {
 
   const ext = extname(target);
   const mime = MIME_TYPES[ext] || "application/octet-stream";
-  res.writeHead(200, { "content-type": mime });
+  const headers = {
+    "content-type": mime,
+    "cache-control":
+      target === join(DIST_DIR, "index.html")
+        ? "no-store, max-age=0"
+        : target.includes(`${DIST_DIR}/assets/`)
+          ? "public, max-age=31536000, immutable"
+          : "no-cache",
+  };
+  res.writeHead(200, headers);
   createReadStream(target).pipe(res);
 }
 
