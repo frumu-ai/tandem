@@ -564,10 +564,23 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
     input: AutomationV2GateDecisionInput,
     decider: crate::automation_v2::governance::GovernanceActorRef,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // GOV-B1: the approval gate is a human-in-the-loop control. Only a verified
-    // human (or a channel-verified Approve-tier user resolved to a human actor)
-    // may decide it — an agent must never be able to approve its own run.
+    let Some(current) = state.get_automation_v2_run(&run_id).await else {
+        return Err(automation_v2_run_not_found(&run_id));
+    };
+    ensure_automation_v2_run_tenant(&tenant_context, &current)?;
+    // GOV-B1/CT-21: the approval gate is a human-in-the-loop control. Only a
+    // verified human (or a channel-verified Approve-tier user resolved to a
+    // human actor) may decide it; an agent attempt is rejected and audited.
     if decider.kind != crate::automation_v2::governance::GovernanceActorKind::Human {
+        audit_gate_decision_denial(
+            &state,
+            &current,
+            None,
+            &decider,
+            "AUTOMATION_V2_GATE_REQUIRES_HUMAN",
+            "Approval gate decisions require a verified human approver",
+        )
+        .await;
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -576,10 +589,6 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             })),
         ));
     }
-    let Some(current) = state.get_automation_v2_run(&run_id).await else {
-        return Err(automation_v2_run_not_found(&run_id));
-    };
-    ensure_automation_v2_run_tenant(&tenant_context, &current)?;
     // GOV-B1/B9: approving a gate is at least as privileged as resuming/cancelling
     // a run, so require owner-or-admin rather than mere read visibility.
     let automation_for_access = ensure_automation_v2_run_owner_or_admin(
@@ -694,6 +703,28 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         .reason
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    if let Err((code, detail)) = authorize_gate_decider(
+        &current,
+        &automation,
+        &gate,
+        &decision,
+        &decider,
+        verified_tenant_context.as_ref(),
+        crate::now_ms(),
+    ) {
+        audit_gate_decision_denial(&state, &current, Some(&gate), &decider, code, detail).await;
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": detail,
+                "code": code,
+                "runID": current.run_id,
+                "automationID": current.automation_id,
+                "nodeID": gate.node_id,
+                "decidedBy": decider,
+            })),
+        ));
+    }
     let mut winning_decision = None;
     let mut decision_applied = false;
     let updated = state
@@ -792,6 +823,279 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
     Ok(Json(
         json!({ "ok": true, "run": automation_v2_run_with_context_links(&state, &updated).await, "contextRunID": context_run_id, "linked_context_run_id": context_run_id }),
     ))
+}
+
+fn authorize_gate_decider(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    automation: &AutomationV2Spec,
+    gate: &crate::AutomationPendingGate,
+    decision: &str,
+    decider: &crate::automation_v2::governance::GovernanceActorRef,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    now_ms: u64,
+) -> Result<(), (&'static str, &'static str)> {
+    let policy = GateReviewerPolicy::from_gate(gate, automation);
+    if decision == "approve" && policy.is_consequential() {
+        if let (Some(requester), Some(reviewer)) = (
+            gate_requester_actor_id(run, automation).as_deref(),
+            decider.actor_id.as_deref(),
+        ) {
+            if actor_identity_matches(
+                requester,
+                None,
+                reviewer,
+                decider.source.as_deref(),
+            ) {
+                return Err((
+                    "AUTOMATION_V2_GATE_SELF_APPROVAL_FORBIDDEN",
+                    "Requester cannot approve their own consequential action",
+                ));
+            }
+        }
+    }
+
+    if !policy.requires_reviewer_authority() {
+        return Ok(());
+    }
+    if channel_verified_decider_satisfies_reviewer_authority(decider) {
+        return Ok(());
+    }
+    if run.tenant_context.is_local_implicit() && verified_tenant_context.is_none() {
+        return Ok(());
+    }
+    let Some(strict_context) =
+        verified_tenant_context.and_then(|context| context.strict_projection.as_ref())
+    else {
+        return Err((
+            "AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_REQUIRED",
+            "Reviewer authority could not be verified for this approval",
+        ));
+    };
+
+    let permissions = policy.required_permissions();
+    let data_classes = policy.required_data_classes();
+    permissions
+        .iter()
+        .any(|permission| {
+            data_classes.iter().any(|data_class| {
+                matches!(
+                    strict_context
+                        .evaluate_access(&policy.resource, *permission, *data_class, now_ms)
+                        .decision,
+                    tandem_types::AccessDecision::Allow
+                )
+            })
+        })
+        .then_some(())
+        .ok_or((
+            "AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_DENIED",
+            "Reviewer lacks matching authority for this approval",
+        ))
+}
+
+fn actor_identity_matches(
+    left_actor_id: &str,
+    left_source: Option<&str>,
+    right_actor_id: &str,
+    right_source: Option<&str>,
+) -> bool {
+    let left = canonical_actor_identity(left_actor_id, left_source);
+    let right = canonical_actor_identity(right_actor_id, right_source);
+    !left.is_empty() && left == right
+}
+
+fn canonical_actor_identity(actor_id: &str, source: Option<&str>) -> String {
+    let actor_id = actor_id.trim();
+    if actor_id.is_empty() {
+        return String::new();
+    }
+    if actor_id
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("channel:"))
+    {
+        return actor_id.to_ascii_lowercase();
+    }
+    if let Some(kind) = channel_kind_from_source(source) {
+        return format!("channel:{kind}:{}", actor_id.to_ascii_lowercase());
+    }
+    actor_id.to_ascii_lowercase()
+}
+
+fn channel_kind_from_source(source: Option<&str>) -> Option<&'static str> {
+    match source?.trim().to_ascii_lowercase().as_str() {
+        "slack" | "channel:slack" => Some("slack"),
+        "discord" | "channel:discord" => Some("discord"),
+        "telegram" | "channel:telegram" => Some("telegram"),
+        _ => None,
+    }
+}
+
+fn channel_verified_decider_satisfies_reviewer_authority(
+    decider: &crate::automation_v2::governance::GovernanceActorRef,
+) -> bool {
+    decider.kind == crate::automation_v2::governance::GovernanceActorKind::Human
+        && decider
+            .actor_id
+            .as_deref()
+            .is_some_and(|actor_id| !actor_id.trim().is_empty())
+        && channel_kind_from_source(decider.source.as_deref()).is_some()
+}
+
+struct GateReviewerPolicy {
+    reviewer_eligibility: tandem_types::ReviewerEligibility,
+    risk_tier: Option<tandem_types::ToolRiskTier>,
+    data_classes: Vec<tandem_types::DataClass>,
+    resource: tandem_types::ResourceRef,
+}
+
+impl GateReviewerPolicy {
+    fn from_gate(gate: &crate::AutomationPendingGate, automation: &AutomationV2Spec) -> Self {
+        let metadata = gate.metadata.as_ref();
+        let reviewer_eligibility = metadata
+            .and_then(metadata_reviewer_eligibility)
+            .unwrap_or(tandem_types::ReviewerEligibility::None);
+        let risk_tier = metadata.and_then(metadata_risk_tier);
+        let data_classes = metadata.map(metadata_data_classes).unwrap_or_default();
+        let resource = metadata
+            .and_then(metadata_resource_ref)
+            .unwrap_or_else(|| automation_gate_resource_ref(automation, gate));
+        Self {
+            reviewer_eligibility,
+            risk_tier,
+            data_classes,
+            resource,
+        }
+    }
+
+    fn is_consequential(&self) -> bool {
+        self.reviewer_eligibility != tandem_types::ReviewerEligibility::None
+            || self
+                .risk_tier
+                .map(tandem_types::ToolRiskTier::approval_required_by_default)
+                .unwrap_or(false)
+            || self
+                .data_classes
+                .iter()
+                .any(|class| tandem_types::ApprovalGateMatrix::data_class_requires_elevated(*class))
+    }
+
+    fn requires_reviewer_authority(&self) -> bool {
+        self.reviewer_eligibility.requires_elevated() || !self.data_classes.is_empty()
+    }
+
+    fn required_permissions(&self) -> Vec<tandem_types::AccessPermission> {
+        if self.reviewer_eligibility.requires_elevated() {
+            vec![
+                tandem_types::AccessPermission::Admin,
+                tandem_types::AccessPermission::Delegate,
+            ]
+        } else {
+            vec![
+                tandem_types::AccessPermission::View,
+                tandem_types::AccessPermission::Read,
+            ]
+        }
+    }
+
+    fn required_data_classes(&self) -> Vec<tandem_types::DataClass> {
+        if self.data_classes.is_empty() {
+            vec![tandem_types::DataClass::Internal]
+        } else {
+            self.data_classes.clone()
+        }
+    }
+}
+
+fn gate_requester_actor_id(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    automation: &AutomationV2Spec,
+) -> Option<String> {
+    run.tenant_context
+        .actor_id
+        .clone()
+        .or_else(|| Some(automation.creator_id.clone()))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn metadata_reviewer_eligibility(value: &Value) -> Option<tandem_types::ReviewerEligibility> {
+    metadata_pointer(value, &["/gate/reviewer_eligibility", "/reviewer_eligibility"])
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn metadata_risk_tier(value: &Value) -> Option<tandem_types::ToolRiskTier> {
+    metadata_pointer(value, &["/gate/risk_tier", "/policy/risk_tier", "/risk_tier"])
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn metadata_data_classes(value: &Value) -> Vec<tandem_types::DataClass> {
+    metadata_pointer(value, &["/gate/data_classes", "/policy/data_classes", "/data_classes"])
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+        .chain(
+            metadata_pointer(value, &["/gate/data_class", "/policy/data_class", "/data_class"])
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
+        )
+        .collect::<Vec<_>>()
+}
+
+fn metadata_resource_ref(value: &Value) -> Option<tandem_types::ResourceRef> {
+    metadata_pointer(value, &["/gate/resource", "/policy/resource", "/resource"])
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn metadata_pointer<'a>(value: &'a Value, pointers: &[&str]) -> Option<&'a Value> {
+    pointers.iter().find_map(|pointer| value.pointer(pointer))
+}
+
+fn automation_gate_resource_ref(
+    automation: &AutomationV2Spec,
+    gate: &crate::AutomationPendingGate,
+) -> tandem_types::ResourceRef {
+    let tenant = automation.tenant_context();
+    tandem_types::ResourceRef::new(
+        tenant.org_id,
+        tenant.workspace_id,
+        tandem_types::ResourceKind::Approval,
+        format!("{}:{}", automation.automation_id, gate.node_id),
+    )
+}
+
+async fn audit_gate_decision_denial(
+    state: &AppState,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    gate: Option<&crate::AutomationPendingGate>,
+    actor: &crate::automation_v2::governance::GovernanceActorRef,
+    code: &str,
+    detail: &str,
+) {
+    let _ = crate::audit::append_protected_audit_event(
+        state,
+        "automation.governance.gate_decision_denied",
+        &run.tenant_context,
+        actor.actor_id.clone().or_else(|| actor.source.clone()),
+        json!({
+            "runID": run.run_id,
+            "automationID": run.automation_id,
+            "nodeID": gate.map(|gate| gate.node_id.clone()),
+            "resource": gate
+                .map(|gate| json!({
+                    "kind": "approval",
+                    "id": format!("{}:{}", run.automation_id, gate.node_id),
+                })),
+            "decision": "denied",
+            "code": code,
+            "detail": detail,
+            "actor": actor,
+        }),
+    )
+    .await;
 }
 
 fn spawn_channel_approval_decision_update(
