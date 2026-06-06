@@ -85,6 +85,25 @@ is retrieved, trusted, encrypted, and key-managed.
   policy decision and writes protected audit evidence for approval-required and
   deny outcomes.
 
+### Goal Capability Learning
+
+- A first slice of Goal Capability Learning (GCL) lands as the front end for
+  *composing a new workflow toward a goal*, distinct from Workflow Learning,
+  which repairs an existing workflow from execution traces (GCL-01). A goal is
+  expressed as a `GoalSpec`; discovery decomposes it into tool-agnostic
+  `CapabilityRequirement`s, resolves those to available capabilities, and
+  produces a ranked `CompositionPath` — demonstrated end-to-end on the smallest
+  demo goal, "read and parse a CSV file" (`file_read → csv_parse`) (GCL-02).
+- Strategy review reuses the existing governance shape rather than inventing a
+  parallel one (GCL-03). A `StrategyCandidate` moves through a fail-closed
+  lifecycle (`Proposed → Approved → Applied`, with `Rejected`/`Superseded`
+  terminals) — it cannot skip review or re-open once applied — and an approved
+  strategy materializes into a `WorkflowProposalDraft` that links into the
+  existing planner plan-draft and Automation V2 preview surfaces. Goal-planning
+  and strategy/proposal review emit namespaced audit events. Discovery decisions
+  are recorded per tenant and exposed through tenant-scoped endpoints that derive
+  the tenant from the authenticated context, never from caller input.
+
 ## v0.5.13 (2026-06-02)
 
 Tandem 0.5.13 combines the Linear-backed Coder intake work with a focused
