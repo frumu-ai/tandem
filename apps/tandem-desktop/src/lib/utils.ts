@@ -40,3 +40,22 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+
+/**
+ * Returns the element in an array that has the maximum value when mapped via `iteratee`.
+ * This is an O(N) optimization over `[...arr].sort(...)[0]` avoiding O(N log N) sorting
+ * and O(N) allocation overhead.
+ */
+export function maxBy<T>(array: readonly T[], iteratee: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let maxElement = array[0];
+  let maxValue = iteratee(maxElement);
+  for (let i = 1; i < array.length; i++) {
+    const currentValue = iteratee(array[i]);
+    if (currentValue > maxValue) {
+      maxValue = currentValue;
+      maxElement = array[i];
+    }
+  }
+  return maxElement;
+}

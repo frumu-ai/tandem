@@ -36,7 +36,7 @@ import { DiffViewer } from "@/components/plan/DiffViewer";
 import { summarizeWorkflowEvent } from "@/components/coder/shared/coderRunUtils";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
-import { cn } from "@/lib/utils";
+import { cn, maxBy } from "@/lib/utils";
 
 type DeveloperRunViewerProps = {
   repoSlug?: string | null;
@@ -1831,7 +1831,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
   }, [artifactGroups]);
 
   const latestValidationArtifact = useMemo(() => {
-    return [...validationArtifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
+    return maxBy(validationArtifacts, (artifact) => artifact.ts_ms) ?? null;
   }, [validationArtifacts]);
 
   const latestBlackboardArtifact = useMemo(() => {
@@ -1860,41 +1860,38 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       }
     }
     if (refs.size === 0) return null;
-    return (
-      [...artifacts]
-        .filter((artifact) =>
-          [
-            artifact.path,
-            artifact.id,
-            artifact.artifact_type,
-            artifact.step_id ?? "",
-            artifact.source_event_id ?? "",
-          ].some((value) => value && refs.has(value))
-        )
-        .sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null
+    const filtered = artifacts.filter((artifact) =>
+      [
+        artifact.path,
+        artifact.id,
+        artifact.artifact_type,
+        artifact.step_id ?? "",
+        artifact.source_event_id ?? "",
+      ].some((value) => value && refs.has(value))
     );
+    return maxBy(filtered, (artifact) => artifact.ts_ms) ?? null;
   }, [artifacts, selectedBlackboard]);
 
   const latestDuplicateArtifact = useMemo(() => {
     const duplicateArtifacts =
       artifactGroups.find((group) => group.key === "duplicate")?.artifacts ?? [];
-    return [...duplicateArtifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
+    return maxBy(duplicateArtifacts, (artifact) => artifact.ts_ms) ?? null;
   }, [artifactGroups]);
 
   const latestMemoryArtifact = useMemo(() => {
     const memoryArtifacts = artifactGroups.find((group) => group.key === "memory")?.artifacts ?? [];
-    return [...memoryArtifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
+    return maxBy(memoryArtifacts, (artifact) => artifact.ts_ms) ?? null;
   }, [artifactGroups]);
 
   const latestTriageArtifact = useMemo(() => {
     const triageArtifacts = artifactGroups.find((group) => group.key === "triage")?.artifacts ?? [];
-    return [...triageArtifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
+    return maxBy(triageArtifacts, (artifact) => artifact.ts_ms) ?? null;
   }, [artifactGroups]);
 
   const latestArtifactByCategory = useMemo(() => {
     const latest = new Map<ArtifactCategory, CoderArtifactRecord>();
     for (const group of artifactGroups) {
-      const top = [...group.artifacts].sort((left, right) => right.ts_ms - left.ts_ms)[0];
+      const top = maxBy(group.artifacts, (artifact) => artifact.ts_ms);
       if (top) latest.set(group.key, top);
     }
     return latest;
