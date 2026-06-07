@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import type { RouteId } from "../app/routes";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
+import { RoleSamplingEditor } from "../components/RoleSamplingEditor";
 import { EmptyState } from "./ui";
 import { Badge, PanelCard, Toolbar } from "../ui/index.tsx";
 import { providerHints } from "../app/store.js";
@@ -452,6 +453,11 @@ export function SettingsPageNavigationProvidersSections({
               </div>
             </div>
 
+            <RoleSamplingEditor
+              configText={installConfigText}
+              onChange={setInstallConfigText}
+            />
+
             <label className="grid gap-2">
               <span className="text-sm font-medium">Control panel config JSON</span>
               <textarea
@@ -471,9 +477,9 @@ export function SettingsPageNavigationProvidersSections({
             ) : null}
 
             <div className="tcp-subtle text-xs">
-              This file holds non-secret install state: repo binding, provider defaults, task
-              source, swarm policy, GitHub MCP preferences, and navigation defaults. Secrets should
-              stay in `.env` or token files.
+              This file holds non-secret install state: repo binding, provider defaults, per-role
+              sampling, task source, swarm policy, GitHub MCP preferences, and navigation defaults.
+              Secrets should stay in `.env` or token files.
             </div>
           </div>
         </PanelCard>
