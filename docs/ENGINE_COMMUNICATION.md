@@ -59,6 +59,57 @@ Core session/run endpoints:
 
 Compatibility aliases under `/api/...` are maintained where noted in server routes.
 
+## Sampling Parameters
+
+`POST /session` and `POST /session/{id}/prompt_async` (and `prompt_sync`)
+accept optional sampling parameters that control the provider's decoding:
+
+| Field         | Type    | Range (generic)        | Notes |
+| ------------- | ------- | ---------------------- | ----- |
+| `temperature` | number  | `0.0`–`2.0`            | Clamped per provider (Anthropic caps at `1.0`). |
+| `top_p`       | number  | `0.0`–`1.0`            | Also accepted as `topP`. |
+| `max_tokens`  | integer | `>= 1`                 | Overrides the engine's default max-tokens budget. Also accepted as `maxTokens`. |
+
+All three are **optional**. Each field is sent only when present, so omitting
+them produces a byte-identical provider request to prior behavior.
+
+### Placement and precedence
+
+- **Session default**: set on `POST /session` to apply to every prompt run on
+  the session.
+- **Per-prompt override**: set on the prompt request to override the session
+  default for that run only.
+- **Precedence** is resolved field by field: a per-prompt field wins; otherwise
+  the session default is used; otherwise the field is omitted and the provider /
+  engine default applies.
+
+```jsonc
+// POST /session  — session-level defaults
+{ "title": "reviewer", "provider": "anthropic", "model": "claude-sonnet-4-6",
+  "temperature": 0.1, "max_tokens": 2048 }
+
+// POST /session/{id}/prompt_async  — per-prompt override
+{ "parts": [{ "type": "text", "text": "..." }], "temperature": 0.7 }
+```
+
+### Per-provider mapping and clamping
+
+- OpenAI-compatible providers (`openai`, `openrouter`, `together`, `groq`,
+  `mistral`, `minimax`, custom `base_url`): mapped to `temperature`, `top_p`,
+  `max_tokens` on the Chat Completions body. The OpenAI Responses API path uses
+  `max_output_tokens`.
+- Anthropic: mapped to `temperature` (clamped to `[0, 1]`), `top_p`, and
+  `max_tokens`.
+- Values outside a provider's accepted range are **clamped**, not rejected.
+- Models that reject an explicit `temperature` (OpenAI reasoning models such as
+  the o-series and gpt-5 reasoning variants) have the parameter **dropped with a
+  logged warning** rather than failing the run.
+
+SDK callers pass these as keyword arguments
+(`sessions.create(..., temperature=, top_p=, max_tokens=)` and
+`prompt_async(..., temperature=, top_p=, max_tokens=)`); see the Python/TypeScript
+SDK reference.
+
 ## Desktop Flow
 
 1. Resolve sidecar binary path (bundled/update/dev fallbacks).

@@ -83,6 +83,7 @@ impl Provider for ScriptedProviderStream {
         _model_override: Option<&str>,
         _tool_mode: ToolMode,
         _tools: Option<Vec<ToolSchema>>,
+        _sampling: tandem_types::SamplingParams,
         _cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -139,7 +140,7 @@ impl Provider for ScriptedProviderStream {
 
 async fn engine_loop_with_scripted_provider(
     base: &std::path::Path,
-    provider: Arc<ScriptedProviderStream>,
+    provider: Arc<dyn Provider>,
 ) -> (EngineLoop, EventBus, Arc<Storage>) {
     let storage = Arc::new(Storage::new(base).await.expect("storage"));
     let bus = EventBus::new();
@@ -180,6 +181,160 @@ fn scripted_model() -> ModelSpec {
         provider_id: "scripted-provider-stream".to_string(),
         model_id: "scripted-model".to_string(),
     }
+}
+
+/// Provider that records the sampling parameters it receives, then emits a
+/// trivial successful completion. Used to assert sampling reaches the adapter
+/// boundary.
+struct SamplingCaptureProvider {
+    captured: Arc<std::sync::Mutex<Option<tandem_types::SamplingParams>>>,
+}
+
+#[async_trait]
+impl Provider for SamplingCaptureProvider {
+    fn info(&self) -> tandem_types::ProviderInfo {
+        tandem_types::ProviderInfo {
+            id: "scripted-provider-stream".to_string(),
+            name: "Sampling Capture".to_string(),
+            models: vec![tandem_types::ModelInfo {
+                id: "scripted-model".to_string(),
+                provider_id: "scripted-provider-stream".to_string(),
+                display_name: "Scripted Model".to_string(),
+                context_window: 8192,
+            }],
+        }
+    }
+
+    async fn complete(
+        &self,
+        _prompt: &str,
+        _model_override: Option<&str>,
+    ) -> anyhow::Result<String> {
+        Ok("complete fallback".to_string())
+    }
+
+    async fn stream(
+        &self,
+        _messages: Vec<ChatMessage>,
+        _model_override: Option<&str>,
+        _tool_mode: ToolMode,
+        _tools: Option<Vec<ToolSchema>>,
+        sampling: tandem_types::SamplingParams,
+        _cancel: CancellationToken,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        *self.captured.lock().unwrap() = Some(sampling);
+        Ok(Box::pin(stream::iter(vec![
+            Ok(StreamChunk::TextDelta("ok".to_string())),
+            Ok(StreamChunk::Done {
+                finish_reason: "stop".to_string(),
+                usage: None,
+            }),
+        ])))
+    }
+}
+
+#[tokio::test]
+async fn session_sampling_default_reaches_provider() {
+    let base =
+        std::env::temp_dir().join(format!("engine-loop-sampling-default-{}", Uuid::new_v4()));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let provider = Arc::new(SamplingCaptureProvider {
+        captured: captured.clone(),
+    });
+    let (engine, _bus, storage) = engine_loop_with_scripted_provider(&base, provider).await;
+    let mut session = Session::new(Some("sampling default".to_string()), Some(".".to_string()));
+    session.model = Some(scripted_model());
+    session.sampling = tandem_types::SamplingParams {
+        temperature: Some(0.1),
+        top_p: None,
+        max_tokens: Some(2048),
+    };
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    engine
+        .run_prompt_async(
+            session_id,
+            SendMessageRequest {
+                parts: vec![MessagePartInput::Text {
+                    text: "answer once".to_string(),
+                }],
+                model: Some(scripted_model()),
+                agent: None,
+                tool_mode: Some(ToolMode::None),
+                tool_allowlist: None,
+                strict_kb_grounding: None,
+                context_mode: None,
+                write_required: None,
+                prewrite_requirements: None,
+                sampling: Default::default(),
+            },
+        )
+        .await
+        .expect("prompt runs");
+
+    let seen = captured
+        .lock()
+        .unwrap()
+        .expect("provider received sampling");
+    assert_eq!(seen.temperature, Some(0.1));
+    assert_eq!(seen.max_tokens, Some(2048));
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[tokio::test]
+async fn per_prompt_sampling_overrides_session_default() {
+    let base =
+        std::env::temp_dir().join(format!("engine-loop-sampling-override-{}", Uuid::new_v4()));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let provider = Arc::new(SamplingCaptureProvider {
+        captured: captured.clone(),
+    });
+    let (engine, _bus, storage) = engine_loop_with_scripted_provider(&base, provider).await;
+    let mut session = Session::new(Some("sampling override".to_string()), Some(".".to_string()));
+    session.model = Some(scripted_model());
+    session.sampling = tandem_types::SamplingParams {
+        temperature: Some(0.1),
+        top_p: Some(0.8),
+        max_tokens: None,
+    };
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    engine
+        .run_prompt_async(
+            session_id,
+            SendMessageRequest {
+                parts: vec![MessagePartInput::Text {
+                    text: "answer once".to_string(),
+                }],
+                model: Some(scripted_model()),
+                agent: None,
+                tool_mode: Some(ToolMode::None),
+                tool_allowlist: None,
+                strict_kb_grounding: None,
+                context_mode: None,
+                write_required: None,
+                prewrite_requirements: None,
+                sampling: tandem_types::SamplingParams {
+                    temperature: Some(0.9),
+                    top_p: None,
+                    max_tokens: Some(512),
+                },
+            },
+        )
+        .await
+        .expect("prompt runs");
+
+    let seen = captured
+        .lock()
+        .unwrap()
+        .expect("provider received sampling");
+    // Per-prompt temperature/max_tokens win; session top_p fills the gap.
+    assert_eq!(seen.temperature, Some(0.9));
+    assert_eq!(seen.top_p, Some(0.8));
+    assert_eq!(seen.max_tokens, Some(512));
+    let _ = std::fs::remove_dir_all(base);
 }
 
 #[test]
@@ -525,6 +680,7 @@ async fn provider_stream_idle_timeout_retries_current_iteration() {
                 context_mode: None,
                 write_required: None,
                 prewrite_requirements: None,
+                sampling: Default::default(),
             },
         )
         .await
@@ -606,6 +762,7 @@ async fn provider_stream_decode_error_retries_current_iteration() {
                 context_mode: None,
                 write_required: None,
                 prewrite_requirements: None,
+                sampling: Default::default(),
             },
         )
         .await
@@ -690,6 +847,7 @@ async fn iteration_budget_exhaustion_fails_run_without_idle_completion() {
                 context_mode: None,
                 write_required: None,
                 prewrite_requirements: None,
+                sampling: Default::default(),
             },
         )
         .await;
@@ -783,6 +941,7 @@ async fn provider_stream_auth_error_does_not_retry() {
                 context_mode: None,
                 write_required: None,
                 prewrite_requirements: None,
+                sampling: Default::default(),
             },
         )
         .await;

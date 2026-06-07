@@ -178,6 +178,7 @@ impl Provider for ScriptedEvalProvider {
         _model_override: Option<&str>,
         _tool_mode: ToolMode,
         _tools: Option<Vec<ToolSchema>>,
+        _sampling: tandem_types::SamplingParams,
         _cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let prompt = assemble_prompt(&messages);
@@ -236,6 +237,7 @@ mod tests {
                 None,
                 ToolMode::Auto,
                 None,
+                tandem_types::SamplingParams::default(),
                 CancellationToken::new(),
             )
             .await

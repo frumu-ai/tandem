@@ -10,8 +10,8 @@ use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
 use tandem_tools::{validate_tool_schemas, ToolRegistry};
 use tandem_types::{
     ContextMode, EngineEvent, HostRuntimeContext, Message, MessagePart, MessagePartInput,
-    MessageRole, ModelSpec, SendMessageRequest, SharedToolProgressSink, TenantContext, ToolMode,
-    ToolSchema,
+    MessageRole, ModelSpec, SamplingParams, SendMessageRequest, SharedToolProgressSink,
+    TenantContext, ToolMode, ToolSchema,
 };
 use tandem_wire::WireMessagePart;
 use tokio_util::sync::CancellationToken;

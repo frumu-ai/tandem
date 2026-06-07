@@ -4,7 +4,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    HostRuntimeContext, LocalImplicitTenant, Message, ModelSpec, TenantContext,
+    HostRuntimeContext, LocalImplicitTenant, Message, ModelSpec, SamplingParams, TenantContext,
     VerifiedTenantContext,
 };
 
@@ -43,6 +43,10 @@ pub struct Session {
     pub time: SessionTime,
     pub model: Option<ModelSpec>,
     pub provider: Option<String>,
+    /// Session-level default sampling parameters, applied to every prompt run
+    /// unless overridden per-prompt.
+    #[serde(default, flatten)]
+    pub sampling: SamplingParams,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,6 +82,7 @@ impl Session {
             },
             model: None,
             provider: None,
+            sampling: SamplingParams::default(),
             source_kind: None,
             source_metadata: None,
             environment: None,
@@ -99,6 +104,66 @@ mod tests {
         assert_eq!(session.tenant_context.source, TenantSource::LocalImplicit);
         assert_eq!(session.tenant_context.actor_id, None);
     }
+
+    #[test]
+    fn session_new_defaults_sampling_to_empty() {
+        let session = Session::new(None, None);
+        assert!(session.sampling.is_empty());
+    }
+
+    #[test]
+    fn create_session_request_parses_flat_sampling_fields() {
+        let req: CreateSessionRequest = serde_json::from_value(serde_json::json!({
+            "title": "s",
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "max_tokens": 2048
+        }))
+        .expect("deserialize");
+        assert_eq!(req.sampling.temperature, Some(0.2));
+        assert_eq!(req.sampling.top_p, Some(0.9));
+        assert_eq!(req.sampling.max_tokens, Some(2048));
+    }
+
+    #[test]
+    fn send_message_request_parses_camel_case_sampling_aliases() {
+        let req: SendMessageRequest = serde_json::from_value(serde_json::json!({
+            "parts": [],
+            "temperature": 0.1,
+            "topP": 0.5,
+            "maxTokens": 1000
+        }))
+        .expect("deserialize");
+        assert_eq!(req.sampling.temperature, Some(0.1));
+        assert_eq!(req.sampling.top_p, Some(0.5));
+        assert_eq!(req.sampling.max_tokens, Some(1000));
+    }
+
+    #[test]
+    fn send_message_request_without_sampling_is_empty() {
+        let req: SendMessageRequest =
+            serde_json::from_value(serde_json::json!({ "parts": [] })).expect("deserialize");
+        assert!(req.sampling.is_empty());
+    }
+
+    #[test]
+    fn sampling_resolve_over_prefers_override_field_by_field() {
+        let session_default = SamplingParams {
+            temperature: Some(0.1),
+            top_p: Some(0.8),
+            max_tokens: Some(1024),
+        };
+        let per_prompt = SamplingParams {
+            temperature: Some(0.7),
+            top_p: None,
+            max_tokens: None,
+        };
+        let resolved = per_prompt.resolve_over(session_default);
+        // Override wins where present; session default fills the rest.
+        assert_eq!(resolved.temperature, Some(0.7));
+        assert_eq!(resolved.top_p, Some(0.8));
+        assert_eq!(resolved.max_tokens, Some(1024));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +177,9 @@ pub struct CreateSessionRequest {
     pub project_id: Option<String>,
     pub model: Option<ModelSpec>,
     pub provider: Option<String>,
+    /// Session-level default sampling parameters (temperature/top_p/max_tokens).
+    #[serde(default, flatten)]
+    pub sampling: SamplingParams,
     #[serde(default, alias = "sourceKind")]
     pub source_kind: Option<String>,
     #[serde(default, alias = "sourceMetadata")]
@@ -141,6 +209,10 @@ pub struct SendMessageRequest {
         alias = "prewrite_requirements"
     )]
     pub prewrite_requirements: Option<PrewriteRequirements>,
+    /// Per-prompt sampling override. Fields set here take precedence over the
+    /// session-level defaults; unset fields fall back to the session default.
+    #[serde(default, flatten)]
+    pub sampling: SamplingParams,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

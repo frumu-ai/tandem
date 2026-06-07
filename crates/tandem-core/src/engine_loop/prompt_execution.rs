@@ -11,6 +11,12 @@ impl EngineLoop {
         let session_model = session_record
             .as_ref()
             .and_then(|session| session.model.clone());
+        // Per-prompt sampling overrides the session-level default, field by field.
+        let session_sampling = session_record
+            .as_ref()
+            .map(|session| session.sampling)
+            .unwrap_or_default();
+        let sampling = req.sampling.resolve_over(session_sampling);
         let strict_tool_context = session_record
             .as_ref()
             .and_then(|session| session.verified_tenant_context.as_ref())
@@ -666,6 +672,7 @@ impl EngineLoop {
                             } else {
                                 Some(tool_schemas.clone())
                             },
+                            sampling,
                             cancel.clone(),
                         ),
                     )
@@ -2307,6 +2314,7 @@ impl EngineLoop {
                         &active_agent,
                         Some(provider_id.as_str()),
                         Some(model_id_value.as_str()),
+                        sampling,
                         cancel.clone(),
                         &last_tool_outputs,
                     )

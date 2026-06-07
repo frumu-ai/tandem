@@ -1171,6 +1171,7 @@ pub async fn run_routine_executor(state: AppState) {
             context_mode: None,
             write_required: None,
             prewrite_requirements: None,
+            sampling: Default::default(),
         };
 
         let run_result = state

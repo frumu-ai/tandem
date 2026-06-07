@@ -76,14 +76,30 @@ Use as an async context manager or call `await client.aclose()` manually.
 
 | Method                                                       | Description                                          |
 | ------------------------------------------------------------ | ---------------------------------------------------- |
-| `create(title?, directory?, provider?, model?)`              | Create session, returns `session_id`                 |
+| `create(title?, directory?, provider?, model?, temperature?, top_p?, max_tokens?)` | Create session, returns `session_id`     |
 | `list(q?, page?, page_size?, archived?, scope?, workspace?)` | List sessions                                        |
 | `get(session_id)`                                            | Get session details                                  |
 | `delete(session_id)`                                         | Delete a session                                     |
 | `messages(session_id)`                                       | Get message history                                  |
 | `active_run(session_id)`                                     | Get active run state                                 |
-| `prompt_async(session_id, prompt)`                           | Start async run, returns `PromptAsyncResult(run_id)` |
-| `prompt_async_parts(session_id, parts)`                      | Start async run with text/file parts                 |
+| `prompt_async(session_id, prompt, *, temperature?, top_p?, max_tokens?)` | Start async run, returns `PromptAsyncResult(run_id)` |
+| `prompt_async_parts(session_id, parts, *, temperature?, top_p?, max_tokens?)` | Start async run with text/file parts            |
+
+**Sampling parameters:** `temperature`, `top_p`, and `max_tokens` are optional.
+Set them on `create(...)` for a session-level default, and/or on
+`prompt_async(...)` to override per prompt (per-prompt wins field by field).
+Omitting them preserves engine defaults. The engine clamps values to each
+provider's accepted range (e.g. Anthropic caps `temperature` at `1.0`) and drops
+`temperature` for models that reject it (e.g. OpenAI reasoning models) rather
+than failing the run. Useful for forcing low temperature on strict-JSON roles:
+
+```python
+session_id = await client.sessions.create(
+    title="reviewer", provider="anthropic", model="claude-sonnet-4-6",
+    temperature=0.1, max_tokens=2048,
+)
+run = await client.sessions.prompt_async(session_id, "...", temperature=0.0)
+```
 
 **Prompt with file attachments:**
 

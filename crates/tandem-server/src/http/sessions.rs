@@ -246,6 +246,7 @@ pub(super) async fn create_session(
     session.environment = Some(state.host_runtime_context());
     session.model = req.model;
     session.provider = req.provider;
+    session.sampling = req.sampling;
     apply_created_session_source(&mut session, req.source_kind, req.source_metadata);
     session.pinned_workspace_id = req
         .pinned_workspace_id

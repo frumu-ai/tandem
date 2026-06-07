@@ -116,6 +116,7 @@ impl Provider for OpenAICompatibleProvider {
         model_override: Option<&str>,
         tool_mode: ToolMode,
         tools: Option<Vec<ToolSchema>>,
+        sampling: SamplingParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let model = model_override
@@ -169,6 +170,7 @@ impl Provider for OpenAICompatibleProvider {
             body["tools"] = serde_json::Value::Array(wire_tools);
             body["tool_choice"] = json!(openai_tool_choice(&tool_mode));
         }
+        apply_openai_chat_sampling(&mut body, &self.id, model, sampling);
 
         let mut resp_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
@@ -552,6 +554,7 @@ impl Provider for OpenAIResponsesProvider {
         model_override: Option<&str>,
         tool_mode: ToolMode,
         tools: Option<Vec<ToolSchema>>,
+        sampling: SamplingParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let model = model_override
@@ -608,6 +611,7 @@ impl Provider for OpenAIResponsesProvider {
             });
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
+        apply_openai_responses_sampling(&mut body, &self.id, model, sampling);
 
         let mut resp_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
@@ -1286,25 +1290,28 @@ impl Provider for AnthropicProvider {
         model_override: Option<&str>,
         _tool_mode: ToolMode,
         _tools: Option<Vec<ToolSchema>>,
+        sampling: SamplingParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let model = model_override
             .map(str::trim)
             .filter(|m| !m.is_empty())
             .unwrap_or(self.default_model.as_str());
+        let mut body = json!({
+            "model": model,
+            "max_tokens": 1024,
+            "stream": true,
+            "messages": messages
+                .into_iter()
+                .map(|m| json!({"role": m.role, "content": m.content}))
+                .collect::<Vec<_>>(),
+        });
+        apply_anthropic_sampling(&mut body, model, sampling);
         let mut req = self
             .client
             .post("https://api.anthropic.com/v1/messages")
             .header("anthropic-version", "2023-06-01")
-            .json(&json!({
-                "model": model,
-                "max_tokens": 1024,
-                "stream": true,
-                "messages": messages
-                    .into_iter()
-                    .map(|m| json!({"role": m.role, "content": m.content}))
-                    .collect::<Vec<_>>(),
-            }));
+            .json(&body);
         if let Some(key) = &self.api_key {
             req = req.header("x-api-key", key);
         }

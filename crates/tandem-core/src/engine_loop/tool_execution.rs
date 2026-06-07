@@ -356,6 +356,7 @@ impl EngineLoop {
         active_agent: &AgentDefinition,
         provider_hint: Option<&str>,
         model_id: Option<&str>,
+        sampling: SamplingParams,
         cancel: CancellationToken,
         tool_outputs: &[String],
     ) -> Option<String> {
@@ -396,6 +397,7 @@ impl EngineLoop {
                 messages,
                 ToolMode::None,
                 None,
+                sampling,
                 cancel.clone(),
             )
             .await

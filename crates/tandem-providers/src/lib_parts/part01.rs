@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 
-use tandem_types::{ModelInfo, ProviderInfo, ToolMode, ToolSchema};
+use tandem_types::{ModelInfo, ProviderInfo, SamplingParams, ToolMode, ToolSchema};
 
 fn provider_max_tokens_for(provider_id: &str) -> u32 {
     if provider_id.eq_ignore_ascii_case("openai-codex") {
@@ -41,6 +41,110 @@ fn provider_max_tokens_for(provider_id: &str) -> u32 {
         .and_then(|raw| raw.trim().parse::<u32>().ok())
         .filter(|value| *value >= 64)
         .unwrap_or(16384)
+}
+
+/// Upper bound for `temperature` accepted by a provider family. Most
+/// OpenAI-compatible providers accept up to `2.0`; Anthropic caps at `1.0`.
+fn provider_temperature_max(provider_id: &str) -> f32 {
+    if provider_id.eq_ignore_ascii_case("anthropic") {
+        1.0
+    } else {
+        2.0
+    }
+}
+
+/// Some models only support the default temperature and reject an explicit
+/// `temperature` field (OpenAI reasoning models such as the o-series and
+/// gpt-5 reasoning variants). For these we drop the parameter with a warning
+/// rather than hard-failing the run.
+fn model_rejects_temperature(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    m == "o1"
+        || m == "o3"
+        || m.starts_with("o1-")
+        || m.starts_with("o3-")
+        || m.starts_with("o4-")
+        || m.starts_with("gpt-5")
+}
+
+/// Resolve a generic `temperature` into a value safe for `provider_id`,
+/// clamping to the provider's accepted range. Returns `None` when the value
+/// must be dropped (the model rejects an explicit temperature), emitting a
+/// warning in that case so the run continues with the model default.
+fn resolve_temperature(provider_id: &str, model: &str, temperature: f32) -> Option<f32> {
+    if model_rejects_temperature(model) {
+        tracing::warn!(
+            provider = provider_id,
+            model,
+            "model rejects explicit `temperature`; dropping sampling temperature for this request"
+        );
+        return None;
+    }
+    Some(temperature.clamp(0.0, provider_temperature_max(provider_id)))
+}
+
+/// Apply generic sampling parameters onto an OpenAI-compatible Chat Completions
+/// request body (`temperature`, `top_p`, `max_tokens`). Unset fields leave the
+/// body untouched so omitting sampling preserves the existing request exactly.
+fn apply_openai_chat_sampling(
+    body: &mut serde_json::Value,
+    provider_id: &str,
+    model: &str,
+    sampling: SamplingParams,
+) {
+    if let Some(temperature) = sampling.temperature {
+        if let Some(resolved) = resolve_temperature(provider_id, model, temperature) {
+            body["temperature"] = json!(resolved);
+        }
+    }
+    if let Some(top_p) = sampling.top_p {
+        body["top_p"] = json!(top_p.clamp(0.0, 1.0));
+    }
+    if let Some(max_tokens) = sampling.max_tokens {
+        body["max_tokens"] = json!(max_tokens.max(1));
+    }
+}
+
+/// Apply generic sampling parameters onto an OpenAI Responses API request body.
+/// The Responses API uses `max_output_tokens` instead of `max_tokens`.
+fn apply_openai_responses_sampling(
+    body: &mut serde_json::Value,
+    provider_id: &str,
+    model: &str,
+    sampling: SamplingParams,
+) {
+    if let Some(temperature) = sampling.temperature {
+        if let Some(resolved) = resolve_temperature(provider_id, model, temperature) {
+            body["temperature"] = json!(resolved);
+        }
+    }
+    if let Some(top_p) = sampling.top_p {
+        body["top_p"] = json!(top_p.clamp(0.0, 1.0));
+    }
+    if let Some(max_tokens) = sampling.max_tokens {
+        body["max_output_tokens"] = json!(max_tokens.max(1));
+    }
+}
+
+/// Apply generic sampling parameters onto an Anthropic Messages request body.
+/// Anthropic always requires `max_tokens`, so an unset value leaves the
+/// existing default in place; a set value overrides it.
+fn apply_anthropic_sampling(
+    body: &mut serde_json::Value,
+    model: &str,
+    sampling: SamplingParams,
+) {
+    if let Some(temperature) = sampling.temperature {
+        if let Some(resolved) = resolve_temperature("anthropic", model, temperature) {
+            body["temperature"] = json!(resolved);
+        }
+    }
+    if let Some(top_p) = sampling.top_p {
+        body["top_p"] = json!(top_p.clamp(0.0, 1.0));
+    }
+    if let Some(max_tokens) = sampling.max_tokens {
+        body["max_tokens"] = json!(max_tokens.max(1));
+    }
 }
 
 fn parse_openrouter_affordable_max_tokens(detail: &str) -> Option<u32> {
@@ -561,6 +665,7 @@ pub trait Provider: Send + Sync {
         model_override: Option<&str>,
         _tool_mode: ToolMode,
         _tools: Option<Vec<ToolSchema>>,
+        _sampling: SamplingParams,
         _cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let prompt = messages
@@ -697,10 +802,19 @@ impl ProviderRegistry {
         tools: Option<Vec<ToolSchema>>,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
-        self.stream_for_provider(None, None, messages, tool_mode, tools, cancel)
-            .await
+        self.stream_for_provider(
+            None,
+            None,
+            messages,
+            tool_mode,
+            tools,
+            SamplingParams::default(),
+            cancel,
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn stream_for_provider(
         &self,
         provider_id: Option<&str>,
@@ -708,11 +822,12 @@ impl ProviderRegistry {
         messages: Vec<ChatMessage>,
         tool_mode: ToolMode,
         tools: Option<Vec<ToolSchema>>,
+        sampling: SamplingParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let provider = self.select_provider(provider_id).await?;
         provider
-            .stream(messages, model_id, tool_mode, tools, cancel)
+            .stream(messages, model_id, tool_mode, tools, sampling, cancel)
             .await
     }
 

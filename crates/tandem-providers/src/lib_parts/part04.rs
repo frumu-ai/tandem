@@ -333,7 +333,7 @@ mod tests {
         )];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, Some(tools), cancel)
+            .stream(messages, None, ToolMode::Auto, Some(tools), SamplingParams::default(), cancel)
             .await
             .expect("stream");
 
@@ -458,7 +458,7 @@ mod tests {
         )];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, Some(tools), cancel)
+            .stream(messages, None, ToolMode::Auto, Some(tools), SamplingParams::default(), cancel)
             .await
             .expect("stream");
 
@@ -563,7 +563,7 @@ mod tests {
         }];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, None, cancel)
+            .stream(messages, None, ToolMode::Auto, None, SamplingParams::default(), cancel)
             .await
             .expect("stream");
 
@@ -991,7 +991,7 @@ mod tests {
         }];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, None, cancel)
+            .stream(messages, None, ToolMode::Auto, None, SamplingParams::default(), cancel)
             .await
             .expect("stream");
 
@@ -1033,5 +1033,123 @@ mod tests {
             Some(15),
             "trailing usage chunk must reach the Done event"
         );
+    }
+
+    // ── Per-role sampling parameter mapping & clamping ───────────────────────
+
+    #[test]
+    fn openai_chat_sampling_maps_all_fields() {
+        let mut body = json!({ "model": "gpt-4o", "max_tokens": 16384 });
+        apply_openai_chat_sampling(
+            &mut body,
+            "openai",
+            "gpt-4o",
+            SamplingParams {
+                temperature: Some(0.1),
+                top_p: Some(0.9),
+                max_tokens: Some(2048),
+            },
+        );
+        assert_eq!(body["temperature"], json!(0.1_f32));
+        assert_eq!(body["top_p"], json!(0.9_f32));
+        // Explicit max_tokens overrides the engine default budget.
+        assert_eq!(body["max_tokens"], json!(2048));
+    }
+
+    #[test]
+    fn empty_sampling_leaves_request_body_untouched() {
+        // Omitting sampling must produce a byte-identical request to today.
+        let original = json!({
+            "model": "gpt-4o",
+            "messages": [],
+            "stream": true,
+            "max_tokens": 16384,
+        });
+        let mut body = original.clone();
+        apply_openai_chat_sampling(&mut body, "openai", "gpt-4o", SamplingParams::default());
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn openai_chat_sampling_clamps_out_of_range_values() {
+        let mut body = json!({ "model": "gpt-4o" });
+        apply_openai_chat_sampling(
+            &mut body,
+            "openai",
+            "gpt-4o",
+            SamplingParams {
+                temperature: Some(5.0),
+                top_p: Some(2.0),
+                max_tokens: Some(0),
+            },
+        );
+        // OpenAI temperature caps at 2.0, top_p at 1.0, max_tokens at >= 1.
+        assert_eq!(body["temperature"], json!(2.0_f32));
+        assert_eq!(body["top_p"], json!(1.0_f32));
+        assert_eq!(body["max_tokens"], json!(1));
+    }
+
+    #[test]
+    fn reasoning_model_drops_temperature_without_failing() {
+        let mut body = json!({ "model": "o3-mini" });
+        apply_openai_chat_sampling(
+            &mut body,
+            "openai",
+            "o3-mini",
+            SamplingParams {
+                temperature: Some(0.2),
+                top_p: None,
+                max_tokens: Some(1000),
+            },
+        );
+        // Model rejects temperature → dropped (with a warning), run continues.
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["max_tokens"], json!(1000));
+    }
+
+    #[test]
+    fn openai_responses_sampling_uses_max_output_tokens() {
+        let mut body = json!({ "model": "gpt-4o" });
+        apply_openai_responses_sampling(
+            &mut body,
+            "openai-codex",
+            "gpt-4o",
+            SamplingParams {
+                temperature: Some(0.3),
+                top_p: None,
+                max_tokens: Some(4096),
+            },
+        );
+        assert_eq!(body["temperature"], json!(0.3_f32));
+        assert_eq!(body["max_output_tokens"], json!(4096));
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn anthropic_sampling_clamps_temperature_to_one() {
+        let mut body = json!({ "model": "claude-sonnet-4-6", "max_tokens": 1024 });
+        apply_anthropic_sampling(
+            &mut body,
+            "claude-sonnet-4-6",
+            SamplingParams {
+                temperature: Some(1.8),
+                top_p: Some(0.5),
+                max_tokens: Some(8192),
+            },
+        );
+        // Anthropic caps temperature at 1.0.
+        assert_eq!(body["temperature"], json!(1.0_f32));
+        assert_eq!(body["top_p"], json!(0.5_f32));
+        assert_eq!(body["max_tokens"], json!(8192));
+    }
+
+    #[test]
+    fn model_rejects_temperature_matches_reasoning_families() {
+        assert!(model_rejects_temperature("o1"));
+        assert!(model_rejects_temperature("o3-mini"));
+        assert!(model_rejects_temperature("o4-mini"));
+        assert!(model_rejects_temperature("gpt-5-thinking"));
+        assert!(!model_rejects_temperature("gpt-4o"));
+        assert!(!model_rejects_temperature("claude-sonnet-4-6"));
     }
 }

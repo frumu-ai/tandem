@@ -525,6 +525,26 @@ class _BugMonitor:
 # ─── Sessions namespace ────────────────────────────────────────────────────────
 
 
+def _apply_sampling(
+    payload: dict[str, Any],
+    temperature: Optional[float],
+    top_p: Optional[float],
+    max_tokens: Optional[int],
+) -> None:
+    """Attach optional sampling parameters to a request payload in place.
+
+    Only sets fields that are provided, so omitting them transmits a request
+    identical to the previous SDK release. Sent as snake_case keys, which the
+    engine accepts alongside their camelCase aliases.
+    """
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if top_p is not None:
+        payload["top_p"] = top_p
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+
+
 class _Sessions:
     def __init__(self, base_url: str, token: str, http: httpx.AsyncClient) -> None:
         self._base_url = base_url
@@ -538,12 +558,25 @@ class _Sessions:
         directory: str = ".",
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
-        """Create a new session. Returns the session ID."""
+        """
+        Create a new session. Returns the session ID.
+
+        ``temperature``, ``top_p`` and ``max_tokens`` set session-level default
+        sampling parameters applied to every prompt run on the session, unless
+        overridden per-prompt. All are optional; omitting them preserves the
+        engine's default behavior. Values are clamped per provider on the engine
+        side (e.g. Anthropic caps ``temperature`` at 1.0); models that reject an
+        explicit ``temperature`` drop it rather than failing the run.
+        """
         payload: dict[str, Any] = {"title": title, "directory": directory}
         if provider and model:
             payload["model"] = {"providerID": provider, "modelID": model}
             payload["provider"] = provider
+        _apply_sampling(payload, temperature, top_p, max_tokens)
         res = await self._http.post("/session", json=payload)
         res.raise_for_status()
         return str(res.json()["id"])
@@ -630,9 +663,16 @@ class _Sessions:
         tool_mode: Optional[ToolMode] = None,
         tool_allowlist: Optional[list[str]] = None,
         context_mode: Optional[ContextMode] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> PromptAsyncResult:
         """
         Start an async run. Use ``client.stream()`` to receive events.
+
+        ``temperature``, ``top_p`` and ``max_tokens`` override the session-level
+        sampling defaults for this prompt only (field by field). Omitted fields
+        fall back to the session default, then the engine default.
 
         Handles ``409 SESSION_RUN_CONFLICT`` by returning the existing run ID.
         """
@@ -642,6 +682,9 @@ class _Sessions:
             tool_mode=tool_mode,
             tool_allowlist=tool_allowlist,
             context_mode=context_mode,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
         )
 
     async def prompt_async_parts(
@@ -652,9 +695,15 @@ class _Sessions:
         tool_mode: Optional[ToolMode] = None,
         tool_allowlist: Optional[list[str]] = None,
         context_mode: Optional[ContextMode] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> PromptAsyncResult:
         """
         Start an async run with explicit prompt parts (text and/or file parts).
+
+        ``temperature``, ``top_p`` and ``max_tokens`` override the session-level
+        sampling defaults for this prompt only (field by field).
 
         Handles ``409 SESSION_RUN_CONFLICT`` by returning the existing run ID.
         """
@@ -670,6 +719,7 @@ class _Sessions:
             payload["toolAllowlist"] = tool_allowlist
         if context_mode is not None:
             payload["contextMode"] = context_mode
+        _apply_sampling(payload, temperature, top_p, max_tokens)
         res = await self._http.post(
             f"/session/{quote(session_id)}/prompt_async",
             params={"return": "run"},

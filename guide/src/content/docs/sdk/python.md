@@ -112,7 +112,7 @@ TandemClient(base_url, token, *, timeout=20.0)
 
 | Method                                                          | Description                                   |
 | --------------------------------------------------------------- | --------------------------------------------- |
-| `create(*, title?, directory?, provider?, model?)`              | Create a session, returns `session_id`        |
+| `create(*, title?, directory?, provider?, model?, temperature?, top_p?, max_tokens?)` | Create a session, returns `session_id` |
 | `list(*, q?, page?, page_size?, archived?, scope?, workspace?)` | List sessions                                 |
 | `get(session_id)`                                               | Get session details                           |
 | `update(session_id, *, title?, archived?)`                      | Update title or archive status                |
@@ -121,7 +121,7 @@ TandemClient(base_url, token, *, timeout=20.0)
 | `messages(session_id)`                                          | Full message history                          |
 | `todos(session_id)`                                             | Pending TODOs                                 |
 | `active_run(session_id)`                                        | Currently active run                          |
-| `prompt_async(session_id, prompt)`                              | Start async run → `PromptAsyncResult(run_id)` |
+| `prompt_async(session_id, prompt, *, temperature?, top_p?, max_tokens?)` | Start async run → `PromptAsyncResult(run_id)` |
 | `prompt_sync(session_id, prompt)`                               | Blocking prompt → reply `str`                 |
 | `abort(session_id)`                                             | Abort the active run                          |
 | `cancel(session_id)`                                            | Cancel the active run                         |

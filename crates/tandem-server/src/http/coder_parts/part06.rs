@@ -126,6 +126,7 @@ async fn run_issue_fix_worker_session(
                     coverage_mode: tandem_types::PrewriteCoverageMode::FilesReviewedBacked,
                 },
             ),
+            sampling: Default::default(),
         };
 
         state

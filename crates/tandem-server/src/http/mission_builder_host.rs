@@ -210,6 +210,7 @@ async fn invoke_mission_builder_provider(
                 messages,
                 ToolMode::None,
                 None,
+                tandem_types::SamplingParams::default(),
                 cancel.clone(),
             )
             .await

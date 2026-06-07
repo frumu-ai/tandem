@@ -41,6 +41,7 @@ impl Provider for StreamedWriteTestProvider {
         _model_override: Option<&str>,
         _tool_mode: ToolMode,
         _tools: Option<Vec<ToolSchema>>,
+        _sampling: tandem_types::SamplingParams,
         _cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let chunks = vec![
@@ -121,6 +122,7 @@ impl Provider for ScriptedStrictKbProvider {
         _model_override: Option<&str>,
         _tool_mode: ToolMode,
         _tools: Option<Vec<ToolSchema>>,
+        _sampling: tandem_types::SamplingParams,
         _cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let step = self
@@ -1728,6 +1730,7 @@ async fn prompt_async_streamed_write_preserves_provider_call_id_and_args_lineage
                 context_mode: None,
                 write_required: None,
                 prewrite_requirements: None,
+                sampling: Default::default(),
             },
         )
         .await

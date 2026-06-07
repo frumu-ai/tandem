@@ -7811,6 +7811,7 @@ dependencies = [
  "tandem-types",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]

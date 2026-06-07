@@ -1149,6 +1149,7 @@ async fn execute_action(
                 context_mode: None,
                 write_required: None,
                 prewrite_requirements: None,
+                sampling: Default::default(),
             };
             state
                 .engine_loop

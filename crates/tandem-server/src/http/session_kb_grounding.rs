@@ -1046,6 +1046,7 @@ async fn synthesize_strict_kb_answer(
             messages.clone(),
             ToolMode::None,
             None,
+            tandem_types::SamplingParams::default(),
             cancel,
         )
         .await

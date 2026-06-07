@@ -70,6 +70,7 @@ pub(crate) async fn invoke_planner_provider(
                 messages,
                 ToolMode::None,
                 None,
+                tandem_types::SamplingParams::default(),
                 cancel.clone(),
             )
             .await

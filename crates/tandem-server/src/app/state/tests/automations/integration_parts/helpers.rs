@@ -58,6 +58,7 @@ impl Provider for ScriptedProvider {
         model_override: Option<&str>,
         tool_mode: ToolMode,
         tools: Option<Vec<ToolSchema>>,
+        _sampling: tandem_types::SamplingParams,
         _cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let prompt = messages
