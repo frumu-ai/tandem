@@ -15,6 +15,7 @@ export const ROUTES = [
   ["files", "Files", "folder"],
   ["memory", "Memory", "database"],
   ["runs", "Runs", "activity"],
+  ["control-loop", "Control Loop", "route"],
   ["approvals", "Approvals", "shield-check"],
   ["settings", "Settings", "settings"],
   // Legacy routes kept for backwards compat (not in primary nav)
@@ -45,6 +46,7 @@ const NAV_ROUTE_ORDER = [
   "files",
   "memory",
   "runs",
+  "control-loop",
   "approvals",
   "settings",
 ];
