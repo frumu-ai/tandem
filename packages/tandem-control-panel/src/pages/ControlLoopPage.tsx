@@ -285,7 +285,7 @@ export function ControlLoopPage({ api, client, navigate }: AppPageProps) {
   });
   const acaCoderRunsQuery = useQuery({
     queryKey: ["control-loop", "aca-coder-runs"],
-    queryFn: () => api("/api/aca/operator/coder-runs").catch(() => ({ runs: [] })),
+    queryFn: () => api("/api/aca/operator/coder-runs").catch(() => ({ coder_runs: [] })),
     refetchInterval: 15000,
   });
   const pendingApprovalsQuery = useQuery({
@@ -306,15 +306,6 @@ export function ControlLoopPage({ api, client, navigate }: AppPageProps) {
       })),
     refetchInterval: 5000,
   });
-  const policyDecisionsQuery = useQuery({
-    queryKey: ["control-loop", "policy-decisions"],
-    queryFn: () =>
-      api("/api/engine/governance/policy-decisions?limit=200").catch((error: any) => ({
-        policy_decisions: [],
-        error: String(error?.message || error),
-      })),
-    refetchInterval: 10000,
-  });
   const memoryQuery = useQuery({
     queryKey: ["control-loop", "memory-list"],
     queryFn: () =>
@@ -328,10 +319,9 @@ export function ControlLoopPage({ api, client, navigate }: AppPageProps) {
   const automationRuns = sortedByRecent(toArray(automationRunsQuery.data, "runs"));
   const contextRuns = sortedByRecent(toArray(contextRunsQuery.data, "runs"));
   const acaRuns = sortedByRecent(toArray(acaRunsQuery.data, "runs"));
-  const acaCoderRuns = sortedByRecent(toArray(acaCoderRunsQuery.data, "runs"));
+  const acaCoderRuns = sortedByRecent(toArray(acaCoderRunsQuery.data, "coder_runs"));
   const pendingApprovals = toArray(pendingApprovalsQuery.data, "approvals");
   const acaPendingApprovals = toArray(acaPendingApprovalsQuery.data, "approvals");
-  const policyDecisions = sortedByRecent(toArray(policyDecisionsQuery.data, "policy_decisions"));
   const memoryRows = sortedByRecent(toArray(memoryQuery.data, "items").concat(toArray(memoryQuery.data, "results")));
 
   const recommendedRunId = useMemo(() => {
@@ -366,6 +356,21 @@ export function ControlLoopPage({ api, client, navigate }: AppPageProps) {
     contextRuns.find((run: any) => matchesRunId(run, new Set(contextCandidates)));
   const contextRunId = runIdOf(selectedContextRun) || contextCandidates.find((candidate) => candidate.startsWith("automation-v2-")) || "";
   const runIds = buildRunIdSet(effectiveRunId, contextRunId);
+
+  const policyDecisionsQuery = useQuery({
+    queryKey: ["control-loop", "policy-decisions", effectiveRunId],
+    enabled: !!effectiveRunId,
+    queryFn: () =>
+      api(
+        `/api/engine/governance/policy-decisions?run_id=${encodeURIComponent(
+          effectiveRunId
+        )}&limit=200`
+      ).catch((error: any) => ({
+        policy_decisions: [],
+        error: String(error?.message || error),
+      })),
+    refetchInterval: 10000,
+  });
 
   const contextRunDetailQuery = useQuery({
     queryKey: ["control-loop", "context-run", contextRunId],
@@ -421,6 +426,7 @@ export function ControlLoopPage({ api, client, navigate }: AppPageProps) {
   const acaRunDetail = acaRunDetailQuery.data || selectedAcaRun || {};
   const contextEvents = sortedByRecent(toArray(contextRunEventsQuery.data, "events"));
   const ledgerRecords = sortedByRecent(toArray(contextLedgerQuery.data, "records"));
+  const policyDecisions = sortedByRecent(toArray(policyDecisionsQuery.data, "policy_decisions"));
   const selectedPolicyDecisions = policyDecisions.filter((row: any) => {
     const id = policyDecisionRunId(row);
     return id ? runIds.has(id) : matchesRunId(row, runIds);
