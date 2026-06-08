@@ -1608,7 +1608,7 @@ fn validate_memory_import_path(path: &str) -> Result<(), (StatusCode, Json<Error
     })
 }
 
-pub(super) async fn memory_put_impl(
+pub(crate) async fn memory_put_impl(
     state: &AppState,
     tenant_context: &TenantContext,
     request: MemoryPutRequest,

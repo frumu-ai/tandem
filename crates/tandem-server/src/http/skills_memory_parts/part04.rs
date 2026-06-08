@@ -8,7 +8,7 @@ pub(super) async fn memory_promote(
     Ok(Json(response))
 }
 
-pub(super) async fn memory_promote_impl(
+pub(crate) async fn memory_promote_impl(
     state: &AppState,
     tenant_context: &TenantContext,
     request: MemoryPromoteRequest,

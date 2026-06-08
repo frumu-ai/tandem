@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::http::StatusCode;
 use serde_json::{json, Value};
 use tandem_core::{
     AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
@@ -12,18 +13,29 @@ use tandem_memory::types::{
     KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus, KnowledgePromotionRequest,
     KnowledgeSpaceRecord, MemoryTenantScope,
 };
+use tandem_memory::{
+    GovernedMemoryTier, MemoryCapabilities, MemoryCapabilityToken, MemoryClassification,
+    MemoryContentKind, MemoryPartition, MemoryPromoteRequest, MemoryPutRequest, PromotionReview,
+    ScrubStatus,
+};
 use tandem_orchestrator::{KnowledgeScope, KnowledgeTrustLevel};
 use tandem_providers::{Provider, ProviderRegistry};
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::{Tool, ToolRegistry};
 use tandem_types::{
-    approval_authorizes_execution, DataClass, GateOutcome, GateRequest, TenantContext, ToolResult,
-    ToolRiskTier, ToolSchema,
+    approval_authorizes_execution, DataClass, GateOutcome, GateRequest, ResourceKind, ResourceRef,
+    TenantContext, ToolResult, ToolRiskTier, ToolSchema,
 };
 
-use crate::app::state::AppState;
 use crate::eval::{ScriptedEvalProvider, SCRIPTED_PROVIDER_ID};
 use crate::runtime::state::RuntimeState;
+use crate::{
+    app::state::AppState, AutomationAgentMcpPolicy, AutomationAgentProfile,
+    AutomationAgentToolPolicy, AutomationExecutionPolicy, AutomationFlowNode,
+    AutomationFlowOutputContract, AutomationFlowSpec, AutomationOutputValidatorKind,
+    AutomationPendingGate, AutomationRunStatus, AutomationV2Schedule, AutomationV2ScheduleType,
+    AutomationV2Spec, AutomationV2Status, RoutineMisfirePolicy,
+};
 
 #[derive(Debug, Clone)]
 pub struct EvalBootstrapOptions {
@@ -119,6 +131,7 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     state.automations_v2_path = data_dir.join("automations_v2.json");
     state.automation_v2_runs_path = data_dir.join("automation_v2_runs.json");
     state.memory_db_path = tandem_home.join("memory.sqlite");
+    state.memory_audit_path = data_dir.join("memory_audit.jsonl");
     state.protected_audit_path = data_dir.join("protected_audit.jsonl");
 
     state
@@ -297,12 +310,16 @@ impl Tool for EvalActionFirewallProbeTool {
         }
 
         let assertion = action_firewall_assertion(scenario, &args, &outcome, &actor_id, now_ms)?;
+        let runtime_guard = self
+            .action_firewall_runtime_guard_evidence(scenario, &args, &tenant_context, &actor_id)
+            .await?;
         anyhow::bail!(
             "{}",
             json!({
                 "action_firewall": "blocked",
                 "scenario": scenario,
                 "assertion": assertion,
+                "runtime_guard": runtime_guard,
                 "policy_decision": {
                     "decision_id": decision.decision_id,
                     "effect": decision.decision,
@@ -314,6 +331,306 @@ impl Tool for EvalActionFirewallProbeTool {
                 "reviewer_eligibility": outcome.reviewer_eligibility.as_str(),
             })
         )
+    }
+}
+
+impl EvalActionFirewallProbeTool {
+    async fn action_firewall_runtime_guard_evidence(
+        &self,
+        scenario: &str,
+        args: &Value,
+        tenant_context: &TenantContext,
+        requester_actor_id: &str,
+    ) -> anyhow::Result<Value> {
+        match scenario {
+            "requester_self_approval" => {
+                self.assert_requester_self_approval_guard(args, tenant_context, requester_actor_id)
+                    .await
+            }
+            "denied_output_memory_promotion" => {
+                self.assert_denied_output_memory_promotion_guard(tenant_context, requester_actor_id)
+                    .await
+            }
+            _ => Ok(Value::Null),
+        }
+    }
+
+    async fn assert_requester_self_approval_guard(
+        &self,
+        args: &Value,
+        tenant_context: &TenantContext,
+        requester_actor_id: &str,
+    ) -> anyhow::Result<Value> {
+        let reviewer_actor_id = args
+            .get("reviewer_actor_id")
+            .and_then(Value::as_str)
+            .unwrap_or(requester_actor_id);
+        if reviewer_actor_id != requester_actor_id {
+            anyhow::bail!("self-approval guard requires matching requester/reviewer actors");
+        }
+
+        let mut gate_tenant_context = tenant_context.clone();
+        gate_tenant_context.actor_id = Some(requester_actor_id.to_string());
+        let automation_id = format!(
+            "eval-action-firewall-self-approval-{}",
+            uuid::Uuid::new_v4()
+        );
+        let resource = ResourceRef::new(
+            gate_tenant_context.org_id.clone(),
+            gate_tenant_context.workspace_id.clone(),
+            ResourceKind::Approval,
+            format!("{automation_id}:publish"),
+        );
+        let automation = action_firewall_eval_automation(
+            &automation_id,
+            "Eval Action Firewall self-approval guard",
+            requester_actor_id,
+            &gate_tenant_context,
+        );
+        self.state.put_automation_v2(automation.clone()).await?;
+        let run = self
+            .state
+            .create_automation_v2_run(&automation, "eval_action_firewall")
+            .await?;
+        let run = self
+            .state
+            .update_automation_v2_run(&run.run_id, |row| {
+                row.status = AutomationRunStatus::AwaitingApproval;
+                row.checkpoint.completed_nodes = vec![
+                    "research".to_string(),
+                    "analysis".to_string(),
+                    "draft".to_string(),
+                ];
+                row.checkpoint.pending_nodes = vec!["publish".to_string()];
+                row.checkpoint.awaiting_gate = Some(AutomationPendingGate {
+                    node_id: "publish".to_string(),
+                    title: "Publish approval".to_string(),
+                    instructions: Some("approve final publish step".to_string()),
+                    decisions: vec![
+                        "approve".to_string(),
+                        "rework".to_string(),
+                        "cancel".to_string(),
+                    ],
+                    rework_targets: vec!["draft".to_string()],
+                    requested_at_ms: crate::now_ms(),
+                    upstream_node_ids: vec!["analysis".to_string(), "draft".to_string()],
+                    metadata: Some(json!({
+                        "gate": {
+                            "reviewer_eligibility": "elevated_reviewer",
+                            "risk_tier": "financial_record_access",
+                            "data_classes": ["financial_record"],
+                            "resource": resource,
+                        }
+                    })),
+                });
+                row.checkpoint.blocked_nodes = vec!["publish".to_string()];
+            })
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!("failed to prepare self-approval eval run `{}`", run.run_id)
+            })?;
+
+        let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+            self.state.clone(),
+            gate_tenant_context,
+            None,
+            run.run_id.clone(),
+            crate::http::routines_automations::AutomationV2GateDecisionInput {
+                decision: "approve".to_string(),
+                reason: None,
+            },
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some(reviewer_actor_id.to_string()),
+                "eval".to_string(),
+            ),
+        )
+        .await;
+        let (status, body) = match result {
+            Ok(_) => anyhow::bail!("self-approval guard unexpectedly approved the gate"),
+            Err(error) => error,
+        };
+        if status != StatusCode::FORBIDDEN {
+            anyhow::bail!(
+                "self-approval guard returned unexpected status {}",
+                status.as_u16()
+            );
+        }
+        let code = body
+            .0
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if code != "AUTOMATION_V2_GATE_SELF_APPROVAL_FORBIDDEN" {
+            anyhow::bail!("self-approval guard returned unexpected code `{}`", code);
+        }
+        let after = self
+            .state
+            .get_automation_v2_run(&run.run_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("self-approval eval run disappeared"))?;
+        if after.status != AutomationRunStatus::AwaitingApproval {
+            anyhow::bail!("self-approval guard advanced the gated run");
+        }
+        if !after.checkpoint.gate_history.is_empty() {
+            anyhow::bail!("self-approval guard recorded a gate decision");
+        }
+        let protected_audit = tokio::fs::read_to_string(&self.state.protected_audit_path)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to read protected audit: {err}"))?;
+        if !protected_audit
+            .contains("\"event_type\":\"automation.governance.gate_decision_denied\"")
+            || !protected_audit.contains("AUTOMATION_V2_GATE_SELF_APPROVAL_FORBIDDEN")
+            || !protected_audit.contains(&automation_id)
+        {
+            anyhow::bail!("self-approval guard did not emit protected audit evidence");
+        }
+
+        Ok(json!({
+            "guard": "automation_gate_self_approval",
+            "status": status.as_u16(),
+            "code": code,
+            "run_id": run.run_id,
+            "automation_id": automation_id,
+            "run_status": after.status,
+            "gate_history_len": after.checkpoint.gate_history.len(),
+            "audit_event": "automation.governance.gate_decision_denied",
+        }))
+    }
+
+    async fn assert_denied_output_memory_promotion_guard(
+        &self,
+        tenant_context: &TenantContext,
+        requester_actor_id: &str,
+    ) -> anyhow::Result<Value> {
+        let run_id = format!(
+            "eval-action-firewall-denied-output-{}",
+            uuid::Uuid::new_v4()
+        );
+        let project_id = "eval-action-firewall".to_string();
+        let partition = MemoryPartition {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            project_id: project_id.clone(),
+            tier: GovernedMemoryTier::Session,
+        };
+        let capability = MemoryCapabilityToken {
+            run_id: run_id.clone(),
+            subject: requester_actor_id.to_string(),
+            org_id: partition.org_id.clone(),
+            workspace_id: partition.workspace_id.clone(),
+            project_id: project_id.clone(),
+            memory: MemoryCapabilities {
+                read_tiers: vec![GovernedMemoryTier::Session, GovernedMemoryTier::Project],
+                write_tiers: vec![GovernedMemoryTier::Session],
+                promote_targets: vec![GovernedMemoryTier::Project],
+                require_review_for_promote: false,
+                allow_auto_use_tiers: vec![GovernedMemoryTier::Curated],
+            },
+            expires_at: u64::MAX,
+        };
+        let put_response = crate::http::memory_put_impl(
+            &self.state,
+            tenant_context,
+            MemoryPutRequest {
+                run_id: run_id.clone(),
+                partition: partition.clone(),
+                kind: MemoryContentKind::Note,
+                content: "denied output artifact contains aws_secret_access_key=blocked"
+                    .to_string(),
+                artifact_refs: vec!["artifact://eval/action-firewall/denied-output".to_string()],
+                classification: MemoryClassification::Restricted,
+                metadata: Some(json!({
+                    "eval_case": "denied_output_memory_promotion",
+                    "source": "denied_output_artifact",
+                })),
+            },
+            Some(capability.clone()),
+        )
+        .await
+        .map_err(|status| {
+            anyhow::anyhow!(
+                "failed to seed denied-output source memory: {}",
+                status.as_u16()
+            )
+        })?;
+        let source_memory_id = put_response.id.clone();
+        let request = MemoryPromoteRequest {
+            run_id: run_id.clone(),
+            source_memory_id: source_memory_id.clone(),
+            from_tier: GovernedMemoryTier::Session,
+            to_tier: GovernedMemoryTier::Project,
+            partition: partition.clone(),
+            reason: "eval denied output must not enter governed memory".to_string(),
+            review: PromotionReview {
+                required: false,
+                reviewer_id: Some(requester_actor_id.to_string()),
+                approval_id: Some("eval-denied-output-review".to_string()),
+            },
+        };
+
+        let response = crate::http::memory_promote_impl(
+            &self.state,
+            tenant_context,
+            request,
+            Some(capability),
+        )
+        .await
+        .map_err(|status| {
+            anyhow::anyhow!(
+                "denied-output memory promotion returned unexpected status {}",
+                status.as_u16()
+            )
+        })?;
+        if response.promoted || response.new_memory_id.is_some() {
+            anyhow::bail!("denied output was promoted into governed memory");
+        }
+        if response.scrub_report.status != ScrubStatus::Blocked {
+            anyhow::bail!(
+                "denied-output memory promotion returned unexpected scrub status {:?}",
+                response.scrub_report.status
+            );
+        }
+        let block_reason = response
+            .scrub_report
+            .block_reason
+            .as_deref()
+            .unwrap_or_default();
+        if !matches!(
+            block_reason,
+            "source memory missing or previously blocked" | "sensitive secret marker detected"
+        ) {
+            anyhow::bail!(
+                "denied-output memory promotion returned unexpected block reason {:?}",
+                response.scrub_report.block_reason
+            );
+        }
+        let memory_audit = tokio::fs::read_to_string(&self.state.memory_audit_path)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to read memory audit: {err}"))?;
+        if !memory_audit.contains(&response.audit_id)
+            || !memory_audit.contains(&put_response.audit_id)
+            || !memory_audit.contains("\"action\":\"memory_put\"")
+            || !memory_audit.contains("\"action\":\"memory_promote\"")
+            || !memory_audit.contains("\"status\":\"blocked\"")
+            || !memory_audit.contains(&source_memory_id)
+            || !memory_audit.contains(block_reason)
+        {
+            anyhow::bail!("denied-output memory promotion did not emit blocked audit evidence");
+        }
+
+        Ok(json!({
+            "guard": "governed_memory_promote_denied_output",
+            "promoted": response.promoted,
+            "new_memory_id": response.new_memory_id,
+            "source_memory_id": source_memory_id,
+            "source_memory_put_audit_id": put_response.audit_id,
+            "to_tier": GovernedMemoryTier::Project,
+            "scrub_status": response.scrub_report.status,
+            "block_reason": response.scrub_report.block_reason,
+            "audit_id": response.audit_id,
+            "audit_event": "memory_promote",
+            "audit_status": "blocked",
+        }))
     }
 }
 
@@ -411,6 +728,95 @@ async fn protected_audit_contains_decision(
         Err(error) => return Err(error.into()),
     };
     Ok(raw.contains(decision_id))
+}
+
+fn action_firewall_eval_automation(
+    automation_id: &str,
+    name: &str,
+    creator_id: &str,
+    tenant_context: &TenantContext,
+) -> AutomationV2Spec {
+    let now = crate::now_ms();
+    let mut automation = AutomationV2Spec {
+        automation_id: automation_id.to_string(),
+        name: name.to_string(),
+        description: Some("Eval-only governed automation for Action Firewall probes.".to_string()),
+        status: AutomationV2Status::Active,
+        schedule: AutomationV2Schedule {
+            schedule_type: AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: RoutineMisfirePolicy::Skip,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: vec![AutomationAgentProfile {
+            agent_id: "eval-action-firewall-agent".to_string(),
+            template_id: None,
+            display_name: "Eval Action Firewall Agent".to_string(),
+            avatar_url: None,
+            model_policy: None,
+            skills: Vec::new(),
+            tool_policy: AutomationAgentToolPolicy {
+                allowlist: Vec::new(),
+                denylist: Vec::new(),
+            },
+            mcp_policy: AutomationAgentMcpPolicy {
+                allowed_servers: Vec::new(),
+                allowed_tools: None,
+            },
+            approval_policy: None,
+        }],
+        flow: AutomationFlowSpec {
+            nodes: ["research", "analysis", "draft", "publish"]
+                .iter()
+                .map(|node_id| AutomationFlowNode {
+                    node_id: (*node_id).to_string(),
+                    agent_id: "eval-action-firewall-agent".to_string(),
+                    objective: format!("Eval {node_id} step"),
+                    knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+                    depends_on: Vec::new(),
+                    input_refs: Vec::new(),
+                    output_contract: Some(AutomationFlowOutputContract {
+                        kind: "artifact".to_string(),
+                        validator: Some(AutomationOutputValidatorKind::GenericArtifact),
+                        enforcement: None,
+                        schema: None,
+                        summary_guidance: None,
+                    }),
+                    tool_policy: None,
+                    mcp_policy: None,
+                    retry_policy: None,
+                    timeout_ms: None,
+                    max_tool_calls: None,
+                    stage_kind: None,
+                    gate: None,
+                    metadata: None,
+                })
+                .collect(),
+        },
+        execution: AutomationExecutionPolicy {
+            profile: None,
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: Some(60_000),
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: now,
+        updated_at_ms: now,
+        creator_id: creator_id.to_string(),
+        workspace_root: None,
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    automation.set_tenant_context(tenant_context);
+    automation
 }
 
 struct EvalTenantResourceProbeTool {
