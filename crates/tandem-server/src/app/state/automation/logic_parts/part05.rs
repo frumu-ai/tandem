@@ -251,6 +251,8 @@ pub(crate) fn automation_external_action_target(
         args.pointer("/owner_repo").and_then(Value::as_str),
         args.pointer("/repo").and_then(Value::as_str),
         args.pointer("/repository").and_then(Value::as_str),
+        args.pointer("/recipient").and_then(Value::as_str),
+        args.pointer("/to").and_then(Value::as_str),
         args.pointer("/channel").and_then(Value::as_str),
         args.pointer("/channel_id").and_then(Value::as_str),
         args.pointer("/thread_ts").and_then(Value::as_str),

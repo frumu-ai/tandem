@@ -720,6 +720,20 @@ fn collect_automation_external_action_receipts_records_bound_publisher_tools() {
 }
 
 #[test]
+fn automation_external_action_target_reads_message_recipient() {
+    let target = automation_external_action_target(
+        &json!({
+            "team_name": "action-firewall-demo",
+            "recipient": "mock-customer-outbox",
+            "content": "Approved outreach draft"
+        }),
+        None,
+    );
+
+    assert_eq!(target.as_deref(), Some("mock-customer-outbox"));
+}
+
+#[test]
 fn collect_automation_external_action_receipts_ignores_non_outbound_nodes() {
     let automation = AutomationV2Spec {
         automation_id: "auto-draft-test".to_string(),

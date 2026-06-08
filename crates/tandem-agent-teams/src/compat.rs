@@ -164,6 +164,10 @@ pub fn send_message_schema() -> Value {
                 "type":"string",
                 "description":"Agent name of the recipient (required for message, shutdown_request, plan_approval_response)"
             },
+            "team_name":{
+                "type":"string",
+                "description":"Optional local team or outbox namespace for the message sink"
+            },
             "content":{
                 "type":"string",
                 "description":"Message text, reason, or feedback"
@@ -249,4 +253,18 @@ pub fn task_schema() -> Value {
         "required":["description","prompt","subagent_type"],
         "additionalProperties":false
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_message_schema_allows_explicit_team_name() {
+        let schema = send_message_schema();
+        assert!(schema
+            .pointer("/properties/team_name")
+            .and_then(Value::as_object)
+            .is_some());
+    }
 }

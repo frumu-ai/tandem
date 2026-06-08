@@ -146,6 +146,7 @@ const STARTER_PRESET_ICON_BY_ID: Record<string, string> = {
   "workflow-audit": "workflow",
   "agentic-design": "bot",
   "automation-rollout": "arrow-up-circle",
+  "control-loop-action-firewall": "shield-check",
   "monitor-analyze-decide-handoff": "radar",
   "intake-plan-execute-verify-review": "list-checks",
   "collect-consolidate-update-notify": "database-zap",
