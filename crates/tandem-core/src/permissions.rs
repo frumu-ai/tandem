@@ -58,6 +58,18 @@ pub struct PermissionArgsContext {
     pub query: Option<String>,
 }
 
+/// Returns true when persisting a standing "always" allow rule for the given
+/// permission/pattern would be too broad to be safe. Shell/execution tools are
+/// excluded from standing approvals because a blanket allow would auto-approve
+/// arbitrary future commands.
+fn standing_allow_is_unsafe(permission: &str, pattern: &str) -> bool {
+    use crate::tool_capabilities::{tool_name_matches_profile, ToolCapabilityProfile};
+    [permission, pattern].into_iter().any(|name| {
+        tool_name_matches_profile(name, ToolCapabilityProfile::ShellExecution)
+            || tool_name_matches_profile(name, ToolCapabilityProfile::VerifyCommand)
+    })
+}
+
 #[derive(Clone)]
 pub struct PermissionManager {
     requests: Arc<RwLock<HashMap<String, PermissionRequest>>>,
@@ -206,12 +218,19 @@ impl PermissionManager {
         };
 
         if matches!(reply, "always" | "allow") {
-            self.rules.write().await.push(PermissionRule {
-                id: Uuid::new_v4().to_string(),
-                permission,
-                pattern,
-                action: PermissionAction::Allow,
-            });
+            // SEC-03: never create an overly broad *standing* approval for
+            // shell/execution tools. A blanket `bash` allow would auto-approve
+            // arbitrary future commands, so for these high-risk tools "always"
+            // is treated as a one-time approval (the current request is still
+            // approved by the waiter; no persistent Allow rule is recorded).
+            if !standing_allow_is_unsafe(&permission, &pattern) {
+                self.rules.write().await.push(PermissionRule {
+                    id: Uuid::new_v4().to_string(),
+                    permission,
+                    pattern,
+                    action: PermissionAction::Allow,
+                });
+            }
         } else if matches!(reply, "reject" | "deny") {
             self.rules.write().await.push(PermissionRule {
                 id: Uuid::new_v4().to_string(),
@@ -476,5 +495,48 @@ mod tests {
         assert!(matches!(action, PermissionAction::Allow));
         let unrelated = manager.evaluate("bash", "bash").await;
         assert!(matches!(unrelated, PermissionAction::Ask));
+    }
+
+    #[tokio::test]
+    async fn always_reply_does_not_create_standing_shell_approval() {
+        let manager = PermissionManager::new(EventBus::new());
+        let req = manager.ask("bash", "bash").await;
+        assert!(manager.reply(&req.id, "always").await);
+
+        // No standing Allow rule is persisted for the shell tool...
+        assert!(
+            manager.list_rules().await.is_empty(),
+            "shell `always` must not create a standing approval rule"
+        );
+        // ...so the next bash invocation is asked again rather than auto-allowed.
+        assert!(matches!(
+            manager.evaluate("bash", "bash").await,
+            PermissionAction::Ask
+        ));
+    }
+
+    #[tokio::test]
+    async fn always_reply_persists_standing_approval_for_non_shell_tool() {
+        let manager = PermissionManager::new(EventBus::new());
+        let req = manager.ask("read", "read").await;
+        assert!(manager.reply(&req.id, "always").await);
+
+        assert!(matches!(
+            manager.evaluate("read", "read").await,
+            PermissionAction::Allow
+        ));
+    }
+
+    #[tokio::test]
+    async fn deny_reply_still_persists_standing_block_for_shell() {
+        let manager = PermissionManager::new(EventBus::new());
+        let req = manager.ask("bash", "bash").await;
+        assert!(manager.reply(&req.id, "reject").await);
+
+        // Standing *deny* rules remain safe to persist for shell tools.
+        assert!(matches!(
+            manager.evaluate("bash", "bash").await,
+            PermissionAction::Deny
+        ));
     }
 }
