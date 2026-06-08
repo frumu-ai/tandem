@@ -331,7 +331,7 @@ struct TodoWriteTool;
 #[async_trait]
 impl Tool for TodoWriteTool {
     fn schema(&self) -> ToolSchema {
-        tool_schema(
+        tool_schema_with_capabilities(
             "todo_write",
             "Update todo list",
             json!({
@@ -351,6 +351,7 @@ impl Tool for TodoWriteTool {
                     }
                 }
             }),
+            planning_write_capabilities(),
         )
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {

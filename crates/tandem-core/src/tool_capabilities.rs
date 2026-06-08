@@ -733,6 +733,37 @@ mod tests {
     }
 
     #[test]
+    fn schema_metadata_overrides_unknown_name_for_memory_operation() {
+        // A memory tool annotated with the Memory domain is classified as a
+        // memory operation from metadata even when its name does not match the
+        // built-in `memory_*` name heuristics.
+        let schema = ToolSchema::new("kb_recall", "", json!({})).with_capabilities(
+            ToolCapabilities::new()
+                .effect(ToolEffect::Search)
+                .domain(ToolDomain::Memory)
+                .preferred_for_discovery(),
+        );
+
+        assert!(tool_schema_matches_profile(
+            &schema,
+            ToolCapabilityProfile::MemoryOperation
+        ));
+        // Name fallback alone would not classify this tool.
+        assert!(!tool_name_matches_profile(
+            "kb_recall",
+            ToolCapabilityProfile::MemoryOperation
+        ));
+
+        let descriptor = tool_schema_security_descriptor(&schema);
+        assert!(descriptor
+            .resource_kinds
+            .contains(&ResourceKind::MemorySpace));
+        assert!(descriptor
+            .required_permissions
+            .contains(&AccessPermission::Read));
+    }
+
+    #[test]
     fn email_send_falls_back_to_name_heuristics() {
         assert!(tool_name_matches_profile(
             "gmail_send_email",

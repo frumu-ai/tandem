@@ -13,7 +13,7 @@ struct MemorySearchTool;
 #[async_trait]
 impl Tool for MemorySearchTool {
     fn schema(&self) -> ToolSchema {
-        tool_schema(
+        tool_schema_with_capabilities(
             "memory_search",
             "Search tandem memory across session/project/global tiers. If scope fields are omitted, the tool defaults to the current session/project context and may include global memory when policy allows it.",
             json!({
@@ -28,6 +28,7 @@ impl Tool for MemorySearchTool {
                 },
                 "required":["query"]
             }),
+            memory_search_capabilities(),
         )
     }
 
@@ -631,7 +632,7 @@ struct MemoryStoreTool;
 #[async_trait]
 impl Tool for MemoryStoreTool {
     fn schema(&self) -> ToolSchema {
-        tool_schema(
+        tool_schema_with_capabilities(
             "memory_store",
             "Store memory chunks in session/project/global tiers. If scope is omitted, the tool defaults to the current project, then session, and only uses global memory when policy allows it.",
             json!({
@@ -647,6 +648,7 @@ impl Tool for MemoryStoreTool {
                 },
                 "required":["content"]
             }),
+            memory_write_capabilities(),
         )
     }
 
@@ -780,7 +782,7 @@ struct MemoryListTool;
 #[async_trait]
 impl Tool for MemoryListTool {
     fn schema(&self) -> ToolSchema {
-        tool_schema(
+        tool_schema_with_capabilities(
             "memory_list",
             "List stored memory chunks for auditing and knowledge-base browsing.",
             json!({
@@ -793,6 +795,7 @@ impl Tool for MemoryListTool {
                     "allow_global":{"type":"boolean"}
                 }
             }),
+            memory_read_capabilities(),
         )
     }
 
@@ -908,7 +911,7 @@ struct MemoryDeleteTool;
 #[async_trait]
 impl Tool for MemoryDeleteTool {
     fn schema(&self) -> ToolSchema {
-        tool_schema(
+        tool_schema_with_capabilities(
             "memory_delete",
             "Delete a stored memory chunk from session/project/global memory within the current allowed scope.",
             json!({
@@ -923,6 +926,7 @@ impl Tool for MemoryDeleteTool {
                 },
                 "required":["chunk_id"]
             }),
+            memory_delete_capabilities(),
         )
     }
 
