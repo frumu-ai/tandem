@@ -259,3 +259,121 @@ async fn memory_search_marks_untrusted_results_as_evidence() {
         Some(false)
     );
 }
+
+// WRC-03 (TAN-47): memory runtime isolation — within a single active AppState
+// memory DB, a `session`-tier put in one partition must not be visible to a
+// `/memory/search` in a different partition, while the originating partition can
+// still read it back. This verifies runtime scoping against the live DB rather
+// than relying only on separate-AppState isolation.
+#[tokio::test]
+async fn memory_put_and_search_isolate_across_partitions_in_same_app_state() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let put_req = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "run-partition-isolation",
+                "partition": {
+                    "org_id": "org-a",
+                    "workspace_id": "ws-a",
+                    "project_id": "proj-a",
+                    "tier": "session"
+                },
+                "kind": "note",
+                "content": "partition scoped memory sentinel",
+                "classification": "internal"
+            })
+            .to_string(),
+        ))
+        .expect("put request");
+    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let search_body = |org: &str, ws: &str, proj: &str| {
+        Body::from(
+            json!({
+                "run_id": "run-partition-isolation",
+                "query": "partition scoped memory sentinel",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": org,
+                    "workspace_id": ws,
+                    "project_id": proj,
+                    "tier": "session"
+                },
+                "limit": 5
+            })
+            .to_string(),
+        )
+    };
+
+    // A different partition (same AppState DB) must not see the sentinel.
+    let foreign_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(search_body("org-b", "ws-b", "proj-b"))
+        .expect("foreign search request");
+    let foreign_resp = app
+        .clone()
+        .oneshot(foreign_req)
+        .await
+        .expect("foreign search response");
+    assert_eq!(foreign_resp.status(), StatusCode::OK);
+    let foreign_payload: Value = serde_json::from_slice(
+        &to_bytes(foreign_resp.into_body(), usize::MAX)
+            .await
+            .expect("foreign body"),
+    )
+    .expect("foreign json");
+    assert!(
+        !foreign_payload
+            .get("results")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| content.contains("partition scoped memory sentinel"))
+                })
+            }),
+        "foreign partition leaked memory: {foreign_payload}"
+    );
+
+    // The originating partition can still read the sentinel back.
+    let owner_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(search_body("org-a", "ws-a", "proj-a"))
+        .expect("owner search request");
+    let owner_resp = app
+        .clone()
+        .oneshot(owner_req)
+        .await
+        .expect("owner search response");
+    assert_eq!(owner_resp.status(), StatusCode::OK);
+    let owner_payload: Value = serde_json::from_slice(
+        &to_bytes(owner_resp.into_body(), usize::MAX)
+            .await
+            .expect("owner body"),
+    )
+    .expect("owner json");
+    assert!(
+        owner_payload
+            .get("results")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| content.contains("partition scoped memory sentinel"))
+                })
+            }),
+        "owner partition could not read its own memory: {owner_payload}"
+    );
+}
