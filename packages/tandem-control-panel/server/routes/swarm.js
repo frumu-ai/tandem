@@ -13,6 +13,25 @@ export function getOrchestratorMetrics() {
   return { ..._metrics };
 }
 
+function blackboardTasksToLegacyTasks(tasks = [], run = {}) {
+  return (Array.isArray(tasks) ? tasks : []).map((task) => {
+    const payload = task?.payload && typeof task.payload === "object" ? task.payload : {};
+    return {
+      taskId: String(task?.id || ""),
+      title: String(payload?.title || task?.title || task?.id || "Untitled task"),
+      ownerRole: String(task?.assigned_agent || "blackboard_worker"),
+      status: String(task?.status || "pending"),
+      stepStatus: String(task?.status || "pending"),
+      statusReason: String(task?.last_error || ""),
+      lastUpdateMs: Number(run?.updated_at_ms || Date.now()),
+      runId: String(run?.run_id || ""),
+      sessionId: `blackboard-${String(run?.run_id || "")}`,
+      branch: "",
+      worktreePath: "",
+    };
+  });
+}
+
 export function createSwarmApiHandler(deps) {
   const {
     PORTAL_PORT,
@@ -702,7 +721,9 @@ export function createSwarmApiHandler(deps) {
           blackboardPatches: snapshot.blackboardPatches,
           replay: snapshot.replay,
           budget: deriveRunBudget(snapshot.run, snapshot.events, boardTasks),
-          tasks: contextRunToTasks(snapshot.run),
+          tasks: contextRunToTasks(snapshot.run).length
+            ? contextRunToTasks(snapshot.run)
+            : blackboardTasksToLegacyTasks(boardTasks, snapshot.run),
           controller: getSwarmRunController(runId),
         });
       } catch (e) {
