@@ -1080,3 +1080,117 @@ async fn channel_session_archival_writes_deduped_global_exchange_memory() {
         .content
         .contains("archive exact user and assistant exchanges"));
 }
+
+// WRC-03 (TAN-47): session runtime edge cases — interrupting in-flight tool work
+// on abort, abort/archival lifecycle failure handling, and permission-denial
+// decisions surfaced through the session permission registry.
+
+#[tokio::test]
+async fn abort_session_interrupts_active_run() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/session")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "title": "interrupt", "directory": "." }).to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app.clone().oneshot(create).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let session_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("session id")
+        .to_string();
+
+    // Simulate an in-flight run / tool stream for this session.
+    state
+        .run_registry
+        .acquire(&session_id, "run-interrupt-1".to_string(), None, None, None)
+        .await
+        .expect("acquire active run");
+    assert!(state.run_registry.get(&session_id).await.is_some());
+
+    let abort = Request::builder()
+        .method("POST")
+        .uri(format!("/session/{session_id}/abort"))
+        .header("x-tandem-actor-id", "operator-interrupt")
+        .body(Body::empty())
+        .expect("abort request");
+    let abort_resp = app.clone().oneshot(abort).await.expect("abort response");
+    assert_eq!(abort_resp.status(), StatusCode::OK);
+    let abort_payload: Value = serde_json::from_slice(
+        &to_bytes(abort_resp.into_body(), usize::MAX)
+            .await
+            .expect("abort body"),
+    )
+    .expect("abort json");
+    assert_eq!(abort_payload.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        abort_payload.get("cancelled").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    // The in-flight run is interrupted and cleared from the registry.
+    assert!(state.run_registry.get(&session_id).await.is_none());
+}
+
+#[tokio::test]
+async fn abort_unknown_session_returns_not_found() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let abort = Request::builder()
+        .method("POST")
+        .uri("/session/does-not-exist/abort")
+        .body(Body::empty())
+        .expect("abort request");
+    let abort_resp = app.oneshot(abort).await.expect("abort response");
+    assert_eq!(abort_resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn create_session_permission_rules_enforce_allow_deny_and_default_ask() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/session")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "title": "permission denial",
+                "directory": ".",
+                "permission": [
+                    {"permission": "write", "pattern": "*", "action": "allow"},
+                    {"permission": "todo_write", "pattern": "todo_write", "action": "deny"}
+                ]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert!(matches!(
+        state.permissions.evaluate("write", "anything").await,
+        tandem_core::PermissionAction::Allow
+    ));
+    assert!(matches!(
+        state.permissions.evaluate("todo_write", "todo_write").await,
+        tandem_core::PermissionAction::Deny
+    ));
+    // A tool with no matching rule falls back to Ask (operator approval required).
+    assert!(matches!(
+        state.permissions.evaluate("unmatched_tool", "x").await,
+        tandem_core::PermissionAction::Ask
+    ));
+}
