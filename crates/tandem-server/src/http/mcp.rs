@@ -497,14 +497,34 @@ fn mcp_uses_oauth(server: &tandem_runtime::McpServer) -> bool {
     server.auth_kind.trim().eq_ignore_ascii_case("oauth")
 }
 
-fn mcp_public_base_url(state: &AppState, cfg: &Value) -> String {
+fn mcp_public_base_url_from_config(cfg: &Value) -> Option<String> {
     cfg.get("hosted")
         .and_then(Value::as_object)
         .and_then(|hosted| hosted.get("public_url"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
+        .map(|value| value.trim_end_matches('/').to_string())
+}
+
+fn mcp_public_base_url_from_env() -> Option<String> {
+    [
+        "TANDEM_CONTROL_PANEL_PUBLIC_URL",
+        "HOSTED_CONTROL_PANEL_PUBLIC_URL",
+        "HOSTED_PUBLIC_URL",
+    ]
+    .into_iter()
+    .find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn mcp_public_base_url(state: &AppState, cfg: &Value) -> String {
+    mcp_public_base_url_from_config(cfg)
+        .or_else(mcp_public_base_url_from_env)
         .unwrap_or_else(|| state.server_base_url())
 }
 
@@ -1683,4 +1703,55 @@ pub(super) async fn mcp_resources(State(state): State<AppState>) -> Json<Value> 
         })
         .collect::<Vec<_>>();
     Json(json!(resources))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn mcp_public_base_url_from_config_trims_trailing_slash() {
+        let cfg = json!({
+            "hosted": {
+                "public_url": "https://test.tandem.ac/"
+            }
+        });
+
+        assert_eq!(
+            mcp_public_base_url_from_config(&cfg).as_deref(),
+            Some("https://test.tandem.ac")
+        );
+    }
+
+    #[test]
+    fn mcp_public_base_url_from_env_uses_control_panel_public_url() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let previous_control_panel = std::env::var("TANDEM_CONTROL_PANEL_PUBLIC_URL").ok();
+        let previous_hosted_panel = std::env::var("HOSTED_CONTROL_PANEL_PUBLIC_URL").ok();
+        let previous_hosted = std::env::var("HOSTED_PUBLIC_URL").ok();
+        std::env::set_var("TANDEM_CONTROL_PANEL_PUBLIC_URL", "https://test.tandem.ac/");
+        std::env::remove_var("HOSTED_CONTROL_PANEL_PUBLIC_URL");
+        std::env::remove_var("HOSTED_PUBLIC_URL");
+
+        assert_eq!(
+            mcp_public_base_url_from_env().as_deref(),
+            Some("https://test.tandem.ac")
+        );
+
+        match previous_control_panel {
+            Some(value) => std::env::set_var("TANDEM_CONTROL_PANEL_PUBLIC_URL", value),
+            None => std::env::remove_var("TANDEM_CONTROL_PANEL_PUBLIC_URL"),
+        }
+        match previous_hosted_panel {
+            Some(value) => std::env::set_var("HOSTED_CONTROL_PANEL_PUBLIC_URL", value),
+            None => std::env::remove_var("HOSTED_CONTROL_PANEL_PUBLIC_URL"),
+        }
+        match previous_hosted {
+            Some(value) => std::env::set_var("HOSTED_PUBLIC_URL", value),
+            None => std::env::remove_var("HOSTED_PUBLIC_URL"),
+        }
+    }
 }
