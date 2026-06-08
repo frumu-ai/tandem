@@ -182,9 +182,7 @@ feedback surfaces.
   not accept an explicit `temperature` (such as OpenAI reasoning families) have
   the parameter dropped with a logged warning instead of failing the run.
 - All fields are optional and fully backwards compatible: omitting them produces
-  a provider request identical to prior releases. The control panel Install
-  settings expose optional per-role sampling controls alongside provider/model
-  selection.
+  a provider request identical to prior releases.
 
 ### Security Review
 

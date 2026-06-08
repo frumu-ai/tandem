@@ -17,8 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and clamped to each provider's supported range; models that reject an explicit
   `temperature` (OpenAI reasoning families) drop it with a logged warning instead
   of failing the run. All fields are optional and omitting them leaves the
-  provider request byte-identical to prior behavior. Exposed as optional per-role
-  controls in the control panel Install settings.
+  provider request byte-identical to prior behavior.
 
 - Wired a cross-tenant isolation evaluation dataset into the per-PR regression
   gate, with must-block scenarios for cross-tenant source/secret access and
