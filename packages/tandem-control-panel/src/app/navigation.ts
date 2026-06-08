@@ -10,6 +10,7 @@ export const ACA_CORE_NAV_ROUTE_IDS = new Set<RouteId>([
   "coding",
   "files",
   "bug-monitor",
+  "control-loop",
   "settings",
 ]);
 

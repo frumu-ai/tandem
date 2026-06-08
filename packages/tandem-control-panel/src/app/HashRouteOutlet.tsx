@@ -33,6 +33,7 @@ const OrchestratorPage = lazyNamed(() => import("../pages/OrchestratorPage"), "O
 const FilesPage = lazyNamed(() => import("../pages/FilesPage"), "FilesPage");
 const MemoryPage = lazyNamed(() => import("../pages/MemoryPage"), "MemoryPage");
 const RunsPage = lazyNamed(() => import("../pages/RunsPage"), "RunsPage");
+const ControlLoopPage = lazyNamed(() => import("../pages/ControlLoopPage"), "ControlLoopPage");
 const BugMonitorPage = lazyNamed(() => import("../pages/BugMonitorPage"), "BugMonitorPage");
 const TeamsPage = lazyNamed(() => import("../pages/TeamsPage"), "TeamsPage");
 const SettingsPage = lazyNamed(() => import("../pages/SettingsPage"), "SettingsPage");
@@ -121,6 +122,8 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
       return <TeamsPage {...pageProps} />;
     case "runs":
       return <RunsPage {...pageProps} />;
+    case "control-loop":
+      return <ControlLoopPage {...pageProps} />;
     case "approvals":
       return <ApprovalsInboxPage {...pageProps} />;
     case "settings":

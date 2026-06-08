@@ -24,6 +24,7 @@ export type RouteId =
   | "memory"
   | "teams"
   | "runs"
+  | "control-loop"
   | "approvals"
   | "settings"
   | "packs-detail"

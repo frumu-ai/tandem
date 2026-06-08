@@ -52,6 +52,10 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
     title: "Runs",
     subtitle: "Live operations overview with queue state and per-run inspection.",
   },
+  "control-loop": {
+    title: "Control Loop",
+    subtitle: "Goal, policy, approval, action, audit, and memory traceability in one view.",
+  },
   approvals: {
     title: "Approvals Inbox",
     subtitle: "Pending human approvals across every workflow that has paused on a gate.",
@@ -94,7 +98,14 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
   },
 };
 
-const FULL_HEIGHT_ROUTES = new Set(["chat", "automations", "approvals", "files", "runs"]);
+const FULL_HEIGHT_ROUTES = new Set([
+  "chat",
+  "automations",
+  "approvals",
+  "files",
+  "runs",
+  "control-loop",
+]);
 
 export function AppShell({
   identity,
