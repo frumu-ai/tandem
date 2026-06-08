@@ -375,3 +375,122 @@ fn eval_nodes_use_explicit_inline_artifact_metadata() {
         Some(1)
     );
 }
+
+// WRC-03 (TAN-47): automation node runtime failure outcomes — exercise the
+// blocked / retry / repair / artifact-recovery decision helpers that drive how a
+// node reacts after a failed attempt.
+
+#[test]
+fn automation_node_outcome_status_classifiers_distinguish_blocked_and_repair() {
+    let blocked = serde_json::json!({ "status": "blocked" });
+    assert!(automation_output_is_blocked(&blocked));
+    assert!(!automation_output_needs_repair(&blocked));
+
+    let needs_repair = serde_json::json!({ "status": "needs_repair" });
+    assert!(automation_output_needs_repair(&needs_repair));
+    assert!(!automation_output_is_blocked(&needs_repair));
+
+    let completed = serde_json::json!({ "status": "completed" });
+    assert!(!automation_output_is_blocked(&completed));
+    assert!(!automation_output_needs_repair(&completed));
+
+    let exhausted = serde_json::json!({
+        "status": "needs_repair",
+        "artifact_validation": { "repair_exhausted": true }
+    });
+    assert!(automation_output_repair_exhausted(&exhausted));
+    let not_exhausted = serde_json::json!({
+        "status": "needs_repair",
+        "artifact_validation": { "repair_exhausted": false }
+    });
+    assert!(!automation_output_repair_exhausted(&not_exhausted));
+}
+
+#[test]
+fn infer_artifact_repair_state_reports_retry_budget_remaining() {
+    // One repair attempt against a five-attempt budget: still retryable.
+    let telemetry = serde_json::json!({
+        "tool_call_counts": { "write": 2 }
+    });
+    let (attempt, remaining, exhausted) = infer_artifact_repair_state(
+        None,
+        true,
+        false,
+        Some("final artifact needs more upstream synthesis"),
+        &telemetry,
+        Some(5),
+    );
+    assert_eq!(attempt, 1);
+    assert_eq!(remaining, 4);
+    assert!(!exhausted);
+}
+
+#[test]
+fn infer_artifact_repair_state_marks_exhausted_when_budget_spent() {
+    // Repair attempts have consumed the whole budget and the block persists.
+    let telemetry = serde_json::json!({
+        "tool_call_counts": { "write": 9 }
+    });
+    let (attempt, remaining, exhausted) = infer_artifact_repair_state(
+        None,
+        true,
+        false,
+        Some("final artifact still does not synthesize upstream evidence"),
+        &telemetry,
+        Some(3),
+    );
+    assert_eq!(attempt, 3);
+    assert_eq!(remaining, 0);
+    assert!(exhausted);
+}
+
+#[test]
+fn infer_artifact_repair_state_marks_exhausted_when_node_attempts_used_up() {
+    // Node-attempt telemetry alone can exhaust repair even mid-budget.
+    let telemetry = serde_json::json!({
+        "node_attempt": 4u32,
+        "node_max_attempts": 4u32,
+        "tool_call_counts": { "write": 2 }
+    });
+    let (_attempt, _remaining, exhausted) = infer_artifact_repair_state(
+        None,
+        true,
+        false,
+        Some("still blocked"),
+        &telemetry,
+        Some(5),
+    );
+    assert!(exhausted);
+}
+
+#[test]
+fn automation_repair_output_recovery_detects_changed_artifact() {
+    // Recovery: a repaired artifact whose text differs from the prior attempt.
+    let recovered = (
+        ".tandem/runs/run-1/artifacts/report.md".to_string(),
+        "# Report\n\nRepaired body grounded in upstream evidence.".to_string(),
+    );
+    assert!(automation_repair_output_differs_from_preexisting(
+        Some("# Report\n\nOriginal blocked body."),
+        Some(&recovered),
+    ));
+
+    // No prior artifact at all still counts as a recovery from nothing.
+    assert!(automation_repair_output_differs_from_preexisting(
+        None,
+        Some(&recovered),
+    ));
+
+    // An unchanged artifact is not a recovery.
+    let unchanged = ("p.md".to_string(), "identical body".to_string());
+    assert!(!automation_repair_output_differs_from_preexisting(
+        Some("identical body"),
+        Some(&unchanged),
+    ));
+
+    // Nothing accepted means nothing recovered.
+    assert!(!automation_repair_output_differs_from_preexisting(
+        Some("anything"),
+        None,
+    ));
+}
