@@ -411,6 +411,7 @@ impl Tool for WebFetchHtmlTool {
     }
 }
 
+#[derive(Debug)]
 struct FetchedResponse {
     final_url: String,
     content_type: String,
@@ -418,15 +419,47 @@ struct FetchedResponse {
     truncated: bool,
 }
 
+#[derive(Debug)]
+struct BlockedRedirectHost(String);
+
+impl std::fmt::Display for BlockedRedirectHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "redirect to blocked host `{}`", self.0)
+    }
+}
+
+impl std::error::Error for BlockedRedirectHost {}
+
 async fn fetch_url_with_limits(
     url: &str,
     timeout_ms: u64,
     max_bytes: usize,
     max_redirects: usize,
 ) -> anyhow::Result<FetchedResponse> {
+    // SSRF guard: reject internal/non-public targets before issuing any request.
+    tandem_types::validate_public_http_url(url)
+        .map_err(|reason| anyhow::anyhow!("blocked_url: {reason}"))?;
+
+    // Re-check every redirect hop so a public URL cannot bounce into an
+    // internal address space.
+    let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= max_redirects {
+            return attempt.stop();
+        }
+        let blocked_host = attempt
+            .url()
+            .host_str()
+            .filter(|host| tandem_types::host_is_ssrf_blocked(host))
+            .map(|host| host.to_string());
+        match blocked_host {
+            Some(host) => attempt.error(BlockedRedirectHost(host)),
+            None => attempt.follow(),
+        }
+    });
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout_ms))
-        .redirect(reqwest::redirect::Policy::limited(max_redirects))
+        .redirect(redirect_policy)
         .build()?;
 
     let res = client
@@ -437,6 +470,12 @@ async fn fetch_url_with_limits(
         )
         .send()
         .await?;
+    // Defense in depth: ensure the final resolved hop is not an internal host.
+    if let Some(host) = res.url().host_str() {
+        if tandem_types::host_is_ssrf_blocked(host) {
+            anyhow::bail!("blocked_url: host `{host}` is blocked by network policy");
+        }
+    }
     let final_url = res.url().to_string();
     let content_type = res
         .headers()

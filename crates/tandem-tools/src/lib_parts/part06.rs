@@ -188,6 +188,28 @@ mod tests {
             .contains(&tandem_types::DataClass::SourceCode));
     }
 
+    #[tokio::test]
+    async fn webfetch_blocks_internal_and_non_http_targets() {
+        // The SSRF guard rejects these before any network request is issued, so
+        // the test is deterministic and offline.
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8080/admin",
+            "http://localhost/secret",
+            "http://[::1]/",
+            "http://10.0.0.5/internal",
+            "file:///etc/passwd",
+        ] {
+            let err = fetch_url_with_limits(url, 1_000, 1_024, 3)
+                .await
+                .expect_err("expected SSRF guard to block");
+            assert!(
+                err.to_string().contains("blocked_url"),
+                "url={url} err={err}"
+            );
+        }
+    }
+
     fn grep_args(root: &Path, pattern: &str) -> Value {
         let root = root.to_string_lossy().to_string();
         json!({
