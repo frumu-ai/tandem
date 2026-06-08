@@ -3377,7 +3377,11 @@ function parsePlanTasksFromAssistant(assistantText, maxTasks = 8, options = {}) 
   if (!allowTextFallback) return [];
   const fromText = String(assistantText || "")
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[-*#\d\.\)\[\]\s]+/, "").trim())
+    .map((line) => {
+      const raw = String(line || "").trim();
+      if (!/^(?:[-*]|\d+[.)]|\[[ xX]\])\s+/.test(raw)) return "";
+      return raw.replace(/^[-*#\d\.\)\[\]\s]+/, "").trim();
+    })
     .filter((line) => line.length >= 6)
     .slice(0, normalizedMax);
   return normalizePlannerTasks(fromText, normalizedMax, { linearFallback: true });
@@ -5658,6 +5662,7 @@ async function startSwarm(session, config = {}) {
     const llmPlan = await generatePlanTodosWithLLM(session, run, maxTasks);
     let plannerSource = "llm_objective_planner";
     let plannerNote = "";
+    let usedLocalPlannerRecovery = false;
     plannerTasks = ensurePlannerTaskOutputTargets(
       normalizePlannerTasks(llmPlan.tasks, maxTasks, { linearFallback: false }),
       objective
@@ -5667,6 +5672,14 @@ async function startSwarm(session, config = {}) {
       plannerTasks = ensurePlannerTaskOutputTargets(recovered.tasks, objective);
       plannerSource = recovered.source;
       plannerNote = recovered.note;
+      usedLocalPlannerRecovery = true;
+      if (requireLlmPlan) {
+        await appendContextRunEvent(session, runId, "plan_failed_llm_required", "planning", {
+          reason: "LLM planner returned no valid tasks.",
+          recovered: true,
+          recovery_source: recovered.source,
+        }).catch(() => null);
+      }
     }
     if (enforceStrictTaskOutputs) {
       const strictCheck = validateStrictPlannerTasks(plannerTasks);
@@ -5677,8 +5690,8 @@ async function startSwarm(session, config = {}) {
       }
     }
     const seeded = await seedBlackboardTasks(session, runId, objective, plannerTasks, workflowId);
-    planSeedMode = "blackboard_llm";
-    await appendContextRunEvent(session, runId, "plan_seeded_llm", "planning", {
+    planSeedMode = usedLocalPlannerRecovery ? "blackboard_local" : "blackboard_llm";
+    await appendContextRunEvent(session, runId, usedLocalPlannerRecovery ? "plan_seeded_local" : "plan_seeded_llm", "planning", {
       source: plannerSource,
       session_id: llmPlan.sessionId || null,
       task_count: Number(seeded?.count || 0),
@@ -5701,10 +5714,9 @@ async function startSwarm(session, config = {}) {
     if (forcedFallback) {
       await appendContextRunEvent(session, runId, "plan_failed_llm_required", "planning", {
         reason: plannerFailureReason,
-        recovered: false,
+        recovered: true,
         recovery_source: recovered.source,
       }).catch(() => null);
-      throw new Error(`LLM planning failed and fallback is disabled: ${plannerFailureReason}`);
     }
     if (enforceStrictTaskOutputs) {
       const strictCheck = validateStrictPlannerTasks(plannerTasks);
