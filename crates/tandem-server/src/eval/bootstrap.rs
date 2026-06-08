@@ -16,7 +16,10 @@ use tandem_orchestrator::{KnowledgeScope, KnowledgeTrustLevel};
 use tandem_providers::{Provider, ProviderRegistry};
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::{Tool, ToolRegistry};
-use tandem_types::{TenantContext, ToolResult, ToolSchema};
+use tandem_types::{
+    approval_authorizes_execution, DataClass, GateOutcome, GateRequest, TenantContext, ToolResult,
+    ToolRiskTier, ToolSchema,
+};
 
 use crate::app::state::AppState;
 use crate::eval::{ScriptedEvalProvider, SCRIPTED_PROVIDER_ID};
@@ -164,6 +167,13 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
             Arc::new(EvalKnowledgeRetrievalProbeTool::new(state.clone())),
         )
         .await;
+    state
+        .tools
+        .register_tool(
+            EvalActionFirewallProbeTool::NAME.to_string(),
+            Arc::new(EvalActionFirewallProbeTool::new(state.clone())),
+        )
+        .await;
 
     if options.spawn_executor {
         let executor_state = state.clone();
@@ -173,6 +183,234 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     }
 
     Ok(state)
+}
+
+struct EvalActionFirewallProbeTool {
+    state: AppState,
+}
+
+impl EvalActionFirewallProbeTool {
+    const NAME: &'static str = "eval.action_firewall_probe";
+
+    fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Tool for EvalActionFirewallProbeTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            Self::NAME,
+            "Eval-only action firewall probe for approval gates, receipt replay, and denied-output promotion.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "scenario": {
+                        "type": "string",
+                        "description": "Action firewall scenario to probe."
+                    },
+                    "requester_actor_id": {
+                        "type": "string",
+                        "description": "Actor requesting the action."
+                    },
+                    "reviewer_actor_id": {
+                        "type": "string",
+                        "description": "Actor attempting to review the action."
+                    },
+                    "approval_actor_id": {
+                        "type": "string",
+                        "description": "Actor bound to the approval receipt."
+                    },
+                    "approved": {
+                        "type": "boolean",
+                        "description": "Whether the replayed approval receipt says approved."
+                    },
+                    "expires_at_ms": {
+                        "type": "integer",
+                        "description": "Approval receipt expiry time."
+                    },
+                    "now_ms": {
+                        "type": "integer",
+                        "description": "Time used for deterministic receipt expiry checks."
+                    }
+                },
+                "required": ["scenario"]
+            }),
+        )
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        self.execute_for_tenant(args, TenantContext::local_implicit())
+            .await
+    }
+
+    async fn execute_for_tenant(
+        &self,
+        args: Value,
+        tenant_context: TenantContext,
+    ) -> anyhow::Result<ToolResult> {
+        let scenario = args
+            .get("scenario")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing action firewall scenario"))?;
+        let actor_id = args
+            .get("requester_actor_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| tenant_context.actor_id.clone())
+            .unwrap_or_else(|| "eval-requester".to_string());
+        let now_ms = args
+            .get("now_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(crate::now_ms);
+        let request = action_firewall_gate_request(scenario)?;
+
+        let (outcome, decision_id) = self
+            .state
+            .enforce_action_gate(
+                &tenant_context,
+                &request,
+                Some(Self::NAME.to_string()),
+                Some(actor_id.clone()),
+                now_ms,
+            )
+            .await;
+        let decision_id = decision_id.ok_or_else(|| {
+            anyhow::anyhow!("action firewall probe did not record a policy decision")
+        })?;
+        let decision = self
+            .state
+            .get_policy_decision(&decision_id)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "action firewall policy decision `{}` was not persisted",
+                    decision_id
+                )
+            })?;
+        if !protected_audit_contains_decision(&self.state, &decision_id).await? {
+            anyhow::bail!(
+                "action firewall policy decision `{}` has no protected audit evidence",
+                decision_id
+            );
+        }
+
+        let assertion = action_firewall_assertion(scenario, &args, &outcome, &actor_id, now_ms)?;
+        anyhow::bail!(
+            "{}",
+            json!({
+                "action_firewall": "blocked",
+                "scenario": scenario,
+                "assertion": assertion,
+                "policy_decision": {
+                    "decision_id": decision.decision_id,
+                    "effect": decision.decision,
+                    "reason_code": decision.reason_code,
+                    "policy_id": decision.policy_id,
+                },
+                "audit_event": "protected_audit_contains_policy_decision",
+                "approval_required": outcome.requires_approval(),
+                "reviewer_eligibility": outcome.reviewer_eligibility.as_str(),
+            })
+        )
+    }
+}
+
+fn action_firewall_gate_request(scenario: &str) -> anyhow::Result<GateRequest> {
+    match scenario {
+        "restricted_doc_read" => Ok(GateRequest::new(
+            Some(ToolRiskTier::ReadDiscover),
+            Some(DataClass::Restricted),
+        )),
+        "financial_record_read" => Ok(GateRequest::new(
+            Some(ToolRiskTier::FinancialRecordAccess),
+            Some(DataClass::FinancialRecord),
+        )),
+        "external_send_without_approval" => Ok(GateRequest::external_customer_send()),
+        "credential_admin_access" => Ok(GateRequest::new(
+            Some(ToolRiskTier::CredentialAdmin),
+            Some(DataClass::Credential),
+        )),
+        "requester_self_approval" => Ok(GateRequest::external_customer_send()),
+        "approval_receipt_replay" => Ok(GateRequest::external_customer_send()),
+        "denied_output_memory_promotion" => Ok(GateRequest::new(
+            Some(ToolRiskTier::InternalWrite),
+            Some(DataClass::Restricted),
+        )),
+        other => anyhow::bail!("unknown action firewall scenario `{}`", other),
+    }
+}
+
+fn action_firewall_assertion(
+    scenario: &str,
+    args: &Value,
+    outcome: &GateOutcome,
+    requester_actor_id: &str,
+    now_ms: u64,
+) -> anyhow::Result<String> {
+    if outcome.is_allowed() {
+        anyhow::bail!(
+            "action firewall scenario `{}` unexpectedly resolved to allow",
+            scenario
+        );
+    }
+
+    match scenario {
+        "requester_self_approval" => {
+            let reviewer = args
+                .get("reviewer_actor_id")
+                .and_then(Value::as_str)
+                .unwrap_or(requester_actor_id);
+            if reviewer != requester_actor_id {
+                anyhow::bail!(
+                    "self-approval scenario configured different requester/reviewer actors"
+                );
+            }
+            Ok("self_approval_denied".to_string())
+        }
+        "approval_receipt_replay" => {
+            let approved = args
+                .get("approved")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let expires_at_ms = args
+                .get("expires_at_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| now_ms.saturating_sub(1));
+            let approval_actor = args
+                .get("approval_actor_id")
+                .and_then(Value::as_str)
+                .unwrap_or("foreign-reviewer");
+            let actor_matches = approval_actor == requester_actor_id;
+            let time_valid = approval_authorizes_execution(approved, expires_at_ms, now_ms);
+            if time_valid && actor_matches {
+                anyhow::bail!("approval receipt replay unexpectedly authorized execution");
+            }
+            Ok("approval_receipt_replay_denied".to_string())
+        }
+        "denied_output_memory_promotion" => {
+            Ok("denied_output_memory_promotion_blocked".to_string())
+        }
+        _ if outcome.requires_approval() => Ok(outcome.reason_code.clone()),
+        _ if outcome.is_denied() => Ok(outcome.reason_code.clone()),
+        _ => anyhow::bail!(
+            "action firewall scenario `{}` resolved to unsupported outcome",
+            scenario
+        ),
+    }
+}
+
+async fn protected_audit_contains_decision(
+    state: &AppState,
+    decision_id: &str,
+) -> anyhow::Result<bool> {
+    let raw = match tokio::fs::read_to_string(&state.protected_audit_path).await {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(raw.contains(decision_id))
 }
 
 struct EvalTenantResourceProbeTool {
