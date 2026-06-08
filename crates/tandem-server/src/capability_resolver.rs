@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-pub const BUILTIN_CAPABILITY_BINDINGS_VERSION: &str = "2026-06-05-linear-mcp-v1";
+pub const BUILTIN_CAPABILITY_BINDINGS_VERSION: &str = "2026-06-08-mock-external-action-v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CapabilityBinding {
@@ -993,6 +993,12 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             "mcp.composio.slack_get_channel_history",
             &["mcp.composio.slack.get_channel_history"],
         ),
+        make_binding(
+            "mock_external_action.send",
+            "custom",
+            "sendmessage",
+            &["SendMessage", "send_message", "mock_external_send"],
+        ),
     ]
 }
 
@@ -1138,6 +1144,35 @@ mod tests {
             result.missing_required,
             vec!["github.create_pull_request".to_string()]
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn resolve_matches_local_mock_external_send_tool() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-cap-resolver-{}", uuid::Uuid::new_v4()));
+        let resolver = CapabilityResolver::new(root.clone());
+        let result = resolver
+            .resolve(
+                CapabilityResolveInput {
+                    workflow_id: Some("wf-mock-send".to_string()),
+                    required_capabilities: vec!["mock_external_action.send".to_string()],
+                    optional_capabilities: vec![],
+                    provider_preference: vec![],
+                    available_tools: vec![CapabilityToolAvailability {
+                        provider: "custom".to_string(),
+                        tool_name: "SendMessage".to_string(),
+                        schema: Value::Null,
+                    }],
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("resolve");
+        assert_eq!(result.missing_required, Vec::<String>::new());
+        assert_eq!(result.resolved.len(), 1);
+        assert_eq!(result.resolved[0].provider, "custom");
+        assert_eq!(result.resolved[0].tool_name, "sendmessage");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1402,6 +1437,11 @@ mod tests {
                     .tool_name_aliases
                     .iter()
                     .any(|alias| alias == "issue_read")
+        }));
+        assert!(merged.bindings.iter().any(|row| {
+            row.capability_id == "mock_external_action.send"
+                && row.provider == "custom"
+                && row.tool_name == "sendmessage"
         }));
         let _ = std::fs::remove_dir_all(root);
     }

@@ -1,0 +1,162 @@
+id: control-loop-action-firewall
+label: Action Firewall
+description: Draft a customer-facing action, pause for human approval, then execute a local mock external send with audit evidence.
+schedule_defaults:
+  type: manual
+blueprint:
+  mission_id: mission_control_loop_action_firewall
+  title: Control Loop action firewall
+  goal: Turn a business goal into a customer-facing action while proving that Tandem pauses before an external mutation, captures the approval decision, executes a mock send, and reuses governed memory on later runs.
+  success_criteria:
+    - Business goal and customer context are captured before drafting
+    - Customer-facing action draft is reviewable before any external mutation
+    - Human approval can approve, rework, or cancel the action
+    - Approved mock send records external-action receipt evidence
+    - Later runs reference prior approved memory and improve the draft
+  shared_context: This is a local Action Firewall demo. Use project-scoped promoted knowledge and prior approved run outputs when available. Treat the mock sink as the only external system; do not call real Gmail, CRM, Slack, or customer systems.
+  workspace_root: ""
+  orchestrator_template_id: ""
+  phases:
+    - phase_id: intake
+      title: Intake
+      execution_mode: soft
+    - phase_id: draft
+      title: Draft
+      execution_mode: barrier
+    - phase_id: execute
+      title: Execute
+      execution_mode: barrier
+  milestones:
+    - milestone_id: action-approved
+      title: Action approved
+      phase_id: draft
+      required_stage_ids:
+        - goal-intake
+        - draft-customer-action
+        - action-approval
+    - milestone_id: mock-send-recorded
+      title: Mock send recorded
+      phase_id: execute
+      required_stage_ids:
+        - mock-send
+  team:
+    allowed_template_ids: []
+    default_model_policy: null
+    allowed_mcp_servers: []
+    max_parallel_agents: 2
+    mission_budget:
+      max_tool_calls: 6
+    orchestrator_only_tool_calls: false
+  workstreams:
+    - workstream_id: goal-intake
+      title: Business goal intake
+      objective: Capture the business goal, customer segment, intended action, and safety constraints for the Action Firewall demo.
+      role: operator
+      prompt: Act as the intake operator. Summarize the business goal, target customer or account, desired outcome, customer-facing action type, tone constraints, privacy constraints, and success signal. Start from promoted project memory if prior approved runs exist, and explicitly note any reused memory.
+      priority: 1
+      phase_id: intake
+      lane: context
+      milestone: action-approved
+      depends_on: []
+      input_refs: []
+      tool_allowlist_override:
+        - read
+        - glob
+        - grep
+        - memory_search
+      mcp_servers_override: []
+      output_contract:
+        kind: brief_markdown
+        summary_guidance: Business goal, customer context, constraints, success signal, and any reused approved memory.
+    - workstream_id: draft-customer-action
+      title: Draft customer action
+      objective: Draft the customer-facing action and a concise approval preview without sending it.
+      role: drafter
+      prompt: Use the intake brief to draft one customer-facing action suitable for review. Produce a subject or title, recipient label, final message body, risk notes, and a compact approval preview. Do not call external tools. If prior approved memory exists, improve wording based on what was approved before and state the memory reused.
+      priority: 2
+      phase_id: draft
+      lane: draft
+      milestone: action-approved
+      depends_on:
+        - goal-intake
+      input_refs:
+        - from_step_id: goal-intake
+          alias: goal_brief
+      tool_allowlist_override:
+        - read
+        - glob
+        - grep
+        - memory_search
+      mcp_servers_override: []
+      output_contract:
+        kind: report_markdown
+        summary_guidance: Customer-facing draft, recipient label, approval preview, risk notes, and memory reuse note.
+    - workstream_id: mock-send
+      title: Mock external send
+      objective: Send the approved customer action to the local mock external action sink and summarize the receipt evidence.
+      role: publisher
+      prompt: Use exactly one SendMessage tool call to execute the mock external action after approval. Send a message with type "message", team_name "action-firewall-demo", recipient "mock-customer-outbox", a 5-10 word summary, and content containing the approved customer-facing draft plus a short approval note. Do not call real external systems. After the tool call, summarize the mock send target, approval dependency, receipt evidence, and what should become governed memory for the next run.
+      priority: 3
+      phase_id: execute
+      lane: action
+      milestone: mock-send-recorded
+      depends_on:
+        - action-approval
+      input_refs:
+        - from_step_id: draft-customer-action
+          alias: approved_customer_action
+        - from_step_id: action-approval
+          alias: approval_decision
+      tool_allowlist_override:
+        - SendMessage
+      mcp_servers_override: []
+      output_contract:
+        kind: report_markdown
+        summary_guidance: Mock send target, approval dependency, receipt evidence, and governed-memory note.
+      metadata:
+        approval:
+          skip_approval: true
+        delivery:
+          method: mock_external_action
+          target: mock-customer-outbox
+          sink: action-firewall-demo
+  review_stages:
+    - stage_id: action-approval
+      stage_kind: approval
+      title: Approve customer action
+      target_ids:
+        - draft-customer-action
+      role: approver
+      prompt: Review the customer-facing draft before the mock external action can run. Approve only if the action matches the business goal, uses safe customer-facing language, respects privacy constraints, and is ready to send to the mock sink. Use rework with specific feedback when the draft needs edits, or cancel if the action should not be sent.
+      checklist:
+        - Business goal is addressed
+        - Message is safe for a customer to see
+        - No real external system will be contacted
+        - Reused memory is called out when present
+      priority: 1
+      phase_id: draft
+      lane: approval
+      milestone: action-approved
+      tool_allowlist_override:
+        - read
+        - glob
+        - grep
+      mcp_servers_override: []
+      gate:
+        required: true
+        decisions:
+          - approve
+          - rework
+          - cancel
+        rework_targets:
+          - draft-customer-action
+        instructions: This is the Action Firewall pause. Rework sends feedback back to the draft step; approval permits only the local mock send, not any real external system.
+  metadata:
+    demo:
+      id: action-firewall
+      mock_external_sink:
+        capability_id: mock_external_action.send
+        tool: SendMessage
+        team_name: action-firewall-demo
+        recipient: mock-customer-outbox
+      second_run_memory_demo: Run the preset again after approving the first mock send to see promoted memory reused in the next draft.
