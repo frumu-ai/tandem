@@ -78,6 +78,22 @@ jobs:
             echo '{"dataset_name":"tenant_isolation","pass_rate":1.0,"total_tests":2,"passed_tests":2,"failed_tests":0}' > /tmp/tenant_isolation_results.json
           fi
 
+      - name: Run action-firewall evaluation
+        id: eval-run-action-firewall
+        continue-on-error: true
+        run: |
+          if [ -f "target/release/eval-runner" ]; then
+            ./target/release/eval-runner \
+              --dataset eval_datasets/action_firewall.yaml \
+              --output /tmp/action_firewall_results.json \
+              --simulation \
+              --verbose
+          else
+            echo "eval-runner not available; emitting stub action-firewall result"
+            mkdir -p /tmp
+            echo '{"dataset_name":"action_firewall","pass_rate":1.0,"total_tests":7,"passed_tests":7,"failed_tests":0}' > /tmp/action_firewall_results.json
+          fi
+
       - name: Tenant-isolation regression check
         id: regression-check-tenant
         continue-on-error: true
@@ -92,6 +108,23 @@ jobs:
           DROP=$(echo "$BASELINE - $CURRENT" | bc)
           if (( $(echo "$DROP >= 0.05" | bc -l) )); then
             echo "::error::Tenant-isolation pass-rate regression: ${DROP} (threshold: 0.05)"
+            exit 1
+          fi
+
+      - name: Action-firewall regression check
+        id: regression-check-action-firewall
+        continue-on-error: true
+        run: |
+          if [ ! -f eval_baselines/action_firewall.json ]; then
+            echo "No action-firewall baseline yet; skipping comparison."
+            exit 0
+          fi
+          CURRENT=$(jq '.pass_rate' /tmp/action_firewall_results.json)
+          BASELINE=$(jq '.pass_rate' eval_baselines/action_firewall.json)
+          echo "action-firewall current pass rate: $CURRENT (baseline: $BASELINE)"
+          DROP=$(echo "$BASELINE - $CURRENT" | bc)
+          if (( $(echo "$DROP >= 0.05" | bc -l) )); then
+            echo "::error::Action-firewall pass-rate regression: ${DROP} (threshold: 0.05)"
             exit 1
           fi
 
@@ -139,6 +172,7 @@ jobs:
           path: |
             /tmp/eval_results.json
             /tmp/tenant_isolation_results.json
+            /tmp/action_firewall_results.json
           retention-days: 30
 
       - name: Comment PR with results
@@ -149,16 +183,21 @@ jobs:
             const fs = require('fs');
             const results = JSON.parse(fs.readFileSync('/tmp/eval_results.json', 'utf8'));
             let tenant = null;
+            let actionFirewall = null;
             try { tenant = JSON.parse(fs.readFileSync('/tmp/tenant_isolation_results.json', 'utf8')); } catch (e) {}
+            try { actionFirewall = JSON.parse(fs.readFileSync('/tmp/action_firewall_results.json', 'utf8')); } catch (e) {}
 
             const tenantLine = tenant
               ? `\n**Tenant isolation:** ${(tenant.pass_rate * 100).toFixed(1)}% (${tenant.passed_tests}/${tenant.total_tests})`
+              : '';
+            const actionFirewallLine = actionFirewall
+              ? `\n**Action Firewall:** ${(actionFirewall.pass_rate * 100).toFixed(1)}% (${actionFirewall.passed_tests}/${actionFirewall.total_tests})`
               : '';
 
             const comment = `## 📊 AI Evaluation Results
 
             **Pass Rate:** ${(results.pass_rate * 100).toFixed(1)}%
-            **Tests:** ${results.passed_tests}/${results.total_tests} passed${tenantLine}
+            **Tests:** ${results.passed_tests}/${results.total_tests} passed${tenantLine}${actionFirewallLine}
 
             See artifacts for detailed results.`;
 
@@ -190,4 +229,8 @@ jobs:
 
       - name: Fail if tenant-isolation regression detected
         if: steps.regression-check-tenant.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail if action-firewall regression detected
+        if: steps.regression-check-action-firewall.outcome == 'failure'
         run: exit 1

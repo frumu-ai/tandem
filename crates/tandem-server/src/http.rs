@@ -134,6 +134,8 @@ pub(crate) mod workflow_planner_runtime;
 mod workflow_planner_transport;
 mod workflows;
 
+pub(crate) use skills_memory::{memory_promote_impl, memory_put_impl};
+
 use capabilities::*;
 use context_runs::*;
 use context_types::*;
