@@ -167,6 +167,25 @@ feedback surfaces.
   connector readiness states for missing, read-only, and write-capable Linear
   setups.
 
+### Per-Role Sampling Parameters
+
+- The engine runtime and the `tandem-client` Python SDK (now `0.5.14`) accept
+  per-role sampling parameters — `temperature`, `top_p`, and `max_tokens`.
+  Callers set a session-level default on `sessions.create(...)` and may override
+  it per prompt on `prompt_async(...)`; the per-prompt value takes precedence
+  field by field. This lets JSON-emitting roles (manager / reviewer / tester) run
+  at a low temperature for more deterministic, parseable output while workers can
+  use a different value.
+- Parameters are mapped to each provider's request shape (OpenAI-compatible chat
+  completions, the OpenAI Responses API's `max_output_tokens`, and Anthropic) and
+  clamped to the provider's supported range rather than rejected. Models that do
+  not accept an explicit `temperature` (such as OpenAI reasoning families) have
+  the parameter dropped with a logged warning instead of failing the run.
+- All fields are optional and fully backwards compatible: omitting them produces
+  a provider request identical to prior releases. The control panel Install
+  settings expose optional per-role sampling controls alongside provider/model
+  selection.
+
 ### Security Review
 
 - Added a source-verified Rust runtime security analysis covering command

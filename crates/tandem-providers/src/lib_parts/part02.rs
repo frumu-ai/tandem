@@ -171,6 +171,12 @@ impl Provider for OpenAICompatibleProvider {
             body["tool_choice"] = json!(openai_tool_choice(&tool_mode));
         }
         apply_openai_chat_sampling(&mut body, &self.id, model, sampling);
+        // A `max_tokens` override changes `body["max_tokens"]`; keep the local
+        // value (used by the OpenRouter affordability retry below) in sync so
+        // the "can only afford N" filter compares against the requested cap.
+        if let Some(requested) = body.get("max_tokens").and_then(|value| value.as_u64()) {
+            max_tokens = requested as u32;
+        }
 
         let mut resp_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;

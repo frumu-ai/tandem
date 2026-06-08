@@ -1152,4 +1152,27 @@ mod tests {
         assert!(!model_rejects_temperature("gpt-4o"));
         assert!(!model_rejects_temperature("claude-sonnet-4-6"));
     }
+
+    #[test]
+    fn openrouter_affordability_retry_respects_max_tokens_override() {
+        let status = reqwest::StatusCode::PAYMENT_REQUIRED;
+        let detail = "can only afford 32000";
+        // With a max_tokens override of 64k, an affordable cap of 32k is below
+        // the requested value and must trigger a retry (regression: previously
+        // compared against the 16k default and bailed).
+        assert_eq!(
+            openrouter_affordability_retry_max_tokens("openrouter", status, detail, 64_000),
+            Some(32_000)
+        );
+        // Affordable cap at/above the requested value does not retry.
+        assert_eq!(
+            openrouter_affordability_retry_max_tokens("openrouter", status, detail, 16_000),
+            None
+        );
+        // Only OpenRouter 402s qualify.
+        assert_eq!(
+            openrouter_affordability_retry_max_tokens("openai", status, detail, 64_000),
+            None
+        );
+    }
 }

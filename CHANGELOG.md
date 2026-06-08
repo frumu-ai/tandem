@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added per-role sampling parameters (`temperature`, `top_p`, `max_tokens`) to
+  the engine runtime and the `tandem-client` Python SDK (bumped to `0.5.14`).
+  Callers can set a session-level default on `sessions.create(...)` and override
+  it per prompt on `prompt_async(...)`; the per-prompt value wins field by field.
+  Values are mapped per provider (OpenAI-compatible, OpenAI Responses, Anthropic)
+  and clamped to each provider's supported range; models that reject an explicit
+  `temperature` (OpenAI reasoning families) drop it with a logged warning instead
+  of failing the run. All fields are optional and omitting them leaves the
+  provider request byte-identical to prior behavior. Exposed as optional per-role
+  controls in the control panel Install settings.
+
 - Wired a cross-tenant isolation evaluation dataset into the per-PR regression
   gate, with must-block scenarios for cross-tenant source/secret access and
   cross-tenant memory reads (CT-01). Multiple datasets now run in the gate
