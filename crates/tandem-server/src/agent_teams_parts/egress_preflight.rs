@@ -1,4 +1,5 @@
 const EGRESS_DLP_POLICY_ID: &str = "egress_dlp_preflight";
+const EGRESS_ARRAY_INSPECTION_LIMIT: usize = 20;
 const EGRESS_PREVIEW_LIMIT: usize = 700;
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,7 @@ struct EgressPreflightReport {
     action_hash: String,
     inspected_field_count: usize,
     redaction_count: usize,
+    inspection_truncated: bool,
 }
 
 impl EgressPreflightReport {
@@ -33,7 +35,7 @@ impl EgressPreflightReport {
     }
 
     fn blocks(&self) -> bool {
-        self.has_class(DataClass::Credential)
+        self.has_class(DataClass::Credential) || self.inspection_truncated
     }
 }
 
@@ -54,11 +56,17 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
     let mut approval_expires_at_ms = None;
     let mut approval_request_error = None;
 
-    let (effect, reason_code, reason) = if report.blocks() {
+    let (effect, reason_code, reason) = if report.has_class(DataClass::Credential) {
         (
             PolicyDecisionEffect::Deny,
             "egress_credential_content_blocked",
             "outbound payload contains credential or secret-looking content and was blocked",
+        )
+    } else if report.inspection_truncated {
+        (
+            PolicyDecisionEffect::Deny,
+            "egress_payload_inspection_truncated",
+            "outbound payload exceeded the DLP inspection limit and was blocked fail-closed",
         )
     } else {
         let approval_expires_at = now_ms.saturating_add(tandem_types::DEFAULT_APPROVAL_TTL_MS);
@@ -88,6 +96,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                         "data_classes": report.data_classes,
                         "target": report.target,
                         "findings": egress_findings_metadata(&report.findings),
+                        "inspection_truncated": report.inspection_truncated,
                     }),
                     Some(approval_expires_at),
                     &tenant_context,
@@ -157,6 +166,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
             "findings": egress_findings_metadata(&report.findings),
             "redaction_count": report.redaction_count,
             "inspected_field_count": report.inspected_field_count,
+            "inspection_truncated": report.inspection_truncated,
         }),
     )
     .await;
@@ -173,6 +183,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                 "riskTier": report.risk_tier.as_str(),
                 "dataClasses": report.data_classes,
                 "target": report.target,
+                "inspectionTruncated": report.inspection_truncated,
                 "timestampMs": now_ms,
                 "tenantContext": tenant_context.clone(),
             }),
@@ -267,6 +278,7 @@ async fn record_egress_preflight_policy_decision(
                 "inspected_field_count": report.inspected_field_count,
                 "approval_expires_at_ms": approval_expires_at_ms,
                 "approval_request_error": approval_request_error,
+                "inspection_truncated": report.inspection_truncated,
                 "tool_effect_ledger_link": "engine attaches this policy_decision_id to blocked tool-effect records",
             }
         }),
@@ -293,7 +305,14 @@ fn inspect_egress_preflight(tool: &str, args: &Value) -> EgressPreflightReport {
 
     let mut findings = Vec::new();
     let mut inspected_field_count = 0;
-    inspect_value_for_egress(args, "$", &mut findings, &mut inspected_field_count);
+    let mut inspection_truncated = false;
+    inspect_value_for_egress(
+        args,
+        "$",
+        &mut findings,
+        &mut inspected_field_count,
+        &mut inspection_truncated,
+    );
     let mut data_classes = Vec::new();
     for finding in &findings {
         push_data_class(&mut data_classes, finding.data_class);
@@ -301,8 +320,14 @@ fn inspect_egress_preflight(tool: &str, args: &Value) -> EgressPreflightReport {
     let target = egress_target(args);
     let action_hash = crate::sha256_hex(&[tool, &args.to_string()]);
     let redaction_count = findings.len();
-    let safe_preview_markdown =
-        build_egress_preview(tool, risk_tier, target.as_deref(), &findings, &data_classes);
+    let safe_preview_markdown = build_egress_preview(
+        tool,
+        risk_tier,
+        target.as_deref(),
+        &findings,
+        &data_classes,
+        inspection_truncated,
+    );
 
     EgressPreflightReport {
         external_action,
@@ -314,6 +339,7 @@ fn inspect_egress_preflight(tool: &str, args: &Value) -> EgressPreflightReport {
         action_hash,
         inspected_field_count,
         redaction_count,
+        inspection_truncated,
     }
 }
 
@@ -322,6 +348,7 @@ fn inspect_value_for_egress(
     path: &str,
     findings: &mut Vec<EgressFinding>,
     inspected_field_count: &mut usize,
+    inspection_truncated: &mut bool,
 ) {
     match value {
         Value::Object(map) => {
@@ -330,13 +357,32 @@ fn inspect_value_for_egress(
                 if key_stores_sensitive_runtime_context(key) {
                     continue;
                 }
-                inspect_value_for_egress(child, &child_path, findings, inspected_field_count);
+                inspect_value_for_egress(
+                    child,
+                    &child_path,
+                    findings,
+                    inspected_field_count,
+                    inspection_truncated,
+                );
             }
         }
         Value::Array(rows) => {
-            for (index, child) in rows.iter().enumerate().take(20) {
+            if rows.len() > EGRESS_ARRAY_INSPECTION_LIMIT {
+                *inspection_truncated = true;
+            }
+            for (index, child) in rows
+                .iter()
+                .enumerate()
+                .take(EGRESS_ARRAY_INSPECTION_LIMIT)
+            {
                 let child_path = format!("{path}[{index}]");
-                inspect_value_for_egress(child, &child_path, findings, inspected_field_count);
+                inspect_value_for_egress(
+                    child,
+                    &child_path,
+                    findings,
+                    inspected_field_count,
+                    inspection_truncated,
+                );
             }
         }
         Value::String(text) => {
@@ -498,6 +544,7 @@ fn build_egress_preview(
     target: Option<&str>,
     findings: &[EgressFinding],
     data_classes: &[DataClass],
+    inspection_truncated: bool,
 ) -> String {
     let mut preview = String::new();
     preview.push_str("### Egress Preflight\n\n");
@@ -513,6 +560,9 @@ fn build_egress_preview(
             .collect::<Vec<_>>()
             .join(", ");
         preview.push_str(&format!("- Detected data: {classes}\n"));
+    }
+    if inspection_truncated {
+        preview.push_str("- Inspection: truncated payload blocked fail-closed.\n");
     }
     if findings.is_empty() {
         preview.push_str("- Payload preview: no sensitive outbound fields detected.\n");
@@ -573,11 +623,43 @@ fn egress_target(args: &Value) -> Option<String> {
         if let Some(value) = args.pointer(pointer).and_then(Value::as_str) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
-                return Some(redact_egress_text(trimmed));
+                return Some(redact_egress_target(pointer, trimmed));
             }
         }
     }
     None
+}
+
+fn redact_egress_target(pointer: &str, value: &str) -> String {
+    if matches!(pointer, "/webhook_url" | "/url") {
+        return redact_egress_url_target(value);
+    }
+    redact_egress_text(value)
+}
+
+fn redact_egress_url_target(value: &str) -> String {
+    let hash = crate::sha256_hex(&[value]);
+    let short_hash = hash.chars().take(12).collect::<String>();
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return format!("[redacted-url-target]#{short_hash}");
+    };
+    let scheme = scheme
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if scheme.is_empty() || authority.is_empty() {
+        return format!("[redacted-url-target]#{short_hash}");
+    }
+    format!("{scheme}://{authority}/[redacted-url-target]#{short_hash}")
 }
 
 fn tool_name_looks_like_egress(tool: &str) -> bool {
