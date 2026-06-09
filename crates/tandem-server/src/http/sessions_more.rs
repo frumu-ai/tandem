@@ -1,6 +1,43 @@
 // Continuation of session handlers split from sessions.rs for the file-size gate
 // (same module via include!).
 
+async fn wait_for_run_finished_event(
+    state: &AppState,
+    rx: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
+    session_id: &str,
+    run_id: &str,
+    max_wait: Duration,
+) -> bool {
+    let deadline = tokio::time::sleep(max_wait);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            _ = &mut deadline => {
+                return state.run_registry.get(session_id).await.is_none();
+            }
+            event = rx.recv() => {
+                match event {
+                    Ok(event)
+                        if event.event_type == "session.run.finished"
+                            && event_matches_run(&event, session_id, run_id) =>
+                    {
+                        return true;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if state.run_registry.get(session_id).await.is_none() {
+                            return true;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return state.run_registry.get(session_id).await.is_none();
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub(super) async fn fork_session(
     State(state): State<AppState>,

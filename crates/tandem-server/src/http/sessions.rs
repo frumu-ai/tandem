@@ -739,6 +739,29 @@ pub(super) async fn delete_session(
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
     ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+
+    if let Some(active_run) = state.run_registry.get(&id).await {
+        let cancel_requested = state.cancellations.cancel_or_defer(&id).await;
+        let active_run_id = active_run.run_id.clone();
+        publish_tenant_event(
+            &state,
+            &session.tenant_context,
+            "session.delete.deferred",
+            json!({
+                "sessionID": id,
+                "runID": active_run_id,
+                "cancelRequested": cancel_requested,
+                "reason": "active_run",
+            }),
+        );
+        return Ok(Json(json!({
+            "deleted": false,
+            "cancelRequested": cancel_requested,
+            "activeRun": active_run,
+            "reason": "active_run",
+        })));
+    }
+
     let deleted = state
         .storage
         .delete_session(&id)
@@ -1002,7 +1025,8 @@ pub(super) async fn prompt_sync(
             .into_response());
     }
 
-    let _ = execute_run(
+    let mut finished_events = state.event_bus.subscribe();
+    spawn_run_task(
         state.clone(),
         id.clone(),
         run_id.clone(),
@@ -1010,8 +1034,19 @@ pub(super) async fn prompt_sync(
         correlation_id,
         client_id,
         tenant_context.clone(),
+    );
+    if !wait_for_run_finished_event(
+        &state,
+        &mut finished_events,
+        &id,
+        &run_id,
+        Duration::from_secs(60 * 10 + 15),
     )
-    .await;
+    .await
+    {
+        let _ = state.cancellations.cancel(&id).await;
+        return Ok(StatusCode::GATEWAY_TIMEOUT.into_response());
+    }
     let session = state
         .storage
         .get_session(&id)

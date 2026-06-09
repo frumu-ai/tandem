@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AnimatedPage, Badge, PanelCard, StatusPulse } from "../ui/index.tsx";
+import { AnimatedPage, Badge, LoadingState, PanelCard, StatusPulse } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { useCapabilities } from "../features/system/queries.ts";
 import { subscribeSse } from "../services/sse.js";
