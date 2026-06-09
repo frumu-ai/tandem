@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AnimatedPage, Badge, LoadingState, PanelCard, StatusPulse } from "../ui/index.tsx";
+import { AnimatedPage, Badge, PanelCard, StatusPulse } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { useCapabilities } from "../features/system/queries.ts";
 import { subscribeSse } from "../services/sse.js";
@@ -14,7 +14,7 @@ import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import type { AppPageProps } from "./pageTypes";
 import { LazyJson } from "../features/automations/LazyJson";
-import { CodingWorkflowsDisconnectedState } from "./CodingWorkflowsDisconnectedState";
+import { CodingWorkflowsConnectingState, CodingWorkflowsDisconnectedState } from "./CodingWorkflowsDisconnectedState";
 import {
   type CodingTab,
   type GithubRepoRef,
@@ -998,6 +998,7 @@ export function CodingWorkflowsPage({
       toast("err", error instanceof Error ? error.message : String(error));
     }
   }
+  if (caps.isLoading && !caps.data) return <CodingWorkflowsConnectingState />;
   if (!acaAvailable) {
     return (
       <CodingWorkflowsDisconnectedState

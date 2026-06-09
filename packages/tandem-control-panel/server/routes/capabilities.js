@@ -62,21 +62,14 @@ export function createCapabilitiesHandler(deps) {
     PROBE_TIMEOUT_MS = 5_000,
     ACA_PROBE_GRACE_MS = DEFAULT_ACA_PROBE_GRACE_MS,
     ACA_BASE_URL,
-    ACA_HEALTH_PATH = "/health",
+    ACA_HEALTH_PATH = "/ready",
     getAcaToken,
     getInstallProfile,
     engineHealth,
     cacheTtlMs = DEFAULT_CAPABILITY_CACHE_TTL_MS,
   } = deps;
 
-  async function probeAca() {
-    const base = String(ACA_BASE_URL || "").trim();
-    if (!base) {
-      incrementProbeError("aca_not_configured");
-      return { available: false, reason: "aca_not_configured" };
-    }
-    const target = `${base.replace(/\/+$/, "")}${ACA_HEALTH_PATH}`;
-    const token = String(getAcaToken?.() || "").trim();
+  async function probeAcaPath(target, token) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
     try {
@@ -89,27 +82,52 @@ export function createCapabilitiesHandler(deps) {
         },
       });
       clearTimeout(timer);
-      if (res.ok) {
-        _acaProbeState.lastHealthyAtMs = Date.now();
-        _acaProbeState.lastHealthyBaseUrl = base;
-        return { available: true, reason: "", degraded: false };
-      }
-      if (res.status === 404 || res.status === 405) {
-        incrementProbeError("aca_endpoint_not_found");
-        return { available: false, reason: "aca_endpoint_not_found" };
-      }
-      incrementProbeError(`aca_health_failed_${res.status}`);
-      return { available: false, reason: `aca_health_failed_${res.status}` };
+      return { res };
     } catch (err) {
       clearTimeout(timer);
+      return { err };
+    }
+  }
+
+  async function probeAca() {
+    const base = String(ACA_BASE_URL || "").trim();
+    if (!base) {
+      incrementProbeError("aca_not_configured");
+      return { available: false, reason: "aca_not_configured" };
+    }
+    const token = String(getAcaToken?.() || "").trim();
+    const normalizedBase = base.replace(/\/+$/, "");
+    const configuredPath = String(ACA_HEALTH_PATH || "/ready").startsWith("/")
+      ? String(ACA_HEALTH_PATH || "/ready")
+      : `/${ACA_HEALTH_PATH}`;
+    const probePaths = [...new Set([configuredPath, "/ready", "/health"])];
+    let lastFailure = { reason: "aca_probe_error" };
+    for (const path of probePaths) {
+      const target = `${normalizedBase}${path}`;
+      const { res, err } = await probeAcaPath(target, token);
+      if (res) {
+        if (res.ok) {
+          _acaProbeState.lastHealthyAtMs = Date.now();
+          _acaProbeState.lastHealthyBaseUrl = base;
+          return { available: true, reason: "", degraded: false, path };
+        }
+        if (res.status === 404 || res.status === 405) {
+          lastFailure = { reason: "aca_endpoint_not_found", path };
+          continue;
+        }
+        lastFailure = { reason: `aca_health_failed_${res.status}`, path };
+        break;
+      }
       const msg = String(err?.message || "");
       if (msg.includes("abort")) {
-        incrementProbeError("aca_probe_timeout");
-        return { available: false, reason: "aca_probe_timeout" };
+        lastFailure = { reason: "aca_probe_timeout", path };
+        break;
       }
-      incrementProbeError("aca_probe_error");
-      return { available: false, reason: "aca_probe_error" };
+      lastFailure = { reason: "aca_probe_error", path };
+      break;
     }
+    incrementProbeError(lastFailure.reason);
+    return { available: false, ...lastFailure };
   }
 
   function smoothAcaProbeResult(probe) {
@@ -226,8 +244,9 @@ export function createCapabilitiesHandler(deps) {
 
     logCapabilityTransition(result);
 
+    const transientAcaMiss = !aca.available && ["aca_probe_timeout", "aca_probe_error"].includes(aca.reason);
     _cache.value = result;
-    _cache.expiresAt = now + cacheTtlMs;
+    _cache.expiresAt = now + (transientAcaMiss ? Math.min(cacheTtlMs, 5_000) : cacheTtlMs);
 
     deps.sendJson(res, 200, result);
   };
