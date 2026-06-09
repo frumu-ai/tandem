@@ -109,6 +109,17 @@ pub fn host_is_ssrf_blocked(host: &str) -> bool {
     false
 }
 
+/// Returns the first resolved socket address whose IP is in a blocked
+/// (internal) range, if any. Callers that resolve a hostname before connecting
+/// should reject the request when this returns `Some`, which closes DNS
+/// rebinding where a public name resolves to an internal address.
+pub fn first_blocked_resolved_ip(addrs: &[std::net::SocketAddr]) -> Option<IpAddr> {
+    addrs
+        .iter()
+        .map(|addr| addr.ip())
+        .find(|ip| ip_is_ssrf_blocked(*ip))
+}
+
 /// Validate that a URL is a public HTTP(S) endpoint safe to fetch.
 ///
 /// Returns the parsed [`Url`] on success, or an [`SsrfBlockReason`] describing
@@ -220,6 +231,22 @@ mod tests {
     fn validate_url_allows_public_endpoints() {
         assert!(validate_public_http_url("https://example.com/path?q=1").is_ok());
         assert!(validate_public_http_url("http://93.184.216.34/").is_ok());
+    }
+
+    #[test]
+    fn first_blocked_resolved_ip_flags_internal_addresses() {
+        use std::net::SocketAddr;
+        let public: SocketAddr = "93.184.216.34:443".parse().unwrap();
+        let loopback: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let metadata: SocketAddr = "169.254.169.254:80".parse().unwrap();
+
+        assert_eq!(first_blocked_resolved_ip(&[public]), None);
+        // A hostname that resolves to any internal address must be rejected.
+        assert_eq!(
+            first_blocked_resolved_ip(&[public, loopback]),
+            Some(loopback.ip())
+        );
+        assert_eq!(first_blocked_resolved_ip(&[metadata]), Some(metadata.ip()));
     }
 
     #[test]

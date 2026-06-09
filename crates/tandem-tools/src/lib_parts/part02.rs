@@ -430,6 +430,35 @@ impl std::fmt::Display for BlockedRedirectHost {
 
 impl std::error::Error for BlockedRedirectHost {}
 
+/// DNS resolver that rejects any hostname resolving to an internal address.
+///
+/// reqwest invokes this for the initial connection and for every redirect hop,
+/// and connects only to the addresses returned here, so it closes the DNS
+/// rebinding gap where a public hostname resolves to a loopback/private/
+/// link-local/metadata IP.
+struct SsrfGuardResolver;
+
+impl reqwest::dns::Resolve for SsrfGuardResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            if addrs.is_empty() {
+                return Err(format!("no addresses resolved for `{host}`").into());
+            }
+            if let Some(blocked) = tandem_types::first_blocked_resolved_ip(&addrs) {
+                return Err(format!(
+                    "blocked_url: `{host}` resolves to internal address {blocked}"
+                )
+                .into());
+            }
+            let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
 async fn fetch_url_with_limits(
     url: &str,
     timeout_ms: u64,
@@ -443,7 +472,9 @@ async fn fetch_url_with_limits(
     // Re-check every redirect hop so a public URL cannot bounce into an
     // internal address space.
     let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
-        if attempt.previous().len() >= max_redirects {
+        // Match `Policy::limited` semantics: `previous()` includes the initial
+        // URL, so only stop once it exceeds the requested redirect budget.
+        if attempt.previous().len() > max_redirects {
             return attempt.stop();
         }
         let blocked_host = attempt
@@ -460,6 +491,7 @@ async fn fetch_url_with_limits(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout_ms))
         .redirect(redirect_policy)
+        .dns_resolver(std::sync::Arc::new(SsrfGuardResolver))
         .build()?;
 
     let res = client
