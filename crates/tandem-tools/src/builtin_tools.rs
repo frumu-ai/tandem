@@ -527,9 +527,10 @@ async fn run_bash_command(
         os_guardrail_applied,
         guardrail_reason.as_deref(),
         &sandbox_mode,
-        stderr,
+        stderr.clone(),
     );
     if let Some(obj) = metadata.as_object_mut() {
+        obj.insert("exit_code".to_string(), json!(output.status.code()));
         obj.insert(
             "effective_cwd".to_string(),
             Value::String(effective_cwd.to_string_lossy().to_string()),
@@ -541,8 +542,18 @@ async fn run_bash_command(
             );
         }
     }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let tool_output = if stdout.is_empty() && !output.status.success() {
+        if stderr.trim().is_empty() {
+            format!("command exited: {}", output.status)
+        } else {
+            format!("command exited: {}\nstderr:\n{}", output.status, stderr)
+        }
+    } else {
+        stdout
+    };
     Ok(ToolResult {
-        output: String::from_utf8_lossy(&output.stdout).to_string(),
+        output: tool_output,
         metadata,
     })
 }
