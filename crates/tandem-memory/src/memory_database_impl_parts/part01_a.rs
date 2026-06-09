@@ -1,3 +1,4 @@
+impl MemoryDatabase {
     /// Override the memory payload crypto provider (used to select an explicit
     /// local-encrypted/hosted provider or in tests). Defaults to env resolution.
     pub fn with_crypto_provider(mut self, crypto: crate::crypto::MemoryCryptoProvider) -> Self {
@@ -1587,3 +1588,5 @@
 
         Ok(results)
     }
+
+}
