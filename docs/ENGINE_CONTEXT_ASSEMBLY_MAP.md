@@ -6,7 +6,7 @@ This document maps the places Tandem assembles provider-facing model context. It
 
 ## Final Provider Boundary
 
-All ordinary chat, workflow, automation, routine, and coder-worker paths converge on `EngineLoop::run_prompt_async_with_context`, then on the provider registry stream call.
+Most ordinary chat, workflow, automation, routine, and coder-worker paths converge on `EngineLoop::run_prompt_async_with_context`, then on the provider registry stream call. A few direct provider sends bypass the engine loop and are listed separately below.
 
 - Owner: `crates/tandem-core/src/engine_loop/prompt_execution.rs:240`
 - Final send: `crates/tandem-core/src/engine_loop/prompt_execution.rs:660`
@@ -65,13 +65,15 @@ Injected sources:
 
 - User request parts from `SendMessageRequest`.
 - Optional strict KB grounding policy derived by the session handler.
-- If a strict text-only KB request can be answered directly, the handler calls the KB MCP `answer_question` path and persists the result without entering the core provider loop.
+- If a strict text-only KB request can be answered directly, the handler calls the KB MCP `answer_question` path and may persist the result without entering the core provider loop.
+- When `TANDEM_STRICT_KB_GROUNDED_SYNTHESIS` is enabled, supported but thin direct KB answers can call `synthesize_strict_kb_answer`, assemble a system/user `ChatMessage` pair, and send that prompt directly through `ProviderRegistry::stream_for_provider`.
 - Otherwise, the session handler sets a KB grounding policy, forces required tools, and lets the prompt context hook inject a KB grounding policy block.
 
 Timing:
 
 - KB policy is derived before `run_prompt_async_with_context`.
-- Direct KB answer happens before provider context assembly.
+- Direct KB answer happens before ordinary engine-loop provider context assembly.
+- Strict-KB synthesis, when enabled and selected, performs its own direct provider context assembly in `crates/tandem-server/src/http/session_kb_grounding.rs:991`.
 - Policy-based KB grounding is injected during prompt hook augmentation.
 
 Raw artifact preservation:
@@ -81,8 +83,40 @@ Raw artifact preservation:
 
 Token estimation:
 
-- Direct KB answer path does not use the provider prompt estimator.
+- Direct KB answer path does not use the core provider prompt estimator.
+- Strict-KB synthesis relies on provider usage from the direct stream path when available; it is outside the core final-message char estimate.
 - Policy-based KB block contributes to the post-hook provider message char count estimate.
+
+## Direct Provider Sends
+
+These paths assemble provider-facing prompts outside `EngineLoop::run_prompt_async_with_context`.
+
+Owners:
+
+- Strict-KB synthesis: `crates/tandem-server/src/http/session_kb_grounding.rs:991`
+- Workflow planner transport: `crates/tandem-server/src/http/workflow_planner_transport.rs:10`
+- Mission builder host: `crates/tandem-server/src/http/mission_builder_host.rs:174`
+
+Injected sources:
+
+- Strict-KB synthesis sends a system message with strict grounding rules and a user message containing the question plus retrieved KB excerpts.
+- Workflow planner transport sends the planner prompt as a single user `ChatMessage`; on selected stream failures it can fall back to `complete_for_provider` with the same prompt string.
+- Mission builder sends the mission-builder prompt as a single user `ChatMessage`.
+
+Timing:
+
+- These calls happen in their HTTP/workflow helper paths before or instead of normal session engine-loop context assembly.
+- They call `state.providers.stream_for_provider` directly with `ToolMode::None` and no tool schemas.
+
+Raw artifact preservation:
+
+- Strict-KB source evidence is preserved in the KB/direct-answer persistence path; the provider synthesis prompt receives rendered excerpts.
+- Planner and mission-builder prompts are transport-level generated prompt strings; they do not project session history, tool results, memory, docs, or prompt hook additions.
+
+Token estimation:
+
+- These direct sends bypass `estimated_prompt_chars` in the core loop.
+- Provider `TokenUsage` may still be returned by the stream adapters, but there is no shared pre-send token estimate for these direct prompt assemblies.
 
 ## Prompt Context Hook
 
