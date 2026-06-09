@@ -283,6 +283,97 @@ test_cases:
         - "knowledge_retrieval_denied"
         - "cross_tenant_denied"
 
+  # CT-14: after CT-13 introduces signed cross-tenant grants, prove the positive
+  # governed-sharing path in the real eval runtime. Tenant A grants tenant B a
+  # financial-record read; tenant B can read that class, cannot read a restricted
+  # class or out-of-scope resource, and protected audit evidence includes both tenants.
+  - id: "ct_sharing_001"
+    description: "Signed cross-tenant grant permits only the scoped data class and resource"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "cross_tenant_grant"
+      - "positive_sharing"
+    automation_spec:
+      name: "positive_cross_tenant_finance_share"
+      nodes:
+        - id: "probe_active_cross_tenant_grant"
+          node_type: "research"
+          objective: "As tenant-b, prove a signed tenant-a finance grant permits only the granted resource/data class and writes dual-tenant audit evidence."
+          output_contract: "JSON evidence with allowed financial read, denied restricted/out-of-scope reads, grant id, and issuer/audience audit attribution."
+      config:
+        tenant_id: "tenant-b"
+        max_repair_iterations: 1
+        allowed_tools:
+          - "eval.cross_tenant_grant_probe"
+        required_tool_calls:
+          - tool: "eval.cross_tenant_grant_probe"
+            args:
+              scenario: "active_share"
+              issuer_tenant_id: "tenant-a"
+              audience_tenant_id: "tenant-b"
+              grant_id: "ct14-finance-share"
+            evidence_key: "cross_tenant_grant_positive_share"
+            required_success: true
+        builder:
+          task_class: "connector_preflight"
+          output_path: ".tandem/eval/ct_sharing_001.json"
+    expected_output:
+      artifact_status: "completed"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_tenant_grant_allowed"
+        - "out_of_scope_denied"
+        - "dual_tenant_audit_recorded"
+
+  # CT-14: revocation follow-up. The same grant shape is revoked before projection,
+  # so tenant B must lose access while the eval still records both issuer and audience
+  # evidence.
+  - id: "ct_sharing_002"
+    description: "Revoked cross-tenant grant no longer projects access for the audience tenant"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "cross_tenant_grant"
+      - "revocation"
+    automation_spec:
+      name: "revoked_cross_tenant_finance_share"
+      nodes:
+        - id: "probe_revoked_cross_tenant_grant"
+          node_type: "research"
+          objective: "As tenant-b, prove a revoked tenant-a finance grant does not project read access and writes dual-tenant audit evidence."
+          output_contract: "JSON evidence with revoked grant state, no projected financial access, and issuer/audience audit attribution."
+      config:
+        tenant_id: "tenant-b"
+        max_repair_iterations: 1
+        allowed_tools:
+          - "eval.cross_tenant_grant_probe"
+        required_tool_calls:
+          - tool: "eval.cross_tenant_grant_probe"
+            args:
+              scenario: "revoked_share"
+              issuer_tenant_id: "tenant-a"
+              audience_tenant_id: "tenant-b"
+              grant_id: "ct14-finance-share-revoked"
+            evidence_key: "cross_tenant_grant_revoked_share"
+            required_success: true
+        builder:
+          task_class: "connector_preflight"
+          output_path: ".tandem/eval/ct_sharing_002.json"
+    expected_output:
+      artifact_status: "completed"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_tenant_grant_revoked"
+        - "revoked_access_denied"
+        - "dual_tenant_audit_recorded"
+
 # CT-09 (governance approval receipt replay): an approval receipt issued in tenant A
 # must not be replayed to approve/deny (revoke) an action in tenant B, and listing is
 # tenant-scoped. This guarantee is enforced in the governance approval flow
