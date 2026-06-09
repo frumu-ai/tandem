@@ -1038,6 +1038,17 @@ async fn synthesize_strict_kb_answer(
         .map(|model| model.model_id.as_str())
         .filter(|value| !value.trim().is_empty());
     let cancel = CancellationToken::new();
+    state.event_bus.publish(tandem_types::EngineEvent::new(
+        "context.budget.bypassed",
+        json!({
+            "component": "session.kb.strict_synthesis",
+            "reason": "direct provider send outside engine-loop context budget accounting",
+            "promptMessageCount": messages.len(),
+            "promptChars": messages.iter().map(|m| m.content.len()).sum::<usize>(),
+            "providerID": provider_id,
+            "modelID": model_id,
+        }),
+    ));
     let stream = match state
         .providers
         .stream_for_provider(

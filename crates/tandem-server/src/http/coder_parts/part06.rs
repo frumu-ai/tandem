@@ -1,3 +1,18 @@
+/// Context mode for coder worker sessions. Coder workers historically
+/// hard-coded Full context; this keeps Full as the explicit default while
+/// allowing rollout of bounded modes (and rollback) via
+/// `TANDEM_CODER_CONTEXT_MODE` without a redeploy.
+fn coder_worker_context_mode() -> tandem_types::ContextMode {
+    match std::env::var("TANDEM_CODER_CONTEXT_MODE")
+        .map(|raw| raw.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Ok("standard") | Ok("auto") => tandem_types::ContextMode::Auto,
+        Ok("compact") => tandem_types::ContextMode::Compact,
+        _ => tandem_types::ContextMode::Full,
+    }
+}
+
 async fn run_issue_fix_worker_session(
     state: &AppState,
     record: &CoderRunRecord,
@@ -110,7 +125,7 @@ async fn run_issue_fix_worker_session(
             }),
             tool_allowlist: None,
             strict_kb_grounding: None,
-            context_mode: Some(tandem_types::ContextMode::Full),
+            context_mode: Some(coder_worker_context_mode()),
             write_required: Some(true),
             prewrite_requirements: strict_issue_fix_worker.then_some(
                 tandem_types::PrewriteRequirements {

@@ -371,6 +371,12 @@ pub(super) fn structured_handoff_loop_guard_final_retry_context(outputs: &[Strin
     context
 }
 
+/// Shared fallback token estimate used when no provider-reported usage is
+/// available: roughly four chars per token.
+pub(super) fn estimate_tokens_from_chars(chars: usize) -> u64 {
+    (chars / 4) as u64
+}
+
 pub(super) fn provider_usage_token_counts(
     provider_usage: Option<&TokenUsage>,
     estimated_prompt_chars: usize,
@@ -385,8 +391,8 @@ pub(super) fn provider_usage_token_counts(
         );
     }
 
-    let prompt_tokens = (estimated_prompt_chars / 4) as u64;
-    let completion_tokens = (completion_chars / 4) as u64;
+    let prompt_tokens = estimate_tokens_from_chars(estimated_prompt_chars);
+    let completion_tokens = estimate_tokens_from_chars(completion_chars);
     (
         prompt_tokens,
         completion_tokens,

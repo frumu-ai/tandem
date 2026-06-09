@@ -368,7 +368,8 @@ impl EngineLoop {
             session_id,
             ChatHistoryProfile::Standard,
         )
-        .await;
+        .await
+        .messages;
         let mut system_parts = vec![tandem_runtime_system_prompt(
             &self.host_runtime_context,
             &[],

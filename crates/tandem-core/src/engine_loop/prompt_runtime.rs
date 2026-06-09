@@ -7,7 +7,7 @@ use tandem_wire::WireMessagePart;
 use crate::{EventBus, Storage};
 use tandem_types::{EngineEvent, MessagePart, MessagePartInput};
 
-use super::extract_todo_candidates_from_text;
+use super::{extract_todo_candidates_from_text, truncate_text};
 
 pub(super) async fn emit_plan_todo_fallback(
     storage: std::sync::Arc<Storage>,
@@ -148,19 +148,74 @@ pub(super) enum ChatHistoryProfile {
     Compact,
 }
 
+impl ChatHistoryProfile {
+    pub(super) fn as_str(&self) -> &'static str {
+        match self {
+            ChatHistoryProfile::Full => "full",
+            ChatHistoryProfile::Standard => "standard",
+            ChatHistoryProfile::Compact => "compact",
+        }
+    }
+}
+
+/// Provider-facing history projection plus accounting for what the
+/// compaction step removed from the raw stored history.
+#[derive(Debug)]
+pub(super) struct LoadedChatHistory {
+    pub(super) messages: Vec<ChatMessage>,
+    pub(super) dropped_messages: usize,
+    pub(super) dropped_chars: usize,
+    pub(super) pinned_messages: usize,
+    pub(super) compacted_tool_results: usize,
+    pub(super) compacted_tool_result_chars: usize,
+}
+
+impl LoadedChatHistory {
+    fn from_messages(messages: Vec<ChatMessage>) -> Self {
+        LoadedChatHistory {
+            messages,
+            dropped_messages: 0,
+            dropped_chars: 0,
+            pinned_messages: 0,
+            compacted_tool_results: 0,
+            compacted_tool_result_chars: 0,
+        }
+    }
+}
+
+/// Provider-facing chat message paired with handles back to the raw stored
+/// message it was projected from, so compaction can cite retrievable sources.
+pub(super) struct SourcedChatMessage {
+    pub(super) message: ChatMessage,
+    pub(super) source_id: Option<String>,
+    pub(super) source_index: usize,
+}
+
+/// Accounting for provider-history-only tool result compaction. Raw stored
+/// tool results are never mutated; this tracks how much smaller the
+/// projection is than the raw data.
+#[derive(Debug, Default)]
+struct ToolResultCompactionStats {
+    compacted: usize,
+    chars_saved: usize,
+}
+
 pub(super) async fn load_chat_history(
     storage: std::sync::Arc<Storage>,
     session_id: &str,
     profile: ChatHistoryProfile,
-) -> Vec<ChatMessage> {
+) -> LoadedChatHistory {
     let Some(session) = storage.get_session(session_id).await else {
-        return Vec::new();
+        return LoadedChatHistory::from_messages(Vec::new());
     };
-    let messages = session
+    let mut tool_compaction = ToolResultCompactionStats::default();
+    let sourced = session
         .messages
         .into_iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(source_index, m)| {
             let role = format!("{:?}", m.role).to_lowercase();
+            let source_id = m.id.clone();
             let content = m
                 .parts
                 .into_iter()
@@ -177,18 +232,26 @@ pub(super) async fn load_chat_history(
                         &args,
                         result.as_ref(),
                         error.as_deref(),
+                        &mut tool_compaction,
                     ),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            ChatMessage {
-                role,
-                content,
-                attachments: Vec::new(),
+            SourcedChatMessage {
+                message: ChatMessage {
+                    role,
+                    content,
+                    attachments: Vec::new(),
+                },
+                source_id: Some(source_id),
+                source_index,
             }
         })
         .collect::<Vec<_>>();
-    compact_chat_history(messages, profile)
+    let mut loaded = compact_chat_history_sourced(sourced, profile);
+    loaded.compacted_tool_results = tool_compaction.compacted;
+    loaded.compacted_tool_result_chars = tool_compaction.chars_saved;
+    loaded
 }
 
 fn summarize_tool_invocation_for_history(
@@ -196,6 +259,7 @@ fn summarize_tool_invocation_for_history(
     args: &Value,
     result: Option<&Value>,
     error: Option<&str>,
+    stats: &mut ToolResultCompactionStats,
 ) -> String {
     let mut segments = vec![format!("Tool {tool}")];
     if !args.is_null()
@@ -211,7 +275,7 @@ fn summarize_tool_invocation_for_history(
         segments.push(format!("error={error}"));
     }
     if let Some(result) = result.filter(|value| !value.is_null()) {
-        let compacted = compact_tool_result_for_history(tool, result);
+        let compacted = compact_tool_result_for_history(tool, result, stats);
         segments.push(format!("result={compacted}"));
     }
     if segments.len() == 1 {
@@ -220,11 +284,118 @@ fn summarize_tool_invocation_for_history(
     segments.join(" ")
 }
 
-fn compact_tool_result_for_history(tool: &str, result: &Value) -> Value {
-    if tool.trim().eq_ignore_ascii_case("mcp_list") {
-        return compact_mcp_list_result_for_history(result);
+/// Slack above the head+tail budget before output compaction kicks in, so
+/// marginally-over outputs are not replaced with a same-sized marker.
+const TOOL_OUTPUT_COMPACTION_SLACK: usize = 512;
+/// Serialized-size ceiling for tool results whose shape has no known
+/// compaction path; larger results are replaced with a capped preview.
+const UNKNOWN_TOOL_RESULT_HISTORY_CAP: usize = 6_000;
+const UNKNOWN_TOOL_RESULT_PREVIEW_CHARS: usize = 2_000;
+
+/// (head, tail) char budget for a tool's `output` field in provider-facing
+/// history. Tail is preserved for shell-style tools because exit status and
+/// error summaries land at the end of the stream.
+fn tool_output_history_budget(tool_key: &str) -> (usize, usize) {
+    match tool_key {
+        "bash" | "shell" | "powershell" | "cmd" => (1_600, 800),
+        "read" | "write" | "edit" | "apply_patch" => (2_000, 400),
+        "grep" | "glob" | "search" | "codebase_search" | "ls" => (2_000, 0),
+        key if key.starts_with("web") || key.contains("fetch") || key.contains("search") => {
+            (2_000, 0)
+        }
+        _ => (2_400, 600),
     }
-    result.clone()
+}
+
+fn compact_tool_result_for_history(
+    tool: &str,
+    result: &Value,
+    stats: &mut ToolResultCompactionStats,
+) -> Value {
+    let tool_key = tool.trim().to_ascii_lowercase();
+    let raw_len = result.to_string().len();
+    if tool_key == "mcp_list" {
+        let compacted = compact_mcp_list_result_for_history(result);
+        record_tool_result_compaction(stats, raw_len, &compacted);
+        return compacted;
+    }
+    let mut projected = result.clone();
+    if let Some(output) = result.get("output").and_then(Value::as_str) {
+        let (head, tail) = tool_output_history_budget(&tool_key);
+        if output.len() > head + tail + TOOL_OUTPUT_COMPACTION_SLACK {
+            if let Some(obj) = projected.as_object_mut() {
+                obj.insert(
+                    "output".to_string(),
+                    Value::String(compact_output_head_tail(output, head, tail)),
+                );
+            }
+        }
+    }
+    // Capped fallback: result shapes that are still oversized after any known
+    // output compaction (huge metadata, unknown nested structures) are
+    // replaced with a bounded preview rather than sent verbatim.
+    let projected_serialized = projected.to_string();
+    if projected_serialized.len() > UNKNOWN_TOOL_RESULT_HISTORY_CAP {
+        let preview = truncate_text(&projected_serialized, UNKNOWN_TOOL_RESULT_PREVIEW_CHARS);
+        projected = json!({
+            "summary": format!("{tool} result compacted for chat history"),
+            "preview": preview,
+            "omittedChars": projected_serialized.len().saturating_sub(UNKNOWN_TOOL_RESULT_PREVIEW_CHARS),
+        });
+    }
+    record_tool_result_compaction(stats, raw_len, &projected);
+    projected
+}
+
+fn record_tool_result_compaction(
+    stats: &mut ToolResultCompactionStats,
+    raw_len: usize,
+    compacted: &Value,
+) {
+    let compacted_len = compacted.to_string().len();
+    if compacted_len < raw_len {
+        stats.compacted += 1;
+        stats.chars_saved += raw_len - compacted_len;
+    }
+}
+
+fn compact_output_head_tail(output: &str, head: usize, tail: usize) -> String {
+    let head_end = char_boundary_at_most(output, head);
+    let tail_start = char_boundary_at_least(output, output.len().saturating_sub(tail));
+    let omitted = tail_start.saturating_sub(head_end);
+    let tail_part = if tail_start > head_end {
+        &output[tail_start..]
+    } else {
+        ""
+    };
+    format!(
+        "{}\n…[tool output compacted for provider history: omitted {} chars]…\n{}",
+        &output[..head_end],
+        omitted,
+        tail_part
+    )
+}
+
+fn char_boundary_at_most(input: &str, index: usize) -> usize {
+    if index >= input.len() {
+        return input.len();
+    }
+    let mut boundary = index;
+    while boundary > 0 && !input.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+fn char_boundary_at_least(input: &str, index: usize) -> usize {
+    if index >= input.len() {
+        return input.len();
+    }
+    let mut boundary = index;
+    while boundary < input.len() && !input.is_char_boundary(boundary) {
+        boundary += 1;
+    }
+    boundary
 }
 
 fn compact_mcp_list_result_for_history(result: &Value) -> Value {
@@ -616,48 +787,175 @@ fn normalize_todo_status(raw: &str) -> String {
     }
 }
 
+/// Char cap applied to each guardrail/decision message pulled forward from
+/// the compacted prefix, so pinning cannot reinflate the projection.
+const PINNED_MESSAGE_CHAR_CAP: usize = 600;
+const MAX_PINNED_MESSAGES: usize = 6;
+
+/// True when a message must survive history compaction: system/runtime
+/// guardrails, plus approval/rejection/decision boundaries and pending
+/// questions that later turns may depend on.
+fn is_pinned_history_message(role: &str, content: &str) -> bool {
+    if role == "system" {
+        return true;
+    }
+    let lowered = content.to_lowercase();
+    const DECISION_MARKERS: [&str; 10] = [
+        "approval granted",
+        "approval denied",
+        "approved:",
+        "rejected:",
+        "permission granted",
+        "permission denied",
+        "pending question",
+        "unresolved decision",
+        "task goal",
+        "workflow state",
+    ];
+    DECISION_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+}
+
 pub(super) fn compact_chat_history(
     messages: Vec<ChatMessage>,
     profile: ChatHistoryProfile,
-) -> Vec<ChatMessage> {
+) -> LoadedChatHistory {
+    let sourced = messages
+        .into_iter()
+        .enumerate()
+        .map(|(source_index, message)| SourcedChatMessage {
+            message,
+            source_id: None,
+            source_index,
+        })
+        .collect();
+    compact_chat_history_sourced(sourced, profile)
+}
+
+/// Projects raw history into a bounded provider-facing view. Old messages
+/// are dropped from the front, but the omission note carries retrievable
+/// provenance handles (source message range and IDs), and guardrail/decision
+/// messages from the dropped prefix are pinned forward in truncated form.
+/// Raw stored history is never mutated.
+pub(super) fn compact_chat_history_sourced(
+    sourced: Vec<SourcedChatMessage>,
+    profile: ChatHistoryProfile,
+) -> LoadedChatHistory {
     let (max_context_chars, keep_recent_messages) = match profile {
         ChatHistoryProfile::Full => (usize::MAX, usize::MAX),
         ChatHistoryProfile::Standard => (80_000usize, 40usize),
         ChatHistoryProfile::Compact => (12_000usize, 12usize),
     };
 
-    if messages.len() <= keep_recent_messages {
-        let total_chars = messages.iter().map(|m| m.content.len()).sum::<usize>();
+    if sourced.len() <= keep_recent_messages {
+        let total_chars = sourced
+            .iter()
+            .map(|m| m.message.content.len())
+            .sum::<usize>();
         if total_chars <= max_context_chars {
-            return messages;
+            return LoadedChatHistory::from_messages(
+                sourced.into_iter().map(|m| m.message).collect(),
+            );
         }
     }
 
-    let mut kept = messages;
+    let mut kept = sourced;
     let mut dropped_count = 0usize;
-    let mut total_chars = kept.iter().map(|m| m.content.len()).sum::<usize>();
+    let mut dropped_chars = 0usize;
+    let mut pinned: Vec<SourcedChatMessage> = Vec::new();
+    let mut prefix_first_index: Option<usize> = None;
+    let mut prefix_last_index: Option<usize> = None;
+    let mut prefix_first_id: Option<String> = None;
+    let mut prefix_last_id: Option<String> = None;
+    let mut total_chars = kept.iter().map(|m| m.message.content.len()).sum::<usize>();
 
     while kept.len() > keep_recent_messages || total_chars > max_context_chars {
         if kept.is_empty() {
             break;
         }
         let removed = kept.remove(0);
-        total_chars = total_chars.saturating_sub(removed.content.len());
+        total_chars = total_chars.saturating_sub(removed.message.content.len());
+        if prefix_first_index.is_none() {
+            prefix_first_index = Some(removed.source_index);
+            prefix_first_id = removed.source_id.clone();
+        }
+        prefix_last_index = Some(removed.source_index);
+        prefix_last_id = removed.source_id.clone();
+        if is_pinned_history_message(&removed.message.role, &removed.message.content) {
+            pinned.push(removed);
+            continue;
+        }
+        dropped_chars = dropped_chars.saturating_add(removed.message.content.len());
         dropped_count += 1;
     }
 
-    if dropped_count > 0 {
-        kept.insert(
-            0,
-            ChatMessage {
-                role: "system".to_string(),
-                content: format!(
-                    "[history compacted: omitted {} older messages to fit context window]",
-                    dropped_count
-                ),
-                attachments: Vec::new(),
-            },
-        );
+    // Keep the most recent pinned entries; older overflow is folded back
+    // into the dropped accounting (it stays retrievable via the note).
+    if pinned.len() > MAX_PINNED_MESSAGES {
+        for overflow in pinned.drain(..pinned.len() - MAX_PINNED_MESSAGES) {
+            dropped_chars = dropped_chars.saturating_add(overflow.message.content.len());
+            dropped_count += 1;
+        }
     }
-    kept
+
+    let pinned_count = pinned.len();
+    let mut projected = Vec::with_capacity(kept.len() + pinned_count + 1);
+    if dropped_count > 0 || pinned_count > 0 {
+        let range = match (prefix_first_index, prefix_last_index) {
+            (Some(first), Some(last)) => format!("; source messages {first}-{last}"),
+            _ => String::new(),
+        };
+        let ids = match (prefix_first_id.as_deref(), prefix_last_id.as_deref()) {
+            (Some(first), Some(last)) => format!(" (ids {first}..{last})"),
+            _ => String::new(),
+        };
+        let pinned_note = if pinned_count > 0 {
+            format!("; {pinned_count} guardrail/decision messages pinned below")
+        } else {
+            String::new()
+        };
+        projected.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "[history compacted: omitted {dropped_count} older messages ({dropped_chars} chars){range}{ids}{pinned_note}; full transcript remains in stored session history]"
+            ),
+            attachments: Vec::new(),
+        });
+    }
+    for pin in pinned {
+        let source = match pin.source_id.as_deref() {
+            Some(id) => format!("source message {} (id {id})", pin.source_index),
+            None => format!("source message {}", pin.source_index),
+        };
+        projected.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "[pinned from compacted history; {source}] {}",
+                truncate_text(&pin.message.content, PINNED_MESSAGE_CHAR_CAP)
+            ),
+            attachments: Vec::new(),
+        });
+    }
+    projected.extend(kept.into_iter().map(|m| m.message));
+
+    LoadedChatHistory {
+        messages: projected,
+        dropped_messages: dropped_count,
+        dropped_chars,
+        pinned_messages: pinned_count,
+        compacted_tool_results: 0,
+        compacted_tool_result_chars: 0,
+    }
+}
+
+/// Approximate char contribution of runtime attachments. Data URLs carry the
+/// full encoded payload in the URL, so URL length is the dominant cost.
+pub(super) fn runtime_attachment_chars(attachments: &[ChatAttachment]) -> usize {
+    attachments
+        .iter()
+        .map(|attachment| match attachment {
+            ChatAttachment::ImageUrl { url } => url.len(),
+        })
+        .sum()
 }

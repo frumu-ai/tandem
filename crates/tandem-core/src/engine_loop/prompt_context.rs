@@ -16,6 +16,25 @@ pub(super) fn format_context_mode(requested: &ContextMode, auto_compact: bool) -
     }
 }
 
+/// Classify a run correlation ID as a known autonomous execution path.
+/// Returns the path kind for coder/workflow/routine/automation correlations,
+/// or `None` for interactive or unattributed runs.
+pub(super) fn autonomous_correlation_kind(correlation_id: Option<&str>) -> Option<&'static str> {
+    let correlation_id = correlation_id?.trim();
+    if correlation_id.starts_with("coder:") {
+        Some("coder")
+    } else if correlation_id.starts_with("workflow:") {
+        Some("workflow")
+    } else if correlation_id.starts_with("routine:") {
+        Some("routine")
+    } else if correlation_id.starts_with("automation:") || correlation_id.starts_with("automation-")
+    {
+        Some("automation")
+    } else {
+        None
+    }
+}
+
 pub(super) fn tandem_runtime_system_prompt(
     host: &HostRuntimeContext,
     mcp_server_names: &[String],

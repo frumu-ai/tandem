@@ -1,237 +1,4 @@
 use super::*;
-use async_trait::async_trait;
-use futures::stream;
-use futures::Stream;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use tandem_providers::{AppConfig, Provider};
-use tandem_tools::Tool;
-use tandem_types::ToolResult;
-
-struct ScriptedProviderStream {
-    calls: Arc<AtomicUsize>,
-    mode: ScriptedProviderStreamMode,
-}
-
-#[derive(Clone, Copy)]
-enum ScriptedProviderStreamMode {
-    DecodeThenSuccess,
-    IdleThenSuccess,
-    AuthFailure,
-    EndlessToolCalls,
-}
-
-struct FailingTool;
-struct LoopingTool;
-
-#[async_trait]
-impl Tool for FailingTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new("failing_tool", "fails for testing", json!({}))
-    }
-
-    async fn execute(&self, _args: Value) -> anyhow::Result<ToolResult> {
-        anyhow::bail!("transient connector failure")
-    }
-}
-
-#[async_trait]
-impl Tool for LoopingTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            "loop_tool",
-            "returns output for iteration-budget tests",
-            json!({}),
-        )
-    }
-
-    async fn execute(&self, _args: Value) -> anyhow::Result<ToolResult> {
-        Ok(ToolResult {
-            output: "loop tool produced output".to_string(),
-            metadata: json!({}),
-        })
-    }
-}
-
-#[async_trait]
-impl Provider for ScriptedProviderStream {
-    fn info(&self) -> tandem_types::ProviderInfo {
-        tandem_types::ProviderInfo {
-            id: "scripted-provider-stream".to_string(),
-            name: "Scripted Provider Stream".to_string(),
-            models: vec![tandem_types::ModelInfo {
-                id: "scripted-model".to_string(),
-                provider_id: "scripted-provider-stream".to_string(),
-                display_name: "Scripted Model".to_string(),
-                context_window: 8192,
-            }],
-        }
-    }
-
-    async fn complete(
-        &self,
-        _prompt: &str,
-        _model_override: Option<&str>,
-    ) -> anyhow::Result<String> {
-        Ok("complete fallback".to_string())
-    }
-
-    async fn stream(
-        &self,
-        _messages: Vec<ChatMessage>,
-        _model_override: Option<&str>,
-        _tool_mode: ToolMode,
-        _tools: Option<Vec<ToolSchema>>,
-        _sampling: tandem_types::SamplingParams,
-        _cancel: CancellationToken,
-    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        match self.mode {
-            ScriptedProviderStreamMode::DecodeThenSuccess if call == 0 => {
-                Ok(Box::pin(stream::iter(vec![
-                    Ok(StreamChunk::TextDelta("partial text".to_string())),
-                    Err(anyhow::anyhow!("error decoding response body")),
-                ])))
-            }
-            ScriptedProviderStreamMode::DecodeThenSuccess => Ok(Box::pin(stream::iter(vec![
-                Ok(StreamChunk::TextDelta("final answer".to_string())),
-                Ok(StreamChunk::Done {
-                    finish_reason: "stop".to_string(),
-                    usage: None,
-                }),
-            ]))),
-            ScriptedProviderStreamMode::IdleThenSuccess if call == 0 => {
-                Ok(Box::pin(stream::pending()))
-            }
-            ScriptedProviderStreamMode::IdleThenSuccess => Ok(Box::pin(stream::iter(vec![
-                Ok(StreamChunk::TextDelta(
-                    "final answer after idle retry".to_string(),
-                )),
-                Ok(StreamChunk::Done {
-                    finish_reason: "stop".to_string(),
-                    usage: None,
-                }),
-            ]))),
-            ScriptedProviderStreamMode::AuthFailure => {
-                anyhow::bail!("authentication failed for scripted provider")
-            }
-            ScriptedProviderStreamMode::EndlessToolCalls => {
-                let call_id = format!("loop-tool-call-{call}");
-                Ok(Box::pin(stream::iter(vec![
-                    Ok(StreamChunk::ToolCallStart {
-                        id: call_id.clone(),
-                        name: "loop_tool".to_string(),
-                    }),
-                    Ok(StreamChunk::ToolCallDelta {
-                        id: call_id.clone(),
-                        args_delta: "{}".to_string(),
-                    }),
-                    Ok(StreamChunk::ToolCallEnd { id: call_id }),
-                    Ok(StreamChunk::Done {
-                        finish_reason: "tool_calls".to_string(),
-                        usage: None,
-                    }),
-                ])))
-            }
-        }
-    }
-}
-
-async fn engine_loop_with_scripted_provider(
-    base: &std::path::Path,
-    provider: Arc<dyn Provider>,
-) -> (EngineLoop, EventBus, Arc<Storage>) {
-    let storage = Arc::new(Storage::new(base).await.expect("storage"));
-    let bus = EventBus::new();
-    let providers = ProviderRegistry::new(AppConfig::default());
-    providers
-        .replace_for_test(vec![provider], Some("scripted-provider-stream".to_string()))
-        .await;
-    let plugins = PluginRegistry::new(base).await.expect("plugins");
-    let agents = AgentRegistry::new(base).await.expect("agents");
-    let permissions = PermissionManager::new(bus.clone());
-    let tools = ToolRegistry::new();
-    tools
-        .register_tool("loop_tool".to_string(), Arc::new(LoopingTool))
-        .await;
-    let cancellations = CancellationRegistry::new();
-    let host_runtime_context = HostRuntimeContext {
-        os: HostOs::Linux,
-        arch: std::env::consts::ARCH.to_string(),
-        shell_family: ShellFamily::Posix,
-        path_style: PathStyle::Posix,
-    };
-    let engine = EngineLoop::new(
-        storage.clone(),
-        bus.clone(),
-        providers,
-        plugins,
-        agents,
-        permissions,
-        tools,
-        cancellations,
-        host_runtime_context,
-    );
-    (engine, bus, storage)
-}
-
-fn scripted_model() -> ModelSpec {
-    ModelSpec {
-        provider_id: "scripted-provider-stream".to_string(),
-        model_id: "scripted-model".to_string(),
-    }
-}
-
-/// Provider that records the sampling parameters it receives, then emits a
-/// trivial successful completion. Used to assert sampling reaches the adapter
-/// boundary.
-struct SamplingCaptureProvider {
-    captured: Arc<std::sync::Mutex<Option<tandem_types::SamplingParams>>>,
-}
-
-#[async_trait]
-impl Provider for SamplingCaptureProvider {
-    fn info(&self) -> tandem_types::ProviderInfo {
-        tandem_types::ProviderInfo {
-            id: "scripted-provider-stream".to_string(),
-            name: "Sampling Capture".to_string(),
-            models: vec![tandem_types::ModelInfo {
-                id: "scripted-model".to_string(),
-                provider_id: "scripted-provider-stream".to_string(),
-                display_name: "Scripted Model".to_string(),
-                context_window: 8192,
-            }],
-        }
-    }
-
-    async fn complete(
-        &self,
-        _prompt: &str,
-        _model_override: Option<&str>,
-    ) -> anyhow::Result<String> {
-        Ok("complete fallback".to_string())
-    }
-
-    async fn stream(
-        &self,
-        _messages: Vec<ChatMessage>,
-        _model_override: Option<&str>,
-        _tool_mode: ToolMode,
-        _tools: Option<Vec<ToolSchema>>,
-        sampling: tandem_types::SamplingParams,
-        _cancel: CancellationToken,
-    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
-        *self.captured.lock().unwrap() = Some(sampling);
-        Ok(Box::pin(stream::iter(vec![
-            Ok(StreamChunk::TextDelta("ok".to_string())),
-            Ok(StreamChunk::Done {
-                finish_reason: "stop".to_string(),
-                usage: None,
-            }),
-        ])))
-    }
-}
 
 #[tokio::test]
 async fn session_sampling_default_reaches_provider() {
@@ -1013,10 +780,28 @@ fn compact_chat_history_keeps_recent_and_inserts_summary() {
         });
     }
     let compacted = compact_chat_history(messages, ChatHistoryProfile::Standard);
-    assert!(compacted.len() <= 41);
-    assert_eq!(compacted[0].role, "system");
-    assert!(compacted[0].content.contains("history compacted"));
-    assert!(compacted.iter().any(|m| m.content.contains("message-59")));
+    assert!(compacted.messages.len() <= 41);
+    assert_eq!(compacted.messages[0].role, "system");
+    assert!(compacted.messages[0].content.contains("history compacted"));
+    assert!(compacted
+        .messages
+        .iter()
+        .any(|m| m.content.contains("message-59")));
+    assert_eq!(compacted.dropped_messages, 20);
+    assert!(compacted.dropped_chars > 0);
+}
+
+#[test]
+fn compact_chat_history_reports_no_drops_when_within_budget() {
+    let messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: "short".to_string(),
+        attachments: Vec::new(),
+    }];
+    let compacted = compact_chat_history(messages, ChatHistoryProfile::Standard);
+    assert_eq!(compacted.messages.len(), 1);
+    assert_eq!(compacted.dropped_messages, 0);
+    assert_eq!(compacted.dropped_chars, 0);
 }
 
 #[tokio::test]
@@ -1049,7 +834,9 @@ async fn load_chat_history_preserves_tool_args_and_error_context() {
         .await
         .expect("append message");
 
-    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard)
+        .await
+        .messages;
     let content = history
         .iter()
         .find(|message| message.role == "user")
@@ -1086,7 +873,9 @@ async fn load_chat_history_preserves_tool_args_and_result_context() {
         .await
         .expect("append message");
 
-    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard)
+        .await
+        .messages;
     let content = history
         .iter()
         .find(|message| message.role == "assistant")
@@ -1130,7 +919,9 @@ async fn load_chat_history_compacts_mcp_list_results() {
         .await
         .expect("append message");
 
-    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard)
+        .await
+        .messages;
     let content = history
         .iter()
         .find(|message| message.role == "assistant")
@@ -1908,254 +1699,4 @@ fn classify_required_tool_failure_detects_empty_provider_write_args() {
         false,
     );
     assert_eq!(reason, RequiredToolFailureKind::WriteArgsEmptyFromProvider);
-}
-
-#[test]
-fn normalize_tool_args_read_infers_path_from_bold_markdown() {
-    let normalized = normalize_tool_args(
-        "read",
-        json!({}),
-        "Please read **FEATURE_LIST.md** and summarize.",
-        "",
-    );
-    assert!(!normalized.missing_terminal);
-    assert_eq!(
-        normalized.args.get("path").and_then(|v| v.as_str()),
-        Some("FEATURE_LIST.md")
-    );
-}
-
-#[test]
-fn normalize_tool_args_shell_infers_command_from_user_prompt() {
-    let normalized = normalize_tool_args("bash", json!({}), "Run `rg -n \"TODO\" .`", "");
-    assert!(!normalized.missing_terminal);
-    assert_eq!(
-        normalized.args.get("command").and_then(|v| v.as_str()),
-        Some("rg -n \"TODO\" .")
-    );
-    assert_eq!(normalized.args_source, "inferred_from_user");
-    assert_eq!(normalized.args_integrity, "recovered");
-}
-
-#[test]
-fn normalize_tool_args_read_rejects_root_only_path() {
-    let normalized = normalize_tool_args("read", json!({"path":"/"}), "", "");
-    assert!(normalized.missing_terminal);
-    assert_eq!(
-        normalized.missing_terminal_reason.as_deref(),
-        Some("FILE_PATH_MISSING")
-    );
-}
-
-#[test]
-fn normalize_tool_args_read_recovers_when_provider_path_is_root_only() {
-    let normalized =
-        normalize_tool_args("read", json!({"path":"/"}), "Please open `CONCEPT.md`", "");
-    assert!(!normalized.missing_terminal);
-    assert_eq!(
-        normalized.args.get("path").and_then(|v| v.as_str()),
-        Some("CONCEPT.md")
-    );
-    assert_eq!(normalized.args_source, "inferred_from_user");
-    assert_eq!(normalized.args_integrity, "recovered");
-}
-
-#[test]
-fn normalize_tool_args_read_rejects_tool_call_markup_path() {
-    let normalized = normalize_tool_args(
-        "read",
-        json!({
-            "path":"<tool_call>\n<function=glob>\n<parameter=pattern>**/*</parameter>\n</function>\n</tool_call>"
-        }),
-        "",
-        "",
-    );
-    assert!(normalized.missing_terminal);
-    assert_eq!(
-        normalized.missing_terminal_reason.as_deref(),
-        Some("FILE_PATH_MISSING")
-    );
-}
-
-#[test]
-fn normalize_tool_args_read_rejects_glob_pattern_path() {
-    let normalized = normalize_tool_args("read", json!({"path":"**/*"}), "", "");
-    assert!(normalized.missing_terminal);
-    assert_eq!(
-        normalized.missing_terminal_reason.as_deref(),
-        Some("FILE_PATH_MISSING")
-    );
-}
-
-#[test]
-fn normalize_tool_args_read_rejects_placeholder_path() {
-    let normalized = normalize_tool_args("read", json!({"path":"files/directories"}), "", "");
-    assert!(normalized.missing_terminal);
-    assert_eq!(
-        normalized.missing_terminal_reason.as_deref(),
-        Some("FILE_PATH_MISSING")
-    );
-}
-
-#[test]
-fn normalize_tool_args_read_rejects_tool_policy_placeholder_path() {
-    let normalized = normalize_tool_args("read", json!({"path":"tool/policy"}), "", "");
-    assert!(normalized.missing_terminal);
-    assert_eq!(
-        normalized.missing_terminal_reason.as_deref(),
-        Some("FILE_PATH_MISSING")
-    );
-}
-
-#[test]
-fn normalize_tool_args_read_recovers_pdf_path_from_user_text() {
-    let normalized = normalize_tool_args(
-        "read",
-        json!({"path":"tool/policy"}),
-        "Read `T1011U kitöltési útmutató.pdf` and summarize.",
-        "",
-    );
-    assert!(!normalized.missing_terminal);
-    assert_eq!(
-        normalized.args.get("path").and_then(|v| v.as_str()),
-        Some("T1011U kitöltési útmutató.pdf")
-    );
-    assert_eq!(normalized.args_source, "inferred_from_user");
-    assert_eq!(normalized.args_integrity, "recovered");
-}
-
-#[test]
-fn normalize_tool_name_strips_default_api_namespace() {
-    assert_eq!(normalize_tool_name("default_api:read"), "read");
-    assert_eq!(normalize_tool_name("functions.shell"), "bash");
-}
-
-#[test]
-fn mcp_server_from_tool_name_parses_server_segment() {
-    assert_eq!(
-        mcp_server_from_tool_name("mcp.arcade.jira_getboards"),
-        Some("arcade")
-    );
-    assert_eq!(mcp_server_from_tool_name("read"), None);
-    assert_eq!(mcp_server_from_tool_name("mcp"), None);
-}
-
-#[test]
-fn mcp_tools_are_exempt_from_workspace_sandbox_path_checks() {
-    assert!(is_mcp_tool_name("mcp_list"));
-    assert!(is_mcp_tool_name("mcp.tandem_mcp.get_doc"));
-    assert!(is_mcp_tool_name("MCP.TANDEM_MCP.GET_DOC"));
-    assert!(!is_mcp_tool_name("read"));
-    assert!(!is_mcp_tool_name("glob"));
-    assert!(is_mcp_sandbox_exempt_server("tandem_mcp"));
-    assert!(is_mcp_sandbox_exempt_server("tandem-mcp"));
-}
-
-#[test]
-fn batch_helpers_use_name_when_tool_is_wrapper() {
-    let args = json!({
-        "tool_calls":[
-            {"tool":"default_api","name":"read","args":{"path":"CONCEPT.md"}},
-            {"tool":"default_api:glob","args":{"pattern":"*.md"}}
-        ]
-    });
-    let calls = extract_batch_calls(&args);
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].0, "read");
-    assert_eq!(calls[1].0, "glob");
-    assert!(is_read_only_batch_call(&args));
-    let sig = batch_tool_signature(&args).unwrap_or_default();
-    assert!(sig.contains("read:"));
-    assert!(sig.contains("glob:"));
-}
-
-#[test]
-fn batch_helpers_resolve_nested_function_name() {
-    let args = json!({
-        "tool_calls":[
-            {"tool":"default_api","function":{"name":"read"},"args":{"path":"CONCEPT.md"}}
-        ]
-    });
-    let calls = extract_batch_calls(&args);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "read");
-    assert!(is_read_only_batch_call(&args));
-}
-
-#[test]
-fn batch_output_classifier_detects_non_productive_unknown_results() {
-    let output = r#"
-[
-  {"tool":"default_api","output":"Unknown tool: default_api","metadata":{}},
-  {"tool":"default_api","output":"Unknown tool: default_api","metadata":{}}
-]
-"#;
-    assert!(is_non_productive_batch_output(output));
-}
-
-#[test]
-fn runtime_prompt_includes_execution_environment_block() {
-    let prompt = tandem_runtime_system_prompt(
-        &HostRuntimeContext {
-            os: HostOs::Windows,
-            arch: "x86_64".to_string(),
-            shell_family: ShellFamily::Powershell,
-            path_style: PathStyle::Windows,
-        },
-        &[],
-    );
-    assert!(prompt.contains("[Execution Environment]"));
-    assert!(prompt.contains("Host OS: windows"));
-    assert!(prompt.contains("Shell: powershell"));
-    assert!(prompt.contains("Path style: windows"));
-}
-
-#[test]
-fn runtime_prompt_includes_connected_integrations_block() {
-    let prompt = tandem_runtime_system_prompt(
-        &HostRuntimeContext {
-            os: HostOs::Linux,
-            arch: "x86_64".to_string(),
-            shell_family: ShellFamily::Posix,
-            path_style: PathStyle::Posix,
-        },
-        &["notion".to_string(), "github".to_string()],
-    );
-    assert!(prompt.contains("[Connected Integrations]"));
-    assert!(prompt.contains("- notion"));
-    assert!(prompt.contains("- github"));
-}
-
-#[test]
-fn detects_web_research_prompt_keywords() {
-    assert!(requires_web_research_prompt(
-        "research todays top news stories and include links"
-    ));
-    assert!(requires_web_research_prompt(
-        "Use web_research and web_fetch to collect current market coverage"
-    ));
-    assert!(!requires_web_research_prompt(
-        "Synthesize the upstream web research artifact into the final report body; do not repeat discovery or fresh web research"
-    ));
-    assert!(!requires_web_research_prompt(
-        "say hello and summarize this text"
-    ));
-}
-
-#[test]
-fn detects_email_delivery_prompt_keywords() {
-    assert!(requires_email_delivery_prompt(
-        "send a full report with links to user123@example.com"
-    ));
-    assert!(!requires_email_delivery_prompt("draft a summary for later"));
-}
-
-#[test]
-fn completion_claim_detector_flags_sent_language() {
-    assert!(completion_claims_email_sent(
-        "Email Status: Sent to user123@example.com."
-    ));
-    assert!(!completion_claims_email_sent(
-        "I could not send email in this run."
-    ));
 }

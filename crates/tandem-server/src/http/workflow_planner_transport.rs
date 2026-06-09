@@ -62,6 +62,18 @@ pub(crate) async fn invoke_planner_provider(
             content: prompt.clone(),
             attachments: Vec::new(),
         }];
+        state.event_bus.publish(tandem_types::EngineEvent::new(
+            "context.budget.bypassed",
+            json!({
+                "component": "workflow.planner",
+                "reason": "direct provider send outside engine-loop context budget accounting",
+                "sessionID": session_id,
+                "promptMessageCount": messages.len(),
+                "promptChars": prompt.len(),
+                "providerID": model.provider_id,
+                "modelID": model.model_id,
+            }),
+        ));
         let stream = match state
             .providers
             .stream_for_provider(
