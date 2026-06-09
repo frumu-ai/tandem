@@ -255,6 +255,9 @@ impl EngineLoop {
                     load_chat_history(self.storage.clone(), &session_id, context_profile).await;
                 let dropped_history_messages = loaded_history.dropped_messages;
                 let dropped_history_chars = loaded_history.dropped_chars;
+                let pinned_history_messages = loaded_history.pinned_messages;
+                let compacted_tool_results = loaded_history.compacted_tool_results;
+                let compacted_tool_result_chars = loaded_history.compacted_tool_result_chars;
                 let mut messages = loaded_history.messages;
                 let mut attachment_count = 0usize;
                 let mut attachment_chars = 0usize;
@@ -724,6 +727,9 @@ impl EngineLoop {
                         "droppedHistoryMessages": dropped_history_messages,
                         "droppedHistoryChars": dropped_history_chars,
                         "droppedDueToBudget": compaction_occurred,
+                        "pinnedHistoryMessages": pinned_history_messages,
+                        "toolResultsCompacted": compacted_tool_results,
+                        "toolResultCharsSaved": compacted_tool_result_chars,
                     }),
                 ));
                 if full_context_mode {

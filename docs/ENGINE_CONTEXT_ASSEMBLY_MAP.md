@@ -26,7 +26,7 @@ Assembly order in the core loop:
 
 Final-boundary telemetry and guardrails:
 
-- `context.budget.final` fires once per provider iteration, immediately before `stream_for_provider`, after history, system prompts, follow-up context, hook augmentation, tool schema selection, and runtime attachments. It reports final message count/chars, serialized tool schema count/chars, attachment count/approx chars, the shared `chars / 4` token estimate, requested context mode, effective history profile, compaction drop counts, and a per-source contribution breakdown (system, history, follow-up, hook additions, tool schemas, attachments). It never logs prompt bodies.
+- `context.budget.final` fires once per provider iteration, immediately before `stream_for_provider`, after history, system prompts, follow-up context, hook augmentation, tool schema selection, and runtime attachments. It reports final message count/chars, serialized tool schema count/chars, attachment count/approx chars, the shared `chars / 4` token estimate, requested context mode, effective history profile, compaction drop counts, pinned guardrail/decision message count, tool result compaction counts/chars saved, and a per-source contribution breakdown (system, history, follow-up, hook additions, tool schemas, attachments). It never logs prompt bodies.
 - `context.mode.full.selected` fires on the first iteration whenever Full context mode is in effect, tagging autonomous-like runs by correlation prefix (`coder:`, `workflow:`, `routine:`, `automation*`).
 - Full context mode is bounded by `TANDEM_FULL_CONTEXT_SOFT_BUDGET_CHARS` (default 240k chars; crossing it emits `context.full.budget.warning` with top contributors) and `TANDEM_FULL_CONTEXT_HARD_BUDGET_CHARS` (default 480k chars; crossing it fails the run closed before provider send with `FULL_CONTEXT_HARD_BUDGET_EXCEEDED` and emits `context.full.budget.exceeded`, unless `TANDEM_FULL_CONTEXT_HARD_BUDGET_OVERRIDE` is set).
 
@@ -46,6 +46,7 @@ Injected sources:
 - Text and reasoning parts are flattened into provider message content.
 - Tool invocation parts are converted to a textual summary by `summarize_tool_invocation_for_history`.
 - `mcp_list` results are compacted to connected server names, counts, and a sample of up to 40 tools.
+- Large tool result `output` fields are compacted in the provider projection with per-tool-class head/tail budgets (shell keeps head and tail; file/search/web tools keep mostly head); result shapes without a known path fall back to a capped serialized preview above 6k chars. Compaction counts/chars saved surface in `context.budget.final`.
 - Image runtime attachments are attached separately as `ChatAttachment::ImageUrl`.
 
 Timing:
@@ -63,6 +64,7 @@ Token estimation:
 - History profile selection emits `historyCharCount`.
 - Standard and compact modes use character budgets, not tokenizer-aware budgets.
 - Full context mode disables history compaction, but later prompt augmentation and provider wrappers still apply.
+- When Standard/Compact compaction drops older history, the omission note carries provenance handles (source message index range and stored message IDs), and guardrail/decision messages from the dropped prefix (system role, approvals/rejections, pending questions) are pinned forward in truncated form instead of being lost.
 
 ## Session Chat And KB Grounding
 
@@ -288,7 +290,7 @@ Timing:
 Raw artifact preservation:
 
 - Raw tool result payloads remain in session storage.
-- Provider history gets a textual summary, with special compaction for `mcp_list`.
+- Provider history gets a textual summary, with special compaction for `mcp_list`, head/tail output compaction for shell/file/search/web-style tools, and a capped preview fallback for unknown oversized result shapes.
 
 Token estimation:
 
@@ -313,7 +315,7 @@ Gaps to close in follow-up work:
 
 - No tokenizer-aware estimate at the final provider boundary; `context.budget.final` uses the shared char-based fallback.
 - Automation preflight does not include later core system prompt, history, prompt hook additions, provider wire transforms, or attachments.
-- History compaction is char-budget based, and dropped history has no provenance handles yet (TAN-188).
+- History compaction is char-budget based. Dropped history now carries provenance handles (source ranges/IDs) and pins decision boundaries, but compacted segments are cited, not summarized; no generated lossy summary exists yet.
 - Prompt hook token sizes are word-count approximations, and hook additions are visible only as an aggregate `hookAddedChars` delta until hook injections participate in the shared budget (TAN-189).
 - Image attachment contribution is approximated by URL/data-URL length, not provider-billed tokens.
 - Direct strict-KB answer, workflow planner, and mission builder sends bypass final budget accounting by design; they emit `context.budget.bypassed` instead.

@@ -769,8 +769,6 @@ async fn question_asked_event_contains_tool_reference() {
     );
 }
 
-
-
 #[test]
 fn compact_chat_history_keeps_recent_and_inserts_summary() {
     let mut messages = Vec::new();
@@ -1702,4 +1700,3 @@ fn classify_required_tool_failure_detects_empty_provider_write_args() {
     );
     assert_eq!(reason, RequiredToolFailureKind::WriteArgsEmptyFromProvider);
 }
-

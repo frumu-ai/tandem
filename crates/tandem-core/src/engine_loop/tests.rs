@@ -252,5 +252,4 @@ impl Provider for SamplingCaptureProvider {
     }
 }
 
-
 mod suite_c;

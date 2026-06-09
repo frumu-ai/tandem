@@ -553,3 +553,218 @@ fn completion_claim_detector_flags_sent_language() {
         "I could not send email in this run."
     ));
 }
+
+#[test]
+fn compact_chat_history_pins_decision_messages_and_emits_provenance() {
+    let mut messages = Vec::new();
+    for i in 0..60 {
+        let content = if i == 5 {
+            "Approval granted: deploy migration 042 to production".to_string()
+        } else {
+            format!("message-{i}")
+        };
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content,
+            attachments: Vec::new(),
+        });
+    }
+    let compacted = compact_chat_history(messages, ChatHistoryProfile::Standard);
+    let note = &compacted.messages[0];
+    assert_eq!(note.role, "system");
+    assert!(note.content.contains("history compacted"));
+    assert!(note.content.contains("source messages 0-19"));
+    assert!(note
+        .content
+        .contains("1 guardrail/decision messages pinned below"));
+    assert!(compacted.messages.iter().any(|m| m
+        .content
+        .contains("Approval granted: deploy migration 042 to production")
+        && m.content.contains("pinned from compacted history")));
+    assert_eq!(compacted.pinned_messages, 1);
+    assert_eq!(compacted.dropped_messages, 19);
+    assert!(compacted
+        .messages
+        .iter()
+        .any(|m| m.content.contains("message-59")));
+}
+
+#[tokio::test]
+async fn load_chat_history_compacts_large_shell_tool_results_and_keeps_raw_intact() {
+    let base = std::env::temp_dir().join(format!(
+        "tandem-core-tool-result-compaction-{}",
+        Uuid::new_v4()
+    ));
+    let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(Some("tool compaction".to_string()), Some(".".to_string()));
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    let big_output = format!("head-marker\n{}\ntail-marker", "x".repeat(20_000));
+    let message = Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "bash".to_string(),
+            args: json!({"command":"cat big.log"}),
+            result: Some(json!({"output": big_output.clone()})),
+            error: None,
+        }],
+    );
+    storage
+        .append_message(&session_id, message)
+        .await
+        .expect("append message");
+
+    let loaded =
+        load_chat_history(storage.clone(), &session_id, ChatHistoryProfile::Standard).await;
+    let content = loaded
+        .messages
+        .iter()
+        .find(|message| message.role == "assistant")
+        .map(|message| message.content.clone())
+        .unwrap_or_default();
+    assert!(content.contains("tool output compacted for provider history"));
+    assert!(content.contains("head-marker"));
+    assert!(content.contains("tail-marker"));
+    assert!(
+        content.len() < big_output.len() / 2,
+        "projection should be much smaller than raw output"
+    );
+    assert_eq!(loaded.compacted_tool_results, 1);
+    assert!(loaded.compacted_tool_result_chars > 10_000);
+
+    // Raw stored tool result must remain unchanged.
+    let raw = storage
+        .get_session(&session_id)
+        .await
+        .expect("session still stored");
+    let raw_result = raw
+        .messages
+        .iter()
+        .flat_map(|m| m.parts.iter())
+        .find_map(|part| match part {
+            MessagePart::ToolInvocation { result, .. } => result.clone(),
+            _ => None,
+        })
+        .expect("raw tool result present");
+    assert_eq!(
+        raw_result.get("output").and_then(Value::as_str),
+        Some(big_output.as_str())
+    );
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[tokio::test]
+async fn load_chat_history_caps_unknown_tool_result_shapes() {
+    let base = std::env::temp_dir().join(format!(
+        "tandem-core-tool-result-fallback-{}",
+        Uuid::new_v4()
+    ));
+    let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(Some("fallback".to_string()), Some(".".to_string()));
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    let message = Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "custom_connector".to_string(),
+            args: json!({}),
+            result: Some(json!({
+                "rows": vec![json!({"payload": "y".repeat(500)}); 40]
+            })),
+            error: None,
+        }],
+    );
+    storage
+        .append_message(&session_id, message)
+        .await
+        .expect("append message");
+
+    let loaded = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
+    let content = loaded
+        .messages
+        .iter()
+        .find(|message| message.role == "assistant")
+        .map(|message| message.content.clone())
+        .unwrap_or_default();
+    assert!(content.contains("custom_connector result compacted for chat history"));
+    assert!(content.contains("omittedChars"));
+    assert!(content.len() < 4_000);
+    assert_eq!(loaded.compacted_tool_results, 1);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[tokio::test]
+async fn load_chat_history_long_session_emits_provenance_handles_and_preserves_raw() {
+    let base = std::env::temp_dir().join(format!(
+        "tandem-core-long-session-provenance-{}",
+        Uuid::new_v4()
+    ));
+    let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(Some("long session".to_string()), Some(".".to_string()));
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    let mut first_message_id = None;
+    for i in 0..50 {
+        let parts = if i == 3 {
+            vec![MessagePart::Text {
+                text: "Approval granted: ship the workflow to staging".to_string(),
+            }]
+        } else if i % 7 == 0 {
+            vec![MessagePart::ToolInvocation {
+                tool: "grep".to_string(),
+                args: json!({"pattern": format!("needle-{i}")}),
+                result: Some(json!({"output": format!("match-{i}\n{}", "z".repeat(3_000))})),
+                error: None,
+            }]
+        } else {
+            vec![MessagePart::Text {
+                text: format!("turn-{i}: {}", "w".repeat(120)),
+            }]
+        };
+        let message = Message::new(
+            if i % 2 == 0 {
+                MessageRole::User
+            } else {
+                MessageRole::Assistant
+            },
+            parts,
+        );
+        if i == 0 {
+            first_message_id = Some(message.id.clone());
+        }
+        storage
+            .append_message(&session_id, message)
+            .await
+            .expect("append message");
+    }
+
+    let loaded =
+        load_chat_history(storage.clone(), &session_id, ChatHistoryProfile::Standard).await;
+    assert!(loaded.dropped_messages > 0);
+    assert!(loaded.messages.len() < 50);
+    let note = &loaded.messages[0];
+    assert!(note.content.contains("history compacted"));
+    assert!(note.content.contains("source messages 0-"));
+    assert!(note
+        .content
+        .contains(first_message_id.as_deref().expect("first id captured")));
+    // The human-approval boundary from the dropped prefix survives, pinned.
+    assert!(loaded.messages.iter().any(|m| m
+        .content
+        .contains("Approval granted: ship the workflow to staging")));
+    assert_eq!(loaded.pinned_messages, 1);
+
+    // Raw stored history is untouched: all 50 messages with original parts.
+    let raw = storage
+        .get_session(&session_id)
+        .await
+        .expect("session still stored");
+    assert_eq!(raw.messages.len(), 50);
+    assert!(raw.messages.iter().any(|m| m.parts.iter().any(|part| {
+        matches!(part, MessagePart::Text { text } if text.contains("Approval granted: ship the workflow to staging"))
+    })));
+    let _ = std::fs::remove_dir_all(base);
+}
