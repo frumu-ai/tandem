@@ -188,6 +188,20 @@ impl MemoryDecryptBrokerConfig {
             ),
         }
     }
+
+    /// Like [`describe`](Self::describe), but surfaces a fail-closed
+    /// misconfiguration instead of claiming a protected mode when the config is
+    /// invalid (e.g. hosted encryption is required but no valid KMS provider /
+    /// principal is configured). Boot diagnostics should use this so operators
+    /// see the hosted misconfiguration rather than a false "hosted KMS" claim.
+    pub fn describe_validated(&self) -> String {
+        match self.validate() {
+            Ok(()) => self.describe(),
+            Err(err) => format!(
+                "memory crypto: misconfigured ({err}); fail-closed — memory decrypt requests will be rejected"
+            ),
+        }
+    }
 }
 
 /// Returns true when a provider name denotes a local (non-hosted) provider:
@@ -227,7 +241,9 @@ impl MemoryCryptoMode {
 /// diagnostic string operators should see at boot.
 pub fn memory_crypto_startup_diagnostic() -> String {
     match MemoryDecryptBrokerConfig::from_env() {
-        Ok(config) => config.describe(),
+        // Validate before describing so a hosted-required-but-misconfigured
+        // runtime reports its fail-closed state instead of a false "hosted KMS".
+        Ok(config) => config.describe_validated(),
         Err(err) => format!("memory crypto: configuration error ({err})"),
     }
 }
@@ -689,6 +705,33 @@ mod tests {
             MemoryCryptoMode::LocalEncrypted { .. }
         ));
         assert!(config.describe().contains("local encrypted"));
+    }
+
+    #[test]
+    fn describe_validated_surfaces_hosted_misconfiguration() {
+        // hosted_required but no valid KMS provider: the boot diagnostic must
+        // report the fail-closed misconfiguration, not claim "hosted KMS".
+        let misconfigured = MemoryDecryptBrokerConfig {
+            provider: String::new(),
+            runtime_principal_id: "runtime-memory-decryptor".to_string(),
+            secret_family: MemorySecretFamily::MemoryEnvelope,
+            hosted_required: true,
+        };
+        let diagnostic = misconfigured.describe_validated();
+        assert!(
+            diagnostic.contains("misconfigured") && diagnostic.contains("fail-closed"),
+            "diagnostic={diagnostic}"
+        );
+        assert!(
+            !diagnostic.contains("hosted KMS"),
+            "must not claim hosted KMS when fail-closed: {diagnostic}"
+        );
+
+        // A valid hosted config still describes hosted KMS.
+        let valid =
+            MemoryDecryptBrokerConfig::hosted("google_cloud_kms", "runtime-memory-decryptor")
+                .expect("hosted config");
+        assert!(valid.describe_validated().contains("hosted KMS"));
     }
 
     #[test]
