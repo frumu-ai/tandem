@@ -55,4 +55,5 @@ This is not a claim that Tandem is production-ready for regulated fintech deploy
 
 - [AI runtime infrastructure](AI_RUNTIME_INFRASTRUCTURE.md)
 - [Enterprise proof walkthrough](ENTERPRISE_PROOF_WALKTHROUGH.md)
+- [Cross-tenant grants design](CROSS_TENANT_GRANTS_DESIGN.md)
 - [Internal enterprise transition plan](internal/enterprise/README.md)

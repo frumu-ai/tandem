@@ -15,6 +15,7 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Design System](./DESIGN_SYSTEM.md) - Detailed style/system notes.
 - [EU AI Act Readiness](./EU_AI_ACT_COMPLIANCE.md) - CISO-facing control mapping, current Tandem coverage, and roadmap gaps.
 - [Compliance Starter Pack](./compliance/README.md) - Public EU AI Act starter docs for deployers, CISOs, and compliance teams.
+- [Cross-Tenant Grants Design](./CROSS_TENANT_GRANTS_DESIGN.md) - Signed grant envelope, inbound lookup, trust root, and enforcement design for governed tenant-to-tenant sharing.
 - [Engine Protocol Matrix](./ENGINE_PROTOCOL_MATRIX.md) - Wire contracts and status.
 - [AI Runtime Infrastructure](./AI_RUNTIME_INFRASTRUCTURE.md) - Engine source-of-truth runtime for long-running context, replay, and guardrails.
 - [MCP Improvements](./MCP_IMPROVEMENTS.md) - Connector tools, MCP discovery, and allowlist design.
