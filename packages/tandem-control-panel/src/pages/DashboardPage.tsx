@@ -197,7 +197,7 @@ export function DashboardPage(props: AppPageProps) {
     }
 
     const sorted = [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-    const maxTokens = Math.max(1, ...sorted.map(([, b]) => b.tokens));
+    const maxTokens = sorted.reduce((max, [, b]) => Math.max(max, b.tokens), 1);
     return { buckets: sorted.map(([, b]) => b), maxTokens, bucketCount };
   }, [automationRunRows, tokenGranularity]);
 

@@ -606,7 +606,7 @@ export function computeNodeDepths(nodes: StudioNodeDraft[]) {
     }
     const nextSeen = new Set(seen);
     nextSeen.add(nodeId);
-    const depth = Math.max(...node.dependsOn.map((dep) => visit(dep, nextSeen))) + 1;
+    const depth = node.dependsOn.reduce((max, dep) => Math.max(max, visit(dep, nextSeen)), 0) + 1;
     cache.set(nodeId, depth);
     return depth;
   };
