@@ -1,4 +1,4 @@
-import { AnimatedPage, Badge, PanelCard } from "../ui/index.tsx";
+import { AnimatedPage, Badge, LoadingState, PanelCard } from "../ui/index.tsx";
 
 type Props = {
   acaReason: string;
@@ -9,6 +9,16 @@ type Props = {
   navigateSettings: () => void;
   refreshAcaConnection: () => void;
 };
+
+export function CodingWorkflowsConnectingState() {
+  return (
+    <AnimatedPage className="grid gap-4">
+      <PanelCard>
+        <LoadingState title="Connecting to ACA" subtitle="Tandem is checking the ACA runtime before loading Coder." />
+      </PanelCard>
+    </AnimatedPage>
+  );
+}
 
 export function CodingWorkflowsDisconnectedState({
   acaReason,

@@ -50,15 +50,25 @@ test("ACA probe timeout increments timeout counter", () => {
   const metrics = getCapabilitiesMetrics();
   const before = metrics.aca_probe_error_counts.aca_probe_timeout;
 
-  const handler = createCapabilitiesHandler({
-    PROBE_TIMEOUT_MS: 10,
-    ACA_BASE_URL: "http://127.0.0.1:59999",
-    engineHealth: async () => ({ engine: { ready: true, healthy: true } }),
-    sendJson: () => {},
-  });
+  return new Promise((resolve) => {
+    const s = createServer(async (req, res) => {
+      await delay(50);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+    });
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  }).then(async (server) => {
+    const port = server.address().port;
+    const handler = createCapabilitiesHandler({
+      PROBE_TIMEOUT_MS: 10,
+      ACA_BASE_URL: `http://127.0.0.1:${port}`,
+      engineHealth: async () => ({ engine: { ready: true, healthy: true } }),
+      sendJson: () => {},
+    });
 
-  const fakeRes = { statusCode: 0, end: () => {}, destroy: () => {} };
-  return handler({}, fakeRes).then(() => {
+    const fakeRes = { statusCode: 0, end: () => {}, destroy: () => {} };
+    await handler({}, fakeRes);
+    server.close();
     const after = getCapabilitiesMetrics().aca_probe_error_counts.aca_probe_timeout;
     assert.equal(after, before + 1);
   });
@@ -155,12 +165,77 @@ test("ACA available returns aca_integration true", async () => {
   assert.equal(body.coder, true);
 });
 
-test("transient ACA timeout after healthy probe stays connected during grace window", async () => {
-  let probeCount = 0;
+test("ACA probe prefers ready endpoint and falls back from health", async () => {
+  const paths = [];
   const server = await new Promise((resolve) => {
     const s = createServer(async (req, res) => {
-      probeCount += 1;
-      if (probeCount === 1) {
+      paths.push(req.url);
+      if (req.url === "/ready") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ready: true }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const port = server.address().port;
+
+  let body = null;
+  const handler = createCapabilitiesHandler({
+    ACA_HEALTH_PATH: "/health",
+    ACA_BASE_URL: `http://127.0.0.1:${port}`,
+    engineHealth: async () => ({ engine: { ready: true, healthy: true } }),
+    sendJson: (_, __, b) => { body = b; },
+  });
+
+  const fakeRes = { statusCode: 0, end: () => {}, destroy: () => {} };
+  await handler({}, fakeRes);
+  server.close();
+
+  assert.equal(body.aca_integration, true);
+  assert.deepEqual(paths, ["/health", "/ready"]);
+});
+
+test("ACA ready failure does not fall back to healthy liveness endpoint", async () => {
+  const paths = [];
+  const server = await new Promise((resolve) => {
+    const s = createServer(async (req, res) => {
+      paths.push(req.url);
+      if (req.url === "/ready") {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ready: false }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ healthy: true }));
+    });
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const port = server.address().port;
+
+  let body = null;
+  const handler = createCapabilitiesHandler({
+    ACA_BASE_URL: `http://127.0.0.1:${port}`,
+    engineHealth: async () => ({ engine: { ready: true, healthy: true } }),
+    sendJson: (_, __, b) => { body = b; },
+  });
+
+  const fakeRes = { statusCode: 0, end: () => {}, destroy: () => {} };
+  await handler({}, fakeRes);
+  server.close();
+
+  assert.equal(body.aca_integration, false);
+  assert.equal(body.aca_reason, "aca_health_failed_503");
+  assert.deepEqual(paths, ["/ready"]);
+});
+
+test("transient ACA timeout after healthy probe stays connected during grace window", async () => {
+  let shouldTimeout = false;
+  const server = await new Promise((resolve) => {
+    const s = createServer(async (req, res) => {
+      if (!shouldTimeout) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ status: "ok" }));
         return;
@@ -187,6 +262,7 @@ test("transient ACA timeout after healthy probe stays connected during grace win
   assert.equal(body.aca_integration, true);
   assert.equal(body.aca_probe_degraded, false);
 
+  shouldTimeout = true;
   await handler({ url: "/api/capabilities?refresh=1" }, fakeRes);
   server.close();
 
