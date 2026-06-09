@@ -378,7 +378,10 @@ impl MemoryDatabase {
         });
 
         match result {
-            Ok(layer) => Ok(Some(layer)),
+            Ok(mut layer) => {
+                layer.content = self.crypto.decrypt_field(&layer.content)?;
+                Ok(Some(layer))
+            }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(MemoryError::Database(e)),
         }
@@ -394,12 +397,13 @@ impl MemoryDatabase {
     ) -> MemoryResult<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
+        let content_stored = self.crypto.encrypt_field(content)?;
 
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT INTO memory_layers (id, node_id, layer_type, content, token_count, created_at, source_chunk_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, node_id, layer_type.to_string(), content, token_count, now, source_chunk_id],
+            params![id, node_id, layer_type.to_string(), content_stored, token_count, now, source_chunk_id],
         )?;
 
         Ok(id)
