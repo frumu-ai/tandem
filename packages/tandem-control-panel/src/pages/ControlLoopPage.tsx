@@ -251,10 +251,33 @@ function first<T>(rows: T[], fallback: T): T {
   return rows.length ? rows[0] : fallback;
 }
 
-export function ControlLoopPage({ api, client, navigate }: AppPageProps) {
+function downloadJsonFile(filename: string, payload: unknown) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function safeDownloadName(value: string) {
+  const sanitized = safeString(value)
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96);
+  return sanitized || "run";
+}
+
+export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) {
   const [selectedRunId, setSelectedRunId] = useState("");
   const [query, setQuery] = useState("");
   const [showRawEvidence, setShowRawEvidence] = useState(false);
+  const [exportingEvidence, setExportingEvidence] = useState(false);
 
   const automationRunsQuery = useQuery({
     queryKey: ["control-loop", "automation-runs"],
@@ -627,6 +650,29 @@ export function ControlLoopPage({ api, client, navigate }: AppPageProps) {
     if (!effectiveRunId && recommendedRunId) setSelectedRunId(recommendedRunId);
   }, [effectiveRunId, recommendedRunId]);
 
+  async function exportGovernanceEvidence() {
+    if (!contextRunId) {
+      toast("warn", "Select a run with a context ledger before exporting evidence.");
+      return;
+    }
+    setExportingEvidence(true);
+    try {
+      const response = await api(
+        `/api/engine/context/runs/${encodeURIComponent(contextRunId)}/governance-evidence`
+      );
+      const evidencePackage = response?.evidence_package || response;
+      const filename =
+        safeString(response?.filename) ||
+        `tandem-governance-evidence-${safeDownloadName(effectiveRunId || contextRunId)}.json`;
+      downloadJsonFile(filename, evidencePackage);
+      toast("ok", "Governance evidence package downloaded.");
+    } catch (error: any) {
+      toast("err", error instanceof Error ? error.message : String(error));
+    } finally {
+      setExportingEvidence(false);
+    }
+  }
+
   return (
     <AnimatedPage className="grid h-full min-h-0 gap-4">
       <section className="grid gap-3">
@@ -689,6 +735,15 @@ export function ControlLoopPage({ api, client, navigate }: AppPageProps) {
           <button type="button" className="tcp-btn" onClick={() => navigate("memory")}>
             <i data-lucide="database"></i>
             Memory
+          </button>
+          <button
+            type="button"
+            className="tcp-btn"
+            disabled={!contextRunId || exportingEvidence}
+            onClick={exportGovernanceEvidence}
+          >
+            <i data-lucide={exportingEvidence ? "loader-2" : "download"}></i>
+            {exportingEvidence ? "Exporting" : "Export"}
           </button>
         </Toolbar>
       </section>

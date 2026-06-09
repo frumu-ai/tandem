@@ -1,11 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
+use crate::audit::ProtectedAuditEnvelope;
 use tandem_core::{
     build_fintech_audit_package, connector_proof_from_tool_record, ToolEffectLedgerRecord,
     ToolEffectLedgerStatus,
 };
-use tandem_types::{AccessDecision, AccessPermission, DataClass, ResourceRef, StrictTenantContext};
+use tandem_types::{
+    AccessDecision, AccessPermission, DataClass, PolicyDecisionRecord, ResourceRef,
+    StrictTenantContext, TenantContext,
+};
 
 #[derive(Debug, Clone, serde::Serialize)]
 struct ContextRunLedgerEventView {
@@ -30,6 +34,82 @@ pub(super) async fn context_run_ledger(
         "records": records,
         "summary": context_run_ledger_summary(&records),
     })))
+}
+
+pub(super) async fn context_run_governance_evidence_export(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    super::governance::premium_governance_required(&state)?;
+    let context_run = super::context_runs::load_context_run_state(&state, &run_id)
+        .await
+        .map_err(governance_evidence_status_error)?;
+    super::ensure_same_tenant(&tenant_context, &context_run.tenant_context)
+        .map_err(governance_evidence_status_error)?;
+
+    let automation_run_id = automation_run_id_from_context_run_id(&context_run.run_id);
+    let automation_run = match automation_run_id.as_deref() {
+        Some(run_id) => state.get_automation_v2_run(run_id).await,
+        None => None,
+    };
+    if let Some(run) = automation_run.as_ref() {
+        super::ensure_same_tenant(&tenant_context, &run.tenant_context)
+            .map_err(governance_evidence_status_error)?;
+    }
+
+    let events = load_context_run_ledger_source_events(&state, &context_run.run_id, None, None);
+    let records = context_run_ledger_records(&events);
+    let run_ids = governance_evidence_run_ids(&context_run.run_id, automation_run.as_ref());
+    let policy_decisions =
+        load_governance_evidence_policy_decisions(&state, &tenant_context, &run_ids, &records)
+            .await;
+    let policy_decision_ids = policy_decisions
+        .iter()
+        .map(|decision| decision.decision_id.clone())
+        .collect::<BTreeSet<_>>();
+    let memory_audit =
+        load_governance_evidence_memory_audit(&state, &tenant_context, &run_ids).await;
+    let protected_audit = load_governance_evidence_protected_audit(
+        &state,
+        &tenant_context,
+        &run_ids,
+        &policy_decision_ids,
+    )
+    .await;
+    let package = governance_evidence_package_for_records(
+        &context_run,
+        automation_run.as_ref(),
+        &records,
+        &policy_decisions,
+        &memory_audit,
+        &protected_audit,
+    );
+    let content_sha256 = stable_json_sha256(&package);
+    let filename = format!(
+        "tandem-governance-evidence-{}.json",
+        sanitize_filename(
+            automation_run
+                .as_ref()
+                .map(|run| run.run_id.as_str())
+                .unwrap_or(context_run.run_id.as_str())
+        )
+    );
+
+    Ok(Json(json!({
+        "evidence_package": package,
+        "filename": filename,
+        "content_sha256": content_sha256,
+    })))
+}
+
+fn governance_evidence_status_error(status: StatusCode) -> (StatusCode, Json<Value>) {
+    (
+        status,
+        Json(json!({
+            "error": status.canonical_reason().unwrap_or("request failed"),
+        })),
+    )
 }
 
 pub(super) fn context_run_ledger_summary_for_run(state: &AppState, run_id: &str) -> Value {
@@ -133,6 +213,573 @@ fn fintech_audit_package_for_automation_v2_run_records_authorized(
         limitations,
     ))
     .unwrap_or(Value::Null)
+}
+
+fn governance_evidence_package_for_records(
+    context_run: &ContextRunState,
+    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
+    records: &[ContextRunLedgerEventView],
+    policy_decisions: &[PolicyDecisionRecord],
+    memory_audit: &[crate::MemoryAuditEvent],
+    protected_audit: &[ProtectedAuditEnvelope],
+) -> Value {
+    let run_goal = automation_run
+        .and_then(|run| {
+            run.automation_snapshot.as_ref().and_then(|automation| {
+                first_nonempty_str([
+                    context_run.objective.as_str(),
+                    automation.name.as_str(),
+                    automation.description.as_deref().unwrap_or_default(),
+                ])
+            })
+        })
+        .unwrap_or(context_run.objective.as_str());
+    let automation_status =
+        automation_run.map(|run| serde_json::to_value(&run.status).unwrap_or(Value::Null));
+    let policy_decision_ids = policy_decisions
+        .iter()
+        .map(|decision| decision.decision_id.clone())
+        .chain(
+            records
+                .iter()
+                .filter_map(|row| row.record.policy_decision_id.clone()),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let audit_event_ids = policy_decisions
+        .iter()
+        .filter_map(|decision| decision.audit_event_id.clone())
+        .chain(protected_audit.iter().map(|event| event.event_id.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    let tool_calls = records
+        .iter()
+        .map(governance_evidence_tool_call)
+        .collect::<Vec<_>>();
+    let policy_decision_rows = policy_decisions
+        .iter()
+        .map(governance_evidence_policy_decision)
+        .collect::<Vec<_>>();
+    let memory_audit_rows = memory_audit
+        .iter()
+        .map(governance_evidence_memory_audit_row)
+        .collect::<Vec<_>>();
+    let memory_promotion_rows = memory_audit_rows
+        .iter()
+        .filter(|row| {
+            row["action"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("promot")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let protected_audit_rows = protected_audit
+        .iter()
+        .map(governance_evidence_protected_audit_row)
+        .collect::<Vec<_>>();
+    let (artifacts, artifact_limitations) = automation_run
+        .map(governance_evidence_artifacts)
+        .unwrap_or_else(|| (Vec::new(), Vec::new()));
+
+    json!({
+        "schema_version": 1,
+        "package_type": "tandem_run_governance_evidence",
+        "run": {
+            "run_id": automation_run
+                .map(|run| run.run_id.as_str())
+                .unwrap_or(context_run.run_id.as_str()),
+            "context_run_id": context_run.run_id,
+            "automation_v2_run_id": automation_run.map(|run| run.run_id.clone()),
+            "automation_id": automation_run.map(|run| run.automation_id.clone()),
+            "run_type": context_run.run_type,
+            "goal": run_goal,
+            "goal_sha256": crate::sha256_hex(&[run_goal]),
+            "tenant_context": context_run.tenant_context,
+            "trigger_type": automation_run.map(|run| run.trigger_type.clone()),
+            "status": {
+                "context": context_run.status,
+                "automation": automation_status,
+            },
+            "timing": {
+                "created_at_ms": context_run.created_at_ms,
+                "started_at_ms": context_run.started_at_ms,
+                "ended_at_ms": context_run.ended_at_ms,
+                "updated_at_ms": context_run.updated_at_ms,
+                "automation_created_at_ms": automation_run.map(|run| run.created_at_ms),
+                "automation_started_at_ms": automation_run.and_then(|run| run.started_at_ms),
+                "automation_finished_at_ms": automation_run.and_then(|run| run.finished_at_ms),
+                "automation_updated_at_ms": automation_run.map(|run| run.updated_at_ms),
+            },
+            "counts": {
+                "context_steps": context_run.steps.len(),
+                "tool_calls": tool_calls.len(),
+                "policy_decisions": policy_decision_rows.len(),
+                "approval_records": automation_run.map(|run| run.checkpoint.gate_history.len()).unwrap_or(0),
+                "memory_audit_records": memory_audit_rows.len(),
+                "protected_audit_records": protected_audit_rows.len(),
+                "artifacts": artifacts.len(),
+            },
+        },
+        "actors": governance_evidence_actors(
+            context_run,
+            automation_run,
+            policy_decisions,
+            memory_audit,
+        ),
+        "tool_calls": tool_calls,
+        "tool_call_summary": context_run_ledger_summary(records),
+        "policy_decisions": policy_decision_rows,
+        "approvals": governance_evidence_approvals(automation_run),
+        "audit": {
+            "policy_decision_ids": policy_decision_ids,
+            "audit_event_ids": audit_event_ids,
+            "protected_events": protected_audit_rows,
+        },
+        "memory_promotions": memory_promotion_rows,
+        "memory_audit": memory_audit_rows,
+        "artifacts": artifacts,
+        "final_outcome": governance_evidence_final_outcome(context_run, automation_run),
+        "limitations": artifact_limitations,
+        "redaction_policy": {
+            "goal_included": true,
+            "tool_arguments": "summaries_only",
+            "tool_results": "summaries_and_hashes_only",
+            "automation_node_outputs": "redacted_to_shape_safe_ids_and_sha256",
+            "approval_instructions_and_reasons": "hashed_length_only",
+            "memory_content": "omitted",
+            "policy_metadata_and_protected_audit_payloads": "hashed_shape_only",
+        },
+    })
+}
+
+fn governance_evidence_tool_call(row: &ContextRunLedgerEventView) -> Value {
+    json!({
+        "seq": row.seq,
+        "ts_ms": row.ts_ms,
+        "event_id": row.event_id,
+        "session_id": row.record.session_id,
+        "message_id": row.record.message_id,
+        "tool_call_id": row.record.tool_call_id,
+        "tool": row.record.tool,
+        "phase": row.record.phase,
+        "status": row.record.status,
+        "policy_decision_id": row.record.policy_decision_id,
+        "args_summary": row.record.args_summary,
+        "result_summary": row.record.result_summary,
+        "error": redacted_text_ref(row.record.error.as_deref()),
+        "connector_proof": connector_proof_from_tool_record(&row.record),
+    })
+}
+
+fn governance_evidence_policy_decision(decision: &PolicyDecisionRecord) -> Value {
+    json!({
+        "decision_id": decision.decision_id,
+        "actor_id": decision.actor_id,
+        "session_id": decision.session_id,
+        "message_id": decision.message_id,
+        "run_id": decision.run_id,
+        "automation_id": decision.automation_id,
+        "node_id": decision.node_id,
+        "tool": decision.tool,
+        "resource": decision.resource,
+        "data_classes": decision.data_classes,
+        "risk_tier": decision.risk_tier,
+        "decision": decision.decision,
+        "reason_code": decision.reason_code,
+        "reason": decision.reason,
+        "policy_id": decision.policy_id,
+        "grant_id": decision.grant_id,
+        "approval_id": decision.approval_id,
+        "audit_event_id": decision.audit_event_id,
+        "created_at_ms": decision.created_at_ms,
+        "metadata": redacted_value_ref(&decision.metadata),
+    })
+}
+
+fn governance_evidence_memory_audit_row(event: &crate::MemoryAuditEvent) -> Value {
+    json!({
+        "audit_id": event.audit_id,
+        "action": event.action,
+        "run_id": event.run_id,
+        "memory_id": event.memory_id,
+        "source_memory_id": event.source_memory_id,
+        "to_tier": event.to_tier,
+        "partition_key": event.partition_key,
+        "actor": event.actor,
+        "status": event.status,
+        "detail": redacted_text_ref(event.detail.as_deref()),
+        "created_at_ms": event.created_at_ms,
+    })
+}
+
+fn governance_evidence_protected_audit_row(event: &ProtectedAuditEnvelope) -> Value {
+    json!({
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "durability": event.durability,
+        "actor": event.actor,
+        "created_at_ms": event.created_at_ms,
+        "payload": redacted_value_ref(&event.payload),
+    })
+}
+
+fn governance_evidence_approvals(
+    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
+) -> Value {
+    let Some(run) = automation_run else {
+        return json!({
+            "pending_gate": null,
+            "gate_history": [],
+        });
+    };
+    let pending_gate = run.checkpoint.awaiting_gate.as_ref().map(|gate| {
+        json!({
+            "node_id": gate.node_id,
+            "title": gate.title,
+            "instructions": redacted_text_ref(gate.instructions.as_deref()),
+            "decisions": gate.decisions,
+            "rework_targets": gate.rework_targets,
+            "requested_at_ms": gate.requested_at_ms,
+            "upstream_node_ids": gate.upstream_node_ids,
+            "metadata": gate.metadata.as_ref().map(redacted_value_ref),
+        })
+    });
+    let gate_history = run
+        .checkpoint
+        .gate_history
+        .iter()
+        .map(|record| {
+            json!({
+                "node_id": record.node_id,
+                "decision": record.decision,
+                "reason": redacted_text_ref(record.reason.as_deref()),
+                "decided_at_ms": record.decided_at_ms,
+                "decided_by": record.decided_by,
+                "metadata": record.metadata.as_ref().map(redacted_value_ref),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "pending_gate": pending_gate,
+        "gate_history": gate_history,
+    })
+}
+
+fn governance_evidence_artifacts(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) -> (Vec<Value>, Vec<String>) {
+    let mut limitations = Vec::new();
+    let mut rows = run
+        .checkpoint
+        .node_outputs
+        .iter()
+        .map(|(node_id, output)| {
+            if artifact_resource_target(output).is_some() {
+                limitations.push(format!(
+                    "artifact_payload_redacted_scoped_resource:{node_id}"
+                ));
+            }
+            json!({
+                "node_id": node_id,
+                "artifact_id": first_string_field(output, &["artifact_id", "artifactID", "id"]),
+                "resource_ref": output
+                    .get("resource_ref")
+                    .or_else(|| output.get("enterprise_resource_ref"))
+                    .or_else(|| output.get("resourceRef"))
+                    .cloned(),
+                "data_class": output
+                    .get("data_class")
+                    .or_else(|| output.get("enterprise_data_class"))
+                    .or_else(|| output.get("dataClass"))
+                    .cloned(),
+                "validation_outcome": output
+                    .pointer("/artifact_validation/validation_outcome")
+                    .or_else(|| output.pointer("/artifactValidation/validationOutcome"))
+                    .cloned(),
+                "output": redacted_value_ref(output),
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| {
+        a["node_id"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["node_id"].as_str().unwrap_or_default())
+    });
+    limitations.sort();
+    (rows, limitations)
+}
+
+fn governance_evidence_final_outcome(
+    context_run: &ContextRunState,
+    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
+) -> Value {
+    json!({
+        "context_status": context_run.status,
+        "automation_status": automation_run.map(|run| serde_json::to_value(&run.status).unwrap_or(Value::Null)),
+        "completed_nodes": automation_run.map(|run| run.checkpoint.completed_nodes.clone()).unwrap_or_default(),
+        "pending_nodes": automation_run.map(|run| run.checkpoint.pending_nodes.clone()).unwrap_or_default(),
+        "blocked_nodes": automation_run.map(|run| run.checkpoint.blocked_nodes.clone()).unwrap_or_default(),
+        "last_error": redacted_text_ref(context_run.last_error.as_deref()),
+        "detail": redacted_text_ref(automation_run.and_then(|run| run.detail.as_deref())),
+        "stop_kind": automation_run.and_then(|run| run.stop_kind.as_ref()).map(|kind| serde_json::to_value(kind).unwrap_or(Value::Null)),
+        "stop_reason": redacted_text_ref(automation_run.and_then(|run| run.stop_reason.as_deref())),
+    })
+}
+
+fn governance_evidence_actors(
+    context_run: &ContextRunState,
+    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
+    policy_decisions: &[PolicyDecisionRecord],
+    memory_audit: &[crate::MemoryAuditEvent],
+) -> Value {
+    let mut policy_actor_ids = BTreeSet::new();
+    for decision in policy_decisions {
+        if let Some(actor_id) = decision
+            .actor_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            policy_actor_ids.insert(actor_id.to_string());
+        }
+    }
+    let mut memory_actor_ids = BTreeSet::new();
+    for event in memory_audit {
+        if !event.actor.is_empty() {
+            memory_actor_ids.insert(event.actor.clone());
+        }
+    }
+    let approval_deciders = automation_run
+        .map(|run| {
+            run.checkpoint
+                .gate_history
+                .iter()
+                .filter_map(|record| record.decided_by.as_ref())
+                .filter_map(|actor| serde_json::to_value(actor).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    json!({
+        "tenant_actor_id": context_run.tenant_context.actor_id,
+        "automation_actor_id": automation_run.and_then(|run| run.tenant_context.actor_id.clone()),
+        "policy_actor_ids": policy_actor_ids.into_iter().collect::<Vec<_>>(),
+        "memory_actor_ids": memory_actor_ids.into_iter().collect::<Vec<_>>(),
+        "approval_deciders": approval_deciders,
+    })
+}
+
+async fn load_governance_evidence_policy_decisions(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    run_ids: &BTreeSet<String>,
+    records: &[ContextRunLedgerEventView],
+) -> Vec<PolicyDecisionRecord> {
+    let mut rows = BTreeMap::<String, PolicyDecisionRecord>::new();
+    for run_id in run_ids {
+        for decision in state
+            .list_policy_decisions_for_run(tenant_context, run_id, 500)
+            .await
+        {
+            rows.insert(decision.decision_id.clone(), decision);
+        }
+    }
+    for decision_id in records
+        .iter()
+        .filter_map(|row| row.record.policy_decision_id.as_deref())
+    {
+        let Some(decision) = state.get_policy_decision(decision_id).await else {
+            continue;
+        };
+        if decision.tenant_context == *tenant_context {
+            rows.insert(decision.decision_id.clone(), decision);
+        }
+    }
+    let mut rows = rows.into_values().collect::<Vec<_>>();
+    rows.sort_by(|a, b| {
+        a.created_at_ms
+            .cmp(&b.created_at_ms)
+            .then(a.decision_id.cmp(&b.decision_id))
+    });
+    rows
+}
+
+async fn load_governance_evidence_memory_audit(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    run_ids: &BTreeSet<String>,
+) -> Vec<crate::MemoryAuditEvent> {
+    let mut rows = load_jsonl_rows::<crate::MemoryAuditEvent>(&state.memory_audit_path).await;
+    if rows.is_empty() {
+        rows = state.memory_audit_log.read().await.clone();
+    }
+    rows.retain(|event| event.tenant_context == *tenant_context && run_ids.contains(&event.run_id));
+    rows.sort_by(|a, b| {
+        a.created_at_ms
+            .cmp(&b.created_at_ms)
+            .then(a.audit_id.cmp(&b.audit_id))
+    });
+    rows
+}
+
+async fn load_governance_evidence_protected_audit(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    run_ids: &BTreeSet<String>,
+    policy_decision_ids: &BTreeSet<String>,
+) -> Vec<ProtectedAuditEnvelope> {
+    let mut rows = load_jsonl_rows::<ProtectedAuditEnvelope>(&state.protected_audit_path).await;
+    rows.retain(|event| {
+        event.tenant_context == *tenant_context
+            && (value_contains_any_string(&event.payload, run_ids)
+                || value_contains_any_string(&event.payload, policy_decision_ids))
+    });
+    rows.sort_by(|a, b| {
+        a.created_at_ms
+            .cmp(&b.created_at_ms)
+            .then(a.event_id.cmp(&b.event_id))
+    });
+    rows
+}
+
+async fn load_jsonl_rows<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Vec<T> {
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            serde_json::from_str::<T>(trimmed).ok()
+        })
+        .collect()
+}
+
+fn automation_run_id_from_context_run_id(context_run_id: &str) -> Option<String> {
+    context_run_id
+        .strip_prefix("automation-v2-")
+        .map(str::to_string)
+}
+
+fn governance_evidence_run_ids(
+    context_run_id: &str,
+    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
+) -> BTreeSet<String> {
+    let mut ids = BTreeSet::from([context_run_id.to_string()]);
+    if let Some(stripped) = context_run_id.strip_prefix("automation-v2-") {
+        ids.insert(stripped.to_string());
+    } else {
+        ids.insert(format!("automation-v2-{context_run_id}"));
+    }
+    if let Some(run) = automation_run {
+        ids.insert(run.run_id.clone());
+        ids.insert(super::context_runs::automation_v2_context_run_id(
+            &run.run_id,
+        ));
+    }
+    ids
+}
+
+fn redacted_value_ref(value: &Value) -> Value {
+    json!({
+        "sha256": stable_json_sha256(value),
+        "shape": evidence_value_shape(value),
+        "redacted": true,
+    })
+}
+
+fn redacted_text_ref(value: Option<&str>) -> Value {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Value::Null;
+    };
+    json!({
+        "chars": value.chars().count(),
+        "sha256": crate::sha256_hex(&[value]),
+        "redacted": true,
+    })
+}
+
+fn stable_json_sha256(value: &Value) -> String {
+    let encoded = serde_json::to_string(value).unwrap_or_default();
+    crate::sha256_hex(&[encoded.as_str()])
+}
+
+fn evidence_value_shape(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let keys = map.keys().cloned().collect::<BTreeSet<_>>();
+            json!({
+                "type": "object",
+                "keys": keys.into_iter().collect::<Vec<_>>(),
+                "field_count": map.len(),
+            })
+        }
+        Value::Array(rows) => json!({
+            "type": "array",
+            "length": rows.len(),
+        }),
+        Value::String(text) => json!({
+            "type": "string",
+            "chars": text.chars().count(),
+        }),
+        Value::Number(_) => json!({ "type": "number" }),
+        Value::Bool(_) => json!({ "type": "boolean" }),
+        Value::Null => json!({ "type": "null" }),
+    }
+}
+
+fn value_contains_any_string(value: &Value, needles: &BTreeSet<String>) -> bool {
+    if needles.is_empty() {
+        return false;
+    }
+    match value {
+        Value::String(text) => needles.contains(text),
+        Value::Array(rows) => rows
+            .iter()
+            .any(|row| value_contains_any_string(row, needles)),
+        Value::Object(map) => map
+            .values()
+            .any(|row| value_contains_any_string(row, needles)),
+        Value::Number(_) | Value::Bool(_) | Value::Null => false,
+    }
+}
+
+fn first_nonempty_str<const N: usize>(values: [&str; N]) -> Option<&str> {
+    values
+        .into_iter()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
+fn first_string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string))
+}
+
+fn sanitize_filename(input: &str) -> String {
+    let sanitized = input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    sanitized
+        .trim_matches('-')
+        .chars()
+        .take(96)
+        .collect::<String>()
 }
 
 enum ArtifactExportDecision {
@@ -425,6 +1072,41 @@ mod tests {
         }
     }
 
+    fn governance_evidence_context_run(
+        run: &crate::automation_v2::types::AutomationV2RunRecord,
+    ) -> ContextRunState {
+        ContextRunState {
+            run_id: super::super::context_runs::automation_v2_context_run_id(&run.run_id),
+            run_type: "automation_v2".to_string(),
+            tenant_context: run.tenant_context.clone(),
+            source_client: None,
+            model_provider: None,
+            model_id: None,
+            mcp_servers: Vec::new(),
+            status: ContextRunStatus::Completed,
+            objective: "Review PCI transfer evidence".to_string(),
+            workspace: ContextWorkspaceLease {
+                workspace_id: "workspace".to_string(),
+                canonical_path: "/tmp/tandem".to_string(),
+                lease_epoch: 1,
+            },
+            steps: vec![ContextRunStep {
+                step_id: "step-1".to_string(),
+                title: "Check policy gate".to_string(),
+                status: ContextStepStatus::Done,
+            }],
+            tasks: Vec::new(),
+            why_next_step: None,
+            revision: 1,
+            last_event_seq: 2,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            ended_at_ms: Some(50),
+            last_error: None,
+            updated_at_ms: 50,
+        }
+    }
+
     #[test]
     fn fintech_audit_package_fixture_includes_run_evidence() {
         let records = context_run_ledger_records(&[
@@ -470,6 +1152,165 @@ mod tests {
             package["policy_decisions"][0]["tool"].as_str(),
             Some("mcp.bank.release_funds")
         );
+    }
+
+    #[test]
+    fn governance_evidence_package_redacts_payloads_and_keeps_review_evidence() {
+        let mut run = fintech_audit_fixture_run();
+        run.status = crate::AutomationRunStatus::Blocked;
+        run.finished_at_ms = Some(50);
+        run.checkpoint.awaiting_gate = Some(crate::AutomationPendingGate {
+            node_id: "release_funds".to_string(),
+            title: "Release funds".to_string(),
+            instructions: Some("approval instructions secret".to_string()),
+            decisions: vec!["approve".to_string(), "deny".to_string()],
+            rework_targets: Vec::new(),
+            requested_at_ms: 30,
+            upstream_node_ids: vec!["draft_compliance_brief".to_string()],
+            metadata: Some(json!({"secret": "pending gate metadata"})),
+        });
+        run.checkpoint
+            .gate_history
+            .push(crate::AutomationGateDecisionRecord {
+                node_id: "release_funds".to_string(),
+                decision: "denied".to_string(),
+                reason: Some("operator reason secret".to_string()),
+                decided_at_ms: 40,
+                decided_by: None,
+                metadata: Some(json!({"secret": "gate decision metadata"})),
+            });
+        run.checkpoint.node_outputs.insert(
+            "release_funds".to_string(),
+            json!({
+                "artifact_id": "transfer-artifact",
+                "payload": "sk-live-secret",
+                "customer_note": "raw customer secret",
+                "resource_ref": {
+                    "organization_id": "acme",
+                    "workspace_id": "finance",
+                    "resource_kind": "data_store",
+                    "resource_id": "finance-ledger"
+                },
+                "data_class": "financial_record",
+                "artifact_validation": {
+                    "validation_outcome": "blocked",
+                    "internal_detail": "validation raw secret"
+                }
+            }),
+        );
+        let context_run = governance_evidence_context_run(&run);
+        let mut blocked = tool_effect_event_with_args(
+            1,
+            "mcp.bank.release_funds",
+            "outcome",
+            "blocked",
+            json!({
+                "keys": ["amount", "account_id"],
+                "field_count": 2,
+                "type": "object",
+                "command_hash": "abc123"
+            }),
+        );
+        blocked.payload["record"]["policy_decision_id"] = json!("decision-approval");
+        blocked.payload["record"]["error"] = json!("tool error secret");
+        let records = context_run_ledger_records(&[blocked]);
+        let policy_decisions = vec![tandem_types::PolicyDecisionRecord {
+            decision_id: "decision-approval".to_string(),
+            tenant_context: run.tenant_context.clone(),
+            actor_id: Some("finance-user".to_string()),
+            session_id: Some("session-1".to_string()),
+            message_id: Some("message-1".to_string()),
+            run_id: Some(run.run_id.clone()),
+            automation_id: Some(run.automation_id.clone()),
+            node_id: Some("release_funds".to_string()),
+            tool: Some("mcp.bank.release_funds".to_string()),
+            resource: None,
+            data_classes: vec![tandem_types::DataClass::FinancialRecord],
+            risk_tier: Some("money_movement".to_string()),
+            decision: tandem_types::PolicyDecisionEffect::ApprovalRequired,
+            reason_code: "approval_required_unverified".to_string(),
+            reason: "approval required".to_string(),
+            policy_id: Some("fintech_strict".to_string()),
+            grant_id: None,
+            approval_id: Some("approval-release-funds".to_string()),
+            audit_event_id: Some("audit-policy-1".to_string()),
+            created_at_ms: 35,
+            metadata: json!({"secret": "policy metadata secret"}),
+        }];
+        let memory_audit = vec![crate::MemoryAuditEvent {
+            audit_id: "memory-audit-1".to_string(),
+            action: "memory_promote".to_string(),
+            run_id: run.run_id.clone(),
+            tenant_context: run.tenant_context.clone(),
+            memory_id: Some("memory-1".to_string()),
+            source_memory_id: Some("source-memory-1".to_string()),
+            to_tier: None,
+            partition_key: "acme:finance:user".to_string(),
+            actor: "finance-user".to_string(),
+            status: "blocked".to_string(),
+            detail: Some("memory detail secret".to_string()),
+            created_at_ms: 45,
+        }];
+        let protected_audit = vec![ProtectedAuditEnvelope {
+            event_id: "protected-audit-1".to_string(),
+            durability: crate::audit::AuditDurability::DurableRequired,
+            event_type: "approval.gate.approval_required".to_string(),
+            tenant_context: run.tenant_context.clone(),
+            actor: Some("finance-user".to_string()),
+            payload: json!({
+                "decision_id": "decision-approval",
+                "raw_payload": "protected audit secret"
+            }),
+            created_at_ms: 36,
+        }];
+
+        let package = governance_evidence_package_for_records(
+            &context_run,
+            Some(&run),
+            &records,
+            &policy_decisions,
+            &memory_audit,
+            &protected_audit,
+        );
+
+        assert_eq!(package["schema_version"].as_u64(), Some(1));
+        assert_eq!(
+            package["policy_decisions"][0]["decision"].as_str(),
+            Some("approval_required")
+        );
+        assert_eq!(
+            package["approvals"]["gate_history"][0]["decision"].as_str(),
+            Some("denied")
+        );
+        assert_eq!(
+            package["memory_promotions"][0]["audit_id"].as_str(),
+            Some("memory-audit-1")
+        );
+        assert_eq!(
+            package["audit"]["protected_events"][0]["event_id"].as_str(),
+            Some("protected-audit-1")
+        );
+        let serialized = serde_json::to_string(&package).expect("package json");
+        for secret in [
+            "sk-live-secret",
+            "raw customer secret",
+            "validation raw secret",
+            "approval instructions secret",
+            "operator reason secret",
+            "policy metadata secret",
+            "memory detail secret",
+            "protected audit secret",
+            "tool error secret",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "governance evidence leaked `{secret}`"
+            );
+        }
+        assert!(serialized.contains("decision-approval"));
+        assert!(serialized.contains("protected-audit-1"));
+        assert!(serialized.contains("sha256"));
+        assert_eq!(stable_json_sha256(&package), stable_json_sha256(&package));
     }
 
     #[test]

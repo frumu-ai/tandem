@@ -38,6 +38,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         )
         .route("/context/runs/{run_id}/ledger", get(context_run_ledger))
         .route(
+            "/context/runs/{run_id}/governance-evidence",
+            get(context_run_governance_evidence_export),
+        )
+        .route(
             "/context/runs/{run_id}/todos/sync",
             post(context_run_todos_sync),
         )
