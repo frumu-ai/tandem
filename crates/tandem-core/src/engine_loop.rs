@@ -35,15 +35,17 @@ use loop_guards::{
     duplicate_signature_limit_for, tool_budget_for, websearch_duplicate_signature_limit,
 };
 use loop_tuning::{
-    max_tool_iterations, permission_wait_timeout_ms, prompt_context_hook_timeout_ms,
-    provider_stream_connect_timeout_ms, provider_stream_decode_retry_attempts,
-    provider_stream_idle_timeout_ms, strict_write_retry_max_attempts, tool_exec_timeout_ms,
+    full_context_hard_budget_chars, full_context_hard_budget_override,
+    full_context_soft_budget_chars, max_tool_iterations, permission_wait_timeout_ms,
+    prompt_context_hook_timeout_ms, provider_stream_connect_timeout_ms,
+    provider_stream_decode_retry_attempts, provider_stream_idle_timeout_ms,
+    strict_write_retry_max_attempts, tool_exec_timeout_ms,
 };
 use prewrite_gate::{evaluate_prewrite_gate, PrewriteProgress};
 use prewrite_mode::*;
 use prompt_context::{
-    format_context_mode, mcp_catalog_in_system_prompt_enabled, semantic_tool_retrieval_enabled,
-    semantic_tool_retrieval_k, tandem_runtime_system_prompt,
+    autonomous_correlation_kind, format_context_mode, mcp_catalog_in_system_prompt_enabled,
+    semantic_tool_retrieval_enabled, semantic_tool_retrieval_k, tandem_runtime_system_prompt,
 };
 use prompt_helpers::*;
 use prompt_runtime::*;

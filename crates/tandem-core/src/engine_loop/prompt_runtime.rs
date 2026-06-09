@@ -148,13 +148,36 @@ pub(super) enum ChatHistoryProfile {
     Compact,
 }
 
+impl ChatHistoryProfile {
+    pub(super) fn as_str(&self) -> &'static str {
+        match self {
+            ChatHistoryProfile::Full => "full",
+            ChatHistoryProfile::Standard => "standard",
+            ChatHistoryProfile::Compact => "compact",
+        }
+    }
+}
+
+/// Provider-facing history projection plus accounting for what the
+/// compaction step removed from the raw stored history.
+#[derive(Debug)]
+pub(super) struct LoadedChatHistory {
+    pub(super) messages: Vec<ChatMessage>,
+    pub(super) dropped_messages: usize,
+    pub(super) dropped_chars: usize,
+}
+
 pub(super) async fn load_chat_history(
     storage: std::sync::Arc<Storage>,
     session_id: &str,
     profile: ChatHistoryProfile,
-) -> Vec<ChatMessage> {
+) -> LoadedChatHistory {
     let Some(session) = storage.get_session(session_id).await else {
-        return Vec::new();
+        return LoadedChatHistory {
+            messages: Vec::new(),
+            dropped_messages: 0,
+            dropped_chars: 0,
+        };
     };
     let messages = session
         .messages
@@ -619,7 +642,7 @@ fn normalize_todo_status(raw: &str) -> String {
 pub(super) fn compact_chat_history(
     messages: Vec<ChatMessage>,
     profile: ChatHistoryProfile,
-) -> Vec<ChatMessage> {
+) -> LoadedChatHistory {
     let (max_context_chars, keep_recent_messages) = match profile {
         ChatHistoryProfile::Full => (usize::MAX, usize::MAX),
         ChatHistoryProfile::Standard => (80_000usize, 40usize),
@@ -629,12 +652,17 @@ pub(super) fn compact_chat_history(
     if messages.len() <= keep_recent_messages {
         let total_chars = messages.iter().map(|m| m.content.len()).sum::<usize>();
         if total_chars <= max_context_chars {
-            return messages;
+            return LoadedChatHistory {
+                messages,
+                dropped_messages: 0,
+                dropped_chars: 0,
+            };
         }
     }
 
     let mut kept = messages;
     let mut dropped_count = 0usize;
+    let mut dropped_chars = 0usize;
     let mut total_chars = kept.iter().map(|m| m.content.len()).sum::<usize>();
 
     while kept.len() > keep_recent_messages || total_chars > max_context_chars {
@@ -643,6 +671,7 @@ pub(super) fn compact_chat_history(
         }
         let removed = kept.remove(0);
         total_chars = total_chars.saturating_sub(removed.content.len());
+        dropped_chars = dropped_chars.saturating_add(removed.content.len());
         dropped_count += 1;
     }
 
@@ -659,5 +688,20 @@ pub(super) fn compact_chat_history(
             },
         );
     }
-    kept
+    LoadedChatHistory {
+        messages: kept,
+        dropped_messages: dropped_count,
+        dropped_chars,
+    }
+}
+
+/// Approximate char contribution of runtime attachments. Data URLs carry the
+/// full encoded payload in the URL, so URL length is the dominant cost.
+pub(super) fn runtime_attachment_chars(attachments: &[ChatAttachment]) -> usize {
+    attachments
+        .iter()
+        .map(|attachment| match attachment {
+            ChatAttachment::ImageUrl { url } => url.len(),
+        })
+        .sum()
 }

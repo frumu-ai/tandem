@@ -54,6 +54,37 @@ pub(super) fn permission_wait_timeout_ms() -> usize {
         .unwrap_or(15_000)
 }
 
+/// Soft char budget for Full context mode prompts. Crossing it emits a
+/// warning event with the top contributors but does not block the send.
+/// Roughly 60k tokens at the shared 4-chars-per-token fallback estimate.
+pub(super) fn full_context_soft_budget_chars() -> usize {
+    std::env::var("TANDEM_FULL_CONTEXT_SOFT_BUDGET_CHARS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(240_000)
+}
+
+/// Hard char budget for Full context mode prompts. Crossing it fails the run
+/// closed before provider send unless the override env is set.
+/// Roughly 120k tokens at the shared 4-chars-per-token fallback estimate.
+pub(super) fn full_context_hard_budget_chars() -> usize {
+    std::env::var("TANDEM_FULL_CONTEXT_HARD_BUDGET_CHARS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(480_000)
+}
+
+pub(super) fn full_context_hard_budget_override() -> bool {
+    std::env::var("TANDEM_FULL_CONTEXT_HARD_BUDGET_OVERRIDE")
+        .map(|raw| {
+            let value = raw.trim().to_ascii_lowercase();
+            value == "1" || value == "true" || value == "yes"
+        })
+        .unwrap_or(false)
+}
+
 pub(super) fn tool_exec_timeout_ms() -> usize {
     std::env::var("TANDEM_TOOL_EXEC_TIMEOUT_MS")
         .ok()

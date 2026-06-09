@@ -197,11 +197,24 @@ async fn invoke_mission_builder_provider(
     );
 
     let builder_future = async {
+        let prompt_chars = prompt.len();
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: prompt,
             attachments: Vec::new(),
         }];
+        state.event_bus.publish(tandem_types::EngineEvent::new(
+            "context.budget.bypassed",
+            json!({
+                "component": "mission.builder",
+                "reason": "direct provider send outside engine-loop context budget accounting",
+                "sessionID": session_id,
+                "promptMessageCount": messages.len(),
+                "promptChars": prompt_chars,
+                "providerID": model.provider_id,
+                "modelID": model.model_id,
+            }),
+        ));
         let stream = state
             .providers
             .stream_for_provider(

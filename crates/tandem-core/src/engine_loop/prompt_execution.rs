@@ -251,10 +251,17 @@ impl EngineLoop {
                 } else {
                     ChatHistoryProfile::Standard
                 };
-                let mut messages =
+                let loaded_history =
                     load_chat_history(self.storage.clone(), &session_id, context_profile).await;
+                let dropped_history_messages = loaded_history.dropped_messages;
+                let dropped_history_chars = loaded_history.dropped_chars;
+                let mut messages = loaded_history.messages;
+                let mut attachment_count = 0usize;
+                let mut attachment_chars = 0usize;
                 if iteration == 1 && !runtime_attachments.is_empty() {
                     attach_to_last_user_message(&mut messages, &runtime_attachments);
+                    attachment_count = runtime_attachments.len();
+                    attachment_chars = runtime_attachment_chars(&runtime_attachments);
                 }
                 let history_char_count = messages.iter().map(|m| m.content.len()).sum::<usize>();
                 self.event_bus.publish(EngineEvent::new(
@@ -269,6 +276,23 @@ impl EngineLoop {
                         "memoryInjected": false
                     }),
                 ));
+                if iteration == 1 && matches!(context_profile, ChatHistoryProfile::Full) {
+                    let correlation_kind = autonomous_correlation_kind(correlation_ref);
+                    self.event_bus.publish(EngineEvent::new(
+                        "context.mode.full.selected",
+                        json!({
+                            "sessionID": session_id,
+                            "messageID": user_message_id,
+                            "correlationID": correlation_ref,
+                            "providerID": provider_id,
+                            "modelID": model_id_value,
+                            "autonomousLike": correlation_kind.is_some(),
+                            "correlationKind": correlation_kind,
+                            "historyMessageCount": messages.len(),
+                            "historyCharCount": history_char_count,
+                        }),
+                    ));
+                }
                 let mut system_parts = vec![tandem_runtime_system_prompt(
                     &self.host_runtime_context,
                     &mcp_server_names,
@@ -276,21 +300,27 @@ impl EngineLoop {
                 if let Some(system) = active_agent.system_prompt.as_ref() {
                     system_parts.push(system.clone());
                 }
+                let system_content = system_parts.join("\n\n");
+                let system_chars = system_content.len();
                 messages.insert(
                     0,
                     ChatMessage {
                         role: "system".to_string(),
-                        content: system_parts.join("\n\n"),
+                        content: system_content,
                         attachments: Vec::new(),
                     },
                 );
+                let mut followup_chars = 0usize;
                 if let Some(extra) = followup_context.take() {
+                    followup_chars = extra.len();
                     messages.push(ChatMessage {
                         role: "user".to_string(),
                         content: extra,
                         attachments: Vec::new(),
                     });
                 }
+                let pre_hook_message_count = messages.len();
+                let pre_hook_chars = messages.iter().map(|m| m.content.len()).sum::<usize>();
                 if let Some(hook) = self.prompt_context_hook.read().await.clone() {
                     let ctx = PromptContextHookContext {
                         session_id: session_id.clone(),
@@ -337,6 +367,12 @@ impl EngineLoop {
                         }
                     }
                 }
+                let hook_added_messages = messages.len().saturating_sub(pre_hook_message_count);
+                let hook_added_chars = messages
+                    .iter()
+                    .map(|m| m.content.len())
+                    .sum::<usize>()
+                    .saturating_sub(pre_hook_chars);
                 let all_tools = self.tools.list().await;
                 let mut retrieval_fallback_reason: Option<&'static str> = None;
                 let mut candidate_tools = if retrieval_enabled {
@@ -643,6 +679,122 @@ impl EngineLoop {
                     }),
                 ));
                 let estimated_prompt_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+                let tool_schema_chars = if tool_schemas.is_empty() {
+                    0usize
+                } else {
+                    serde_json::to_string(&tool_schemas)
+                        .map(|serialized| serialized.len())
+                        .unwrap_or(0)
+                };
+                let estimated_total_chars = estimated_prompt_chars
+                    .saturating_add(tool_schema_chars)
+                    .saturating_add(attachment_chars);
+                let full_context_mode = matches!(context_profile, ChatHistoryProfile::Full);
+                let compaction_occurred = dropped_history_messages > 0;
+                self.event_bus.publish(EngineEvent::new(
+                    "context.budget.final",
+                    json!({
+                        "sessionID": session_id,
+                        "messageID": user_message_id,
+                        "correlationID": correlation_ref,
+                        "providerID": provider_id,
+                        "modelID": model_id_value,
+                        "iteration": iteration,
+                        "contextMode": format_context_mode(&requested_context_mode, context_is_auto_compact),
+                        "historyProfile": context_profile.as_str(),
+                        "fullContextMode": full_context_mode,
+                        "finalMessageCount": messages.len(),
+                        "finalMessageChars": estimated_prompt_chars,
+                        "estimatedTotalChars": estimated_total_chars,
+                        "estimatedPromptTokens": estimate_tokens_from_chars(estimated_total_chars),
+                        "toolSchemaCount": tool_schemas.len(),
+                        "toolSchemaChars": tool_schema_chars,
+                        "attachmentCount": attachment_count,
+                        "attachmentChars": attachment_chars,
+                        "contribution": {
+                            "systemChars": system_chars,
+                            "historyChars": history_char_count,
+                            "followupChars": followup_chars,
+                            "hookAddedMessages": hook_added_messages,
+                            "hookAddedChars": hook_added_chars,
+                            "toolSchemaChars": tool_schema_chars,
+                            "attachmentChars": attachment_chars,
+                        },
+                        "compactionOccurred": compaction_occurred,
+                        "droppedHistoryMessages": dropped_history_messages,
+                        "droppedHistoryChars": dropped_history_chars,
+                        "droppedDueToBudget": compaction_occurred,
+                    }),
+                ));
+                if full_context_mode {
+                    let soft_budget_chars = full_context_soft_budget_chars();
+                    let hard_budget_chars = full_context_hard_budget_chars();
+                    if estimated_total_chars > soft_budget_chars
+                        || estimated_total_chars > hard_budget_chars
+                    {
+                        let mut top_contributors = vec![
+                            ("history", history_char_count),
+                            ("system", system_chars),
+                            ("hookAdded", hook_added_chars),
+                            ("toolSchemas", tool_schema_chars),
+                            ("followup", followup_chars),
+                            ("attachments", attachment_chars),
+                        ];
+                        top_contributors.sort_by(|a, b| b.1.cmp(&a.1));
+                        let top_contributors = top_contributors
+                            .into_iter()
+                            .filter(|(_, chars)| *chars > 0)
+                            .map(|(source, chars)| json!({"source": source, "chars": chars}))
+                            .collect::<Vec<_>>();
+                        let hard_exceeded = estimated_total_chars > hard_budget_chars;
+                        let hard_override = hard_exceeded && full_context_hard_budget_override();
+                        self.event_bus.publish(EngineEvent::new(
+                            if hard_exceeded {
+                                "context.full.budget.exceeded"
+                            } else {
+                                "context.full.budget.warning"
+                            },
+                            json!({
+                                "sessionID": session_id,
+                                "messageID": user_message_id,
+                                "correlationID": correlation_ref,
+                                "providerID": provider_id,
+                                "modelID": model_id_value,
+                                "iteration": iteration,
+                                "estimatedTotalChars": estimated_total_chars,
+                                "softBudgetChars": soft_budget_chars,
+                                "hardBudgetChars": hard_budget_chars,
+                                "overrideApplied": hard_override,
+                                "topContributors": top_contributors,
+                            }),
+                        ));
+                        if hard_exceeded && !hard_override {
+                            let detail = format!(
+                                "FULL_CONTEXT_HARD_BUDGET_EXCEEDED: estimated prompt size {} chars exceeds hard budget {} chars; set TANDEM_FULL_CONTEXT_HARD_BUDGET_OVERRIDE=1 to send anyway or use a bounded context mode",
+                                estimated_total_chars, hard_budget_chars
+                            );
+                            emit_event(
+                                Level::ERROR,
+                                ProcessKind::Engine,
+                                ObservabilityEvent {
+                                    event: "provider.call.error",
+                                    component: "engine.loop",
+                                    correlation_id: correlation_ref,
+                                    session_id: Some(&session_id),
+                                    run_id: None,
+                                    message_id: Some(&user_message_id),
+                                    provider_id: Some(provider_id.as_str()),
+                                    model_id,
+                                    status: Some("failed"),
+                                    error_code: Some("FULL_CONTEXT_HARD_BUDGET_EXCEEDED"),
+                                    detail: Some(&detail),
+                                },
+                            );
+                            self.mark_session_run_failed(&session_id, &detail).await;
+                            anyhow::bail!("{detail}");
+                        }
+                    }
+                }
                 let provider_connect_timeout =
                     Duration::from_millis(provider_stream_connect_timeout_ms() as u64);
                 let provider_idle_timeout =
