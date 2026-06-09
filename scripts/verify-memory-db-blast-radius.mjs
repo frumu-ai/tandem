@@ -17,7 +17,11 @@ import process from "node:process";
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
 
 const files = {
-  memorySchema: "crates/tandem-memory/src/memory_database_impl_parts/part01.rs",
+  memorySchemas: [
+    "crates/tandem-memory/src/memory_database_impl_parts/part01.rs",
+    "crates/tandem-memory/src/memory_database_impl_parts/part01_a.rs",
+    "crates/tandem-memory/src/memory_database_impl_parts/part01_b.rs",
+  ],
   memoryQueries: "crates/tandem-memory/src/memory_database_impl_parts/part02.rs",
   memoryDb: "crates/tandem-memory/src/db.rs",
   responseCache: "crates/tandem-memory/src/response_cache.rs",
@@ -55,13 +59,15 @@ function packagePresent(lockfile, name) {
   return new RegExp(`name = "${name}"`, "m").test(lockfile);
 }
 
-const schema = readRepoFile(files.memorySchema);
+const schemas = files.memorySchemas.map((relativePath) =>
+  readRepoFile(relativePath),
+);
 const queries = readRepoFile(files.memoryQueries);
 const db = readRepoFile(files.memoryDb);
 const responseCache = readRepoFile(files.responseCache);
 const cargoLock = readRepoFile(files.cargoLock);
 const memorySources = [
-  { file: files.memorySchema, content: schema },
+  ...files.memorySchemas.map((file, index) => ({ file, content: schemas[index] })),
   { file: files.memoryQueries, content: queries },
   { file: files.memoryDb, content: db },
   { file: files.responseCache, content: responseCache },
