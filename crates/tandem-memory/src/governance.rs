@@ -121,19 +121,37 @@ impl MemoryAuthorityJobContextError {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryAuthorityJobValidation<'a> {
+    pub context: Option<&'a MemoryAuthorityJobContext>,
+    pub require_context: bool,
+    pub org_id: &'a str,
+    pub workspace_id: &'a str,
+    pub deployment_id: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+    pub run_id: &'a str,
+    pub partition: &'a MemoryPartition,
+    pub operation: MemoryAuthorityOperation,
+    pub classification: Option<MemoryClassification>,
+    pub source_memory_id: Option<&'a str>,
+}
+
 pub fn validate_memory_authority_job_context(
-    context: Option<&MemoryAuthorityJobContext>,
-    require_context: bool,
-    org_id: &str,
-    workspace_id: &str,
-    deployment_id: Option<&str>,
-    actor_id: Option<&str>,
-    run_id: &str,
-    partition: &MemoryPartition,
-    operation: MemoryAuthorityOperation,
-    classification: Option<MemoryClassification>,
-    source_memory_id: Option<&str>,
+    validation: MemoryAuthorityJobValidation<'_>,
 ) -> Result<(), MemoryAuthorityJobContextError> {
+    let MemoryAuthorityJobValidation {
+        context,
+        require_context,
+        org_id,
+        workspace_id,
+        deployment_id,
+        actor_id,
+        run_id,
+        partition,
+        operation,
+        classification,
+        source_memory_id,
+    } = validation;
     let Some(context) = context else {
         return if require_context {
             Err(MemoryAuthorityJobContextError::Missing)
@@ -507,19 +525,19 @@ mod tests {
     fn authority_context_revalidates_execution_scope() {
         let (partition, context) = authority_context();
 
-        let result = validate_memory_authority_job_context(
-            Some(&context),
-            true,
-            "org-1",
-            "ws-1",
-            Some("deploy-1"),
-            Some("reviewer-1"),
-            "run-1",
-            &partition,
-            MemoryAuthorityOperation::Promote,
-            Some(MemoryClassification::Internal),
-            Some("mem-1"),
-        );
+        let result = validate_memory_authority_job_context(MemoryAuthorityJobValidation {
+            context: Some(&context),
+            require_context: true,
+            org_id: "org-1",
+            workspace_id: "ws-1",
+            deployment_id: Some("deploy-1"),
+            actor_id: Some("reviewer-1"),
+            run_id: "run-1",
+            partition: &partition,
+            operation: MemoryAuthorityOperation::Promote,
+            classification: Some(MemoryClassification::Internal),
+            source_memory_id: Some("mem-1"),
+        });
 
         assert_eq!(result, Ok(()));
     }
@@ -529,19 +547,19 @@ mod tests {
         let (partition, mut context) = authority_context();
         context.operation = MemoryAuthorityOperation::Write;
 
-        let result = validate_memory_authority_job_context(
-            Some(&context),
-            true,
-            "org-1",
-            "ws-1",
-            Some("deploy-1"),
-            Some("reviewer-1"),
-            "run-1",
-            &partition,
-            MemoryAuthorityOperation::Promote,
-            Some(MemoryClassification::Internal),
-            Some("mem-1"),
-        );
+        let result = validate_memory_authority_job_context(MemoryAuthorityJobValidation {
+            context: Some(&context),
+            require_context: true,
+            org_id: "org-1",
+            workspace_id: "ws-1",
+            deployment_id: Some("deploy-1"),
+            actor_id: Some("reviewer-1"),
+            run_id: "run-1",
+            partition: &partition,
+            operation: MemoryAuthorityOperation::Promote,
+            classification: Some(MemoryClassification::Internal),
+            source_memory_id: Some("mem-1"),
+        });
 
         assert_eq!(
             result,
@@ -557,19 +575,19 @@ mod tests {
     fn missing_authority_context_can_be_required() {
         let (partition, _) = authority_context();
 
-        let result = validate_memory_authority_job_context(
-            None,
-            true,
-            "org-1",
-            "ws-1",
-            Some("deploy-1"),
-            Some("reviewer-1"),
-            "run-1",
-            &partition,
-            MemoryAuthorityOperation::Promote,
-            None,
-            None,
-        );
+        let result = validate_memory_authority_job_context(MemoryAuthorityJobValidation {
+            context: None,
+            require_context: true,
+            org_id: "org-1",
+            workspace_id: "ws-1",
+            deployment_id: Some("deploy-1"),
+            actor_id: Some("reviewer-1"),
+            run_id: "run-1",
+            partition: &partition,
+            operation: MemoryAuthorityOperation::Promote,
+            classification: None,
+            source_memory_id: None,
+        });
 
         assert_eq!(result, Err(MemoryAuthorityJobContextError::Missing));
     }

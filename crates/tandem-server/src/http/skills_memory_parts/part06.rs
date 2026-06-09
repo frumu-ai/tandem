@@ -25,16 +25,30 @@ fn validate_memory_capability_guardrail_context(
     Ok(cap)
 }
 
-fn validate_memory_authority_job_context_for_request(
-    tenant_context: &TenantContext,
-    capability: &MemoryCapabilityToken,
-    run_id: &str,
-    partition: &tandem_memory::MemoryPartition,
+struct MemoryAuthorityRequestValidation<'a> {
+    tenant_context: &'a TenantContext,
+    capability: &'a MemoryCapabilityToken,
+    run_id: &'a str,
+    partition: &'a tandem_memory::MemoryPartition,
     operation: tandem_memory::MemoryAuthorityOperation,
     classification: Option<tandem_memory::MemoryClassification>,
-    source_memory_id: Option<&str>,
-    authority_job_context: Option<&tandem_memory::MemoryAuthorityJobContext>,
+    source_memory_id: Option<&'a str>,
+    authority_job_context: Option<&'a tandem_memory::MemoryAuthorityJobContext>,
+}
+
+fn validate_memory_authority_job_context_for_request(
+    validation: MemoryAuthorityRequestValidation<'_>,
 ) -> Result<(), &'static str> {
+    let MemoryAuthorityRequestValidation {
+        tenant_context,
+        capability,
+        run_id,
+        partition,
+        operation,
+        classification,
+        source_memory_id,
+        authority_job_context,
+    } = validation;
     let (org_id, workspace_id, deployment_id) = if tenant_context.is_local_implicit() {
         (
             partition.org_id.as_str(),
@@ -48,19 +62,19 @@ fn validate_memory_authority_job_context_for_request(
             tenant_context.deployment_id.as_deref(),
         )
     };
-    tandem_memory::validate_memory_authority_job_context(
-        authority_job_context,
-        false,
+    tandem_memory::validate_memory_authority_job_context(tandem_memory::MemoryAuthorityJobValidation {
+        context: authority_job_context,
+        require_context: false,
         org_id,
         workspace_id,
         deployment_id,
-        Some(capability.subject.as_str()),
+        actor_id: Some(capability.subject.as_str()),
         run_id,
         partition,
         operation,
         classification,
         source_memory_id,
-    )
+    })
     .map_err(|error| error.as_str())
 }
 
@@ -93,16 +107,18 @@ async fn validate_memory_put_capability_with_guardrail(
         .await?;
         return Err(StatusCode::FORBIDDEN);
     }
-    if let Err(detail) = validate_memory_authority_job_context_for_request(
-        tenant_context,
-        &cap,
-        &request.run_id,
-        &request.partition,
-        tandem_memory::MemoryAuthorityOperation::Write,
-        Some(request.classification),
-        None,
-        request.authority_job_context.as_ref(),
-    ) {
+    if let Err(detail) =
+        validate_memory_authority_job_context_for_request(MemoryAuthorityRequestValidation {
+            tenant_context,
+            capability: &cap,
+            run_id: &request.run_id,
+            partition: &request.partition,
+            operation: tandem_memory::MemoryAuthorityOperation::Write,
+            classification: Some(request.classification),
+            source_memory_id: None,
+            authority_job_context: request.authority_job_context.as_ref(),
+        })
+    {
         emit_blocked_memory_put_guardrail(
             state,
             tenant_context,
@@ -145,16 +161,18 @@ async fn validate_memory_promote_capability_with_guardrail(
         .await?;
         return Err(StatusCode::FORBIDDEN);
     }
-    if let Err(detail) = validate_memory_authority_job_context_for_request(
-        tenant_context,
-        &cap,
-        &request.run_id,
-        &request.partition,
-        tandem_memory::MemoryAuthorityOperation::Promote,
-        None,
-        Some(&request.source_memory_id),
-        request.authority_job_context.as_ref(),
-    ) {
+    if let Err(detail) =
+        validate_memory_authority_job_context_for_request(MemoryAuthorityRequestValidation {
+            tenant_context,
+            capability: &cap,
+            run_id: &request.run_id,
+            partition: &request.partition,
+            operation: tandem_memory::MemoryAuthorityOperation::Promote,
+            classification: None,
+            source_memory_id: Some(&request.source_memory_id),
+            authority_job_context: request.authority_job_context.as_ref(),
+        })
+    {
         emit_blocked_memory_promote_guardrail(
             state,
             tenant_context,
@@ -219,16 +237,18 @@ async fn validate_memory_search_capability_with_guardrail(
         )
         .await;
     }
-    if let Err(detail) = validate_memory_authority_job_context_for_request(
-        tenant_context,
-        &cap,
-        &request.run_id,
-        &request.partition,
-        tandem_memory::MemoryAuthorityOperation::Read,
-        None,
-        None,
-        request.authority_job_context.as_ref(),
-    ) {
+    if let Err(detail) =
+        validate_memory_authority_job_context_for_request(MemoryAuthorityRequestValidation {
+            tenant_context,
+            capability: &cap,
+            run_id: &request.run_id,
+            partition: &request.partition,
+            operation: tandem_memory::MemoryAuthorityOperation::Read,
+            classification: None,
+            source_memory_id: None,
+            authority_job_context: request.authority_job_context.as_ref(),
+        })
+    {
         let requested_scopes = if request.read_scopes.is_empty() {
             cap.memory.read_tiers.clone()
         } else {
