@@ -1086,6 +1086,71 @@ async fn channel_session_archival_writes_deduped_global_exchange_memory() {
 // decisions surfaced through the session permission registry.
 
 #[tokio::test]
+async fn delete_session_defers_when_run_is_active() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/session")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "title": "delete-active", "directory": "." }).to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app.clone().oneshot(create).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let session_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("session id")
+        .to_string();
+
+    state
+        .run_registry
+        .acquire(&session_id, "run-delete-1".to_string(), None, None, None)
+        .await
+        .expect("acquire active run");
+
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri(format!("/session/{session_id}"))
+        .body(Body::empty())
+        .expect("delete request");
+    let delete_resp = app.clone().oneshot(delete).await.expect("delete response");
+    assert_eq!(delete_resp.status(), StatusCode::OK);
+    let delete_payload: Value = serde_json::from_slice(
+        &to_bytes(delete_resp.into_body(), usize::MAX)
+            .await
+            .expect("delete body"),
+    )
+    .expect("delete json");
+    assert_eq!(
+        delete_payload.get("deleted").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        delete_payload.get("reason").and_then(Value::as_str),
+        Some("active_run")
+    );
+
+    assert!(
+        state.storage.get_session(&session_id).await.is_some(),
+        "active session must remain available for run finalization"
+    );
+    assert!(
+        state.run_registry.get(&session_id).await.is_some(),
+        "active run stays registered until execute_run observes cancellation"
+    );
+}
+
+#[tokio::test]
 async fn abort_session_interrupts_active_run() {
     let state = test_state().await;
     let app = app_router(state.clone());
