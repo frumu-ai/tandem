@@ -124,7 +124,12 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
         const text = String(item?.text || item?.content || item?.value || "");
         const compact = text.length > 340 ? `${text.slice(0, 340)}...` : text;
         const metadata = item?.metadata || {};
+        const provenance = item?.provenance || {};
         const linkage = item?.linkage || {};
+        const promotion = metadata?.promotion || provenance?.promotion || {};
+        const governance =
+          item?.governance || promotion?.governance || provenance?.governance || {};
+        const sourceOutcome = governance?.source_outcome || promotion?.governance?.source_outcome || {};
         const sourcePath = String(
           item?.source_path ||
             item?.sourcePath ||
@@ -147,6 +152,19 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
         );
         const visibility = String(item?.visibility || metadata?.visibility || "");
         const runId = String(item?.run_id || item?.runId || linkage?.run_id || "");
+        const originRunId = String(linkage?.origin_run_id || provenance?.origin_run_id || "");
+        const promoteRunId = String(linkage?.promote_run_id || promotion?.promote_run_id || "");
+        const approvalId = String(
+          linkage?.approval_id ||
+            promotion?.approval_id ||
+            promotion?.review?.approval_id ||
+            sourceOutcome?.approval_id ||
+            ""
+        );
+        const policyDecisionId = String(governance?.policy_decision_id || "");
+        const auditId = String(governance?.audit_id || "");
+        const scrubStatus = String(governance?.scrub_status || "");
+        const sourceOutcomeStatus = String(sourceOutcome?.status || "");
         return {
           id,
           text,
@@ -157,6 +175,13 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
           project,
           visibility,
           runId,
+          originRunId,
+          promoteRunId,
+          approvalId,
+          policyDecisionId,
+          auditId,
+          scrubStatus,
+          sourceOutcomeStatus,
           runtime: isRuntimeMemory(item, sourceType),
         };
       }),
@@ -320,6 +345,21 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
                     {item.project ? <Badge tone="info">{item.project}</Badge> : null}
                     {item.visibility ? <Badge tone="ghost">{item.visibility}</Badge> : null}
                     {item.runId ? <Badge tone="ghost">{item.runId}</Badge> : null}
+                    {item.originRunId && item.originRunId !== item.runId ? (
+                      <Badge tone="ghost">origin {item.originRunId}</Badge>
+                    ) : null}
+                    {item.promoteRunId ? (
+                      <Badge tone="info">promoted {item.promoteRunId}</Badge>
+                    ) : null}
+                    {item.approvalId ? <Badge tone="info">approval {item.approvalId}</Badge> : null}
+                    {item.policyDecisionId ? (
+                      <Badge tone="ghost">policy {item.policyDecisionId}</Badge>
+                    ) : null}
+                    {item.scrubStatus ? <Badge tone="ghost">scrub {item.scrubStatus}</Badge> : null}
+                    {item.sourceOutcomeStatus ? (
+                      <Badge tone="ghost">outcome {item.sourceOutcomeStatus}</Badge>
+                    ) : null}
+                    {item.auditId ? <Badge tone="ghost">audit {item.auditId}</Badge> : null}
                   </div>
                   {item.sourcePath ? (
                     <div className="tcp-subtle mb-2 truncate text-[11px]">{item.sourcePath}</div>

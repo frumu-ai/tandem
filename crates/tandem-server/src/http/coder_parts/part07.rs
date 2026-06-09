@@ -859,6 +859,14 @@ pub(super) async fn coder_memory_candidate_promote(
                             reviewer_id: input.reviewer_id.clone(),
                             approval_id: input.approval_id.clone(),
                         },
+                        source_outcome: Some(tandem_memory::PromotionSourceOutcome {
+                            status: Some("approved".to_string()),
+                            approved: Some(true),
+                            source_run_id: Some(record.linked_context_run_id.clone()),
+                            approval_id: input.approval_id.clone(),
+                            policy_decision_id: None,
+                            audit_id: None,
+                        }),
                     },
                     Some(capability),
                 )

@@ -422,6 +422,21 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
         },
         "expires_at": 9999999999999u64
     });
+    let next_run_capability = json!({
+        "run_id": "run-3-next",
+        "subject": "reviewer-user",
+        "org_id": "org-1",
+        "workspace_id": "ws-1",
+        "project_id": "proj-1",
+        "memory": {
+            "read_tiers": ["session", "project"],
+            "write_tiers": [],
+            "promote_targets": [],
+            "require_review_for_promote": true,
+            "allow_auto_use_tiers": ["curated"]
+        },
+        "expires_at": 9999999999999u64
+    });
 
     let put_req = Request::builder()
         .method("POST")
@@ -654,6 +669,14 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
                     "reviewer_id": "user-1",
                     "approval_id": "appr-1"
                 },
+                "source_outcome": {
+                    "status": "approved",
+                    "approved": true,
+                    "source_run_id": "run-3-ok",
+                    "approval_id": "appr-1",
+                    "policy_decision_id": "source-policy-1",
+                    "audit_id": put_audit_id
+                },
                 "capability": capability
             })
             .to_string(),
@@ -682,6 +705,21 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
         .and_then(Value::as_str)
         .expect("promote audit id")
         .to_string();
+    let promote_policy_decision_id = promote_payload
+        .get("policy_decision_id")
+        .and_then(Value::as_str)
+        .expect("promote policy decision id")
+        .to_string();
+    let policy_record = state
+        .get_policy_decision(&promote_policy_decision_id)
+        .await
+        .expect("promote policy decision");
+    assert_eq!(policy_record.decision, tandem_types::PolicyDecisionEffect::Allow);
+    assert_eq!(
+        policy_record.audit_event_id.as_deref(),
+        Some(promote_audit_id.as_str())
+    );
+    assert_eq!(policy_record.approval_id.as_deref(), Some("appr-1"));
     let promote_event = next_event_of_type(&mut rx, "memory.promote").await;
     assert_eq!(
         promote_event
@@ -758,6 +796,21 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .get("auditID")
             .and_then(Value::as_str),
         Some(promote_audit_id.as_str())
+    );
+    assert_eq!(
+        promote_event
+            .properties
+            .get("policyDecisionID")
+            .and_then(Value::as_str),
+        Some(promote_policy_decision_id.as_str())
+    );
+    assert_eq!(
+        promote_event
+            .properties
+            .get("governance")
+            .and_then(|v| v.get("scrub_status"))
+            .and_then(Value::as_str),
+        Some("passed")
     );
     let promote_updated_event = next_event_of_type(&mut rx, "memory.updated").await;
     assert_eq!(
@@ -853,6 +906,13 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .and_then(Value::as_str),
         Some(promote_audit_id.as_str())
     );
+    assert_eq!(
+        promote_updated_event
+            .properties
+            .get("policyDecisionID")
+            .and_then(Value::as_str),
+        Some(promote_policy_decision_id.as_str())
+    );
 
     let search_req = Request::builder()
         .method("POST")
@@ -860,7 +920,7 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
-                "run_id": "run-3-ok",
+                "run_id": "run-3-next",
                 "query": "safe promote memory",
                 "read_scopes": ["project"],
                 "partition": {
@@ -869,7 +929,7 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
                     "project_id": "proj-1",
                     "tier": "project"
                 },
-                "capability": capability,
+                "capability": next_run_capability,
                 "limit": 5
             })
             .to_string(),
@@ -937,6 +997,34 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .and_then(Value::as_str),
         Some("appr-1")
     );
+    assert_eq!(
+        promoted_hit
+            .get("governance")
+            .and_then(|row| row.get("policy_decision_id"))
+            .and_then(Value::as_str),
+        Some(promote_policy_decision_id.as_str())
+    );
+    assert_eq!(
+        promoted_hit
+            .get("governance")
+            .and_then(|row| row.get("scrub_status"))
+            .and_then(Value::as_str),
+        Some("passed")
+    );
+    assert_eq!(
+        promoted_hit
+            .get("influence")
+            .and_then(|row| row.get("retrieval_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-next")
+    );
+    assert_eq!(
+        promoted_hit
+            .get("influence")
+            .and_then(|row| row.get("policy_decision_id"))
+            .and_then(Value::as_str),
+        Some(promote_policy_decision_id.as_str())
+    );
 
     let audit_req = Request::builder()
         .method("GET")
@@ -1000,6 +1088,8 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
                                 && detail.contains("partition_key=org-1/ws-1/proj-1/project")
                                 && detail.contains("source_memory_id=")
                                 && detail.contains("approval_id=appr-1")
+                                && detail.contains("scrub_status=")
+                                && detail.contains("policy_decision_id=")
                                 && detail.contains("origin_run_id=run-3-ok")
                                 && detail.contains("project_id=proj-1")
                                 && detail.contains("promote_run_id=run-3-ok")

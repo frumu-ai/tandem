@@ -1,7 +1,16 @@
+#[derive(Debug, Clone)]
+struct MemoryPromotionGovernanceEvidence {
+    audit_id: String,
+    policy_decision_id: Option<String>,
+    scrub_report: ScrubReport,
+    source_outcome: Value,
+}
+
 fn memory_promote_metadata(
     metadata: Option<&Value>,
     request: &MemoryPromoteRequest,
     promoted_at_ms: u64,
+    governance: &MemoryPromotionGovernanceEvidence,
 ) -> Option<Value> {
     let mut obj = metadata
         .and_then(Value::as_object)
@@ -21,6 +30,13 @@ fn memory_promote_metadata(
                 "reviewer_id": request.review.reviewer_id,
                 "approval_id": request.review.approval_id,
             },
+            "governance": {
+                "audit_id": governance.audit_id,
+                "policy_decision_id": governance.policy_decision_id,
+                "scrub_status": governance.scrub_report.status,
+                "scrub_redactions": governance.scrub_report.redactions,
+                "source_outcome": governance.source_outcome,
+            },
         }),
     );
     let next_trust_label = if memory_review_has_evidence(&request.review) {
@@ -38,6 +54,7 @@ fn memory_promote_provenance(
     partition_key: &str,
     promoted_at_ms: u64,
     tenant_context: &TenantContext,
+    governance: &MemoryPromotionGovernanceEvidence,
 ) -> Value {
     let mut obj = provenance
         .and_then(Value::as_object)
@@ -54,6 +71,13 @@ fn memory_promote_provenance(
             "reviewer_id": request.review.reviewer_id,
             "approval_id": request.review.approval_id,
             "tenant_context": tenant_context,
+            "governance": {
+                "audit_id": governance.audit_id,
+                "policy_decision_id": governance.policy_decision_id,
+                "scrub_status": governance.scrub_report.status,
+                "scrub_redactions": governance.scrub_report.redactions,
+                "source_outcome": governance.source_outcome,
+            },
         }),
     );
     obj.insert(
@@ -70,7 +94,76 @@ fn memory_promote_provenance(
             "approval_id": request.review.approval_id,
         }),
     );
+    obj.insert(
+        "governance".to_string(),
+        json!({
+            "audit_id": governance.audit_id,
+            "policy_decision_id": governance.policy_decision_id,
+            "scrub_status": governance.scrub_report.status,
+            "source_outcome": governance.source_outcome,
+        }),
+    );
     Value::Object(obj)
+}
+
+fn memory_promotion_governance_payload(
+    metadata: Option<&Value>,
+    provenance: Option<&Value>,
+) -> Value {
+    let promotion_metadata = metadata
+        .and_then(|row| row.get("promotion"))
+        .and_then(|row| row.get("governance"));
+    let promotion_provenance = provenance
+        .and_then(|row| row.get("promotion"))
+        .and_then(|row| row.get("governance"));
+    let record_governance = provenance.and_then(|row| row.get("governance"));
+    let lookup = |key: &str| {
+        promotion_metadata
+            .and_then(|row| row.get(key))
+            .or_else(|| promotion_provenance.and_then(|row| row.get(key)))
+            .or_else(|| record_governance.and_then(|row| row.get(key)))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    json!({
+        "audit_id": lookup("audit_id"),
+        "policy_decision_id": lookup("policy_decision_id"),
+        "scrub_status": lookup("scrub_status"),
+        "source_outcome": lookup("source_outcome"),
+    })
+}
+
+fn memory_promotion_policy_decision_id(
+    metadata: Option<&Value>,
+    provenance: Option<&Value>,
+) -> Option<String> {
+    memory_promotion_governance_payload(metadata, provenance)
+        .get("policy_decision_id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn memory_influence_payload(record: &GlobalMemoryRecord, retrieval_run_id: &str) -> Value {
+    let linkage = memory_linkage(record);
+    json!({
+        "retrieval_run_id": retrieval_run_id,
+        "memory_id": record.id,
+        "source_run_id": record.run_id,
+        "origin_run_id": linkage.get("origin_run_id").cloned().unwrap_or(Value::Null),
+        "promote_run_id": linkage.get("promote_run_id").cloned().unwrap_or(Value::Null),
+        "approval_id": linkage.get("approval_id").cloned().unwrap_or(Value::Null),
+        "policy_decision_id": memory_promotion_policy_decision_id(
+            record.metadata.as_ref(),
+            record.provenance.as_ref()
+        ),
+        "scrub_status": memory_promotion_governance_payload(
+            record.metadata.as_ref(),
+            record.provenance.as_ref()
+        )
+        .get("scrub_status")
+        .cloned()
+        .unwrap_or(Value::Null),
+    })
 }
 
 fn memory_linkage(record: &GlobalMemoryRecord) -> Value {
@@ -181,6 +274,126 @@ fn memory_review_has_evidence(review: &tandem_memory::PromotionReview) -> bool {
             .approval_id
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn normalized_outcome_status(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('-', "_")
+}
+
+fn outcome_status_from_value(value: &Value) -> Option<String> {
+    if let Some(status) = value
+        .get("status")
+        .or_else(|| value.get("outcome"))
+        .or_else(|| value.get("decision"))
+        .or_else(|| value.get("disposition"))
+        .and_then(Value::as_str)
+    {
+        return Some(normalized_outcome_status(status));
+    }
+    if let Some(approved) = value.get("approved").and_then(Value::as_bool) {
+        return Some(if approved { "approved" } else { "rejected" }.to_string());
+    }
+    None
+}
+
+fn outcome_status_from_metadata(metadata: Option<&Value>) -> Option<String> {
+    let metadata = metadata?;
+    for key in [
+        "source_outcome",
+        "approved_outcome",
+        "outcome",
+        "human_review",
+        "approval",
+    ] {
+        if let Some(status) = metadata.get(key).and_then(outcome_status_from_value) {
+            return Some(status);
+        }
+    }
+    for key in ["outcome_status", "human_disposition", "review_status"] {
+        if let Some(status) = metadata.get(key).and_then(Value::as_str) {
+            return Some(normalized_outcome_status(status));
+        }
+    }
+    if metadata
+        .get("artifact_validation")
+        .and_then(|value| value.get("rejected_artifact_reason"))
+        .is_some()
+        || metadata.get("rejected_artifact_reason").is_some()
+    {
+        return Some("artifact_rejected".to_string());
+    }
+    if let Some(approved) = metadata.get("approved").and_then(Value::as_bool) {
+        return Some(if approved { "approved" } else { "rejected" }.to_string());
+    }
+    None
+}
+
+fn outcome_status_from_request(request: &MemoryPromoteRequest) -> Option<String> {
+    let outcome = request.source_outcome.as_ref()?;
+    outcome
+        .status
+        .as_deref()
+        .map(normalized_outcome_status)
+        .or_else(|| {
+            outcome
+                .approved
+                .map(|approved| if approved { "approved" } else { "rejected" }.to_string())
+        })
+}
+
+fn promotion_outcome_block_reason(
+    request: &MemoryPromoteRequest,
+    source: &GlobalMemoryRecord,
+) -> Option<String> {
+    for status in [
+        outcome_status_from_request(request),
+        outcome_status_from_metadata(source.metadata.as_ref()),
+        outcome_status_from_metadata(source.provenance.as_ref()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if matches!(
+            status.as_str(),
+            "denied"
+                | "deny"
+                | "rejected"
+                | "reject"
+                | "rework"
+                | "reworked"
+                | "regressed"
+                | "superseded"
+                | "failed"
+                | "failure"
+                | "blocked"
+                | "artifact_rejected"
+        ) {
+            return Some(format!("source outcome not approved: {status}"));
+        }
+    }
+    None
+}
+
+fn promotion_source_outcome_value(
+    request: &MemoryPromoteRequest,
+    source: &GlobalMemoryRecord,
+) -> Value {
+    let requested = request.source_outcome.as_ref();
+    let status = outcome_status_from_request(request)
+        .or_else(|| outcome_status_from_metadata(source.metadata.as_ref()))
+        .or_else(|| outcome_status_from_metadata(source.provenance.as_ref()));
+    json!({
+        "status": status,
+        "approved": requested.and_then(|outcome| outcome.approved),
+        "source_run_id": requested
+            .and_then(|outcome| outcome.source_run_id.clone())
+            .unwrap_or_else(|| source.run_id.clone()),
+        "approval_id": requested
+            .and_then(|outcome| outcome.approval_id.clone())
+            .or_else(|| request.review.approval_id.clone()),
+        "policy_decision_id": requested.and_then(|outcome| outcome.policy_decision_id.clone()),
+        "audit_id": requested.and_then(|outcome| outcome.audit_id.clone()),
+    })
 }
 
 fn memory_trust_label_for_put(request: &MemoryPutRequest) -> tandem_memory::MemoryTrustLabel {

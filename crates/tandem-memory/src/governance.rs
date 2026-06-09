@@ -222,6 +222,22 @@ pub struct PromotionReview {
     pub approval_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PromotionSourceOutcome {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_decision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryPromoteRequest {
     pub run_id: String,
@@ -231,6 +247,8 @@ pub struct MemoryPromoteRequest {
     pub partition: MemoryPartition,
     pub reason: String,
     pub review: PromotionReview,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_outcome: Option<PromotionSourceOutcome>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,6 +275,8 @@ pub struct MemoryPromoteResponse {
     pub to_tier: GovernedMemoryTier,
     pub scrub_report: ScrubReport,
     pub audit_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_decision_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
