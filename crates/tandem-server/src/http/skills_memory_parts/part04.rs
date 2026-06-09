@@ -132,21 +132,9 @@ pub(crate) async fn memory_promote_impl(
             to_tier: request.to_tier,
             scrub_report,
             audit_id,
+            policy_decision_id: None,
         });
     };
-    let source_trust_label = memory_record_trust_label(source.metadata.as_ref())
-        .unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated);
-    if !source_trust_label.is_trusted_for_promotion() && !memory_review_has_evidence(&request.review) {
-        emit_blocked_memory_promote_guardrail(
-            state,
-            tenant_context,
-            &request,
-            capability.subject.clone(),
-            "untrusted memory promotion requires review evidence",
-        )
-        .await?;
-        return Err(StatusCode::FORBIDDEN);
-    }
     let scrub_report = scrub_content(&source.content);
     let audit_id = Uuid::new_v4().to_string();
     let now = crate::now_ms();
@@ -157,8 +145,23 @@ pub(crate) async fn memory_promote_impl(
         request.partition.project_id,
         request.to_tier
     );
-    let linkage = memory_linkage(&source);
-    if scrub_report.status == ScrubStatus::Blocked {
+    let source_outcome = promotion_source_outcome_value(&request, &source);
+    if let Some(reason) = promotion_outcome_block_reason(&request, &source) {
+        let policy_decision_id = record_memory_promotion_policy_decision(
+            state,
+            tenant_context,
+            &request,
+            &capability.subject,
+            Some(&source),
+            &scrub_report,
+            &audit_id,
+            tandem_types::PolicyDecisionEffect::Deny,
+            "source_outcome_not_approved",
+            &reason,
+            Some(&source_outcome),
+        )
+        .await;
+        let linkage = memory_linkage(&source);
         append_memory_audit(
             &state,
             tenant_context,
@@ -173,10 +176,12 @@ pub(crate) async fn memory_promote_impl(
                 partition_key: partition_key.clone(),
                 actor: capability.subject,
                 status: "blocked".to_string(),
-                detail: scrub_report
-                    .block_reason
-                    .as_ref()
-                    .map(|detail| format!("{detail}{}", memory_linkage_detail(&linkage))),
+                detail: Some(format!(
+                    "{reason} scrub_status={} policy_decision_id={}{}",
+                    serde_json::to_string(&scrub_report.status).unwrap_or_default(),
+                    policy_decision_id.clone().unwrap_or_default(),
+                    memory_linkage_detail(&linkage)
+                )),
                 created_at_ms: now,
             },
         )
@@ -196,6 +201,99 @@ pub(crate) async fn memory_promote_impl(
                 "artifactRefs": memory_artifact_refs(source.metadata.as_ref()),
                 "visibility": source.visibility,
                 "scrubStatus": scrub_report.status,
+                "sourceOutcome": source_outcome,
+                "policyDecisionID": policy_decision_id,
+                "linkage": linkage,
+                "detail": reason,
+                "auditID": audit_id,
+            }),
+        );
+        return Ok(MemoryPromoteResponse {
+            promoted: false,
+            new_memory_id: None,
+            to_tier: request.to_tier,
+            scrub_report,
+            audit_id,
+            policy_decision_id,
+        });
+    }
+    let source_trust_label = memory_record_trust_label(source.metadata.as_ref())
+        .unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated);
+    if !source_trust_label.is_trusted_for_promotion() && !memory_review_has_evidence(&request.review) {
+        emit_blocked_memory_promote_guardrail(
+            state,
+            tenant_context,
+            &request,
+            capability.subject.clone(),
+            "untrusted memory promotion requires review evidence",
+        )
+        .await?;
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let linkage = memory_linkage(&source);
+    if scrub_report.status == ScrubStatus::Blocked {
+        let policy_decision_id = record_memory_promotion_policy_decision(
+            state,
+            tenant_context,
+            &request,
+            &capability.subject,
+            Some(&source),
+            &scrub_report,
+            &audit_id,
+            tandem_types::PolicyDecisionEffect::Deny,
+            "scrub_blocked",
+            scrub_report
+                .block_reason
+                .as_deref()
+                .unwrap_or("memory promotion scrub blocked"),
+            Some(&source_outcome),
+        )
+        .await;
+        append_memory_audit(
+            &state,
+            tenant_context,
+            crate::MemoryAuditEvent {
+                audit_id: audit_id.clone(),
+                action: "memory_promote".to_string(),
+                run_id: request.run_id.clone(),
+                tenant_context: tenant_context.clone(),
+                memory_id: None,
+                source_memory_id: Some(source_memory_id.clone()),
+                to_tier: Some(request.to_tier),
+                partition_key: partition_key.clone(),
+                actor: capability.subject,
+                status: "blocked".to_string(),
+                detail: scrub_report
+                    .block_reason
+                    .as_ref()
+                    .map(|detail| {
+                        format!(
+                            "{detail} policy_decision_id={}{}",
+                            policy_decision_id.clone().unwrap_or_default(),
+                            memory_linkage_detail(&linkage)
+                        )
+                    }),
+                created_at_ms: now,
+            },
+        )
+        .await?;
+        publish_tenant_event(
+            state,
+            tenant_context,
+            "memory.promote",
+            json!({
+                "runID": request.run_id,
+                "sourceMemoryID": source_memory_id,
+                "toTier": request.to_tier,
+                "partitionKey": partition_key,
+                "status": "blocked",
+                "kind": memory_kind_label(&source.source_type),
+                "classification": memory_classification_label(source.metadata.as_ref()),
+                "artifactRefs": memory_artifact_refs(source.metadata.as_ref()),
+                "visibility": source.visibility,
+                "scrubStatus": scrub_report.status,
+                "sourceOutcome": source_outcome,
+                "policyDecisionID": policy_decision_id,
                 "linkage": linkage,
                 "detail": scrub_report.block_reason.clone(),
                 "auditID": audit_id,
@@ -207,16 +305,38 @@ pub(crate) async fn memory_promote_impl(
             to_tier: request.to_tier,
             scrub_report,
             audit_id,
+            policy_decision_id,
         });
     }
     let new_id = source.id.clone();
-    let next_metadata = memory_promote_metadata(source.metadata.as_ref(), &request, now);
+    let policy_decision_id = record_memory_promotion_policy_decision(
+        state,
+        tenant_context,
+        &request,
+        &capability.subject,
+        Some(&source),
+        &scrub_report,
+        &audit_id,
+        tandem_types::PolicyDecisionEffect::Allow,
+        "memory_promotion_allowed",
+        "approved memory promotion allowed",
+        Some(&source_outcome),
+    )
+    .await;
+    let governance = MemoryPromotionGovernanceEvidence {
+        audit_id: audit_id.clone(),
+        policy_decision_id: policy_decision_id.clone(),
+        scrub_report: scrub_report.clone(),
+        source_outcome: source_outcome.clone(),
+    };
+    let next_metadata = memory_promote_metadata(source.metadata.as_ref(), &request, now, &governance);
     let next_provenance = memory_promote_provenance(
         source.provenance.as_ref(),
         &request,
         &partition_key,
         now,
         tenant_context,
+        &governance,
     );
     let classification = memory_classification_label(next_metadata.as_ref());
     let artifact_refs = memory_artifact_refs(next_metadata.as_ref());
@@ -227,7 +347,7 @@ pub(crate) async fn memory_promote_impl(
         .join(",");
     let kind = memory_kind_label(&source.source_type);
     let promote_detail = format!(
-        "kind={} classification={} artifact_refs={} visibility=shared tier={} partition_key={} source_memory_id={} approval_id={}{}",
+        "kind={} classification={} artifact_refs={} visibility=shared tier={} partition_key={} source_memory_id={} approval_id={} scrub_status={} policy_decision_id={}{}",
         kind,
         classification,
         artifact_ref_labels,
@@ -235,6 +355,8 @@ pub(crate) async fn memory_promote_impl(
         partition_key,
         source_memory_id,
         request.review.approval_id.clone().unwrap_or_default(),
+        serde_json::to_string(&scrub_report.status).unwrap_or_default(),
+        policy_decision_id.clone().unwrap_or_default(),
         memory_linkage_detail(&memory_linkage_from_parts(
             &source.run_id,
             source.project_tag.as_deref(),
@@ -301,7 +423,13 @@ pub(crate) async fn memory_promote_impl(
             ),
             "approvalID": request.review.approval_id,
             "auditID": audit_id,
+            "policyDecisionID": policy_decision_id,
             "scrubStatus": scrub_report.status,
+            "sourceOutcome": source_outcome,
+            "governance": memory_promotion_governance_payload(
+                next_metadata.as_ref(),
+                Some(&next_provenance),
+            ),
         }),
     );
     publish_tenant_event(
@@ -327,6 +455,13 @@ pub(crate) async fn memory_promote_impl(
             "sourceMemoryID": source_memory_id,
             "approvalID": request.review.approval_id,
             "auditID": audit_id,
+            "policyDecisionID": policy_decision_id,
+            "scrubStatus": scrub_report.status,
+            "sourceOutcome": source_outcome,
+            "governance": memory_promotion_governance_payload(
+                next_metadata.as_ref(),
+                Some(&next_provenance),
+            ),
         }),
     );
     Ok(MemoryPromoteResponse {
@@ -335,7 +470,74 @@ pub(crate) async fn memory_promote_impl(
         to_tier: request.to_tier,
         scrub_report,
         audit_id,
+        policy_decision_id,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_memory_promotion_policy_decision(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    request: &MemoryPromoteRequest,
+    actor: &str,
+    source: Option<&GlobalMemoryRecord>,
+    scrub_report: &ScrubReport,
+    audit_id: &str,
+    decision: tandem_types::PolicyDecisionEffect,
+    reason_code: &str,
+    reason: &str,
+    source_outcome: Option<&Value>,
+) -> Option<String> {
+    let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
+    let data_class = source.and_then(|record| {
+        let target = MemorySourceAccessTarget::from_metadata(record.metadata.as_ref());
+        memory_record_data_class(record, target.as_ref())
+    });
+    let metadata = json!({
+        "memory_promotion": {
+            "source_memory_id": request.source_memory_id,
+            "from_tier": request.from_tier,
+            "to_tier": request.to_tier,
+            "partition_key": memory_target_partition_key(&request.partition, request.to_tier),
+            "reason": request.reason,
+            "scrub_report": scrub_report,
+            "source_outcome": source_outcome.cloned().unwrap_or(Value::Null),
+            "source_run_id": source.map(|record| record.run_id.clone()),
+            "source_visibility": source.map(|record| record.visibility.clone()),
+            "source_kind": source.map(|record| memory_kind_label(&record.source_type).to_string()),
+            "classification": source.map(|record| memory_classification_label(record.metadata.as_ref()).to_string()),
+        }
+    });
+    let record = tandem_types::PolicyDecisionRecord {
+        decision_id: decision_id.clone(),
+        tenant_context: tenant_context.clone(),
+        actor_id: Some(actor.to_string()),
+        session_id: source.and_then(|record| record.session_id.clone()),
+        message_id: source.and_then(|record| record.message_id.clone()),
+        run_id: Some(request.run_id.clone()),
+        automation_id: None,
+        node_id: None,
+        tool: Some("memory.promote".to_string()),
+        resource: None,
+        data_classes: data_class.into_iter().collect(),
+        risk_tier: Some("memory_promotion".to_string()),
+        decision,
+        reason_code: reason_code.to_string(),
+        reason: reason.to_string(),
+        policy_id: Some("memory_promotion_governance".to_string()),
+        grant_id: None,
+        approval_id: request.review.approval_id.clone(),
+        audit_event_id: Some(audit_id.to_string()),
+        created_at_ms: crate::now_ms(),
+        metadata,
+    };
+    match state.record_policy_decision(record).await {
+        Ok(record) => Some(record.decision_id),
+        Err(error) => {
+            tracing::warn!("failed to record memory promotion policy decision: {error:?}");
+            None
+        }
+    }
 }
 
 fn memory_search_rendering_role(label: tandem_memory::MemoryTrustLabel) -> &'static str {
@@ -487,6 +689,11 @@ pub(super) async fn memory_search(
                 "visibility": hit.record.visibility,
                 "artifact_refs": memory_artifact_refs(hit.record.metadata.as_ref()),
                 "linkage": memory_linkage(&hit.record),
+                "governance": memory_promotion_governance_payload(
+                    hit.record.metadata.as_ref(),
+                    hit.record.provenance.as_ref(),
+                ),
+                "influence": memory_influence_payload(&hit.record, &request.run_id),
                 "memory_trust": memory_trust_result_payload(trust_label),
                 "rendering_role": memory_search_rendering_role(trust_label),
                 "metadata": hit.record.metadata,

@@ -575,6 +575,7 @@ impl EvalActionFirewallProbeTool {
                 reviewer_id: Some(requester_actor_id.to_string()),
                 approval_id: Some("eval-denied-output-review".to_string()),
             },
+            source_outcome: None,
         };
 
         let response = crate::http::memory_promote_impl(

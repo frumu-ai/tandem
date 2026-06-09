@@ -85,6 +85,14 @@ pub(super) async fn workflow_learning_candidate_promote(
                     .or_else(|| tenant_context.actor_id.clone()),
                 approval_id: input.approval_id.clone(),
             },
+            source_outcome: Some(tandem_memory::PromotionSourceOutcome {
+                status: Some("approved".to_string()),
+                approved: Some(true),
+                source_run_id: Some(candidate.source_run_id.clone()),
+                approval_id: input.approval_id.clone(),
+                policy_decision_id: None,
+                audit_id: None,
+            }),
         },
         Some(capability),
     )
@@ -356,6 +364,10 @@ pub(super) async fn memory_list(
                 "content": row.content,
                 "artifact_refs": memory_artifact_refs(row.metadata.as_ref()),
                 "linkage": memory_linkage(&row),
+                "governance": memory_promotion_governance_payload(
+                    row.metadata.as_ref(),
+                    row.provenance.as_ref(),
+                ),
                 "metadata": row.metadata,
                 "provenance": row.provenance,
                 "created_at_ms": row.created_at_ms,
