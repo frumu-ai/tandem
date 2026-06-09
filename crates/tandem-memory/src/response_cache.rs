@@ -66,6 +66,7 @@ pub struct ResponseCache {
     db_path: PathBuf,
     ttl_minutes: i64,
     max_entries: usize,
+    crypto: crate::crypto::MemoryCryptoProvider,
 }
 
 impl ResponseCache {
@@ -112,7 +113,15 @@ impl ResponseCache {
             db_path,
             ttl_minutes: i64::from(ttl_minutes),
             max_entries,
+            crypto: crate::crypto::MemoryCryptoProvider::from_env(),
         })
+    }
+
+    /// Override the payload crypto provider (cached responses are semantic
+    /// memory and are encrypted at rest in encrypted modes). Used in tests.
+    pub fn with_crypto_provider(mut self, crypto: crate::crypto::MemoryCryptoProvider) -> Self {
+        self.crypto = crypto;
+        self
     }
 
     /// Build a deterministic cache key from model + system prompt + user prompt.
@@ -153,7 +162,7 @@ impl ResponseCache {
         let conn = self.conn.lock().await;
         let cutoff = (Utc::now() - Duration::minutes(self.ttl_minutes)).to_rfc3339();
 
-        let result: Option<String> = conn
+        let stored: Option<String> = conn
             .query_row(
                 "SELECT response FROM response_cache
                  WHERE prompt_hash = ?1 AND created_at > ?2",
@@ -161,6 +170,10 @@ impl ResponseCache {
                 |row| row.get(0),
             )
             .ok();
+        let result = match stored {
+            Some(value) => Some(self.crypto.decrypt_field(&value)?),
+            None => None,
+        };
 
         if result.is_some() {
             let now = Utc::now().to_rfc3339();
@@ -183,6 +196,7 @@ impl ResponseCache {
         response: &str,
         token_count: u32,
     ) -> MemoryResult<()> {
+        let response_stored = self.crypto.encrypt_field(response)?;
         let conn = self.conn.lock().await;
         let now = Utc::now().to_rfc3339();
 
@@ -190,7 +204,7 @@ impl ResponseCache {
             "INSERT OR REPLACE INTO response_cache
              (prompt_hash, model, response, token_count, created_at, accessed_at, hit_count)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            params![key, model, response, token_count, now, now],
+            params![key, model, response_stored, token_count, now, now],
         )?;
 
         // Evict expired entries
@@ -223,6 +237,7 @@ impl ResponseCache {
         token_count: u32,
         scope: &ResponseCacheScope,
     ) -> MemoryResult<()> {
+        let response_stored = self.crypto.encrypt_field(response)?;
         let conn = self.conn.lock().await;
         let now = Utc::now().to_rfc3339();
         let source_binding_key = scope.source_binding_key();
@@ -235,7 +250,7 @@ impl ResponseCache {
             params![
                 key,
                 model,
-                response,
+                response_stored,
                 token_count,
                 now,
                 now,
