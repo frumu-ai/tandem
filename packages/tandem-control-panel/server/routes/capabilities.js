@@ -1,4 +1,5 @@
 const DEFAULT_CAPABILITY_CACHE_TTL_MS = 45_000;
+const DEFAULT_ACA_PROBE_GRACE_MS = 120_000;
 
 let _cache = {
   value: null,
@@ -8,6 +9,11 @@ let _cache = {
 let _lastReported = {
   aca_available: null,
   engine_healthy: null,
+};
+
+let _acaProbeState = {
+  lastHealthyAtMs: 0,
+  lastHealthyBaseUrl: "",
 };
 
 const _metrics = {
@@ -54,6 +60,7 @@ function incrementProbeError(reason) {
 export function createCapabilitiesHandler(deps) {
   const {
     PROBE_TIMEOUT_MS = 5_000,
+    ACA_PROBE_GRACE_MS = DEFAULT_ACA_PROBE_GRACE_MS,
     ACA_BASE_URL,
     ACA_HEALTH_PATH = "/health",
     getAcaToken,
@@ -82,7 +89,11 @@ export function createCapabilitiesHandler(deps) {
         },
       });
       clearTimeout(timer);
-      if (res.ok) return { available: true, reason: "" };
+      if (res.ok) {
+        _acaProbeState.lastHealthyAtMs = Date.now();
+        _acaProbeState.lastHealthyBaseUrl = base;
+        return { available: true, reason: "", degraded: false };
+      }
       if (res.status === 404 || res.status === 405) {
         incrementProbeError("aca_endpoint_not_found");
         return { available: false, reason: "aca_endpoint_not_found" };
@@ -99,6 +110,27 @@ export function createCapabilitiesHandler(deps) {
       incrementProbeError("aca_probe_error");
       return { available: false, reason: "aca_probe_error" };
     }
+  }
+
+  function smoothAcaProbeResult(probe) {
+    if (probe?.available) return probe;
+    const reason = String(probe?.reason || "");
+    if (!["aca_probe_timeout", "aca_probe_error"].includes(reason)) return probe;
+    const base = String(ACA_BASE_URL || "").trim();
+    const graceMs = Number.isFinite(Number(ACA_PROBE_GRACE_MS))
+      ? Math.max(0, Number(ACA_PROBE_GRACE_MS))
+      : DEFAULT_ACA_PROBE_GRACE_MS;
+    const lastHealthyAtMs = Number(_acaProbeState.lastHealthyAtMs || 0);
+    const recentlyHealthy =
+      lastHealthyAtMs > 0 &&
+      _acaProbeState.lastHealthyBaseUrl === base &&
+      Date.now() - lastHealthyAtMs <= graceMs;
+    if (!recentlyHealthy) return probe;
+    return {
+      available: true,
+      reason,
+      degraded: true,
+    };
   }
 
   async function probeEngineFeatures(engineOk, acaOk) {
@@ -132,7 +164,7 @@ export function createCapabilitiesHandler(deps) {
     const t0 = Date.now();
     const health = await engineHealth().catch(() => null);
     const engineOk = engineIsHealthy(health);
-    const aca = await probeAca();
+    const aca = smoothAcaProbeResult(await probeAca());
     const features = await probeEngineFeatures(engineOk, aca.available);
     const durationMs = Date.now() - t0;
     let installProfile = null;
@@ -155,6 +187,7 @@ export function createCapabilitiesHandler(deps) {
     const result = {
       aca_integration: aca.available,
       aca_reason: aca.reason,
+      aca_probe_degraded: aca.degraded === true,
       coding_workflows: features.coding_workflows,
       missions: features.missions,
       agent_teams: features.agent_teams,
@@ -215,4 +248,6 @@ export function resetCapabilitiesCache() {
 export function resetCapabilitiesState() {
   _lastReported.aca_available = null;
   _lastReported.engine_healthy = null;
+  _acaProbeState.lastHealthyAtMs = 0;
+  _acaProbeState.lastHealthyBaseUrl = "";
 }
