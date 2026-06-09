@@ -145,7 +145,8 @@ impl MemoryCryptoProvider {
             return match &self.inner {
                 CryptoInner::Plaintext | CryptoInner::LocalKey(_) => Ok(stored.to_string()),
                 CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
-                    "hosted memory mode requires encrypted rows (missing tce1 payload marker)".to_string(),
+                    "hosted memory mode requires encrypted rows (missing tce1 payload marker)"
+                        .to_string(),
                 )),
             };
         };
@@ -388,12 +389,11 @@ mod tests {
         );
         // Plaintext mode reading an encrypted value also fails closed.
         assert!(provider
-                .decrypt_field(&format!("{CIPHERTEXT_PREFIX}deadbeef"))
-                .is_err());
+            .decrypt_field(&format!("{CIPHERTEXT_PREFIX}deadbeef"))
+            .is_err());
 
-        assert!(provider
-            .decrypt_field("legacy memory row")
-            .is_err(),
+        assert!(
+            provider.decrypt_field("legacy memory row").is_err(),
             "hosted mode should reject plaintext rows to avoid compatibility leakage"
         );
     }
