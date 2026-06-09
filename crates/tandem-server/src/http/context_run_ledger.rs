@@ -40,9 +40,13 @@ pub(super) async fn context_run_governance_evidence_export(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let context_run = super::context_runs::load_context_run_state(&state, &run_id).await?;
-    super::ensure_same_tenant(&tenant_context, &context_run.tenant_context)?;
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    super::governance::premium_governance_required(&state)?;
+    let context_run = super::context_runs::load_context_run_state(&state, &run_id)
+        .await
+        .map_err(governance_evidence_status_error)?;
+    super::ensure_same_tenant(&tenant_context, &context_run.tenant_context)
+        .map_err(governance_evidence_status_error)?;
 
     let automation_run_id = automation_run_id_from_context_run_id(&context_run.run_id);
     let automation_run = match automation_run_id.as_deref() {
@@ -50,7 +54,8 @@ pub(super) async fn context_run_governance_evidence_export(
         None => None,
     };
     if let Some(run) = automation_run.as_ref() {
-        super::ensure_same_tenant(&tenant_context, &run.tenant_context)?;
+        super::ensure_same_tenant(&tenant_context, &run.tenant_context)
+            .map_err(governance_evidence_status_error)?;
     }
 
     let events = load_context_run_ledger_source_events(&state, &context_run.run_id, None, None);
@@ -96,6 +101,15 @@ pub(super) async fn context_run_governance_evidence_export(
         "filename": filename,
         "content_sha256": content_sha256,
     })))
+}
+
+fn governance_evidence_status_error(status: StatusCode) -> (StatusCode, Json<Value>) {
+    (
+        status,
+        Json(json!({
+            "error": status.canonical_reason().unwrap_or("request failed"),
+        })),
+    )
 }
 
 pub(super) fn context_run_ledger_summary_for_run(state: &AppState, run_id: &str) -> Value {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::state::governance::UnavailableGovernanceEngine;
 
 #[tokio::test]
 async fn context_run_ledger_endpoint_returns_records_and_summary() {
@@ -102,5 +103,32 @@ async fn context_run_ledger_endpoint_returns_records_and_summary() {
             .and_then(|value| value.get("succeeded"))
             .and_then(Value::as_u64),
         Some(1)
+    );
+}
+
+#[tokio::test]
+async fn governance_evidence_export_requires_premium_governance() {
+    let mut state = test_state().await;
+    state.governance_engine = Arc::new(UnavailableGovernanceEngine);
+
+    let response = app_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/context/runs/ctx-run-ledger-1/governance-evidence")
+                .body(Body::empty())
+                .expect("governance evidence request"),
+        )
+        .await
+        .expect("governance evidence response");
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("governance evidence body");
+    let payload: Value = serde_json::from_slice(&body).expect("governance evidence json");
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("PREMIUM_FEATURE_REQUIRED")
     );
 }
