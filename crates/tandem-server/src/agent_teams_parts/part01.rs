@@ -889,13 +889,22 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 });
             }
 
+            let runtime_auth_mode = resolve_runtime_auth_mode();
+            if runtime_auth_mode_requires_verified_tool_context(runtime_auth_mode) {
+                if let Some(decision) =
+                    evaluate_egress_preflight_tool_policy(&state, &ctx, &tool).await
+                {
+                    return Ok(decision);
+                }
+            }
+
             if let Some(decision) = evaluate_fintech_strict_tool_policy(
                 &state,
                 &ctx.session_id,
                 &ctx.message_id,
                 ctx.tenant_context.as_ref(),
                 ctx.verified_tenant_context.as_ref(),
-                resolve_runtime_auth_mode(),
+                runtime_auth_mode,
                 &tool,
                 &ctx.args,
             )
@@ -907,7 +916,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
             // CT-20: resolve high-risk tools against the declarative approval
             // gate matrix. Only enforces under strict runtime auth modes so
             // local/single-tenant deployments remain a no-op.
-            if runtime_auth_mode_requires_verified_tool_context(resolve_runtime_auth_mode()) {
+            if runtime_auth_mode_requires_verified_tool_context(runtime_auth_mode) {
                 if let Some(decision) =
                     evaluate_action_gate_tool_policy(&state, &ctx, &tool).await
                 {
