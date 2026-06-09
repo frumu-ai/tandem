@@ -262,6 +262,12 @@ mod tests {
             todo_write.capabilities.effects,
             vec![tandem_types::ToolEffect::Write]
         );
+        // Planning tools must keep an empty security descriptor so they stay
+        // visible in read-scoped strict contexts (no tenant-resource gating).
+        assert!(
+            todo_write.security.is_empty(),
+            "todo_write must not carry a security descriptor"
+        );
     }
 
     fn grep_args(root: &Path, pattern: &str) -> Value {

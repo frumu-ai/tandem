@@ -170,9 +170,10 @@ fn security_descriptor_for_capabilities(capabilities: &ToolCapabilities) -> Tool
             .data_class(DataClass::Confidential);
     }
 
-    if capabilities.domains.contains(&ToolDomain::Planning) {
-        security = security.permission(AccessPermission::Edit);
-    }
+    // Planning-domain tools (e.g. `todo_write`) are local, non-resource helpers.
+    // They intentionally get no security descriptor so they remain visible in
+    // read-scoped strict contexts, matching their pre-annotation behavior; the
+    // capability metadata still records the planning effect/domain.
 
     security
 }
