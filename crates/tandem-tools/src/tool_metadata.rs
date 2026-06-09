@@ -76,6 +76,41 @@ pub(crate) fn apply_patch_capabilities() -> ToolCapabilities {
         .requires_verification()
 }
 
+pub(crate) fn memory_search_capabilities() -> ToolCapabilities {
+    ToolCapabilities::new()
+        .effect(ToolEffect::Search)
+        .domain(ToolDomain::Memory)
+        .preferred_for_discovery()
+}
+
+pub(crate) fn memory_read_capabilities() -> ToolCapabilities {
+    ToolCapabilities::new()
+        .effect(ToolEffect::Read)
+        .domain(ToolDomain::Memory)
+        .preferred_for_discovery()
+}
+
+pub(crate) fn memory_write_capabilities() -> ToolCapabilities {
+    ToolCapabilities::new()
+        .effect(ToolEffect::Write)
+        .domain(ToolDomain::Memory)
+        .requires_verification()
+}
+
+pub(crate) fn memory_delete_capabilities() -> ToolCapabilities {
+    ToolCapabilities::new()
+        .effect(ToolEffect::Delete)
+        .domain(ToolDomain::Memory)
+        .destructive()
+        .requires_verification()
+}
+
+pub(crate) fn planning_write_capabilities() -> ToolCapabilities {
+    ToolCapabilities::new()
+        .effect(ToolEffect::Write)
+        .domain(ToolDomain::Planning)
+}
+
 fn security_descriptor_for_capabilities(capabilities: &ToolCapabilities) -> ToolSecurityDescriptor {
     let mut security = ToolSecurityDescriptor::new();
 
@@ -117,6 +152,28 @@ fn security_descriptor_for_capabilities(capabilities: &ToolCapabilities) -> Tool
             .permission(AccessPermission::View)
             .data_class(DataClass::Public);
     }
+
+    if capabilities.domains.contains(&ToolDomain::Memory) {
+        let mutates_memory = capabilities.effects.contains(&ToolEffect::Write)
+            || capabilities.effects.contains(&ToolEffect::Patch)
+            || capabilities.effects.contains(&ToolEffect::Delete);
+        let permission = if mutates_memory {
+            AccessPermission::Edit
+        } else {
+            AccessPermission::Read
+        };
+        security = security
+            .permission(permission)
+            .resource_kind(ResourceKind::MemorySpace)
+            .resource_kind(ResourceKind::KnowledgeSpace)
+            .data_class(DataClass::Internal)
+            .data_class(DataClass::Confidential);
+    }
+
+    // Planning-domain tools (e.g. `todo_write`) are local, non-resource helpers.
+    // They intentionally get no security descriptor so they remain visible in
+    // read-scoped strict contexts, matching their pre-annotation behavior; the
+    // capability metadata still records the planning effect/domain.
 
     security
 }

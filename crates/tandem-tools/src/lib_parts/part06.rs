@@ -186,6 +186,88 @@ mod tests {
             .security
             .data_classes
             .contains(&tandem_types::DataClass::SourceCode));
+
+        let memory_search = schema_by_name
+            .get("memory_search")
+            .expect("memory_search tool");
+        assert!(memory_search
+            .capabilities
+            .domains
+            .contains(&tandem_types::ToolDomain::Memory));
+        assert!(memory_search.capabilities.preferred_for_discovery);
+        assert_eq!(
+            memory_search.capabilities.effects,
+            vec![tandem_types::ToolEffect::Search]
+        );
+        assert!(memory_search
+            .security
+            .resource_kinds
+            .contains(&tandem_types::ResourceKind::MemorySpace));
+        assert!(memory_search
+            .security
+            .required_permissions
+            .contains(&tandem_types::AccessPermission::Read));
+
+        let memory_store = schema_by_name
+            .get("memory_store")
+            .expect("memory_store tool");
+        assert!(memory_store
+            .capabilities
+            .domains
+            .contains(&tandem_types::ToolDomain::Memory));
+        assert!(memory_store.capabilities.requires_verification);
+        assert_eq!(
+            memory_store.capabilities.effects,
+            vec![tandem_types::ToolEffect::Write]
+        );
+        assert!(memory_store
+            .security
+            .required_permissions
+            .contains(&tandem_types::AccessPermission::Edit));
+
+        let memory_list = schema_by_name.get("memory_list").expect("memory_list tool");
+        assert!(memory_list
+            .capabilities
+            .domains
+            .contains(&tandem_types::ToolDomain::Memory));
+        assert_eq!(
+            memory_list.capabilities.effects,
+            vec![tandem_types::ToolEffect::Read]
+        );
+
+        let memory_delete = schema_by_name
+            .get("memory_delete")
+            .expect("memory_delete tool");
+        assert!(memory_delete.capabilities.destructive);
+        assert!(memory_delete.capabilities.requires_verification);
+        assert_eq!(
+            memory_delete.capabilities.effects,
+            vec![tandem_types::ToolEffect::Delete]
+        );
+        assert!(memory_delete
+            .security
+            .required_permissions
+            .contains(&tandem_types::AccessPermission::Edit));
+        assert!(memory_delete
+            .security
+            .data_classes
+            .contains(&tandem_types::DataClass::Confidential));
+
+        let todo_write = schema_by_name.get("todo_write").expect("todo_write tool");
+        assert!(todo_write
+            .capabilities
+            .domains
+            .contains(&tandem_types::ToolDomain::Planning));
+        assert_eq!(
+            todo_write.capabilities.effects,
+            vec![tandem_types::ToolEffect::Write]
+        );
+        // Planning tools must keep an empty security descriptor so they stay
+        // visible in read-scoped strict contexts (no tenant-resource gating).
+        assert!(
+            todo_write.security.is_empty(),
+            "todo_write must not carry a security descriptor"
+        );
     }
 
     fn grep_args(root: &Path, pattern: &str) -> Value {
