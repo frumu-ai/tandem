@@ -24,6 +24,18 @@ fn audit_stream_request(org_id: &str, workspace_id: &str, actor_id: &str) -> Req
         .expect("audit stream request")
 }
 
+fn protected_audit_request(uri: &str, org_id: &str, workspace_id: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("x-tandem-org-id", org_id)
+        .header("x-tandem-workspace-id", workspace_id)
+        .header("x-tandem-actor-id", "audit-admin")
+        .header("x-tandem-request-source", "api_token")
+        .body(Body::empty())
+        .expect("protected audit request")
+}
+
 /// A fintech protected-action denial audit event tagged with an explicit tenant. `run_marker`
 /// is echoed into the streamed record's `result.run_id`, giving each event a unique probe.
 fn tenant_audit_event(org_id: &str, workspace_id: &str, run_marker: &str) -> EngineEvent {
@@ -161,4 +173,134 @@ async fn audit_stream_requires_admin_principal() {
         .expect("request");
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn protected_audit_query_filters_by_tenant_context() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let tenant_a =
+        tandem_types::TenantContext::explicit("org-a", "workspace-a", Some("user-a".to_string()));
+    let tenant_b =
+        tandem_types::TenantContext::explicit("org-b", "workspace-b", Some("user-b".to_string()));
+
+    crate::audit::append_protected_audit_event(
+        &state,
+        "automation_v2.internal_sweep.server_restart_failed_run",
+        &tenant_a,
+        Some("tandem-server:internal-sweep".to_string()),
+        json!({
+            "run_id": "run-tenant-a-secret",
+            "automation_id": "automation-a",
+            "tenantContext": tenant_a,
+        }),
+    )
+    .await
+    .expect("tenant a audit");
+    crate::audit::append_protected_audit_event(
+        &state,
+        "automation_v2.internal_sweep.server_restart_failed_run",
+        &tenant_b,
+        Some("tandem-server:internal-sweep".to_string()),
+        json!({
+            "run_id": "run-tenant-b-visible",
+            "automation_id": "automation-b",
+            "tenantContext": tenant_b,
+        }),
+    )
+    .await
+    .expect("tenant b audit");
+
+    let tenant_b_resp = app
+        .clone()
+        .oneshot(protected_audit_request(
+            "/audit/protected?run_id=run-tenant-a-secret",
+            "org-b",
+            "workspace-b",
+        ))
+        .await
+        .expect("tenant b protected audit response");
+    assert_eq!(tenant_b_resp.status(), StatusCode::OK);
+    let tenant_b_body = to_bytes(tenant_b_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant b body");
+    let tenant_b_payload: Value =
+        serde_json::from_slice(&tenant_b_body).expect("tenant b audit json");
+    assert_eq!(
+        tenant_b_payload.get("count").and_then(Value::as_u64),
+        Some(0)
+    );
+
+    let tenant_a_resp = app
+        .oneshot(protected_audit_request(
+            "/audit/protected?run_id=run-tenant-a-secret",
+            "org-a",
+            "workspace-a",
+        ))
+        .await
+        .expect("tenant a protected audit response");
+    assert_eq!(tenant_a_resp.status(), StatusCode::OK);
+    let tenant_a_body = to_bytes(tenant_a_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant a body");
+    let tenant_a_payload: Value =
+        serde_json::from_slice(&tenant_a_body).expect("tenant a audit json");
+    assert_eq!(
+        tenant_a_payload.get("count").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        tenant_a_payload["events"][0]["payload"]["run_id"].as_str(),
+        Some("run-tenant-a-secret")
+    );
+}
+
+#[tokio::test]
+async fn recover_in_flight_runs_records_attributed_protected_audit() {
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::explicit(
+        "org-recovery",
+        "workspace-recovery",
+        Some("user-recovery".to_string()),
+    );
+    let mut automation =
+        super::global::create_test_automation_v2(&state, "auto-v2-restart-recovery-audit").await;
+    automation.set_tenant_context(&tenant);
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("store tenant automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Running;
+            row.active_session_ids = vec!["session-recovery-audit".to_string()];
+            row.latest_session_id = Some("session-recovery-audit".to_string());
+        })
+        .await
+        .expect("mark running");
+
+    let recovered = state.recover_in_flight_runs().await;
+    assert_eq!(recovered, 1);
+
+    let events = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant).await;
+    let recovery_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == "automation_v2.internal_sweep.server_restart_failed_run"
+                && event.payload.get("run_id").and_then(Value::as_str) == Some(run.run_id.as_str())
+        })
+        .expect("protected restart recovery audit event");
+    assert_eq!(recovery_event.tenant_context, tenant);
+    assert_eq!(
+        recovery_event.actor.as_deref(),
+        Some("tandem-server:internal-sweep")
+    );
+    assert_eq!(
+        recovery_event.payload.get("sweep").and_then(Value::as_str),
+        Some("recover_in_flight_runs")
+    );
 }

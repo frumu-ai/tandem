@@ -186,6 +186,43 @@ mod stale_auto_resume_window_tests {
 }
 
 impl AppState {
+    async fn append_internal_sweep_protected_audit_event(
+        &self,
+        event_type: &str,
+        run: &AutomationV2RunRecord,
+        sweep: &str,
+        outcome: &str,
+        detail: Option<String>,
+        metadata: Value,
+    ) {
+        let _ = crate::audit::append_protected_audit_event(
+            self,
+            event_type,
+            &run.tenant_context,
+            Some("tandem-server:internal-sweep".to_string()),
+            json!({
+                "source": "automation_v2_internal_sweep",
+                "sweep": sweep,
+                "actor": {
+                    "type": "system",
+                    "id": "tandem-server",
+                    "component": "automation_v2_sweeper",
+                },
+                "run_id": run.run_id,
+                "runID": run.run_id,
+                "automation_id": run.automation_id,
+                "automationID": run.automation_id,
+                "status": run.status,
+                "stop_kind": run.stop_kind,
+                "reason": detail,
+                "tenantContext": run.tenant_context,
+                "outcome": outcome,
+                "metadata": metadata,
+            }),
+        )
+        .await;
+    }
+
     pub async fn recover_in_flight_runs(&self) -> usize {
         let runs = self
             .automation_v2_runs
@@ -199,7 +236,7 @@ impl AppState {
             match run.status {
                 AutomationRunStatus::Running => {
                     let detail = "automation run interrupted by server restart".to_string();
-                    if self
+                    if let Some(updated_run) = self
                         .update_automation_v2_run(&run.run_id, |row| {
                             row.status = AutomationRunStatus::Failed;
                             row.detail = Some(detail.clone());
@@ -213,8 +250,16 @@ impl AppState {
                             );
                         })
                         .await
-                        .is_some()
                     {
+                        self.append_internal_sweep_protected_audit_event(
+                            "automation_v2.internal_sweep.server_restart_failed_run",
+                            &updated_run,
+                            "recover_in_flight_runs",
+                            "failed_running_run",
+                            Some(detail),
+                            json!({ "previous_status": "running" }),
+                        )
+                        .await;
                         recovered += 1;
                     }
                 }
@@ -229,7 +274,7 @@ impl AppState {
                     // run on the same workspace.
                     let detail =
                         "automation run settled to paused after server restart".to_string();
-                    if self
+                    if let Some(updated_run) = self
                         .update_automation_v2_run(&run.run_id, |row| {
                             row.status = AutomationRunStatus::Paused;
                             if row.pause_reason.is_none() {
@@ -243,8 +288,16 @@ impl AppState {
                             );
                         })
                         .await
-                        .is_some()
                     {
+                        self.append_internal_sweep_protected_audit_event(
+                            "automation_v2.internal_sweep.server_restart_settled_pausing_run",
+                            &updated_run,
+                            "recover_in_flight_runs",
+                            "settled_pausing_run",
+                            Some(detail),
+                            json!({ "previous_status": "pausing" }),
+                        )
+                        .await;
                         recovered += 1;
                     }
                 }
@@ -315,7 +368,7 @@ impl AppState {
                 gate_node_id,
                 stale_after_ms / 1000
             );
-            if self
+            if let Some(updated_run) = self
                 .update_automation_v2_run(&run.run_id, |row| {
                     row.detail = Some(detail.clone());
                     if let Some(gate) = row.checkpoint.awaiting_gate.as_mut() {
@@ -325,7 +378,10 @@ impl AppState {
                             .and_then(|value| value.as_object().cloned())
                             .unwrap_or_default();
                         metadata.insert("stale".to_string(), json!(true));
-                        metadata.insert("stale_policy".to_string(), json!("manual_only_visible_status"));
+                        metadata.insert(
+                            "stale_policy".to_string(),
+                            json!("manual_only_visible_status"),
+                        );
                         metadata.insert("stale_after_ms".to_string(), json!(stale_after_ms));
                         metadata.insert("stale_marked_at_ms".to_string(), json!(now));
                         metadata.insert("requested_at_ms".to_string(), json!(requested_at_ms));
@@ -345,8 +401,21 @@ impl AppState {
                     );
                 })
                 .await
-                .is_some()
             {
+                self.append_internal_sweep_protected_audit_event(
+                    "automation_v2.internal_sweep.approval_gate_marked_stale",
+                    &updated_run,
+                    "mark_stale_awaiting_approval_runs",
+                    "marked_stale",
+                    Some(detail),
+                    json!({
+                        "node_id": gate_node_id,
+                        "requested_at_ms": requested_at_ms,
+                        "stale_after_ms": stale_after_ms,
+                        "policy": "manual_only_visible_status",
+                    }),
+                )
+                .await;
                 marked += 1;
             }
         }
@@ -434,7 +503,7 @@ impl AppState {
             if self.run_launch_blocked_by_spend_pause(&automation).await {
                 continue;
             }
-            if self
+            if let Some(updated_run) = self
                 .update_automation_v2_run(&run.run_id, |row| {
                     row.status = AutomationRunStatus::Queued;
                     row.pause_reason = None;
@@ -453,8 +522,21 @@ impl AppState {
                     );
                 })
                 .await
-                .is_some()
             {
+                self.append_internal_sweep_protected_audit_event(
+                    "automation_v2.internal_sweep.auto_resumed_stale_reaped_run",
+                    &updated_run,
+                    "auto_resume_stale_reaped_runs",
+                    "queued",
+                    Some("auto_resume_after_stale_reap".to_string()),
+                    json!({
+                        "auto_resume_window_ms": auto_resume_window_ms,
+                        "auto_resume_count_before": auto_resume_count,
+                        "auto_resume_max_attempts": auto_resume_max_attempts,
+                        "stale_reaped_at_ms": stale_reaped_at_ms,
+                    }),
+                )
+                .await;
                 resumed += 1;
             }
         }
@@ -500,7 +582,7 @@ impl AppState {
             if !has_approved_override {
                 continue;
             }
-            if self
+            if let Some(updated_run) = self
                 .update_automation_v2_run(&run.run_id, |row| {
                     row.status = AutomationRunStatus::Queued;
                     row.pause_reason = None;
@@ -519,8 +601,19 @@ impl AppState {
                     );
                 })
                 .await
-                .is_some()
             {
+                self.append_internal_sweep_protected_audit_event(
+                    "automation_v2.internal_sweep.auto_resumed_guardrail_stopped_run",
+                    &updated_run,
+                    "auto_resume_guardrail_stopped_runs",
+                    "queued",
+                    Some("auto_resume_after_guardrail_override".to_string()),
+                    json!({
+                        "agent_ids": agent_ids.iter().cloned().collect::<Vec<_>>(),
+                        "stop_kind": "guardrail_stopped",
+                    }),
+                )
+                .await;
                 resumed += 1;
             }
         }
@@ -579,7 +672,7 @@ impl AppState {
         let mut failed = 0usize;
         for run_id in run_ids {
             let detail = "automation run stopped during server shutdown".to_string();
-            if self
+            if let Some(updated_run) = self
                 .update_automation_v2_run(&run_id, |row| {
                     row.status = AutomationRunStatus::Failed;
                     row.detail = Some(detail.clone());
@@ -593,8 +686,16 @@ impl AppState {
                     );
                 })
                 .await
-                .is_some()
             {
+                self.append_internal_sweep_protected_audit_event(
+                    "automation_v2.internal_sweep.shutdown_failed_run",
+                    &updated_run,
+                    "fail_running_automation_runs_for_shutdown",
+                    "failed_running_run",
+                    Some(detail),
+                    json!({ "previous_status": "running" }),
+                )
+                .await;
                 failed += 1;
             }
         }

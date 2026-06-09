@@ -103,6 +103,10 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
 
     router = super::routes_approvals::apply(router);
     router = router.route(
+        "/audit/protected",
+        axum::routing::get(super::audit_stream::protected_audit_events),
+    );
+    router = router.route(
         "/audit/stream",
         axum::routing::get(super::audit_stream::audit_stream),
     );

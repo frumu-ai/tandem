@@ -27,6 +27,43 @@ pub struct ProtectedAuditEnvelope {
     pub created_at_ms: u64,
 }
 
+pub fn protected_audit_event_matches_tenant(
+    event: &ProtectedAuditEnvelope,
+    tenant_context: &TenantContext,
+) -> bool {
+    tenant_context.is_local_implicit()
+        || (event.tenant_context.org_id == tenant_context.org_id
+            && event.tenant_context.workspace_id == tenant_context.workspace_id
+            && event.tenant_context.deployment_id == tenant_context.deployment_id)
+}
+
+pub async fn load_protected_audit_events_for_tenant(
+    state: &AppState,
+    tenant_context: &TenantContext,
+) -> Vec<ProtectedAuditEnvelope> {
+    let content = match fs::read_to_string(&state.protected_audit_path).await {
+        Ok(content) => content,
+        Err(_) => return Vec::new(),
+    };
+    let mut rows = content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            serde_json::from_str::<ProtectedAuditEnvelope>(trimmed).ok()
+        })
+        .filter(|event| protected_audit_event_matches_tenant(event, tenant_context))
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| {
+        a.created_at_ms
+            .cmp(&b.created_at_ms)
+            .then(a.event_id.cmp(&b.event_id))
+    });
+    rows
+}
+
 pub async fn append_protected_audit_event(
     state: &AppState,
     event_type: impl Into<String>,

@@ -1570,6 +1570,23 @@ impl AppState {
                         );
                     }
                 }
+                self.append_internal_sweep_protected_audit_event(
+                    if terminal {
+                        "automation_v2.internal_sweep.failed_stale_run"
+                    } else {
+                        "automation_v2.internal_sweep.paused_stale_run"
+                    },
+                    &updated_run,
+                    "reap_stale_running_automation_runs",
+                    if terminal { "failed" } else { "paused" },
+                    updated_run.detail.clone().or_else(|| Some(detail.clone())),
+                    json!({
+                        "stale_node_ids": stale_node_ids.clone(),
+                        "terminal_stale_node_ids": terminal_stale_node_ids.clone(),
+                        "stale_after_ms": stale_after_ms,
+                    }),
+                )
+                .await;
                 self.event_bus
                     .publish(EngineEvent::new(
                         if terminal {
@@ -1594,6 +1611,7 @@ impl AppState {
                             "stale_node_ids": stale_node_ids,
                             "terminal_stale_node_ids": terminal_stale_node_ids,
                             "stale_after_ms": stale_after_ms,
+                            "tenantContext": updated_run.tenant_context,
                         }),
                     ));
                 reaped += 1;
