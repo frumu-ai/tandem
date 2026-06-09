@@ -1575,4 +1575,3 @@ impl MemoryDatabase {
         Ok(row)
     }
 }
-}
