@@ -720,6 +720,13 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
         Some(promote_audit_id.as_str())
     );
     assert_eq!(policy_record.approval_id.as_deref(), Some("appr-1"));
+    assert_eq!(
+        policy_record
+            .metadata
+            .pointer("/memory_promotion/partition_key")
+            .and_then(Value::as_str),
+        Some("org-1/ws-1/proj-1/project")
+    );
     let promote_event = next_event_of_type(&mut rx, "memory.promote").await;
     assert_eq!(
         promote_event

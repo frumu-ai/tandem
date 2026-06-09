@@ -143,6 +143,16 @@ fn memory_promotion_policy_decision_id(
         .map(ToOwned::to_owned)
 }
 
+fn memory_target_partition_key(
+    partition: &tandem_memory::MemoryPartition,
+    target_tier: tandem_memory::GovernedMemoryTier,
+) -> String {
+    format!(
+        "{}/{}/{}/{}",
+        partition.org_id, partition.workspace_id, partition.project_id, target_tier
+    )
+}
+
 fn memory_influence_payload(record: &GlobalMemoryRecord, retrieval_run_id: &str) -> Value {
     let linkage = memory_linkage(record);
     json!({

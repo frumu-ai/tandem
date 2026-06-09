@@ -498,7 +498,7 @@ async fn record_memory_promotion_policy_decision(
             "source_memory_id": request.source_memory_id,
             "from_tier": request.from_tier,
             "to_tier": request.to_tier,
-            "partition_key": request.partition.key(),
+            "partition_key": memory_target_partition_key(&request.partition, request.to_tier),
             "reason": request.reason,
             "scrub_report": scrub_report,
             "source_outcome": source_outcome.cloned().unwrap_or(Value::Null),
