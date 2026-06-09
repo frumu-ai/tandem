@@ -13,9 +13,10 @@
 //!   KMS provider is provisioned, hosted mode **fails closed** on write rather
 //!   than silently storing plaintext.
 //!
-//! Stored ciphertext is self-describing (`tce1:<hex(nonce||ciphertext+tag)>`),
-//! so reads transparently pass through legacy plaintext rows that predate
-//! encryption (no migration is required for local/dev data).
+//! Stored ciphertext is self-describing (`tce1:<hex(nonce||ciphertext+tag)>`).
+//! In local plaintext and local-encrypted modes, legacy plaintext rows are read
+//! as plain text for compatibility, but hosted modes reject plaintext rows to
+//! enforce fail-closed behavior at rest.
 //!
 //! Embeddings (sqlite-vec KNN) and the FTS-indexed `memory_records.content`
 //! column cannot be encrypted without breaking similarity/full-text search; they
@@ -133,16 +134,26 @@ impl MemoryCryptoProvider {
         }
     }
 
-    /// Decrypt a stored memory text field. Values without the encryption prefix
-    /// are treated as legacy plaintext and returned unchanged.
+    /// Decrypt a stored memory text field.
+    ///
+    /// - In plaintext and local-encrypted modes, values without the encryption
+    ///   prefix are treated as legacy plaintext for compatibility.
+    /// - In hosted mode, plaintext rows are rejected to avoid leaving memory
+    ///   readable at rest under encryption-required semantics.
     pub fn decrypt_field(&self, stored: &str) -> MemoryResult<String> {
         let Some(hex_blob) = stored.strip_prefix(CIPHERTEXT_PREFIX) else {
-            // Legacy / plaintext row: return as-is (no migration required).
-            return Ok(stored.to_string());
+            return match &self.inner {
+                CryptoInner::Plaintext | CryptoInner::LocalKey(_) => Ok(stored.to_string()),
+                CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
+                    "hosted memory mode requires encrypted rows (missing tce1 payload marker)".to_string(),
+                )),
+            };
         };
+
         match &self.inner {
             CryptoInner::LocalKey(key) => decrypt_with_key(key, hex_blob),
-            CryptoInner::Plaintext | CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
+            CryptoInner::Plaintext => Ok(stored.to_string()),
+            CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                 "encrypted memory field cannot be read without the configured decryption key"
                     .to_string(),
             )),
@@ -284,7 +295,7 @@ fn to_hex(bytes: &[u8]) -> String {
 
 fn from_hex(text: &str) -> Option<Vec<u8>> {
     let text = text.trim();
-    if text.is_empty() || text.len() % 2 != 0 {
+    if text.is_empty() || !text.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(text.len() / 2);
@@ -377,8 +388,14 @@ mod tests {
         );
         // Plaintext mode reading an encrypted value also fails closed.
         assert!(provider
-            .decrypt_field(&format!("{CIPHERTEXT_PREFIX}deadbeef"))
-            .is_err());
+                .decrypt_field(&format!("{CIPHERTEXT_PREFIX}deadbeef"))
+                .is_err());
+
+        assert!(provider
+            .decrypt_field("legacy memory row")
+            .is_err(),
+            "hosted mode should reject plaintext rows to avoid compatibility leakage"
+        );
     }
 
     #[test]

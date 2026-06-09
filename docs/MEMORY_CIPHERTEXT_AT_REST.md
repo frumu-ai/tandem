@@ -60,9 +60,10 @@ can adopt the same provider in a follow-up: `memory_records.metadata` /
 
 ## Migration / backup
 
-- **No migration is required.** Reads transparently pass through legacy plaintext
-  rows (values without the `tce1:` prefix), so existing local/dev databases keep
-  working after enabling local encryption; only new writes are encrypted.
+- **No migration is required.** Local plaintext compatibility reads continue to
+  accept legacy rows without the `tce1:` marker, while hosted mode continues to
+  fail closed on plaintext rows; existing local/dev databases keep working after
+  enabling local encryption and only new writes are encrypted.
 - A backfill (re-encrypt existing rows) can be added later but is not needed for
   correctness.
 - **Backups:** local plaintext installs back up portable SQLite files (host/file
