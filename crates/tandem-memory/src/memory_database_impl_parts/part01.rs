@@ -1,4 +1,11 @@
 impl MemoryDatabase {
+    /// Override the memory payload crypto provider (used to select an explicit
+    /// local-encrypted/hosted provider or in tests). Defaults to env resolution.
+    pub fn with_crypto_provider(mut self, crypto: crate::crypto::MemoryCryptoProvider) -> Self {
+        self.crypto = crypto;
+        self
+    }
+
     /// Initialize or open the memory database
     pub async fn new(db_path: &Path) -> MemoryResult<Self> {
         if let Some(parent) = db_path.parent() {
@@ -28,6 +35,7 @@ impl MemoryDatabase {
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path: db_path.to_path_buf(),
+            crypto: crate::crypto::MemoryCryptoProvider::from_env(),
         };
 
         let _schema_init_guard = SCHEMA_INIT_LOCK.lock().await;
@@ -1222,11 +1230,18 @@ impl MemoryDatabase {
         };
 
         let created_at_str = chunk.created_at.to_rfc3339();
-        let metadata_str = chunk
+        // Encrypt semantic payloads at rest (no-op in local plaintext mode).
+        let content_stored = self.crypto.encrypt_field(&chunk.content)?;
+        let metadata_plain = chunk
             .metadata
             .as_ref()
             .map(|m| m.to_string())
             .unwrap_or_default();
+        let metadata_str = if metadata_plain.is_empty() {
+            String::new()
+        } else {
+            self.crypto.encrypt_field(&metadata_plain)?
+        };
 
         // Insert chunk
         match chunk.tier {
@@ -1242,7 +1257,7 @@ impl MemoryDatabase {
                     ),
                     params![
                         chunk.id,
-                        chunk.content,
+                        content_stored,
                         chunk.session_id.as_ref().unwrap_or(&String::new()),
                         chunk.project_id,
                         chunk.source,
@@ -1271,7 +1286,7 @@ impl MemoryDatabase {
                     ),
                     params![
                         chunk.id,
-                        chunk.content,
+                        content_stored,
                         chunk.project_id.as_ref().unwrap_or(&String::new()),
                         chunk.session_id,
                         chunk.source,
@@ -1300,7 +1315,7 @@ impl MemoryDatabase {
                     ),
                     params![
                         chunk.id,
-                        chunk.content,
+                        content_stored,
                         chunk.source,
                         created_at_str,
                         chunk.token_count,
@@ -1417,7 +1432,7 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1446,7 +1461,7 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1474,7 +1489,7 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1506,7 +1521,7 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1534,7 +1549,7 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1564,7 +1579,7 @@ impl MemoryDatabase {
                             embedding_json,
                             limit
                         ],
-                        |row| Ok((row_to_chunk(row, tier)?, row.get::<_, f64>("distance")?)),
+                        |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
                     )?
                     .collect::<Result<Vec<_>, _>>()?;
                 results
@@ -1589,7 +1604,7 @@ impl MemoryDatabase {
 
         let chunks = stmt
             .query_map(params![session_id], |row| {
-                row_to_chunk(row, MemoryTier::Session)
+                row_to_chunk(row, MemoryTier::Session, &self.crypto)
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1623,7 +1638,7 @@ impl MemoryDatabase {
                     tenant_scope.workspace_id.as_str(),
                     tenant_scope.deployment_id.as_deref()
                 ],
-                |row| row_to_chunk(row, MemoryTier::Session),
+                |row| row_to_chunk(row, MemoryTier::Session, &self.crypto),
             )?
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1645,7 +1660,7 @@ impl MemoryDatabase {
 
         let chunks = stmt
             .query_map(params![project_id], |row| {
-                row_to_chunk(row, MemoryTier::Project)
+                row_to_chunk(row, MemoryTier::Project, &self.crypto)
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1679,7 +1694,7 @@ impl MemoryDatabase {
                     tenant_scope.workspace_id.as_str(),
                     tenant_scope.deployment_id.as_deref()
                 ],
-                |row| row_to_chunk(row, MemoryTier::Project),
+                |row| row_to_chunk(row, MemoryTier::Project, &self.crypto),
             )?
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1700,7 +1715,7 @@ impl MemoryDatabase {
         )?;
 
         let chunks = stmt
-            .query_map(params![limit], |row| row_to_chunk(row, MemoryTier::Global))?
+            .query_map(params![limit], |row| row_to_chunk(row, MemoryTier::Global, &self.crypto))?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(chunks)
@@ -1734,7 +1749,7 @@ impl MemoryDatabase {
                     tenant_scope.deployment_id.as_deref(),
                     limit
                 ],
-                |row| row_to_chunk(row, MemoryTier::Global),
+                |row| row_to_chunk(row, MemoryTier::Global, &self.crypto),
             )?
             .collect::<Result<Vec<_>, _>>()?;
 

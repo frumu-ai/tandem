@@ -32,6 +32,7 @@ type ProjectIndexStatusRow = (
 pub struct MemoryDatabase {
     conn: Arc<Mutex<Connection>>,
     db_path: std::path::PathBuf,
+    crypto: crate::crypto::MemoryCryptoProvider,
 }
 
 static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -40,9 +41,19 @@ include!("memory_database_impl_parts/part01.rs");
 include!("memory_database_impl_parts/part02.rs");
 
 /// Convert a database row to a MemoryChunk
-fn row_to_chunk(row: &Row, tier: MemoryTier) -> Result<MemoryChunk, rusqlite::Error> {
+fn row_to_chunk(
+    row: &Row,
+    tier: MemoryTier,
+    crypto: &crate::crypto::MemoryCryptoProvider,
+) -> Result<MemoryChunk, rusqlite::Error> {
+    let map_decrypt_err = |err: crate::types::MemoryError| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))
+    };
     let id: String = row.get(0)?;
-    let content: String = row.get(1)?;
+    let content_raw: String = row.get(1)?;
+    let content = crypto
+        .decrypt_field(&content_raw)
+        .map_err(map_decrypt_err)?;
     let (session_id, project_id, source_idx, created_at_idx, token_count_idx, metadata_idx) =
         match tier {
             MemoryTier::Session => (
@@ -67,7 +78,11 @@ fn row_to_chunk(row: &Row, tier: MemoryTier) -> Result<MemoryChunk, rusqlite::Er
     let source: String = row.get(source_idx)?;
     let created_at_str: String = row.get(created_at_idx)?;
     let token_count: i64 = row.get(token_count_idx)?;
-    let metadata_str: Option<String> = row.get(metadata_idx)?;
+    let metadata_raw: Option<String> = row.get(metadata_idx)?;
+    let metadata_str = match metadata_raw {
+        Some(s) if !s.is_empty() => Some(crypto.decrypt_field(&s).map_err(map_decrypt_err)?),
+        other => other,
+    };
 
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
         .map_err(|e| {
@@ -950,6 +965,85 @@ mod tests {
         let chunks = db.get_session_chunks("session-1").await.unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].content, "Test content");
+    }
+
+    #[tokio::test]
+    async fn chunk_content_is_ciphertext_at_rest_with_local_key() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("encrypted_memory.db");
+        let db = MemoryDatabase::new(&path)
+            .await
+            .unwrap()
+            .with_crypto_provider(crate::crypto::MemoryCryptoProvider::local_key([5u8; 32]));
+
+        let chunk = MemoryChunk {
+            id: "enc-1".to_string(),
+            content: "tenant secret launch plan".to_string(),
+            tier: MemoryTier::Session,
+            session_id: Some("session-enc".to_string()),
+            project_id: None,
+            source: "user_message".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            tenant_scope: MemoryTenantScope::local(),
+            created_at: Utc::now(),
+            token_count: 5,
+            metadata: Some(serde_json::json!({"classification": "confidential"})),
+        };
+        let embedding = vec![0.1f32; DEFAULT_EMBEDDING_DIMENSION];
+        db.store_chunk(&chunk, &embedding).await.unwrap();
+
+        // Raw DB read must NOT expose plaintext content or metadata.
+        {
+            let conn = db.conn.lock().await;
+            let raw_content: String = conn
+                .query_row(
+                    "SELECT content FROM session_memory_chunks WHERE id = ?1",
+                    params!["enc-1"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                raw_content.starts_with("tce1:"),
+                "content stored as ciphertext"
+            );
+            assert!(!raw_content.contains("launch plan"));
+
+            let raw_metadata: String = conn
+                .query_row(
+                    "SELECT metadata FROM session_memory_chunks WHERE id = ?1",
+                    params!["enc-1"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                raw_metadata.starts_with("tce1:"),
+                "metadata stored as ciphertext"
+            );
+            assert!(!raw_metadata.contains("confidential"));
+        }
+
+        // Authorized read through the provider transparently decrypts.
+        let chunks = db.get_session_chunks("session-enc").await.unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].content, "tenant secret launch plan");
+        assert_eq!(
+            chunks[0]
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("classification"))
+                .and_then(|v| v.as_str()),
+            Some("confidential")
+        );
+
+        // A different key cannot read the ciphertext (cross-key isolation).
+        let other = MemoryDatabase::new(&path)
+            .await
+            .unwrap()
+            .with_crypto_provider(crate::crypto::MemoryCryptoProvider::local_key([6u8; 32]));
+        assert!(other.get_session_chunks("session-enc").await.is_err());
     }
 
     #[tokio::test]
