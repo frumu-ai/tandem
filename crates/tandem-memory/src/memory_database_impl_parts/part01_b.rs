@@ -1,4 +1,5 @@
-    /// Get chunks by session ID
+impl MemoryDatabase {
+/// Get chunks by session ID
     pub async fn get_session_chunks(&self, session_id: &str) -> MemoryResult<Vec<MemoryChunk>> {
         let conn = self.conn.lock().await;
 
@@ -1573,4 +1574,5 @@
             .optional()?;
         Ok(row)
     }
+}
 }
