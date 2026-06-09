@@ -187,6 +187,15 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
             Arc::new(EvalActionFirewallProbeTool::new(state.clone())),
         )
         .await;
+    state
+        .tools
+        .register_tool(
+            crate::eval::cross_tenant_probe::EvalCrossTenantGrantProbeTool::NAME.to_string(),
+            Arc::new(
+                crate::eval::cross_tenant_probe::EvalCrossTenantGrantProbeTool::new(state.clone()),
+            ),
+        )
+        .await;
 
     if options.spawn_executor {
         let executor_state = state.clone();

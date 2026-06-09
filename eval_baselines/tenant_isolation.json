@@ -1,26 +1,26 @@
 {
   "dataset_name": "tenant_isolation",
   "dataset_version": "1.0",
-  "started_at_ms": 1780669613845,
-  "finished_at_ms": 1780669613845,
+  "started_at_ms": 1781006867877,
+  "finished_at_ms": 1781006867877,
   "duration_ms": 0,
-  "total_tests": 6,
-  "passed_tests": 6,
+  "total_tests": 8,
+  "passed_tests": 8,
   "failed_tests": 0,
   "skipped_tests": 0,
   "pass_rate": 1.0,
   "avg_repair_iterations": 1.0,
   "max_repair_iterations": 1,
-  "total_tokens": 12000,
-  "total_cost_usd": 0.036,
+  "total_tokens": 16000,
+  "total_cost_usd": 0.047999999999999994,
   "avg_cost_per_test": 0.005999999999999999,
   "provider_failure_rate": 0.0,
   "total_provider_calls": 0,
   "provider_failures": 0,
   "validator_pass_rates": {
-    "audit_event": 0.875,
+    "mcp_required_tool_failed": 0.875,
     "tenant_scope": 0.875,
-    "mcp_required_tool_failed": 0.875
+    "audit_event": 0.875
   },
   "failure_modes": {},
   "test_results": [
@@ -152,6 +152,46 @@
         "security",
         "tenant_boundary",
         "knowledge"
+      ]
+    },
+    {
+      "test_id": "ct_sharing_001",
+      "description": "Signed cross-tenant grant permits only the scoped data class and resource",
+      "passed": true,
+      "artifact_status": "completed",
+      "repair_iterations": 1,
+      "tokens_used": 2000,
+      "cost_usd": 0.006,
+      "duration_ms": 0,
+      "validators_passed": [],
+      "validators_failed": [],
+      "failure_mode": null,
+      "error_message": null,
+      "tags": [
+        "security",
+        "tenant_boundary",
+        "cross_tenant_grant",
+        "positive_sharing"
+      ]
+    },
+    {
+      "test_id": "ct_sharing_002",
+      "description": "Revoked cross-tenant grant no longer projects access for the audience tenant",
+      "passed": true,
+      "artifact_status": "completed",
+      "repair_iterations": 1,
+      "tokens_used": 2000,
+      "cost_usd": 0.006,
+      "duration_ms": 0,
+      "validators_passed": [],
+      "validators_failed": [],
+      "failure_mode": null,
+      "error_message": null,
+      "tags": [
+        "security",
+        "tenant_boundary",
+        "cross_tenant_grant",
+        "revocation"
       ]
     }
   ]
