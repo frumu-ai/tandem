@@ -67,6 +67,7 @@ mod context_run_ledger;
 mod context_run_mutation_checkpoints;
 pub(crate) mod context_runs;
 pub(crate) mod context_types;
+pub(crate) mod cross_tenant_grants;
 mod discord_interactions;
 mod external_actions;
 mod global;

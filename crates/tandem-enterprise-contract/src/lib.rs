@@ -1,5 +1,8 @@
 pub mod authority;
+pub mod cross_tenant;
 pub mod governance;
+
+pub use cross_tenant::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -487,6 +490,7 @@ pub enum GrantSource {
     Inherited,
     ExecutiveGlobal,
     Delegation,
+    CrossTenantGrant,
     BreakGlass,
 }
 
@@ -1199,6 +1203,7 @@ pub enum SigningKeyPurpose {
     ContextAssertion,
     ApprovalReceipt,
     DelegationProjection,
+    CrossTenantGrant,
     A2aPeerAssertion,
     BreakGlassAdminAssertion,
 }
@@ -1209,6 +1214,7 @@ impl SigningKeyPurpose {
             Self::ContextAssertion => "context_assertion",
             Self::ApprovalReceipt => "approval_receipt",
             Self::DelegationProjection => "delegation_projection",
+            Self::CrossTenantGrant => "cross_tenant_grant",
             Self::A2aPeerAssertion => "a2a_peer_assertion",
             Self::BreakGlassAdminAssertion => "break_glass_admin_assertion",
         }
@@ -1230,6 +1236,7 @@ impl core::str::FromStr for SigningKeyPurpose {
             | "tenant-context-assertion" => Ok(Self::ContextAssertion),
             "approval_receipt" | "approval-receipt" => Ok(Self::ApprovalReceipt),
             "delegation_projection" | "delegation-projection" => Ok(Self::DelegationProjection),
+            "cross_tenant_grant" | "cross-tenant-grant" => Ok(Self::CrossTenantGrant),
             "a2a_peer_assertion"
             | "a2a-peer-assertion"
             | "agent2agent_peer_assertion"

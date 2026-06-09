@@ -116,6 +116,11 @@ async fn attach_enterprise_request_context_for_mode(
 
     if let Some(mut verified_tenant_context) = resolved.verified_tenant_context {
         enrich_verified_context_with_org_unit_grants(state, &mut verified_tenant_context).await;
+        super::cross_tenant_grants::enrich_verified_context_with_inbound_cross_tenant_grants(
+            state,
+            &mut verified_tenant_context,
+        )
+        .await;
         request.extensions_mut().insert(verified_tenant_context);
     }
     request.extensions_mut().insert(resolved.tenant_context);

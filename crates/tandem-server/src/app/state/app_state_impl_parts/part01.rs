@@ -249,6 +249,11 @@ impl AppState {
             )),
             enterprise_org_unit_access_grants_path:
                 config::paths::resolve_enterprise_org_unit_access_grants_path(),
+            enterprise_cross_tenant_grants: Arc::new(RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            enterprise_cross_tenant_grants_path:
+                config::paths::resolve_enterprise_cross_tenant_grants_path(),
             enterprise_source_bindings: Arc::new(RwLock::new(std::collections::HashMap::new())),
             enterprise_source_bindings_path: config::paths::resolve_enterprise_source_bindings_path(
             ),
@@ -511,6 +516,7 @@ impl AppState {
         let _ = self.load_enterprise_org_units().await;
         let _ = self.load_enterprise_org_unit_memberships().await;
         let _ = self.load_enterprise_org_unit_access_grants().await;
+        let _ = self.load_enterprise_cross_tenant_grants().await;
         let _ = self.load_enterprise_source_bindings().await;
         let _ = self.load_enterprise_connectors().await;
         let _ = self.load_enterprise_ingestion_jobs().await;
@@ -601,6 +607,20 @@ impl AppState {
             tandem_enterprise_contract::OrganizationUnitAccessGrant,
         > = serde_json::from_slice(&bytes)?;
         *self.enterprise_org_unit_access_grants.write().await = registry;
+        Ok(())
+    }
+
+    pub async fn load_enterprise_cross_tenant_grants(&self) -> anyhow::Result<()> {
+        if !self.enterprise_cross_tenant_grants_path.exists() {
+            return Ok(());
+        }
+        check_file_permissions(&self.enterprise_cross_tenant_grants_path);
+        let bytes = fs::read(&self.enterprise_cross_tenant_grants_path).await?;
+        let registry: std::collections::HashMap<
+            String,
+            tandem_enterprise_contract::CrossTenantGrantRecord,
+        > = serde_json::from_slice(&bytes)?;
+        *self.enterprise_cross_tenant_grants.write().await = registry;
         Ok(())
     }
 

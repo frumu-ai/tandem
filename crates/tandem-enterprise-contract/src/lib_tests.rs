@@ -654,6 +654,7 @@ mod tests {
             SigningKeyPurpose::ContextAssertion,
             SigningKeyPurpose::ApprovalReceipt,
             SigningKeyPurpose::DelegationProjection,
+            SigningKeyPurpose::CrossTenantGrant,
             SigningKeyPurpose::A2aPeerAssertion,
             SigningKeyPurpose::BreakGlassAdminAssertion,
         ];
@@ -666,9 +667,14 @@ mod tests {
                 "context_assertion",
                 "approval_receipt",
                 "delegation_projection",
+                "cross_tenant_grant",
                 "a2a_peer_assertion",
                 "break_glass_admin_assertion"
             ])
+        );
+        assert_eq!(
+            SigningKeyPurpose::parse("cross-tenant-grant"),
+            Ok(SigningKeyPurpose::CrossTenantGrant)
         );
         assert_eq!(
             SigningKeyPurpose::parse("break-glass-admin"),

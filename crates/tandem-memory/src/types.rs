@@ -161,6 +161,77 @@ impl MemorySourceAccessTarget {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tandem_enterprise_contract::{
+        AccessPermission, AssertionMetadata, AuthorityChain, CrossTenantGrant,
+        CrossTenantGrantClaims, CrossTenantGrantHeader, CrossTenantGrantParty,
+        CrossTenantGrantRecord, DataBoundary, PrincipalRef, RequestPrincipal, ResourceKind,
+        ResourceScope, TenantContext,
+    };
+
+    #[test]
+    fn memory_access_filter_allows_active_cross_tenant_projection() {
+        let issuer =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "admin-a");
+        let audience =
+            TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "user-b");
+        let subject = PrincipalRef::human_user("user-b");
+        let resource = ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            ResourceKind::DocumentCollection,
+            "finance-drive",
+        );
+        let claims = CrossTenantGrantClaims::new_v1(
+            "grant-finance",
+            CrossTenantGrantParty::from_tenant_context(&issuer),
+            CrossTenantGrantParty::from_tenant_context(&audience),
+            subject.clone(),
+            ResourceScope::root(resource.clone()),
+            vec![AccessPermission::Read],
+            vec![DataClass::FinancialRecord],
+            1_000,
+            5_000,
+            PrincipalRef::human_user("admin-a"),
+        );
+        let record = CrossTenantGrantRecord::active(
+            CrossTenantGrant::new(
+                CrossTenantGrantHeader::ed25519("grant-key"),
+                claims,
+                "signature-bytes",
+            ),
+            1_000,
+        );
+        let request_principal = RequestPrincipal::authenticated_user("user-b", "test");
+        let mut strict = tandem_enterprise_contract::StrictTenantContext::new(
+            audience,
+            subject,
+            AuthorityChain::from_request(request_principal),
+            ResourceScope::root(ResourceRef::new(
+                "org-b",
+                "workspace-b",
+                ResourceKind::Workspace,
+                "workspace-b",
+            )),
+            AssertionMetadata::new("issuer", "runtime", 1_000, 5_000, "assertion-b"),
+        )
+        .with_data_boundary(DataBoundary::allow(vec![DataClass::FinancialRecord]));
+
+        assert!(record.project_into_strict_context(&mut strict, 2_000));
+        let filter = MemoryAccessFilter::strict(strict, 2_000);
+        let target = MemorySourceAccessTarget {
+            resource_ref: resource,
+            data_class: DataClass::FinancialRecord,
+            source_binding_id: Some("finance-drive".to_string()),
+            source_object_id: Some("statement-q4".to_string()),
+        };
+
+        assert!(filter.allows_source_target(&target));
+    }
+}
+
 /// Memory configuration for a project
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {

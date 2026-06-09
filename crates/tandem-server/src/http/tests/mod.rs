@@ -166,6 +166,7 @@ pub(super) async fn test_state() -> AppState {
     state.enterprise_org_unit_memberships_path = root.join("enterprise_org_unit_memberships.json");
     state.enterprise_org_unit_access_grants_path =
         root.join("enterprise_org_unit_access_grants.json");
+    state.enterprise_cross_tenant_grants_path = root.join("enterprise_cross_tenant_grants.json");
     state.enterprise_source_bindings_path = root.join("enterprise_source_bindings.json");
     state.enterprise_connectors_path = root.join("enterprise_connectors.json");
     state.enterprise_ingestion_jobs_path = root.join("enterprise_ingestion_jobs.json");

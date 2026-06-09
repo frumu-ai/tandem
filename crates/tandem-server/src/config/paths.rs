@@ -81,6 +81,10 @@ pub(crate) fn resolve_enterprise_org_unit_access_grants_path() -> PathBuf {
     resolve_canonical_data_file_path("enterprise/org_unit_access_grants.json")
 }
 
+pub(crate) fn resolve_enterprise_cross_tenant_grants_path() -> PathBuf {
+    resolve_canonical_data_file_path("enterprise/cross_tenant_grants.json")
+}
+
 pub(crate) fn resolve_enterprise_source_bindings_path() -> PathBuf {
     resolve_canonical_data_file_path("enterprise/source_bindings.json")
 }

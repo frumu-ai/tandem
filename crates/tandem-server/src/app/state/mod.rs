@@ -17,8 +17,9 @@ use tandem_enterprise_contract::{
         AuthorityAccessRequest, AuthorityDecision, AuthorityEffect, IntraTenantAuthorityGraph,
     },
     governance::GovernancePolicyEngine,
-    ConnectorInstance as EnterpriseConnectorInstance, IngestionJob as EnterpriseIngestionJob,
-    IngestionQuarantine as EnterpriseIngestionQuarantine,
+    ConnectorInstance as EnterpriseConnectorInstance,
+    CrossTenantGrantRecord as EnterpriseCrossTenantGrantRecord,
+    IngestionJob as EnterpriseIngestionJob, IngestionQuarantine as EnterpriseIngestionQuarantine,
     OrganizationUnit as EnterpriseOrganizationUnit,
     OrganizationUnitAccessGrant as EnterpriseOrganizationUnitAccessGrant,
     OrganizationUnitMembership as EnterpriseOrganizationUnitMembership, ScopedGrant,
@@ -101,6 +102,9 @@ pub struct AppState {
     pub enterprise_org_unit_access_grants:
         Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnitAccessGrant>>>,
     pub enterprise_org_unit_access_grants_path: PathBuf,
+    pub enterprise_cross_tenant_grants:
+        Arc<RwLock<std::collections::HashMap<String, EnterpriseCrossTenantGrantRecord>>>,
+    pub enterprise_cross_tenant_grants_path: PathBuf,
     pub enterprise_source_bindings:
         Arc<RwLock<std::collections::HashMap<String, EnterpriseSourceBinding>>>,
     pub enterprise_source_bindings_path: PathBuf,

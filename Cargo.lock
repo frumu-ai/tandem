@@ -7708,6 +7708,8 @@ version = "0.5.13"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
+ "ed25519-dalek",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
