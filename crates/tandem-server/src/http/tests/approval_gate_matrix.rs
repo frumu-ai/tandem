@@ -184,3 +184,115 @@ async fn tool_policy_gate_pauses_high_risk_tool_and_skips_reads() {
     .await;
     assert!(read.is_none(), "low-risk read tools fall through the gate");
 }
+
+#[tokio::test]
+async fn egress_preflight_blocks_secret_content_before_external_send() {
+    use tandem_core::ToolPolicyContext;
+
+    let state = test_state().await;
+    let ctx = ToolPolicyContext {
+        session_id: "session-egress-secret".to_string(),
+        message_id: "message-egress-secret".to_string(),
+        tenant_context: Some(tenant()),
+        verified_tenant_context: None,
+        tool: "mcp.email.send".to_string(),
+        args: json!({
+            "to": "customer@example.com",
+            "subject": "credential leak",
+            "body": "use API key sk-test-secret for the integration"
+        }),
+    };
+
+    let decision =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+            .await
+            .expect("secret-bearing external send must be blocked");
+    assert!(!decision.allowed);
+    let decision_id = decision.policy_decision_id.expect("policy decision id");
+
+    let recorded = state
+        .get_policy_decision(&decision_id)
+        .await
+        .expect("recorded policy decision");
+    assert_eq!(recorded.decision, PolicyDecisionEffect::Deny);
+    assert_eq!(recorded.policy_id.as_deref(), Some("egress_dlp_preflight"));
+    assert!(recorded.data_classes.contains(&DataClass::Credential));
+    assert!(recorded.approval_id.is_none());
+    let preview = recorded.metadata["egress_preflight"]["safe_preview_markdown"]
+        .as_str()
+        .expect("safe preview");
+    assert!(preview.contains("[redacted credential]"));
+    assert!(!preview.contains("sk-test-secret"));
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"egress.preflight.denied\""));
+    assert!(audit.contains(&decision_id));
+}
+
+#[tokio::test]
+async fn egress_preflight_creates_safe_customer_data_approval_request() {
+    use tandem_core::ToolPolicyContext;
+
+    let state = test_state().await;
+    if !state.premium_governance_enabled() {
+        return;
+    }
+
+    let ctx = ToolPolicyContext {
+        session_id: "session-egress-customer".to_string(),
+        message_id: "message-egress-customer".to_string(),
+        tenant_context: Some(tenant()),
+        verified_tenant_context: None,
+        tool: "mcp.email.send".to_string(),
+        args: json!({
+            "to": "alice.customer@example.com",
+            "subject": "Renewal follow-up",
+            "body": "Hi Alice, your account ACME-42 renewal is ready."
+        }),
+    };
+
+    let decision =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+            .await
+            .expect("customer-data external send must require approval");
+    assert!(!decision.allowed);
+    let decision_id = decision.policy_decision_id.expect("policy decision id");
+
+    let recorded = state
+        .get_policy_decision(&decision_id)
+        .await
+        .expect("recorded policy decision");
+    assert_eq!(recorded.decision, PolicyDecisionEffect::ApprovalRequired);
+    let approval_id = recorded.approval_id.clone().expect("approval id");
+    assert!(recorded.data_classes.contains(&DataClass::CustomerData));
+    let preview = recorded.metadata["egress_preflight"]["safe_preview_markdown"]
+        .as_str()
+        .expect("safe preview");
+    assert!(preview.contains("a***@example.com"));
+    assert!(!preview.contains("alice.customer@example.com"));
+
+    let approvals = state
+        .list_approval_requests_for_tenant(None, None, &tenant())
+        .await;
+    let approval = approvals
+        .iter()
+        .find(|approval| approval.approval_id == approval_id)
+        .expect("pending approval request");
+    assert_eq!(
+        approval.request_type,
+        crate::automation_v2::governance::GovernanceApprovalRequestType::ExternalPost
+    );
+    assert_eq!(
+        approval.context["safe_preview_markdown"].as_str(),
+        Some(preview)
+    );
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"egress.preflight.approval_required\""));
+    assert!(audit.contains(&decision_id));
+    assert!(audit.contains(&approval_id));
+}

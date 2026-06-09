@@ -14,9 +14,11 @@ use tandem_core::{
     ToolPolicyHook, FINTECH_STRICT_PROFILE,
 };
 use tandem_types::{
-    GateRequest, PolicyDecisionEffect, PolicyDecisionRecord, ToolSecurityDescriptor,
+    DataClass, GateRequest, PolicyDecisionEffect, PolicyDecisionRecord, ToolRiskTier,
+    ToolSecurityDescriptor,
 };
 
+include!("agent_teams_parts/egress_preflight.rs");
 include!("agent_teams_parts/part01.rs");
 include!("agent_teams_parts/part03.rs");
 include!("agent_teams_parts/part02.rs");
