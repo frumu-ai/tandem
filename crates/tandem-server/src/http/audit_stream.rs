@@ -1,15 +1,80 @@
 use std::convert::Infallible;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tandem_types::{EngineEvent, RequestPrincipal, TenantContext};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::AppState;
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ProtectedAuditQuery {
+    event_type: Option<String>,
+    run_id: Option<String>,
+    limit: Option<usize>,
+}
+
+pub(crate) async fn protected_audit_events(
+    State(state): State<AppState>,
+    Extension(principal): Extension<RequestPrincipal>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Query(query): Query<ProtectedAuditQuery>,
+) -> Response {
+    if !audit_admin_allowed(&principal) {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": "Admin capability required",
+                "code": "AUDIT_ADMIN_REQUIRED"
+            })),
+        )
+            .into_response();
+    }
+
+    let mut rows = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant_context)
+        .await
+        .into_iter()
+        .filter(|event| {
+            query
+                .event_type
+                .as_deref()
+                .map(|event_type| event.event_type == event_type)
+                .unwrap_or(true)
+        })
+        .filter(|event| {
+            query
+                .run_id
+                .as_ref()
+                .map(|run_ids| {
+                    let run_ids = run_ids
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    !run_ids.is_empty()
+                        && protected_audit_payload_contains_any_run_id(&event.payload, &run_ids)
+                })
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    if let Some(limit) = query.limit.filter(|limit| *limit > 0) {
+        if rows.len() > limit {
+            rows = rows.split_off(rows.len() - limit);
+        }
+    }
+
+    axum::Json(json!({
+        "events": rows,
+        "count": rows.len(),
+    }))
+    .into_response()
+}
 
 pub(crate) async fn audit_stream(
     State(state): State<AppState>,
@@ -47,6 +112,22 @@ pub(crate) async fn audit_stream(
         HeaderValue::from_static("application/x-ndjson"),
     );
     response
+}
+
+fn protected_audit_payload_contains_any_run_id(
+    payload: &Value,
+    run_ids: &std::collections::BTreeSet<String>,
+) -> bool {
+    match payload {
+        Value::String(value) => run_ids.contains(value),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| protected_audit_payload_contains_any_run_id(value, run_ids)),
+        Value::Object(map) => map
+            .values()
+            .any(|value| protected_audit_payload_contains_any_run_id(value, run_ids)),
+        _ => false,
+    }
 }
 
 fn audit_admin_allowed(principal: &RequestPrincipal) -> bool {

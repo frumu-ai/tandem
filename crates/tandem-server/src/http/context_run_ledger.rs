@@ -633,11 +633,11 @@ async fn load_governance_evidence_protected_audit(
     run_ids: &BTreeSet<String>,
     policy_decision_ids: &BTreeSet<String>,
 ) -> Vec<ProtectedAuditEnvelope> {
-    let mut rows = load_jsonl_rows::<ProtectedAuditEnvelope>(&state.protected_audit_path).await;
+    let mut rows =
+        crate::audit::load_protected_audit_events_for_tenant(state, tenant_context).await;
     rows.retain(|event| {
-        event.tenant_context == *tenant_context
-            && (value_contains_any_string(&event.payload, run_ids)
-                || value_contains_any_string(&event.payload, policy_decision_ids))
+        value_contains_any_string(&event.payload, run_ids)
+            || value_contains_any_string(&event.payload, policy_decision_ids)
     });
     rows.sort_by(|a, b| {
         a.created_at_ms
