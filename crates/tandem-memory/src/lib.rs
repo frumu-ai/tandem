@@ -1,6 +1,7 @@
 pub mod chunking;
 pub mod context_layers;
 pub mod context_uri;
+pub mod crypto;
 pub mod db;
 pub mod decrypt_broker;
 pub mod distillation;
@@ -16,6 +17,7 @@ pub mod types;
 
 pub use context_layers::*;
 pub use context_uri::*;
+pub use crypto::MemoryCryptoProvider;
 pub use decrypt_broker::*;
 pub use distillation::*;
 pub use governance::*;
