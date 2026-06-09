@@ -128,7 +128,7 @@ impl CrossTenantGrantClaims {
 
     fn issuer_owns_resource(&self, resource: &ResourceRef) -> bool {
         resource.organization_id == self.issuer.organization_id
-            && (resource.workspace_id == self.issuer.workspace_id || resource.workspace_id == "*")
+            && resource.workspace_id == self.issuer.workspace_id
     }
 }
 
@@ -477,6 +477,48 @@ mod tests {
                 1_500
             ),
             Some("cross_tenant_grant_inactive")
+        );
+    }
+
+    #[test]
+    fn wildcard_workspace_scope_is_not_well_formed_without_org_wide_authority() {
+        let issuer =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "admin-a");
+        let audience =
+            TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "user-b");
+        let claims = CrossTenantGrantClaims::new_v1(
+            "grant-org-wide",
+            CrossTenantGrantParty::from_tenant_context(&issuer),
+            CrossTenantGrantParty::from_tenant_context(&audience),
+            PrincipalRef::human_user("user-b"),
+            ResourceScope::root(ResourceRef::new(
+                "org-a",
+                "*",
+                ResourceKind::DocumentCollection,
+                "all-workspaces",
+            )),
+            vec![AccessPermission::Read],
+            vec![DataClass::Internal],
+            1_000,
+            5_000,
+            PrincipalRef::human_user("admin-a"),
+        );
+        let record = CrossTenantGrantRecord::active(
+            CrossTenantGrant::new(
+                CrossTenantGrantHeader::ed25519("grant-key"),
+                claims,
+                "signature-bytes",
+            ),
+            1_000,
+        );
+
+        assert_eq!(
+            record.denial_reason_for_audience(
+                &audience,
+                &PrincipalRef::human_user("user-b"),
+                2_000
+            ),
+            Some("cross_tenant_grant_malformed")
         );
     }
 }

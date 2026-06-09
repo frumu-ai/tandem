@@ -302,7 +302,7 @@ fn validate_resource_matches_tenant(
     tenant_context: &TenantContext,
 ) -> Result<(), (StatusCode, Json<Value>)> {
     if resource.organization_id != tenant_context.org_id
-        || (resource.workspace_id != tenant_context.workspace_id && resource.workspace_id != "*")
+        || resource.workspace_id != tenant_context.workspace_id
     {
         return Err(bad_request(
             "ENTERPRISE_CROSS_TENANT_GRANT_RESOURCE_TENANT_MISMATCH",
@@ -448,4 +448,24 @@ fn service_unavailable(code: impl Into<String>) -> (StatusCode, Json<Value>) {
             "message": "enterprise signing key is not configured"
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tandem_enterprise_contract::ResourceKind;
+
+    #[test]
+    fn grant_issuer_scope_rejects_wildcard_workspace() {
+        let tenant_context =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "admin-a");
+        let resource = ResourceRef::new(
+            "org-a",
+            "*",
+            ResourceKind::DocumentCollection,
+            "all-workspaces",
+        );
+
+        assert!(validate_resource_matches_tenant(&resource, &tenant_context).is_err());
+    }
 }
