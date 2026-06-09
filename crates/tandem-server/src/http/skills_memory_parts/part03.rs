@@ -31,11 +31,46 @@ pub(super) async fn workflow_learning_candidate_promote(
         &session_partition,
         RunMemoryCapabilityPolicy::CoderWorkflow,
     );
+    let project_partition = workflow_learning_candidate_partition(
+        &tenant_context,
+        &candidate,
+        tandem_memory::GovernedMemoryTier::Project,
+    );
+    let make_authority_job_context = |
+        partition: &tandem_memory::MemoryPartition,
+        operation: tandem_memory::MemoryAuthorityOperation,
+        source_memory_ids: Vec<String>,
+    | {
+        tandem_memory::MemoryAuthorityJobContext {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+            project_id: partition.project_id.clone(),
+            actor_id: capability.subject.clone(),
+            run_id: run_id.clone(),
+            node_id: candidate.node_id.clone(),
+            task_id: Some(candidate.candidate_id.clone()),
+            purpose: "promote approved workflow learning candidate".to_string(),
+            source_binding_id: Some(format!("workflow:{}", candidate.workflow_id)),
+            data_class: Some(tandem_types::DataClass::Internal),
+            classification: tandem_memory::MemoryClassification::Internal,
+            operation,
+            source_memory_ids,
+            artifact_refs: candidate.artifact_refs.clone(),
+            policy_decision_id: input.approval_id.clone(),
+            grant_decision_id: input.approval_id.clone(),
+        }
+    };
     let source_memory_id = if let Some(memory_id) = candidate.source_memory_id.clone() {
         memory_id
     } else {
         let content = workflow_learning_candidate_memory_content(&candidate)
             .ok_or(StatusCode::BAD_REQUEST)?;
+        let authority_job_context = make_authority_job_context(
+            &session_partition,
+            tandem_memory::MemoryAuthorityOperation::Write,
+            Vec::new(),
+        );
         let response = memory_put_impl(
             &state,
             &tenant_context,
@@ -46,6 +81,7 @@ pub(super) async fn workflow_learning_candidate_promote(
                 content,
                 artifact_refs: candidate.artifact_refs.clone(),
                 classification: tandem_memory::MemoryClassification::Internal,
+                authority_job_context: Some(authority_job_context),
                 metadata: Some(json!({
                     "origin": "workflow_learning_candidate",
                     "candidate_id": candidate.candidate_id,
@@ -66,11 +102,7 @@ pub(super) async fn workflow_learning_candidate_promote(
             source_memory_id: source_memory_id.clone(),
             from_tier: tandem_memory::GovernedMemoryTier::Session,
             to_tier: tandem_memory::GovernedMemoryTier::Project,
-            partition: workflow_learning_candidate_partition(
-                &tenant_context,
-                &candidate,
-                tandem_memory::GovernedMemoryTier::Project,
-            ),
+            partition: project_partition.clone(),
             reason: input.reason.unwrap_or_else(|| {
                 format!(
                     "approved workflow learning candidate {}",
@@ -85,6 +117,11 @@ pub(super) async fn workflow_learning_candidate_promote(
                     .or_else(|| tenant_context.actor_id.clone()),
                 approval_id: input.approval_id.clone(),
             },
+            authority_job_context: Some(make_authority_job_context(
+                &project_partition,
+                tandem_memory::MemoryAuthorityOperation::Promote,
+                vec![source_memory_id.clone()],
+            )),
             source_outcome: Some(tandem_memory::PromotionSourceOutcome {
                 status: Some("approved".to_string()),
                 approved: Some(true),

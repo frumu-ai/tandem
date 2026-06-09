@@ -548,6 +548,7 @@ impl EvalActionFirewallProbeTool {
                     .to_string(),
                 artifact_refs: vec!["artifact://eval/action-firewall/denied-output".to_string()],
                 classification: MemoryClassification::Restricted,
+                authority_job_context: None,
                 metadata: Some(json!({
                     "eval_case": "denied_output_memory_promotion",
                     "source": "denied_output_artifact",
@@ -575,6 +576,7 @@ impl EvalActionFirewallProbeTool {
                 reviewer_id: Some(requester_actor_id.to_string()),
                 approval_id: Some("eval-denied-output-review".to_string()),
             },
+            authority_job_context: None,
             source_outcome: None,
         };
 

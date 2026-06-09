@@ -17,6 +17,7 @@ use tandem_types::{
 };
 
 include!("skills_memory_parts/part01.rs");
+include!("skills_memory_parts/part06.rs");
 include!("skills_memory_parts/part02.rs");
 include!("skills_memory_parts/part04.rs");
 include!("skills_memory_parts/part03.rs");
