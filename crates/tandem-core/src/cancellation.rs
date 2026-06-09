@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -6,7 +6,13 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default)]
 pub struct CancellationRegistry {
-    tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    state: Arc<RwLock<CancellationState>>,
+}
+
+#[derive(Default)]
+struct CancellationState {
+    tokens: HashMap<String, CancellationToken>,
+    deferred: HashSet<String>,
 }
 
 impl CancellationRegistry {
@@ -16,19 +22,20 @@ impl CancellationRegistry {
 
     pub async fn create(&self, session_id: &str) -> CancellationToken {
         let token = CancellationToken::new();
-        self.tokens
-            .write()
-            .await
-            .insert(session_id.to_string(), token.clone());
+        let mut state = self.state.write().await;
+        if state.deferred.remove(session_id) {
+            token.cancel();
+        }
+        state.tokens.insert(session_id.to_string(), token.clone());
         token
     }
 
     pub async fn get(&self, session_id: &str) -> Option<CancellationToken> {
-        self.tokens.read().await.get(session_id).cloned()
+        self.state.read().await.tokens.get(session_id).cloned()
     }
 
     pub async fn cancel(&self, session_id: &str) -> bool {
-        let token = self.tokens.read().await.get(session_id).cloned();
+        let token = self.state.read().await.tokens.get(session_id).cloned();
         if let Some(token) = token {
             token.cancel();
             true
@@ -37,15 +44,28 @@ impl CancellationRegistry {
         }
     }
 
+    pub async fn cancel_or_defer(&self, session_id: &str) -> bool {
+        let mut state = self.state.write().await;
+        if let Some(token) = state.tokens.get(session_id).cloned() {
+            token.cancel();
+        } else {
+            state.deferred.insert(session_id.to_string());
+        }
+        true
+    }
+
     pub async fn remove(&self, session_id: &str) {
-        self.tokens.write().await.remove(session_id);
+        let mut state = self.state.write().await;
+        state.tokens.remove(session_id);
+        state.deferred.remove(session_id);
     }
 
     pub async fn cancel_all(&self) -> usize {
         let tokens = self
-            .tokens
+            .state
             .read()
             .await
+            .tokens
             .values()
             .cloned()
             .collect::<Vec<_>>();

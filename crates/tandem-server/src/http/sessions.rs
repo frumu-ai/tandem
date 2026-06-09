@@ -741,7 +741,7 @@ pub(super) async fn delete_session(
     ensure_same_tenant(&tenant_context, &session.tenant_context)?;
 
     if let Some(active_run) = state.run_registry.get(&id).await {
-        let cancel_requested = state.cancellations.cancel(&id).await;
+        let cancel_requested = state.cancellations.cancel_or_defer(&id).await;
         let active_run_id = active_run.run_id.clone();
         publish_tenant_event(
             &state,

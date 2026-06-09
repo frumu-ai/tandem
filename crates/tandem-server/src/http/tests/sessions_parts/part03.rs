@@ -1148,6 +1148,12 @@ async fn delete_session_defers_when_run_is_active() {
         state.run_registry.get(&session_id).await.is_some(),
         "active run stays registered until execute_run observes cancellation"
     );
+
+    let delayed_token = state.cancellations.create(&session_id).await;
+    assert!(
+        delayed_token.is_cancelled(),
+        "delete must latch cancellation until the run creates its token"
+    );
 }
 
 #[tokio::test]
