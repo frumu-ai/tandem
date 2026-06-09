@@ -560,23 +560,9 @@ fn parse_browser_wait_args(args: &Value) -> anyhow::Result<BrowserWaitParams> {
 }
 
 fn is_local_or_private_host(host: &str) -> bool {
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    let Ok(ip) = host.parse::<IpAddr>() else {
-        return false;
-    };
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.octets()[0] == 169 && ip.octets()[1] == 254
-        }
-        IpAddr::V6(ip) => {
-            ip == Ipv6Addr::LOCALHOST || ip.is_unique_local() || ip.is_unicast_link_local()
-        }
-    }
+    // Delegate to the shared SSRF guard so browser network policy blocks the
+    // same internal address space as web fetch and other outbound surfaces.
+    tandem_types::host_is_ssrf_blocked(host)
 }
 
 fn resolve_text_input(text: Option<String>, secret_ref: Option<String>) -> anyhow::Result<String> {

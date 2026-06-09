@@ -7973,6 +7973,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tandem-enterprise-contract",
+ "url",
  "uuid",
 ]
 
