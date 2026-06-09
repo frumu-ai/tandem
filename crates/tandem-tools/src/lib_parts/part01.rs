@@ -1070,6 +1070,12 @@ fn resolve_read_path_fallback(path: &str, args: &Value) -> Option<PathBuf> {
                     continue;
                 }
             }
+            // Re-apply sensitive-path protections to the *resolved* candidate:
+            // a benign-looking token (e.g. `config.json`) must not surface a
+            // sensitive file such as `.docker/config.json` via basename search.
+            if tandem_types::is_sensitive_path(candidate) {
+                continue;
+            }
             let file_name = candidate
                 .file_name()
                 .and_then(|name| name.to_str())
