@@ -330,64 +330,9 @@ pub(super) fn is_duplicate_signature_limit_output(output: &str) -> bool {
 }
 
 pub(super) fn is_sensitive_path_candidate(path: &Path) -> bool {
-    let lowered = path.to_string_lossy().to_ascii_lowercase();
-
-    // SSH / GPG directories
-    if lowered.contains("/.ssh/") || lowered.ends_with("/.ssh") {
-        return true;
-    }
-    if lowered.contains("/.gnupg/") || lowered.ends_with("/.gnupg") {
-        return true;
-    }
-
-    // Cloud credential files
-    if lowered.contains("/.aws/credentials")
-        || lowered.contains("/.config/gcloud/")
-        || lowered.contains("/.docker/config.json")
-        || lowered.contains("/.kube/config")
-        || lowered.contains("/.git-credentials")
-    {
-        return true;
-    }
-
-    // Package manager / tool secrets
-    if lowered.ends_with("/.npmrc") || lowered.ends_with("/.netrc") || lowered.ends_with("/.pypirc")
-    {
-        return true;
-    }
-
-    // Known private key file names (use file_name() to avoid false positives on paths)
-    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-        let n = name.to_ascii_lowercase();
-        // .env files (but not .env.example — check no extra extension after .env)
-        if n == ".env"
-            || n.starts_with(".env.") && !n.ends_with(".example") && !n.ends_with(".sample")
-        {
-            return true;
-        }
-        // Key identity files
-        if n.starts_with("id_rsa")
-            || n.starts_with("id_ed25519")
-            || n.starts_with("id_ecdsa")
-            || n.starts_with("id_dsa")
-        {
-            return true;
-        }
-    }
-
-    // Certificate / private key extensions — use extension() to avoid substring false positives
-    // e.g. keyboard.rs has no .key extension, so it won't match here.
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        let ext_lower = ext.to_ascii_lowercase();
-        if matches!(
-            ext_lower.as_str(),
-            "pem" | "p12" | "pfx" | "key" | "keystore" | "jks"
-        ) {
-            return true;
-        }
-    }
-
-    false
+    // Delegate to the shared classifier so every surface (read fallback, MCP
+    // file tools, shell sandbox) agrees on what is sensitive.
+    tandem_types::is_sensitive_path(path)
 }
 
 pub(super) fn shell_command_targets_sensitive_path(command: &str) -> bool {

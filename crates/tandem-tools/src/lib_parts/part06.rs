@@ -292,6 +292,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn read_basename_fallback_skips_sensitive_files() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let root = tempdir.path();
+        let args = json!({
+            "__workspace_root": root.to_string_lossy(),
+            "__effective_cwd": root.to_string_lossy(),
+        });
+
+        // A sensitive file (by extension) reachable only via basename search.
+        let sub = root.join("subdir");
+        std::fs::create_dir_all(&sub).expect("create subdir");
+        std::fs::write(sub.join("server.key"), "PRIVATE KEY").expect("write key");
+        assert!(
+            resolve_read_path_fallback("server.key", &args).is_none(),
+            "basename fallback must not surface a sensitive file"
+        );
+
+        // A benign file with a unique basename still resolves through the fallback.
+        std::fs::write(sub.join("notes.txt"), "hello").expect("write notes");
+        let resolved =
+            resolve_read_path_fallback("notes.txt", &args).expect("benign file should resolve");
+        assert!(resolved.ends_with("notes.txt"));
+    }
+
     fn grep_args(root: &Path, pattern: &str) -> Value {
         let root = root.to_string_lossy().to_string();
         json!({
