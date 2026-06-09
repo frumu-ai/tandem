@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, PanelCard } from "../ui/index.tsx";
+import { TandemLogoAnimation } from "../ui/TandemLogoAnimation";
 import { EmptyState } from "./ui";
 import { formatStatus, runStatus, runTitle, runUpdatedAt, toArray } from "./CodingWorkflowsHelpers";
 import { subscribeSse } from "../services/sse.js";
@@ -455,6 +456,34 @@ export function CodingWorkflowsAgentCockpit({
   }
 
   if (!runId || !selectedRun) {
+    const hydratingRun = Boolean(runId || lastRunEvent || runDetailQuery.isLoading || runDetailQuery.isFetching);
+    if (hydratingRun) {
+      return (
+        <PanelCard
+          title="Agent cockpit"
+          subtitle="Connecting to the active ACA run"
+          actions={lastRunEvent ? <Badge tone="ghost">Live {formatStatus(lastRunEvent)}</Badge> : null}
+        >
+          <div className="flex min-h-[180px] flex-col items-center justify-center gap-4 border border-white/10 bg-black/20 p-6 text-center">
+            <TandemLogoAnimation
+              className="h-20 w-20"
+              mode="compact"
+              title="Loading ACA run"
+            />
+            <div>
+              <div className="text-sm font-semibold text-slate-100">
+                {runId ? "Loading run cockpit" : "Waiting for the run to appear"}
+              </div>
+              <div className="tcp-subtle mt-2 max-w-xl text-sm">
+                {runId
+                  ? `Tandem is hydrating ${runId} with status, thread, approvals, and logs.`
+                  : "Tandem received the run event and is waiting for ACA to publish the run record."}
+              </div>
+            </div>
+          </div>
+        </PanelCard>
+      );
+    }
     return (
       <PanelCard title="Agent cockpit" subtitle="Select an ACA run to inspect its operational thread.">
         <EmptyState text="No run selected. Start or select a Coder run from Intake or Overview." />

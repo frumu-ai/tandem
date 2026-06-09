@@ -1138,7 +1138,7 @@ export function CodingWorkflowsPage({
           coderRuns={coderRuns}
           reconcileCoderRun={reconcileCoderRun}
           cancelCoderRun={cancelCoderRun}
-          lastRunEvent={lastRunEvent}
+          lastRunEvent={lastRunEvent || lastGlobalEvent}
         />
       ) : null}
       {tab === "board" ? (

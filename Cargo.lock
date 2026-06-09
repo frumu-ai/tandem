@@ -7738,11 +7738,13 @@ dependencies = [
 name = "tandem-memory"
 version = "0.5.13"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "chrono",
  "dirs 5.0.1",
  "fastembed",
+ "getrandom 0.2.17",
  "ignore",
  "once_cell",
  "rusqlite",
