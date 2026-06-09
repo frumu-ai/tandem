@@ -63,10 +63,29 @@ pub struct PermissionArgsContext {
 /// excluded from standing approvals because a blanket allow would auto-approve
 /// arbitrary future commands.
 fn standing_allow_is_unsafe(permission: &str, pattern: &str) -> bool {
-    use crate::tool_capabilities::{tool_name_matches_profile, ToolCapabilityProfile};
+    use crate::tool_capabilities::{
+        canonical_tool_name, tool_name_matches_profile, ToolCapabilityProfile,
+    };
     [permission, pattern].into_iter().any(|name| {
+        // Profile matching only canonicalizes execution tools to `bash`, so also
+        // match execution capability names that are keyed directly (for example
+        // the automation `verify_command` capability) to close the standing-allow
+        // path for arbitrary command execution/verification.
         tool_name_matches_profile(name, ToolCapabilityProfile::ShellExecution)
             || tool_name_matches_profile(name, ToolCapabilityProfile::VerifyCommand)
+            || matches!(
+                canonical_tool_name(name).as_str(),
+                "verify_command"
+                    | "verifycommand"
+                    | "shell"
+                    | "exec"
+                    | "execute"
+                    | "command"
+                    | "run"
+                    | "run_command"
+                    | "runcommand"
+                    | "terminal"
+            )
     })
 }
 
@@ -511,6 +530,22 @@ mod tests {
         // ...so the next bash invocation is asked again rather than auto-allowed.
         assert!(matches!(
             manager.evaluate("bash", "bash").await,
+            PermissionAction::Ask
+        ));
+    }
+
+    #[tokio::test]
+    async fn always_reply_does_not_create_standing_verify_command_approval() {
+        let manager = PermissionManager::new(EventBus::new());
+        let req = manager.ask("verify_command", "verify_command").await;
+        assert!(manager.reply(&req.id, "always").await);
+
+        assert!(
+            manager.list_rules().await.is_empty(),
+            "verify_command `always` must not create a standing approval rule"
+        );
+        assert!(matches!(
+            manager.evaluate("verify_command", "verify_command").await,
             PermissionAction::Ask
         ));
     }
