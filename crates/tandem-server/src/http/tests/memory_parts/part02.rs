@@ -401,6 +401,165 @@ async fn memory_promote_rejects_expired_capability_and_emits_blocked_audit() {
 }
 
 #[tokio::test]
+async fn memory_promote_rejects_tampered_authority_context_and_emits_blocked_audit() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let mut rx = state.event_bus.subscribe();
+
+    let promote_req = Request::builder()
+        .method("POST")
+        .uri("/memory/promote")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "run-3-authority-tamper",
+                "source_memory_id": "authority-source-memory",
+                "from_tier": "session",
+                "to_tier": "project",
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "reason": "tampered authority context test",
+                "review": {
+                    "required": false
+                },
+                "authority_job_context": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "actor_id": "reviewer-user",
+                    "run_id": "run-3-authority-tamper",
+                    "task_id": "candidate-1",
+                    "purpose": "promote approved memory",
+                    "source_binding_id": "workflow:wf-1",
+                    "data_class": "internal",
+                    "classification": "internal",
+                    "operation": "write",
+                    "source_memory_ids": ["authority-source-memory"],
+                    "artifact_refs": ["artifact://run-3-authority-tamper/candidate-1"],
+                    "policy_decision_id": "policy-1",
+                    "grant_decision_id": "grant-1"
+                },
+                "capability": {
+                    "run_id": "run-3-authority-tamper",
+                    "subject": "reviewer-user",
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "memory": {
+                        "read_tiers": ["session", "project"],
+                        "write_tiers": ["session"],
+                        "promote_targets": ["project"],
+                        "require_review_for_promote": false,
+                        "allow_auto_use_tiers": ["curated"]
+                    },
+                    "expires_at": 9999999999999u64
+                }
+            })
+            .to_string(),
+        ))
+        .expect("promote request");
+    let promote_resp = app
+        .clone()
+        .oneshot(promote_req)
+        .await
+        .expect("promote response");
+    assert_eq!(promote_resp.status(), StatusCode::FORBIDDEN);
+
+    let blocked_event = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        next_event_of_type(&mut rx, "memory.promote"),
+    )
+    .await
+    .expect("blocked memory.promote event");
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("status")
+            .and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("sourceMemoryID")
+            .and_then(Value::as_str),
+        Some("authority-source-memory")
+    );
+    assert!(blocked_event
+        .properties
+        .get("detail")
+        .and_then(Value::as_str)
+        .is_some_and(|detail| detail.contains("memory authority job operation mismatch")));
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("quarantine")
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("memory_authority_job")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("quarantine")
+            .and_then(|row| row.get("action"))
+            .and_then(Value::as_str),
+        Some("dead_letter")
+    );
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=run-3-authority-tamper")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app
+        .clone()
+        .oneshot(audit_req)
+        .await
+        .expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    let blocked_promote_exists = audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("action").and_then(Value::as_str) == Some("memory_promote")
+                    && row.get("status").and_then(Value::as_str) == Some("blocked")
+                    && row.get("source_memory_id").and_then(Value::as_str)
+                        == Some("authority-source-memory")
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| {
+                            detail.contains("memory authority job operation mismatch")
+                                && detail.contains("quarantine=memory_authority_job")
+                                && detail.contains("origin_run_id=run-3-authority-tamper")
+                                && detail.contains("project_id=proj-1")
+                        })
+            })
+        })
+        .cloned()
+        .expect("authority-context blocked memory_promote audit row");
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        blocked_promote_exists
+            .get("audit_id")
+            .and_then(Value::as_str)
+    );
+}
+
+#[tokio::test]
 async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
     let state = test_state().await;
     let app = app_router(state.clone());

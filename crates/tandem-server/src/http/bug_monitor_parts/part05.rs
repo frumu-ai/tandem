@@ -114,6 +114,7 @@ async fn persist_bug_monitor_failure_pattern_from_approved_draft(
             content: summary_text.clone(),
             artifact_refs: vec![approval_artifact_path],
             classification: MemoryClassification::Internal,
+            authority_job_context: None,
             metadata: Some(metadata.clone()),
         },
         capability,

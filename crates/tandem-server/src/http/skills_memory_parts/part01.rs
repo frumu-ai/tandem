@@ -1471,6 +1471,7 @@ impl GovernedDistillationWriter {
             content: fact.content.clone(),
             artifact_refs: self.artifact_refs.clone(),
             classification: tandem_memory::MemoryClassification::Internal,
+            authority_job_context: None,
             metadata: Some(json!({
                 "origin": "session_distillation",
                 "fact_category": fact.category,
@@ -1578,6 +1579,26 @@ fn memory_put_provenance(
     })
 }
 
+fn memory_authority_job_quarantine_event(detail: &str) -> Value {
+    if detail.starts_with("memory authority job ") {
+        json!({
+            "kind": "memory_authority_job",
+            "action": "dead_letter",
+            "reason": detail,
+        })
+    } else {
+        Value::Null
+    }
+}
+
+fn memory_authority_job_quarantine_suffix(detail: &str) -> &'static str {
+    if detail.starts_with("memory authority job ") {
+        " quarantine=memory_authority_job"
+    } else {
+        ""
+    }
+}
+
 async fn emit_blocked_memory_promote_guardrail(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -1619,7 +1640,11 @@ async fn emit_blocked_memory_promote_guardrail(
             partition_key: partition_key.clone(),
             actor,
             status: "blocked".to_string(),
-            detail: Some(format!("{detail}{}", memory_linkage_detail(&linkage))),
+            detail: Some(format!(
+                "{detail}{}{}",
+                memory_authority_job_quarantine_suffix(detail),
+                memory_linkage_detail(&linkage)
+            )),
             created_at_ms: crate::now_ms(),
         },
     )
@@ -1641,6 +1666,7 @@ async fn emit_blocked_memory_promote_guardrail(
             "scrubStatus": Value::Null,
             "linkage": linkage,
             "detail": detail,
+            "quarantine": memory_authority_job_quarantine_event(detail),
             "auditID": audit_id,
         }),
     );
@@ -1687,7 +1713,11 @@ async fn emit_blocked_memory_put_guardrail(
             partition_key: partition_key.clone(),
             actor,
             status: "blocked".to_string(),
-            detail: Some(format!("{detail}{}", memory_linkage_detail(&linkage))),
+            detail: Some(format!(
+                "{detail}{}{}",
+                memory_authority_job_quarantine_suffix(detail),
+                memory_linkage_detail(&linkage)
+            )),
             created_at_ms: crate::now_ms(),
         },
     )
@@ -1707,155 +1737,11 @@ async fn emit_blocked_memory_put_guardrail(
             "linkage": linkage,
             "status": "blocked",
             "detail": detail,
+            "quarantine": memory_authority_job_quarantine_event(detail),
             "auditID": audit_id,
         }),
     );
     Ok(())
-}
-
-fn validate_memory_capability_guardrail_context(
-    run_id: &str,
-    partition: &tandem_memory::MemoryPartition,
-    capability: Option<MemoryCapabilityToken>,
-) -> Result<MemoryCapabilityToken, (String, &'static str, StatusCode)> {
-    let cap = capability.unwrap_or_else(|| default_memory_capability_for(run_id, partition));
-    if cap.run_id != run_id
-        || cap.org_id != partition.org_id
-        || cap.workspace_id != partition.workspace_id
-        || cap.project_id != partition.project_id
-    {
-        return Err((
-            cap.subject.clone(),
-            "capability context mismatch",
-            StatusCode::FORBIDDEN,
-        ));
-    }
-    if cap.expires_at < crate::now_ms() {
-        return Err((
-            cap.subject.clone(),
-            "capability expired",
-            StatusCode::UNAUTHORIZED,
-        ));
-    }
-    Ok(cap)
-}
-
-async fn validate_memory_put_capability_with_guardrail(
-    state: &AppState,
-    tenant_context: &TenantContext,
-    request: &MemoryPutRequest,
-    capability: Option<MemoryCapabilityToken>,
-) -> Result<MemoryCapabilityToken, StatusCode> {
-    let cap = match validate_memory_capability_guardrail_context(
-        &request.run_id,
-        &request.partition,
-        capability,
-    ) {
-        Ok(cap) => cap,
-        Err((actor, detail, status)) => {
-            emit_blocked_memory_put_guardrail(state, tenant_context, request, actor, detail)
-                .await?;
-            return Err(status);
-        }
-    };
-    if !memory_partition_matches_request_tenant(tenant_context, &request.partition) {
-        emit_blocked_memory_put_guardrail(
-            state,
-            tenant_context,
-            request,
-            cap.subject.clone(),
-            "partition tenant mismatch",
-        )
-        .await?;
-        return Err(StatusCode::FORBIDDEN);
-    }
-    Ok(cap)
-}
-
-async fn validate_memory_promote_capability_with_guardrail(
-    state: &AppState,
-    tenant_context: &TenantContext,
-    request: &MemoryPromoteRequest,
-    capability: Option<MemoryCapabilityToken>,
-) -> Result<MemoryCapabilityToken, StatusCode> {
-    let cap = match validate_memory_capability_guardrail_context(
-        &request.run_id,
-        &request.partition,
-        capability,
-    ) {
-        Ok(cap) => cap,
-        Err((actor, detail, status)) => {
-            emit_blocked_memory_promote_guardrail(state, tenant_context, request, actor, detail)
-                .await?;
-            return Err(status);
-        }
-    };
-    if !memory_partition_matches_request_tenant(tenant_context, &request.partition) {
-        emit_blocked_memory_promote_guardrail(
-            state,
-            tenant_context,
-            request,
-            cap.subject.clone(),
-            "partition tenant mismatch",
-        )
-        .await?;
-        return Err(StatusCode::FORBIDDEN);
-    }
-    Ok(cap)
-}
-
-async fn validate_memory_search_capability_with_guardrail(
-    state: &AppState,
-    tenant_context: &TenantContext,
-    request: &MemorySearchRequest,
-    capability: Option<MemoryCapabilityToken>,
-) -> Result<MemoryCapabilityToken, StatusCode> {
-    let cap = match validate_memory_capability_guardrail_context(
-        &request.run_id,
-        &request.partition,
-        capability,
-    ) {
-        Ok(cap) => cap,
-        Err((actor, detail, status)) => {
-            let requested_scopes = if request.read_scopes.is_empty() {
-                default_memory_capability_for(&request.run_id, &request.partition)
-                    .memory
-                    .read_tiers
-            } else {
-                request.read_scopes.clone()
-            };
-            return emit_blocked_memory_search_guardrail(
-                status,
-                detail,
-                actor,
-                state,
-                tenant_context,
-                request,
-                &requested_scopes,
-                &request.partition.key(),
-            )
-            .await;
-        }
-    };
-    if !memory_partition_matches_request_tenant(tenant_context, &request.partition) {
-        let requested_scopes = if request.read_scopes.is_empty() {
-            cap.memory.read_tiers.clone()
-        } else {
-            request.read_scopes.clone()
-        };
-        return emit_blocked_memory_search_guardrail(
-            StatusCode::FORBIDDEN,
-            "partition tenant mismatch",
-            cap.subject.clone(),
-            state,
-            tenant_context,
-            request,
-            &requested_scopes,
-            &request.partition.key(),
-        )
-        .await;
-    }
-    Ok(cap)
 }
 
 async fn emit_blocked_memory_search_guardrail(
@@ -1882,7 +1768,7 @@ async fn emit_blocked_memory_search_guardrail(
         "artifact_refs": [],
     });
     let search_detail = format!(
-        "query={} result_count=0 result_ids= result_kinds= requested_scopes={} scopes_used= blocked_scopes={} detail={}{}",
+        "query={} result_count=0 result_ids= result_kinds= requested_scopes={} scopes_used= blocked_scopes={} detail={}{}{}",
         request.query,
         requested_scopes
             .iter()
@@ -1895,6 +1781,7 @@ async fn emit_blocked_memory_search_guardrail(
             .collect::<Vec<_>>()
             .join(","),
         detail,
+        memory_authority_job_quarantine_suffix(detail),
         memory_linkage_detail(&linkage)
     );
     append_memory_audit(
@@ -1933,6 +1820,7 @@ async fn emit_blocked_memory_search_guardrail(
             "linkage": linkage,
             "status": "blocked",
             "detail": detail,
+            "quarantine": memory_authority_job_quarantine_event(detail),
             "auditID": audit_id,
         }),
     );

@@ -50,6 +50,140 @@ pub enum MemoryClassification {
     Restricted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryAuthorityOperation {
+    Read,
+    Write,
+    Promote,
+    Export,
+    Decrypt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryAuthorityJobContext {
+    pub org_id: String,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
+    pub project_id: String,
+    pub actor_id: String,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub purpose: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_binding_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_class: Option<DataClass>,
+    pub classification: MemoryClassification,
+    pub operation: MemoryAuthorityOperation,
+    #[serde(default)]
+    pub source_memory_ids: Vec<String>,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_decision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_decision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryAuthorityJobContextError {
+    Missing,
+    TenantMismatch,
+    ProjectMismatch,
+    ActorMissing,
+    ActorMismatch,
+    RunMismatch,
+    PurposeMissing,
+    OperationMismatch,
+    ClassificationMismatch,
+    SourceMemoryMismatch,
+}
+
+impl MemoryAuthorityJobContextError {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "memory authority job context missing",
+            Self::TenantMismatch => "memory authority job tenant mismatch",
+            Self::ProjectMismatch => "memory authority job project mismatch",
+            Self::ActorMissing => "memory authority job actor missing",
+            Self::ActorMismatch => "memory authority job actor mismatch",
+            Self::RunMismatch => "memory authority job run mismatch",
+            Self::PurposeMissing => "memory authority job purpose missing",
+            Self::OperationMismatch => "memory authority job operation mismatch",
+            Self::ClassificationMismatch => "memory authority job classification mismatch",
+            Self::SourceMemoryMismatch => "memory authority job source memory mismatch",
+        }
+    }
+}
+
+pub fn validate_memory_authority_job_context(
+    context: Option<&MemoryAuthorityJobContext>,
+    require_context: bool,
+    org_id: &str,
+    workspace_id: &str,
+    deployment_id: Option<&str>,
+    actor_id: Option<&str>,
+    run_id: &str,
+    partition: &MemoryPartition,
+    operation: MemoryAuthorityOperation,
+    classification: Option<MemoryClassification>,
+    source_memory_id: Option<&str>,
+) -> Result<(), MemoryAuthorityJobContextError> {
+    let Some(context) = context else {
+        return if require_context {
+            Err(MemoryAuthorityJobContextError::Missing)
+        } else {
+            Ok(())
+        };
+    };
+
+    if context.org_id != org_id
+        || context.workspace_id != workspace_id
+        || context.org_id != partition.org_id
+        || context.workspace_id != partition.workspace_id
+        || context.deployment_id.as_deref() != deployment_id
+    {
+        return Err(MemoryAuthorityJobContextError::TenantMismatch);
+    }
+    if context.project_id != partition.project_id {
+        return Err(MemoryAuthorityJobContextError::ProjectMismatch);
+    }
+    if context.actor_id.trim().is_empty() {
+        return Err(MemoryAuthorityJobContextError::ActorMissing);
+    }
+    if actor_id.is_some_and(|expected| context.actor_id != expected) {
+        return Err(MemoryAuthorityJobContextError::ActorMismatch);
+    }
+    if context.run_id != run_id {
+        return Err(MemoryAuthorityJobContextError::RunMismatch);
+    }
+    if context.purpose.trim().is_empty() {
+        return Err(MemoryAuthorityJobContextError::PurposeMissing);
+    }
+    if context.operation != operation {
+        return Err(MemoryAuthorityJobContextError::OperationMismatch);
+    }
+    if classification.is_some_and(|expected| context.classification != expected) {
+        return Err(MemoryAuthorityJobContextError::ClassificationMismatch);
+    }
+    if let Some(source_memory_id) = source_memory_id {
+        if !context
+            .source_memory_ids
+            .iter()
+            .any(|candidate| candidate == source_memory_id)
+        {
+            return Err(MemoryAuthorityJobContextError::SourceMemoryMismatch);
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryCapabilities {
     #[serde(default)]
@@ -201,6 +335,8 @@ pub struct MemoryPutRequest {
     pub artifact_refs: Vec<String>,
     pub classification: MemoryClassification,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_job_context: Option<MemoryAuthorityJobContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
 
@@ -248,6 +384,8 @@ pub struct MemoryPromoteRequest {
     pub reason: String,
     pub review: PromotionReview,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_job_context: Option<MemoryAuthorityJobContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_outcome: Option<PromotionSourceOutcome>,
 }
 
@@ -288,6 +426,8 @@ pub struct MemorySearchRequest {
     pub partition: MemoryPartition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_job_context: Option<MemoryAuthorityJobContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retrieval_gateway: Option<MemoryRetrievalGatewayRequest>,
 }
@@ -332,5 +472,105 @@ mod tests {
             partition.key(),
             "org_acme/ws_tandem/proj_engine/project".to_string()
         );
+    }
+
+    fn authority_context() -> (MemoryPartition, MemoryAuthorityJobContext) {
+        let partition = MemoryPartition {
+            org_id: "org-1".to_string(),
+            workspace_id: "ws-1".to_string(),
+            project_id: "proj-1".to_string(),
+            tier: GovernedMemoryTier::Project,
+        };
+        let context = MemoryAuthorityJobContext {
+            org_id: partition.org_id.clone(),
+            workspace_id: partition.workspace_id.clone(),
+            deployment_id: Some("deploy-1".to_string()),
+            project_id: partition.project_id.clone(),
+            actor_id: "reviewer-1".to_string(),
+            run_id: "run-1".to_string(),
+            node_id: Some("node-1".to_string()),
+            task_id: Some("task-1".to_string()),
+            purpose: "promote approved memory".to_string(),
+            source_binding_id: Some("workflow:wf-1".to_string()),
+            data_class: Some(DataClass::Internal),
+            classification: MemoryClassification::Internal,
+            operation: MemoryAuthorityOperation::Promote,
+            source_memory_ids: vec!["mem-1".to_string()],
+            artifact_refs: vec!["artifact://run-1/task-1".to_string()],
+            policy_decision_id: Some("policy-1".to_string()),
+            grant_decision_id: Some("grant-1".to_string()),
+        };
+        (partition, context)
+    }
+
+    #[test]
+    fn authority_context_revalidates_execution_scope() {
+        let (partition, context) = authority_context();
+
+        let result = validate_memory_authority_job_context(
+            Some(&context),
+            true,
+            "org-1",
+            "ws-1",
+            Some("deploy-1"),
+            Some("reviewer-1"),
+            "run-1",
+            &partition,
+            MemoryAuthorityOperation::Promote,
+            Some(MemoryClassification::Internal),
+            Some("mem-1"),
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn authority_context_fails_closed_for_tampered_scope() {
+        let (partition, mut context) = authority_context();
+        context.operation = MemoryAuthorityOperation::Write;
+
+        let result = validate_memory_authority_job_context(
+            Some(&context),
+            true,
+            "org-1",
+            "ws-1",
+            Some("deploy-1"),
+            Some("reviewer-1"),
+            "run-1",
+            &partition,
+            MemoryAuthorityOperation::Promote,
+            Some(MemoryClassification::Internal),
+            Some("mem-1"),
+        );
+
+        assert_eq!(
+            result,
+            Err(MemoryAuthorityJobContextError::OperationMismatch)
+        );
+        assert_eq!(
+            MemoryAuthorityJobContextError::OperationMismatch.as_str(),
+            "memory authority job operation mismatch"
+        );
+    }
+
+    #[test]
+    fn missing_authority_context_can_be_required() {
+        let (partition, _) = authority_context();
+
+        let result = validate_memory_authority_job_context(
+            None,
+            true,
+            "org-1",
+            "ws-1",
+            Some("deploy-1"),
+            Some("reviewer-1"),
+            "run-1",
+            &partition,
+            MemoryAuthorityOperation::Promote,
+            None,
+            None,
+        );
+
+        assert_eq!(result, Err(MemoryAuthorityJobContextError::Missing));
     }
 }

@@ -789,6 +789,17 @@ pub(super) async fn coder_memory_candidate_promote(
         record.linked_context_run_id, candidate_id
     )];
     let tenant_context = run.tenant_context.clone();
+    let write_authority_job_context = coder_memory_authority_job_context(
+        &tenant_context,
+        &capability,
+        &record,
+        &candidate_id,
+        &session_partition,
+        &artifact_refs,
+        tandem_memory::MemoryAuthorityOperation::Write,
+        Vec::new(),
+        input.approval_id.as_ref(),
+    );
     let put_response = super::skills_memory::memory_put_impl(
         &state,
         &tenant_context,
@@ -811,6 +822,7 @@ pub(super) async fn coder_memory_candidate_promote(
             content,
             artifact_refs: artifact_refs.clone(),
             classification: MemoryClassification::Internal,
+            authority_job_context: Some(write_authority_job_context),
             metadata: Some(json!({
                 "kind": kind,
                 "candidate_id": candidate_id,
@@ -859,6 +871,17 @@ pub(super) async fn coder_memory_candidate_promote(
                             reviewer_id: input.reviewer_id.clone(),
                             approval_id: input.approval_id.clone(),
                         },
+                        authority_job_context: Some(coder_memory_authority_job_context(
+                            &tenant_context,
+                            &capability,
+                            &record,
+                            &candidate_id,
+                            &session_partition,
+                            &artifact_refs,
+                            tandem_memory::MemoryAuthorityOperation::Promote,
+                            vec![put_response.id.clone()],
+                            input.approval_id.as_ref(),
+                        )),
                         source_outcome: Some(tandem_memory::PromotionSourceOutcome {
                             status: Some("approved".to_string()),
                             approved: Some(true),
