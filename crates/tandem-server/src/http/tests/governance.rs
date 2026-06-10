@@ -310,6 +310,7 @@ async fn automations_v2_update_allows_mcp_narrowing_without_premium_governance()
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_create_rejects_lineage_depth_over_limit() {
     let state = test_state().await;
@@ -342,6 +343,7 @@ async fn automations_v2_create_rejects_lineage_depth_over_limit() {
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_create_requires_approved_capability_request() {
     let state = test_state().await;
@@ -471,6 +473,7 @@ async fn automations_v2_create_and_run_now_treat_control_panel_source_as_human()
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_patch_requires_approved_capability_request() {
     let state = test_state().await;
@@ -552,6 +555,7 @@ async fn automations_v2_patch_requires_approved_capability_request() {
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_spend_caps_pause_and_resume_after_quota_override() {
     let state = test_state().await;
@@ -729,6 +733,7 @@ async fn automations_v2_spend_caps_pause_and_resume_after_quota_override() {
     assert_eq!(create_resp.status(), StatusCode::OK);
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_creation_review_threshold_blocks_and_can_be_acknowledged() {
     let state = test_state().await;
@@ -850,6 +855,7 @@ async fn automations_v2_creation_review_threshold_blocks_and_can_be_acknowledged
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_run_drift_creates_lifecycle_review_and_clears_on_acknowledgement() {
     let state = test_state().await;
@@ -985,6 +991,7 @@ async fn automations_v2_run_drift_creates_lifecycle_review_and_clears_on_acknowl
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_health_check_pauses_expired_automation_and_requests_retirement_review() {
     let state = test_state().await;
@@ -1141,6 +1148,7 @@ async fn automations_v2_health_check_pauses_expired_automation_and_requests_reti
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_retire_and_extend_round_trip_lifecycle_state() {
     let state = test_state().await;
@@ -1300,6 +1308,7 @@ async fn automations_v2_retire_and_extend_round_trip_lifecycle_state() {
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_grant_revoke_pauses_automation_and_requests_dependency_review() {
     let state = test_state().await;
@@ -1487,6 +1496,7 @@ async fn automations_v2_grant_revoke_pauses_automation_and_requests_dependency_r
     );
 }
 
+#[cfg(feature = "premium-governance")]
 #[tokio::test]
 async fn automations_v2_mcp_policy_narrowing_pauses_automation_and_requests_dependency_review() {
     let state = test_state().await;

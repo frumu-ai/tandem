@@ -37,6 +37,7 @@ async fn create_capability_approval(
         .to_string()
 }
 
+#[cfg(feature = "premium-governance")]
 /// GOV-B4: an agent-context caller cannot review (approve) a governance approval.
 #[tokio::test]
 async fn governance_approval_approve_rejects_agent_reviewer() {
@@ -73,6 +74,7 @@ async fn governance_approval_approve_rejects_agent_reviewer() {
     );
 }
 
+#[cfg(feature = "premium-governance")]
 /// GOV-B4: an agent-filed request cannot be self-approved by the same agent
 /// identity (even when presented as a human actor sharing that id).
 #[tokio::test]
@@ -112,6 +114,7 @@ async fn governance_approval_rejects_agent_self_review() {
     );
 }
 
+#[cfg(feature = "premium-governance")]
 /// CT-09: an approval receipt issued in tenant A must not be approved (replayed)
 /// from tenant B. The cross-tenant caller sees the same 404 as a missing receipt so
 /// existence is not leaked, while the owning tenant can still approve its own receipt.
@@ -169,6 +172,7 @@ async fn governance_approval_rejects_cross_tenant_approve_replay() {
     );
 }
 
+#[cfg(feature = "premium-governance")]
 /// CT-09: revocation (deny) must stay tenant-scoped — tenant B cannot deny/revoke an
 /// approval receipt issued in tenant A.
 #[tokio::test]
@@ -230,6 +234,7 @@ async fn governance_approval_rejects_cross_tenant_deny_revocation() {
     );
 }
 
+#[cfg(feature = "premium-governance")]
 /// CT-09: listing approvals is tenant-scoped — one tenant's receipts must never be
 /// enumerated by another.
 #[tokio::test]

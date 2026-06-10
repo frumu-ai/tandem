@@ -39,6 +39,15 @@ jobs:
       - name: Cargo test
         run: cargo test -p tandem-ai --no-default-features
 
+      # Tenant-isolation and storage suites that previously never ran in CI.
+      # The tandem-memory suite was silently dead on main (broken include!)
+      # until 2026-06; this step keeps these crates from going dark again.
+      - name: Cargo test governance-critical crates
+        run: |
+          cargo test -p tandem-memory --lib
+          cargo test -p tandem-runtime --lib
+          cargo test -p tandem-core --lib provider_auth_store::
+
       - name: Cargo clippy
         run: cargo clippy -p tandem-ai --no-default-features -- -D warnings
 
