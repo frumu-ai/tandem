@@ -1346,3 +1346,368 @@ async fn stale_running_automation_runs_ignore_recent_session_activity() {
     assert!(!cancellation.is_cancelled());
 }
 
+
+// --- TAN-214: golden tests for the email approval workflow ------------------
+//
+// The flagship contract: an agent composes an email, the run pauses at a
+// HumanApprovalGate, and the send node cannot complete before an approve
+// decision — and never completes after cancel. These tests pin the gate
+// state machine (pause_automation_run_for_gate / apply_automation_gate_decision)
+// at the checkpoint level: "send executed" == the send node leaving
+// pending_nodes for completed_nodes.
+
+fn email_flow_node(node_id: &str, objective: &str, depends_on: Vec<String>) -> AutomationFlowNode {
+    AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: node_id.to_string(),
+        agent_id: "mailer".to_string(),
+        objective: objective.to_string(),
+        depends_on,
+        input_refs: Vec::new(),
+        output_contract: None,
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: None,
+    }
+}
+
+fn email_approval_automation(automation_id: &str) -> AutomationV2Spec {
+    AutomationV2Spec {
+        automation_id: automation_id.to_string(),
+        name: "Email approval golden".to_string(),
+        description: None,
+        status: AutomationV2Status::Active,
+        schedule: AutomationV2Schedule {
+            schedule_type: AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: AutomationFlowSpec {
+            nodes: vec![
+                email_flow_node("compose_email", "Draft the email", Vec::new()),
+                email_flow_node(
+                    "approval_gate",
+                    "Human review",
+                    vec!["compose_email".to_string()],
+                ),
+                email_flow_node("send_email", "Send the email", vec!["approval_gate".to_string()]),
+            ],
+        },
+        execution: AutomationExecutionPolicy {
+            profile: None,
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp/email-approval-golden".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    }
+}
+
+fn email_pending_gate() -> AutomationPendingGate {
+    AutomationPendingGate {
+        node_id: "approval_gate".to_string(),
+        title: "Review the drafted email".to_string(),
+        instructions: Some("Approve before the email is sent.".to_string()),
+        decisions: vec![
+            "approve".to_string(),
+            "rework".to_string(),
+            "cancel".to_string(),
+        ],
+        rework_targets: vec!["compose_email".to_string()],
+        requested_at_ms: now_ms(),
+        upstream_node_ids: vec!["compose_email".to_string()],
+        metadata: None,
+    }
+}
+
+/// Build a run paused at the approval gate: compose completed with a draft,
+/// gate + send still pending.
+async fn paused_email_run(
+    state: &crate::AppState,
+    automation: &AutomationV2Spec,
+) -> AutomationV2RunRecord {
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+    let mut run = state
+        .create_automation_v2_run(automation, "manual")
+        .await
+        .expect("create run");
+    run.checkpoint.completed_nodes = vec!["compose_email".to_string()];
+    run.checkpoint.pending_nodes = vec!["approval_gate".to_string(), "send_email".to_string()];
+    run.checkpoint.node_outputs.insert(
+        "compose_email".to_string(),
+        json!({
+            "contract_kind": "email_draft",
+            "summary": "Drafted email to customer",
+            "content": { "to": "customer@example.com", "subject": "Update", "body": "Hello" },
+        }),
+    );
+    crate::app::state::pause_automation_run_for_gate(
+        &mut run,
+        email_pending_gate(),
+        vec!["send_email".to_string()],
+    );
+    run
+}
+
+fn send_email_completed(run: &AutomationV2RunRecord) -> bool {
+    run.checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node| node == "send_email")
+}
+
+fn human_reviewer() -> crate::automation_v2::governance::GovernanceActorRef {
+    crate::automation_v2::governance::GovernanceActorRef::human(
+        Some("reviewer-1".to_string()),
+        "control_panel",
+    )
+}
+
+#[tokio::test]
+async fn email_approval_golden_approve_path() {
+    let state = ready_test_state().await;
+    let automation = email_approval_automation("auto-email-approve");
+    let mut run = paused_email_run(&state, &automation).await;
+
+    // Golden pre-approval state: paused, send not executed, gate visible.
+    assert_eq!(run.status, AutomationRunStatus::AwaitingApproval);
+    assert!(!send_email_completed(&run), "send must not run before approval");
+    assert_eq!(
+        run.checkpoint.awaiting_gate.as_ref().map(|g| g.node_id.as_str()),
+        Some("approval_gate")
+    );
+    assert!(run.checkpoint.gate_history.is_empty());
+
+    let gate = email_pending_gate();
+    let outcome = crate::app::state::apply_automation_gate_decision(
+        &mut run,
+        &automation,
+        &gate,
+        "approve",
+        Some("LGTM".to_string()),
+        Some(human_reviewer()),
+    );
+    assert!(matches!(
+        outcome,
+        crate::app::state::AutomationGateDecisionOutcome::Applied
+    ));
+
+    // Golden post-approval state: queued to continue, gate recorded once with
+    // the human actor, gate node completed with an approval_gate output, and
+    // the send node released (pending, not yet executed).
+    assert_eq!(run.status, AutomationRunStatus::Queued);
+    assert!(run.checkpoint.awaiting_gate.is_none());
+    assert_eq!(run.checkpoint.gate_history.len(), 1);
+    let record = &run.checkpoint.gate_history[0];
+    assert_eq!(record.node_id, "approval_gate");
+    assert_eq!(record.decision, "approve");
+    assert_eq!(record.reason.as_deref(), Some("LGTM"));
+    let decider = record.decided_by.as_ref().expect("decision has an actor");
+    assert_eq!(decider.actor_id.as_deref(), Some("reviewer-1"));
+    assert!(run
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node| node == "approval_gate"));
+    assert_eq!(
+        run.checkpoint.node_outputs["approval_gate"]["contract_kind"],
+        json!("approval_gate")
+    );
+    assert!(
+        run.checkpoint.pending_nodes.iter().any(|n| n == "send_email"),
+        "send node is released for execution only after approval"
+    );
+    assert!(!send_email_completed(&run));
+}
+
+#[tokio::test]
+async fn email_approval_golden_cancel_path_never_sends() {
+    let state = ready_test_state().await;
+    let automation = email_approval_automation("auto-email-cancel");
+    let mut run = paused_email_run(&state, &automation).await;
+
+    let gate = email_pending_gate();
+    let outcome = crate::app::state::apply_automation_gate_decision(
+        &mut run,
+        &automation,
+        &gate,
+        "cancel",
+        Some("wrong recipient".to_string()),
+        Some(human_reviewer()),
+    );
+    assert!(matches!(
+        outcome,
+        crate::app::state::AutomationGateDecisionOutcome::Applied
+    ));
+
+    assert_eq!(run.status, AutomationRunStatus::Cancelled);
+    assert_eq!(run.stop_kind, Some(AutomationStopKind::Cancelled));
+    assert!(!send_email_completed(&run), "send must never run after cancel");
+    assert!(!run
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node| node == "approval_gate"));
+    assert_eq!(run.checkpoint.gate_history.len(), 1);
+    assert_eq!(run.checkpoint.gate_history[0].decision, "cancel");
+    assert!(run
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .any(|entry| entry.event == "run_cancelled"));
+}
+
+#[tokio::test]
+async fn email_approval_golden_rework_rearms_and_second_approval_releases_send() {
+    let state = ready_test_state().await;
+    let automation = email_approval_automation("auto-email-rework");
+    let mut run = paused_email_run(&state, &automation).await;
+
+    let gate = email_pending_gate();
+    let outcome = crate::app::state::apply_automation_gate_decision(
+        &mut run,
+        &automation,
+        &gate,
+        "rework",
+        Some("tone is off".to_string()),
+        Some(human_reviewer()),
+    );
+    assert!(matches!(
+        outcome,
+        crate::app::state::AutomationGateDecisionOutcome::Applied
+    ));
+
+    // Rework resets compose (and the gate) back to pending and clears the
+    // draft output; send is still not executed.
+    assert_eq!(run.status, AutomationRunStatus::Queued);
+    assert!(run
+        .checkpoint
+        .pending_nodes
+        .iter()
+        .any(|node| node == "compose_email"));
+    assert!(!run
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node| node == "compose_email"));
+    assert!(!run.checkpoint.node_outputs.contains_key("compose_email"));
+    assert!(!send_email_completed(&run));
+    assert_eq!(run.checkpoint.gate_history.len(), 1);
+
+    // Second round: compose finishes again, gate re-arms, approval releases send.
+    run.checkpoint.completed_nodes.push("compose_email".to_string());
+    run.checkpoint
+        .pending_nodes
+        .retain(|node| node != "compose_email");
+    crate::app::state::pause_automation_run_for_gate(
+        &mut run,
+        email_pending_gate(),
+        vec!["send_email".to_string()],
+    );
+    assert_eq!(run.status, AutomationRunStatus::AwaitingApproval);
+
+    let outcome = crate::app::state::apply_automation_gate_decision(
+        &mut run,
+        &automation,
+        &gate,
+        "approve",
+        None,
+        Some(human_reviewer()),
+    );
+    assert!(matches!(
+        outcome,
+        crate::app::state::AutomationGateDecisionOutcome::Applied
+    ));
+    assert_eq!(run.checkpoint.gate_history.len(), 2);
+    assert_eq!(run.checkpoint.gate_history[0].decision, "rework");
+    assert_eq!(run.checkpoint.gate_history[1].decision, "approve");
+    assert_eq!(run.status, AutomationRunStatus::Queued);
+    assert!(run.checkpoint.pending_nodes.iter().any(|n| n == "send_email"));
+}
+
+#[tokio::test]
+async fn email_approval_golden_rejects_decisions_on_settled_gates() {
+    let state = ready_test_state().await;
+    let automation = email_approval_automation("auto-email-double");
+    let mut run = paused_email_run(&state, &automation).await;
+
+    let gate = email_pending_gate();
+    let first = crate::app::state::apply_automation_gate_decision(
+        &mut run,
+        &automation,
+        &gate,
+        "approve",
+        None,
+        Some(human_reviewer()),
+    );
+    assert!(matches!(
+        first,
+        crate::app::state::AutomationGateDecisionOutcome::Applied
+    ));
+
+    // A second decision (e.g. a racing cancel) must not apply: the winner is
+    // returned, history stays at one record, and the run state is unchanged.
+    let second = crate::app::state::apply_automation_gate_decision(
+        &mut run,
+        &automation,
+        &gate,
+        "cancel",
+        Some("too late".to_string()),
+        Some(human_reviewer()),
+    );
+    match second {
+        crate::app::state::AutomationGateDecisionOutcome::AlreadyDecided(winner) => {
+            let winner = winner.expect("winning decision returned");
+            assert_eq!(winner.decision, "approve");
+        }
+        crate::app::state::AutomationGateDecisionOutcome::Applied => {
+            panic!("settled gate must not accept a second decision")
+        }
+    }
+    assert_eq!(run.checkpoint.gate_history.len(), 1);
+    assert_eq!(run.status, AutomationRunStatus::Queued);
+    assert!(!send_email_completed(&run));
+
+    // Decisions for a gate that was never pending are rejected the same way.
+    let bogus_gate = AutomationPendingGate {
+        node_id: "not_a_gate".to_string(),
+        ..email_pending_gate()
+    };
+    let bogus = crate::app::state::apply_automation_gate_decision(
+        &mut run,
+        &automation,
+        &bogus_gate,
+        "approve",
+        None,
+        Some(human_reviewer()),
+    );
+    assert!(matches!(
+        bogus,
+        crate::app::state::AutomationGateDecisionOutcome::AlreadyDecided(_)
+    ));
+    assert_eq!(run.checkpoint.gate_history.len(), 1);
+}

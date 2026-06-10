@@ -126,6 +126,8 @@ jobs:
           "$TEST_BIN" 'http::tests::global::automation_v2_run_projects_backlog_tasks_into_context_blackboard' --exact --nocapture
           "$TEST_BIN" 'app::state::tests::automations::workflow_policy::mcp_grounded_citations_artifact_passes_without_local_reads_or_websearch' --exact --nocapture
           "$TEST_BIN" 'app::state::tests::automations::workflow_policy::materialized_current_attempt_output_does_not_report_missing_output_requirement' --exact --nocapture
+          # TAN-214: golden email approval workflow (compose -> gate -> send)
+          "$TEST_BIN" 'app::state::tests::automations::email_approval_golden' --nocapture
 
   workflow-runtime-deep-gate:
     name: Workflow Runtime Deep Gate
