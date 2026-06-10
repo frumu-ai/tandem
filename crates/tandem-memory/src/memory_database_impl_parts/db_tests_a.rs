@@ -608,6 +608,114 @@
     }
 
     #[tokio::test]
+    async fn test_session_tier_search_does_not_leak_across_tenants() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+        let vector = embedding(0.7, 0.3);
+
+        // Both tenants share the same session_id ("shared-session" from the
+        // chunk helper) so only the tenant clause separates them.
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-session",
+                MemoryTier::Session,
+                tenant_a.clone(),
+                "tenant a session memory",
+                None,
+            ),
+            &vector,
+        )
+        .await
+        .unwrap();
+
+        let foreign = db
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Session,
+                None,
+                Some("shared-session"),
+                &tenant_b,
+                10,
+            )
+            .await
+            .unwrap();
+        assert!(
+            foreign.is_empty(),
+            "tenant B must not see tenant A session chunks"
+        );
+
+        let own = db
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Session,
+                None,
+                Some("shared-session"),
+                &tenant_a,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(own.len(), 1);
+        assert_eq!(own[0].0.id, "tenant-a-session");
+    }
+
+    #[tokio::test]
+    async fn test_search_isolates_deployments_within_same_org_workspace() {
+        let (db, _temp) = setup_test_db().await;
+        let deployment_one = tenant_scope("org-a", "workspace-a");
+        let deployment_two = MemoryTenantScope {
+            org_id: "org-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            deployment_id: Some("deployment-2".to_string()),
+        };
+        let no_deployment = MemoryTenantScope {
+            org_id: "org-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            deployment_id: None,
+        };
+        let vector = embedding(0.5, 0.5);
+
+        db.store_chunk(
+            &test_vector_chunk(
+                "deployment-one-chunk",
+                MemoryTier::Global,
+                deployment_one.clone(),
+                "deployment one memory",
+                None,
+            ),
+            &vector,
+        )
+        .await
+        .unwrap();
+
+        let cross_deployment = db
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &deployment_two, 10)
+            .await
+            .unwrap();
+        assert!(
+            cross_deployment.is_empty(),
+            "a different deployment in the same org/workspace must not match"
+        );
+
+        let missing_deployment = db
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &no_deployment, 10)
+            .await
+            .unwrap();
+        assert!(
+            missing_deployment.is_empty(),
+            "a scope without deployment_id must not match deployment-scoped rows"
+        );
+
+        let own = db
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &deployment_one, 10)
+            .await
+            .unwrap();
+        assert_eq!(own.len(), 1);
+        assert_eq!(own[0].0.id, "deployment-one-chunk");
+    }
+
+    #[tokio::test]
     async fn test_tenant_delete_does_not_remove_other_tenant_vector_memory() {
         let (db, _temp) = setup_test_db().await;
         let tenant_a = tenant_scope("org-a", "workspace-a");
