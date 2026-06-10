@@ -11,7 +11,17 @@ use std::path::Path;
 /// Returns true if a resolved path points at a sensitive credential, key, or
 /// secret-config file that runtime tools must not read or mutate.
 pub fn is_sensitive_path(path: &Path) -> bool {
-    let lowered = path.to_string_lossy().to_ascii_lowercase();
+    // Normalize for the substring checks below: Windows separators become
+    // `/`, and a leading `/` is prepended so relative inputs like
+    // `.aws/credentials` hit the same `/.aws/credentials` patterns as
+    // absolute resolved paths. Both were false negatives before.
+    let lowered = format!(
+        "/{}",
+        path.to_string_lossy()
+            .to_ascii_lowercase()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
 
     // SSH / GPG directories
     if lowered.contains("/.ssh/") || lowered.ends_with("/.ssh") {
@@ -99,6 +109,17 @@ mod tests {
         assert!(is_sensitive_path(&p("/work/server.key")));
         assert!(is_sensitive_path(&p("/work/cert.pem")));
         assert!(is_sensitive_path(&p("/work/store.jks")));
+    }
+
+    #[test]
+    fn flags_relative_and_windows_style_paths() {
+        assert!(is_sensitive_path(&p(".aws/credentials")));
+        assert!(is_sensitive_path(&p(".docker/config.json")));
+        assert!(is_sensitive_path(&p(".ssh/id_rsa")));
+        assert!(is_sensitive_path(&p(".ssh")));
+        assert!(is_sensitive_path(&p(r"C:\Users\u\.aws\credentials")));
+        assert!(is_sensitive_path(&p(r"C:\work\.docker\config.json")));
+        assert!(is_sensitive_path(&p(r"users\u\.ssh")));
     }
 
     #[test]

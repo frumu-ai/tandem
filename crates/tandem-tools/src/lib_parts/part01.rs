@@ -1235,7 +1235,7 @@ fn is_malformed_tool_path_token(path: &str) -> bool {
     {
         return true;
     }
-    if path.contains('\n') || path.contains('\r') {
+    if path.chars().any(|c| c.is_control()) {
         return true;
     }
     if path.contains('*') {

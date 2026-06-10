@@ -574,4 +574,36 @@ mod tests {
             PermissionAction::Deny
         ));
     }
+
+    #[test]
+    fn standing_allow_is_unsafe_for_every_shell_execution_alias() {
+        // Table-driven over the known shell/verify aliases so a new execution
+        // tool name cannot silently regain standing "always allow" approval.
+        let unsafe_names = [
+            "bash",
+            "shell",
+            "run_command",
+            "powershell",
+            "cmd",
+            "verify_command",
+            "verifycommand",
+        ];
+        for name in unsafe_names {
+            assert!(
+                standing_allow_is_unsafe(name, name),
+                "`{name}` must be excluded from standing allow rules"
+            );
+            assert!(
+                standing_allow_is_unsafe(name, "*"),
+                "`{name}` with wildcard pattern must be excluded"
+            );
+        }
+
+        for name in ["read", "grep", "glob", "webfetch", "todo_write"] {
+            assert!(
+                !standing_allow_is_unsafe(name, name),
+                "`{name}` is not an execution tool and may hold standing rules"
+            );
+        }
+    }
 }
