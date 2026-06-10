@@ -146,6 +146,20 @@ pub struct McpRegistry {
     processes: Arc<Mutex<HashMap<String, Child>>>,
     state_file: Arc<PathBuf>,
     oauth_security_dir: Arc<PathBuf>,
+    strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Process-wide default for strict tenant enforcement, set once at startup by
+/// the host (engine `serve` in hosted/enterprise auth modes). Registries
+/// inherit this default at construction.
+static MCP_STRICT_TENANT_ENFORCEMENT_DEFAULT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Enable (or disable) strict tenant enforcement for registries constructed
+/// after this call. In strict mode, MCP tool calls carrying the local-implicit
+/// tenant context are denied instead of resolving local/env-backed secrets.
+pub fn set_strict_tenant_enforcement_default(enabled: bool) {
+    MCP_STRICT_TENANT_ENFORCEMENT_DEFAULT.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
 impl McpRegistry {
@@ -193,7 +207,17 @@ impl McpRegistry {
             processes: Arc::new(Mutex::new(HashMap::new())),
             state_file: Arc::new(state_file),
             oauth_security_dir: Arc::new(oauth_security_dir),
+            strict_tenant_enforcement: Arc::new(std::sync::atomic::AtomicBool::new(
+                MCP_STRICT_TENANT_ENFORCEMENT_DEFAULT.load(std::sync::atomic::Ordering::SeqCst),
+            )),
         }
+    }
+
+    /// Override strict tenant enforcement for this registry (registries inherit
+    /// the process default from `set_strict_tenant_enforcement_default`).
+    pub fn set_strict_tenant_enforcement(&self, enabled: bool) {
+        self.strict_tenant_enforcement
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub async fn list(&self) -> HashMap<String, McpServer> {
@@ -784,6 +808,15 @@ impl McpRegistry {
         args: Value,
         current_tenant: &TenantContext,
     ) -> Result<ToolResult, String> {
+        if current_tenant.is_local_implicit()
+            && self
+                .strict_tenant_enforcement
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(format!(
+                "ToolDenied {{ reason: TenantScope }}: blocked MCP tool `{server_name}.{tool_name}` because local-implicit tenant context is not permitted in hosted/enterprise mode."
+            ));
+        }
         let server = {
             let servers = self.servers.read().await;
             let Some(server) = servers.get(server_name) else {

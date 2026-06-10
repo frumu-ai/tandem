@@ -78,6 +78,14 @@ struct McpOAuthBootstrap {
 
 pub(super) async fn bootstrap_mcp_servers_when_ready(state: AppState) {
     if state.wait_until_ready_or_failed(120, 250).await {
+        // The registry held by RuntimeState was constructed by the host before
+        // serve() could set the crate-level strict default, so flip the live
+        // instance here once the runtime is ready.
+        if crate::config::env::resolve_runtime_auth_mode()
+            != tandem_types::RuntimeAuthMode::LocalSingleTenant
+        {
+            state.mcp.set_strict_tenant_enforcement(true);
+        }
         bootstrap_mcp_servers(&state).await;
     } else {
         tracing::warn!("mcp bootstrap: skipped because runtime startup failed or timed out");

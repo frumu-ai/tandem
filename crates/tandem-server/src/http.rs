@@ -285,11 +285,31 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     serve_with_route_extensions(addr, state, &[]).await
 }
 
+/// In hosted/enterprise auth modes the data layers must fail closed on
+/// local-implicit tenant context instead of trusting ingress middleware alone
+/// (TAN-196). Sets the process-wide defaults that MemoryDatabase and
+/// McpRegistry instances inherit at construction; the registry instance held
+/// by RuntimeState is flipped in `bootstrap_mcp_servers_when_ready` once the
+/// runtime is initialized.
+fn apply_strict_tenant_enforcement_defaults() {
+    let mode = crate::config::env::resolve_runtime_auth_mode();
+    let strict = mode != tandem_types::RuntimeAuthMode::LocalSingleTenant;
+    if strict {
+        tandem_memory::db::set_strict_tenant_enforcement_default(true);
+        tandem_runtime::mcp::set_strict_tenant_enforcement_default(true);
+        tracing::info!(
+            auth_mode = ?mode,
+            "strict tenant enforcement enabled for memory and MCP data layers"
+        );
+    }
+}
+
 pub async fn serve_with_route_extensions(
     addr: SocketAddr,
     state: AppState,
     route_extensions: &[RouteRegistrar],
 ) -> anyhow::Result<()> {
+    apply_strict_tenant_enforcement_defaults();
     let reaper_state = state.clone();
     let session_part_persister_state = state.clone();
     let session_context_run_journaler_state = state.clone();

@@ -652,6 +652,40 @@ mod tests {
         std::env::remove_var("TANDEM_TEST_MCP_SECRET");
     }
 
+    #[tokio::test]
+    async fn strict_mode_denies_local_implicit_tool_calls_before_dispatch() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        registry.set_strict_tenant_enforcement(true);
+
+        // Denied before server lookup: no server named "any-server" exists,
+        // so reaching "not found" would mean the guard did not fire first.
+        let err = registry
+            .call_tool_for_tenant(
+                "any-server",
+                "any_tool",
+                json!({}),
+                &TenantContext::local_implicit(),
+            )
+            .await
+            .expect_err("strict mode must deny local-implicit tool calls");
+        assert!(err.contains("ToolDenied { reason: TenantScope }"));
+        assert!(err.contains("local-implicit"));
+
+        // Explicit tenants pass the strict guard (and then fail later on the
+        // missing server, proving the guard is scope-specific).
+        let err = registry
+            .call_tool_for_tenant(
+                "any-server",
+                "any_tool",
+                json!({}),
+                &TenantContext::explicit("org-a", "workspace-a", None),
+            )
+            .await
+            .expect_err("server does not exist");
+        assert!(err.contains("not found"));
+    }
+
     #[test]
     fn mismatched_store_secret_headers_flags_only_foreign_store_refs() {
         let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);

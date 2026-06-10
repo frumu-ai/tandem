@@ -6,6 +6,37 @@ impl MemoryDatabase {
         self
     }
 
+    /// Override strict tenant enforcement for this instance (instances inherit
+    /// the process default from `set_strict_tenant_enforcement_default`).
+    pub fn set_strict_tenant_enforcement(&self, enabled: bool) {
+        self.strict_tenant_enforcement
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// In hosted/enterprise (strict) mode the local-implicit scope must never
+    /// reach the store: it would silently read or write the shared "local"
+    /// partition instead of an explicit tenant partition.
+    fn deny_local_scope_in_strict_mode(
+        &self,
+        operation: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<()> {
+        if tenant_scope.is_local()
+            && self
+                .strict_tenant_enforcement
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            tracing::warn!(
+                operation = operation,
+                "memory access denied: local-implicit tenant scope reached a strict-mode store"
+            );
+            return Err(MemoryError::TenantScopeViolation(format!(
+                "{operation} denied: local-implicit tenant scope is not permitted in hosted/enterprise mode"
+            )));
+        }
+        Ok(())
+    }
+
     /// Initialize or open the memory database
     pub async fn new(db_path: &Path) -> MemoryResult<Self> {
         if let Some(parent) = db_path.parent() {
@@ -36,6 +67,9 @@ impl MemoryDatabase {
             conn: Arc::new(Mutex::new(conn)),
             db_path: db_path.to_path_buf(),
             crypto: crate::crypto::MemoryCryptoProvider::from_env(),
+            strict_tenant_enforcement: std::sync::atomic::AtomicBool::new(
+                crate::db::strict_tenant_enforcement_default(),
+            ),
         };
 
         let _schema_init_guard = SCHEMA_INIT_LOCK.lock().await;
@@ -1221,6 +1255,7 @@ impl MemoryDatabase {
 
     /// Store a chunk with its embedding
     pub async fn store_chunk(&self, chunk: &MemoryChunk, embedding: &[f32]) -> MemoryResult<()> {
+        self.deny_local_scope_in_strict_mode("memory store", &chunk.tenant_scope)?;
         let conn = self.conn.lock().await;
 
         let (chunks_table, vectors_table) = match chunk.tier {
@@ -1386,6 +1421,7 @@ impl MemoryDatabase {
         tenant_scope: &MemoryTenantScope,
         limit: i64,
     ) -> MemoryResult<Vec<(MemoryChunk, f64)>> {
+        self.deny_local_scope_in_strict_mode("memory search", tenant_scope)?;
         let conn = self.conn.lock().await;
 
         let (chunks_table, vectors_table) = match tier {

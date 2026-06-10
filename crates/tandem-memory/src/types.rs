@@ -58,6 +58,13 @@ impl MemoryTenantScope {
             deployment_id: None,
         }
     }
+
+    /// True when this scope is the single-user local partition rather than an
+    /// explicit hosted/enterprise tenant. Strict-mode stores reject this scope
+    /// (see `MemoryDatabase::set_strict_tenant_enforcement`).
+    pub fn is_local(&self) -> bool {
+        self == &Self::local()
+    }
 }
 
 impl Default for MemoryTenantScope {
@@ -558,6 +565,9 @@ pub enum MemoryError {
 
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    #[error("Tenant scope violation: {0}")]
+    TenantScopeViolation(String),
 
     #[error("Not found: {0}")]
     NotFound(String),

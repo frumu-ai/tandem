@@ -716,6 +716,71 @@
     }
 
     #[tokio::test]
+    async fn test_strict_mode_denies_local_scope_reads_and_writes() {
+        let (db, _temp) = setup_test_db().await;
+        let local_scope = MemoryTenantScope::local();
+        let vector = embedding(0.3, 0.7);
+
+        // Default (local single-tenant) mode: local scope works.
+        db.store_chunk(
+            &test_vector_chunk(
+                "local-chunk",
+                MemoryTier::Global,
+                local_scope.clone(),
+                "local memory",
+                None,
+            ),
+            &vector,
+        )
+        .await
+        .expect("local scope writes succeed before strict mode is enabled");
+
+        db.set_strict_tenant_enforcement(true);
+
+        let read_err = db
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &local_scope, 10)
+            .await
+            .expect_err("strict mode must deny local-scope reads");
+        assert!(matches!(read_err, MemoryError::TenantScopeViolation(_)));
+
+        let write_err = db
+            .store_chunk(
+                &test_vector_chunk(
+                    "local-chunk-2",
+                    MemoryTier::Global,
+                    local_scope.clone(),
+                    "local memory two",
+                    None,
+                ),
+                &vector,
+            )
+            .await
+            .expect_err("strict mode must deny local-scope writes");
+        assert!(matches!(write_err, MemoryError::TenantScopeViolation(_)));
+
+        // Explicit tenants remain unaffected by strict mode.
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        db.store_chunk(
+            &test_vector_chunk(
+                "tenant-a-strict",
+                MemoryTier::Global,
+                tenant_a.clone(),
+                "tenant a strict memory",
+                None,
+            ),
+            &vector,
+        )
+        .await
+        .expect("explicit tenant writes succeed in strict mode");
+        let results = db
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_a, 10)
+            .await
+            .expect("explicit tenant reads succeed in strict mode");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, "tenant-a-strict");
+    }
+
+    #[tokio::test]
     async fn test_tenant_delete_does_not_remove_other_tenant_vector_memory() {
         let (db, _temp) = setup_test_db().await;
         let tenant_a = tenant_scope("org-a", "workspace-a");

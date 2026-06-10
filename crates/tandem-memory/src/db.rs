@@ -33,9 +33,30 @@ pub struct MemoryDatabase {
     conn: Arc<Mutex<Connection>>,
     db_path: std::path::PathBuf,
     crypto: crate::crypto::MemoryCryptoProvider,
+    strict_tenant_enforcement: std::sync::atomic::AtomicBool,
 }
 
 static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Process-wide default for strict tenant enforcement, set once at startup by
+/// the host (engine `serve` in hosted/enterprise auth modes) before databases
+/// are opened. New `MemoryDatabase` instances inherit this default, so the
+/// many ad-hoc construction sites in tandem-server stay fail-closed without
+/// each one threading a flag.
+static STRICT_TENANT_ENFORCEMENT_DEFAULT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Enable (or disable) strict tenant enforcement for all `MemoryDatabase`
+/// instances opened after this call. In strict mode, reads and writes carrying
+/// the local-implicit tenant scope are rejected instead of landing in the
+/// shared "local" partition.
+pub fn set_strict_tenant_enforcement_default(enabled: bool) {
+    STRICT_TENANT_ENFORCEMENT_DEFAULT.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn strict_tenant_enforcement_default() -> bool {
+    STRICT_TENANT_ENFORCEMENT_DEFAULT.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 include!("memory_database_impl_parts/part01.rs");
 include!("memory_database_impl_parts/part02.rs");
