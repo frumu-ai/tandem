@@ -405,7 +405,7 @@ fn kb_grounding_block_directs_factual_questions_to_enabled_kb_mcp() {
         tool_patterns: vec!["mcp.customer_kb.*".to_string()],
     };
 
-    let block = ServerPromptContextHook::build_kb_grounding_block(&policy);
+    let block = prompt_context_blocks::build_kb_grounding_block(&policy);
 
     assert!(block.contains("preferred_question_tools: mcp.customer_kb.answer_question"));
     assert!(block.contains("First choice: call the KB MCP `answer_question` tool"));
