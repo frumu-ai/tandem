@@ -1116,4 +1116,3 @@
         let loaded = db.get_knowledge_item(&item.id).await.unwrap().unwrap();
         assert_eq!(loaded.status, KnowledgeItemStatus::Working);
     }
-}

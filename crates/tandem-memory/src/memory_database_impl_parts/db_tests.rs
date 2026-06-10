@@ -5,6 +5,6 @@ mod tests {
     use tandem_orchestrator::{KnowledgeScope, KnowledgeTrustLevel};
     use tempfile::TempDir;
 
-    include!("memory_database_impl_parts/db_tests_a.rs");
-    include!("memory_database_impl_parts/db_tests_b.rs");
+    include!("db_tests_a.rs");
+    include!("db_tests_b.rs");
 }
