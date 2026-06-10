@@ -111,10 +111,18 @@ mod strict_tenant_tests {
         assert!(tool_requires_explicit_tenant(&memory_search_capabilities()));
         assert!(tool_requires_explicit_tenant(&memory_write_capabilities()));
         // bash: network_access via shell capabilities
-        assert!(tool_requires_explicit_tenant(&shell_execution_capabilities()));
-        assert!(!tool_requires_explicit_tenant(&workspace_read_capabilities()));
-        assert!(!tool_requires_explicit_tenant(&workspace_write_capabilities()));
-        assert!(!tool_requires_explicit_tenant(&planning_write_capabilities()));
+        assert!(tool_requires_explicit_tenant(
+            &shell_execution_capabilities()
+        ));
+        assert!(!tool_requires_explicit_tenant(
+            &workspace_read_capabilities()
+        ));
+        assert!(!tool_requires_explicit_tenant(
+            &workspace_write_capabilities()
+        ));
+        assert!(!tool_requires_explicit_tenant(
+            &planning_write_capabilities()
+        ));
     }
 }
 
@@ -200,8 +208,7 @@ mod sandbox_and_resolution_tests {
         assert!(resolve_tool_path("nested/../../escape.txt", &args).is_none());
         assert!(resolve_tool_path("/etc/passwd", &args).is_none());
         assert!(
-            resolve_tool_path(&format!("{}/file.txt", workspace.path().display()), &args)
-                .is_some(),
+            resolve_tool_path(&format!("{}/file.txt", workspace.path().display()), &args).is_some(),
             "absolute path inside the workspace resolves"
         );
         assert!(resolve_tool_path("inside.txt", &args).is_some());
