@@ -1,0 +1,12 @@
+[package]
+name = "tandem-meta-harness-eval"
+version = "0.1.0"
+edition = "2021"
+description = "Durable trace and scored-version models for Tandem meta-harness evaluation"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

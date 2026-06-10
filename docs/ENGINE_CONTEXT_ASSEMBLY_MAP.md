@@ -2,7 +2,7 @@
 
 TAN-186 inventory. Last traced from `main` at `3094ac42` on 2026-06-09.
 
-This document maps the places Tandem assembles provider-facing model context. It is a behavior-free reference for follow-up context hygiene work.
+This document maps the places Tandem assembles provider-facing model context. It is a behavior-free reference for follow-up context hygiene work. Regression coverage for this behavior lives in the context eval suites; see `docs/CONTEXT_EVALS.md`.
 
 ## Final Provider Boundary
 
@@ -151,11 +151,16 @@ Timing:
 Raw artifact preservation:
 
 - Docs and memory hits stay in their source stores; the hook injects rendered summaries only.
-- Global memory rendering is capped by `MEMORY_CONTEXT_CHAR_BUDGET` in `crates/tandem-server/src/app/state/prompt_memory_context.rs`.
+- Project-scoped memory hits are preferred when the session has a project; global hits are deduped by record id and deferred while project hits exist.
+
+Budgets:
+
+- All hook additions share `TANDEM_PROMPT_HOOK_CONTEXT_BUDGET_CHARS` (default 6k); identity, memory scope, and required KB grounding inject regardless, optional blocks defer when over budget.
+- Embedded docs are additionally capped by `TANDEM_DOCS_CONTEXT_BUDGET_CHARS` (default 2.4k) and global memory by `TANDEM_MEMORY_CONTEXT_BUDGET_CHARS` (default 2.2k); the effective per-source budget is the minimum of the source budget and the remaining shared budget, reported as `sourceBudgetChars` in injection events.
 
 Token estimation:
 
-- Hook emits approximate token sizes with `split_whitespace().count()`.
+- Hook emits approximate token sizes with `split_whitespace().count()`, plus char sizes and budget/remaining-budget counters in injection events.
 - Final provider usage falls back to char-count estimates if the provider does not report usage.
 
 ## Workflow Execution

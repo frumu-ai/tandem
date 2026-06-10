@@ -551,6 +551,141 @@ fn prompt_context_memory_selection_prefers_project_hits_over_global_fallback() {
     assert_eq!(deferred[0].record.id, "global-memory");
 }
 
+#[test]
+fn prompt_context_memory_selection_dedupes_duplicate_record_ids() {
+    let mut record_a = prompt_memory_record("verified", "Project note.");
+    record_a.id = "memory-1".to_string();
+    let mut record_a_dup = prompt_memory_record("verified", "Project note duplicate.");
+    record_a_dup.id = "memory-1".to_string();
+    let mut record_b = prompt_memory_record("verified", "Global note.");
+    record_b.id = "memory-2".to_string();
+    let mut record_b_dup = prompt_memory_record("verified", "Global note duplicate.");
+    record_b_dup.id = "memory-2".to_string();
+    // A global hit sharing an id with a selected project hit must also drop.
+    let mut record_a_global = prompt_memory_record("verified", "Same as project note.");
+    record_a_global.id = "memory-1".to_string();
+
+    let hit = |record: tandem_memory::types::GlobalMemoryRecord| {
+        tandem_memory::types::GlobalMemorySearchHit { score: 0.9, record }
+    };
+    let (selected, deferred, project_scope_used) =
+        ServerPromptContextHook::select_memory_hits_for_context(
+            vec![hit(record_a), hit(record_a_dup)],
+            vec![hit(record_b), hit(record_b_dup), hit(record_a_global)],
+        );
+
+    assert!(project_scope_used);
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].record.id, "memory-1");
+    assert_eq!(deferred.len(), 1);
+    assert_eq!(deferred[0].record.id, "memory-2");
+}
+
+#[test]
+fn docs_and_memory_source_budgets_are_explicit_and_env_tunable() {
+    std::env::remove_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS");
+    std::env::remove_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS");
+    assert_eq!(docs_context_budget_chars(), 2_400);
+    assert_eq!(memory_context_budget_chars(), 2_200);
+
+    std::env::set_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS", "900");
+    std::env::set_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS", "800");
+    assert_eq!(docs_context_budget_chars(), 900);
+    assert_eq!(memory_context_budget_chars(), 800);
+
+    // Values below the floor fall back to the defaults instead of starving
+    // required grounding context.
+    std::env::set_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS", "10");
+    std::env::set_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS", "10");
+    assert_eq!(docs_context_budget_chars(), 2_400);
+    assert_eq!(memory_context_budget_chars(), 2_200);
+
+    std::env::remove_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS");
+    std::env::remove_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS");
+}
+
+#[test]
+fn memory_block_respects_explicit_source_budget() {
+    let hits = (0..100)
+        .map(|i| {
+            let mut record = prompt_memory_record(
+                "verified",
+                "This memory line is long enough to consume meaningful budget in the rendered block.",
+            );
+            record.id = format!("memory-{i}");
+            tandem_memory::types::GlobalMemorySearchHit {
+                score: 0.9,
+                record,
+            }
+        })
+        .collect::<Vec<_>>();
+    // Fixed budget rather than memory_context_budget_chars(): the env-knob
+    // test runs in parallel and mutates the variable that function reads.
+    let budget = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS;
+    let block = prompt_memory_context::build_memory_block_with_budget(&hits, budget);
+    assert!(block.dropped_count > 0, "oversized hit list must drop rows");
+    assert!(block.included_count > 0);
+    assert!(
+        block.content.len() <= budget + 200,
+        "rendered block stays near the explicit budget (closing tag overhead only)"
+    );
+}
+
+/// TAN-193 eval: when project-scoped memory is available, unrelated global
+/// memory must not appear in the rendered provider-facing block, and every
+/// injected line must carry a retrievable record-id provenance handle. This
+/// fails if cross-project context leaks into the projection.
+#[test]
+fn context_eval_unrelated_global_memory_not_injected_when_project_scoped() {
+    let mut project_record =
+        prompt_memory_record("verified", "Project Alpha deploy steps live in runbook.md.");
+    project_record.id = "alpha-runbook".to_string();
+    project_record.project_tag = Some("project-alpha".to_string());
+    let mut unrelated_global = prompt_memory_record(
+        "verified",
+        "Unrelated Beta project gossip that must not leak into Alpha prompts.",
+    );
+    unrelated_global.id = "beta-gossip".to_string();
+    unrelated_global.project_tag = Some("project-beta".to_string());
+
+    let (selected, deferred, project_scope_used) =
+        ServerPromptContextHook::select_memory_hits_for_context(
+            vec![tandem_memory::types::GlobalMemorySearchHit {
+                score: 0.7,
+                record: project_record,
+            }],
+            vec![tandem_memory::types::GlobalMemorySearchHit {
+                score: 0.99,
+                record: unrelated_global,
+            }],
+        );
+    let block = prompt_memory_context::build_memory_block_with_budget(
+        &selected,
+        DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    );
+
+    assert!(project_scope_used);
+    assert!(
+        block.content.contains("Project Alpha deploy steps"),
+        "allowed project-scoped context must be injected"
+    );
+    assert!(
+        !block.content.contains("Unrelated Beta project gossip"),
+        "unrelated global memory leaked into a project-scoped prompt:\n{}",
+        block.content
+    );
+    assert!(
+        block.content.contains("id=alpha-runbook"),
+        "injected memory line must carry its record-id provenance handle"
+    );
+    assert_eq!(
+        deferred.len(),
+        1,
+        "global hit defers rather than disappears"
+    );
+    assert_eq!(deferred[0].record.id, "beta-gossip");
+}
+
 fn prompt_memory_record(label: &str, content: &str) -> tandem_memory::types::GlobalMemoryRecord {
     tandem_memory::types::GlobalMemoryRecord {
         id: format!("memory-{label}"),
