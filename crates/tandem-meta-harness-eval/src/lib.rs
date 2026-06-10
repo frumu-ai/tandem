@@ -17,7 +17,5 @@
 pub mod scoring;
 pub mod trace;
 
-pub use scoring::{
-    ScoreDimension, ScoreValue, ScoredWorkflowVersion, VersionId, WorkflowId,
-};
+pub use scoring::{ScoreDimension, ScoreValue, ScoredWorkflowVersion, VersionId, WorkflowId};
 pub use trace::{Trace, TraceEvent, TraceEventId, TraceMetadata, TraceStep, TraceStepId};

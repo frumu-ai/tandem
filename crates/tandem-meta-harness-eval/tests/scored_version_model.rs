@@ -18,12 +18,16 @@ fn scored_versions_serialize_and_sort_deterministically_for_best_selection() {
         "candidate",
         ScoreValue::new(0.91).expect("finite score"),
     )
-    .with_dimension(ScoreDimension::new("accuracy"), ScoreValue::new(0.95).unwrap())
+    .with_dimension(
+        ScoreDimension::new("accuracy"),
+        ScoreValue::new(0.95).unwrap(),
+    )
     .with_dimension("cost", ScoreValue::new(0.51).unwrap())
     .with_metadata("trace", "trace-candidate");
 
     let json = serde_json::to_string(&candidate).expect("score record serializes");
-    let decoded: ScoredWorkflowVersion = serde_json::from_str(&json).expect("score record deserializes");
+    let decoded: ScoredWorkflowVersion =
+        serde_json::from_str(&json).expect("score record deserializes");
     assert_eq!(decoded.version_id.as_str(), "candidate");
     assert_eq!(decoded.aggregate_score.get(), 0.91);
 

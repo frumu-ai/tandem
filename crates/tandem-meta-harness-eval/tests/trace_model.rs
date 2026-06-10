@@ -38,11 +38,17 @@ fn trace_model_serializes_deserializes_and_replays_in_sequence_order() {
 
     assert_eq!(replayed, vec![10, 11, 20]);
     assert_eq!(
-        decoded.steps().map(|step| step.id.as_str()).collect::<Vec<_>>(),
+        decoded
+            .steps()
+            .map(|step| step.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["step-plan", "step-score"]
     );
     assert_eq!(
-        decoded.events().map(|event| event.id.as_str()).collect::<Vec<_>>(),
+        decoded
+            .events()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["event-plan-finished"]
     );
 }
