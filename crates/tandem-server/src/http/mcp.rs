@@ -85,6 +85,7 @@ pub(super) async fn bootstrap_mcp_servers_when_ready(state: AppState) {
             != tandem_types::RuntimeAuthMode::LocalSingleTenant
         {
             state.mcp.set_strict_tenant_enforcement(true);
+            state.tools.set_strict_tenant_enforcement(true);
         }
         bootstrap_mcp_servers(&state).await;
     } else {

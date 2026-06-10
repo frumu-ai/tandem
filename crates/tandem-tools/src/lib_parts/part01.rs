@@ -34,7 +34,8 @@ use tandem_agent_teams::{
 use tandem_memory::types::{MemorySearchResult, MemoryTier};
 use tandem_memory::MemoryManager;
 use tandem_types::{
-    SharedToolProgressSink, TenantContext, ToolProgressEvent, ToolResult, ToolSchema,
+    SharedToolProgressSink, TenantContext, ToolCapabilities, ToolDomain, ToolProgressEvent,
+    ToolResult, ToolSchema,
 };
 
 #[async_trait]
@@ -81,6 +82,35 @@ pub trait Tool: Send + Sync {
 pub struct ToolRegistry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
     tool_vectors: Arc<RwLock<HashMap<String, Vec<f32>>>>,
+    strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Process-wide default for strict tenant enforcement, set once at startup by
+/// the host (engine `serve` in hosted/enterprise auth modes). Registries
+/// inherit this default at construction.
+static TOOLS_STRICT_TENANT_ENFORCEMENT_DEFAULT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Enable (or disable) strict tenant enforcement for registries constructed
+/// after this call. In strict mode, external-effect tools (network access or
+/// Web/Memory/Browser domains) are denied for local-implicit tenant context
+/// instead of executing against shared local state.
+pub fn set_strict_tenant_enforcement_default(enabled: bool) {
+    TOOLS_STRICT_TENANT_ENFORCEMENT_DEFAULT.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// External-effect tools must carry an explicit tenant in hosted/enterprise
+/// mode: their effects (network egress, shared memory, browser sessions)
+/// escape the workspace, so attribution and scoping cannot be reconstructed
+/// after the fact. Workspace/Shell/Planning tools stay local-scoped.
+fn tool_requires_explicit_tenant(capabilities: &ToolCapabilities) -> bool {
+    capabilities.network_access
+        || capabilities.domains.iter().any(|domain| {
+            matches!(
+                domain,
+                ToolDomain::Web | ToolDomain::Memory | ToolDomain::Browser
+            )
+        })
 }
 
 impl ToolRegistry {
@@ -122,7 +152,39 @@ impl ToolRegistry {
         Self {
             tools: Arc::new(RwLock::new(map)),
             tool_vectors: Arc::new(RwLock::new(HashMap::new())),
+            strict_tenant_enforcement: Arc::new(std::sync::atomic::AtomicBool::new(
+                TOOLS_STRICT_TENANT_ENFORCEMENT_DEFAULT.load(std::sync::atomic::Ordering::SeqCst),
+            )),
         }
+    }
+
+    /// Override strict tenant enforcement for this registry (registries
+    /// inherit the process default from `set_strict_tenant_enforcement_default`).
+    pub fn set_strict_tenant_enforcement(&self, enabled: bool) {
+        self.strict_tenant_enforcement
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn deny_local_tenant_for_external_tool(
+        &self,
+        tool: &Arc<dyn Tool>,
+        tenant_context: &TenantContext,
+    ) -> anyhow::Result<()> {
+        if !tenant_context.is_local_implicit()
+            || !self
+                .strict_tenant_enforcement
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+        let schema = tool.schema();
+        if tool_requires_explicit_tenant(&schema.capabilities) {
+            anyhow::bail!(
+                "ToolDenied {{ reason: TenantScope }}: blocked tool `{}` because local-implicit tenant context is not permitted for external-effect tools in hosted/enterprise mode.",
+                schema.name
+            );
+        }
+        Ok(())
     }
 
     pub async fn list(&self) -> Vec<ToolSchema> {
@@ -316,6 +378,7 @@ impl ToolRegistry {
                 metadata: json!({}),
             });
         };
+        self.deny_local_tenant_for_external_tool(&tool, &tenant_context)?;
         tool.execute_for_tenant(args, tenant_context).await
     }
 
@@ -364,6 +427,7 @@ impl ToolRegistry {
                 metadata: json!({}),
             });
         };
+        self.deny_local_tenant_for_external_tool(&tool, &tenant_context)?;
         tool.execute_with_progress_for_tenant(args, tenant_context, cancel, progress)
             .await
     }

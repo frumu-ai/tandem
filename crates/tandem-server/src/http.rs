@@ -297,9 +297,10 @@ fn apply_strict_tenant_enforcement_defaults() {
     if strict {
         tandem_memory::db::set_strict_tenant_enforcement_default(true);
         tandem_runtime::mcp::set_strict_tenant_enforcement_default(true);
+        tandem_tools::set_strict_tenant_enforcement_default(true);
         tracing::info!(
             auth_mode = ?mode,
-            "strict tenant enforcement enabled for memory and MCP data layers"
+            "strict tenant enforcement enabled for memory, MCP, and tool data layers"
         );
     }
 }
