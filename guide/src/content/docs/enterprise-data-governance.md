@@ -89,6 +89,29 @@ import or reindex data. If an MCP or enterprise connector is cataloged but not
 connected, the safe next step is an operator request, not a fallback connector
 or direct `mcp_debug` call.
 
+## Current runtime enforcement
+
+The governance UI is backed by runtime checks, not only documentation. Current
+enterprise hardening includes:
+
+- tenant-scoped audit reads and protected audit evidence for policy decisions,
+  approvals, and tool-effect records
+- a runtime policy-decision store with tenant/run filtering
+- fail-closed intra-tenant authority decisions from direct grants and org-unit
+  membership, including explicit deny precedence
+- a declarative approval gate matrix based on risk tier, data class, reviewer
+  eligibility, and approval TTL
+- explicit cross-tenant grant contracts for governed sharing, with ordinary
+  cross-tenant access denied unless a grant applies
+- governed retrieval/egress paths for source-bound memory, knowledge, channel
+  memory, and protected outbound actions
+- context-budget telemetry and provenance-aware compaction so long-running
+  agent sessions can be audited without silently losing approval boundaries
+
+This does not replace hosted identity administration. OIDC, SCIM, provider ACL
+sync, SIEM export, private sidecar enforcement, and SOC2 evidence remain
+hosted/private control-plane or roadmap work.
+
 ## Organization units
 
 Use **Create org unit** to define customer-specific business domains. These are
