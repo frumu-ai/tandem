@@ -357,6 +357,7 @@ enum TenantContextIngressError {
     ContextAssertionMalformed,
     ContextAssertionUntrusted,
     ContextAssertionExpired,
+    ContextAssertionReplayed,
     UnsignedTenantHeaders,
 }
 
@@ -368,6 +369,7 @@ impl TenantContextIngressError {
             Self::ContextAssertionMalformed => "context_assertion_malformed",
             Self::ContextAssertionUntrusted => "context_assertion_untrusted",
             Self::ContextAssertionExpired => "context_assertion_expired",
+            Self::ContextAssertionReplayed => "context_assertion_replayed",
             Self::UnsignedTenantHeaders => "unsigned_tenant_headers",
         }
     }
@@ -387,6 +389,7 @@ fn resolve_enterprise_request_context_for_mode(
                 .ok_or(TenantContextIngressError::MissingVerifiedContext)?;
             let verifier = TenantContextAssertionVerifier::from_env()?;
             let verified_tenant_context = verifier.verify(&assertion)?;
+            enforce_context_assertion_replay_policy(&assertion, &verified_tenant_context)?;
             Ok(ResolvedEnterpriseRequestContext::verified(
                 verified_tenant_context,
             ))
@@ -649,6 +652,169 @@ impl TenantContextAssertionVerifier {
         }
         Ok(())
     }
+}
+
+/// Replay handling for verified context assertions.
+///
+/// Assertions are bearer context that first-party clients legitimately reuse
+/// across many requests within the expiry window (e.g. tandem-channels caches
+/// one assertion per process), so the default cannot be one-shot:
+///
+/// - `bound` (default): the first use binds an `assertion_id` to the SHA-256
+///   of the exact assertion bytes. Re-presenting the identical assertion is
+///   allowed until expiry; a different assertion carrying the same
+///   `assertion_id` is rejected as a replay/substitution.
+/// - `one_shot`: an `assertion_id` is accepted exactly once. Requires the
+///   issuing control plane to mint a fresh assertion per request.
+/// - `off`: no replay tracking (unsafe; migration escape hatch only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssertionReplayMode {
+    Bound,
+    OneShot,
+    Off,
+}
+
+fn resolve_assertion_replay_mode() -> AssertionReplayMode {
+    match std::env::var("TANDEM_CONTEXT_ASSERTION_REPLAY_MODE")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("one_shot") | Some("one-shot") | Some("oneshot") => AssertionReplayMode::OneShot,
+        Some("off") => AssertionReplayMode::Off,
+        _ => AssertionReplayMode::Bound,
+    }
+}
+
+struct AssertionReplayEntry {
+    fingerprint: [u8; 32],
+    expires_at_ms: u64,
+}
+
+struct AssertionReplayGuard {
+    entries: std::sync::Mutex<std::collections::HashMap<String, AssertionReplayEntry>>,
+}
+
+/// Sweep expired entries once the map grows past this size, bounding memory
+/// without a background task.
+const ASSERTION_REPLAY_SWEEP_THRESHOLD: usize = 1024;
+
+/// Entries are retained slightly past assertion expiry so a clock-skewed
+/// replay near the expiry boundary still hits the cache instead of slipping
+/// through between sweep and expiry validation.
+const ASSERTION_REPLAY_RETENTION_GRACE_MS: u64 = 60_000;
+
+impl AssertionReplayGuard {
+    fn new() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn global() -> &'static Self {
+        static GUARD: std::sync::OnceLock<AssertionReplayGuard> = std::sync::OnceLock::new();
+        GUARD.get_or_init(AssertionReplayGuard::new)
+    }
+
+    fn check_and_record(
+        &self,
+        mode: AssertionReplayMode,
+        assertion_id: &str,
+        fingerprint: [u8; 32],
+        expires_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), TenantContextIngressError> {
+        if mode == AssertionReplayMode::Off {
+            return Ok(());
+        }
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries.len() >= ASSERTION_REPLAY_SWEEP_THRESHOLD {
+            entries.retain(|_, entry| {
+                entry
+                    .expires_at_ms
+                    .saturating_add(ASSERTION_REPLAY_RETENTION_GRACE_MS)
+                    > now_ms
+            });
+        }
+        match entries.get(assertion_id) {
+            None => {
+                entries.insert(
+                    assertion_id.to_string(),
+                    AssertionReplayEntry {
+                        fingerprint,
+                        expires_at_ms,
+                    },
+                );
+                Ok(())
+            }
+            Some(entry)
+                if entry
+                    .expires_at_ms
+                    .saturating_add(ASSERTION_REPLAY_RETENTION_GRACE_MS)
+                    <= now_ms =>
+            {
+                entries.insert(
+                    assertion_id.to_string(),
+                    AssertionReplayEntry {
+                        fingerprint,
+                        expires_at_ms,
+                    },
+                );
+                Ok(())
+            }
+            Some(entry) => match mode {
+                AssertionReplayMode::OneShot => {
+                    Err(TenantContextIngressError::ContextAssertionReplayed)
+                }
+                AssertionReplayMode::Bound if entry.fingerprint == fingerprint => Ok(()),
+                AssertionReplayMode::Bound => {
+                    Err(TenantContextIngressError::ContextAssertionReplayed)
+                }
+                AssertionReplayMode::Off => Ok(()),
+            },
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+}
+
+fn assertion_fingerprint(assertion: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(assertion.trim().as_bytes());
+    hasher.finalize().into()
+}
+
+fn enforce_context_assertion_replay_policy(
+    assertion: &str,
+    verified: &VerifiedTenantContext,
+) -> Result<(), TenantContextIngressError> {
+    let mode = resolve_assertion_replay_mode();
+    let result = AssertionReplayGuard::global().check_and_record(
+        mode,
+        &verified.assertion_id,
+        assertion_fingerprint(assertion),
+        verified.expires_at_ms,
+        current_unix_ms(),
+    );
+    if let Err(error) = result {
+        tracing::warn!(
+            assertion_id = %verified.assertion_id,
+            org_id = %verified.tenant_context.org_id,
+            replay_mode = ?mode,
+            "Authorization denied: context assertion rejected as replayed - reason={}",
+            error.as_str()
+        );
+    }
+    result
 }
 
 fn read_context_public_keyring_from_env(
@@ -1770,6 +1936,138 @@ mod tests {
             .expect_err("key scope must constrain signed projection scope");
 
         assert_eq!(err, TenantContextIngressError::ContextAssertionUntrusted);
+    }
+
+    #[test]
+    fn replay_guard_bound_mode_allows_identical_assertion_reuse() {
+        let guard = AssertionReplayGuard::new();
+        let fingerprint = assertion_fingerprint("assertion-bytes");
+
+        for _ in 0..3 {
+            guard
+                .check_and_record(
+                    AssertionReplayMode::Bound,
+                    "assertion-a",
+                    fingerprint,
+                    2_000,
+                    1_500,
+                )
+                .expect("identical assertion reuse is allowed in bound mode");
+        }
+    }
+
+    #[test]
+    fn replay_guard_bound_mode_rejects_same_id_with_different_bytes() {
+        let guard = AssertionReplayGuard::new();
+        guard
+            .check_and_record(
+                AssertionReplayMode::Bound,
+                "assertion-a",
+                assertion_fingerprint("original-bytes"),
+                2_000,
+                1_500,
+            )
+            .expect("first use binds the assertion id");
+
+        let err = guard
+            .check_and_record(
+                AssertionReplayMode::Bound,
+                "assertion-a",
+                assertion_fingerprint("different-bytes"),
+                2_500,
+                1_600,
+            )
+            .expect_err("same assertion id with different bytes is a replay/substitution");
+
+        assert_eq!(err, TenantContextIngressError::ContextAssertionReplayed);
+    }
+
+    #[test]
+    fn replay_guard_one_shot_mode_rejects_second_use() {
+        let guard = AssertionReplayGuard::new();
+        let fingerprint = assertion_fingerprint("assertion-bytes");
+        guard
+            .check_and_record(
+                AssertionReplayMode::OneShot,
+                "assertion-a",
+                fingerprint,
+                2_000,
+                1_500,
+            )
+            .expect("first use is accepted");
+
+        let err = guard
+            .check_and_record(
+                AssertionReplayMode::OneShot,
+                "assertion-a",
+                fingerprint,
+                2_000,
+                1_600,
+            )
+            .expect_err("one-shot mode accepts an assertion id exactly once");
+
+        assert_eq!(err, TenantContextIngressError::ContextAssertionReplayed);
+    }
+
+    #[test]
+    fn replay_guard_releases_expired_assertion_ids() {
+        let guard = AssertionReplayGuard::new();
+        guard
+            .check_and_record(
+                AssertionReplayMode::OneShot,
+                "assertion-a",
+                assertion_fingerprint("old-bytes"),
+                2_000,
+                1_500,
+            )
+            .expect("first use is accepted");
+
+        let past_retention = 2_000 + ASSERTION_REPLAY_RETENTION_GRACE_MS + 1;
+        guard
+            .check_and_record(
+                AssertionReplayMode::OneShot,
+                "assertion-a",
+                assertion_fingerprint("new-bytes"),
+                past_retention + 1_000,
+                past_retention,
+            )
+            .expect("expired entries no longer block the assertion id");
+    }
+
+    #[test]
+    fn replay_guard_sweeps_expired_entries_to_bound_memory() {
+        let guard = AssertionReplayGuard::new();
+        let fingerprint = assertion_fingerprint("assertion-bytes");
+        for index in 0..ASSERTION_REPLAY_SWEEP_THRESHOLD {
+            guard
+                .check_and_record(
+                    AssertionReplayMode::Bound,
+                    &format!("assertion-{index}"),
+                    fingerprint,
+                    2_000,
+                    1_500,
+                )
+                .expect("inserts succeed");
+        }
+        assert_eq!(guard.len(), ASSERTION_REPLAY_SWEEP_THRESHOLD);
+
+        let past_retention = 2_000 + ASSERTION_REPLAY_RETENTION_GRACE_MS + 1;
+        guard
+            .check_and_record(
+                AssertionReplayMode::Bound,
+                "assertion-fresh",
+                fingerprint,
+                past_retention + 10_000,
+                past_retention,
+            )
+            .expect("insert after sweep succeeds");
+
+        assert_eq!(guard.len(), 1, "expired entries are swept at threshold");
+    }
+
+    #[test]
+    fn replay_mode_defaults_to_bound() {
+        assert_eq!(resolve_assertion_replay_mode(), AssertionReplayMode::Bound);
     }
 
     fn test_signing_key_and_verifier() -> (ed25519_dalek::SigningKey, TenantContextAssertionVerifier)
