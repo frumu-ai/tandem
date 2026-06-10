@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
@@ -84,7 +84,7 @@ impl From<String> for ScoreDimension {
 }
 
 /// Finite score value for deterministic comparison and serialization.
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Serialize)]
 pub struct ScoreValue(f64);
 
 impl ScoreValue {
@@ -94,6 +94,16 @@ impl ScoreValue {
 
     pub fn get(self) -> f64 {
         self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ScoreValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = f64::deserialize(deserializer)?;
+        Self::new(value).ok_or_else(|| D::Error::custom("score values must be finite"))
     }
 }
 
@@ -163,5 +173,24 @@ impl Ord for ScoredWorkflowVersion {
 impl PartialOrd for ScoredWorkflowVersion {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::de::{value::Error, IntoDeserializer};
+
+    #[test]
+    fn score_value_deserialization_rejects_non_finite_values() {
+        let finite: Result<ScoreValue, Error> = ScoreValue::deserialize(0.42.into_deserializer());
+        assert_eq!(finite.expect("finite score deserializes").get(), 0.42);
+
+        let nan: Result<ScoreValue, Error> = ScoreValue::deserialize(f64::NAN.into_deserializer());
+        assert!(nan.is_err());
+
+        let infinity: Result<ScoreValue, Error> =
+            ScoreValue::deserialize(f64::INFINITY.into_deserializer());
+        assert!(infinity.is_err());
     }
 }
