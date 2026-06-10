@@ -29,11 +29,15 @@ jobs:
           workspaces: |
             crates/tandem-server
 
+      # The gate must fail when the eval-runner cannot be built. A broken build
+      # previously fell back to hardcoded stub results, which let governance
+      # regressions pass CI with a plausible-looking green check (TAN-219).
       - name: Build eval-runner binary
         run: |
-          cargo build --release --bin eval-runner -p tandem-server 2>&1 || {
-            echo "Warning: eval-runner build had issues, will try simulation mode"
-          }
+          if ! cargo build --release --bin eval-runner -p tandem-server; then
+            echo "::error::eval-runner failed to build — the evaluation gate cannot run. Fix the build; there is no stub fallback."
+            exit 1
+          fi
 
       - name: Load main branch baseline (if exists)
         id: load-baseline
@@ -45,54 +49,34 @@ jobs:
             echo "Creating initial baseline..."
           fi
 
+      # No stub fallbacks below: if the runner is missing or crashes, the job
+      # fails here. Artifact upload and the PR comment still run via always().
       - name: Run critical-path evaluation
         id: eval-run
-        continue-on-error: true
         run: |
-          if [ -f "target/release/eval-runner" ]; then
-            ./target/release/eval-runner \
-              --dataset eval_datasets/critical_path.yaml \
-              --output /tmp/eval_results.json \
-              --simulation \
-              --verbose
-          else
-            echo "eval-runner not available, running in CI stub mode"
-            # Stub results for CI when build fails
-            mkdir -p /tmp
-            echo '{"dataset_name":"critical_path","pass_rate":0.9,"total_tests":10,"passed_tests":9,"failed_tests":1}' > /tmp/eval_results.json
-          fi
+          ./target/release/eval-runner \
+            --dataset eval_datasets/critical_path.yaml \
+            --output /tmp/eval_results.json \
+            --simulation \
+            --verbose
 
       - name: Run tenant-isolation evaluation
         id: eval-run-tenant
-        continue-on-error: true
         run: |
-          if [ -f "target/release/eval-runner" ]; then
-            ./target/release/eval-runner \
-              --dataset eval_datasets/tenant_isolation.yaml \
-              --output /tmp/tenant_isolation_results.json \
-              --simulation \
-              --verbose
-          else
-            echo "eval-runner not available; emitting stub tenant-isolation result"
-            mkdir -p /tmp
-            echo '{"dataset_name":"tenant_isolation","pass_rate":1.0,"total_tests":2,"passed_tests":2,"failed_tests":0}' > /tmp/tenant_isolation_results.json
-          fi
+          ./target/release/eval-runner \
+            --dataset eval_datasets/tenant_isolation.yaml \
+            --output /tmp/tenant_isolation_results.json \
+            --simulation \
+            --verbose
 
       - name: Run action-firewall evaluation
         id: eval-run-action-firewall
-        continue-on-error: true
         run: |
-          if [ -f "target/release/eval-runner" ]; then
-            ./target/release/eval-runner \
-              --dataset eval_datasets/action_firewall.yaml \
-              --output /tmp/action_firewall_results.json \
-              --simulation \
-              --verbose
-          else
-            echo "eval-runner not available; emitting stub action-firewall result"
-            mkdir -p /tmp
-            echo '{"dataset_name":"action_firewall","pass_rate":1.0,"total_tests":7,"passed_tests":7,"failed_tests":0}' > /tmp/action_firewall_results.json
-          fi
+          ./target/release/eval-runner \
+            --dataset eval_datasets/action_firewall.yaml \
+            --output /tmp/action_firewall_results.json \
+            --simulation \
+            --verbose
 
       - name: Tenant-isolation regression check
         id: regression-check-tenant
@@ -181,23 +165,25 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const results = JSON.parse(fs.readFileSync('/tmp/eval_results.json', 'utf8'));
-            let tenant = null;
-            let actionFirewall = null;
-            try { tenant = JSON.parse(fs.readFileSync('/tmp/tenant_isolation_results.json', 'utf8')); } catch (e) {}
-            try { actionFirewall = JSON.parse(fs.readFileSync('/tmp/action_firewall_results.json', 'utf8')); } catch (e) {}
+            // Results may be missing if the build or an eval run failed. Never
+            // fabricate numbers: report the failure explicitly instead.
+            const read = (path) => {
+              try { return JSON.parse(fs.readFileSync(path, 'utf8')); } catch (e) { return null; }
+            };
+            const results = read('/tmp/eval_results.json');
+            const tenant = read('/tmp/tenant_isolation_results.json');
+            const actionFirewall = read('/tmp/action_firewall_results.json');
 
-            const tenantLine = tenant
-              ? `\n**Tenant isolation:** ${(tenant.pass_rate * 100).toFixed(1)}% (${tenant.passed_tests}/${tenant.total_tests})`
-              : '';
-            const actionFirewallLine = actionFirewall
-              ? `\n**Action Firewall:** ${(actionFirewall.pass_rate * 100).toFixed(1)}% (${actionFirewall.passed_tests}/${actionFirewall.total_tests})`
-              : '';
+            const line = (label, r) => r
+              ? `\n**${label}:** ${(r.pass_rate * 100).toFixed(1)}% (${r.passed_tests}/${r.total_tests})`
+              : `\n**${label}:** ❌ no results produced (build or eval run failed — see job logs)`;
 
-            const comment = `## 📊 AI Evaluation Results
+            const header = (results && tenant && actionFirewall)
+              ? '## 📊 AI Evaluation Results'
+              : '## ❌ AI Evaluation Gate Failed';
 
-            **Pass Rate:** ${(results.pass_rate * 100).toFixed(1)}%
-            **Tests:** ${results.passed_tests}/${results.total_tests} passed${tenantLine}${actionFirewallLine}
+            const comment = `${header}
+            ${line('Critical path', results)}${line('Tenant isolation', tenant)}${line('Action Firewall', actionFirewall)}
 
             See artifacts for detailed results.`;
 
