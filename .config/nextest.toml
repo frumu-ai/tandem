@@ -1,0 +1,19 @@
+# Nextest configuration for the Tandem workspace (TAN-220).
+#
+# nextest runs each test in its own process, which also isolates the
+# in-process global-state pollution that made some suites flaky under
+# `cargo test` (e.g. config_store_rehydrates_channel_token_from_secure_store).
+
+[profile.default]
+# Surface slow tests instead of hanging CI: warn at 60s, kill at 5 min.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci]
+# One retry absorbs residual environmental flakiness without hiding real
+# failures (retried tests are reported as FLAKY, not silently green).
+retries = 1
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci.junit]
+path = "junit.xml"
