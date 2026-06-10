@@ -374,6 +374,86 @@ test_cases:
         - "revoked_access_denied"
         - "dual_tenant_audit_recorded"
 
+  # CT-15 (deployment-scope isolation): two deployments of the SAME org/workspace are
+  # distinct tenants. Memory search, MCP store-backed secrets, and provider credentials
+  # all key on (org_id, workspace_id, deployment_id); a request scoped to deployment-2
+  # must not read deployment-1 rows even though org/workspace match, and a scope with a
+  # missing deployment_id must not match deployment-scoped rows. Real enforcement is
+  # proven by the Rust tests added under TAN-197:
+  #   crates/tandem-memory .. test_search_isolates_deployments_within_same_org_workspace
+  #   crates/tandem-runtime .. mismatched_store_secret_headers_treats_deployments_as_distinct_tenants
+  #   crates/tandem-core .. provider_auth_isolates_deployments_within_same_org_workspace
+  # As with the other CT cases, a green simulation run proves dataset shape; the Rust
+  # tests are the enforcement signal until the eval engine drives these paths directly.
+  - id: "ct_isolation_007"
+    description: "Same org/workspace with a different or missing deployment_id must fail closed across memory, secrets, and credentials"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "deployment_scope"
+    automation_spec:
+      name: "cross_deployment_denial"
+      nodes:
+        - id: "probe_cross_deployment_access"
+          node_type: "research"
+          objective: "As org-a/workspace-a deployment-2, prove deployment-1 memory rows, store-backed secrets, and provider credentials are unreadable and each denial leaves audit evidence."
+          output_contract: "JSON with zero deployment-1 records, an explicit denial reason per probed surface (memory, mcp_secret, provider_credential), and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        deployment_id: "deployment-2"
+        forbidden_deployment_id: "deployment-1"
+        require_fail_closed_secret_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_deployment_denied"
+        - "audit_event_recorded"
+
+  # CT-16 (provider credential isolation): tenant B must never read tenant A's provider
+  # API keys, and local-mode unscoped keys must be invisible to explicit tenants (and
+  # vice versa). Enforcement lives in tenant_scope_prefix/strip_tenant_scoped_provider_id
+  # (crates/tandem-core/src/provider_auth_store.rs) and is proven by the Rust tests added
+  # under TAN-197 (provider_auth_for_tenant_is_isolated_per_tenant_and_from_local).
+  # Simulation proves shape; the Rust tests are the enforcement signal.
+  - id: "ct_isolation_008"
+    description: "Cross-tenant provider credential read must fail closed and emit audit evidence"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "tenant_boundary"
+      - "provider_credentials"
+    automation_spec:
+      name: "cross_tenant_provider_credential_denial"
+      nodes:
+        - id: "probe_foreign_provider_credentials"
+          node_type: "research"
+          objective: "As tenant-b, prove tenant-a provider credentials and local unscoped credentials are unreadable, with a denial reason and audit ID for each probe."
+          output_contract: "JSON with zero foreign credentials, denial reasons for tenant-a and local credential probes, and audit IDs."
+      config:
+        tenant_id: "tenant-b"
+        forbidden_tenant_id: "tenant-a"
+        require_fail_closed_secret_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_tenant_denied"
+        - "audit_event_recorded"
+
 # CT-09 (governance approval receipt replay): an approval receipt issued in tenant A
 # must not be replayed to approve/deny (revoke) an action in tenant B, and listing is
 # tenant-scoped. This guarantee is enforced in the governance approval flow

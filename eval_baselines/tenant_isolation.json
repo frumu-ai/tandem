@@ -1,26 +1,26 @@
 {
   "dataset_name": "tenant_isolation",
   "dataset_version": "1.0",
-  "started_at_ms": 1781006867877,
-  "finished_at_ms": 1781006867877,
+  "started_at_ms": 1781105092371,
+  "finished_at_ms": 1781105092371,
   "duration_ms": 0,
-  "total_tests": 8,
-  "passed_tests": 8,
+  "total_tests": 10,
+  "passed_tests": 10,
   "failed_tests": 0,
   "skipped_tests": 0,
   "pass_rate": 1.0,
   "avg_repair_iterations": 1.0,
   "max_repair_iterations": 1,
-  "total_tokens": 16000,
-  "total_cost_usd": 0.047999999999999994,
+  "total_tokens": 20000,
+  "total_cost_usd": 0.05999999999999999,
   "avg_cost_per_test": 0.005999999999999999,
   "provider_failure_rate": 0.0,
   "total_provider_calls": 0,
   "provider_failures": 0,
   "validator_pass_rates": {
     "mcp_required_tool_failed": 0.875,
-    "tenant_scope": 0.875,
-    "audit_event": 0.875
+    "audit_event": 0.96875,
+    "tenant_scope": 0.96875
   },
   "failure_modes": {},
   "test_results": [
@@ -192,6 +192,50 @@
         "tenant_boundary",
         "cross_tenant_grant",
         "revocation"
+      ]
+    },
+    {
+      "test_id": "ct_isolation_007",
+      "description": "Same org/workspace with a different or missing deployment_id must fail closed across memory, secrets, and credentials",
+      "passed": true,
+      "artifact_status": "blocked",
+      "repair_iterations": 1,
+      "tokens_used": 2000,
+      "cost_usd": 0.006,
+      "duration_ms": 0,
+      "validators_passed": [
+        "tenant_scope",
+        "audit_event"
+      ],
+      "validators_failed": [],
+      "failure_mode": null,
+      "error_message": null,
+      "tags": [
+        "security",
+        "tenant_boundary",
+        "deployment_scope"
+      ]
+    },
+    {
+      "test_id": "ct_isolation_008",
+      "description": "Cross-tenant provider credential read must fail closed and emit audit evidence",
+      "passed": true,
+      "artifact_status": "blocked",
+      "repair_iterations": 1,
+      "tokens_used": 2000,
+      "cost_usd": 0.006,
+      "duration_ms": 0,
+      "validators_passed": [
+        "tenant_scope",
+        "audit_event"
+      ],
+      "validators_failed": [],
+      "failure_mode": null,
+      "error_message": null,
+      "tags": [
+        "security",
+        "tenant_boundary",
+        "provider_credentials"
       ]
     }
   ]
