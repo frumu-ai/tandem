@@ -551,6 +551,86 @@ fn prompt_context_memory_selection_prefers_project_hits_over_global_fallback() {
     assert_eq!(deferred[0].record.id, "global-memory");
 }
 
+#[test]
+fn prompt_context_memory_selection_dedupes_duplicate_record_ids() {
+    let mut record_a = prompt_memory_record("verified", "Project note.");
+    record_a.id = "memory-1".to_string();
+    let mut record_a_dup = prompt_memory_record("verified", "Project note duplicate.");
+    record_a_dup.id = "memory-1".to_string();
+    let mut record_b = prompt_memory_record("verified", "Global note.");
+    record_b.id = "memory-2".to_string();
+    let mut record_b_dup = prompt_memory_record("verified", "Global note duplicate.");
+    record_b_dup.id = "memory-2".to_string();
+    // A global hit sharing an id with a selected project hit must also drop.
+    let mut record_a_global = prompt_memory_record("verified", "Same as project note.");
+    record_a_global.id = "memory-1".to_string();
+
+    let hit = |record: tandem_memory::types::GlobalMemoryRecord| {
+        tandem_memory::types::GlobalMemorySearchHit { score: 0.9, record }
+    };
+    let (selected, deferred, project_scope_used) =
+        ServerPromptContextHook::select_memory_hits_for_context(
+            vec![hit(record_a), hit(record_a_dup)],
+            vec![hit(record_b), hit(record_b_dup), hit(record_a_global)],
+        );
+
+    assert!(project_scope_used);
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].record.id, "memory-1");
+    assert_eq!(deferred.len(), 1);
+    assert_eq!(deferred[0].record.id, "memory-2");
+}
+
+#[test]
+fn docs_and_memory_source_budgets_are_explicit_and_env_tunable() {
+    std::env::remove_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS");
+    std::env::remove_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS");
+    assert_eq!(docs_context_budget_chars(), 2_400);
+    assert_eq!(memory_context_budget_chars(), 2_200);
+
+    std::env::set_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS", "900");
+    std::env::set_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS", "800");
+    assert_eq!(docs_context_budget_chars(), 900);
+    assert_eq!(memory_context_budget_chars(), 800);
+
+    // Values below the floor fall back to the defaults instead of starving
+    // required grounding context.
+    std::env::set_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS", "10");
+    std::env::set_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS", "10");
+    assert_eq!(docs_context_budget_chars(), 2_400);
+    assert_eq!(memory_context_budget_chars(), 2_200);
+
+    std::env::remove_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS");
+    std::env::remove_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS");
+}
+
+#[test]
+fn memory_block_respects_explicit_source_budget() {
+    let hits = (0..100)
+        .map(|i| {
+            let mut record = prompt_memory_record(
+                "verified",
+                "This memory line is long enough to consume meaningful budget in the rendered block.",
+            );
+            record.id = format!("memory-{i}");
+            tandem_memory::types::GlobalMemorySearchHit {
+                score: 0.9,
+                record,
+            }
+        })
+        .collect::<Vec<_>>();
+    // Fixed budget rather than memory_context_budget_chars(): the env-knob
+    // test runs in parallel and mutates the variable that function reads.
+    let budget = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS;
+    let block = prompt_memory_context::build_memory_block_with_budget(&hits, budget);
+    assert!(block.dropped_count > 0, "oversized hit list must drop rows");
+    assert!(block.included_count > 0);
+    assert!(
+        block.content.len() <= budget + 200,
+        "rendered block stays near the explicit budget (closing tag overhead only)"
+    );
+}
+
 fn prompt_memory_record(label: &str, content: &str) -> tandem_memory::types::GlobalMemoryRecord {
     tandem_memory::types::GlobalMemoryRecord {
         id: format!("memory-{label}"),
