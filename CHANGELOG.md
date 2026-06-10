@@ -108,6 +108,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are categorically blocked from auto-apply; and the previously-inlined
   before/after regression check is centralized behind the policy with identical
   default thresholds. Configurable via `TANDEM_WORKFLOW_LEARNING_*` env knobs.
+- Added Action Firewall regression coverage and a demo preset, exercising
+  governed action decisions before protected tool execution.
+- Added a tenant-scoped protected audit ledger and governance evidence export
+  surfaces so protected decisions can be traced, exported, and tied back to
+  run context.
+- Added cross-tenant grant contracts, server routes, and positive sharing evals
+  for explicitly governed tenant-to-tenant access, while keeping ordinary
+  tenant isolation fail-closed.
+- Added default data-boundary and cross-tenant grants design docs to describe
+  how governed reads and explicit sharing should compose.
+- Added engine context assembly mapping, context-budget telemetry, Full-context
+  guardrails, provenance-aware compaction, per-source prompt hook budgets, and
+  long-session context evals with provenance assertions.
+- Added memory crypto mode diagnostics and ciphertext-at-rest support for
+  encryptable memory payloads, with a public residual-risk document for
+  search-required plaintext.
+- Added an egress DLP preflight for agent-team outbound actions.
+- Added the `tandem-meta-harness-eval` crate with trace/scoring models, finite
+  score deserialization, and design docs for optimizer loops, candidate
+  scoring/promotion, and human approval surfaces.
 
 ### Changed
 
@@ -128,6 +148,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the broader write gate, added Linear read/write coverage and built-in
   bindings, and exposed connector readiness state for missing/read-only/write
   Linear capability states.
+- Hardened ACA engine session follow-up handling and stabilized ACA capability
+  probing/status reporting.
+- Split large prompt execution and memory database modules into smaller
+  implementation parts while preserving existing runtime behavior.
 
 ### Security
 
@@ -170,6 +194,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check.
 - Added a memory database blast-radius boundary check, enforced in CI, to bound
   the impact of a memory-store compromise.
+- Rechecked sensitive-path protections in read basename fallback paths.
+- Added shared SSRF URL/IP validation across web fetch and browser navigation,
+  and tightened standing shell approval guidance to avoid overly broad
+  approvals.
+- Isolated memory authority jobs so memory maintenance work runs under explicit
+  authority rather than inheriting ambient session power.
+- Governed memory promotion outcomes so promotion decisions are policy-visible
+  instead of implicit side effects.
 
 ## [0.5.13] - 2026-06-02
 

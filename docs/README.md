@@ -15,10 +15,14 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Design System](./DESIGN_SYSTEM.md) - Detailed style/system notes.
 - [EU AI Act Readiness](./EU_AI_ACT_COMPLIANCE.md) - CISO-facing control mapping, current Tandem coverage, and roadmap gaps.
 - [Compliance Starter Pack](./compliance/README.md) - Public EU AI Act starter docs for deployers, CISOs, and compliance teams.
+- [Enterprise Readiness](./ENTERPRISE_READINESS.md) - Current enterprise capabilities, in-progress work, and roadmap boundaries.
 - [Cross-Tenant Grants Design](./CROSS_TENANT_GRANTS_DESIGN.md) - Signed grant envelope, inbound lookup, trust root, and enforcement design for governed tenant-to-tenant sharing.
 - [Default DataBoundary Enforcement Design](./DATA_BOUNDARY_ENFORCEMENT_DESIGN.md) - Default data-class boundary policy and trigger for governed reads.
 - [Engine Protocol Matrix](./ENGINE_PROTOCOL_MATRIX.md) - Wire contracts and status.
+- [Engine Context Assembly Map](./ENGINE_CONTEXT_ASSEMBLY_MAP.md) - Provider-facing context assembly paths, context-budget telemetry, and Full-context guardrails.
+- [Context Evals](./CONTEXT_EVALS.md) - Long-session context regression evals with provenance assertions.
 - [AI Runtime Infrastructure](./AI_RUNTIME_INFRASTRUCTURE.md) - Engine source-of-truth runtime for long-running context, replay, and guardrails.
+- [Memory Ciphertext At Rest](./MEMORY_CIPHERTEXT_AT_REST.md) - Memory crypto modes, encrypted columns, search-required plaintext residuals, and backup implications.
 - [MCP Improvements](./MCP_IMPROVEMENTS.md) - Connector tools, MCP discovery, and allowlist design.
 - [GitHub Projects via MCP](./MCP_IMPROVEMENTS.md#implementation-note-github-projects-via-mcp) - Tandem auto-registers the official GitHub MCP server when a PAT is available, so GitHub Projects work without manual `mcp add`.
 - [Workflow Automation Runtime](./WORKFLOW_RUNTIME.md) - How Tandem's workflow runtime produces verifiable, trustworthy artifacts across multi-stage AI pipelines.
@@ -26,12 +30,18 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Workflow Generated Variation Coverage](./WORKFLOW_GENERATED_VARIATIONS.md) - Constrained generator design and nightly workflow-variation coverage.
 - [Channel Lifecycle and Diagnostics](./CHANNELS_LIFECYCLE_AND_DIAGNOSTICS.md) - Registry-based channel runtime lifecycle, endpoint behavior, and required config keys.
 
+## Meta-Harness
+
+- [Optimizer Loop](./meta-harness/optimizer-loop.md) - Design contract for turning scored traces into candidate proposals.
+- [Candidate Scoring And Promotion](./meta-harness/candidate-scoring-promotion.md) - Scored version summaries, candidate ranking, and promotion states.
+- [Approval Surfaces](./meta-harness/approval-surfaces.md) - Human review surfaces for comparing, approving, rejecting, and promoting candidates.
+
 ## SDK & Development
 
 - [Engine CLI Guide](./ENGINE_CLI.md)
 - [Engine Testing](./ENGINE_TESTING.md)
 
-For archived planning notes, internal design docs, and working reports, see [docs/internal/README.md](./internal/README.md).
+For archived planning notes, internal design docs, and working reports, see [docs/internal](./internal/).
 
 ## Release Notes
 

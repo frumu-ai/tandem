@@ -9,7 +9,27 @@ foundation for cross-tenant data governance, governed runtime decisions, and
 goal-driven capability composition. It adds eval-backed, CI-enforced proof that
 tenant boundaries hold at runtime, tenant-scopes approval/audit/provider paths,
 hardens MCP and memory egress, and gives operators better ACA cockpit and
-feedback surfaces.
+feedback surfaces. The later 0.5.14 hardening work also adds an Action
+Firewall eval suite, explicit memory ciphertext-at-rest modes, tenant-scoped
+protected audit evidence, context-budget/provenance guardrails, and the first
+meta-harness evaluation models for scoring workflow candidates.
+
+### Enterprise Hardening Snapshot
+
+- The Action Firewall now has regression coverage and a demo preset for
+  protected action decisions before tool execution.
+- Tenant-scoped protected audit ledger and governance evidence export surfaces
+  make protected decisions traceable across policy decisions, audit records,
+  tool-effect ledger entries, and run context.
+- Cross-tenant grants now have public contract/server implementation surfaces
+  and positive sharing eval coverage. Ordinary tenant boundaries still fail
+  closed; cross-tenant access must be represented as an explicit governed grant.
+- Default data-boundary and cross-tenant grant design docs describe how
+  governed reads, inbound lookup, trust roots, and explicit sharing compose.
+- Egress DLP preflight checks outbound agent-team actions before they leave the
+  runtime boundary.
+- Sensitive-path basename fallback protections were rechecked, and shared
+  SSRF URL/IP validation now covers web fetch and browser navigation paths.
 
 ### Cross-Tenant Data Governance
 
@@ -61,6 +81,13 @@ feedback surfaces.
   scoping before retrieved memory is used in channel responses.
 - Retrieval egress controls (TAN-102) restrict which retrieved memory and
   knowledge can leave through session knowledge-base grounding and export paths.
+- Memory crypto mode is now explicit. Local/default installs remain plaintext,
+  local encrypted mode stores encryptable memory payload columns as
+  AES-256-GCM ciphertext, and hosted KMS mode fails closed on plaintext writes
+  until a KMS-backed decrypt broker is provisioned.
+- The memory ciphertext-at-rest documentation names which columns are encrypted,
+  which search-required plaintext columns remain residual risk, and how local
+  encrypted backups must preserve the key file.
 - Memory poisoning trust gates label memory by trust level and gate promotion;
   untrusted search results, channel reads, and prompt context are surfaced as
   trust-scoped evidence. A memory-poisoning eval dataset locks in the behavior.
@@ -98,7 +125,7 @@ feedback surfaces.
 
 ### Runtime Authority
 
-- An intra-tenant authority graph models the boundaries *inside* a single
+- An intra-tenant authority graph models the boundaries _inside_ a single
   tenant (CT-18). It resolves a principal's effective grants from direct grants
   plus organization-unit memberships — honoring role-domain nesting and
   parent-department inheritance — and renders fail-closed decisions: access is
@@ -123,10 +150,30 @@ feedback surfaces.
   policy decision and writes protected audit evidence for approval-required and
   deny outcomes.
 
+### Context Hygiene And Runtime Guardrails
+
+- The engine context assembly map now traces the provider-facing prompt
+  boundary across ordinary chat, workflow, automation, routine, coder-worker,
+  strict-KB, workflow-planner, and mission-builder paths.
+- `context.budget.final` telemetry reports final message/tool-schema/attachment
+  sizes, per-source contribution accounting, compaction counts, and Full-context
+  budget diagnostics without logging prompt bodies.
+- Full-context mode now has soft and hard budget guardrails. The hard budget
+  fails closed before provider send unless explicitly overridden.
+- Standard and compact history projection now preserve provenance handles for
+  dropped message ranges and stored message ids, while pinning decision/guardrail
+  context forward instead of losing approval boundaries.
+- Long-session context evals assert both answerability and provenance: they fail
+  if context hygiene only passes by injecting too much raw history or omitting
+  compaction handles.
+- Prompt hook context budgeting now reports per-source additions so identity,
+  memory scope, KB grounding, docs, and global memory blocks can be audited as
+  distinct context contributors.
+
 ### Goal Capability Learning
 
 - A first slice of Goal Capability Learning (GCL) lands as the front end for
-  *composing a new workflow toward a goal*, distinct from Workflow Learning,
+  _composing a new workflow toward a goal_, distinct from Workflow Learning,
   which repairs an existing workflow from execution traces (GCL-01). A goal is
   expressed as a `GoalSpec`; discovery decomposes it into tool-agnostic
   `CapabilityRequirement`s, resolves those to available capabilities, and
@@ -183,6 +230,16 @@ feedback surfaces.
   the parameter dropped with a logged warning instead of failing the run.
 - All fields are optional and fully backwards compatible: omitting them produces
   a provider request identical to prior releases.
+
+### Meta-Harness Evaluation
+
+- A new `tandem-meta-harness-eval` crate defines stable trace and scoring
+  models for workflow/version evaluation.
+- Score values must deserialize to finite numbers, preventing `NaN` or
+  infinity from entering deterministic candidate ordering.
+- Public meta-harness design docs now describe the optimizer loop, candidate
+  scoring/promotion lifecycle, and grouped human approval surfaces for reviewing
+  proposed workflow improvements.
 
 ### Security Review
 
