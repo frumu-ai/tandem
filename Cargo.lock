@@ -7764,6 +7764,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tandem-meta-harness-eval"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tandem-observability"
 version = "0.5.13"
 dependencies = [
