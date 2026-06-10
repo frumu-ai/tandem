@@ -144,7 +144,7 @@ Variables:
 
 The desktop app now exposes these search settings directly in Settings, and the control panel exposes them under Settings -> Web Search when it is connected to a local engine host.
 
-- `TANDEM_DISABLE_TOOL_GUARD_BUDGETS` (`1` disables per-run guard budgets; default in installer/service env is `1`)
+- `TANDEM_DISABLE_TOOL_GUARD_BUDGETS` (`1` disables per-run guard budgets; default in installer/service env is `0`)
 - `TANDEM_PROMPT_CONTEXT_HOOK_TIMEOUT_MS` (default `5000`)
 - `TANDEM_PROVIDER_STREAM_CONNECT_TIMEOUT_MS` (default `30000`)
 - `TANDEM_PROVIDER_STREAM_IDLE_TIMEOUT_MS` (default `90000`)
@@ -162,13 +162,13 @@ The desktop app now exposes these search settings directly in Settings, and the 
 
 ## Tool Guard Budgets
 
-Default installs now set:
+Default installs now enforce guard budgets:
 
 ```bash
-TANDEM_DISABLE_TOOL_GUARD_BUDGETS=1
+TANDEM_DISABLE_TOOL_GUARD_BUDGETS=0
 ```
 
-To enforce caps instead, set:
+To tune caps, set:
 
 ```bash
 TANDEM_DISABLE_TOOL_GUARD_BUDGETS=0
