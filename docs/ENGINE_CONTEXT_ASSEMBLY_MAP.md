@@ -2,7 +2,7 @@
 
 TAN-186 inventory. Last traced from `main` at `3094ac42` on 2026-06-09.
 
-This document maps the places Tandem assembles provider-facing model context. It is a behavior-free reference for follow-up context hygiene work.
+This document maps the places Tandem assembles provider-facing model context. It is a behavior-free reference for follow-up context hygiene work. Regression coverage for this behavior lives in the context eval suites; see `docs/CONTEXT_EVALS.md`.
 
 ## Final Provider Boundary
 

@@ -631,6 +631,61 @@ fn memory_block_respects_explicit_source_budget() {
     );
 }
 
+/// TAN-193 eval: when project-scoped memory is available, unrelated global
+/// memory must not appear in the rendered provider-facing block, and every
+/// injected line must carry a retrievable record-id provenance handle. This
+/// fails if cross-project context leaks into the projection.
+#[test]
+fn context_eval_unrelated_global_memory_not_injected_when_project_scoped() {
+    let mut project_record =
+        prompt_memory_record("verified", "Project Alpha deploy steps live in runbook.md.");
+    project_record.id = "alpha-runbook".to_string();
+    project_record.project_tag = Some("project-alpha".to_string());
+    let mut unrelated_global = prompt_memory_record(
+        "verified",
+        "Unrelated Beta project gossip that must not leak into Alpha prompts.",
+    );
+    unrelated_global.id = "beta-gossip".to_string();
+    unrelated_global.project_tag = Some("project-beta".to_string());
+
+    let (selected, deferred, project_scope_used) =
+        ServerPromptContextHook::select_memory_hits_for_context(
+            vec![tandem_memory::types::GlobalMemorySearchHit {
+                score: 0.7,
+                record: project_record,
+            }],
+            vec![tandem_memory::types::GlobalMemorySearchHit {
+                score: 0.99,
+                record: unrelated_global,
+            }],
+        );
+    let block = prompt_memory_context::build_memory_block_with_budget(
+        &selected,
+        DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    );
+
+    assert!(project_scope_used);
+    assert!(
+        block.content.contains("Project Alpha deploy steps"),
+        "allowed project-scoped context must be injected"
+    );
+    assert!(
+        !block.content.contains("Unrelated Beta project gossip"),
+        "unrelated global memory leaked into a project-scoped prompt:\n{}",
+        block.content
+    );
+    assert!(
+        block.content.contains("id=alpha-runbook"),
+        "injected memory line must carry its record-id provenance handle"
+    );
+    assert_eq!(
+        deferred.len(),
+        1,
+        "global hit defers rather than disappears"
+    );
+    assert_eq!(deferred[0].record.id, "beta-gossip");
+}
+
 fn prompt_memory_record(label: &str, content: &str) -> tandem_memory::types::GlobalMemoryRecord {
     tandem_memory::types::GlobalMemoryRecord {
         id: format!("memory-{label}"),
