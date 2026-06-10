@@ -38,7 +38,10 @@ use tandem_channels::{
     channel_registry::registered_channels,
     config::{ChannelsConfig, DiscordConfig, SlackConfig, TelegramConfig},
 };
-use tandem_core::{resolve_shared_paths, PromptContextHook, PromptContextHookContext};
+use tandem_core::{
+    resolve_shared_paths, PromptContextHook, PromptContextHookContext, PromptContextHookResult,
+    PromptContextHookStats,
+};
 use tandem_memory::db::MemoryDatabase;
 use tandem_providers::ChatMessage;
 use tandem_workflows::{
@@ -1200,6 +1203,86 @@ struct ServerPromptContextHook {
     state: AppState,
 }
 
+const DEFAULT_PROMPT_HOOK_CONTEXT_BUDGET_CHARS: usize = 6_000;
+const MIN_PROMPT_HOOK_CONTEXT_BUDGET_CHARS: usize = 512;
+const SOURCE_IDENTITY: &str = "identity";
+const SOURCE_MEMORY_SCOPE: &str = "memoryScope";
+const SOURCE_KB_GROUNDING: &str = "kbGrounding";
+const SOURCE_DOCS: &str = "docs";
+const SOURCE_GLOBAL_MEMORY: &str = "globalMemory";
+
+struct PromptHookBudget {
+    stats: PromptContextHookStats,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DocsContextBlock {
+    content: String,
+    included_count: usize,
+    included_chars: usize,
+    dropped_count: usize,
+    dropped_chars: usize,
+}
+
+impl PromptHookBudget {
+    fn new() -> Self {
+        let budget_chars = prompt_hook_context_budget_chars();
+        Self {
+            stats: PromptContextHookStats {
+                budget_chars: Some(budget_chars),
+                remaining_chars: Some(budget_chars),
+                ..PromptContextHookStats::default()
+            },
+        }
+    }
+
+    fn remaining_chars(&self) -> usize {
+        self.stats.remaining_chars.unwrap_or(usize::MAX)
+    }
+
+    fn push_system_message(
+        &mut self,
+        messages: &mut Vec<ChatMessage>,
+        source: &'static str,
+        content: String,
+        injected_count: usize,
+        required: bool,
+    ) -> bool {
+        let chars = content.len();
+        if !required && chars > self.remaining_chars() {
+            self.stats.record_deferred(source, injected_count, chars);
+            return false;
+        }
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content,
+            attachments: Vec::new(),
+        });
+        self.stats.record_injected(source, injected_count, chars);
+        true
+    }
+
+    fn record_dropped(&mut self, source: &'static str, count: usize, chars: usize) {
+        self.stats.record_dropped(source, count, chars);
+    }
+
+    fn record_deferred(&mut self, source: &'static str, count: usize, chars: usize) {
+        self.stats.record_deferred(source, count, chars);
+    }
+
+    fn finish(self) -> PromptContextHookStats {
+        self.stats
+    }
+}
+
+fn prompt_hook_context_budget_chars() -> usize {
+    std::env::var("TANDEM_PROMPT_HOOK_CONTEXT_BUDGET_CHARS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value >= MIN_PROMPT_HOOK_CONTEXT_BUDGET_CHARS)
+        .unwrap_or(DEFAULT_PROMPT_HOOK_CONTEXT_BUDGET_CHARS)
+}
+
 impl ServerPromptContextHook {
     fn new(state: AppState) -> Self {
         Self { state }
@@ -1266,9 +1349,13 @@ impl ServerPromptContextHook {
             .to_string()
     }
 
-    fn build_docs_memory_block(hits: &[tandem_memory::types::MemorySearchResult]) -> String {
+    fn build_docs_memory_block_with_budget(
+        hits: &[tandem_memory::types::MemorySearchResult],
+        char_budget: usize,
+    ) -> DocsContextBlock {
         let mut out = vec!["<docs_context>".to_string()];
         let mut used = 0usize;
+        let mut result = DocsContextBlock::default();
         for hit in hits {
             let url = Self::extract_docs_source_url(&hit.chunk).unwrap_or_default();
             let path = Self::extract_docs_relative_path(&hit.chunk);
@@ -1280,17 +1367,24 @@ impl ServerPromptContextHook {
                 .collect::<Vec<_>>()
                 .join(" ");
             let line = format!(
-                "- [{:.3}] {} (doc_path={}, source_url={})",
-                hit.similarity, text, path, url
+                "- [{:.3}] {} (doc_id={}, doc_path={}, source_url={})",
+                hit.similarity, text, hit.chunk.id, path, url
             );
-            used = used.saturating_add(line.len());
-            if used > 2800 {
-                break;
+            let next_used = used.saturating_add(line.len());
+            if next_used > char_budget {
+                result.dropped_count = result.dropped_count.saturating_add(1);
+                result.dropped_chars = result.dropped_chars.saturating_add(line.len());
+                continue;
             }
+            used = next_used;
+            result.included_count = result.included_count.saturating_add(1);
+            result.included_chars = result.included_chars.saturating_add(line.len());
             out.push(line);
         }
         out.push("</docs_context>".to_string());
-        out.join("\n")
+        result.content = out.join("\n");
+        result.included_chars = result.content.len();
+        result
     }
 
     async fn search_embedded_docs(
@@ -1316,6 +1410,47 @@ impl ServerPromptContextHook {
             .filter(|hit| hit.chunk.source.starts_with("guide_docs:"))
             .take(limit)
             .collect()
+    }
+
+    fn dedupe_global_memory_hits(
+        hits: Vec<tandem_memory::types::GlobalMemorySearchHit>,
+    ) -> Vec<tandem_memory::types::GlobalMemorySearchHit> {
+        let mut seen = std::collections::HashSet::new();
+        let mut deduped = Vec::new();
+        for hit in hits {
+            if seen.insert(hit.record.id.clone()) {
+                deduped.push(hit);
+            }
+        }
+        deduped
+    }
+
+    fn select_memory_hits_for_context(
+        project_hits: Vec<tandem_memory::types::GlobalMemorySearchHit>,
+        global_hits: Vec<tandem_memory::types::GlobalMemorySearchHit>,
+    ) -> (
+        Vec<tandem_memory::types::GlobalMemorySearchHit>,
+        Vec<tandem_memory::types::GlobalMemorySearchHit>,
+        bool,
+    ) {
+        let project_hits = Self::dedupe_global_memory_hits(project_hits);
+        if project_hits.is_empty() {
+            return (
+                Self::dedupe_global_memory_hits(global_hits),
+                Vec::new(),
+                false,
+            );
+        }
+
+        let selected_ids = project_hits
+            .iter()
+            .map(|hit| hit.record.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let deferred_global_hits = Self::dedupe_global_memory_hits(global_hits)
+            .into_iter()
+            .filter(|hit| !selected_ids.contains(&hit.record.id))
+            .collect::<Vec<_>>();
+        (project_hits, deferred_global_hits, true)
     }
 
     fn should_skip_memory_injection(query: &str) -> bool {
@@ -1551,38 +1686,50 @@ impl PromptContextHook for ServerPromptContextHook {
         &self,
         ctx: PromptContextHookContext,
         mut messages: Vec<ChatMessage>,
-    ) -> BoxFuture<'static, anyhow::Result<Vec<ChatMessage>>> {
+    ) -> BoxFuture<'static, anyhow::Result<PromptContextHookResult>> {
         let this = self.clone();
         Box::pin(async move {
             // Startup can invoke prompt plumbing before RuntimeState is installed.
             // Never panic from context hooks; fail-open and continue without augmentation.
             if !this.state.is_ready() {
-                return Ok(messages);
+                return Ok(PromptContextHookResult::new(
+                    messages,
+                    PromptContextHookStats::default(),
+                ));
             }
             let run = this.state.run_registry.get(&ctx.session_id).await;
             let Some(run) = run else {
-                return Ok(messages);
+                return Ok(PromptContextHookResult::new(
+                    messages,
+                    PromptContextHookStats::default(),
+                ));
             };
+            let mut budget = PromptHookBudget::new();
             let config = this.state.config.get_effective_value().await;
             if let Some(identity_block) =
                 Self::resolve_identity_block(&config, run.agent_profile.as_deref())
             {
-                messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: identity_block,
-                    attachments: Vec::new(),
-                });
+                budget.push_system_message(&mut messages, SOURCE_IDENTITY, identity_block, 1, true);
             }
-            if let Some(session) = this.state.storage.get_session(&ctx.session_id).await {
-                messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: Self::build_memory_scope_block(
+            let session = this.state.storage.get_session(&ctx.session_id).await;
+            let project_id = session
+                .as_ref()
+                .and_then(|session| session.project_id.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
+            if let Some(session) = session.as_ref() {
+                budget.push_system_message(
+                    &mut messages,
+                    SOURCE_MEMORY_SCOPE,
+                    Self::build_memory_scope_block(
                         &ctx.session_id,
                         session.project_id.as_deref(),
                         session.workspace_root.as_deref(),
                     ),
-                    attachments: Vec::new(),
-                });
+                    1,
+                    true,
+                );
             }
             let run_id = run.run_id;
             let user_id = run.client_id.unwrap_or_else(|| "default".to_string());
@@ -1593,10 +1740,10 @@ impl PromptContextHook for ServerPromptContextHook {
                 .map(|m| m.content.clone())
                 .unwrap_or_default();
             if query.trim().is_empty() {
-                return Ok(messages);
+                return Ok(PromptContextHookResult::new(messages, budget.finish()));
             }
             if Self::should_skip_memory_injection(&query) {
-                return Ok(messages);
+                return Ok(PromptContextHookResult::new(messages, budget.finish()));
             }
             if let Some(policy) = this
                 .state
@@ -1606,11 +1753,14 @@ impl PromptContextHook for ServerPromptContextHook {
             {
                 if policy.required {
                     let kb_block = Self::build_kb_grounding_block(&policy);
-                    messages.push(ChatMessage {
-                        role: "system".to_string(),
-                        content: kb_block.clone(),
-                        attachments: Vec::new(),
-                    });
+                    let kb_chars = kb_block.len();
+                    let injected = budget.push_system_message(
+                        &mut messages,
+                        SOURCE_KB_GROUNDING,
+                        kb_block.clone(),
+                        1,
+                        true,
+                    );
                     this.state.event_bus.publish(EngineEvent::new(
                         "kb.grounding.context.injected",
                         json!({
@@ -1621,6 +1771,10 @@ impl PromptContextHook for ServerPromptContextHook {
                             "strict": policy.strict,
                             "serverNames": policy.server_names,
                             "toolPatterns": policy.tool_patterns,
+                            "budgetChars": budget.stats.budget_chars,
+                            "remainingBudgetChars": budget.stats.remaining_chars,
+                            "charSize": kb_chars,
+                            "injected": injected,
                             "tokenSizeApprox": kb_block.split_whitespace().count(),
                         }),
                     ));
@@ -1629,12 +1783,23 @@ impl PromptContextHook for ServerPromptContextHook {
 
             let docs_hits = this.search_embedded_docs(&query, 6).await;
             if !docs_hits.is_empty() {
-                let docs_block = Self::build_docs_memory_block(&docs_hits);
-                messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: docs_block.clone(),
-                    attachments: Vec::new(),
-                });
+                let docs_block =
+                    Self::build_docs_memory_block_with_budget(&docs_hits, budget.remaining_chars());
+                if docs_block.dropped_count > 0 {
+                    budget.record_dropped(
+                        SOURCE_DOCS,
+                        docs_block.dropped_count,
+                        docs_block.dropped_chars,
+                    );
+                }
+                let injected = docs_block.included_count > 0
+                    && budget.push_system_message(
+                        &mut messages,
+                        SOURCE_DOCS,
+                        docs_block.content.clone(),
+                        docs_block.included_count,
+                        false,
+                    );
                 this.state.event_bus.publish(EngineEvent::new(
                     "memory.docs.context.injected",
                     json!({
@@ -1643,24 +1808,42 @@ impl PromptContextHook for ServerPromptContextHook {
                         "messageID": ctx.message_id,
                         "iteration": ctx.iteration,
                         "count": docs_hits.len(),
-                        "tokenSizeApprox": docs_block.split_whitespace().count(),
+                        "injected": injected,
+                        "injectedCount": if injected { docs_block.included_count } else { 0 },
+                        "droppedCount": docs_block.dropped_count,
+                        "deferredCount": if injected { 0 } else { docs_block.included_count },
+                        "budgetChars": budget.stats.budget_chars,
+                        "remainingBudgetChars": budget.stats.remaining_chars,
+                        "charSize": docs_block.content.len(),
+                        "tokenSizeApprox": docs_block.content.split_whitespace().count(),
                         "sourcePrefix": "guide_docs:"
                     }),
                 ));
-                return Ok(messages);
             }
 
             let Some(db) = this.open_memory_db().await else {
-                return Ok(messages);
+                return Ok(PromptContextHookResult::new(messages, budget.finish()));
             };
             let started = now_ms();
-            let hits = db
+            let project_hits = if let Some(project_id) = project_id.as_deref() {
+                db.search_global_memory(&user_id, &query, 8, Some(project_id), None, None)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let global_hits = db
                 .search_global_memory(&user_id, &query, 8, None, None, None)
                 .await
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
                 .collect::<Vec<_>>();
+            let (hits, deferred_global_hits, project_scope_used) =
+                Self::select_memory_hits_for_context(project_hits, global_hits);
             let latency_ms = now_ms().saturating_sub(started);
             let scores = hits.iter().map(|h| h.score).collect::<Vec<_>>();
             this.state.event_bus.publish(EngineEvent::new(
@@ -1674,6 +1857,9 @@ impl PromptContextHook for ServerPromptContextHook {
                     "iteration": ctx.iteration,
                     "queryHash": Self::hash_query(&query),
                     "resultCount": hits.len(),
+                    "projectScopeUsed": project_scope_used,
+                    "currentProjectID": project_id.clone(),
+                    "globalFallbackDeferredCount": deferred_global_hits.len(),
                     "scoreMin": scores.iter().copied().reduce(f64::min),
                     "scoreMax": scores.iter().copied().reduce(f64::max),
                     "scores": scores,
@@ -1683,15 +1869,28 @@ impl PromptContextHook for ServerPromptContextHook {
             ));
 
             if hits.is_empty() {
-                return Ok(messages);
+                return Ok(PromptContextHookResult::new(messages, budget.finish()));
             }
 
-            let memory_block = Self::build_memory_block(&hits);
-            messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: memory_block.clone(),
-                attachments: Vec::new(),
-            });
+            let memory_block = prompt_memory_context::build_memory_block_with_budget(
+                &hits,
+                budget.remaining_chars(),
+            );
+            if memory_block.dropped_count > 0 {
+                budget.record_dropped(
+                    SOURCE_GLOBAL_MEMORY,
+                    memory_block.dropped_count,
+                    memory_block.dropped_chars,
+                );
+            }
+            let injected = memory_block.included_count > 0
+                && budget.push_system_message(
+                    &mut messages,
+                    SOURCE_GLOBAL_MEMORY,
+                    memory_block.content.clone(),
+                    memory_block.included_count,
+                    false,
+                );
             this.state.event_bus.publish(EngineEvent::new(
                 "memory.context.injected",
                 json!({
@@ -1700,10 +1899,20 @@ impl PromptContextHook for ServerPromptContextHook {
                     "messageID": ctx.message_id,
                     "iteration": ctx.iteration,
                     "count": hits.len(),
-                    "tokenSizeApprox": memory_block.split_whitespace().count(),
+                    "injected": injected,
+                    "injectedCount": if injected { memory_block.included_count } else { 0 },
+                    "droppedCount": memory_block.dropped_count,
+                    "deferredCount": if injected { 0 } else { memory_block.included_count },
+                    "deferredGlobalFallbackCount": deferred_global_hits.len(),
+                    "projectScopeUsed": project_scope_used,
+                    "currentProjectID": project_id.clone(),
+                    "budgetChars": budget.stats.budget_chars,
+                    "remainingBudgetChars": budget.stats.remaining_chars,
+                    "charSize": memory_block.content.len(),
+                    "tokenSizeApprox": memory_block.content.split_whitespace().count(),
                 }),
             ));
-            Ok(messages)
+            Ok(PromptContextHookResult::new(messages, budget.finish()))
         })
     }
 }

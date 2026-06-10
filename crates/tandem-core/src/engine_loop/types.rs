@@ -1,5 +1,7 @@
 use futures::future::BoxFuture;
+use serde::Serialize;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use tandem_providers::ChatMessage;
 use tandem_types::{
     EngineEvent, TenantContext, ToolProgressEvent, ToolProgressSink, VerifiedTenantContext,
@@ -161,10 +163,112 @@ pub struct PromptContextHookContext {
     pub iteration: usize,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptContextHookSourceStats {
+    pub injected_count: usize,
+    pub injected_chars: usize,
+    pub dropped_count: usize,
+    pub dropped_chars: usize,
+    pub deferred_count: usize,
+    pub deferred_chars: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptContextHookStats {
+    pub budget_chars: Option<usize>,
+    pub used_chars: usize,
+    pub remaining_chars: Option<usize>,
+    pub sources: BTreeMap<String, PromptContextHookSourceStats>,
+}
+
+impl PromptContextHookStats {
+    pub fn record_injected(&mut self, source: impl Into<String>, count: usize, chars: usize) {
+        let entry = self.sources.entry(source.into()).or_default();
+        entry.injected_count = entry.injected_count.saturating_add(count);
+        entry.injected_chars = entry.injected_chars.saturating_add(chars);
+        self.used_chars = self.used_chars.saturating_add(chars);
+        self.refresh_remaining();
+    }
+
+    pub fn record_dropped(&mut self, source: impl Into<String>, count: usize, chars: usize) {
+        let entry = self.sources.entry(source.into()).or_default();
+        entry.dropped_count = entry.dropped_count.saturating_add(count);
+        entry.dropped_chars = entry.dropped_chars.saturating_add(chars);
+    }
+
+    pub fn record_deferred(&mut self, source: impl Into<String>, count: usize, chars: usize) {
+        let entry = self.sources.entry(source.into()).or_default();
+        entry.deferred_count = entry.deferred_count.saturating_add(count);
+        entry.deferred_chars = entry.deferred_chars.saturating_add(chars);
+    }
+
+    pub fn injected_count(&self) -> usize {
+        self.sources
+            .values()
+            .map(|source| source.injected_count)
+            .sum()
+    }
+
+    pub fn injected_chars(&self) -> usize {
+        self.sources
+            .values()
+            .map(|source| source.injected_chars)
+            .sum()
+    }
+
+    pub fn dropped_count(&self) -> usize {
+        self.sources
+            .values()
+            .map(|source| source.dropped_count)
+            .sum()
+    }
+
+    pub fn dropped_chars(&self) -> usize {
+        self.sources
+            .values()
+            .map(|source| source.dropped_chars)
+            .sum()
+    }
+
+    pub fn deferred_count(&self) -> usize {
+        self.sources
+            .values()
+            .map(|source| source.deferred_count)
+            .sum()
+    }
+
+    pub fn deferred_chars(&self) -> usize {
+        self.sources
+            .values()
+            .map(|source| source.deferred_chars)
+            .sum()
+    }
+
+    fn refresh_remaining(&mut self) {
+        self.remaining_chars = self
+            .budget_chars
+            .map(|budget| budget.saturating_sub(self.used_chars));
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PromptContextHookResult {
+    pub messages: Vec<ChatMessage>,
+    pub stats: PromptContextHookStats,
+}
+
+impl PromptContextHookResult {
+    pub fn new(messages: Vec<ChatMessage>, stats: PromptContextHookStats) -> Self {
+        Self { messages, stats }
+    }
+}
+
 pub trait PromptContextHook: Send + Sync {
     fn augment_provider_messages(
         &self,
         ctx: PromptContextHookContext,
         messages: Vec<ChatMessage>,
-    ) -> BoxFuture<'static, anyhow::Result<Vec<ChatMessage>>>;
+    ) -> BoxFuture<'static, anyhow::Result<PromptContextHookResult>>;
 }

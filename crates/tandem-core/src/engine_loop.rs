@@ -55,7 +55,8 @@ use types::{EngineToolProgressSink, StreamedToolCall, WritePathRecoveryMode};
 
 pub use prewrite_mode::prewrite_repair_retry_max_attempts;
 pub use types::{
-    KnowledgebaseGroundingPolicy, PromptContextHook, PromptContextHookContext, SpawnAgentHook,
+    KnowledgebaseGroundingPolicy, PromptContextHook, PromptContextHookContext,
+    PromptContextHookResult, PromptContextHookSourceStats, PromptContextHookStats, SpawnAgentHook,
     SpawnAgentToolContext, SpawnAgentToolResult, ToolPolicyContext, ToolPolicyDecision,
     ToolPolicyHook,
 };

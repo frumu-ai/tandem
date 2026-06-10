@@ -324,6 +324,7 @@ impl EngineLoop {
                 }
                 let pre_hook_message_count = messages.len();
                 let pre_hook_chars = messages.iter().map(|m| m.content.len()).sum::<usize>();
+                let mut hook_stats = PromptContextHookStats::default();
                 if let Some(hook) = self.prompt_context_hook.read().await.clone() {
                     let ctx = PromptContextHookContext {
                         session_id: session_id.clone(),
@@ -340,8 +341,9 @@ impl EngineLoop {
                     )
                     .await
                     {
-                        Ok(Ok(augmented)) => {
-                            messages = augmented;
+                        Ok(Ok(result)) => {
+                            messages = result.messages;
+                            hook_stats = result.stats;
                         }
                         Ok(Err(err)) => {
                             self.event_bus.publish(EngineEvent::new(
@@ -694,6 +696,13 @@ impl EngineLoop {
                     .saturating_add(attachment_chars);
                 let full_context_mode = matches!(context_profile, ChatHistoryProfile::Full);
                 let compaction_occurred = dropped_history_messages > 0;
+                let hook_injected_items = hook_stats.injected_count();
+                let hook_injected_chars = hook_stats.injected_chars();
+                let hook_dropped_items = hook_stats.dropped_count();
+                let hook_dropped_chars = hook_stats.dropped_chars();
+                let hook_deferred_items = hook_stats.deferred_count();
+                let hook_deferred_chars = hook_stats.deferred_chars();
+                let hook_sources = hook_stats.sources.clone();
                 self.event_bus.publish(EngineEvent::new(
                     "context.budget.final",
                     json!({
@@ -720,13 +729,24 @@ impl EngineLoop {
                             "followupChars": followup_chars,
                             "hookAddedMessages": hook_added_messages,
                             "hookAddedChars": hook_added_chars,
+                            "hookBudgetChars": hook_stats.budget_chars,
+                            "hookBudgetUsedChars": hook_stats.used_chars,
+                            "hookBudgetRemainingChars": hook_stats.remaining_chars,
+                            "hookInjectedItems": hook_injected_items,
+                            "hookInjectedChars": hook_injected_chars,
+                            "hookDroppedItems": hook_dropped_items,
+                            "hookDroppedChars": hook_dropped_chars,
+                            "hookDeferredItems": hook_deferred_items,
+                            "hookDeferredChars": hook_deferred_chars,
+                            "hookSources": hook_sources,
                             "toolSchemaChars": tool_schema_chars,
                             "attachmentChars": attachment_chars,
                         },
                         "compactionOccurred": compaction_occurred,
                         "droppedHistoryMessages": dropped_history_messages,
                         "droppedHistoryChars": dropped_history_chars,
-                        "droppedDueToBudget": compaction_occurred,
+                        "droppedDueToBudget": compaction_occurred || hook_dropped_items > 0,
+                        "deferredDueToBudget": hook_deferred_items > 0,
                         "pinnedHistoryMessages": pinned_history_messages,
                         "toolResultsCompacted": compacted_tool_results,
                         "toolResultCharsSaved": compacted_tool_result_chars,
