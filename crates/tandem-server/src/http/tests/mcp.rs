@@ -934,6 +934,107 @@ async fn mcp_refresh_silently_renews_expired_oauth_token() {
 }
 
 #[tokio::test]
+async fn mcp_refresh_falls_back_to_global_oauth_credential() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;
+
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    assert!(state.mcp.set_auth_kind("notion", "oauth".to_string()).await);
+
+    let app = app_router(state.clone());
+    let connect_req = Request::builder()
+        .method("POST")
+        .uri("/mcp/notion/connect")
+        .body(Body::empty())
+        .expect("connect request");
+    let connect_resp = app
+        .clone()
+        .oneshot(connect_req)
+        .await
+        .expect("connect response");
+    assert_eq!(connect_resp.status(), StatusCode::OK);
+
+    let session = state
+        .mcp_oauth_sessions
+        .read()
+        .await
+        .values()
+        .find(|session| session.server_name == "notion")
+        .cloned()
+        .expect("mcp oauth session");
+
+    let callback_req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/mcp/notion/auth/callback?code=test-code&state={}",
+            urlencoding::encode(&session.state)
+        ))
+        .body(Body::empty())
+        .expect("callback request");
+    let callback_resp = app.oneshot(callback_req).await.expect("callback response");
+    assert_eq!(callback_resp.status(), StatusCode::OK);
+
+    let provider_auth_security_dir = state
+        .shared_resources_path
+        .parent()
+        .expect("state root")
+        .join("security");
+    assert!(
+        tandem_core::load_provider_oauth_credential_in_dir(
+            &provider_auth_security_dir,
+            "mcp-oauth::notion",
+        )
+        .is_none(),
+        "callback writes the current global provider credential, not the registry-local copy"
+    );
+    tandem_core::set_provider_oauth_credential(
+        "mcp-oauth::notion",
+        tandem_core::OAuthProviderCredential {
+            provider_id: "mcp-oauth::notion".to_string(),
+            access_token: "access-token-123".to_string(),
+            refresh_token: "refresh-token-123".to_string(),
+            expires_at_ms: crate::now_ms().saturating_sub(1_000),
+            account_id: None,
+            email: None,
+            display_name: None,
+            managed_by: "tandem".to_string(),
+            api_key: None,
+        },
+    )
+    .expect("store expired global oauth credential");
+
+    let tools = state.mcp.refresh("notion").await.expect("refresh notion");
+    assert!(!tools.is_empty());
+
+    let notion = state
+        .mcp
+        .list()
+        .await
+        .get("notion")
+        .cloned()
+        .expect("notion row");
+    assert_eq!(
+        notion
+            .secret_header_values
+            .get("Authorization")
+            .map(String::as_str),
+        Some("Bearer access-token-456")
+    );
+    let stored = tandem_core::load_provider_oauth_credential_in_dir(
+        &provider_auth_security_dir,
+        "mcp-oauth::notion",
+    )
+    .expect("refreshed oauth credential should be backfilled locally");
+    assert_eq!(stored.access_token, "access-token-456");
+    assert_eq!(stored.refresh_token, "refresh-token-456");
+
+    drop(server);
+}
+
+#[tokio::test]
 async fn mcp_catalog_overlay_surfaces_connected_and_uncataloged_states() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;

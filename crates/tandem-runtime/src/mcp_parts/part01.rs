@@ -1164,7 +1164,9 @@ impl McpRegistry {
         let Some(credential) = tandem_core::load_provider_oauth_credential_in_dir(
             &self.oauth_security_dir,
             &oauth.provider_id,
-        ) else {
+        )
+        .or_else(|| tandem_core::load_provider_oauth_credential(&oauth.provider_id))
+        else {
             return Ok(false);
         };
 
