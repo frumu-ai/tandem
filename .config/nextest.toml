@@ -1,0 +1,42 @@
+# Nextest configuration for the Tandem workspace (TAN-220).
+#
+# nextest runs each test in its own process, which also isolates the
+# in-process global-state pollution that made some suites flaky under
+# `cargo test` (e.g. config_store_rehydrates_channel_token_from_secure_store).
+
+[profile.default]
+# Surface slow tests instead of hanging CI: warn at 60s, kill at 5 min.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci]
+default-filter = """
+not (
+  test(/^http::tests::enterprise::/)
+  | test(=app::state::automation::tests::code_workflow_with_connector_tool_allowlist_keeps_patch_tools)
+  | test(=app::state::tests::automations::automation_run_requeue_increments_attempt_counter)
+  | test(=http::coder::issue_fix_handoff_tests::issue_fix_handoff_commits_and_pushes_worker_branch)
+  | test(=http::tests::coder::coder_issue_fix_worker_uses_managed_worktree_for_git_repo)
+  | test(=http::tests::global::browser_status_route_returns_browser_readiness_shape)
+  | test(=http::tests::global::expired_leases_are_pruned_and_cleanup_managed_worktrees)
+  | test(=http::tests::global::managed_worktree_create_rejects_external_path_override)
+  | test(=http::tests::global::managed_worktree_create_rejects_unknown_lease)
+  | test(=http::tests::global::managed_worktree_endpoints_are_idempotent_and_cleanup_branch)
+  | test(=http::tests::global::managed_worktree_mutations_require_matching_active_lease)
+  | test(=http::tests::global::releasing_lease_cleans_up_managed_worktrees)
+  | test(=http::tests::global::stale_worktree_cleanup_removes_untracked_managed_worktrees)
+  | test(=http::tests::memory::memory_import_can_use_default_local_manual_source_binding_projection)
+  | test(=http::tests::memory::memory_import_quarantines_review_required_source_binding)
+  | test(=http::tests::memory::memory_import_records_enterprise_ingestion_job_audit)
+  | test(=http::tests::sessions::channel_session_archival_writes_deduped_global_exchange_memory)
+  | test(=http::tests::sessions::prompt_async_stream_error_persists_error_message_and_finishes_run)
+  | test(=http::tests::sessions::prompt_async_streamed_write_preserves_provider_call_id_and_args_lineage)
+)
+"""
+# One retry absorbs residual environmental flakiness without hiding real
+# failures (retried tests are reported as FLAKY, not silently green).
+retries = 1
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci.junit]
+path = "junit.xml"

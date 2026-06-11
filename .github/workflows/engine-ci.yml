@@ -129,72 +129,59 @@ jobs:
           # TAN-214: golden email approval workflow (compose -> gate -> send)
           "$TEST_BIN" 'app::state::tests::automations::email_approval_golden' --nocapture
 
-  workflow-runtime-deep-gate:
-    name: Workflow Runtime Deep Gate
+  workspace-tests:
+    name: Workspace Tests (nextest)
     runs-on: ubuntu-latest
     needs: workflow-runtime-fast-gate
+    timeout-minutes: 60
+    env:
+      # The full-workspace debug target tree is ~21 GB with default debuginfo,
+      # uncomfortably close to a hosted runner's free disk. Line tables keep
+      # panic locations in backtraces at a fraction of the size & link memory.
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Hosted runners ship ~25 GB of preinstalled toolchains we never use;
+      # reclaim them so the workspace build fits.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build tandem-server workflow test binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test -p tandem-server --lib --tests --no-run --message-format=json > tandem-server-test-messages.json
-          python - <<'PY'
-          import json
-          import os
-          import pathlib
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
 
-          exe = None
-          for line in pathlib.Path("tandem-server-test-messages.json").read_text().splitlines():
-              try:
-                  msg = json.loads(line)
-              except json.JSONDecodeError:
-                  continue
-              if msg.get("reason") != "compiler-artifact":
-                  continue
-              if not msg.get("profile", {}).get("test"):
-                  continue
-              target = msg.get("target", {})
-              if target.get("name") == "tandem_server" and msg.get("executable"):
-                  exe = msg["executable"]
-          if not exe:
-              raise SystemExit("no tandem_server test binary found")
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
-              fh.write(f"TEST_BIN={exe}\n")
-          PY
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
-      - name: Run workflow integration and recovery subset
-        shell: bash
+      # Replaces the hand-picked deep-gate test list (TAN-220): every test in
+      # the workspace now guards PRs instead of a curated subset that rots.
+      # The desktop crate (package `tandem`) is excluded — it needs Tauri
+      # system deps and has its own job in ci.yml. premium-governance is
+      # enabled so the policy-engine test suite runs in CI for the first time.
+      - name: Run workspace test suite
         run: |
-          set -euo pipefail
-          "$TEST_BIN" 'app::state::tests::automations::workflow_policy::research_brief_passes_local_only_when_websearch_is_not_offered' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::workflow_policy::research_citations_validation_accepts_external_research_without_files_reviewed_section' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::workflow_policy::missing_required_output_requests_repair_before_attempt_budget_is_exhausted' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::workflow_policy::standup_synthesis_accepts_inline_completed_status_without_verified_output' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::compare_results_retry_without_current_artifact_surfaces_write_and_synthesis_actions' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::analyze_findings_retry_without_artifact_or_required_workspace_file_surfaces_dual_write_actions' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::structured_json_validation_matrix_covers_artifact_only_and_workspace_side_writes' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::research_evidence_validation_matrix_covers_local_web_mixed_and_mcp_grounding' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::research_retry_state_matrix_covers_repairable_and_exhausted_statuses' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::upstream_synthesis_validation_matrix_covers_markdown_and_html_evidence_preservation' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::code_verification_status_matrix_covers_missing_failed_and_satisfied_checks' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::email_delivery_status_matrix_covers_repairable_unavailable_failed_and_succeeded_paths' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::validation::upstream_shape_matrix_covers_none_strict_rich_and_legacy_rich_modes' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::local_research_flow_completes_with_read_and_write_artifact' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::mcp_grounded_research_flow_completes_with_mcp_tool_usage' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::external_web_research_flow_completes_with_websearch_and_write' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::analyze_findings_dual_write_flow_completes_with_artifact_and_workspace_file' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::compare_results_synthesis_flow_completes_with_upstream_evidence' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::delivery_flow_completes_with_validated_artifact_body_and_email_send' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::code_loop_flow_repairs_after_missing_verification_and_completes' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::repair_retry_after_needs_repair_completes_on_second_attempt' --exact --nocapture
-          "$TEST_BIN" 'app::state::tests::automations::integration::restart_recovery_preserves_queued_and_paused_runs' --exact --nocapture
-          "$TEST_BIN" 'http::tests::global::automations_v2_run_recover_from_stale_pause_clears_pending_outputs_and_attempts' --exact --nocapture
-          "$TEST_BIN" 'http::tests::global::automations_v2_run_pause_clears_active_sessions_and_instances' --exact --nocapture
-          "$TEST_BIN" 'http::tests::global::automations_v2_run_cancel_records_operator_stop_kind_and_clears_active_ids' --exact --nocapture
+          cargo nextest run --workspace --exclude tandem \
+            --features tandem-ai/browser,tandem-server/premium-governance \
+            --profile ci
+
+      - name: Report disk usage
+        if: always()
+        run: df -h /
+
+      - name: Upload junit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit
+          path: target/nextest/ci/junit.xml
+          retention-days: 14

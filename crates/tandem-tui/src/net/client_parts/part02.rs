@@ -134,6 +134,7 @@ impl EngineClient {
             project_id: None,
             model: None,
             provider: None,
+            sampling: Default::default(),
             source_kind: Some("chat".to_string()),
             source_metadata: None,
             permission: Some(default_tui_permission_rules()),
