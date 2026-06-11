@@ -86,10 +86,7 @@ pub(crate) fn summarize_automation_tool_activity(
                 continue;
             };
             let normalized = tool.trim().to_ascii_lowercase().replace('-', "_");
-            let is_workspace_tool = matches!(
-                normalized.as_str(),
-                "glob" | "read" | "grep" | "search" | "codesearch" | "ls" | "list"
-            );
+            let is_workspace_tool = automation_tool_name_is_workspace_inspection(&normalized);
             let is_web_tool = matches!(
                 normalized.as_str(),
                 "websearch" | "webfetch" | "webfetch_html"
@@ -310,10 +307,7 @@ pub(crate) fn summarize_automation_tool_activity(
                             .unwrap_or(0)
                             .saturating_add(1);
                         counts.insert(normalized.clone(), json!(next_count));
-                        if matches!(
-                            normalized.as_str(),
-                            "glob" | "read" | "grep" | "search" | "codesearch" | "ls" | "list"
-                        ) {
+                        if automation_tool_name_is_workspace_inspection(&normalized) {
                             *workspace_inspection_used = true;
                         }
                         if matches!(
@@ -414,6 +408,25 @@ pub(crate) fn summarize_automation_tool_activity(
         "latest_verification_command": verification.get("latest_verification_command").cloned().unwrap_or(Value::Null),
         "latest_verification_failure": verification.get("latest_verification_failure").cloned().unwrap_or(Value::Null),
     })
+}
+
+fn automation_tool_name_is_workspace_inspection(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "glob"
+            | "read"
+            | "grep"
+            | "search"
+            | "codesearch"
+            | "ls"
+            | "list"
+            | "repo.context_bundle"
+            | "repo.search"
+            | "repo.symbol"
+            | "repo.neighbors"
+            | "repo.impact"
+            | "repo.test_targets"
+    )
 }
 
 pub(crate) fn automation_attempt_receipt_event_payload(

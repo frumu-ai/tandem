@@ -486,7 +486,19 @@ pub(super) fn should_generate_post_tool_final_narrative(
 pub(super) fn is_workspace_inspection_tool(tool_name: &str) -> bool {
     matches!(
         normalize_tool_name(tool_name).as_str(),
-        "glob" | "read" | "grep" | "search" | "codesearch" | "ls" | "list"
+        "glob"
+            | "read"
+            | "grep"
+            | "search"
+            | "codesearch"
+            | "ls"
+            | "list"
+            | "repo.context_bundle"
+            | "repo.search"
+            | "repo.symbol"
+            | "repo.neighbors"
+            | "repo.impact"
+            | "repo.test_targets"
     )
 }
 

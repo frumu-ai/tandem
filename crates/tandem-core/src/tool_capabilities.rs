@@ -332,7 +332,18 @@ pub fn tool_name_matches_profile(tool_name: &str, profile: ToolCapabilityProfile
         ToolCapabilityProfile::WorkspaceRead => normalized == "read",
         ToolCapabilityProfile::WorkspaceDiscover => matches!(
             normalized.as_str(),
-            "glob" | "search" | "grep" | "codesearch" | "ls" | "list"
+            "glob"
+                | "search"
+                | "grep"
+                | "codesearch"
+                | "ls"
+                | "list"
+                | "repo.context_bundle"
+                | "repo.search"
+                | "repo.symbol"
+                | "repo.neighbors"
+                | "repo.impact"
+                | "repo.test_targets"
         ),
         ToolCapabilityProfile::ArtifactWrite => {
             matches!(normalized.as_str(), "write" | "edit" | "apply_patch")

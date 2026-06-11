@@ -129,6 +129,20 @@ impl ToolRegistry {
         // control-panel changes take effect without restarting tandem-engine.
         map.insert("websearch".to_string(), Arc::new(WebSearchTool));
         map.insert("codesearch".to_string(), Arc::new(CodeSearchTool));
+        map.insert("repo.index".to_string(), Arc::new(RepoIndexTool));
+        map.insert(
+            "repo.update_changed_files".to_string(),
+            Arc::new(RepoUpdateChangedFilesTool),
+        );
+        map.insert("repo.search".to_string(), Arc::new(RepoSearchTool));
+        map.insert("repo.symbol".to_string(), Arc::new(RepoSymbolTool));
+        map.insert("repo.neighbors".to_string(), Arc::new(RepoNeighborsTool));
+        map.insert("repo.impact".to_string(), Arc::new(RepoImpactTool));
+        map.insert(
+            "repo.context_bundle".to_string(),
+            Arc::new(RepoContextBundleTool),
+        );
+        map.insert("repo.test_targets".to_string(), Arc::new(RepoTestTargetsTool));
         let todo_tool: Arc<dyn Tool> = Arc::new(TodoWriteTool);
         map.insert("todo_write".to_string(), todo_tool.clone());
         map.insert("todowrite".to_string(), todo_tool.clone());

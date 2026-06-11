@@ -123,4 +123,6 @@ mod logic;
 pub(crate) use logic::*;
 
 #[cfg(test)]
+mod repo_context_policy_tests;
+#[cfg(test)]
 mod tests;

@@ -2,9 +2,17 @@
 pub mod approval_classifier;
 #[path = "builtin_tools.rs"]
 mod builtin_tools;
+#[path = "repo_intelligence_tool_support.rs"]
+mod repo_intelligence_tool_support;
+#[path = "repo_intelligence_tools.rs"]
+mod repo_intelligence_tools;
+#[cfg(test)]
+#[path = "repo_intelligence_tools_tests.rs"]
+mod repo_intelligence_tools_tests;
 #[path = "tool_metadata.rs"]
 mod tool_metadata;
 use builtin_tools::*;
+use repo_intelligence_tools::*;
 use tool_metadata::*;
 
 include!("lib_parts/part01.rs");
