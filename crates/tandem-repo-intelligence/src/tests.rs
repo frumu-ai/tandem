@@ -197,6 +197,20 @@ fn extract_repo_facts_reads_manifest_files() {
         .any(|heading| heading.title == "Indexed"));
 }
 
+#[test]
+fn extract_repo_facts_skips_non_utf8_manifest_files() {
+    let repo = TempDir::new().unwrap();
+    write(repo.path().join("src/lib.rs"), "pub fn indexed() {}\n");
+    fs::write(repo.path().join("asset"), [0xff, 0xfe, 0xfd]).unwrap();
+
+    let manifest = ManifestIndex::scan(repo.path()).unwrap();
+    let files: Vec<_> = manifest.files().cloned().collect();
+    let facts = extract_repo_facts(repo.path(), &files).unwrap();
+
+    assert!(files.iter().any(|entry| entry.path == "asset"));
+    assert!(facts.symbols.iter().any(|symbol| symbol.name == "indexed"));
+}
+
 fn write(path: impl AsRef<Path>, body: &str) {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {

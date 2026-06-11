@@ -25,10 +25,12 @@ pub fn extract_file_facts(path: &str, body: &str) -> ExtractedFacts {
 
 fn extract_file_from_root(root: &Path, file: &FileManifestEntry) -> Result<ExtractedFacts> {
     let path = root.join(&file.path);
-    let body =
-        std::fs::read_to_string(&path).map_err(|source| RepoIntelligenceError::ReadFile {
-            path: PathBuf::from(path),
-            source,
-        })?;
+    let bytes = std::fs::read(&path).map_err(|source| RepoIntelligenceError::ReadFile {
+        path: PathBuf::from(path),
+        source,
+    })?;
+    let Ok(body) = String::from_utf8(bytes) else {
+        return Ok(ExtractedFacts::default());
+    };
     Ok(extract_file_facts(&file.path, &body))
 }
