@@ -114,9 +114,7 @@ impl ManifestDelta {
     pub fn stats(&self, indexed_files: usize) -> IndexStats {
         IndexStats {
             root: self.root.clone(),
-            total_seen: indexed_files,
             indexed_files,
-            skipped_files: 0,
             added_files: self.added.len(),
             modified_files: self.modified.len(),
             unchanged_files: self.unchanged.len(),

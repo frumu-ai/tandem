@@ -66,9 +66,7 @@ pub enum FileChangeKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexStats {
     pub root: PathBuf,
-    pub total_seen: usize,
     pub indexed_files: usize,
-    pub skipped_files: usize,
     pub added_files: usize,
     pub modified_files: usize,
     pub unchanged_files: usize,
