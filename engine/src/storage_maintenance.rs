@@ -307,9 +307,9 @@ pub(crate) struct ContextRunCleanupReport {
 
 #[derive(Debug, Default)]
 pub(crate) struct DefaultKnowledgeCleanupReport {
-    rows_cleared: u64,
-    state_files_matched: usize,
-    files_quarantined: Vec<String>,
+    pub(crate) rows_cleared: u64,
+    pub(crate) state_files_matched: usize,
+    pub(crate) files_quarantined: Vec<String>,
 }
 
 pub(crate) fn default_knowledge_state_paths(root: &Path) -> [PathBuf; 2] {

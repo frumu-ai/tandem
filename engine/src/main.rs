@@ -1641,7 +1641,9 @@ fn resolve_memory_db_path(state_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use serde_json::json;
+    use tandem_memory::db::MemoryDatabase;
 
     #[test]
     fn build_cli_overrides_targets_selected_provider() {
