@@ -29,3 +29,31 @@ where
         detail: Some(truncate_text(&error.to_string(), 500)),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Debug, Deserialize)]
+    struct Payload {
+        action: String,
+    }
+
+    #[test]
+    fn parse_planner_json_decodes_valid_payloads() {
+        let parsed: Payload = parse_planner_json(json!({ "action": "keep" })).expect("parses");
+        assert_eq!(parsed.action, "keep");
+    }
+
+    #[test]
+    fn parse_planner_json_reports_invalid_json_with_bounded_detail() {
+        let error = parse_planner_json::<Payload>(json!({ "wrong_key": true }))
+            .expect_err("missing field fails");
+        assert_eq!(error.reason, "invalid_json");
+        let detail = error.detail.expect("detail present");
+        assert!(detail.contains("action"), "detail names the missing field");
+        assert!(detail.len() <= 504, "detail is truncated to ~500 chars");
+    }
+}

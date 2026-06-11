@@ -100,3 +100,123 @@ pub struct ProjectedAutomationDraft<I, O> {
     pub context: Option<ProjectedAutomationContextMaterialization>,
     pub metadata: Value,
 }
+
+// These types are the wire format between the plan compiler and the
+// automation runtime; the tests below pin the serialized shape so a field
+// rename or a dropped `skip_serializing_if` cannot silently break drafts
+// persisted by older engines.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn stage_kind_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_value(ProjectedAutomationStageKind::Workstream).expect("serialize"),
+            json!("workstream")
+        );
+        assert_eq!(
+            serde_json::to_value(ProjectedAutomationStageKind::Approval).expect("serialize"),
+            json!("approval")
+        );
+        let parsed: ProjectedAutomationStageKind =
+            serde_json::from_value(json!("review")).expect("deserialize");
+        assert_eq!(parsed, ProjectedAutomationStageKind::Review);
+    }
+
+    #[test]
+    fn minimal_node_deserializes_with_defaults() {
+        let node: ProjectedAutomationNode<Value, Value> = serde_json::from_value(json!({
+            "node_id": "compose",
+            "agent_id": "agent_compose",
+            "objective": "Compose the weekly email",
+        }))
+        .expect("minimal node deserializes");
+
+        assert!(node.depends_on.is_empty());
+        assert!(node.input_refs.is_empty());
+        assert!(node.output_contract.is_none());
+        assert!(node.gate.is_none());
+        assert!(node.stage_kind.is_none());
+        assert!(node.partial_failure_mode.is_none());
+        assert!(node.metadata.is_none());
+    }
+
+    #[test]
+    fn node_serialization_omits_unset_optional_fields() {
+        let node = ProjectedAutomationNode::<Value, Value> {
+            node_id: "compose".to_string(),
+            agent_id: "agent_compose".to_string(),
+            objective: "Compose the weekly email".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: None,
+            retry_policy: None,
+            timeout_ms: None,
+            stage_kind: None,
+            gate: None,
+            partial_failure_mode: None,
+            metadata: None,
+        };
+
+        let serialized = serde_json::to_value(&node).expect("serialize");
+        let keys = serialized
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = [
+            "node_id",
+            "agent_id",
+            "objective",
+            "depends_on",
+            "input_refs",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn gate_deserializes_with_defaults_and_round_trips() {
+        let gate: ProjectedAutomationApprovalGate =
+            serde_json::from_value(json!({ "required": true })).expect("gate deserializes");
+        assert!(gate.required);
+        assert!(gate.decisions.is_empty());
+        assert!(gate.rework_targets.is_empty());
+        assert!(gate.instructions.is_none());
+
+        let full = ProjectedAutomationApprovalGate {
+            required: true,
+            decisions: vec!["approve".to_string(), "rework".to_string()],
+            rework_targets: vec!["compose".to_string()],
+            instructions: Some("Review before sending".to_string()),
+        };
+        let round_tripped: ProjectedAutomationApprovalGate =
+            serde_json::from_value(serde_json::to_value(&full).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(round_tripped.decisions, full.decisions);
+        assert_eq!(round_tripped.rework_targets, full.rework_targets);
+        assert_eq!(round_tripped.instructions, full.instructions);
+    }
+
+    #[test]
+    fn minimal_draft_deserializes_with_empty_collections() {
+        let draft: ProjectedAutomationDraft<Value, Value> = serde_json::from_value(json!({
+            "name": "Weekly email",
+            "execution": {},
+            "metadata": {},
+        }))
+        .expect("minimal draft deserializes");
+
+        assert!(draft.agents.is_empty());
+        assert!(draft.nodes.is_empty());
+        assert!(draft.output_targets.is_empty());
+        assert!(draft.execution.max_parallel_agents.is_none());
+        assert!(draft.execution.max_total_cost_usd.is_none());
+        assert!(draft.context.is_none());
+    }
+}

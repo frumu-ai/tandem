@@ -427,4 +427,168 @@ mod tests {
         assert_eq!(analysis.decision, OverlapDecision::New);
         assert!(!analysis.requires_user_confirmation);
     }
+
+    #[test]
+    fn empty_prior_list_is_new() {
+        let candidate = sample_plan("candidate", "Prepare a daily market report", "hash-a");
+
+        let analysis = analyze_plan_overlap(&candidate, &[]);
+
+        assert_eq!(analysis.decision, OverlapDecision::New);
+        assert_eq!(analysis.matched_plan_id, None);
+    }
+
+    #[test]
+    fn semantic_match_with_shared_trigger_and_routine_merges() {
+        // Same routine ids + identical manual triggers: the near-match should
+        // be folded into the existing plan rather than forked.
+        let candidate = sample_plan(
+            "candidate",
+            "Prepare the daily market report for the desk",
+            "hash-a",
+        );
+        let prior = sample_plan("prior", "Prepare the daily market report", "hash-b");
+
+        let analysis = analyze_plan_overlap(&candidate, &[prior]);
+
+        assert_eq!(analysis.match_layer, Some(OverlapMatchLayer::Semantic));
+        assert_eq!(analysis.decision, OverlapDecision::Merge);
+        assert!(analysis.requires_user_confirmation);
+        assert_eq!(analysis.matched_plan_id.as_deref(), Some("prior"));
+    }
+
+    #[test]
+    fn semantic_match_with_different_trigger_forks() {
+        let candidate = sample_plan(
+            "candidate",
+            "Prepare the daily market report for the desk",
+            "hash-a",
+        );
+        let mut prior = sample_plan("prior", "Prepare the daily market report", "hash-b");
+        prior.routine_graph[0].trigger = TriggerDefinition {
+            trigger_type: TriggerKind::Scheduled,
+            schedule: Some("0 9 * * *".to_string()),
+            timezone: Some("UTC".to_string()),
+        };
+
+        let analysis = analyze_plan_overlap(&candidate, &[prior]);
+
+        assert_eq!(analysis.match_layer, Some(OverlapMatchLayer::Semantic));
+        assert_eq!(analysis.decision, OverlapDecision::Fork);
+        assert!(analysis.requires_user_confirmation);
+    }
+
+    #[test]
+    fn similarity_below_configured_threshold_is_new() {
+        // The goals share roughly half their tokens; raising the candidate's
+        // threshold above that similarity must suppress the semantic match.
+        let mut candidate = sample_plan(
+            "candidate",
+            "Prepare a daily market report for trading",
+            "hash-a",
+        );
+        if let Some(policy) = candidate.overlap_policy.as_mut() {
+            if let Some(identity) = policy.semantic_identity.as_mut() {
+                identity.similarity_threshold = Some(0.95);
+            }
+        }
+        let prior = sample_plan("prior", "Prepare a weekly compliance report", "hash-b");
+
+        let analysis = analyze_plan_overlap(&candidate, &[prior]);
+
+        assert_eq!(analysis.decision, OverlapDecision::New);
+        assert_eq!(analysis.match_layer, None);
+    }
+
+    #[test]
+    fn plans_without_overlap_policy_still_get_semantic_detection() {
+        // No canonical hash on either side: detection falls through to the
+        // semantic layer with the default 0.85 threshold.
+        let mut candidate = sample_plan("candidate", "Prepare a daily market report", "ignored");
+        candidate.overlap_policy = None;
+        let mut prior = sample_plan("prior", "Prepare a daily market report", "ignored");
+        prior.overlap_policy = None;
+
+        let analysis = analyze_plan_overlap(&candidate, &[prior]);
+
+        assert_eq!(analysis.match_layer, Some(OverlapMatchLayer::Semantic));
+        assert!(analysis.similarity_score.unwrap_or(0.0) >= 0.85);
+        assert!(analysis.requires_user_confirmation);
+    }
+
+    #[test]
+    fn canonical_hash_does_not_match_priors_without_hashes() {
+        let candidate = sample_plan("candidate", "Prepare a daily market report", "same-hash");
+        let mut prior = sample_plan("prior", "Prepare a daily market report", "same-hash");
+        prior.overlap_policy = None;
+
+        let analysis = analyze_plan_overlap(&candidate, &[prior]);
+
+        // The identical goal still matches — but through the semantic layer,
+        // never by pretending the hashless prior had a canonical hash.
+        assert_eq!(analysis.match_layer, Some(OverlapMatchLayer::Semantic));
+    }
+
+    #[test]
+    fn best_scoring_prior_wins_among_multiple_candidates() {
+        let candidate = sample_plan(
+            "candidate",
+            "Summarize weekly sales numbers into a report",
+            "hash-a",
+        );
+        let distant = sample_plan("distant", "Rotate the on-call support queue", "hash-b");
+        let close = sample_plan(
+            "close",
+            "Summarize weekly sales numbers into a short report",
+            "hash-c",
+        );
+
+        let analysis = analyze_plan_overlap(&candidate, &[distant, close]);
+
+        assert_eq!(analysis.matched_plan_id.as_deref(), Some("close"));
+        assert_eq!(analysis.match_layer, Some(OverlapMatchLayer::Semantic));
+    }
+
+    #[test]
+    fn overlap_log_entry_maps_layers_and_decisions_to_wire_strings() {
+        let analysis = OverlapComparison {
+            matched_plan_id: Some("prior".to_string()),
+            matched_plan_revision: Some(3),
+            match_layer: Some(OverlapMatchLayer::Semantic),
+            similarity_score: Some(0.91),
+            decision: OverlapDecision::Merge,
+            requires_user_confirmation: true,
+            reason: "test".to_string(),
+        };
+
+        let entry = overlap_log_entry_from_analysis(
+            &analysis,
+            "operator@example.com",
+            "2026-06-11T00:00:00Z",
+        )
+        .expect("matched analysis produces a log entry");
+
+        assert_eq!(entry.matched_plan_id, "prior");
+        assert_eq!(entry.matched_plan_revision, 3);
+        assert_eq!(entry.match_layer, "semantic");
+        assert_eq!(entry.decision, "merge");
+        assert_eq!(entry.similarity_score, Some(0.91));
+        assert_eq!(entry.decided_by, "operator@example.com");
+        assert_eq!(entry.decided_at, "2026-06-11T00:00:00Z");
+    }
+
+    #[test]
+    fn overlap_log_entry_is_none_when_nothing_matched() {
+        let analysis = OverlapComparison {
+            matched_plan_id: None,
+            matched_plan_revision: None,
+            match_layer: None,
+            similarity_score: None,
+            decision: OverlapDecision::New,
+            requires_user_confirmation: false,
+            reason: "no match".to_string(),
+        };
+
+        assert!(overlap_log_entry_from_analysis(&analysis, "operator", "now").is_none());
+    }
 }
