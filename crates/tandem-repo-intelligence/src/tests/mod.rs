@@ -1,4 +1,5 @@
 mod debug_export;
+mod graph_core;
 mod query_context;
 mod regression_quality;
 mod scanner_extractors;

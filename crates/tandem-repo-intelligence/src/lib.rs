@@ -8,6 +8,7 @@ mod context;
 mod debug;
 mod error;
 mod extractors;
+mod graph_core;
 mod manifest;
 mod model;
 mod query;
@@ -20,6 +21,10 @@ pub use debug::{
 };
 pub use error::{RepoIntelligenceError, Result};
 pub use extractors::{extract_file_facts, extract_repo_facts};
+pub use graph_core::{
+    confidence_provenance, graph_fact_for_edge, graph_scope_for_repo, relation_edge_kind,
+    snapshot_freshness,
+};
 pub use manifest::{ManifestDelta, ManifestIndex};
 pub use model::{
     Confidence, ConfigReference, DocHeading, ExtractedFacts, ExtractedSymbol, FileChangeKind,

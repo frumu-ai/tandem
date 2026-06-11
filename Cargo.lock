@@ -7736,6 +7736,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tandem-graph-core"
+version = "0.5.13"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "tandem-memory"
 version = "0.5.13"
 dependencies = [
@@ -7836,6 +7845,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tandem-graph-core",
  "tempfile",
  "thiserror 1.0.69",
 ]
