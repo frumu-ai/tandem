@@ -8,6 +8,7 @@ pub mod path_guard;
 pub mod policy_decision;
 pub mod provider;
 pub mod runtime;
+pub mod runtime_event;
 pub mod session;
 pub mod tool;
 
@@ -40,5 +41,6 @@ pub use path_guard::*;
 pub use policy_decision::*;
 pub use provider::*;
 pub use runtime::*;
+pub use runtime_event::*;
 pub use session::*;
 pub use tool::*;

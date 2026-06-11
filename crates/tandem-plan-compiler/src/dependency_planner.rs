@@ -469,4 +469,95 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn self_dependency_is_reported_as_a_cycle() {
+        let mut routine = sample_routine(DependencyResolutionStrategy::TopologicalSequential);
+        routine.steps[0].dependencies.push("step_a".to_string());
+
+        let error = plan_routine_execution(&routine).expect_err("self-cycle error");
+
+        match error {
+            DependencyPlanningError::CyclicStepDependencies { remaining_step_ids } => {
+                assert!(remaining_step_ids.contains(&"step_a".to_string()));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parallel_batches_order_ready_steps_by_declared_order() {
+        // step_b and step_c are both released by step_a; swapping their
+        // declaration order must deterministically swap their batch order.
+        let mut routine = sample_routine(DependencyResolutionStrategy::TopologicalParallel);
+        routine.steps.swap(1, 2);
+
+        let plan = plan_routine_execution(&routine).expect("plan");
+
+        assert_eq!(
+            plan.batches[1],
+            RoutineExecutionBatch {
+                step_ids: vec!["step_c".to_string(), "step_b".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn external_prerequisites_are_deduplicated_across_steps() {
+        let mut routine = sample_routine(DependencyResolutionStrategy::TopologicalParallel);
+        routine.steps[1]
+            .dependencies
+            .push("upstream_routine".to_string());
+
+        let plan = plan_routine_execution(&routine).expect("plan");
+
+        assert_eq!(
+            plan.external_prerequisites,
+            vec!["upstream_routine".to_string()]
+        );
+    }
+
+    #[test]
+    fn routine_without_steps_plans_no_batches() {
+        let mut routine = sample_routine(DependencyResolutionStrategy::TopologicalParallel);
+        routine.steps.clear();
+
+        let plan = plan_routine_execution(&routine).expect("plan");
+
+        assert!(plan.batches.is_empty());
+        assert!(plan.external_prerequisites.is_empty());
+    }
+
+    #[test]
+    fn planning_errors_serialize_with_snake_case_kind_tags() {
+        // These errors cross the wire to plan-preview clients; the tag shape
+        // is a compatibility contract.
+        let missing = serde_json::to_value(DependencyPlanningError::MissingStepDependency {
+            step_id: "step_b".to_string(),
+            dependency: "ghost".to_string(),
+        })
+        .expect("serialize");
+        assert_eq!(missing["kind"], "missing_step_dependency");
+        assert_eq!(missing["step_id"], "step_b");
+        assert_eq!(missing["dependency"], "ghost");
+
+        let strict = serde_json::to_value(
+            DependencyPlanningError::StrictSequentialOrderContradictsDependency {
+                step_id: "step_b".to_string(),
+                dependency: "step_a".to_string(),
+            },
+        )
+        .expect("serialize");
+        assert_eq!(
+            strict["kind"],
+            "strict_sequential_order_contradicts_dependency"
+        );
+
+        let cyclic = serde_json::to_value(DependencyPlanningError::CyclicStepDependencies {
+            remaining_step_ids: vec!["step_a".to_string()],
+        })
+        .expect("serialize");
+        assert_eq!(cyclic["kind"], "cyclic_step_dependencies");
+        assert_eq!(cyclic["remaining_step_ids"], serde_json::json!(["step_a"]));
+    }
 }

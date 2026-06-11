@@ -411,8 +411,433 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::{McpToolCatalog, PlannerLlmInvoker, PlannerModelRegistry, TelemetrySink};
     use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
     use tandem_workflows::plan_package::{AutomationV2Schedule, AutomationV2ScheduleType};
+
+    type TestPlan = WorkflowPlan<AutomationV2Schedule<Value>, WorkflowPlanStep<Value, Value>>;
+
+    /// Scripted `PlannerLoopHost`: each LLM call pops the next queued
+    /// response, and every invocation is captured for assertions.
+    struct MockPlannerHost {
+        provider_configured: bool,
+        responses: Mutex<VecDeque<Result<Value, PlannerInvocationFailure>>>,
+        invocations: Mutex<Vec<PlannerLlmInvocation>>,
+    }
+
+    impl MockPlannerHost {
+        fn scripted(
+            responses: impl IntoIterator<Item = Result<Value, PlannerInvocationFailure>>,
+        ) -> Self {
+            Self {
+                provider_configured: true,
+                responses: Mutex::new(responses.into_iter().collect()),
+                invocations: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn unconfigured() -> Self {
+            Self {
+                provider_configured: false,
+                responses: Mutex::new(VecDeque::new()),
+                invocations: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn invocation_count(&self) -> usize {
+            self.invocations.lock().expect("invocations lock").len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PlannerModelRegistry for MockPlannerHost {
+        async fn is_provider_configured(&self, _provider_id: &str) -> bool {
+            self.provider_configured
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl McpToolCatalog for MockPlannerHost {
+        async fn capability_summary(&self, _allowed_mcp_servers: &[String]) -> Value {
+            json!({ "runtime": { "mcp_inventory": [] } })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PlannerLlmInvoker for MockPlannerHost {
+        async fn invoke_planner_llm(
+            &self,
+            invocation: PlannerLlmInvocation,
+        ) -> Result<Value, PlannerInvocationFailure> {
+            self.invocations
+                .lock()
+                .expect("invocations lock")
+                .push(invocation);
+            self.responses
+                .lock()
+                .expect("responses lock")
+                .pop_front()
+                .expect("test scripted more LLM calls than responses")
+        }
+    }
+
+    impl TelemetrySink for MockPlannerHost {}
+
+    fn test_step(step_id: &str, depends_on: &[&str]) -> WorkflowPlanStep<Value, Value> {
+        WorkflowPlanStep {
+            step_id: step_id.to_string(),
+            kind: "analysis".to_string(),
+            objective: format!("Objective for {step_id}"),
+            depends_on: depends_on.iter().map(|dep| dep.to_string()).collect(),
+            agent_role: "analyst".to_string(),
+            input_refs: Vec::new(),
+            output_contract: None,
+            metadata: None,
+        }
+    }
+
+    fn base_plan() -> TestPlan {
+        WorkflowPlan {
+            plan_id: "wfplan-test".to_string(),
+            planner_version: "v1".to_string(),
+            plan_source: "unit_test".to_string(),
+            original_prompt: "Research the topic and generate a report".to_string(),
+            normalized_prompt: "research the topic and generate a report".to_string(),
+            confidence: "medium".to_string(),
+            title: "Test".to_string(),
+            description: None,
+            schedule: AutomationV2Schedule {
+                schedule_type: AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: Value::Null,
+            },
+            execution_target: "automation_v2".to_string(),
+            workspace_root: "/tmp/workspace".to_string(),
+            steps: vec![test_step("collect_inputs", &[])],
+            requires_integrations: vec![],
+            allowed_mcp_servers: vec!["github".to_string()],
+            // A resolvable planner model lets the loop proceed past the
+            // model-availability check to the behavior under test.
+            operator_preferences: Some(json!({
+                "model_provider": "anthropic",
+                "model_id": "test-planner-model",
+            })),
+            save_options: json!({"can_export_pack": true, "can_save_skill": true}),
+        }
+    }
+
+    fn empty_conversation() -> WorkflowPlanConversation {
+        WorkflowPlanConversation {
+            conversation_id: "wfchat-1".to_string(),
+            plan_id: "wfplan-test".to_string(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            messages: vec![],
+        }
+    }
+
+    fn test_config() -> PlannerLoopConfig {
+        PlannerLoopConfig {
+            session_title: "Planner revision".to_string(),
+            timeout_ms: 30_000,
+            override_env: "TANDEM_TEST_PLANNER".to_string(),
+        }
+    }
+
+    async fn run_loop(
+        host: &MockPlannerHost,
+        plan: &TestPlan,
+        message: &str,
+    ) -> (TestPlan, String, Vec<String>, Value, Option<Value>) {
+        revise_workflow_plan_with_planner_loop(
+            host,
+            plan,
+            &empty_conversation(),
+            message,
+            test_config(),
+            |_step| {},
+        )
+        .await
+    }
+
+    fn failure_reason(clarifier: &Value) -> Option<&str> {
+        clarifier.get("failure_reason").and_then(Value::as_str)
+    }
+
+    fn plan_step_ids(plan: &TestPlan) -> Vec<&str> {
+        plan.steps
+            .iter()
+            .map(|step| step.step_id.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn missing_model_preferences_fail_before_any_llm_call() {
+        let host = MockPlannerHost::scripted([]);
+        let mut plan = base_plan();
+        plan.operator_preferences = None;
+
+        let (result, assistant_text, changes, clarifier, observation) =
+            run_loop(&host, &plan, "Add a summary step").await;
+
+        assert_eq!(
+            failure_reason(&clarifier),
+            Some("planner_model_unavailable")
+        );
+        assert!(clarifier["blocks_activation"].as_bool().unwrap_or(false));
+        assert_eq!(plan_step_ids(&result), vec!["collect_inputs"]);
+        assert!(assistant_text.contains("could not revise"));
+        assert!(changes.is_empty());
+        assert!(
+            observation.is_some(),
+            "decomposition observation always returned"
+        );
+        assert_eq!(host.invocation_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unconfigured_provider_short_circuits_before_llm_invocation() {
+        let host = MockPlannerHost::unconfigured();
+        let plan = base_plan();
+
+        let (result, _, _, clarifier, _) = run_loop(&host, &plan, "Add a summary step").await;
+
+        assert_eq!(
+            failure_reason(&clarifier),
+            Some("planner_provider_unconfigured")
+        );
+        assert_eq!(plan_step_ids(&result), vec!["collect_inputs"]);
+        assert_eq!(host.invocation_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn invoker_failure_keeps_plan_and_reports_invocation_failure() {
+        let host = MockPlannerHost::scripted([Err(PlannerInvocationFailure {
+            reason: "timeout".to_string(),
+            detail: Some("planner session timed out".to_string()),
+        })]);
+        let plan = base_plan();
+
+        let (result, _, changes, clarifier, _) = run_loop(&host, &plan, "Add a step").await;
+
+        assert_eq!(
+            failure_reason(&clarifier),
+            Some("planner_invocation_failed")
+        );
+        assert_eq!(plan_step_ids(&result), vec!["collect_inputs"]);
+        assert!(changes.is_empty());
+        assert_eq!(host.invocation_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_llm_payload_is_an_invocation_failure_not_a_panic() {
+        let host = MockPlannerHost::scripted([Ok(json!({ "action": "explode" }))]);
+        let plan = base_plan();
+
+        let (result, _, _, clarifier, _) = run_loop(&host, &plan, "Add a step").await;
+
+        assert_eq!(
+            failure_reason(&clarifier),
+            Some("planner_invocation_failed")
+        );
+        assert_eq!(plan_step_ids(&result), vec!["collect_inputs"]);
+    }
+
+    #[tokio::test]
+    async fn revise_without_plan_payload_is_an_invalid_response() {
+        let host = MockPlannerHost::scripted([Ok(json!({ "action": "revise" }))]);
+        let plan = base_plan();
+
+        let (result, _, _, clarifier, _) = run_loop(&host, &plan, "Add a step").await;
+
+        assert_eq!(failure_reason(&clarifier), Some("planner_invalid_response"));
+        assert_eq!(plan_step_ids(&result), vec!["collect_inputs"]);
+    }
+
+    #[tokio::test]
+    async fn revision_with_unknown_dependency_is_rejected_and_plan_kept() {
+        let mut invalid = base_plan();
+        invalid
+            .steps
+            .push(test_step("summarize_inputs", &["ghost_step"]));
+        let host = MockPlannerHost::scripted([Ok(json!({
+            "action": "revise",
+            "plan": serde_json::to_value(&invalid).expect("serialize plan"),
+        }))]);
+        let plan = base_plan();
+
+        let (result, _, changes, clarifier, _) = run_loop(&host, &plan, "Add a step").await;
+
+        assert_eq!(failure_reason(&clarifier), Some("planner_invalid_response"));
+        assert_eq!(plan_step_ids(&result), vec!["collect_inputs"]);
+        assert!(changes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn clarify_surfaces_question_field_and_options() {
+        let host = MockPlannerHost::scripted([Ok(json!({
+            "action": "clarify",
+            "clarifier": {
+                "field": "schedule",
+                "question": "Which timezone should the report use?",
+                "options": [
+                    { "id": "utc", "label": "UTC" },
+                    { "id": "local", "label": "Workspace local time" },
+                ],
+            },
+        }))]);
+        let plan = base_plan();
+
+        let (result, assistant_text, changes, clarifier, _) =
+            run_loop(&host, &plan, "Schedule it daily").await;
+
+        assert_eq!(clarifier["field"], "schedule");
+        assert_eq!(
+            clarifier["question"],
+            "Which timezone should the report use?"
+        );
+        assert_eq!(clarifier["options"].as_array().map(Vec::len), Some(2));
+        assert!(
+            failure_reason(&clarifier).is_none(),
+            "clarify is not a failure"
+        );
+        // With no assistant_text in the payload, the question doubles as text.
+        assert_eq!(assistant_text, "Which timezone should the report use?");
+        assert_eq!(plan_step_ids(&result), vec!["collect_inputs"]);
+        assert!(changes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn clarify_with_blank_question_is_an_invalid_response() {
+        let host = MockPlannerHost::scripted([Ok(json!({
+            "action": "clarify",
+            "clarifier": { "question": "   " },
+        }))]);
+        let plan = base_plan();
+
+        let (_, _, _, clarifier, _) = run_loop(&host, &plan, "Schedule it daily").await;
+
+        assert_eq!(failure_reason(&clarifier), Some("planner_invalid_response"));
+    }
+
+    #[tokio::test]
+    async fn keep_returns_current_plan_without_clarifier_or_changes() {
+        let host = MockPlannerHost::scripted([Ok(json!({
+            "action": "keep",
+            "assistant_text": "The plan already covers that.",
+        }))]);
+        let plan = base_plan();
+
+        let (result, assistant_text, changes, clarifier, observation) =
+            run_loop(&host, &plan, "Make sure we collect inputs").await;
+
+        assert_eq!(assistant_text, "The plan already covers that.");
+        assert_eq!(clarifier, Value::Null);
+        assert!(changes.is_empty());
+        assert_eq!(plan_step_ids(&result), vec!["collect_inputs"]);
+        assert!(observation.is_some());
+    }
+
+    #[tokio::test]
+    async fn valid_revision_replaces_plan_and_pins_identity_fields() {
+        let mut revised = base_plan();
+        revised.title = "Research report with summary".to_string();
+        revised
+            .steps
+            .push(test_step("summarize_inputs", &["collect_inputs"]));
+        let mut payload_plan = serde_json::to_value(&revised).expect("serialize plan");
+        // The planner must not be able to rewrite plan identity or execution
+        // target: normalization pins them back to the current plan's values.
+        payload_plan["plan_id"] = json!("evil-override");
+        payload_plan["plan_source"] = json!("forged");
+        payload_plan["execution_target"] = json!("shell");
+
+        let host = MockPlannerHost::scripted([Ok(json!({
+            "action": "revise",
+            "assistant_text": "Added a summarize step.",
+            "change_summary": ["added summarize_inputs step"],
+            "plan": payload_plan,
+        }))]);
+        let plan = base_plan();
+
+        let (result, assistant_text, changes, clarifier, _) =
+            run_loop(&host, &plan, "Add a summary step").await;
+
+        assert_eq!(
+            plan_step_ids(&result),
+            vec!["collect_inputs", "summarize_inputs"]
+        );
+        assert_eq!(result.title, "Research report with summary");
+        assert_eq!(result.plan_id, "wfplan-test");
+        assert_eq!(result.plan_source, "unit_test");
+        assert_eq!(result.execution_target, "automation_v2");
+        assert_eq!(changes, vec!["added summarize_inputs step".to_string()]);
+        assert_eq!(assistant_text, "Added a summarize step.");
+        assert_eq!(clarifier, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn resubmitting_the_same_plan_collapses_to_keep() {
+        // Round 1: a real revision, whose output carries the compiler's
+        // normalized step metadata.
+        let mut revised = base_plan();
+        revised
+            .steps
+            .push(test_step("summarize_inputs", &["collect_inputs"]));
+        let host = MockPlannerHost::scripted([Ok(json!({
+            "action": "revise",
+            "change_summary": ["added summarize_inputs step"],
+            "plan": serde_json::to_value(&revised).expect("serialize plan"),
+        }))]);
+        let plan = base_plan();
+        let (after_first, _, first_changes, _, _) =
+            run_loop(&host, &plan, "Add a summary step").await;
+        assert_eq!(
+            first_changes,
+            vec!["added summarize_inputs step".to_string()]
+        );
+
+        // Round 2: the planner replays the identical plan; the loop must
+        // detect the no-op and answer as a keep (no change summary, no
+        // clarifier) instead of reporting a phantom revision.
+        let host = MockPlannerHost::scripted([Ok(json!({
+            "action": "revise",
+            "change_summary": ["pretended to change something"],
+            "plan": serde_json::to_value(&after_first).expect("serialize plan"),
+        }))]);
+
+        let (after_second, assistant_text, changes, clarifier, _) =
+            run_loop(&host, &after_first, "Improve it").await;
+
+        assert_eq!(assistant_text, "I kept the current workflow plan.");
+        assert!(changes.is_empty());
+        assert_eq!(clarifier, Value::Null);
+        assert_eq!(plan_step_ids(&after_second), plan_step_ids(&after_first));
+    }
+
+    #[tokio::test]
+    async fn invoker_receives_run_key_prompt_and_config_passthrough() {
+        let host = MockPlannerHost::scripted([Ok(json!({ "action": "keep" }))]);
+        let plan = base_plan();
+
+        let _ = run_loop(&host, &plan, "Tighten the report scope").await;
+
+        let invocations = host.invocations.lock().expect("invocations lock");
+        assert_eq!(invocations.len(), 1);
+        let invocation = &invocations[0];
+        assert_eq!(invocation.run_key, "workflow-plan-revision:wfplan-test");
+        assert_eq!(invocation.session_title, "Planner revision");
+        assert_eq!(invocation.timeout_ms, 30_000);
+        assert_eq!(invocation.override_env, "TANDEM_TEST_PLANNER");
+        assert_eq!(invocation.workspace_root, "/tmp/workspace");
+        assert!(invocation.prompt.contains("User revision request"));
+        assert!(invocation.prompt.contains("Tighten the report scope"));
+        assert!(invocation.prompt.contains("Current plan JSON"));
+    }
 
     #[test]
     fn revise_prompt_surfaces_decomposition_guidance() {
