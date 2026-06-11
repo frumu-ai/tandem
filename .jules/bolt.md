@@ -1,0 +1,3 @@
+## 2024-06-11 - [Optimize DeveloperRunViewer by replacing O(n log n) sorting patterns]
+**Learning:** React components handling large arrays (like log streams or artifacts in `DeveloperRunViewer`) often use `[...arr].sort(...)[0]` to find maximum or minimum elements. This incurs O(n log n) compute overhead and O(n) memory allocation.
+**Action:** Replaced these sorting patterns with O(N) `maxBy` and `minBy` utilities from `@/lib/utils`, successfully reducing overhead. The intermediate sorted array was not utilized elsewhere in the execution path, so replacing it with O(n) single pass computation is functionally identical.
