@@ -1,0 +1,12 @@
+[package]
+name = "tandem-graph-core"
+version = "0.5.13"
+description = "Shared context graph primitives for Tandem"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

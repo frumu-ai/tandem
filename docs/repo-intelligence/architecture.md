@@ -85,6 +85,11 @@ and does not by itself authorize claims about file contents.
 
 ## Graph Model
 
+The shared context graph taxonomy is defined in
+[`context-graph-taxonomy.md`](./context-graph-taxonomy.md) and implemented by
+`crates/tandem-graph-core`. Repo intelligence remains the first adapter into
+that shared model.
+
 Repo graph nodes should start with these source-derived entities:
 
 - `repository`
