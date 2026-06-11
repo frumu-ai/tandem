@@ -20,6 +20,7 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Default DataBoundary Enforcement Design](./DATA_BOUNDARY_ENFORCEMENT_DESIGN.md) - Default data-class boundary policy and trigger for governed reads.
 - [Engine Protocol Matrix](./ENGINE_PROTOCOL_MATRIX.md) - Wire contracts and status.
 - [Engine Context Assembly Map](./ENGINE_CONTEXT_ASSEMBLY_MAP.md) - Provider-facing context assembly paths, context-budget telemetry, and Full-context guardrails.
+- [Repo Intelligence Architecture](./repo-intelligence/architecture.md) - Source-derived repo graph, agent workflow, confidence rules, and context-bundle debugging.
 - [Context Evals](./CONTEXT_EVALS.md) - Long-session context regression evals with provenance assertions.
 - [AI Runtime Infrastructure](./AI_RUNTIME_INFRASTRUCTURE.md) - Engine source-of-truth runtime for long-running context, replay, and guardrails.
 - [Memory Ciphertext At Rest](./MEMORY_CIPHERTEXT_AT_REST.md) - Memory crypto modes, encrypted columns, search-required plaintext residuals, and backup implications.
