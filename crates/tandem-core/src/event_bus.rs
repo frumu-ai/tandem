@@ -49,11 +49,15 @@ impl EventBus {
     }
 
     /// Publish a canonical [`RuntimeEvent`] directly. The envelope's `seq`
-    /// is reassigned by the bus to preserve publish-order monotonicity.
+    /// is reassigned by the bus to preserve publish-order monotonicity, and
+    /// a missing (zero) `occurred_at_ms` is stamped with publish time.
     pub fn publish_runtime(&self, event: RuntimeEvent) {
         let mut engine_event = event.to_engine_event();
         if let Some(envelope) = engine_event.envelope.as_mut() {
             envelope.seq = self.next_seq();
+            if envelope.occurred_at_ms == 0 {
+                envelope.occurred_at_ms = now_ms();
+            }
         }
         self.publish(engine_event);
     }
@@ -245,6 +249,10 @@ mod tests {
         assert_eq!(received.event_type, "automation_v2.run.failed");
         let envelope = received.envelope.expect("envelope");
         assert!(envelope.seq >= 2, "bus reassigns seq, got {}", envelope.seq);
+        assert!(
+            envelope.occurred_at_ms > 0,
+            "bus stamps publish time when the envelope carries none"
+        );
         assert_eq!(envelope.run_id.as_deref(), Some("run_1"));
         assert_eq!(envelope.node_id.as_deref(), Some("node_1"));
     }
