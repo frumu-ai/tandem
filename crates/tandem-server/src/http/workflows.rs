@@ -188,6 +188,211 @@ pub(super) async fn workflow_runs_get(
     Ok(Json(json!({ "run": run })))
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct WorkflowGateDecisionInput {
+    pub decision: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Decide a pending workflow approval gate (TAN-73). Mirrors the automation
+/// v2 gate semantics: human-only decider, durable decision record, protected
+/// audit event, and the dispatcher resumes from the checkpoint on approval.
+pub(super) async fn workflow_run_gate_decide(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<tandem_types::RequestPrincipal>,
+    headers: axum::http::HeaderMap,
+    Path(WorkflowRunPath { id }): Path<WorkflowRunPath>,
+    Json(input): Json<WorkflowGateDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let run = state.get_workflow_run(&id).await.ok_or((
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "workflow run not found", "code": "WORKFLOW_RUN_NOT_FOUND" })),
+    ))?;
+    super::ensure_same_tenant(&tenant_context, &run.tenant_context).map_err(|status| {
+        (
+            status,
+            Json(json!({ "error": "workflow run not found", "code": "WORKFLOW_RUN_NOT_FOUND" })),
+        )
+    })?;
+
+    // GOV: deciding a gate is a privileged human action; agents cannot
+    // approve their own work (same rule as automation v2 gates).
+    let decider =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    if decider.kind != crate::automation_v2::governance::GovernanceActorKind::Human {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "workflow approval gates must be decided by a human operator",
+                "code": "WORKFLOW_GATE_REQUIRES_HUMAN",
+            })),
+        ));
+    }
+
+    if run.status != tandem_workflows::WorkflowRunStatus::AwaitingApproval {
+        // Race UX parity with automation gates: surface the winning decision.
+        let winner = run.gate_history.last().cloned();
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "workflow run is not awaiting approval",
+                "code": "WORKFLOW_RUN_NOT_AWAITING_APPROVAL",
+                "runID": id,
+                "currentStatus": run.status,
+                "decidedGate": winner,
+            })),
+        ));
+    }
+    let Some(gate) = run.awaiting_gate.clone() else {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "workflow run has no pending gate",
+                "code": "WORKFLOW_RUN_GATE_MISSING",
+            })),
+        ));
+    };
+
+    let decision = input.decision.trim().to_ascii_lowercase();
+    if !gate.decisions.iter().any(|allowed| allowed == &decision) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("decision must be one of {:?}", gate.decisions),
+                "code": "WORKFLOW_GATE_INVALID_DECISION",
+            })),
+        ));
+    }
+    if decision == "rework" && gate.rework_targets.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "gate has no rework_targets configured",
+                "code": "WORKFLOW_GATE_NO_REWORK_TARGETS",
+            })),
+        ));
+    }
+
+    let record = tandem_workflows::WorkflowGateDecisionRecord {
+        action_id: gate.action_id.clone(),
+        decision: decision.clone(),
+        reason: input.reason.clone(),
+        decided_at_ms: crate::now_ms(),
+        decided_by: serde_json::to_value(&decider).ok(),
+    };
+    let gate_action_id = gate.action_id.clone();
+    let rework_targets = gate.rework_targets.clone();
+    let decision_for_update = decision.clone();
+    let record_for_update = record.clone();
+    let updated = state
+        .update_workflow_run(&id, |row| {
+            row.awaiting_gate = None;
+            row.gate_history.push(record_for_update.clone());
+            match decision_for_update.as_str() {
+                "approve" => {
+                    row.status = tandem_workflows::WorkflowRunStatus::Running;
+                    if let Some(action) = row
+                        .actions
+                        .iter_mut()
+                        .find(|action| action.action_id == gate_action_id)
+                    {
+                        action.status = tandem_workflows::WorkflowActionRunStatus::Completed;
+                        action.detail = Some("gate approved".to_string());
+                        action.output = Some(json!({
+                            "decision": "approve",
+                            "reason": record_for_update.reason,
+                        }));
+                        action.updated_at_ms = crate::now_ms();
+                    }
+                }
+                "rework" => {
+                    row.status = tandem_workflows::WorkflowRunStatus::Running;
+                    for action in row.actions.iter_mut() {
+                        if rework_targets
+                            .iter()
+                            .any(|target| target == &action.action_id)
+                        {
+                            action.status = tandem_workflows::WorkflowActionRunStatus::Pending;
+                            action.detail = Some("re-queued by gate rework".to_string());
+                            action.output = None;
+                            action.updated_at_ms = crate::now_ms();
+                        }
+                    }
+                }
+                _ => {
+                    row.status = tandem_workflows::WorkflowRunStatus::Cancelled;
+                    row.finished_at_ms = Some(crate::now_ms());
+                    if let Some(action) = row
+                        .actions
+                        .iter_mut()
+                        .find(|action| action.action_id == gate_action_id)
+                    {
+                        action.status = tandem_workflows::WorkflowActionRunStatus::Skipped;
+                        action.detail = Some("gate cancelled".to_string());
+                        action.updated_at_ms = crate::now_ms();
+                    }
+                }
+            }
+        })
+        .await
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "workflow run not found", "code": "WORKFLOW_RUN_NOT_FOUND" })),
+        ))?;
+
+    // GOV-B8 parity: every gate decision leaves tamper-evident audit.
+    let _ = crate::audit::append_protected_audit_event(
+        &state,
+        "workflow.governance.gate_decided",
+        &tenant_context,
+        decider.actor_id.clone().or_else(|| decider.source.clone()),
+        json!({
+            "runID": id,
+            "workflowID": updated.workflow_id,
+            "actionID": gate.action_id,
+            "decision": decision,
+            "reason": input.reason,
+            "decidedBy": decider,
+        }),
+    )
+    .await;
+    state.event_bus.publish(EngineEvent::new(
+        "approval.decision.recorded",
+        json!({
+            "run_id": id,
+            "workflow_id": updated.workflow_id,
+            "node_id": gate.action_id,
+            "decision": decision,
+            "reason": input.reason,
+            "executed_as": "workflow_gate",
+            "decided_by": decider,
+            "tenantContext": tenant_context,
+        }),
+    ));
+
+    if matches!(updated.status, tandem_workflows::WorkflowRunStatus::Running) {
+        let resume_state = state.clone();
+        let resume_run_id = id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = crate::resume_workflow_run(&resume_state, &resume_run_id).await {
+                tracing::warn!(
+                    "workflow run `{resume_run_id}` failed to resume after gate decision: {error:#}"
+                );
+                let _ = resume_state
+                    .update_workflow_run(&resume_run_id, |row| {
+                        row.status = tandem_workflows::WorkflowRunStatus::Failed;
+                        row.finished_at_ms = Some(crate::now_ms());
+                    })
+                    .await;
+            }
+        });
+    }
+
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
 fn workflow_event_tenant_context(event: &EngineEvent) -> TenantContext {
     event
         .properties

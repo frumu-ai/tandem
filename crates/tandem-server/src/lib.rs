@@ -74,7 +74,8 @@ pub use util::build::*;
 pub use util::host::*;
 pub use util::time::*;
 pub use workflows::{
-    dispatch_workflow_event, execute_workflow, run_workflow_dispatcher, simulate_workflow_event,
+    dispatch_workflow_event, execute_workflow, resume_workflow_run, run_workflow_dispatcher,
+    simulate_workflow_event,
 };
 
 pub fn normalize_absolute_workspace_root(raw: &str) -> Result<String, String> {

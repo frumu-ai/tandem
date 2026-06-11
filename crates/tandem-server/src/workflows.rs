@@ -482,18 +482,40 @@ async fn sync_workflow_automation_action_failed(
 
 #[derive(Debug, Clone)]
 pub enum ParsedWorkflowAction {
-    EventEmit { event_type: String },
-    ResourcePut { key: String },
-    ResourcePatch { key: String },
-    ResourceDelete { key: String },
-    Tool { tool_name: String },
-    Capability { capability_id: String },
-    Workflow { workflow_id: String },
-    Agent { agent_id: String },
+    /// Durable human approval gate: the run pauses in `AwaitingApproval`
+    /// until decided via `POST /workflows/runs/{id}/gate`.
+    ApprovalGate,
+    EventEmit {
+        event_type: String,
+    },
+    ResourcePut {
+        key: String,
+    },
+    ResourcePatch {
+        key: String,
+    },
+    ResourceDelete {
+        key: String,
+    },
+    Tool {
+        tool_name: String,
+    },
+    Capability {
+        capability_id: String,
+    },
+    Workflow {
+        workflow_id: String,
+    },
+    Agent {
+        agent_id: String,
+    },
 }
 
 pub fn parse_workflow_action(action: &str) -> ParsedWorkflowAction {
     let trimmed = action.trim();
+    if trimmed == "approval:gate" || trimmed == "approval.gate" {
+        return ParsedWorkflowAction::ApprovalGate;
+    }
     if let Some(rest) = trimmed.strip_prefix("event:") {
         return ParsedWorkflowAction::EventEmit {
             event_type: rest.trim().to_string(),
@@ -779,6 +801,8 @@ async fn execute_actions(
                 updated_at_ms: now,
             })
             .collect(),
+        awaiting_gate: None,
+        gate_history: Vec::new(),
         source,
     };
     state.put_workflow_run(run.clone()).await?;
@@ -801,14 +825,211 @@ async fn execute_actions(
     if dry_run {
         return Ok(run);
     }
-    for (action_row, action_spec) in run.actions.iter_mut().zip(actions.iter()) {
+    drive_workflow_actions(state, &automation, &automation_run.run_id, &actions, run, 0).await
+}
+
+/// Re-enter the dispatcher for a run whose gate was decided (status already
+/// reset to `Running` by the decision handler). Prepared actions are
+/// reconstructed from the workflow definition (manual runs) or the hook
+/// binding (hook runs); if the definition changed since the run started and
+/// no longer aligns by action id, the resume fails closed.
+pub async fn resume_workflow_run(
+    state: &AppState,
+    run_id: &str,
+) -> anyhow::Result<WorkflowRunRecord> {
+    let run = state
+        .get_workflow_run(run_id)
+        .await
+        .with_context(|| format!("workflow run `{run_id}` not found"))?;
+    anyhow::ensure!(
+        run.status == WorkflowRunStatus::Running,
+        "workflow run `{run_id}` is not queued to resume (status {:?})",
+        run.status
+    );
+    let actions: Vec<PreparedWorkflowAction> = if let Some(binding_id) = &run.binding_id {
+        let hook = state
+            .list_workflow_hooks(Some(&run.workflow_id))
+            .await
+            .into_iter()
+            .find(|hook| &hook.binding_id == binding_id)
+            .with_context(|| format!("workflow hook binding `{binding_id}` not found"))?;
+        hook.actions
+            .iter()
+            .enumerate()
+            .map(|(idx, action)| PreparedWorkflowAction {
+                action_id: format!("action_{}", idx + 1),
+                spec: action.clone(),
+            })
+            .collect()
+    } else {
+        let workflow = state
+            .get_workflow(&run.workflow_id)
+            .await
+            .with_context(|| format!("unknown workflow `{}`", run.workflow_id))?;
+        workflow
+            .steps
+            .iter()
+            .map(|step| PreparedWorkflowAction {
+                action_id: step.step_id.clone(),
+                spec: WorkflowActionSpec {
+                    action: step.action.clone(),
+                    with: step.with.clone(),
+                },
+            })
+            .collect()
+    };
+    let automation_id = run
+        .automation_id
+        .clone()
+        .with_context(|| format!("workflow run `{run_id}` has no automation link"))?;
+    let automation = state
+        .get_automation_v2(&automation_id)
+        .await
+        .with_context(|| format!("automation `{automation_id}` for workflow run not found"))?;
+    let automation_run_id = run
+        .automation_run_id
+        .clone()
+        .with_context(|| format!("workflow run `{run_id}` has no automation run link"))?;
+    let start_index = run
+        .actions
+        .iter()
+        .position(|row| row.status != WorkflowActionRunStatus::Completed)
+        .unwrap_or(actions.len());
+    drive_workflow_actions(
+        state,
+        &automation,
+        &automation_run_id,
+        &actions,
+        run,
+        start_index,
+    )
+    .await
+}
+
+/// Build the pending-gate record for an `approval:gate` action from its
+/// `with:` config (title/instructions/decisions/rework_targets).
+fn workflow_pending_gate_from_spec(
+    action_id: &str,
+    with: Option<&Value>,
+) -> tandem_workflows::WorkflowPendingGate {
+    let str_list = |key: &str| -> Vec<String> {
+        with.and_then(|value| value.get(key))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut decisions = str_list("decisions");
+    if decisions.is_empty() {
+        decisions = vec![
+            "approve".to_string(),
+            "rework".to_string(),
+            "cancel".to_string(),
+        ];
+    }
+    tandem_workflows::WorkflowPendingGate {
+        action_id: action_id.to_string(),
+        title: with
+            .and_then(|value| value.get("title"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        instructions: with
+            .and_then(|value| value.get("instructions"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        decisions,
+        rework_targets: str_list("rework_targets"),
+        requested_at_ms: now_ms(),
+    }
+}
+
+/// Drive the action loop from `start_index`, persisting per-action progress.
+/// Pauses durably (status `AwaitingApproval`) when an undecided
+/// `approval:gate` action is reached; `resume_workflow_run` re-enters here
+/// after a gate decision. Rows already `Completed` (decided gates, actions
+/// finished before a rework reset) are skipped.
+pub(crate) async fn drive_workflow_actions(
+    state: &AppState,
+    automation: &crate::AutomationV2Spec,
+    automation_run_id: &str,
+    actions: &[PreparedWorkflowAction],
+    mut run: WorkflowRunRecord,
+    start_index: usize,
+) -> anyhow::Result<WorkflowRunRecord> {
+    let trigger_event = run.trigger_event.clone();
+    for idx in start_index..actions.len() {
+        let action_spec = &actions[idx];
+        let Some(action_row) = run.actions.get_mut(idx) else {
+            anyhow::bail!(
+                "workflow run `{}` action row {idx} missing (definition changed?)",
+                run.run_id
+            );
+        };
+        anyhow::ensure!(
+            action_row.action_id == action_spec.action_id,
+            "workflow run `{}` action row `{}` does not match definition action `{}`",
+            run.run_id,
+            action_row.action_id,
+            action_spec.action_id
+        );
+        if action_row.status == WorkflowActionRunStatus::Completed {
+            continue;
+        }
+        if matches!(
+            parse_workflow_action(&action_spec.spec.action),
+            ParsedWorkflowAction::ApprovalGate
+        ) {
+            let gate = workflow_pending_gate_from_spec(
+                &action_spec.action_id,
+                action_spec.spec.with.as_ref(),
+            );
+            action_row.status = WorkflowActionRunStatus::Pending;
+            action_row.detail = Some("awaiting human approval".to_string());
+            action_row.updated_at_ms = now_ms();
+            let action_row = action_row.clone();
+            let paused = state
+                .update_workflow_run(&run.run_id, |row| {
+                    row.status = WorkflowRunStatus::AwaitingApproval;
+                    row.awaiting_gate = Some(gate.clone());
+                    if let Some(target) = row
+                        .actions
+                        .iter_mut()
+                        .find(|item| item.action_id == action_row.action_id)
+                    {
+                        *target = action_row.clone();
+                    }
+                })
+                .await
+                .with_context(|| format!("workflow run `{}` missing at gate pause", run.run_id))?;
+            let _ = crate::http::sync_workflow_run_blackboard(state, &paused).await;
+            state.event_bus.publish(EngineEvent::new(
+                "workflow.run.awaiting_approval",
+                workflow_event_with_tenant_context(
+                    json!({
+                    "runID": paused.run_id,
+                    "workflowID": paused.workflow_id,
+                    "actionID": gate.action_id,
+                    "taskID": paused.task_id,
+                    "instructions": gate.instructions,
+                    "decisions": gate.decisions,
+                    }),
+                    &paused.tenant_context,
+                ),
+            ));
+            return Ok(paused);
+        }
         action_row.status = WorkflowActionRunStatus::Running;
         action_row.updated_at_ms = now_ms();
         let action_name = action_row.action.clone();
         let _ = sync_workflow_automation_action_started(
             state,
             &automation,
-            automation_run.run_id.as_str(),
+            automation_run_id,
             &action_row.action_id,
         )
         .await;
@@ -839,10 +1060,11 @@ async fn execute_actions(
                 &run.tenant_context,
             ),
         ));
+        let run_workflow_id = run.workflow_id.clone();
         match execute_action(
             state,
             &run.run_id,
-            workflow_id,
+            &run_workflow_id,
             &action_spec.spec,
             action_row,
             &run.tenant_context,
@@ -868,7 +1090,7 @@ async fn execute_actions(
                 let _ = sync_workflow_automation_action_completed(
                     state,
                     &automation,
-                    automation_run.run_id.as_str(),
+                    automation_run_id,
                     &action_row.action_id,
                     &output,
                 )
@@ -914,7 +1136,7 @@ async fn execute_actions(
                 let _ = sync_workflow_automation_action_failed(
                     state,
                     &automation,
-                    automation_run.run_id.as_str(),
+                    automation_run_id,
                     &action_row.action_id,
                     &detail,
                 )
@@ -992,6 +1214,9 @@ async fn execute_action(
     let action_name = action_spec.action.as_str();
     let parsed = parse_workflow_action(action_name);
     match parsed {
+        ParsedWorkflowAction::ApprovalGate => {
+            anyhow::bail!("approval gates are handled by the dispatcher, not executed as actions")
+        }
         ParsedWorkflowAction::EventEmit { event_type } => {
             let payload = action_payload(action_spec, action_row);
             state.event_bus.publish(EngineEvent::new(

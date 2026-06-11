@@ -100,8 +100,12 @@ pub struct WorkflowRegistry {
 pub enum WorkflowRunStatus {
     Queued,
     Running,
+    /// Paused on a `HumanApprovalGate` action; resumes via the gate decision
+    /// endpoint (`POST /workflows/runs/{id}/gate`).
+    AwaitingApproval,
     Completed,
     Failed,
+    Cancelled,
     DryRun,
 }
 
@@ -113,6 +117,40 @@ pub enum WorkflowActionRunStatus {
     Completed,
     Failed,
     Skipped,
+}
+
+/// A pending human approval gate blocking a workflow run. Mirrors
+/// `AutomationPendingGate` semantics: the gate is durable run state, not an
+/// in-process wait, so it survives restarts and stays visible in the
+/// approvals inbox until decided.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowPendingGate {
+    /// The gate action's id within the run.
+    pub action_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// Allowed decisions; defaults to approve/rework/cancel.
+    #[serde(default)]
+    pub decisions: Vec<String>,
+    /// Action ids re-queued on a `rework` decision.
+    #[serde(default)]
+    pub rework_targets: Vec<String>,
+    pub requested_at_ms: u64,
+}
+
+/// Audit record of a decided workflow gate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowGateDecisionRecord {
+    pub action_id: String,
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub decided_at_ms: u64,
+    /// Serialized governance actor (kind/actor_id/source).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,6 +192,10 @@ pub struct WorkflowRunRecord {
     pub finished_at_ms: Option<u64>,
     #[serde(default)]
     pub actions: Vec<WorkflowActionRunRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_gate: Option<WorkflowPendingGate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_history: Vec<WorkflowGateDecisionRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<WorkflowSourceRef>,
 }

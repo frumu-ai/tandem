@@ -3,10 +3,10 @@
 //! Surfaces a unified list of [`ApprovalRequest`]s drawn from every Tandem
 //! subsystem that owns a pending-approval primitive.
 //!
-//! v1 sources: `automation_v2` mission runs whose `checkpoint.awaiting_gate`
-//! is set or can be recovered from a pending approval node. Workflow runs and
-//! coder runs will be added once their pause/resume paths are wired (see
-//! `docs/internal/approval-gates-and-channel-ux/PLAN.md`).
+//! Sources: `automation_v2` mission runs whose `checkpoint.awaiting_gate` is
+//! set or can be recovered from a pending approval node, and workflow runs
+//! paused on an `approval:gate` action (TAN-73). Coder runs will be added
+//! once their pause/resume path is wired.
 //!
 //! The aggregator never mutates state. Decisions still go through the
 //! authoritative subsystem handlers (e.g. `automations_v2_run_gate_decide`);
@@ -79,11 +79,96 @@ pub async fn list_pending_approvals(
         }
     }
 
-    // Future: coder + workflow sources slot in here.
+    if filter
+        .source
+        .as_ref()
+        .map(|source| matches!(source, ApprovalSourceKind::Workflow))
+        .unwrap_or(true)
+    {
+        let runs = state.list_workflow_runs(None, MAX_PENDING_LIMIT).await;
+        for run in runs.iter() {
+            if run.status != tandem_workflows::WorkflowRunStatus::AwaitingApproval {
+                continue;
+            }
+            let Some(gate) = run.awaiting_gate.as_ref() else {
+                continue;
+            };
+            if !workflow_tenant_matches(filter, run) {
+                continue;
+            }
+            out.push(workflow_run_to_approval_request(run, gate));
+        }
+    }
+
+    // Future: coder source slots in here.
 
     out.sort_by(|a, b| b.requested_at_ms.cmp(&a.requested_at_ms));
     out.truncate(limit);
     out
+}
+
+fn workflow_tenant_matches(
+    filter: &ApprovalListFilter,
+    run: &tandem_workflows::WorkflowRunRecord,
+) -> bool {
+    if let Some(org) = filter.org_id.as_deref() {
+        if run.tenant_context.org_id != org {
+            return false;
+        }
+    }
+    if let Some(workspace) = filter.workspace_id.as_deref() {
+        if run.tenant_context.workspace_id != workspace {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn workflow_run_to_approval_request(
+    run: &tandem_workflows::WorkflowRunRecord,
+    gate: &tandem_workflows::WorkflowPendingGate,
+) -> ApprovalRequest {
+    // The next non-completed action after the gate is what approval unblocks.
+    let action_kind = run
+        .actions
+        .iter()
+        .skip_while(|action| action.action_id != gate.action_id)
+        .skip(1)
+        .find(|action| action.status != tandem_workflows::WorkflowActionRunStatus::Completed)
+        .map(|action| action.action.clone());
+    ApprovalRequest {
+        request_id: format!("workflow:{}:{}", run.run_id, gate.action_id),
+        source: ApprovalSourceKind::Workflow,
+        tenant: ApprovalTenantRef {
+            org_id: run.tenant_context.org_id.clone(),
+            workspace_id: run.tenant_context.workspace_id.clone(),
+            user_id: run.tenant_context.actor_id.clone(),
+        },
+        run_id: run.run_id.clone(),
+        node_id: Some(gate.action_id.clone()),
+        workflow_name: Some(run.workflow_id.clone()),
+        action_kind,
+        action_preview_markdown: None,
+        surface_payload: Some(serde_json::json!({
+            "workflow_run_id": run.run_id,
+            "workflow_id": run.workflow_id,
+            "action_id": gate.action_id,
+            "decide_endpoint": format!("/workflows/runs/{}/gate", run.run_id),
+        })),
+        requested_at_ms: gate.requested_at_ms,
+        expires_at_ms: None,
+        decisions: gate
+            .decisions
+            .iter()
+            .filter_map(|raw| approval_decision_from_gate(raw))
+            .collect(),
+        rework_targets: gate.rework_targets.clone(),
+        instructions: gate.instructions.clone(),
+        decided_by: None,
+        decided_at_ms: None,
+        decision: None,
+        rework_feedback: None,
+    }
 }
 
 fn recover_automation_v2_pending_gate(
