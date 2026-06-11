@@ -148,7 +148,7 @@ impl ExtractedFacts {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum GraphRelation {
     Defines,
     Imports,
@@ -173,6 +173,66 @@ pub struct RepoSearchResult {
     pub label: String,
     pub reason: String,
     pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoGraphNeighbor {
+    pub node: String,
+    pub edge: GraphEdge,
+    pub depth: usize,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoImpactItem {
+    pub file_path: String,
+    pub line: usize,
+    pub relation: GraphRelation,
+    pub reason: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoImpactSummary {
+    pub changed_files: Vec<String>,
+    pub directly_affected: Vec<RepoImpactItem>,
+    pub import_neighbors: Vec<RepoImpactItem>,
+    pub config_or_docs: Vec<RepoImpactItem>,
+    pub likely_test_targets: Vec<RepoImpactItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoContextBundleOptions {
+    pub budget_chars: usize,
+    pub required_files: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub path_scope: Option<String>,
+    pub result_limit: usize,
+}
+
+impl Default for RepoContextBundleOptions {
+    fn default() -> Self {
+        Self {
+            budget_chars: 6_000,
+            required_files: Vec::new(),
+            changed_files: Vec::new(),
+            path_scope: None,
+            result_limit: 12,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoContextBundle {
+    pub task: String,
+    pub budget_chars: usize,
+    pub likely_files: Vec<RepoSearchResult>,
+    pub relevant_symbols: Vec<RepoSearchResult>,
+    pub graph_edges: Vec<GraphEdge>,
+    pub suggested_first_reads: Vec<String>,
+    pub test_targets: Vec<String>,
+    pub gaps: Vec<String>,
+    pub estimated_chars: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

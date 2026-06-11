@@ -1,9 +1,9 @@
+use super::write;
 use crate::{
-    edges_by_relation, extract_file_facts, extract_repo_facts, repo_file, repo_search, repo_symbol,
-    FileChangeKind, GraphRelation, JsonRepoIndexStore, ManifestIndex, RepoScanOptions, SymbolKind,
+    extract_file_facts, extract_repo_facts, FileChangeKind, ManifestIndex, RepoScanOptions,
+    SymbolKind,
 };
 use std::fs;
-use std::path::Path;
 use tempfile::TempDir;
 
 #[test]
@@ -209,124 +209,4 @@ fn extract_repo_facts_skips_non_utf8_manifest_files() {
 
     assert!(files.iter().any(|entry| entry.path == "asset"));
     assert!(facts.symbols.iter().any(|symbol| symbol.name == "indexed"));
-}
-
-#[test]
-fn json_repo_index_store_persists_across_reload() {
-    let repo = TempDir::new().unwrap();
-    let store_path = repo.path().join(".tandem/repo-index.json");
-    write(
-        repo.path().join("src/lib.rs"),
-        "use std::fs;\npub fn indexed() {}\n",
-    );
-    write(
-        repo.path().join("README.md"),
-        "# Indexed\n\nSearchable docs.\n",
-    );
-
-    let store = JsonRepoIndexStore::new(&store_path);
-    let snapshot = store.index_repo(repo.path()).unwrap();
-    let reloaded = JsonRepoIndexStore::new(&store_path).load().unwrap();
-
-    assert_eq!(snapshot.manifest, reloaded.manifest);
-    assert!(reloaded.indexed_unix_ms > 0);
-    assert!(repo_file(&reloaded, "src/lib.rs").is_some());
-    assert!(
-        repo_symbol(&reloaded, "indexed", Some(SymbolKind::Function), 10)
-            .iter()
-            .any(|result| result.file_path == "src/lib.rs")
-    );
-}
-
-#[test]
-fn json_repo_index_store_does_not_index_its_own_snapshot() {
-    let repo = TempDir::new().unwrap();
-    let store_path = repo.path().join(".tandem/repo-index.json");
-    write(repo.path().join("src/lib.rs"), "pub fn indexed() {}\n");
-
-    let store = JsonRepoIndexStore::new(&store_path);
-    store.index_repo(repo.path()).unwrap();
-    let snapshot = store.index_repo(repo.path()).unwrap();
-
-    assert!(repo_file(&snapshot, ".tandem/repo-index.json").is_none());
-    assert!(!repo_search(&snapshot, "root_label", 10, None)
-        .iter()
-        .any(|result| result.file_path == ".tandem/repo-index.json"));
-}
-
-#[test]
-fn repo_search_is_stable_and_honors_path_scope() {
-    let repo = TempDir::new().unwrap();
-    let store_path = repo.path().join("repo-index.json");
-    write(repo.path().join("src/lib.rs"), "pub fn indexed() {}\n");
-    write(
-        repo.path().join("docs/guide.md"),
-        "# Indexed\n\nSearchable docs.\n",
-    );
-
-    let snapshot = JsonRepoIndexStore::new(store_path)
-        .index_repo(repo.path())
-        .unwrap();
-    let all = repo_search(&snapshot, "indexed", 10, None);
-    let docs = repo_search(&snapshot, "indexed", 10, Some("docs"));
-
-    assert!(all.iter().any(|result| result.file_path == "src/lib.rs"));
-    assert!(all.iter().any(|result| result.file_path == "docs/guide.md"));
-    assert_eq!(docs.len(), 1);
-    assert_eq!(docs[0].file_path, "docs/guide.md");
-}
-
-#[test]
-fn repo_search_path_scope_matches_path_components() {
-    let repo = TempDir::new().unwrap();
-    write(
-        repo.path().join("docs/guide.md"),
-        "# Indexed\n\nExpected docs.\n",
-    );
-    write(
-        repo.path().join("docs-old/guide.md"),
-        "# Indexed\n\nOld docs.\n",
-    );
-    write(
-        repo.path().join("docs2/guide.md"),
-        "# Indexed\n\nOther docs.\n",
-    );
-
-    let snapshot = JsonRepoIndexStore::new(repo.path().join("repo-index.json"))
-        .index_repo(repo.path())
-        .unwrap();
-    let docs = repo_search(&snapshot, "indexed", 10, Some("docs"));
-
-    assert_eq!(
-        docs.iter()
-            .map(|result| result.file_path.as_str())
-            .collect::<Vec<_>>(),
-        vec!["docs/guide.md"]
-    );
-}
-
-#[test]
-fn graph_edges_can_be_filtered_by_relation() {
-    let repo = TempDir::new().unwrap();
-    write(
-        repo.path().join("src/lib.rs"),
-        "use std::path::Path;\npub fn indexed() {}\n",
-    );
-    let snapshot = JsonRepoIndexStore::new(repo.path().join("repo-index.json"))
-        .index_repo(repo.path())
-        .unwrap();
-
-    let imports = edges_by_relation(&snapshot, GraphRelation::Imports);
-    let definitions = edges_by_relation(&snapshot, GraphRelation::Defines);
-
-    assert!(imports.iter().any(|edge| edge.target == "std::path::Path"));
-    assert!(definitions.iter().any(|edge| edge.target == "indexed"));
-}
-
-fn write(path: impl AsRef<Path>, body: &str) {
-    let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(path, body).unwrap();
 }

@@ -131,6 +131,12 @@ settling. The query API is deterministic and testable without Tauri:
 - `repo_symbol` finds symbols by name and optional kind
 - `repo_search` searches files, symbols, imports, config references, and docs
 - `edges_by_relation` exposes graph-like edges for defines/imports/config/docs
+- `repo_neighbors` traverses graph edges from a file, symbol, or graph node
+- `repo_impact` summarizes changed-file fallout, including import neighbors,
+  config/docs evidence, and likely test targets
+- `repo_context_bundle` turns task intent plus optional required/changed files
+  into a deterministic, budgeted set of first reads, relevant symbols, graph
+  evidence, test targets, and known gaps
 
 SQLite/FTS can replace the storage backend later once query volume and schema
 stability justify it. Callers should depend on the public query functions and
