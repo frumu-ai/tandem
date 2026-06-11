@@ -1045,7 +1045,7 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
             node: AutomationFlowNode {
                 node_id: "implement_fix".to_string(),
                 agent_id: "engineer".to_string(),
-                objective: "Inspect the code, patch the smallest root cause, rerun verification, and write a handoff."
+                objective: "Inspect crates/tandem-server/src/app/state/automation/prompting_impl.rs, patch the smallest root cause, rerun verification, and write a handoff."
                     .to_string(),
                 knowledge: tandem_orchestrator::KnowledgeBinding::default(),
                 depends_on: Vec::new(),
@@ -1073,6 +1073,8 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
                 })),
             },
             requested_tools: vec![
+                "repo.context_bundle".to_string(),
+                "repo.search".to_string(),
                 "read".to_string(),
                 "edit".to_string(),
                 "write".to_string(),
@@ -1081,6 +1083,9 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
             allowed_servers: Vec::new(),
             expected_present: vec![
                 "Prefer `edit` for existing-file changes.",
+                "Repo Context Discovery:",
+                "call `repo.context_bundle` first",
+                "Exact files named in the objective",
                 "cargo test",
                 "Required Run Artifact:",
             ],

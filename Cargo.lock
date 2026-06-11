@@ -7946,6 +7946,7 @@ dependencies = [
  "tandem-agent-teams",
  "tandem-document",
  "tandem-memory",
+ "tandem-repo-intelligence",
  "tandem-skills",
  "tandem-types",
  "tempfile",

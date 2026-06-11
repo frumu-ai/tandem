@@ -41,9 +41,35 @@ pub fn build_mode_permission_rules(
 
     if allows_any(
         allowed_tools,
-        &["ls", "list", "glob", "search", "grep", "codesearch"],
+        &[
+            "ls",
+            "list",
+            "glob",
+            "search",
+            "grep",
+            "codesearch",
+            "repo.context_bundle",
+            "repo.search",
+            "repo.symbol",
+            "repo.neighbors",
+            "repo.impact",
+            "repo.test_targets",
+        ],
     ) {
-        for permission in ["ls", "list", "glob", "search", "grep", "codesearch"] {
+        for permission in [
+            "ls",
+            "list",
+            "glob",
+            "search",
+            "grep",
+            "codesearch",
+            "repo.context_bundle",
+            "repo.search",
+            "repo.symbol",
+            "repo.neighbors",
+            "repo.impact",
+            "repo.test_targets",
+        ] {
             rules.push(PermissionRuleTemplate {
                 permission: permission.to_string(),
                 pattern: "*".to_string(),
@@ -85,6 +111,15 @@ pub fn build_mode_permission_rules(
             pattern: "*".to_string(),
             action: default_write_action.to_string(),
         });
+    }
+    if allows_any(allowed_tools, &["repo.index", "repo.update_changed_files"]) {
+        for permission in ["repo.index", "repo.update_changed_files"] {
+            rules.push(PermissionRuleTemplate {
+                permission: permission.to_string(),
+                pattern: "*".to_string(),
+                action: default_write_action.to_string(),
+            });
+        }
     }
 
     if allows_any(

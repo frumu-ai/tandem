@@ -798,6 +798,18 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     {
         sections.push(concrete_source_coverage);
     }
+    let repo_context_available = requested_tools.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "repo.context_bundle" | "repo.search" | "repo.symbol"
+        )
+    });
+    if repo_context_available {
+        sections.push(
+            "Repo Context Discovery:\n- When no exact source file is named and you need local repository discovery, call `repo.context_bundle` first with focused terms from the objective and any known files or symbols.\n- Use `repo.search` or `repo.symbol` for follow-up narrowing before broad `glob`, `grep`, or `codesearch` calls.\n- Exact files named in the objective, inputs, or output contract still take precedence: call `read` on those paths before discovery-only tools.\n- If repo context tools report stale, unavailable, ephemeral, or empty index metadata, fall back to `glob`, `grep`, `codesearch`, and `read`, and preserve that limitation in the artifact or handoff."
+                .to_string(),
+        );
+    }
     let outbound_mcp_tools = automation_node_concrete_mcp_tool_allowlist(node)
         .into_iter()
         .filter(|tool| !tool.ends_with(".*"))
@@ -821,10 +833,14 @@ pub(crate) fn render_automation_v2_prompt_with_options(
             || enforcement.validation_profile.as_deref() == Some("local_research");
         let read_available = requested_tools.iter().any(|tool| tool == "read");
         if requires_local_source_reads && read_available {
-            sections.push(
-                "Local Source Evidence Required:\n- Before the final response, call `codesearch`, `grep`, or `glob` with focused terms from the objective, payload, and upstream artifacts.\n- Then call `read` on at least one concrete workspace source file found by that search; discovery-only tools do not satisfy this node.\n- If search finds no obvious file, read the closest automation, Bug Monitor, workflow, provider, or artifact-handling source file and record why it was the closest match.\n- Populate `files_examined` and `file_references` only with concrete workspace paths you actually read or inspected.\n- Do not claim local repo inspection, source coverage, or file evidence if no workspace tool calls were made."
-                    .to_string(),
-            );
+            let discovery_instruction = if repo_context_available {
+                "call `repo.context_bundle` or `repo.search` with focused terms from the objective, payload, and upstream artifacts before broad `codesearch`, `grep`, or `glob` discovery"
+            } else {
+                "call `codesearch`, `grep`, or `glob` with focused terms from the objective, payload, and upstream artifacts"
+            };
+            sections.push(format!(
+                "Local Source Evidence Required:\n- Before the final response, {discovery_instruction}.\n- Then call `read` on at least one concrete workspace source file found by that search; discovery-only tools do not satisfy this node.\n- If search finds no obvious file, read the closest automation, Bug Monitor, workflow, provider, or artifact-handling source file and record why it was the closest match.\n- Populate `files_examined` and `file_references` only with concrete workspace paths you actually read or inspected.\n- Do not claim local repo inspection, source coverage, or file evidence if no workspace tool calls were made."
+            ));
         }
     }
     let execution_mode = automation_node_execution_mode(node, workspace_root);

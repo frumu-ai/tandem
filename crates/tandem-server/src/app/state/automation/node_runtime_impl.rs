@@ -383,6 +383,9 @@ pub(crate) fn normalize_automation_requested_tools(
         match automation_node_execution_mode(node, workspace_root) {
             "git_patch" => {
                 normalized.extend([
+                    "repo.context_bundle".to_string(),
+                    "repo.search".to_string(),
+                    "repo.symbol".to_string(),
                     "glob".to_string(),
                     "read".to_string(),
                     "edit".to_string(),
@@ -393,6 +396,8 @@ pub(crate) fn normalize_automation_requested_tools(
             }
             "filesystem_patch" => {
                 normalized.extend([
+                    "repo.context_bundle".to_string(),
+                    "repo.search".to_string(),
                     "glob".to_string(),
                     "read".to_string(),
                     "edit".to_string(),
@@ -425,9 +430,12 @@ pub(crate) fn normalize_automation_requested_tools(
         normalized.push("read".to_string());
     }
     let has_read = normalized.iter().any(|tool| tool == "read");
-    let has_workspace_probe = normalized
-        .iter()
-        .any(|tool| matches!(tool.as_str(), "glob" | "ls" | "list"));
+    let has_workspace_probe = normalized.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "glob" | "ls" | "list" | "repo.context_bundle" | "repo.search" | "repo.symbol"
+        )
+    });
     if has_read
         && !has_workspace_probe
         && !explicit_connector_tool_allowlist

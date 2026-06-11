@@ -28,9 +28,9 @@ tandem-skills = { path = "../tandem-skills", version = "0.5.13" }
 tandem-memory = { path = "../tandem-memory", version = "0.5.13" }
 tandem-document = { path = "../tandem-document", version = "0.5.13" }
 tandem-agent-teams = { path = "../tandem-agent-teams", version = "0.5.13" }
+tandem-repo-intelligence = { path = "../tandem-repo-intelligence", version = "0.5.13" }
 dirs = "5.0"
 
 [dev-dependencies]
 tempfile = "3"
-
 

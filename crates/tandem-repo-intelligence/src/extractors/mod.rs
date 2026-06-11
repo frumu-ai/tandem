@@ -3,7 +3,7 @@ mod source;
 
 use crate::error::{RepoIntelligenceError, Result};
 use crate::model::{ExtractedFacts, FileManifestEntry};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn extract_repo_facts(
     root: impl AsRef<Path>,
@@ -25,10 +25,8 @@ pub fn extract_file_facts(path: &str, body: &str) -> ExtractedFacts {
 
 fn extract_file_from_root(root: &Path, file: &FileManifestEntry) -> Result<ExtractedFacts> {
     let path = root.join(&file.path);
-    let bytes = std::fs::read(&path).map_err(|source| RepoIntelligenceError::ReadFile {
-        path: PathBuf::from(path),
-        source,
-    })?;
+    let bytes =
+        std::fs::read(&path).map_err(|source| RepoIntelligenceError::ReadFile { path, source })?;
     let Ok(body) = String::from_utf8(bytes) else {
         return Ok(ExtractedFacts::default());
     };
