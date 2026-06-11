@@ -7828,6 +7828,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tandem-repo-intelligence"
+version = "0.5.13"
+dependencies = [
+ "ignore",
+ "serde",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "tandem-runtime"
 version = "0.5.13"
 dependencies = [
