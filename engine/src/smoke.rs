@@ -183,6 +183,26 @@ async fn boot_in_process(deadline: Instant) -> anyhow::Result<(SmokeContext, tem
         "TANDEM_GLOBAL_CONFIG",
         temp.path().join("global-config.json"),
     );
+    // Provider credentials from the host shell would register real providers
+    // and displace the echo fallback; the in-process smoke must stay
+    // deterministic and offline even in a developer/release shell.
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "BEDROCK_API_KEY",
+        "COHERE_API_KEY",
+        "GITHUB_TOKEN",
+        "GROQ_API_KEY",
+        "MISTRAL_API_KEY",
+        "OLLAMA_URL",
+        "OPENAI_API_KEY",
+        "OPENCODE_ZEN_API_KEY",
+        "OPENROUTER_API_KEY",
+        "TOGETHER_API_KEY",
+        "VERTEX_API_KEY",
+    ] {
+        std::env::remove_var(key);
+    }
     // Embedding models would download weights; the smoke must run offline.
     std::env::set_var("TANDEM_DISABLE_EMBEDDINGS", "1");
 
@@ -553,9 +573,9 @@ async fn scenario_policy_denial(ctx: &SmokeContext) -> anyhow::Result<String> {
         .await?;
     // In the OSS build agent-owned mutation is denied as a premium-feature
     // 501; with premium governance it is a 4xx policy denial. Both must be
-    // structured and audited.
+    // structured and audited. A 500 is a runtime failure, not a denial.
     anyhow::ensure!(
-        (400..=501).contains(&status),
+        (400..500).contains(&status) || status == 501,
         "agent-sourced share must be denied, got {status}: {body}"
     );
     anyhow::ensure!(
