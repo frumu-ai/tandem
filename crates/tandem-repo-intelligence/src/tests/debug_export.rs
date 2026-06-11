@@ -29,6 +29,26 @@ fn repo_index_metrics_and_debug_export_summarize_snapshot() {
 }
 
 #[test]
+fn root_level_store_does_not_overwrite_root_repo_graph_file() {
+    let repo = repo_with_handler_fixture();
+    let root_graph = repo.path().join("repo-graph.json");
+    std::fs::write(&root_graph, "checked in graph docs").unwrap();
+    let store = JsonRepoIndexStore::new(repo.path().join("repo-index.json"));
+
+    store.index_repo(repo.path()).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&root_graph).unwrap(),
+        "checked in graph docs"
+    );
+    assert_eq!(
+        store.debug_export_path(),
+        repo.path().join(".tandem/repo-graph.json")
+    );
+    assert!(store.debug_export_path().exists());
+}
+
+#[test]
 fn repo_context_bundle_metrics_report_bundle_shape() {
     let repo = repo_with_handler_fixture();
     let snapshot = JsonRepoIndexStore::new(repo.path().join(".tandem/repo-index.json"))

@@ -75,10 +75,11 @@ impl JsonRepoIndexStore {
     }
 
     pub fn debug_export_path(&self) -> PathBuf {
-        self.path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("repo-graph.json")
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        if parent.file_name().and_then(|name| name.to_str()) == Some(".tandem") {
+            return parent.join("repo-graph.json");
+        }
+        parent.join(".tandem").join("repo-graph.json")
     }
 
     pub fn save_debug_export(&self, export: &RepoDebugExport) -> Result<()> {
