@@ -205,9 +205,17 @@ fn result(
 }
 
 fn in_scope(path: &str, path_scope: Option<&str>) -> bool {
-    path_scope
-        .map(|scope| path.starts_with(scope.trim_matches('/')))
-        .unwrap_or(true)
+    let Some(scope) = path_scope else {
+        return true;
+    };
+    let scope = scope.trim_matches('/');
+    if scope.is_empty() {
+        return true;
+    }
+    path == scope
+        || path
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn sort_and_limit(mut results: Vec<RepoSearchResult>, limit: usize) -> Vec<RepoSearchResult> {

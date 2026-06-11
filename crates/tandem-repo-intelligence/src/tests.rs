@@ -239,6 +239,22 @@ fn json_repo_index_store_persists_across_reload() {
 }
 
 #[test]
+fn json_repo_index_store_does_not_index_its_own_snapshot() {
+    let repo = TempDir::new().unwrap();
+    let store_path = repo.path().join(".tandem/repo-index.json");
+    write(repo.path().join("src/lib.rs"), "pub fn indexed() {}\n");
+
+    let store = JsonRepoIndexStore::new(&store_path);
+    store.index_repo(repo.path()).unwrap();
+    let snapshot = store.index_repo(repo.path()).unwrap();
+
+    assert!(repo_file(&snapshot, ".tandem/repo-index.json").is_none());
+    assert!(!repo_search(&snapshot, "root_label", 10, None)
+        .iter()
+        .any(|result| result.file_path == ".tandem/repo-index.json"));
+}
+
+#[test]
 fn repo_search_is_stable_and_honors_path_scope() {
     let repo = TempDir::new().unwrap();
     let store_path = repo.path().join("repo-index.json");
@@ -258,6 +274,35 @@ fn repo_search_is_stable_and_honors_path_scope() {
     assert!(all.iter().any(|result| result.file_path == "docs/guide.md"));
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].file_path, "docs/guide.md");
+}
+
+#[test]
+fn repo_search_path_scope_matches_path_components() {
+    let repo = TempDir::new().unwrap();
+    write(
+        repo.path().join("docs/guide.md"),
+        "# Indexed\n\nExpected docs.\n",
+    );
+    write(
+        repo.path().join("docs-old/guide.md"),
+        "# Indexed\n\nOld docs.\n",
+    );
+    write(
+        repo.path().join("docs2/guide.md"),
+        "# Indexed\n\nOther docs.\n",
+    );
+
+    let snapshot = JsonRepoIndexStore::new(repo.path().join("repo-index.json"))
+        .index_repo(repo.path())
+        .unwrap();
+    let docs = repo_search(&snapshot, "indexed", 10, Some("docs"));
+
+    assert_eq!(
+        docs.iter()
+            .map(|result| result.file_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["docs/guide.md"]
+    );
 }
 
 #[test]
