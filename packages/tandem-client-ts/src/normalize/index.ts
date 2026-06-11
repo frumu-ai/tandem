@@ -341,10 +341,23 @@ export const ContextDistillResponseSchema = z
 
 // ─── SSE Schema ───────────────────────────────────────────────────────────────
 
+export const RuntimeEventEnvelopeSchema = z
+  .object({
+    event_id: z.string(),
+    seq: z.number(),
+    schema_version: z.number(),
+    occurred_at_ms: z.number(),
+    session_id: z.string().optional(),
+    run_id: z.string().optional(),
+    node_id: z.string().optional(),
+  })
+  .passthrough();
+
 export const EngineEventSchema = z
   .object({
     type: z.string(),
     properties: z.record(z.string(), z.any()).optional().default({}),
+    envelope: RuntimeEventEnvelopeSchema.optional(),
     sessionID: z.string().optional(),
     session_id: z.string().optional(),
     sessionId: z.string().optional(),
@@ -358,8 +371,10 @@ export const EngineEventSchema = z
     return {
       ...val,
       properties: val.properties as Record<string, unknown>,
-      sessionId: val.sessionId || val.sessionID || val.session_id,
-      runId: val.runId || val.runID || val.run_id,
+      // The canonical envelope (stamped by the event bus) wins; fall back to
+      // the historical property spellings for pre-envelope payloads.
+      sessionId: val.envelope?.session_id || val.sessionId || val.sessionID || val.session_id,
+      runId: val.envelope?.run_id || val.runId || val.runID || val.run_id,
     } as Public.EngineEvent;
   });
 

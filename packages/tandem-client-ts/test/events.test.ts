@@ -57,6 +57,44 @@ describe("EngineEventSchema Contracts", () => {
   });
 });
 
+describe("Runtime event envelope (schema_version 1)", () => {
+  const envelope = {
+    event_id: "7f9b6c2e-0000-0000-0000-000000000000",
+    seq: 184,
+    schema_version: 1,
+    occurred_at_ms: 1765430400000,
+    session_id: "ses_env",
+    run_id: "run_env",
+  };
+
+  it("passes the envelope through and prefers its canonical ids", () => {
+    const result = EngineEventSchema.safeParse({
+      type: "session.run.started",
+      properties: { sessionID: "ses_legacy", runID: "run_legacy" },
+      envelope,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.envelope).toMatchObject({ event_id: envelope.event_id, seq: 184 });
+    expect(result.data.sessionId).toBe("ses_env");
+    expect(result.data.runId).toBe("run_env");
+  });
+
+  it("still normalizes pre-envelope payloads from property spellings", () => {
+    const result = EngineEventSchema.safeParse({
+      type: "session.run.started",
+      properties: {},
+      session_id: "ses_legacy",
+      run_id: "run_legacy",
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.envelope).toBeUndefined();
+    expect(result.data.sessionId).toBe("ses_legacy");
+    expect(result.data.runId).toBe("run_legacy");
+  });
+});
+
 describe("Coder SDK coverage", () => {
   it("posts memory path imports with canonical server payload", async () => {
     const client = new TandemClient({

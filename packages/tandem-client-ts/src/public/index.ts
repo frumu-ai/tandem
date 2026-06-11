@@ -2216,12 +2216,28 @@ export interface ToolExecuteResult {
 
 // ─── SSE Events ──────────────────────────────────────────────────────────────
 
+/**
+ * Canonical envelope stamped on every event by the engine event bus
+ * (schema_version 1). See docs/RUNTIME_EVENTS.md in the Tandem repo.
+ */
+export interface RuntimeEventEnvelope {
+  event_id: string;
+  seq: number;
+  schema_version: number;
+  occurred_at_ms: number;
+  session_id?: string;
+  run_id?: string;
+  node_id?: string;
+  [key: string]: unknown;
+}
+
 export interface EngineEventBase {
   type: string;
   properties: Record<string, unknown>;
   sessionId?: string;
   runId?: string;
   timestamp?: string;
+  envelope?: RuntimeEventEnvelope;
   [key: string]: unknown;
 }
 
