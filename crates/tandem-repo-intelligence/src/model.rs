@@ -147,3 +147,85 @@ impl ExtractedFacts {
         self.doc_headings.extend(next.doc_headings);
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GraphRelation {
+    Defines,
+    Imports,
+    Configures,
+    Documents,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    pub relation: GraphRelation,
+    pub line: usize,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoSearchResult {
+    pub file_path: String,
+    pub line: usize,
+    pub kind: String,
+    pub label: String,
+    pub reason: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoIndexSnapshot {
+    pub root_label: String,
+    pub indexed_unix_ms: u128,
+    pub manifest: Vec<FileManifestEntry>,
+    pub facts: ExtractedFacts,
+}
+
+impl RepoIndexSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.manifest.is_empty() && self.facts == ExtractedFacts::default()
+    }
+
+    pub fn graph_edges(&self) -> Vec<GraphEdge> {
+        let mut edges = Vec::new();
+        for symbol in &self.facts.symbols {
+            edges.push(GraphEdge {
+                source: symbol.file_path.clone(),
+                target: symbol.name.clone(),
+                relation: GraphRelation::Defines,
+                line: symbol.line,
+                confidence: symbol.confidence.clone(),
+            });
+        }
+        for import in &self.facts.imports {
+            edges.push(GraphEdge {
+                source: import.source_file.clone(),
+                target: import.target.clone(),
+                relation: GraphRelation::Imports,
+                line: import.line,
+                confidence: import.confidence.clone(),
+            });
+        }
+        for reference in &self.facts.config_references {
+            edges.push(GraphEdge {
+                source: reference.file_path.clone(),
+                target: reference.key.clone(),
+                relation: GraphRelation::Configures,
+                line: reference.line,
+                confidence: reference.confidence.clone(),
+            });
+        }
+        for heading in &self.facts.doc_headings {
+            edges.push(GraphEdge {
+                source: heading.file_path.clone(),
+                target: heading.title.clone(),
+                relation: GraphRelation::Documents,
+                line: heading.line,
+                confidence: heading.confidence.clone(),
+            });
+        }
+        edges
+    }
+}

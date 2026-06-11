@@ -7833,6 +7833,7 @@ version = "0.5.13"
 dependencies = [
  "ignore",
  "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror 1.0.69",

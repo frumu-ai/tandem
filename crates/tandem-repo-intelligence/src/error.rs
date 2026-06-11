@@ -22,6 +22,30 @@ pub enum RepoIntelligenceError {
         path: PathBuf,
         source: std::io::Error,
     },
+
+    #[error("failed to write index store {path}: {source}")]
+    WriteStore {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("failed to read index store {path}: {source}")]
+    ReadStore {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("failed to encode index store {path}: {source}")]
+    EncodeStore {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+
+    #[error("failed to decode index store {path}: {source}")]
+    DecodeStore {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, RepoIntelligenceError>;

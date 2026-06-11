@@ -113,3 +113,25 @@ The first extraction pass is intentionally conservative and deterministic:
 This MVP favors low false-positive rates and stable tests over deep language
 coverage. Tree-sitter or LSP-backed extraction can replace individual
 language extractors later without changing the public fact types.
+
+## Storage and Query MVP
+
+The first durable store is a JSON snapshot written by `JsonRepoIndexStore`.
+It persists:
+
+- manifest entries
+- extracted facts
+- root label
+- index timestamp
+
+This is intentionally simpler than SQLite while the graph schema is still
+settling. The query API is deterministic and testable without Tauri:
+
+- `repo_file` returns manifest metadata for a relative path
+- `repo_symbol` finds symbols by name and optional kind
+- `repo_search` searches files, symbols, imports, config references, and docs
+- `edges_by_relation` exposes graph-like edges for defines/imports/config/docs
+
+SQLite/FTS can replace the storage backend later once query volume and schema
+stability justify it. Callers should depend on the public query functions and
+snapshot model rather than the JSON file layout.
