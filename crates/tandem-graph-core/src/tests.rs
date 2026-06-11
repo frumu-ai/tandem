@@ -2,6 +2,7 @@ use crate::{
     stable_graph_hash, EdgeKind, Freshness, FreshnessSource, GraphDomain, GraphFact, GraphScope,
     NodeKind, Provenance,
 };
+use serde_json::json;
 
 #[test]
 fn node_and_edge_kinds_have_stable_ids() {
@@ -47,4 +48,28 @@ fn stable_hash_is_repeatable_for_graph_facts() {
 
     assert_eq!(first, second);
     assert_eq!(first.len(), 64);
+}
+
+#[test]
+fn graph_fact_serializes_stable_taxonomy_ids() {
+    let fact = GraphFact::new(
+        GraphScope::new("tenant-a", "project-a").with_repo("repo-a"),
+        GraphDomain::Repo,
+        "src/lib.rs",
+        "RepoIndexSnapshot",
+        EdgeKind::Defines,
+        Provenance::Extracted,
+    );
+
+    let value = serde_json::to_value(&fact).expect("serialize graph fact");
+
+    assert_eq!(value["domain"], json!("repo"));
+    assert_eq!(value["edge_kind"], json!("defines"));
+    assert_eq!(value["provenance"], json!("extracted"));
+    assert_eq!(value["freshness"]["source"], json!("unknown"));
+    assert_eq!(value["policy"], json!("allowed"));
+    assert_eq!(
+        serde_json::to_value(NodeKind::File).expect("serialize node kind"),
+        json!("repo.file")
+    );
 }

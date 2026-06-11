@@ -5,49 +5,89 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GraphDomain {
+    #[serde(rename = "repo")]
     Repo,
+    #[serde(rename = "workflow")]
     Workflow,
+    #[serde(rename = "tool")]
     Tool,
+    #[serde(rename = "memory")]
     Memory,
+    #[serde(rename = "policy")]
     Policy,
+    #[serde(rename = "run")]
     Run,
+    #[serde(rename = "artifact")]
     Artifact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
+    #[serde(rename = "repo.repository")]
     Repository,
+    #[serde(rename = "repo.file")]
     File,
+    #[serde(rename = "repo.symbol")]
     Symbol,
+    #[serde(rename = "repo.import")]
     Import,
+    #[serde(rename = "repo.test_target")]
     TestTarget,
+    #[serde(rename = "repo.config_entry")]
     ConfigEntry,
+    #[serde(rename = "repo.doc_section")]
     DocSection,
+    #[serde(rename = "workflow.template")]
     WorkflowTemplate,
+    #[serde(rename = "workflow.version")]
     WorkflowVersion,
+    #[serde(rename = "workflow.step")]
     WorkflowStep,
+    #[serde(rename = "workflow.dependency")]
     WorkflowDependency,
+    #[serde(rename = "workflow.approval_gate")]
     ApprovalGate,
+    #[serde(rename = "tool.mcp_server")]
     McpServer,
+    #[serde(rename = "tool.definition")]
     ToolDefinition,
+    #[serde(rename = "tool.credential")]
     Credential,
+    #[serde(rename = "tool.schema")]
     ToolSchema,
+    #[serde(rename = "tool.authority")]
     Authority,
+    #[serde(rename = "memory.tier")]
     MemoryTier,
+    #[serde(rename = "memory.collection")]
     MemoryCollection,
+    #[serde(rename = "memory.retrieved")]
     RetrievedMemory,
+    #[serde(rename = "memory.write_candidate")]
     MemoryWriteCandidate,
+    #[serde(rename = "policy.scope")]
     PolicyScope,
+    #[serde(rename = "policy.budget")]
     PolicyBudget,
+    #[serde(rename = "policy.sandbox_limit")]
     SandboxLimit,
+    #[serde(rename = "policy.data_boundary")]
     DataBoundary,
+    #[serde(rename = "run.run")]
     Run,
+    #[serde(rename = "run.model_call")]
     ModelCall,
+    #[serde(rename = "run.tool_call")]
     ToolCall,
+    #[serde(rename = "run.error")]
     Error,
+    #[serde(rename = "run.retry")]
     Retry,
+    #[serde(rename = "run.output")]
     Output,
+    #[serde(rename = "run.cost")]
     Cost,
+    #[serde(rename = "artifact.artifact")]
     Artifact,
 }
 
@@ -93,30 +133,55 @@ impl NodeKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EdgeKind {
+    #[serde(rename = "contains")]
     Contains,
+    #[serde(rename = "imports")]
     Imports,
+    #[serde(rename = "defines")]
     Defines,
+    #[serde(rename = "references")]
     References,
+    #[serde(rename = "configures")]
     Configures,
+    #[serde(rename = "documents")]
     Documents,
+    #[serde(rename = "tests")]
     Tests,
+    #[serde(rename = "likely_related")]
     LikelyRelated,
+    #[serde(rename = "changed_with")]
     ChangedWith,
+    #[serde(rename = "depends_on")]
     DependsOn,
+    #[serde(rename = "requires_approval")]
     RequiresApproval,
+    #[serde(rename = "requires_tool")]
     RequiresTool,
+    #[serde(rename = "requires_memory")]
     RequiresMemory,
+    #[serde(rename = "governed_by")]
     GovernedBy,
+    #[serde(rename = "produces")]
     Produces,
+    #[serde(rename = "consumes")]
     Consumes,
+    #[serde(rename = "observed_in")]
     ObservedIn,
+    #[serde(rename = "blocks")]
     Blocks,
+    #[serde(rename = "retries")]
     Retries,
+    #[serde(rename = "costs")]
     Costs,
+    #[serde(rename = "has_credential")]
     HasCredential,
+    #[serde(rename = "has_schema")]
     HasSchema,
+    #[serde(rename = "has_authority")]
     HasAuthority,
+    #[serde(rename = "visible_to")]
     VisibleTo,
+    #[serde(rename = "freshened_by")]
     FreshenedBy,
 }
 
