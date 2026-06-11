@@ -25,8 +25,20 @@ fn code_workflow_node() -> AutomationFlowNode {
 #[test]
 fn code_workflow_defaults_include_repo_context_tools() {
     let node = code_workflow_node();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let git_init = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace.path())
+        .arg("init")
+        .output()
+        .expect("git init");
+    assert!(git_init.status.success());
 
-    let requested = normalize_automation_requested_tools(&node, "/home/evan/tandem", Vec::new());
+    let requested = normalize_automation_requested_tools(
+        &node,
+        workspace.path().to_string_lossy().as_ref(),
+        Vec::new(),
+    );
 
     assert!(requested.contains(&"repo.context_bundle".to_string()));
     assert!(requested.contains(&"repo.search".to_string()));
