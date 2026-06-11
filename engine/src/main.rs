@@ -7,6 +7,8 @@ use std::{fs, io::Read, io::Write};
 use anyhow::Context;
 use chrono::{Datelike, TimeZone, Utc};
 use clap::{Parser, Subcommand};
+
+mod smoke;
 use flate2::{write::GzEncoder, Compression};
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -325,6 +327,42 @@ enum Command {
     Memory {
         #[command(subcommand)]
         action: MemoryCommand,
+    },
+    #[command(
+        about = "Run the end-to-end runtime smoke test (session prompt, approval gate, policy denial, memory)."
+    )]
+    #[command(
+        long_about = "Runs deterministic end-to-end scenarios against the governed runtime path:\nsession prompt round-trip, approval gate (submit -> awaiting_approval -> approve -> complete),\nagent policy denial with audit, and a governed memory put/search round-trip.\n\nBy default an isolated in-process server is booted with a fresh state directory and the\nlocal echo provider, so no network access or API keys are required. Use --against to\ntarget an already-running engine instead."
+    )]
+    Smoke {
+        #[arg(
+            long,
+            help = "Base URL of a running engine (e.g. http://127.0.0.1:39731). Omit to boot an isolated in-process server."
+        )]
+        against: Option<String>,
+        #[arg(
+            long,
+            env = "TANDEM_API_TOKEN",
+            help = "API token for --against mode (Authorization: Bearer)."
+        )]
+        token: Option<String>,
+        #[arg(
+            long,
+            help = "Run only the named scenario (repeatable): session-prompt, approval-gate, policy-denial, memory-roundtrip."
+        )]
+        scenario: Vec<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Emit machine-readable JSON results."
+        )]
+        json: bool,
+        #[arg(
+            long,
+            default_value_t = 60,
+            help = "Overall deadline in seconds; the run fails if scenarios have not finished."
+        )]
+        timeout_secs: u64,
     },
 }
 
@@ -989,6 +1027,25 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         },
+        Command::Smoke {
+            against,
+            token,
+            scenario,
+            json,
+            timeout_secs,
+        } => {
+            let all_passed = smoke::run_smoke(smoke::SmokeOptions {
+                against,
+                token,
+                scenarios: scenario,
+                json,
+                timeout_secs,
+            })
+            .await?;
+            if !all_passed {
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())

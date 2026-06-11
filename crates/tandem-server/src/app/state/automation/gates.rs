@@ -103,6 +103,10 @@ fn apply_gate_approval(
         gate.node_id.clone(),
         json!({
             "contract_kind": "approval_gate",
+            // Terminal-run accounting (`derive_terminal_run_state`) requires a
+            // terminal `status`; without it an approved gate node derives as
+            // "incomplete" and fails the run at finalization.
+            "status": "completed",
             "summary": format!("Gate `{}` approved.", gate.node_id),
             "content": {
                 "decision": "approve",
