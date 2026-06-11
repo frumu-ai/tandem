@@ -1,8 +1,8 @@
 use super::*;
 use crate::repo_intelligence_tool_support::*;
 use tandem_repo_intelligence::{
-    repo_context_bundle, repo_impact, repo_neighbors, repo_search, repo_symbol, JsonRepoIndexStore,
-    RepoContextBundleOptions,
+    repo_context_bundle, repo_context_bundle_metrics, repo_impact, repo_neighbors, repo_search,
+    repo_symbol, JsonRepoIndexStore, RepoContextBundleOptions,
 };
 
 pub(crate) struct RepoIndexTool;
@@ -256,12 +256,9 @@ impl Tool for RepoContextBundleTool {
                 result_limit: limit_arg(&args, 12, 50),
             },
         );
-        Ok(json_result(
-            "repo.context_bundle",
-            &repo_root,
-            &source,
-            json!(bundle),
-        ))
+        let mut result = json_result("repo.context_bundle", &repo_root, &source, json!(bundle));
+        result.metadata["metrics"] = json!(repo_context_bundle_metrics(&bundle));
+        Ok(result)
     }
 }
 

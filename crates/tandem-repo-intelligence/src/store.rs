@@ -1,6 +1,7 @@
 use crate::error::{RepoIntelligenceError, Result};
 use crate::extract_repo_facts;
-use crate::model::RepoIndexSnapshot;
+use crate::model::{RepoDebugExport, RepoIndexSnapshot};
+use crate::repo_debug_export;
 use crate::scanner::scan_repo;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,6 +26,9 @@ impl JsonRepoIndexStore {
         if let Some(store_path) = relative_store_path(root, &self.path) {
             manifest.retain(|entry| entry.path != store_path);
         }
+        if let Some(debug_path) = relative_store_path(root, &self.debug_export_path()) {
+            manifest.retain(|entry| entry.path != debug_path);
+        }
         let facts = extract_repo_facts(root, &manifest)?;
         let snapshot = RepoIndexSnapshot {
             root_label: root.to_string_lossy().to_string(),
@@ -33,6 +37,7 @@ impl JsonRepoIndexStore {
             facts,
         };
         self.save(&snapshot)?;
+        self.save_debug_export(&repo_debug_export(&snapshot))?;
         Ok(snapshot)
     }
 
@@ -67,6 +72,33 @@ impl JsonRepoIndexStore {
             path: self.path.clone(),
             source,
         })
+    }
+
+    pub fn debug_export_path(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("repo-graph.json")
+    }
+
+    pub fn save_debug_export(&self, export: &RepoDebugExport) -> Result<()> {
+        let path = self.debug_export_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| {
+                RepoIntelligenceError::WriteStore {
+                    path: parent.to_path_buf(),
+                    source,
+                }
+            })?;
+        }
+        let body = serde_json::to_vec_pretty(export).map_err(|source| {
+            RepoIntelligenceError::EncodeStore {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        std::fs::write(&path, body)
+            .map_err(|source| RepoIntelligenceError::WriteStore { path, source })
     }
 }
 

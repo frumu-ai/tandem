@@ -1,6 +1,7 @@
 use super::*;
 use tandem_repo_intelligence::{
-    extract_repo_facts, scan_repo, GraphRelation, JsonRepoIndexStore, RepoIndexSnapshot, SymbolKind,
+    extract_repo_facts, repo_index_metrics, repo_intelligence_event, scan_repo, GraphRelation,
+    JsonRepoIndexStore, RepoIndexSnapshot, SymbolKind,
 };
 
 pub(crate) fn repo_path_schema() -> Value {
@@ -40,6 +41,8 @@ pub(crate) fn snapshot_result(
     source: &str,
     snapshot: RepoIndexSnapshot,
 ) -> ToolResult {
+    let store = JsonRepoIndexStore::new(store_path(repo_root));
+    let metrics = repo_index_metrics(&snapshot);
     json_result(
         tool,
         repo_root,
@@ -50,7 +53,15 @@ pub(crate) fn snapshot_result(
             "symbols": snapshot.facts.symbols.len(),
             "imports": snapshot.facts.imports.len(),
             "config_references": snapshot.facts.config_references.len(),
-            "doc_headings": snapshot.facts.doc_headings.len()
+            "doc_headings": snapshot.facts.doc_headings.len(),
+            "metrics": metrics.clone(),
+            "debug_export_path": store.debug_export_path().to_string_lossy(),
+            "event": repo_intelligence_event(
+                format!("{tool}.completed"),
+                repo_root.to_string_lossy(),
+                Some(metrics),
+                None,
+            )
         }),
     )
 }

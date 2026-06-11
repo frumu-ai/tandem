@@ -13,6 +13,13 @@ async fn repo_tools_index_and_query_structured_metadata() {
 
     let index = RepoIndexTool.execute(args.clone()).await.expect("index");
     assert_eq!(index.metadata["structured"]["files"], json!(1));
+    assert_eq!(
+        index.metadata["structured"]["metrics"]["files_indexed"],
+        json!(1)
+    );
+    assert!(index.metadata["structured"]["debug_export_path"]
+        .as_str()
+        .is_some_and(|path| path.ends_with(".tandem/repo-graph.json")));
 
     let search = RepoSearchTool
         .execute(json!({
@@ -57,6 +64,10 @@ async fn repo_context_bundle_tool_scopes_symbols() {
     let symbols = result.metadata["structured"]["relevant_symbols"]
         .as_array()
         .expect("symbols");
+    assert!(result.metadata["metrics"]["likely_files"]
+        .as_u64()
+        .is_some_and(|count| count >= 1));
+    assert_eq!(result.metadata["metrics"]["relevant_symbols"], json!(1));
     assert!(symbols
         .iter()
         .any(|item| item["file_path"] == "packages/app/src/login.rs"));

@@ -236,6 +236,50 @@ pub struct RepoContextBundle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoIndexMetrics {
+    pub indexed_unix_ms: u128,
+    pub files_indexed: usize,
+    pub total_bytes: u64,
+    pub symbols: usize,
+    pub imports: usize,
+    pub config_references: usize,
+    pub doc_headings: usize,
+    pub graph_edges: usize,
+    pub top_file_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoContextBundleMetrics {
+    pub task: String,
+    pub estimated_chars: usize,
+    pub budget_chars: usize,
+    pub likely_files: usize,
+    pub relevant_symbols: usize,
+    pub graph_edges: usize,
+    pub suggested_first_reads: usize,
+    pub test_targets: usize,
+    pub gaps: usize,
+    pub top_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoDebugExport {
+    pub root_label: String,
+    pub generated_unix_ms: u128,
+    pub metrics: RepoIndexMetrics,
+    pub graph_edges: Vec<GraphEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoIntelligenceEvent {
+    pub event: String,
+    pub repo_root: String,
+    pub unix_ms: u128,
+    pub metrics: Option<RepoIndexMetrics>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoIndexSnapshot {
     pub root_label: String,
     pub indexed_unix_ms: u128,

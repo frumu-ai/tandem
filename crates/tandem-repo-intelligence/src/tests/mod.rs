@@ -1,3 +1,4 @@
+mod debug_export;
 mod query_context;
 mod regression_quality;
 mod scanner_extractors;
