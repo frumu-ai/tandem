@@ -5,11 +5,15 @@
 
 mod hash;
 mod ids;
+mod query_envelope;
 mod taxonomy;
 mod trust;
 
 pub use hash::{stable_graph_hash, StableGraphHash, StableGraphHashError};
 pub use ids::{EdgeId, GraphSchemaVersion, GraphScope, NodeId};
+pub use query_envelope::{
+    GraphQueryAudit, GraphQueryEnvelope, GraphQueryEnvelopeError, GraphQueryOutput,
+};
 pub use taxonomy::{
     EdgeKind, GraphDomain, GraphEdge, GraphFact, GraphNode, GraphPayload, NodeKind,
 };

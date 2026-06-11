@@ -1,7 +1,8 @@
 use super::*;
 use tandem_repo_intelligence::{
-    extract_repo_facts, repo_index_metrics, repo_intelligence_event, scan_repo, GraphRelation,
-    JsonRepoIndexStore, RepoIndexSnapshot, SymbolKind,
+    extract_repo_facts, graph_scope_for_repo, repo_index_metrics, repo_intelligence_event,
+    scan_repo, GraphQueryEnvelope, GraphRelation, JsonRepoIndexStore, RepoIndexSnapshot,
+    SymbolKind,
 };
 
 pub(crate) fn repo_path_schema() -> Value {
@@ -117,6 +118,34 @@ pub(crate) fn string_array(value: Option<&Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub(crate) fn graph_query_envelope(
+    args: &Value,
+    snapshot: &RepoIndexSnapshot,
+    tool: &str,
+    extra_allowed_tools: &[&str],
+) -> GraphQueryEnvelope {
+    let actor_id = string_arg(args, "actor_id").unwrap_or("local-agent");
+    let mut envelope =
+        GraphQueryEnvelope::new(graph_scope_for_repo(&snapshot.root_label), actor_id);
+    envelope.automation_id = string_arg(args, "automation_id").map(str::to_string);
+    envelope.run_id = string_arg(args, "run_id").map(str::to_string);
+    envelope.context_assertion = string_arg(args, "context_assertion").map(str::to_string);
+    envelope.budget_tokens = args.get("budget_tokens").and_then(Value::as_u64);
+    envelope.readable_paths = string_array(args.get("readable_paths"));
+    if envelope.readable_paths.is_empty() {
+        envelope.readable_paths = string_arg(args, "path_scope")
+            .map(|scope| vec![scope.to_string()])
+            .unwrap_or_else(|| vec![".".to_string()]);
+    }
+    envelope.writable_paths = string_array(args.get("writable_paths"));
+    envelope.allowed_memory_tiers = string_array(args.get("allowed_memory_tiers"));
+    envelope.approvals = string_array(args.get("approvals"));
+    envelope.allowed_tools = std::iter::once(tool.to_string())
+        .chain(extra_allowed_tools.iter().map(|tool| tool.to_string()))
+        .collect();
+    envelope
 }
 
 pub(crate) fn limit_arg(args: &Value, default: usize, max: usize) -> usize {

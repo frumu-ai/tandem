@@ -1,8 +1,9 @@
 use super::*;
 use crate::repo_intelligence_tool_support::*;
 use tandem_repo_intelligence::{
-    repo_context_bundle, repo_context_bundle_metrics, repo_impact, repo_neighbors, repo_search,
-    repo_symbol, JsonRepoIndexStore, RepoContextBundleOptions,
+    repo_context_bundle_governed, repo_context_bundle_metrics, repo_impact_governed,
+    repo_neighbors_governed, repo_search_governed, repo_symbol_governed, JsonRepoIndexStore,
+    RepoContextBundleOptions,
 };
 
 pub(crate) struct RepoIndexTool;
@@ -98,13 +99,22 @@ impl Tool for RepoSearchTool {
         };
         let query = args["query"].as_str().unwrap_or("").trim();
         let limit = limit_arg(&args, 20, 100);
-        let results = repo_search(&snapshot, query, limit, string_arg(&args, "path_scope"));
-        Ok(json_result(
+        let envelope = graph_query_envelope(&args, &snapshot, "repo.search", &[]);
+        let governed = repo_search_governed(
+            &envelope,
+            &snapshot,
+            query,
+            limit,
+            string_arg(&args, "path_scope"),
+        );
+        let mut result = json_result(
             "repo.search",
             &repo_root,
             &source,
-            json!({"query": query, "count": results.len(), "results": results}),
-        ))
+            json!({"query": query, "count": governed.value.len(), "results": governed.value}),
+        );
+        result.metadata["graph_query"] = json!(governed.audit);
+        Ok(result)
     }
 }
 
@@ -136,16 +146,22 @@ impl Tool for RepoSymbolTool {
         let query = args["query"].as_str().unwrap_or("").trim();
         let kind = string_arg(&args, "kind").and_then(parse_symbol_kind);
         let path_scope = string_arg(&args, "path_scope");
-        let results = repo_symbol(&snapshot, query, kind, limit_arg(&args, 20, 100))
+        let envelope = graph_query_envelope(&args, &snapshot, "repo.symbol", &[]);
+        let mut governed =
+            repo_symbol_governed(&envelope, &snapshot, query, kind, limit_arg(&args, 20, 100));
+        governed.value = governed
+            .value
             .into_iter()
             .filter(|result| in_scope(&result.file_path, path_scope))
             .collect::<Vec<_>>();
-        Ok(json_result(
+        let mut result = json_result(
             "repo.symbol",
             &repo_root,
             &source,
-            json!({"query": query, "count": results.len(), "results": results}),
-        ))
+            json!({"query": query, "count": governed.value.len(), "results": governed.value}),
+        );
+        result.metadata["graph_query"] = json!(governed.audit);
+        Ok(result)
     }
 }
 
@@ -175,13 +191,17 @@ impl Tool for RepoNeighborsTool {
         };
         let node = args["node_or_path"].as_str().unwrap_or("").trim();
         let relation = string_arg(&args, "relation").and_then(parse_relation);
-        let neighbors = repo_neighbors(&snapshot, node, relation, limit_arg(&args, 1, 4));
-        Ok(json_result(
+        let envelope = graph_query_envelope(&args, &snapshot, "repo.neighbors", &[]);
+        let governed =
+            repo_neighbors_governed(&envelope, &snapshot, node, relation, limit_arg(&args, 1, 4));
+        let mut result = json_result(
             "repo.neighbors",
             &repo_root,
             &source,
-            json!({"node_or_path": node, "count": neighbors.len(), "neighbors": neighbors}),
-        ))
+            json!({"node_or_path": node, "count": governed.value.len(), "neighbors": governed.value}),
+        );
+        result.metadata["graph_query"] = json!(governed.audit);
+        Ok(result)
     }
 }
 
@@ -207,13 +227,15 @@ impl Tool for RepoImpactTool {
         let Some((repo_root, snapshot, source)) = load_snapshot_for_query(&args)? else {
             return Ok(sandbox_path_denied_result(repo_path_arg(&args), &args));
         };
-        let impact = repo_impact(&snapshot, &string_array(args.get("changed_files")));
-        Ok(json_result(
-            "repo.impact",
-            &repo_root,
-            &source,
-            json!(impact),
-        ))
+        let envelope = graph_query_envelope(&args, &snapshot, "repo.impact", &[]);
+        let governed = repo_impact_governed(
+            &envelope,
+            &snapshot,
+            &string_array(args.get("changed_files")),
+        );
+        let mut result = json_result("repo.impact", &repo_root, &source, json!(governed.value));
+        result.metadata["graph_query"] = json!(governed.audit);
+        Ok(result)
     }
 }
 
@@ -245,7 +267,9 @@ impl Tool for RepoContextBundleTool {
             return Ok(sandbox_path_denied_result(repo_path_arg(&args), &args));
         };
         let task = args["task"].as_str().unwrap_or("").trim();
-        let bundle = repo_context_bundle(
+        let envelope = graph_query_envelope(&args, &snapshot, "repo.context_bundle", &[]);
+        let governed = repo_context_bundle_governed(
+            &envelope,
             &snapshot,
             task,
             RepoContextBundleOptions {
@@ -256,8 +280,14 @@ impl Tool for RepoContextBundleTool {
                 result_limit: limit_arg(&args, 12, 50),
             },
         );
-        let mut result = json_result("repo.context_bundle", &repo_root, &source, json!(bundle));
-        result.metadata["metrics"] = json!(repo_context_bundle_metrics(&bundle));
+        let mut result = json_result(
+            "repo.context_bundle",
+            &repo_root,
+            &source,
+            json!(governed.value),
+        );
+        result.metadata["metrics"] = json!(repo_context_bundle_metrics(&governed.value));
+        result.metadata["graph_query"] = json!(governed.audit);
         Ok(result)
     }
 }
@@ -284,17 +314,26 @@ impl Tool for RepoTestTargetsTool {
         let Some((repo_root, snapshot, source)) = load_snapshot_for_query(&args)? else {
             return Ok(sandbox_path_denied_result(repo_path_arg(&args), &args));
         };
-        let impact = repo_impact(&snapshot, &string_array(args.get("changed_files")));
-        let targets = impact
+        let envelope =
+            graph_query_envelope(&args, &snapshot, "repo.test_targets", &["repo.impact"]);
+        let governed = repo_impact_governed(
+            &envelope,
+            &snapshot,
+            &string_array(args.get("changed_files")),
+        );
+        let targets = governed
+            .value
             .likely_test_targets
             .iter()
             .map(|item| item.file_path.clone())
             .collect::<Vec<_>>();
-        Ok(json_result(
+        let mut result = json_result(
             "repo.test_targets",
             &repo_root,
             &source,
-            json!({"count": targets.len(), "test_targets": targets, "impact": impact}),
-        ))
+            json!({"count": targets.len(), "test_targets": targets, "impact": governed.value}),
+        );
+        result.metadata["graph_query"] = json!(governed.audit);
+        Ok(result)
     }
 }

@@ -82,3 +82,19 @@ claims or edits.
 repo, worktree, and run IDs. Hosted graph queries must fail closed when the
 caller lacks required scope; local repo-only adapters may use explicit local
 scope values while still populating repo/worktree fields.
+
+## Query Envelope
+
+Every agent-facing graph query must carry a `GraphQueryEnvelope` with:
+
+- graph scope: tenant, project, and repo/worktree/run identifiers where
+  applicable
+- actor and optional automation/run identifiers
+- readable and writable path scopes
+- allowed tool IDs, memory tiers, budgets, approvals, and context assertion
+  metadata
+
+Adapters validate the envelope before running a query. Tenant, project, repo,
+actor, tool, or readable-path failures are fail-closed. Path filtering may still
+return allowed results while reporting denied counts and reasons, but base
+scope/tool failures return no graph payload.

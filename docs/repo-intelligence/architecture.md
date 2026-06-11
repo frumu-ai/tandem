@@ -164,6 +164,10 @@ tenant/project visibility before they reach agents. Context bundles should
 include policy-denied counts or reasons without leaking hidden file names or
 payloads.
 
+`crates/tandem-graph-core` defines `GraphQueryEnvelope` and `GraphQueryAudit`;
+repo intelligence applies that envelope in governed query wrappers before the
+`repo.*` tool surface returns graph-derived results.
+
 ## Reuse Points
 
 Existing code that informed this slice:

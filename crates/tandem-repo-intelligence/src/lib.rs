@@ -8,6 +8,7 @@ mod context;
 mod debug;
 mod error;
 mod extractors;
+mod governed;
 mod graph_core;
 mod manifest;
 mod model;
@@ -21,6 +22,11 @@ pub use debug::{
 };
 pub use error::{RepoIntelligenceError, Result};
 pub use extractors::{extract_file_facts, extract_repo_facts};
+pub use governed::{
+    edges_by_relation_governed, repo_context_bundle_governed, repo_file_governed,
+    repo_impact_governed, repo_neighbors_governed, repo_search_governed, repo_symbol_governed,
+    symbols_by_kind_governed,
+};
 pub use graph_core::{
     confidence_provenance, graph_fact_for_edge, graph_scope_for_repo, relation_edge_kind,
     snapshot_freshness,
@@ -36,6 +42,7 @@ pub use model::{
 pub use query::{edges_by_relation, repo_file, repo_search, repo_symbol, symbols_by_kind};
 pub use scanner::{scan_repo, scan_repo_with_options};
 pub use store::JsonRepoIndexStore;
+pub use tandem_graph_core::{GraphQueryAudit, GraphQueryEnvelope, GraphQueryOutput};
 
 #[cfg(test)]
 mod tests;

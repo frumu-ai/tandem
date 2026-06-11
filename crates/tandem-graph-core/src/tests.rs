@@ -1,6 +1,6 @@
 use crate::{
-    stable_graph_hash, EdgeKind, Freshness, FreshnessSource, GraphDomain, GraphFact, GraphScope,
-    NodeKind, Provenance,
+    stable_graph_hash, EdgeKind, Freshness, FreshnessSource, GraphDomain, GraphFact,
+    GraphQueryEnvelope, GraphScope, NodeKind, Provenance,
 };
 use serde_json::json;
 
@@ -72,4 +72,27 @@ fn graph_fact_serializes_stable_taxonomy_ids() {
         serde_json::to_value(NodeKind::File).expect("serialize node kind"),
         json!("repo.file")
     );
+}
+
+#[test]
+fn graph_query_envelope_requires_scope_and_actor() {
+    let mut envelope = GraphQueryEnvelope::new(GraphScope::new("", "project-a"), "");
+    envelope.readable_paths.push("src".to_string());
+
+    let error = envelope.validate().expect_err("missing scope is denied");
+
+    assert_eq!(error.missing, vec!["tenant_id", "actor_id"]);
+}
+
+#[test]
+fn graph_query_envelope_checks_tools_and_paths() {
+    let mut envelope = GraphQueryEnvelope::new(GraphScope::new("tenant-a", "project-a"), "agent-a");
+    envelope.readable_paths.push("src".to_string());
+    envelope.allowed_tools.push("repo.search".to_string());
+
+    assert!(envelope.validate().is_ok());
+    assert!(envelope.allows_tool("repo.search"));
+    assert!(!envelope.allows_tool("repo.impact"));
+    assert!(envelope.allows_path("src/lib.rs"));
+    assert!(!envelope.allows_path("docs/private.md"));
 }

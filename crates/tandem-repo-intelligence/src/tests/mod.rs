@@ -1,4 +1,5 @@
 mod debug_export;
+mod governed;
 mod graph_core;
 mod query_context;
 mod regression_quality;
