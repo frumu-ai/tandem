@@ -72,3 +72,78 @@ pub struct IndexStats {
     pub unchanged_files: usize,
     pub deleted_files: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Confidence {
+    Extracted,
+    Inferred,
+    Summary,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SymbolKind {
+    Function,
+    Struct,
+    Enum,
+    Trait,
+    Impl,
+    Module,
+    Class,
+    Interface,
+    TypeAlias,
+    Constant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtractedSymbol {
+    pub file_path: String,
+    pub line: usize,
+    pub name: String,
+    pub kind: SymbolKind,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportEdge {
+    pub source_file: String,
+    pub line: usize,
+    pub target: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigReference {
+    pub file_path: String,
+    pub line: usize,
+    pub key: String,
+    pub value: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocHeading {
+    pub file_path: String,
+    pub line: usize,
+    pub level: usize,
+    pub title: String,
+    pub excerpt: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtractedFacts {
+    pub symbols: Vec<ExtractedSymbol>,
+    pub imports: Vec<ImportEdge>,
+    pub config_references: Vec<ConfigReference>,
+    pub doc_headings: Vec<DocHeading>,
+}
+
+impl ExtractedFacts {
+    pub fn extend(&mut self, next: ExtractedFacts) {
+        self.symbols.extend(next.symbols);
+        self.imports.extend(next.imports);
+        self.config_references.extend(next.config_references);
+        self.doc_headings.extend(next.doc_headings);
+    }
+}

@@ -98,3 +98,18 @@ Existing code that informed this slice:
 
 The new crate reuses the deterministic file-walking shape from desktop indexing
 without depending on Tauri, memory storage, or ACA internals.
+
+## Current Extraction MVP
+
+The first extraction pass is intentionally conservative and deterministic:
+
+- Rust: `use`, `fn`, `struct`, `enum`, `trait`, `impl`, and `mod`
+- TypeScript/JavaScript: `import`, exported/local functions, classes,
+  interfaces, type aliases, and constants
+- Python: `import`, `from ... import`, `def`, `async def`, and `class`
+- Config/docs: TOML/YAML/JSON-style key/value lines and Markdown headings with
+  short excerpts
+
+This MVP favors low false-positive rates and stable tests over deep language
+coverage. Tree-sitter or LSP-backed extraction can replace individual
+language extractors later without changing the public fact types.
