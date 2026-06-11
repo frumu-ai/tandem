@@ -19,7 +19,11 @@ pub fn repo_context_bundle(
 
     for term in &terms {
         likely_files.extend(repo_search(snapshot, term, limit, path_scope));
-        relevant_symbols.extend(repo_symbol(snapshot, term, None, limit));
+        relevant_symbols.extend(
+            repo_symbol(snapshot, term, None, limit)
+                .into_iter()
+                .filter(|result| in_scope(&result.file_path, path_scope)),
+        );
     }
 
     let impact = repo_impact(snapshot, &options.changed_files);
@@ -176,6 +180,20 @@ fn is_likely_test_file(path: &str) -> bool {
         || path.contains(".test.")
         || path.contains("_spec.")
         || path.contains(".spec.")
+}
+
+fn in_scope(path: &str, path_scope: Option<&str>) -> bool {
+    let Some(scope) = path_scope else {
+        return true;
+    };
+    let scope = scope.trim_matches('/');
+    if scope.is_empty() {
+        return true;
+    }
+    path == scope
+        || path
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn explanatory_edges(

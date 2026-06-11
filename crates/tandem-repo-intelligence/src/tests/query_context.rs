@@ -190,3 +190,38 @@ fn repo_context_bundle_is_budgeted_and_prioritizes_agent_reads() {
         .iter()
         .any(|path| path == "docs/handler.md"));
 }
+
+#[test]
+fn repo_context_bundle_scopes_relevant_symbols() {
+    let repo = TempDir::new().unwrap();
+    write(
+        repo.path().join("packages/app/src/login.rs"),
+        "pub fn login_flow() {}\n",
+    );
+    write(
+        repo.path().join("packages/admin/src/login.rs"),
+        "pub fn login_flow() {}\n",
+    );
+
+    let snapshot = JsonRepoIndexStore::new(repo.path().join("repo-index.json"))
+        .index_repo(repo.path())
+        .unwrap();
+    let bundle = repo_context_bundle(
+        &snapshot,
+        "login flow",
+        RepoContextBundleOptions {
+            path_scope: Some(String::from("packages/app")),
+            result_limit: 10,
+            ..RepoContextBundleOptions::default()
+        },
+    );
+
+    assert!(bundle
+        .relevant_symbols
+        .iter()
+        .any(|result| result.file_path == "packages/app/src/login.rs"));
+    assert!(!bundle
+        .relevant_symbols
+        .iter()
+        .any(|result| result.file_path == "packages/admin/src/login.rs"));
+}
