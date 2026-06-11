@@ -17,6 +17,7 @@ flowchart TD
   ROOT --> BROWSER[browser]
   ROOT --> STORAGE[storage]
   ROOT --> MEMORY[memory]
+  ROOT --> SMOKE[smoke]
   ROOT --> PROV[providers]
   ROOT --> CHAT[chat placeholder]
 
@@ -29,6 +30,7 @@ flowchart TD
   BROWSER --> DIAG[Browser diagnostics]
   STORAGE --> CLEAN[Storage doctor + cleanup]
   MEMORY --> IMPORT[Memory import utilities]
+  SMOKE --> E2E[End-to-end runtime smoke test]
 ```
 
 ## `serve`
@@ -66,6 +68,43 @@ tandem-engine status [OPTIONS]
 
 - `--hostname <HOSTNAME>` / `--host <HOSTNAME>`: Hostname or IP to check (default: `127.0.0.1`, env: `TANDEM_ENGINE_HOST`).
 - `--port <PORT>`: Port to check (default: `39731`, env: `TANDEM_ENGINE_PORT`).
+
+## `smoke`
+
+The standard install-verification step: a one-command end-to-end health check
+of the governed runtime path. By default it boots an isolated in-process
+server with a fresh state directory and the deterministic local echo
+provider, so it needs no network access and no API keys.
+
+```bash
+tandem-engine smoke [OPTIONS]
+```
+
+**Options:**
+
+- `--against <URL>`: Target an already-running engine instead of booting in-process.
+- `--token <TOKEN>`: API token for `--against` mode (env: `TANDEM_API_TOKEN`).
+- `--scenario <NAME>`: Run only the named scenario (repeatable): `session-prompt`, `approval-gate`, `policy-denial`, `memory-roundtrip`.
+- `--json`: Emit machine-readable JSON results.
+- `--timeout-secs <N>`: Overall deadline in seconds (default: `60`).
+
+**Scenarios:**
+
+- `session-prompt`: session create → `prompt_async` → assistant reply observed in the message log.
+- `approval-gate`: gated automation run reaches `awaiting_approval`, is approved through the gate API, and completes with the decision recorded in `gate_history`.
+- `policy-denial`: an agent-sourced governance mutation is rejected with a structured error and recorded in the protected audit log.
+- `memory-roundtrip`: governed memory `put` → `search` returns the stored fact.
+
+The exit code is non-zero if any scenario fails. The same check runs as the
+`engine-smoke` job in CI on every engine PR.
+
+```bash
+# In-process, all scenarios
+tandem-engine smoke
+
+# Against a running engine, JSON output for CI
+tandem-engine smoke --against http://127.0.0.1:39731 --token "$TANDEM_API_TOKEN" --json
+```
 
 ## `browser`
 

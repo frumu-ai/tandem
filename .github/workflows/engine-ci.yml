@@ -76,6 +76,31 @@ jobs:
       - name: Test browser sidecar
         run: cargo test -p tandem-browser
 
+  # TAN-227: one-command end-to-end health check over the governed runtime
+  # path (session prompt round-trip, approval gate, policy denial + audit,
+  # memory round-trip) against an isolated in-process server with the local
+  # echo provider — no network access or API keys.
+  engine-smoke:
+    name: Runtime Smoke Test (tandem-engine smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: engine-smoke
+
+      - name: Build tandem-engine
+        run: cargo build -p tandem-ai --bin tandem-engine
+
+      - name: Run runtime smoke test (in-process)
+        run: ./target/debug/tandem-engine smoke --json --timeout-secs 120
+
   workflow-runtime-fast-gate:
     name: Workflow Runtime Fast Gate
     runs-on: ubuntu-latest

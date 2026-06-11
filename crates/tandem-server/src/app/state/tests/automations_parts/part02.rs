@@ -1537,6 +1537,13 @@ async fn email_approval_golden_approve_path() {
         run.checkpoint.node_outputs["approval_gate"]["contract_kind"],
         json!("approval_gate")
     );
+    // Run finalization requires a terminal status on the gate output;
+    // without it the whole run derives as "terminal accounting missing"
+    // (caught by `tandem-engine smoke`, TAN-227).
+    assert_eq!(
+        run.checkpoint.node_outputs["approval_gate"]["status"],
+        json!("completed")
+    );
     assert!(
         run.checkpoint.pending_nodes.iter().any(|n| n == "send_email"),
         "send node is released for execution only after approval"

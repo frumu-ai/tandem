@@ -76,6 +76,43 @@ tandem-engine status
 tandem-engine status --hostname 127.0.0.1 --port 39731
 ```
 
+### `smoke`
+
+The standard install-verification step: a one-command end-to-end health
+check of the governed runtime path. Run it after installing or deploying
+Tandem, before a release, or whenever you suspect the runtime is unhealthy.
+
+```bash
+# Boot an isolated in-process server (fresh state dir, deterministic local
+# echo provider — no network access or API keys required) and run all
+# scenarios:
+tandem-engine smoke
+
+# Target an already-running engine instead:
+tandem-engine smoke --against http://127.0.0.1:39731 --token "$TANDEM_API_TOKEN"
+
+# Machine-readable output for CI, single scenario, custom deadline:
+tandem-engine smoke --json --scenario approval-gate --timeout-secs 120
+```
+
+Scenarios (all deterministic):
+
+| Scenario | What it proves |
+| --- | --- |
+| `session-prompt` | Session create → `prompt_async` → assistant reply lands in the message log. |
+| `approval-gate` | A gated automation run reaches `awaiting_approval`, is approved through the gate API, and completes with the decision recorded in `gate_history`. |
+| `policy-denial` | An agent-sourced governance mutation is rejected with a structured error, and (in-process) the denial is written to the protected audit log. |
+| `memory-roundtrip` | Governed memory `put` → `search` returns the stored fact. |
+
+Output is a PASS/FAIL table (or JSON with `--json`); the exit code is
+non-zero if any scenario fails. The same check runs as the `engine-smoke`
+job in CI on every engine PR.
+
+Notes for `--against` mode: the target engine keeps its own configured
+providers, so `session-prompt` uses that engine's default model (and may
+incur provider usage); the protected-audit file check is skipped because the
+state directory is not accessible remotely.
+
 ## Engine-Detected Execution Environment
 
 Engine runtime now detects host environment once at startup and treats it as canonical:
