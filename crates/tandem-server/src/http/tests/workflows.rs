@@ -838,6 +838,18 @@ async fn workflow_gate_pauses_run_and_resumes_after_human_approval() {
         entry["surface_payload"]["decide_endpoint"].as_str(),
         Some(format!("/workflows/runs/{run_id}/gate").as_str())
     );
+    // The demo gate has no rework_targets, so rework must not be advertised
+    // (the decide endpoint would reject it).
+    let advertised = entry["decisions"]
+        .as_array()
+        .expect("decisions array")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        !advertised.contains(&"rework"),
+        "rework advertised without targets: {advertised:?}"
+    );
 
     // An agent cannot decide the gate.
     let (status, body) = decide_workflow_gate(&app, &run_id, "approve", "agent").await;
@@ -872,6 +884,19 @@ async fn workflow_gate_pauses_run_and_resumes_after_human_approval() {
     assert!(run.awaiting_gate.is_none());
     assert_eq!(crm_calls.lock().await.len(), 1);
 
+    // The shadow automation mirror must reach a terminal state too.
+    let mirror_run_id = run.automation_run_id.clone().expect("mirror run id");
+    let mirror = state
+        .get_automation_v2_run(&mirror_run_id)
+        .await
+        .expect("mirror run");
+    assert_eq!(
+        mirror.status,
+        crate::AutomationRunStatus::Completed,
+        "mirror automation run stuck after gate approval: {:?}",
+        mirror.detail
+    );
+
     // The decision left a tamper-evident protected audit record.
     let audit = tokio::fs::read_to_string(&state.protected_audit_path)
         .await
@@ -901,6 +926,14 @@ async fn workflow_gate_cancel_never_runs_protected_action() {
         crm_calls.lock().await.is_empty(),
         "CRM write ran after cancel"
     );
+
+    // Cancel must also terminate the shadow automation mirror.
+    let mirror_run_id = run.automation_run_id.clone().expect("mirror run id");
+    let mirror = state
+        .get_automation_v2_run(&mirror_run_id)
+        .await
+        .expect("mirror run");
+    assert_eq!(mirror.status, crate::AutomationRunStatus::Cancelled);
 
     // A second decision on the settled gate is rejected with the winner.
     let (status, body) = decide_workflow_gate(&app, &run_id, "approve", "control_panel").await;

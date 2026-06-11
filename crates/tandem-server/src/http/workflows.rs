@@ -342,6 +342,17 @@ pub(super) async fn workflow_run_gate_decide(
             Json(json!({ "error": "workflow run not found", "code": "WORKFLOW_RUN_NOT_FOUND" })),
         ))?;
 
+    if decision == "approve" || decision == "cancel" {
+        crate::workflows::sync_workflow_gate_decision_to_mirror(
+            &state,
+            &updated,
+            &gate.action_id,
+            &decision,
+            &json!({ "decision": decision, "reason": input.reason }),
+        )
+        .await;
+    }
+
     // GOV-B8 parity: every gate decision leaves tamper-evident audit.
     let _ = crate::audit::append_protected_audit_event(
         &state,

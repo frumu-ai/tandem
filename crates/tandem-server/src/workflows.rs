@@ -828,6 +828,57 @@ async fn execute_actions(
     drive_workflow_actions(state, &automation, &automation_run.run_id, &actions, run, 0).await
 }
 
+/// Mirror a workflow gate decision onto the shadow automation-v2 run so the
+/// mirror reaches a terminal state instead of sticking in `Running`:
+/// approval completes the gate's mirror node (which also completes the
+/// mirror run when it was the last node); cancel cancels the mirror run.
+/// Rework leaves the mirror untouched — the re-driven actions re-sync it.
+pub(crate) async fn sync_workflow_gate_decision_to_mirror(
+    state: &AppState,
+    run: &WorkflowRunRecord,
+    action_id: &str,
+    decision: &str,
+    output: &Value,
+) {
+    let (Some(automation_id), Some(automation_run_id)) =
+        (run.automation_id.as_ref(), run.automation_run_id.as_ref())
+    else {
+        return;
+    };
+    let Some(automation) = state.get_automation_v2(automation_id).await else {
+        return;
+    };
+    match decision {
+        "approve" => {
+            let _ = sync_workflow_automation_action_completed(
+                state,
+                &automation,
+                automation_run_id,
+                action_id,
+                output,
+            )
+            .await;
+        }
+        "cancel" => {
+            let detail = format!("workflow gate `{action_id}` cancelled");
+            let _ = state
+                .update_automation_v2_run(automation_run_id, |row| {
+                    row.status = crate::AutomationRunStatus::Cancelled;
+                    row.detail = Some(detail.clone());
+                    row.finished_at_ms = Some(now_ms());
+                    crate::app::state::automation::lifecycle::record_automation_lifecycle_event(
+                        row,
+                        "workflow_gate_cancelled",
+                        Some(detail.clone()),
+                        None,
+                    );
+                })
+                .await;
+        }
+        _ => {}
+    }
+}
+
 /// Re-enter the dispatcher for a run whose gate was decided (status already
 /// reset to `Running` by the decision handler). Prepared actions are
 /// reconstructed from the workflow definition (manual runs) or the hook
@@ -924,13 +975,18 @@ fn workflow_pending_gate_from_spec(
             })
             .unwrap_or_default()
     };
+    let rework_targets = str_list("rework_targets");
     let mut decisions = str_list("decisions");
     if decisions.is_empty() {
-        decisions = vec![
-            "approve".to_string(),
-            "rework".to_string(),
-            "cancel".to_string(),
-        ];
+        decisions = vec!["approve".to_string(), "cancel".to_string()];
+        if !rework_targets.is_empty() {
+            decisions.insert(1, "rework".to_string());
+        }
+    }
+    // Never advertise a decision the decide endpoint would reject: rework
+    // without configured targets cannot succeed.
+    if rework_targets.is_empty() {
+        decisions.retain(|decision| decision != "rework");
     }
     tandem_workflows::WorkflowPendingGate {
         action_id: action_id.to_string(),
@@ -943,7 +999,7 @@ fn workflow_pending_gate_from_spec(
             .and_then(Value::as_str)
             .map(str::to_string),
         decisions,
-        rework_targets: str_list("rework_targets"),
+        rework_targets,
         requested_at_ms: now_ms(),
     }
 }
