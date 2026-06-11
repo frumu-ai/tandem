@@ -155,7 +155,7 @@ jobs:
       - name: Run workspace test suite
         run: |
           cargo nextest run --workspace --exclude tandem \
-            --features tandem-server/premium-governance \
+            --features tandem-ai/browser,tandem-server/premium-governance \
             --profile ci
 
       - name: Upload junit report
