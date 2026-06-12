@@ -1,5 +1,7 @@
 pub mod authority;
 pub mod cross_tenant;
+mod delegation;
+pub use delegation::*;
 pub mod governance;
 
 pub use cross_tenant::*;
