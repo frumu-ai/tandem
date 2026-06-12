@@ -167,8 +167,22 @@ impl DelegationProjection {
         if self.claims.delegate == self.claims.delegator {
             return Err("delegation_projection_self_delegation");
         }
-        let redelegation_allowed = self.claims.max_delegation_depth.unwrap_or(0) > 0;
-        if !redelegation_allowed
+        // Depth accounting across re-delegation chains: a context produced by
+        // a projection carries `remaining_delegation_depth`; projecting FROM
+        // such a context is itself a re-delegation and consumes one hop. The
+        // child's remaining depth is the requested depth clamped by the
+        // parent's remaining hops, so an intermediate delegate can never
+        // mint more depth than it was given.
+        let child_remaining = match parent.remaining_delegation_depth {
+            None => self.claims.max_delegation_depth.unwrap_or(0),
+            Some(0) => return Err("delegation_projection_depth_exhausted"),
+            Some(parent_remaining) => self
+                .claims
+                .max_delegation_depth
+                .unwrap_or(0)
+                .min(parent_remaining - 1),
+        };
+        if child_remaining == 0
             && self
                 .claims
                 .permissions
@@ -215,6 +229,25 @@ impl DelegationProjection {
             })
             .collect::<Vec<_>>();
 
+        // Carry the parent's explicit denials so a broad delegated scope
+        // (e.g. a whole project) cannot bypass narrower deny rules: the
+        // parent's deny-effect grants and scope-level denied resources keep
+        // applying inside the delegate's context.
+        let mut grants = grants;
+        for deny in parent
+            .grants
+            .iter()
+            .filter(|grant| grant.effect == crate::AccessEffect::Deny)
+        {
+            grants.push(deny.clone());
+        }
+        let mut scope = self.claims.resource_scope.clone();
+        for denied in &parent.resource_scope.denied_resources {
+            if !scope.denied_resources.contains(denied) {
+                scope.denied_resources.push(denied.clone());
+            }
+        }
+
         let assertion = crate::AssertionMetadata::new(
             parent.assertion.issuer.clone(),
             self.claims.audience.clone(),
@@ -229,27 +262,28 @@ impl DelegationProjection {
             parent.tenant_context.clone(),
             self.claims.delegate.clone(),
             parent.authority_chain.clone(),
-            self.claims.resource_scope.clone(),
+            scope,
             assertion,
         )
         .with_grants(grants)
-        .with_data_boundary(parent.data_boundary.clone()))
+        .with_data_boundary(parent.data_boundary.clone())
+        .with_remaining_delegation_depth(child_remaining))
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
     use super::*;
     use crate::{
         AssertionMetadata, AuthorityChain, RequestPrincipal, ResourceKind, ResourceRef,
         TenantContext,
     };
 
-    fn resource(id: &str) -> ResourceRef {
+    pub(crate) fn resource(id: &str) -> ResourceRef {
         ResourceRef::new("org-a", "workspace-a", ResourceKind::Document, id)
     }
 
-    fn parent_context() -> StrictTenantContext {
+    pub(crate) fn parent_context() -> StrictTenantContext {
         let delegator = PrincipalRef::human_user("lead-1");
         let project_root =
             ResourceRef::new("org-a", "workspace-a", ResourceKind::Project, "proj-1");
@@ -300,7 +334,7 @@ mod tests {
         .with_grants(grants)
     }
 
-    fn delegation_to(doc: &str) -> DelegationProjection {
+    pub(crate) fn delegation_to(doc: &str) -> DelegationProjection {
         let claims = DelegationProjectionClaims {
             version: "v1".to_string(),
             delegation_id: "delegation-1".to_string(),
@@ -461,6 +495,126 @@ mod tests {
         assert_eq!(
             redelegate.project_into_strict_context(&parent, 3_000),
             Err("delegation_projection_redelegation_forbidden")
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_fix_tests {
+    use super::tests_support::*;
+    use super::*;
+    use crate::{AccessEffect, ResourceKind, ResourceRef};
+
+    #[test]
+    fn broad_delegation_carries_parent_denies() {
+        // Parent: project-wide allow + a document-specific deny. Delegating
+        // the whole project must NOT launder away the deny (Codex P1).
+        let mut parent = parent_context();
+        let doc_denied = ResourceRef::new("org-a", "workspace-a", ResourceKind::Document, "doc-2")
+            .with_project_id("proj-1");
+        let doc_allowed = ResourceRef::new("org-a", "workspace-a", ResourceKind::Document, "doc-1")
+            .with_project_id("proj-1");
+        let project = ResourceRef::new("org-a", "workspace-a", ResourceKind::Project, "proj-1");
+        parent.grants.push(
+            ScopedGrant::new(
+                "deny-doc-2",
+                parent.principal.clone(),
+                doc_denied.clone(),
+                GrantSource::Direct,
+            )
+            .with_effect(AccessEffect::Deny)
+            .with_permissions(vec![AccessPermission::Read])
+            .with_data_classes(vec![DataClass::Internal]),
+        );
+
+        let mut projection = delegation_to("doc-1");
+        projection.claims.resource_scope = ResourceScope::root(project);
+        let delegated = projection
+            .project_into_strict_context(&parent, 3_000)
+            .expect("broad projection");
+
+        assert_eq!(
+            delegated
+                .evaluate_access(
+                    &doc_allowed,
+                    AccessPermission::Read,
+                    DataClass::Internal,
+                    3_000
+                )
+                .decision,
+            AccessDecision::Allow
+        );
+        assert_eq!(
+            delegated
+                .evaluate_access(
+                    &doc_denied,
+                    AccessPermission::Read,
+                    DataClass::Internal,
+                    3_000
+                )
+                .decision,
+            AccessDecision::Deny,
+            "parent's document-specific deny must survive a broad delegation"
+        );
+    }
+
+    #[test]
+    fn delegation_depth_is_decremented_across_the_chain() {
+        // Root delegates with one re-delegation hop; the chain cannot mint
+        // more depth for itself (Codex P1).
+        let mut parent = parent_context();
+        // The root delegator itself holds the Delegate permission on doc-1.
+        parent.grants.push(
+            ScopedGrant::new(
+                "grant-delegate",
+                parent.principal.clone(),
+                resource("doc-1"),
+                GrantSource::Direct,
+            )
+            .with_permissions(vec![AccessPermission::Delegate])
+            .with_data_classes(vec![DataClass::Internal]),
+        );
+        let mut first = delegation_to("doc-1");
+        first.claims.max_delegation_depth = Some(1);
+        first.claims.permissions = vec![AccessPermission::Read, AccessPermission::Delegate];
+        let delegate_a = first
+            .project_into_strict_context(&parent, 3_000)
+            .expect("first hop");
+        assert_eq!(delegate_a.remaining_delegation_depth, Some(1));
+
+        // Second hop: requesting a huge depth is clamped to 0, so granting
+        // the Delegate permission onward is rejected...
+        let mut greedy = delegation_to("doc-1");
+        greedy.claims.delegation_id = "delegation-2".to_string();
+        greedy.claims.parent_assertion_id = "delegation-1".to_string();
+        greedy.claims.delegator = delegate_a.principal.clone();
+        greedy.claims.delegate =
+            PrincipalRef::new(crate::PrincipalKind::ExternalDelegate, "a2a-worker-2");
+        greedy.claims.max_delegation_depth = Some(5);
+        greedy.claims.permissions = vec![AccessPermission::Read, AccessPermission::Delegate];
+        assert_eq!(
+            greedy.project_into_strict_context(&delegate_a, 3_000),
+            Err("delegation_projection_redelegation_forbidden")
+        );
+
+        // ...while a read-only second hop succeeds with zero remaining depth.
+        let mut second = greedy.clone();
+        second.claims.permissions = vec![AccessPermission::Read];
+        let delegate_b = second
+            .project_into_strict_context(&delegate_a, 3_000)
+            .expect("second hop");
+        assert_eq!(delegate_b.remaining_delegation_depth, Some(0));
+
+        // A third hop from the exhausted context is rejected outright.
+        let mut third = second.clone();
+        third.claims.delegation_id = "delegation-3".to_string();
+        third.claims.parent_assertion_id = "delegation-2".to_string();
+        third.claims.delegator = delegate_b.principal.clone();
+        third.claims.delegate =
+            PrincipalRef::new(crate::PrincipalKind::ExternalDelegate, "a2a-worker-3");
+        assert_eq!(
+            third.project_into_strict_context(&delegate_b, 3_000),
+            Err("delegation_projection_depth_exhausted")
         );
     }
 }
