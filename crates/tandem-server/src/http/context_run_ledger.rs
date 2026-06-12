@@ -39,6 +39,7 @@ pub(super) async fn context_run_ledger(
 pub(super) async fn context_run_governance_evidence_export(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     super::governance::premium_governance_required(&state)?;
@@ -77,6 +78,54 @@ pub(super) async fn context_run_governance_evidence_export(
         &policy_decision_ids,
     )
     .await;
+    // EAA-03 (TAN-28): the evidence package is a mixed-scope export (tool
+    // ledger + policy decisions + memory/protected audit + artifacts).
+    // Under a strict tenant projection the principal must hold explicit
+    // read authority for the run's audit-export resource at every data
+    // class included in the package; otherwise the whole export is
+    // rejected. A silently incomplete evidence package would itself be an
+    // integrity hazard, so this fails closed rather than filtering.
+    // Local/default exports (no strict projection) are unchanged.
+    if let Some(strict) = verified_tenant_context
+        .as_ref()
+        .and_then(|verified| verified.0.strict_projection.as_ref())
+    {
+        let export_resource_id = automation_run
+            .as_ref()
+            .map(|run| run.run_id.as_str())
+            .unwrap_or(context_run.run_id.as_str());
+        if let Some(denied) = governance_evidence_export_denial(
+            strict,
+            export_resource_id,
+            &policy_decisions,
+            crate::now_ms(),
+        ) {
+            let _ = crate::audit::append_protected_audit_event(
+                &state,
+                "audit.export.denied",
+                &tenant_context,
+                Some(strict.principal.id.clone()),
+                json!({
+                    "runID": export_resource_id,
+                    "resourceKind": "audit_export",
+                    "dataClass": denied,
+                    "reason": "missing read authority for included data class",
+                }),
+            )
+            .await;
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "export denied: principal lacks read authority for data class `{denied:?}` included in this evidence package"
+                    ),
+                    "code": "EXPORT_AUTHORITY_DENIED",
+                    "data_class": denied,
+                })),
+            ));
+        }
+    }
+
     let package = governance_evidence_package_for_records(
         &context_run,
         automation_run.as_ref(),
@@ -110,6 +159,46 @@ fn governance_evidence_status_error(status: StatusCode) -> (StatusCode, Json<Val
             "error": status.canonical_reason().unwrap_or("request failed"),
         })),
     )
+}
+
+/// EAA-03: decide whether a strict principal may export the governance
+/// evidence package for a run. The package's baseline content (tool-effect
+/// ledger, memory/protected audit, artifacts) is classified `Internal`;
+/// included policy decisions contribute their own data classes. Every
+/// class must be explicitly readable on the run's `AuditExport` resource —
+/// the same fail-closed `evaluate_access` grant evaluation used by
+/// memory/search filtering. Returns the first denied data class.
+fn governance_evidence_export_denial(
+    strict: &tandem_types::StrictTenantContext,
+    export_resource_id: &str,
+    policy_decisions: &[PolicyDecisionRecord],
+    now_ms: u64,
+) -> Option<tandem_types::DataClass> {
+    let mut required: Vec<tandem_types::DataClass> = vec![tandem_types::DataClass::Internal];
+    for decision in policy_decisions {
+        for data_class in &decision.data_classes {
+            if !required.contains(data_class) {
+                required.push(*data_class);
+            }
+        }
+    }
+    let resource = tandem_types::ResourceRef::new(
+        strict.tenant_context.org_id.clone(),
+        strict.tenant_context.workspace_id.clone(),
+        tandem_types::ResourceKind::AuditExport,
+        export_resource_id,
+    );
+    required.into_iter().find(|data_class| {
+        strict
+            .evaluate_access(
+                &resource,
+                tandem_types::AccessPermission::Read,
+                *data_class,
+                now_ms,
+            )
+            .decision
+            != tandem_types::AccessDecision::Allow
+    })
 }
 
 pub(super) fn context_run_ledger_summary_for_run(state: &AppState, run_id: &str) -> Value {
@@ -1468,5 +1557,117 @@ mod tests {
         )
         .with_grants(vec![grant])
         .with_data_boundary(tandem_types::DataBoundary::allow(vec![data_class]))
+    }
+}
+
+#[cfg(test)]
+mod export_authority_tests {
+    use super::*;
+
+    fn strict_context_with_classes(
+        run_id: &str,
+        data_classes: Vec<tandem_types::DataClass>,
+    ) -> tandem_types::StrictTenantContext {
+        let resource = tandem_types::ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            tandem_types::ResourceKind::AuditExport,
+            run_id,
+        );
+        let tenant_context =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "auditor-1");
+        let principal = tandem_types::PrincipalRef::human_user("auditor-1");
+        let grant = tandem_types::ScopedGrant::new(
+            "grant-export",
+            principal.clone(),
+            resource.clone(),
+            tandem_types::GrantSource::Direct,
+        )
+        .with_permissions(vec![tandem_types::AccessPermission::Read])
+        .with_data_classes(data_classes);
+        tandem_types::StrictTenantContext::new(
+            tenant_context,
+            principal.clone(),
+            tandem_types::AuthorityChain::from_request(
+                tandem_types::RequestPrincipal::authenticated_user(principal.id, "tandem-web"),
+            ),
+            tandem_types::ResourceScope::root(resource),
+            tandem_types::AssertionMetadata::new(
+                "tandem-web",
+                "tandem-runtime",
+                1_000,
+                9_999_999_999_999,
+                "assertion-export",
+            ),
+        )
+        .with_grants(vec![grant])
+    }
+
+    fn decision_with_classes(data_classes: Vec<tandem_types::DataClass>) -> PolicyDecisionRecord {
+        serde_json::from_value(json!({
+            "decision_id": "decision-1",
+            "tenant_context": TenantContext::local_implicit(),
+            "data_classes": data_classes,
+            "decision": "allow",
+            "reason_code": "test",
+            "reason": "test fixture",
+            "created_at_ms": 1_500,
+        }))
+        .expect("policy decision fixture")
+    }
+
+    #[test]
+    fn export_allowed_when_every_included_class_is_granted() {
+        let strict = strict_context_with_classes(
+            "run-1",
+            vec![
+                tandem_types::DataClass::Internal,
+                tandem_types::DataClass::Restricted,
+            ],
+        );
+        let decisions = vec![decision_with_classes(vec![
+            tandem_types::DataClass::Restricted,
+        ])];
+        assert_eq!(
+            governance_evidence_export_denial(&strict, "run-1", &decisions, 2_000),
+            None
+        );
+    }
+
+    #[test]
+    fn export_rejected_when_a_policy_decision_class_is_not_granted() {
+        // The principal can read Internal evidence but a included policy
+        // decision carries Restricted data: the whole package is rejected,
+        // so restricted data is never included in an unauthorized export.
+        let strict = strict_context_with_classes("run-1", vec![tandem_types::DataClass::Internal]);
+        let decisions = vec![decision_with_classes(vec![
+            tandem_types::DataClass::Restricted,
+        ])];
+        assert_eq!(
+            governance_evidence_export_denial(&strict, "run-1", &decisions, 2_000),
+            Some(tandem_types::DataClass::Restricted)
+        );
+    }
+
+    #[test]
+    fn export_rejected_without_any_grant_for_the_run_resource() {
+        // Grant is scoped to a different run: baseline Internal evidence is
+        // already unreadable, fail closed.
+        let strict =
+            strict_context_with_classes("run-other", vec![tandem_types::DataClass::Internal]);
+        assert_eq!(
+            governance_evidence_export_denial(&strict, "run-1", &[], 2_000),
+            Some(tandem_types::DataClass::Internal)
+        );
+    }
+
+    #[test]
+    fn expired_assertion_fails_closed() {
+        let strict = strict_context_with_classes("run-1", vec![tandem_types::DataClass::Internal]);
+        // now_ms beyond the assertion expiry of the fixture
+        assert_eq!(
+            governance_evidence_export_denial(&strict, "run-1", &[], 99_999_999_999_999),
+            Some(tandem_types::DataClass::Internal)
+        );
     }
 }

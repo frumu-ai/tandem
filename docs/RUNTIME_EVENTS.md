@@ -162,6 +162,7 @@ not every key.
 | `permission.wait.timeout` | A permission wait times out. | `sessionID`, `messageID`, `tool`, `requestID`, `timeoutMs` |
 | `approval.gate.tool.gated` | The approval gate intercepts a risky tool. | `sessionID`, `messageID`, `tool`, `riskTier`, `effect` |
 | `approval.decision.recorded` | An approval decision is recorded (audit). | `run_id`, `automation_id`, `node_id`, `decision`, `executed_as` |
+| `audit.export.denied` | A governance evidence export is rejected because the strict principal lacks read authority for an included data class (protected audit event). | `runID`, `resourceKind`, `dataClass`, `reason` |
 | `egress.preflight.denied` / `egress.preflight.approval_required` | Egress preflight inspection denies / gates an outbound action. | `sessionID`, `messageID`, `tool`, `riskTier`, `target`, `findings` |
 | `fintech.protected_action.approved` / `fintech.protected_action.denied` | A fintech-protected action is approved / denied. | `runID`, `automationID`, `tool`, `category`, `classification` |
 | `policy.decision.recorded` | A policy decision is persisted. | `decisionID`, `sessionID`, `messageID`, `runID`, `automationID` |
