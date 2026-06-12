@@ -73,6 +73,7 @@ runtime_event_types! {
     AgentTeamSpawnDenied => "agent_team.spawn.denied",
     AgentTeamSpawnRequested => "agent_team.spawn.requested",
     ApprovalDecisionRecorded => "approval.decision.recorded",
+    AuditExportDenied => "audit.export.denied",
     ApprovalGateToolGated => "approval.gate.tool.gated",
     AutomationReadOnlyWriteDenied => "automation.read_only_write.denied",
     AutomationUpdated => "automation.updated",
