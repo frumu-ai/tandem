@@ -51,9 +51,9 @@ pub enum FreshnessSource {
 pub struct Freshness {
     pub source: FreshnessSource,
     pub revision: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_at_unix_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_after_unix_ms: Option<u64>,
 }
 
@@ -130,13 +130,8 @@ impl Visibility {
     }
 
     pub fn allows_scope(&self, scope: &GraphScope) -> bool {
-        self.tenant_id
-            .as_ref()
-            .is_none_or(|tenant_id| tenant_id == &scope.tenant_id)
-            && self
-                .project_id
-                .as_ref()
-                .is_none_or(|project_id| project_id == &scope.project_id)
+        self.tenant_id.as_ref() == Some(&scope.tenant_id)
+            && self.project_id.as_ref() == Some(&scope.project_id)
             && self
                 .run_id
                 .as_ref()

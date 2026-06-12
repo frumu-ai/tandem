@@ -68,11 +68,24 @@ fn graph_fact_serializes_stable_taxonomy_ids() {
     assert_eq!(value["edge_kind"], json!("defines"));
     assert_eq!(value["provenance"], json!("extracted"));
     assert_eq!(value["freshness"]["source"], json!("unknown"));
+    assert!(value["freshness"].get("checked_at_unix_ms").is_none());
+    assert!(value["freshness"].get("stale_after_unix_ms").is_none());
     assert_eq!(value["policy"], json!("allowed"));
     assert_eq!(
         serde_json::to_value(NodeKind::File).expect("serialize node kind"),
         json!("repo.file")
     );
+}
+
+#[test]
+fn freshness_optional_metadata_does_not_change_default_serialization() {
+    let freshness = Freshness::from_revision(FreshnessSource::Commit, "abc123");
+    let value = serde_json::to_value(&freshness).expect("serialize freshness");
+
+    assert_eq!(value["source"], json!("commit"));
+    assert_eq!(value["revision"], json!("abc123"));
+    assert!(value.get("checked_at_unix_ms").is_none());
+    assert!(value.get("stale_after_unix_ms").is_none());
 }
 
 #[test]
@@ -169,6 +182,7 @@ fn freshness_and_visibility_report_staleness_and_scope() {
     assert!(visibility.redacted);
     assert!(visibility.allows_scope(&tenant_scope));
     assert!(!visibility.allows_scope(&other_scope));
+    assert!(!Visibility::default().allows_scope(&tenant_scope));
     assert_eq!(visibility.readable_paths, vec!["src", "docs"]);
 
     assert!(PolicyDecision::Allowed.is_allowed());
