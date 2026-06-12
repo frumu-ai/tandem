@@ -1,4 +1,4 @@
-use crate::graph_build::{graph_edge, graph_node, insert_optional, node_id, payload};
+use crate::graph_build::{insert_optional, node_id, payload, GraphBuildContext};
 use crate::{
     EdgeKind, Freshness, FreshnessSource, GraphEdge, GraphNode, GraphPayload, GraphRetentionPolicy,
     GraphScope, GraphStoragePartition, NodeId, NodeKind, Provenance, StableGraphHashError,
@@ -68,6 +68,12 @@ impl WorkflowGraph {
             &spec.version.workflow_hash,
         );
         let visibility = Visibility::for_scope(&spec.scope);
+        let context = GraphBuildContext::new(
+            &spec.scope,
+            freshness.clone(),
+            visibility.clone(),
+            Provenance::Configured,
+        );
         let partition = GraphStoragePartition::workflow_version(
             spec.scope.clone(),
             spec.version.workflow_hash.clone(),
@@ -85,8 +91,7 @@ impl WorkflowGraph {
             &spec.version.version_id,
         );
         let mut nodes = vec![
-            graph_node(
-                &spec.scope,
+            context.node(
                 NodeKind::WorkflowTemplate,
                 &spec.template.template_id,
                 spec.template.name.clone(),
@@ -94,37 +99,25 @@ impl WorkflowGraph {
                     ("template_id", spec.template.template_id.clone()),
                     ("owner_id", spec.template.owner_id.clone()),
                 ]),
-                freshness.clone(),
-                visibility.clone(),
-                Provenance::Configured,
             ),
-            graph_node(
-                &spec.scope,
+            context.node(
                 NodeKind::WorkflowVersion,
                 &spec.version.version_id,
                 spec.version.version_id.clone(),
                 version_payload(&spec.version),
-                freshness.clone(),
-                visibility.clone(),
-                Provenance::Configured,
             ),
         ];
-        let mut edges = vec![graph_edge(
-            &spec.scope,
+        let mut edges = vec![context.edge(
             EdgeKind::Contains,
             &template_id,
             &version_id,
             GraphPayload::new(),
-            freshness.clone(),
-            visibility.clone(),
-            Provenance::Configured,
         )?];
         let mut step_dependencies = Vec::new();
 
         for step in spec.steps {
             let step_id = node_id(&spec.scope, NodeKind::WorkflowStep, &step.step_id);
-            nodes.push(graph_node(
-                &spec.scope,
+            nodes.push(context.node(
                 NodeKind::WorkflowStep,
                 &step.step_id,
                 step.title.clone(),
@@ -132,19 +125,12 @@ impl WorkflowGraph {
                     ("step_id", step.step_id.clone()),
                     ("kind", step.kind.clone()),
                 ]),
-                freshness.clone(),
-                visibility.clone(),
-                Provenance::Configured,
             ));
-            edges.push(graph_edge(
-                &spec.scope,
+            edges.push(context.edge(
                 EdgeKind::Contains,
                 &version_id,
                 &step_id,
                 GraphPayload::new(),
-                freshness.clone(),
-                visibility.clone(),
-                Provenance::Configured,
             )?);
             add_dependency_edges(
                 &mut nodes,
@@ -152,7 +138,7 @@ impl WorkflowGraph {
                 &spec.scope,
                 &step_id,
                 &step,
-                &freshness,
+                &context,
             )?;
             step_dependencies.push((
                 step.step_id.clone(),
@@ -194,67 +180,62 @@ fn add_dependency_edges(
     scope: &GraphScope,
     step_id: &NodeId,
     step: &WorkflowStepGraphNode,
-    freshness: &Freshness,
+    context: &GraphBuildContext,
 ) -> Result<(), StableGraphHashError> {
-    let visibility = Visibility::for_scope(scope);
+    let dependency_context = context.with_scope(scope);
     for upstream in &step.depends_on {
         edges.push(edge_to_existing_step(
+            &dependency_context,
             scope,
             step_id,
             upstream,
-            freshness,
-            visibility.clone(),
         )?);
     }
+    let external_context = context.with_scope(scope);
     add_external_dependencies(
         nodes,
         edges,
-        scope,
+        &external_context,
         step_id,
         &step.required_tools,
         NodeKind::ToolDefinition,
         EdgeKind::RequiresTool,
-        freshness,
     )?;
     add_external_dependencies(
         nodes,
         edges,
-        scope,
+        &external_context,
         step_id,
         &step.memory_tiers,
         NodeKind::MemoryTier,
         EdgeKind::RequiresMemory,
-        freshness,
     )?;
     add_external_dependencies(
         nodes,
         edges,
-        scope,
+        &external_context,
         step_id,
         &step.approval_gates,
         NodeKind::ApprovalGate,
         EdgeKind::RequiresApproval,
-        freshness,
     )?;
     add_external_dependencies(
         nodes,
         edges,
-        scope,
+        &external_context,
         step_id,
         &step.policy_scopes,
         NodeKind::PolicyScope,
         EdgeKind::GovernedBy,
-        freshness,
     )?;
     add_external_dependencies(
         nodes,
         edges,
-        scope,
+        &external_context,
         step_id,
         &step.artifact_refs,
         NodeKind::Artifact,
         EdgeKind::Produces,
-        freshness,
     )?;
     Ok(())
 }
@@ -262,57 +243,37 @@ fn add_dependency_edges(
 fn add_external_dependencies(
     nodes: &mut Vec<GraphNode>,
     edges: &mut Vec<GraphEdge>,
-    scope: &GraphScope,
+    context: &GraphBuildContext,
     step_id: &NodeId,
     refs: &[String],
     kind: NodeKind,
     edge_kind: EdgeKind,
-    freshness: &Freshness,
 ) -> Result<(), StableGraphHashError> {
-    let visibility = Visibility::for_scope(scope);
     for reference in refs {
-        let target = node_id(scope, kind.clone(), reference);
-        nodes.push(graph_node(
-            scope,
+        let target = node_id(&step_id.scope, kind.clone(), reference);
+        nodes.push(context.node(
             kind.clone(),
             reference,
             reference.clone(),
             payload([("ref", reference.clone())]),
-            freshness.clone(),
-            visibility.clone(),
-            Provenance::Configured,
         ));
-        edges.push(graph_edge(
-            scope,
-            edge_kind.clone(),
-            step_id,
-            &target,
-            GraphPayload::new(),
-            freshness.clone(),
-            visibility.clone(),
-            Provenance::Configured,
-        )?);
+        edges.push(context.edge(edge_kind.clone(), step_id, &target, GraphPayload::new())?);
     }
     Ok(())
 }
 
 fn edge_to_existing_step(
+    context: &GraphBuildContext,
     scope: &GraphScope,
     step_id: &NodeId,
     upstream: &str,
-    freshness: &Freshness,
-    visibility: Visibility,
 ) -> Result<GraphEdge, StableGraphHashError> {
     let upstream_id = node_id(scope, NodeKind::WorkflowStep, upstream);
-    graph_edge(
-        scope,
+    context.edge(
         EdgeKind::DependsOn,
         step_id,
         &upstream_id,
         GraphPayload::new(),
-        freshness.clone(),
-        visibility,
-        Provenance::Configured,
     )
 }
 

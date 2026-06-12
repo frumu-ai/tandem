@@ -4,56 +4,83 @@ use crate::{
     NodeKind, PolicyDecision, Provenance, StableGraphHashError, Visibility,
 };
 
-pub(crate) fn graph_node(
-    scope: &GraphScope,
-    kind: NodeKind,
-    key: &str,
-    label: String,
-    payload: GraphPayload,
+#[derive(Debug, Clone)]
+pub(crate) struct GraphBuildContext {
+    scope: GraphScope,
     freshness: Freshness,
     visibility: Visibility,
     provenance: Provenance,
-) -> GraphNode {
-    GraphNode {
-        id: node_id(scope, kind.clone(), key),
-        kind,
-        label,
-        payload,
-        provenance,
-        freshness,
-        visibility,
-        policy: PolicyDecision::Allowed,
-    }
 }
 
-pub(crate) fn graph_edge(
-    scope: &GraphScope,
-    kind: EdgeKind,
-    source: &NodeId,
-    target: &NodeId,
-    payload: GraphPayload,
-    freshness: Freshness,
-    visibility: Visibility,
-    provenance: Provenance,
-) -> Result<GraphEdge, StableGraphHashError> {
-    let fact_hash = stable_graph_hash(&(kind.stable_id(), &source.key, &target.key, &payload))?;
-    Ok(GraphEdge {
-        id: EdgeId::new(
-            scope.clone(),
-            kind.stable_id(),
-            &source.key,
-            &target.key,
-            fact_hash,
-        ),
-        kind,
-        source: source.clone(),
-        target: target.clone(),
-        payload,
-        provenance,
-        freshness,
-        visibility,
-        policy: PolicyDecision::Allowed,
-    })
+impl GraphBuildContext {
+    pub(crate) fn new(
+        scope: &GraphScope,
+        freshness: Freshness,
+        visibility: Visibility,
+        provenance: Provenance,
+    ) -> Self {
+        Self {
+            scope: scope.clone(),
+            freshness,
+            visibility,
+            provenance,
+        }
+    }
+
+    pub(crate) fn with_scope(&self, scope: &GraphScope) -> Self {
+        Self {
+            scope: scope.clone(),
+            freshness: self.freshness.clone(),
+            visibility: self.visibility.clone(),
+            provenance: self.provenance.clone(),
+        }
+    }
+
+    pub(crate) fn node(
+        &self,
+        kind: NodeKind,
+        key: &str,
+        label: String,
+        payload: GraphPayload,
+    ) -> GraphNode {
+        GraphNode {
+            id: node_id(&self.scope, kind.clone(), key),
+            kind,
+            label,
+            payload,
+            provenance: self.provenance.clone(),
+            freshness: self.freshness.clone(),
+            visibility: self.visibility.clone(),
+            policy: PolicyDecision::Allowed,
+        }
+    }
+
+    pub(crate) fn edge(
+        &self,
+        kind: EdgeKind,
+        source: &NodeId,
+        target: &NodeId,
+        payload: GraphPayload,
+    ) -> Result<GraphEdge, StableGraphHashError> {
+        let fact_hash = stable_graph_hash(&(kind.stable_id(), &source.key, &target.key, &payload))?;
+        Ok(GraphEdge {
+            id: EdgeId::new(
+                self.scope.clone(),
+                kind.stable_id(),
+                &source.key,
+                &target.key,
+                fact_hash,
+            ),
+            kind,
+            source: source.clone(),
+            target: target.clone(),
+            payload,
+            provenance: self.provenance.clone(),
+            freshness: self.freshness.clone(),
+            visibility: self.visibility.clone(),
+            policy: PolicyDecision::Allowed,
+        })
+    }
 }
 
 pub(crate) fn node_id(scope: &GraphScope, kind: NodeKind, key: &str) -> NodeId {

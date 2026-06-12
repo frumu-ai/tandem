@@ -122,10 +122,16 @@ fn run_trace_spec_builds_redacted_run_graph_and_audit_marker() {
         .nodes
         .iter()
         .any(|node| node.kind == NodeKind::ToolCall));
-    assert!(graph
-        .edges
-        .iter()
-        .any(|edge| edge.kind == EdgeKind::ObservedIn));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == EdgeKind::ObservedIn
+            && edge.target.kind == NodeKind::WorkflowVersion.stable_id()
+            && edge.target.scope.run_id.is_none()
+    }));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == EdgeKind::ObservedIn
+            && edge.target.kind == NodeKind::WorkflowStep.stable_id()
+            && edge.target.scope.run_id.is_none()
+    }));
     assert_eq!(
         graph.audit_event.event_type,
         GraphAuditEventType::RunTraceCaptured

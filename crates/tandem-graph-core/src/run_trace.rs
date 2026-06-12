@@ -1,4 +1,4 @@
-use crate::graph_build::{graph_edge, graph_node, insert_optional, node_id, payload};
+use crate::graph_build::{insert_optional, node_id, payload, GraphBuildContext};
 use crate::{
     EdgeKind, Freshness, FreshnessSource, GraphAuditEvent, GraphAuditEventType, GraphAuditTarget,
     GraphEdge, GraphNode, GraphPayload, GraphRetentionPolicy, GraphScope, GraphStoragePartition,
@@ -69,46 +69,35 @@ impl RunTraceGraph {
         actor_id: impl Into<String>,
     ) -> Result<Self, StableGraphHashError> {
         spec.scope.run_id = Some(spec.run_id.clone());
+        let workflow_scope = workflow_graph_scope(&spec.scope);
         let freshness = Freshness::from_revision(FreshnessSource::Run, &spec.run_id);
         let visibility = Visibility::for_scope(&spec.scope).redacted();
+        let run_context = GraphBuildContext::new(
+            &spec.scope,
+            freshness.clone(),
+            visibility.clone(),
+            Provenance::Observed,
+        );
         let partition = GraphStoragePartition::run_ephemeral(
             spec.scope.clone(),
             GraphRetentionPolicy::audit_retained(86_400_000),
         );
         let run_id = node_id(&spec.scope, NodeKind::Run, &spec.run_id);
-        let mut nodes = vec![graph_node(
-            &spec.scope,
+        let mut nodes = vec![run_context.node(
             NodeKind::Run,
             &spec.run_id,
             spec.run_id.clone(),
             run_payload(&spec),
-            freshness.clone(),
-            visibility.clone(),
-            Provenance::Observed,
         )];
         let mut edges = Vec::new();
 
         if let Some(version_id) = &spec.workflow_version_id {
-            let workflow_version = node_id(&spec.scope, NodeKind::WorkflowVersion, version_id);
-            nodes.push(graph_node(
-                &spec.scope,
-                NodeKind::WorkflowVersion,
-                version_id,
-                version_id.clone(),
-                payload([("version_id", version_id.clone())]),
-                freshness.clone(),
-                visibility.clone(),
-                Provenance::Observed,
-            ));
-            edges.push(graph_edge(
-                &spec.scope,
+            let workflow_version = node_id(&workflow_scope, NodeKind::WorkflowVersion, version_id);
+            edges.push(run_context.edge(
                 EdgeKind::ObservedIn,
                 &run_id,
                 &workflow_version,
                 GraphPayload::new(),
-                freshness.clone(),
-                visibility.clone(),
-                Provenance::Observed,
             )?);
         }
 
@@ -116,33 +105,25 @@ impl RunTraceGraph {
         for event in &spec.events {
             denied += event.policy_denied as u64;
             let event_id = node_id(&spec.scope, event.kind.node_kind(), &event.event_id);
-            nodes.push(graph_node(
-                &spec.scope,
+            nodes.push(run_context.node(
                 event.kind.node_kind(),
                 &event.event_id,
                 event.event_id.clone(),
                 event_payload(event),
-                freshness.clone(),
-                visibility.clone(),
-                Provenance::Observed,
             ));
-            edges.push(graph_edge(
-                &spec.scope,
+            edges.push(run_context.edge(
                 EdgeKind::Contains,
                 &run_id,
                 &event_id,
                 GraphPayload::new(),
-                freshness.clone(),
-                visibility.clone(),
-                Provenance::Observed,
             )?);
             add_trace_links(
                 &mut nodes,
                 &mut edges,
-                &spec.scope,
+                &run_context,
+                &workflow_scope,
                 &event_id,
                 event,
-                &freshness,
             )?;
         }
 
@@ -201,113 +182,97 @@ impl RunTraceEventKind {
 fn add_trace_links(
     nodes: &mut Vec<GraphNode>,
     edges: &mut Vec<GraphEdge>,
-    scope: &GraphScope,
+    run_context: &GraphBuildContext,
+    workflow_scope: &GraphScope,
     event_id: &NodeId,
     event: &RunTraceEvent,
-    freshness: &Freshness,
 ) -> Result<(), StableGraphHashError> {
-    let visibility = Visibility::for_scope(scope).redacted();
     if let Some(step_id) = &event.workflow_step_id {
-        add_link(
-            nodes,
-            edges,
-            scope,
-            event_id,
-            NodeKind::WorkflowStep,
-            step_id,
+        edges.push(run_context.edge(
             EdgeKind::ObservedIn,
-            freshness,
-            &visibility,
-        )?;
+            event_id,
+            &node_id(workflow_scope, NodeKind::WorkflowStep, step_id),
+            GraphPayload::new(),
+        )?);
     }
     if let Some(tool_name) = &event.tool_name {
         add_link(
             nodes,
             edges,
-            scope,
+            run_context,
             event_id,
-            NodeKind::ToolDefinition,
-            tool_name,
-            EdgeKind::RequiresTool,
-            freshness,
-            &visibility,
+            LinkTarget::new(NodeKind::ToolDefinition, tool_name, EdgeKind::RequiresTool),
         )?;
     }
     if let Some(memory_tier) = &event.memory_tier {
         add_link(
             nodes,
             edges,
-            scope,
+            run_context,
             event_id,
-            NodeKind::MemoryTier,
-            memory_tier,
-            EdgeKind::RequiresMemory,
-            freshness,
-            &visibility,
+            LinkTarget::new(NodeKind::MemoryTier, memory_tier, EdgeKind::RequiresMemory),
         )?;
     }
     if let Some(policy_scope) = &event.policy_scope {
         add_link(
             nodes,
             edges,
-            scope,
+            run_context,
             event_id,
-            NodeKind::PolicyScope,
-            policy_scope,
-            EdgeKind::GovernedBy,
-            freshness,
-            &visibility,
+            LinkTarget::new(NodeKind::PolicyScope, policy_scope, EdgeKind::GovernedBy),
         )?;
     }
     if let Some(artifact_ref) = &event.artifact_ref {
         add_link(
             nodes,
             edges,
-            scope,
+            run_context,
             event_id,
-            NodeKind::Artifact,
-            artifact_ref,
-            EdgeKind::Produces,
-            freshness,
-            &visibility,
+            LinkTarget::new(NodeKind::Artifact, artifact_ref, EdgeKind::Produces),
         )?;
     }
     Ok(())
 }
 
+struct LinkTarget<'a> {
+    kind: NodeKind,
+    key: &'a str,
+    edge_kind: EdgeKind,
+}
+
+impl<'a> LinkTarget<'a> {
+    fn new(kind: NodeKind, key: &'a str, edge_kind: EdgeKind) -> Self {
+        Self {
+            kind,
+            key,
+            edge_kind,
+        }
+    }
+}
+
 fn add_link(
     nodes: &mut Vec<GraphNode>,
     edges: &mut Vec<GraphEdge>,
-    scope: &GraphScope,
+    context: &GraphBuildContext,
     source: &NodeId,
-    kind: NodeKind,
-    key: &str,
-    edge_kind: EdgeKind,
-    freshness: &Freshness,
-    visibility: &Visibility,
+    target: LinkTarget<'_>,
 ) -> Result<(), StableGraphHashError> {
-    let target = node_id(scope, kind.clone(), key);
-    nodes.push(graph_node(
-        scope,
-        kind,
-        key,
-        key.to_string(),
-        payload([("ref", key.to_string())]),
-        freshness.clone(),
-        visibility.clone(),
-        Provenance::Observed,
+    let target_id = node_id(&source.scope, target.kind.clone(), target.key);
+    nodes.push(context.node(
+        target.kind,
+        target.key,
+        target.key.to_string(),
+        payload([("ref", target.key.to_string())]),
     ));
-    edges.push(graph_edge(
-        scope,
-        edge_kind,
-        source,
-        &target,
-        GraphPayload::new(),
-        freshness.clone(),
-        visibility.clone(),
-        Provenance::Observed,
-    )?);
+    edges.push(context.edge(target.edge_kind, source, &target_id, GraphPayload::new())?);
     Ok(())
+}
+
+fn workflow_graph_scope(scope: &GraphScope) -> GraphScope {
+    GraphScope {
+        run_id: None,
+        ..scope.clone()
+    }
 }
 
 fn run_payload(spec: &RunTraceGraphSpec) -> GraphPayload {
