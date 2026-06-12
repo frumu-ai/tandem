@@ -526,6 +526,43 @@ pub(super) fn filter_mcp_snapshot_by_tool_scope(
     snapshot
 }
 
+/// Locate the security descriptor for an invoked `mcp.{server}.{tool}`
+/// name in the live inventory snapshot. Returns `None` when the invocation
+/// does not name a known MCP tool (built-in tools are not discovery-filtered
+/// and stay on their existing policy paths).
+/// Split an invoked tool name into `(server_segment, bare_tool)` when it
+/// names an MCP tool (`mcp.{server}.{tool}`).
+fn parse_mcp_invocation(invoked_tool: &str) -> Option<(&str, &str)> {
+    let rest = invoked_tool.strip_prefix("mcp.")?;
+    let (segment, bare_tool) = rest.split_once('.')?;
+    if segment.is_empty() || bare_tool.is_empty() {
+        return None;
+    }
+    Some((segment, bare_tool))
+}
+
+pub(crate) async fn mcp_tool_security_for_invocation(
+    state: &AppState,
+    invoked_tool: &str,
+) -> Option<(String, Option<Value>)> {
+    let (segment, bare_tool) = parse_mcp_invocation(invoked_tool)?;
+    let snapshot = mcp_inventory_snapshot(state).await;
+    let servers = snapshot.get("servers")?.as_array()?;
+    for row in servers {
+        let server_name = row.get("name").and_then(Value::as_str).unwrap_or("");
+        if mcp_namespace_segment(server_name) != segment {
+            continue;
+        }
+        let security = row
+            .get("tool_security")
+            .and_then(Value::as_object)
+            .and_then(|map| map.get(bare_tool))
+            .cloned();
+        return Some((bare_tool.to_string(), security));
+    }
+    None
+}
+
 pub(super) fn filter_mcp_snapshot_by_discovery_authorization(
     snapshot: Value,
     strict_context: Option<&StrictTenantContext>,
@@ -611,7 +648,12 @@ pub(super) fn session_mcp_tool_filter(session_tools: &[String]) -> McpToolScopeF
     parse_mcp_tool_scope_filter(session_tools)
 }
 
-fn mcp_tool_authorized_for_discovery(
+/// Shared authorization decision for an MCP tool against a strict tenant
+/// principal. Used by BOTH discovery filtering and execution-time
+/// re-checking (EAA-02 / TAN-27): a tool hidden from the offered list is
+/// denied with the exact same normalized descriptor and grant evaluation
+/// when named directly by a hand-crafted or model-generated invocation.
+pub(crate) fn mcp_tool_authorized_for_discovery(
     strict_context: Option<&StrictTenantContext>,
     tool_name: &str,
     security: Option<&Value>,
@@ -949,5 +991,103 @@ mod tests {
             Some(&security),
             2_000,
         ));
+    }
+
+    // ── EAA-02 (TAN-27): execution-time authorization ───────────────────
+
+    fn strict_context_with_permissions(
+        permissions: Vec<tandem_types::AccessPermission>,
+        tool_name: &str,
+    ) -> tandem_types::StrictTenantContext {
+        let resource = tandem_types::ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            tandem_types::ResourceKind::McpTool,
+            tool_name,
+        );
+        let tenant_context =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
+        let principal = tandem_types::PrincipalRef::human_user("actor-a");
+        let grant = tandem_types::ScopedGrant::new(
+            "grant-exec",
+            principal.clone(),
+            resource.clone(),
+            tandem_types::GrantSource::Direct,
+        )
+        .with_permissions(permissions)
+        .with_data_classes(vec![
+            tandem_types::DataClass::Internal,
+            tandem_types::DataClass::Credential,
+        ]);
+        tandem_types::StrictTenantContext::new(
+            tenant_context,
+            principal.clone(),
+            tandem_types::AuthorityChain::from_request(
+                tandem_types::RequestPrincipal::authenticated_user(principal.id, "tandem-web"),
+            ),
+            tandem_types::ResourceScope::root(resource),
+            tandem_types::AssertionMetadata::new(
+                "tandem-web",
+                "tandem-runtime",
+                1_000,
+                9_999_999_999_999,
+                "assertion-execution",
+            ),
+        )
+        .with_grants(vec![grant])
+    }
+
+    #[test]
+    fn execution_authorization_is_the_same_decision_as_discovery() {
+        // A discovery-hidden tool must be equally denied when named directly
+        // by a hand-crafted invocation: both paths call the same function
+        // with the same descriptor.
+        let tool_name = "mcp.enterprise_admin.rotate_credential";
+        let descriptor = ToolSecurityDescriptor::new()
+            .permission(AccessPermission::Admin)
+            .resource_kind(ResourceKind::McpTool)
+            .data_class(DataClass::Internal)
+            .admin_surface()
+            .hidden_by_default()
+            .risk_tier(ToolRiskTier::CredentialAdmin);
+        let security = serde_json::to_value(descriptor).unwrap();
+
+        let read_only =
+            strict_context_with_permissions(vec![tandem_types::AccessPermission::Read], tool_name);
+        assert!(
+            !mcp_tool_authorized_for_discovery(Some(&read_only), tool_name, Some(&security), 2_000),
+            "read-only principal must be denied execution of a hidden admin tool"
+        );
+
+        // The required Admin grant flips both discovery and execution to allow.
+        let admin =
+            strict_context_with_permissions(vec![tandem_types::AccessPermission::Admin], tool_name);
+        assert!(
+            mcp_tool_authorized_for_discovery(Some(&admin), tool_name, Some(&security), 2_000),
+            "an explicit admin grant must authorize execution"
+        );
+
+        // Local/unscoped sessions are unchanged: no strict context, no denial.
+        assert!(mcp_tool_authorized_for_discovery(
+            None,
+            tool_name,
+            Some(&security),
+            2_000
+        ));
+    }
+
+    #[test]
+    fn invocation_parsing_matches_only_mcp_tool_names() {
+        assert_eq!(
+            parse_mcp_invocation("mcp.github.create_issue"),
+            Some(("github", "create_issue"))
+        );
+        // Built-in tools are not discovery-filtered and must not match the
+        // execution-time re-check.
+        assert_eq!(parse_mcp_invocation("read"), None);
+        assert_eq!(parse_mcp_invocation("bash"), None);
+        assert_eq!(parse_mcp_invocation("mcp."), None);
+        assert_eq!(parse_mcp_invocation("mcp.github."), None);
+        assert_eq!(parse_mcp_invocation("mcp..tool"), None);
     }
 }

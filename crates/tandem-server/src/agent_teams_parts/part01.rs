@@ -836,6 +836,62 @@ impl ToolPolicyHook for ServerToolPolicyHook {
         let state = self.state.clone();
         Box::pin(async move {
             let tool = normalize_tool_name(&ctx.tool);
+            // EAA-02 (TAN-27): discovery filtering hides unauthorized MCP
+            // tools from the offered list, but a hand-crafted or
+            // model-generated invocation can still name them. Re-check the
+            // exact same authorization at execution time, failing closed
+            // only when a strict tenant projection is present so
+            // local/unscoped sessions are unchanged.
+            if let Some(strict) = ctx
+                .verified_tenant_context
+                .as_ref()
+                .and_then(|verified| verified.strict_projection.as_ref())
+            {
+                if let Some((bare_tool, security)) =
+                    crate::http::mcp_inventory::mcp_tool_security_for_invocation(&state, &tool)
+                        .await
+                {
+                    if !crate::http::mcp_inventory::mcp_tool_authorized_for_discovery(
+                        Some(strict),
+                        &bare_tool,
+                        security.as_ref(),
+                        crate::now_ms(),
+                    ) {
+                        let reason = format!(
+                            "tool `{tool}` is not authorized for this principal (execution-time authorization)"
+                        );
+                        state.event_bus.publish(EngineEvent::new(
+                            "tool.execution.denied",
+                            json!({
+                                "sessionID": ctx.session_id,
+                                "messageID": ctx.message_id,
+                                "tool": tool,
+                                "reason": reason,
+                                "principal": strict.principal.id,
+                                "timestampMs": crate::now_ms(),
+                            }),
+                        ));
+                        let _ = crate::audit::append_protected_audit_event(
+                            &state,
+                            "tool.execution.denied",
+                            &strict.tenant_context,
+                            Some(strict.principal.id.clone()),
+                            json!({
+                                "sessionID": ctx.session_id,
+                                "messageID": ctx.message_id,
+                                "tool": tool,
+                                "reason": reason,
+                            }),
+                        )
+                        .await;
+                        return Ok(ToolPolicyDecision {
+                            allowed: false,
+                            reason: Some(reason),
+                            policy_decision_id: None,
+                        });
+                    }
+                }
+            }
             if let Some(policy) = state.routine_session_policy(&ctx.session_id).await {
                 let allowed_patterns = policy
                     .allowed_tools
