@@ -98,6 +98,7 @@ pub(super) async fn context_run_governance_evidence_export(
             strict,
             export_resource_id,
             &policy_decisions,
+            automation_run.as_ref(),
             crate::now_ms(),
         ) {
             let _ = crate::audit::append_protected_audit_event(
@@ -172,6 +173,7 @@ fn governance_evidence_export_denial(
     strict: &tandem_types::StrictTenantContext,
     export_resource_id: &str,
     policy_decisions: &[PolicyDecisionRecord],
+    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
     now_ms: u64,
 ) -> Option<tandem_types::DataClass> {
     let mut required: Vec<tandem_types::DataClass> = vec![tandem_types::DataClass::Internal];
@@ -179,6 +181,25 @@ fn governance_evidence_export_denial(
         for data_class in &decision.data_classes {
             if !required.contains(data_class) {
                 required.push(*data_class);
+            }
+        }
+    }
+    // The artifact section serializes per-node `data_class` metadata (and a
+    // redacted output reference); those classes gate the export exactly like
+    // policy-decision classes, mirroring governance_evidence_artifacts'
+    // extraction keys.
+    if let Some(run) = automation_run {
+        for output in run.checkpoint.node_outputs.values() {
+            let class_value = output
+                .get("data_class")
+                .or_else(|| output.get("enterprise_data_class"))
+                .or_else(|| output.get("dataClass"));
+            if let Some(data_class) = class_value.and_then(|value| {
+                serde_json::from_value::<tandem_types::DataClass>(value.clone()).ok()
+            }) {
+                if !required.contains(&data_class) {
+                    required.push(data_class);
+                }
             }
         }
     }
@@ -1629,7 +1650,7 @@ mod export_authority_tests {
             tandem_types::DataClass::Restricted,
         ])];
         assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &decisions, 2_000),
+            governance_evidence_export_denial(&strict, "run-1", &decisions, None, 2_000),
             None
         );
     }
@@ -1644,7 +1665,7 @@ mod export_authority_tests {
             tandem_types::DataClass::Restricted,
         ])];
         assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &decisions, 2_000),
+            governance_evidence_export_denial(&strict, "run-1", &decisions, None, 2_000),
             Some(tandem_types::DataClass::Restricted)
         );
     }
@@ -1656,8 +1677,54 @@ mod export_authority_tests {
         let strict =
             strict_context_with_classes("run-other", vec![tandem_types::DataClass::Internal]);
         assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &[], 2_000),
+            governance_evidence_export_denial(&strict, "run-1", &[], None, 2_000),
             Some(tandem_types::DataClass::Internal)
+        );
+    }
+
+    #[test]
+    fn export_rejected_when_an_artifact_class_is_not_granted() {
+        // A node output carrying a Restricted artifact class gates the export
+        // even when no policy decision carries that class (Codex P1 on
+        // PR #1557): artifact metadata is serialized into the package, so
+        // its classes must be readable too.
+        let strict = strict_context_with_classes("run-1", vec![tandem_types::DataClass::Internal]);
+        let mut run: crate::automation_v2::types::AutomationV2RunRecord =
+            serde_json::from_value(json!({
+                "run_id": "run-1",
+                "automation_id": "auto-1",
+                "tenant_context": TenantContext::local_implicit(),
+                "trigger_type": "manual",
+                "status": "completed",
+                "created_at_ms": 1_500,
+                "updated_at_ms": 1_500,
+                "checkpoint": {},
+            }))
+            .expect("run fixture");
+        run.checkpoint.node_outputs.insert(
+            "export_step".to_string(),
+            json!({
+                "artifact_id": "artifact-1",
+                "data_class": "restricted",
+                "content": "redacted"
+            }),
+        );
+        assert_eq!(
+            governance_evidence_export_denial(&strict, "run-1", &[], Some(&run), 2_000),
+            Some(tandem_types::DataClass::Restricted)
+        );
+
+        // With the Restricted grant the same package exports.
+        let granted = strict_context_with_classes(
+            "run-1",
+            vec![
+                tandem_types::DataClass::Internal,
+                tandem_types::DataClass::Restricted,
+            ],
+        );
+        assert_eq!(
+            governance_evidence_export_denial(&granted, "run-1", &[], Some(&run), 2_000),
+            None
         );
     }
 
@@ -1666,7 +1733,7 @@ mod export_authority_tests {
         let strict = strict_context_with_classes("run-1", vec![tandem_types::DataClass::Internal]);
         // now_ms beyond the assertion expiry of the fixture
         assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &[], 99_999_999_999_999),
+            governance_evidence_export_denial(&strict, "run-1", &[], None, 99_999_999_999_999),
             Some(tandem_types::DataClass::Internal)
         );
     }
