@@ -335,4 +335,163 @@ mod tests {
             "tenant B should not inherit tenant A provider throttle"
         );
     }
+
+    // ── TAN-64 acceptance: multi-run admission semantics ────────────────
+
+    #[test]
+    fn different_workspace_runs_admit_concurrently() {
+        let mut scheduler = AutomationScheduler::new(8);
+
+        assert!(scheduler
+            .can_admit("run-a", Some("/work/repo-a"), &[])
+            .is_ok());
+        scheduler.admit_run("run-a", Some("/work/repo-a"));
+        assert!(
+            scheduler
+                .can_admit("run-b", Some("/work/repo-b"), &[])
+                .is_ok(),
+            "a different workspace must admit while run-a is active"
+        );
+        scheduler.admit_run("run-b", Some("/work/repo-b"));
+
+        assert_eq!(scheduler.active_count(), 2);
+        assert_eq!(
+            scheduler.locked_workspaces.get("/work/repo-a"),
+            Some(&"run-a".to_string())
+        );
+        assert_eq!(
+            scheduler.locked_workspaces.get("/work/repo-b"),
+            Some(&"run-b".to_string())
+        );
+    }
+
+    #[test]
+    fn same_workspace_contention_queues_behind_workspace_lock() {
+        let mut scheduler = AutomationScheduler::new(8);
+        scheduler.admit_run("run-a", Some("/work/repo-a"));
+
+        let queued = scheduler
+            .can_admit("run-b", Some("/work/repo-a"), &[])
+            .expect_err("same workspace must queue while run-a holds the lock");
+        assert_eq!(queued.queue_reason, Some(QueueReason::WorkspaceLock));
+        assert_eq!(queued.resource_key.as_deref(), Some("/work/repo-a"));
+
+        // The lock is per workspace, not global: the run queues even when
+        // capacity is plentiful.
+        assert!(scheduler.active_count() < scheduler.max_concurrent_runs);
+
+        scheduler.release_run("run-a");
+        assert!(
+            scheduler
+                .can_admit("run-b", Some("/work/repo-a"), &[])
+                .is_ok(),
+            "lock release must unblock the queued same-workspace run"
+        );
+    }
+
+    #[test]
+    fn capacity_contention_reports_capacity_reason_and_default_is_eight() {
+        // The global cap defaults to 8 (TANDEM_SCHEDULER_MAX_CONCURRENT_RUNS).
+        if std::env::var("TANDEM_SCHEDULER_MAX_CONCURRENT_RUNS").is_err() {
+            assert_eq!(
+                crate::config::env::resolve_scheduler_max_concurrent_runs(),
+                8
+            );
+        }
+
+        let mut scheduler = AutomationScheduler::new(8);
+        for idx in 0..8 {
+            let run_id = format!("run-{idx}");
+            let workspace = format!("/work/repo-{idx}");
+            assert!(scheduler.can_admit(&run_id, Some(&workspace), &[]).is_ok());
+            scheduler.admit_run(&run_id, Some(&workspace));
+        }
+        assert!(scheduler.is_at_capacity());
+
+        let queued = scheduler
+            .can_admit("run-9", Some("/work/repo-9"), &[])
+            .expect_err("ninth run must queue on capacity");
+        assert_eq!(queued.queue_reason, Some(QueueReason::Capacity));
+        assert_eq!(queued.resource_key, None);
+
+        scheduler.release_run("run-0");
+        assert!(
+            scheduler
+                .can_admit("run-9", Some("/work/repo-9"), &[])
+                .is_ok(),
+            "freed capacity must admit the queued run"
+        );
+    }
+
+    #[test]
+    fn terminal_release_frees_capacity_and_workspace_lock() {
+        let mut scheduler = AutomationScheduler::new(8);
+        scheduler.track_queue_state(
+            "run-a",
+            SchedulerMetadata {
+                tenant_context: TenantContext::local_implicit(),
+                queue_reason: Some(QueueReason::Capacity),
+                resource_key: None,
+                rate_limited_provider: None,
+                queued_at_ms: crate::util::time::now_ms(),
+            },
+        );
+        scheduler.admit_run("run-a", Some("/work/repo-a"));
+        assert_eq!(scheduler.admitted_total, 1);
+
+        // Terminal transition (completed/failed/cancelled) releases both the
+        // capacity slot and the workspace lock.
+        scheduler.release_run("run-a");
+        assert_eq!(scheduler.active_count(), 0);
+        assert!(scheduler.locked_workspaces.is_empty());
+        assert_eq!(scheduler.completed_total, 1);
+        assert!(
+            scheduler.queue_state.get("run-a").is_none(),
+            "queue metadata is cleared with the run"
+        );
+        assert!(scheduler
+            .can_admit("run-b", Some("/work/repo-a"), &[])
+            .is_ok());
+    }
+
+    #[test]
+    fn capacity_release_without_workspace_release_still_blocks_same_workspace() {
+        // Pausing-shaped transition: capacity is freed but the workspace lock
+        // is retained (prevents priority inversion while a run settles).
+        let mut scheduler = AutomationScheduler::new(8);
+        scheduler.admit_run("run-a", Some("/work/repo-a"));
+        scheduler.release_capacity("run-a");
+
+        assert_eq!(scheduler.active_count(), 0);
+        let queued = scheduler
+            .can_admit("run-b", Some("/work/repo-a"), &[])
+            .expect_err("retained workspace lock must still queue same-workspace runs");
+        assert_eq!(queued.queue_reason, Some(QueueReason::WorkspaceLock));
+
+        scheduler.release_workspace("run-a");
+        assert!(scheduler
+            .can_admit("run-b", Some("/work/repo-a"), &[])
+            .is_ok());
+    }
+
+    #[test]
+    fn queue_metrics_count_reasons_and_record_wait_times() {
+        let mut scheduler = AutomationScheduler::new(1);
+        scheduler.admit_run("run-a", Some("/work/repo-a"));
+
+        let queued = scheduler
+            .can_admit("run-b", Some("/work/repo-b"), &[])
+            .expect_err("capacity 1 queues the second run");
+        scheduler.track_queue_state("run-b", queued);
+
+        let metrics = scheduler.metrics();
+        assert_eq!(metrics.active_runs, 1);
+        assert_eq!(metrics.queued_runs_by_reason.get("capacity"), Some(&1));
+
+        scheduler.release_run("run-a");
+        scheduler.admit_run("run-b", Some("/work/repo-b"));
+        let metrics = scheduler.metrics();
+        assert_eq!(metrics.admitted_total, 2);
+        assert!(metrics.queued_runs_by_reason.is_empty());
+    }
 }
