@@ -137,14 +137,17 @@ pub(crate) fn graph_query_envelope(
     if envelope.readable_paths.is_empty() {
         envelope.readable_paths = string_arg(args, "path_scope")
             .map(|scope| vec![scope.to_string()])
-            .unwrap_or_else(|| vec![".".to_string()]);
+            .unwrap_or_default();
     }
     envelope.writable_paths = string_array(args.get("writable_paths"));
     envelope.allowed_memory_tiers = string_array(args.get("allowed_memory_tiers"));
     envelope.approvals = string_array(args.get("approvals"));
-    envelope.allowed_tools = std::iter::once(tool.to_string())
-        .chain(extra_allowed_tools.iter().map(|tool| tool.to_string()))
-        .collect();
+    envelope.allowed_tools = string_array(args.get("allowed_tools"));
+    if envelope.allowed_tools.is_empty() && args.get("allowed_tools").is_none() {
+        envelope.allowed_tools = std::iter::once(tool.to_string())
+            .chain(extra_allowed_tools.iter().map(|tool| tool.to_string()))
+            .collect();
+    }
     envelope
 }
 

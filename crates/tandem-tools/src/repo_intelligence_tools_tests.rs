@@ -25,7 +25,8 @@ async fn repo_tools_index_and_query_structured_metadata() {
         .execute(json!({
             "__workspace_root": workspace.path(),
             "repo_path": ".",
-            "query": "indexed"
+            "query": "indexed",
+            "path_scope": "."
         }))
         .await
         .expect("search");
@@ -74,4 +75,69 @@ async fn repo_context_bundle_tool_scopes_symbols() {
     assert!(!symbols
         .iter()
         .any(|item| item["file_path"] == "packages/admin/src/login.rs"));
+}
+
+#[tokio::test]
+async fn repo_search_fails_closed_without_readable_scope() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::create_dir_all(workspace.path().join("src")).expect("src dir");
+    std::fs::write(
+        workspace.path().join("src/lib.rs"),
+        "pub fn indexed_repo() {}\n",
+    )
+    .expect("write source");
+    RepoIndexTool
+        .execute(json!({"__workspace_root": workspace.path(), "repo_path": "."}))
+        .await
+        .expect("index");
+
+    let search = RepoSearchTool
+        .execute(json!({
+            "__workspace_root": workspace.path(),
+            "repo_path": ".",
+            "query": "indexed",
+            "allowed_tools": ["repo.search"]
+        }))
+        .await
+        .expect("search");
+
+    assert_eq!(search.metadata["structured"]["count"], json!(0));
+    assert_eq!(search.metadata["graph_query"]["denied_count"], json!(1));
+    assert_eq!(
+        search.metadata["graph_query"]["denied_reasons"],
+        json!(["invalid_envelope:readable_paths"])
+    );
+}
+
+#[tokio::test]
+async fn repo_search_respects_explicit_tool_allowlist() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::create_dir_all(workspace.path().join("src")).expect("src dir");
+    std::fs::write(
+        workspace.path().join("src/lib.rs"),
+        "pub fn indexed_repo() {}\n",
+    )
+    .expect("write source");
+    RepoIndexTool
+        .execute(json!({"__workspace_root": workspace.path(), "repo_path": "."}))
+        .await
+        .expect("index");
+
+    let search = RepoSearchTool
+        .execute(json!({
+            "__workspace_root": workspace.path(),
+            "repo_path": ".",
+            "query": "indexed",
+            "path_scope": ".",
+            "allowed_tools": ["repo.symbol"]
+        }))
+        .await
+        .expect("search");
+
+    assert_eq!(search.metadata["structured"]["count"], json!(0));
+    assert_eq!(search.metadata["graph_query"]["denied_count"], json!(1));
+    assert_eq!(
+        search.metadata["graph_query"]["denied_reasons"],
+        json!(["tool_denied"])
+    );
 }

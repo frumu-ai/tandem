@@ -209,7 +209,7 @@ fn in_scope(path: &str, path_scope: Option<&str>) -> bool {
         return true;
     };
     let scope = scope.trim_matches('/');
-    if scope.is_empty() {
+    if scope.is_empty() || scope == "." {
         return true;
     }
     path == scope
