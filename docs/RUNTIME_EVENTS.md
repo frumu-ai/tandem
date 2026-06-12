@@ -147,6 +147,7 @@ not every key.
 | `tool.loop_guard.triggered` | Duplicate-call loop guard trips. | `sessionID`, `messageID`, `tool`, `reason`, `duplicateLimit` |
 | `tool.mode.required.unsatisfied` | Required-tool mode not satisfied. | `sessionID`, `messageID`, `selectedToolCount`, `reason` |
 | `tool.effect.recorded` | A tool effect is recorded in the ledger. | `sessionID`, `messageID`, `tool`, `record` |
+| `tool.execution.denied` | Execution-time authorization denies a directly invoked tool that discovery filtering would have hidden (strict tenant context only; also written to the protected audit log). | `sessionID`, `messageID`, `tool`, `reason`, `principal` |
 | `mutation.checkpoint.recorded` | A mutation checkpoint is recorded. | `sessionID`, `messageID`, `tool`, `record` |
 | `prewrite.gate.strict_mode.blocked` | Strict prewrite gate blocks a write. | `sessionID`, `messageID`, `iteration`, `unmetCodes` |
 | `prewrite.gate.waived.write_executed` | A waived prewrite gate lets a write run. | `sessionID`, `messageID`, `unmetCodes` |

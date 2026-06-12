@@ -223,6 +223,7 @@ runtime_event_types! {
     ToolCallRejectedUnoffered => "tool.call.rejected_unoffered",
     ToolCallRejectedWritePolicy => "tool.call.rejected_write_policy",
     ToolEffectRecorded => "tool.effect.recorded",
+    ToolExecutionDenied => "tool.execution.denied",
     ToolLoopGuardTriggered => "tool.loop_guard.triggered",
     ToolModeRequiredUnsatisfied => "tool.mode.required.unsatisfied",
     ToolRoutingDecision => "tool.routing.decision",
