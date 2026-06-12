@@ -176,3 +176,23 @@ Graph reads, writes, denials, fallbacks, and context bundle creation should emit
 Audit payloads must not include raw tokens, private file contents, hidden path
 names, or unredacted artifacts. Store opaque refs, hashes, counts, and reasons
 that explain decisions without leaking denied data.
+
+## Workflow and Run Graphs
+
+`tandem-graph-core::WorkflowGraph` converts a compiled workflow description into
+versioned graph data without depending on the plan compiler. The graph contains
+template, version, step, tool, memory tier, approval, policy, and artifact nodes.
+Step edges use `depends_on`, `requires_tool`, `requires_memory`,
+`requires_approval`, `governed_by`, and `produces`. Each workflow graph is stored
+in a `workflow_version` partition with workflow hash freshness, which keeps
+future incremental reruns tied to the exact template/policy/prompt/tool-schema
+revision that produced them.
+
+`tandem-graph-core::RunTraceGraph` converts observed runtime events into
+run-scoped graph nodes. It records model calls, tool calls, memory reads/writes,
+approvals, policy checks, artifacts, errors, retries, costs, and outputs as
+display-safe nodes linked back to the run, workflow version, and step when known.
+Run trace graph nodes are redacted by default and use `run_ephemeral` storage
+with audit-retained retention, so sensitive payloads stay behind governed
+artifact or event-log references. Successful capture emits
+`graph.run_trace.captured` with safe counts and run scope.

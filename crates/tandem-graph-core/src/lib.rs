@@ -5,12 +5,15 @@
 
 mod audit;
 mod context_payloads;
+mod graph_build;
 mod hash;
 mod ids;
 mod query_envelope;
+mod run_trace;
 mod storage;
 mod taxonomy;
 mod trust;
+mod workflow_graph;
 
 pub use audit::{
     GraphAuditDecision, GraphAuditEvent, GraphAuditEventType, GraphAuditMetrics, GraphAuditTarget,
@@ -26,6 +29,7 @@ pub use ids::{EdgeId, GraphSchemaVersion, GraphScope, NodeId};
 pub use query_envelope::{
     GraphQueryAudit, GraphQueryEnvelope, GraphQueryEnvelopeError, GraphQueryOutput,
 };
+pub use run_trace::{RunTraceEvent, RunTraceEventKind, RunTraceGraph, RunTraceGraphSpec};
 pub use storage::{
     GraphPartitionKind, GraphRetentionClass, GraphRetentionPolicy, GraphStoragePartition,
 };
@@ -33,6 +37,12 @@ pub use taxonomy::{
     EdgeKind, GraphDomain, GraphEdge, GraphFact, GraphNode, GraphPayload, NodeKind,
 };
 pub use trust::{Freshness, FreshnessSource, PolicyDecision, Provenance, Visibility};
+pub use workflow_graph::{
+    WorkflowGraph, WorkflowGraphSpec, WorkflowStepDependencySummary, WorkflowStepGraphNode,
+    WorkflowTemplateGraphNode, WorkflowVersionGraphNode,
+};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workflow_run_tests;

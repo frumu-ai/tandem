@@ -300,6 +300,31 @@ intelligence rollout. A future `context.bundle` alias can combine repo,
 workflow, run, memory, and policy graph facts after those adapters share the
 same scope, retention, and audit semantics.
 
+## Workflow and Run Graph Foundation
+
+M7 starts by keeping workflow/run graph builders in `crates/tandem-graph-core`
+instead of coupling the shared graph model directly to plan compiler or runtime
+internals. The first builder accepts a compiled workflow-shaped spec and emits:
+
+- workflow template, workflow version, and workflow step nodes
+- dependency edges between steps
+- required tool, memory tier, approval gate, policy scope, and artifact edges
+- a step dependency summary that can answer "what does this step need?" without
+  replaying the whole graph
+
+The second builder accepts safe observed run trace events and emits:
+
+- run, model call, tool call, memory read/write, approval, policy, artifact,
+  error, retry, cost, and output nodes
+- links back to workflow version and step nodes when identifiers are available
+- redacted visibility and audit-retained run partition metadata
+- a `graph.run_trace.captured` audit event with safe counts and run scope
+
+Concrete adapters should feed these builders from the plan compiler and runtime
+event bus in follow-on work. Those adapters must pass references, hashes, and
+safe summaries rather than raw prompts, tool payloads, memory bodies, or hidden
+artifact contents.
+
 ## Stale Index and Fallback Behavior
 
 The persisted snapshot lives at `.tandem/repo-index.json` under the repo root.

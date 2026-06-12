@@ -82,6 +82,8 @@ pub enum GraphAuditEventType {
     StaleIndexFallback,
     #[serde(rename = "graph.dirty_nodes.invalidated")]
     DirtyNodesInvalidated,
+    #[serde(rename = "graph.run_trace.captured")]
+    RunTraceCaptured,
 }
 
 impl GraphAuditEventType {
@@ -97,6 +99,7 @@ impl GraphAuditEventType {
             Self::PolicyFiltered => "graph.policy.filtered",
             Self::StaleIndexFallback => "graph.index.stale_fallback",
             Self::DirtyNodesInvalidated => "graph.dirty_nodes.invalidated",
+            Self::RunTraceCaptured => "graph.run_trace.captured",
         }
     }
 }
