@@ -1,6 +1,7 @@
 use crate::{
-    stable_graph_hash, EdgeKind, Freshness, FreshnessSource, GraphDomain, GraphFact,
-    GraphQueryEnvelope, GraphScope, NodeKind, Provenance,
+    stable_graph_hash, ArtifactNode, ContextNodePayload, EdgeKind, Freshness, FreshnessSource,
+    GraphDomain, GraphFact, GraphQueryEnvelope, GraphScope, NodeKind, PolicyDecision, Provenance,
+    ToolCredentialNode, Visibility,
 };
 use serde_json::json;
 
@@ -95,4 +96,84 @@ fn graph_query_envelope_checks_tools_and_paths() {
     assert!(!envelope.allows_tool("repo.impact"));
     assert!(envelope.allows_path("src/lib.rs"));
     assert!(!envelope.allows_path("docs/private.md"));
+}
+
+#[test]
+fn context_node_payloads_are_display_safe() {
+    let credential = ContextNodePayload::ToolCredential(ToolCredentialNode {
+        provider: "linear".to_string(),
+        credential_ref: "credential://linear/team-a".to_string(),
+        status: "connected".to_string(),
+        scopes: vec!["issues:read".to_string(), "issues:write".to_string()],
+        expires_at_unix_ms: Some(1_800_000_000_000),
+        secret_material_present: true,
+    });
+
+    assert_eq!(credential.node_kind(), NodeKind::Credential);
+    let payload = credential.display_safe_payload();
+    assert_eq!(
+        payload.get("credential_ref").map(String::as_str),
+        Some("credential://linear/team-a")
+    );
+    assert_eq!(
+        payload.get("secret_material_present").map(String::as_str),
+        Some("true")
+    );
+    assert!(!payload.contains_key("token"));
+    assert!(!payload.contains_key("secret"));
+    assert!(!payload.contains_key("refresh_token"));
+
+    let artifact = ContextNodePayload::Artifact(ArtifactNode {
+        artifact_id: "artifact-a".to_string(),
+        artifact_type: "report".to_string(),
+        display_name: "Run summary".to_string(),
+        path_ref: Some("artifact://run-a/summary.md".to_string()),
+        content_hash: Some("sha256:abc".to_string()),
+        produced_by_run: Some("run-a".to_string()),
+    });
+
+    let payload = artifact.display_safe_payload();
+    assert_eq!(
+        payload.get("content_hash").map(String::as_str),
+        Some("sha256:abc")
+    );
+    assert!(!payload.contains_key("content"));
+}
+
+#[test]
+fn provenance_distinguishes_source_truth_from_agent_hints() {
+    assert!(Provenance::Extracted.is_source_truth());
+    assert!(Provenance::Configured.is_source_truth());
+    assert!(Provenance::Observed.is_source_truth());
+    assert!(!Provenance::Inferred.is_source_truth());
+    assert!(!Provenance::Summarized.is_source_truth());
+    assert!(Provenance::Inferred.requires_source_confirmation());
+}
+
+#[test]
+fn freshness_and_visibility_report_staleness_and_scope() {
+    let freshness = Freshness::from_revision(FreshnessSource::PolicyHash, "policy-a")
+        .with_checked_at(1_000)
+        .with_stale_after(2_000);
+
+    assert!(!freshness.is_unknown());
+    assert!(!freshness.is_stale_at(1_999));
+    assert!(freshness.is_stale_at(2_000));
+
+    let tenant_scope = GraphScope::new("tenant-a", "project-a").with_run("run-a");
+    let other_scope = GraphScope::new("tenant-b", "project-a").with_run("run-a");
+    let visibility = Visibility::for_scope(&tenant_scope)
+        .with_readable_paths(["src", "docs"])
+        .redacted();
+
+    assert!(visibility.redacted);
+    assert!(visibility.allows_scope(&tenant_scope));
+    assert!(!visibility.allows_scope(&other_scope));
+    assert_eq!(visibility.readable_paths, vec!["src", "docs"]);
+
+    assert!(PolicyDecision::Allowed.is_allowed());
+    assert!(PolicyDecision::Denied {
+        reason: "path_denied".to_string()
+    }
+    .is_denied());
 }

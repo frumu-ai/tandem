@@ -168,6 +168,24 @@ payloads.
 repo intelligence applies that envelope in governed query wrappers before the
 `repo.*` tool surface returns graph-derived results.
 
+The same crate also defines typed `ContextNodePayload` variants for tool,
+memory, policy, approval, and artifact nodes. These payloads are the shared
+contract for non-repo context graph adapters. They are display-safe by
+construction: credentials are represented by opaque refs and status metadata,
+schemas/artifacts by hashes and summaries, and policy/runtime details by scoped
+IDs. Raw tokens, credential material, artifact contents, and sensitive hidden
+payloads remain in their owning stores.
+
+Trust semantics are centralized in graph-core:
+
+- `Provenance::Extracted`, `Configured`, and `Observed` are source-truth capable.
+- `Inferred`, `Summarized`, and `Ambiguous` are planning hints and require source
+  confirmation before final claims or edits.
+- `Freshness` can carry revision, checked-at, and stale-after metadata so stale
+  graph facts trigger refresh or fallback.
+- `Visibility` binds facts to tenant/project/run/readable-path scope and records
+  redaction.
+
 ## Reuse Points
 
 Existing code that informed this slice:

@@ -59,6 +59,29 @@ Edge stable IDs live in `tandem-graph-core::EdgeKind::stable_id()`:
 - Governance/tooling: `governed_by`, `has_credential`, `has_schema`,
   `has_authority`, `visible_to`, `freshened_by`.
 
+## Context Node Payloads
+
+`tandem-graph-core::ContextNodePayload` defines the typed payload families for
+non-repo context that affects execution:
+
+- Tool nodes: MCP server, tool definition, credential reference, schema hash, and
+  authority/risk summary.
+- Memory nodes: tier, collection, retrieved memory evidence, and write
+  candidates.
+- Policy nodes: policy scope, budget, sandbox limits, data boundaries, and
+  approval gates.
+- Artifact nodes: generated reports, files, logs, and reviewable outputs.
+
+Payloads are deliberately display-safe. They store opaque credential refs,
+schema/content hashes, summaries, scopes, and booleans. They must not store raw
+tokens, refresh tokens, private keys, artifact bodies, or unredacted sensitive
+payloads. If secret material exists behind a credential, graph payloads represent
+that as metadata such as `secret_material_present=true`, not as the secret.
+
+Adapters can convert typed payloads to `GraphPayload` for storage through
+`display_safe_payload()`. Governance-sensitive details that are needed for
+execution stay in the owning runtime/config store and are linked by opaque ref.
+
 ## Trust Semantics
 
 Every graph fact has provenance, freshness, visibility, and policy fields.
@@ -75,6 +98,15 @@ Deterministic facts (`Extracted`, `Configured`, `Observed`) can guide agent
 planning directly. `Inferred`, `Summarized`, and `Ambiguous` facts are hints;
 agents must confirm with concrete source, run, or policy evidence before final
 claims or edits.
+
+Freshness carries the fact source, revision, optional check time, and optional
+stale-after timestamp. Stale or unknown facts can still help discovery, but
+agents and runtime planners must either refresh/reindex or fall back to source
+reads before treating the fact as current.
+
+Visibility scopes facts to tenant, project, optional run, readable paths, and
+redaction state. A fact that fails visibility checks must be omitted or replaced
+with aggregate denied counts/reasons.
 
 ## Scope
 

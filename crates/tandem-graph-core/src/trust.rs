@@ -1,3 +1,4 @@
+use crate::GraphScope;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +15,16 @@ pub enum Provenance {
     Summarized,
     #[serde(rename = "ambiguous")]
     Ambiguous,
+}
+
+impl Provenance {
+    pub fn is_source_truth(&self) -> bool {
+        matches!(self, Self::Extracted | Self::Configured | Self::Observed)
+    }
+
+    pub fn requires_source_confirmation(&self) -> bool {
+        !self.is_source_truth()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +51,10 @@ pub enum FreshnessSource {
 pub struct Freshness {
     pub source: FreshnessSource,
     pub revision: Option<String>,
+    #[serde(default)]
+    pub checked_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub stale_after_unix_ms: Option<u64>,
 }
 
 impl Freshness {
@@ -47,6 +62,8 @@ impl Freshness {
         Self {
             source: FreshnessSource::Unknown,
             revision: None,
+            checked_at_unix_ms: None,
+            stale_after_unix_ms: None,
         }
     }
 
@@ -54,7 +71,28 @@ impl Freshness {
         Self {
             source,
             revision: Some(revision.into()),
+            checked_at_unix_ms: None,
+            stale_after_unix_ms: None,
         }
+    }
+
+    pub fn with_checked_at(mut self, checked_at_unix_ms: u64) -> Self {
+        self.checked_at_unix_ms = Some(checked_at_unix_ms);
+        self
+    }
+
+    pub fn with_stale_after(mut self, stale_after_unix_ms: u64) -> Self {
+        self.stale_after_unix_ms = Some(stale_after_unix_ms);
+        self
+    }
+
+    pub fn is_unknown(&self) -> bool {
+        self.source == FreshnessSource::Unknown || self.revision.is_none()
+    }
+
+    pub fn is_stale_at(&self, now_unix_ms: u64) -> bool {
+        self.stale_after_unix_ms
+            .is_some_and(|stale_after| now_unix_ms >= stale_after)
     }
 }
 
@@ -67,6 +105,45 @@ pub struct Visibility {
     pub redacted: bool,
 }
 
+impl Visibility {
+    pub fn for_scope(scope: &GraphScope) -> Self {
+        Self {
+            tenant_id: Some(scope.tenant_id.clone()),
+            project_id: Some(scope.project_id.clone()),
+            run_id: scope.run_id.clone(),
+            readable_paths: Vec::new(),
+            redacted: false,
+        }
+    }
+
+    pub fn redacted(mut self) -> Self {
+        self.redacted = true;
+        self
+    }
+
+    pub fn with_readable_paths(
+        mut self,
+        paths: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.readable_paths = paths.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn allows_scope(&self, scope: &GraphScope) -> bool {
+        self.tenant_id
+            .as_ref()
+            .is_none_or(|tenant_id| tenant_id == &scope.tenant_id)
+            && self
+                .project_id
+                .as_ref()
+                .is_none_or(|project_id| project_id == &scope.project_id)
+            && self
+                .run_id
+                .as_ref()
+                .is_none_or(|run_id| scope.run_id.as_ref() == Some(run_id))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PolicyDecision {
     #[serde(rename = "allowed")]
@@ -75,4 +152,14 @@ pub enum PolicyDecision {
     Denied { reason: String },
     #[serde(rename = "requires_approval")]
     RequiresApproval { approval_gate: String },
+}
+
+impl PolicyDecision {
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+
+    pub fn is_denied(&self) -> bool {
+        matches!(self, Self::Denied { .. })
+    }
 }
