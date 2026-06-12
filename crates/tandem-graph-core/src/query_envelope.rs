@@ -58,6 +58,18 @@ impl GraphQueryEnvelope {
         self.allowed_tools.iter().any(|allowed| allowed == tool)
     }
 
+    pub fn allows_memory_tier(&self, tier: &str) -> bool {
+        self.allowed_memory_tiers
+            .iter()
+            .any(|allowed| allowed == tier)
+    }
+
+    pub fn has_approval(&self, approval_gate: &str) -> bool {
+        self.approvals
+            .iter()
+            .any(|approval| approval == approval_gate)
+    }
+
     pub fn allows_path(&self, path: &str) -> bool {
         self.readable_paths
             .iter()

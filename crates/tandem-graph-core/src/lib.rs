@@ -14,6 +14,8 @@ mod storage;
 mod taxonomy;
 mod trust;
 mod workflow_graph;
+mod workflow_runtime;
+mod workflow_runtime_topology;
 
 pub use audit::{
     GraphAuditDecision, GraphAuditEvent, GraphAuditEventType, GraphAuditMetrics, GraphAuditTarget,
@@ -40,6 +42,11 @@ pub use trust::{Freshness, FreshnessSource, PolicyDecision, Provenance, Visibili
 pub use workflow_graph::{
     WorkflowGraph, WorkflowGraphSpec, WorkflowStepDependencySummary, WorkflowStepGraphNode,
     WorkflowTemplateGraphNode, WorkflowVersionGraphNode,
+};
+pub use workflow_runtime::{
+    WorkflowBlockedNode, WorkflowBlocker, WorkflowBlockerKind, WorkflowPreflightReport,
+    WorkflowPromptPruningMetrics, WorkflowReadyNode, WorkflowRuntimePlan, WorkflowRuntimeState,
+    WorkflowToolCandidate, WorkflowToolSelection,
 };
 
 #[cfg(test)]
