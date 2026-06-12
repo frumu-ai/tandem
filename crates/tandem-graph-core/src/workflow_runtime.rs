@@ -50,6 +50,8 @@ pub struct WorkflowBlocker {
 pub enum WorkflowBlockerKind {
     #[serde(rename = "envelope_invalid")]
     EnvelopeInvalid,
+    #[serde(rename = "scope_mismatch")]
+    ScopeMismatch,
     #[serde(rename = "tool_denied")]
     ToolDenied,
     #[serde(rename = "memory_denied")]
@@ -118,17 +120,7 @@ impl WorkflowGraph {
         envelope: &GraphQueryEnvelope,
     ) -> GraphQueryOutput<WorkflowPreflightReport> {
         let mut audit = GraphQueryAudit::default();
-        let mut blockers = Vec::new();
-        if let Err(error) = envelope.validate() {
-            let detail = error.to_string();
-            audit.deny(detail.clone());
-            blockers.push(WorkflowBlocker::new(
-                "",
-                WorkflowBlockerKind::EnvelopeInvalid,
-                error.missing.join(","),
-                detail,
-            ));
-        }
+        let mut blockers = self.envelope_blockers(envelope);
 
         for (step_id, summary) in &self.step_dependencies {
             append_governance_blockers(step_id, summary, envelope, &mut blockers);
@@ -155,6 +147,22 @@ impl WorkflowGraph {
         step_id: Option<&str>,
     ) -> GraphQueryOutput<WorkflowToolSelection> {
         let mut audit = GraphQueryAudit::default();
+        let envelope_blockers = self.envelope_blockers(envelope);
+        if !envelope_blockers.is_empty() {
+            for blocker in envelope_blockers {
+                audit.deny(blocker.detail);
+            }
+            return GraphQueryOutput::new(
+                WorkflowToolSelection {
+                    step_id: step_id.map(str::to_string),
+                    candidates: Vec::new(),
+                    policy_notes: Vec::new(),
+                    metrics: WorkflowPromptPruningMetrics::default(),
+                },
+                audit,
+            );
+        }
+
         let mut tools = BTreeSet::new();
         let mut policy_notes = BTreeSet::new();
 
@@ -207,6 +215,7 @@ impl WorkflowGraph {
         envelope: &GraphQueryEnvelope,
     ) -> GraphQueryOutput<WorkflowRuntimePlan> {
         let mut audit = GraphQueryAudit::default();
+        let envelope_blockers = self.envelope_blockers(envelope);
         let completed: BTreeSet<_> = state.completed_steps.iter().cloned().collect();
         let failed: BTreeSet<_> = state.failed_steps.iter().cloned().collect();
         let mut ready_nodes = Vec::new();
@@ -216,7 +225,13 @@ impl WorkflowGraph {
             if completed.contains(step_id) {
                 continue;
             }
-            let blockers = runtime_blockers(self, step_id, summary, envelope, &completed, &failed);
+            let mut blockers = envelope_blockers
+                .iter()
+                .map(|blocker| blocker.for_step(step_id))
+                .collect::<Vec<_>>();
+            if blockers.is_empty() {
+                blockers = runtime_blockers(self, step_id, summary, envelope, &completed, &failed);
+            }
             if blockers.is_empty() {
                 ready_nodes.push(WorkflowReadyNode {
                     step_id: step_id.clone(),
@@ -251,6 +266,27 @@ impl WorkflowGraph {
             .map(|(step_id, _)| step_id.clone())
             .collect()
     }
+
+    fn envelope_blockers(&self, envelope: &GraphQueryEnvelope) -> Vec<WorkflowBlocker> {
+        let mut blockers = Vec::new();
+        if let Err(error) = envelope.validate() {
+            blockers.push(WorkflowBlocker::new(
+                "",
+                WorkflowBlockerKind::EnvelopeInvalid,
+                error.missing.join(","),
+                error.to_string(),
+            ));
+        }
+        if !self.partition.is_visible_to(&envelope.scope) {
+            blockers.push(WorkflowBlocker::new(
+                "",
+                WorkflowBlockerKind::ScopeMismatch,
+                self.partition.key(),
+                "graph query envelope scope is not visible to the workflow partition",
+            ));
+        }
+        blockers
+    }
 }
 
 impl WorkflowBlocker {
@@ -265,6 +301,15 @@ impl WorkflowBlocker {
             kind,
             target: target.into(),
             detail: detail.into(),
+        }
+    }
+
+    fn for_step(&self, step_id: impl Into<String>) -> Self {
+        Self {
+            step_id: step_id.into(),
+            kind: self.kind.clone(),
+            target: self.target.clone(),
+            detail: self.detail.clone(),
         }
     }
 }

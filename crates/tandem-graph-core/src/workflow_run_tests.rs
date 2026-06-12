@@ -162,6 +162,23 @@ fn workflow_preflight_blocks_missing_approval_and_denied_memory() {
 }
 
 #[test]
+fn workflow_preflight_denies_envelopes_outside_workflow_partition() {
+    let graph = runtime_query_workflow();
+    let mut envelope = GraphQueryEnvelope::new(GraphScope::new("tenant-a", "project-b"), "agent-a");
+    envelope.readable_paths = vec![".".to_string()];
+    envelope.allowed_tools = vec!["web.search".to_string(), "slack.send".to_string()];
+    envelope.allowed_memory_tiers = vec!["project".to_string(), "private".to_string()];
+    envelope.approvals = vec!["human-review".to_string()];
+
+    let output = graph.workflow_preflight(&envelope);
+
+    assert!(!output.value.allowed);
+    assert!(output.value.blockers.iter().any(|blocker| {
+        blocker.step_id.is_empty() && blocker.kind == WorkflowBlockerKind::ScopeMismatch
+    }));
+}
+
+#[test]
 fn workflow_tool_selection_prunes_denied_tools_before_prompting() {
     let graph = runtime_query_workflow();
     let mut envelope = runtime_envelope();
@@ -183,6 +200,18 @@ fn workflow_tool_selection_prunes_denied_tools_before_prompting() {
         .candidates
         .iter()
         .any(|tool| tool.tool_name == "slack.send" && !tool.selected));
+}
+
+#[test]
+fn workflow_tool_selection_fails_closed_for_invalid_envelope() {
+    let graph = runtime_query_workflow();
+    let envelope = GraphQueryEnvelope::new(GraphScope::new("tenant-a", "project-a"), "");
+
+    let output = graph.workflow_tool_selection(&envelope, None);
+
+    assert!(output.value.candidates.is_empty());
+    assert_eq!(output.value.metrics.candidate_tools, 0);
+    assert!(output.audit.denied_count > 0);
 }
 
 #[test]
@@ -211,6 +240,27 @@ fn workflow_runtime_plan_returns_ready_blocked_and_critical_path() {
         output.value.critical_path,
         vec!["collect".to_string(), "publish".to_string()]
     );
+}
+
+#[test]
+fn workflow_runtime_plan_blocks_invalid_envelope_instead_of_scheduling_roots() {
+    let graph = runtime_query_workflow();
+    let envelope = GraphQueryEnvelope::new(GraphScope::new("tenant-a", "project-a"), "");
+    let state = WorkflowRuntimeState::new();
+
+    let output = graph.workflow_runtime_plan(&state, &envelope);
+
+    assert!(output.value.ready_nodes.is_empty());
+    let collect = output
+        .value
+        .blocked_nodes
+        .iter()
+        .find(|node| node.step_id == "collect")
+        .expect("collect should be blocked by invalid envelope");
+    assert!(collect
+        .blockers
+        .iter()
+        .any(|blocker| blocker.kind == WorkflowBlockerKind::EnvelopeInvalid));
 }
 
 #[test]
