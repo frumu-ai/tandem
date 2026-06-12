@@ -232,6 +232,31 @@ fn graph_storage_partitions_keep_worktrees_isolated() {
 }
 
 #[test]
+fn graph_storage_partition_keys_encode_ambiguous_components() {
+    let first = GraphStoragePartition::canonical_repo(
+        GraphScope::new("a:b", "c").with_repo("_"),
+        "commit:a",
+        GraphRetentionPolicy::durable_project(),
+    );
+    let second = GraphStoragePartition::canonical_repo(
+        GraphScope::new("a", "b:c"),
+        "_",
+        GraphRetentionPolicy::durable_project(),
+    );
+
+    assert_ne!(first.key(), second.key());
+    assert_ne!(
+        first.key(),
+        GraphStoragePartition::canonical_repo(
+            GraphScope::new("a:b", "c"),
+            "commit:a",
+            GraphRetentionPolicy::durable_project(),
+        )
+        .key()
+    );
+}
+
+#[test]
 fn retention_policies_encode_delete_and_compaction_semantics() {
     let durable = GraphRetentionPolicy::durable_project();
     let ephemeral = GraphRetentionPolicy::ephemeral_run(10_000);

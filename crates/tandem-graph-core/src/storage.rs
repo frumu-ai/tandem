@@ -80,16 +80,16 @@ impl GraphStoragePartition {
 
     pub fn key(&self) -> String {
         [
-            self.scope.tenant_id.as_str(),
-            self.scope.project_id.as_str(),
-            self.scope.workspace_id.as_deref().unwrap_or("_"),
-            self.scope.repo_id.as_deref().unwrap_or("_"),
-            self.scope.worktree_id.as_deref().unwrap_or("_"),
-            self.scope.run_id.as_deref().unwrap_or("_"),
-            self.kind.stable_id(),
-            self.revision.as_deref().unwrap_or("_"),
+            encode_key_component(Some(&self.scope.tenant_id)),
+            encode_key_component(Some(&self.scope.project_id)),
+            encode_key_component(self.scope.workspace_id.as_deref()),
+            encode_key_component(self.scope.repo_id.as_deref()),
+            encode_key_component(self.scope.worktree_id.as_deref()),
+            encode_key_component(self.scope.run_id.as_deref()),
+            encode_key_component(Some(self.kind.stable_id())),
+            encode_key_component(self.revision.as_deref()),
         ]
-        .join(":")
+        .join("|")
     }
 
     pub fn requires_explicit_promotion(&self) -> bool {
@@ -113,6 +113,13 @@ fn scoped_id_matches(partition_id: &Option<String>, caller_id: &Option<String>) 
     partition_id
         .as_ref()
         .is_none_or(|partition_id| caller_id.as_ref() == Some(partition_id))
+}
+
+fn encode_key_component(value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("{}:{value}", value.len()),
+        None => "-".to_string(),
+    }
 }
 
 impl GraphPartitionKind {
