@@ -12,6 +12,7 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route("/workflows/events", get(workflow_events))
         .route("/workflows/runs", get(workflow_runs_list))
         .route("/workflows/runs/{id}", get(workflow_runs_get))
+        .route("/workflows/runs/{id}/gate", post(workflow_run_gate_decide))
         .route("/workflows/{id}", get(workflows_get))
         .route("/workflows/{id}/run", post(workflows_run))
         .route("/workflow-hooks", get(workflow_hooks_list))

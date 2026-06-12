@@ -188,6 +188,8 @@ not every key.
 | Event type | Fires when | Key payload fields |
 | --- | --- | --- |
 | `workflow.run.started` / `workflow.run.completed` / `workflow.run.failed` | A bound workflow run starts / completes / fails. | `runID`, `workflowID`, `bindingID`, `taskID`, `error` |
+| `workflow.run.awaiting_approval` | A workflow run pauses on an `approval:gate` action until a human decides via `POST /workflows/runs/{id}/gate`. | `runID`, `workflowID`, `actionID`, `instructions`, `decisions` |
+| `workflow.governance.gate_decided` | A workflow gate decision is recorded (protected audit event). | `runID`, `workflowID`, `actionID`, `decision`, `decidedBy` |
 | `workflow.action.started` / `workflow.action.completed` / `workflow.action.failed` | A workflow action transitions. | `runID`, `workflowID`, `actionID`, `action`, `taskID` |
 | `workflow_learning.candidate.auto_applied` | A learned workflow improvement is auto-applied. | `candidate_id`, `workflow_id`, `kind` |
 | `capabilities.readiness.evaluated` | Workflow capability readiness evaluated. | `workflow_id`, `runnable`, `blocking_issue_count` |

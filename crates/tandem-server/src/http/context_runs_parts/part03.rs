@@ -99,6 +99,8 @@ fn workflow_run_status_to_context(status: &crate::WorkflowRunStatus) -> ContextR
     match status {
         crate::WorkflowRunStatus::Queued => ContextRunStatus::Queued,
         crate::WorkflowRunStatus::Running => ContextRunStatus::Running,
+        crate::WorkflowRunStatus::AwaitingApproval => ContextRunStatus::AwaitingApproval,
+        crate::WorkflowRunStatus::Cancelled => ContextRunStatus::Cancelled,
         crate::WorkflowRunStatus::Completed | crate::WorkflowRunStatus::DryRun => {
             ContextRunStatus::Completed
         }

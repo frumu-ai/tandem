@@ -701,3 +701,242 @@ async fn workflow_hook_patch_disables_binding() {
         Some(0)
     );
 }
+
+// ── TAN-73: workflow dispatcher pause/resume for approval gates ─────────────
+
+fn write_gated_crm_workflow(root: &Path) {
+    let workflows_dir = root.join("workflows");
+    std::fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+    std::fs::write(
+        workflows_dir.join("crm_outreach.yaml"),
+        r#"
+workflow:
+  id: crm_outreach
+  name: CRM Outreach
+  steps:
+    - action: approval:gate
+      with:
+        title: Approve CRM write
+        instructions: Review the outbound CRM update before it is written.
+        rework_targets: []
+    - action: tool:workflow_test.crm_write
+      with:
+        record: contact-42
+"#,
+    )
+    .expect("write gated workflow");
+}
+
+async fn gated_workflow_state() -> (AppState, Arc<Mutex<Vec<Value>>>) {
+    let state = workflow_test_state().await;
+    let state_dir = state
+        .workflow_runs_path
+        .parent()
+        .expect("state dir")
+        .to_path_buf();
+    write_gated_crm_workflow(&state_dir.join("builtin_workflows"));
+    state.reload_workflows().await.expect("reload workflows");
+    let crm_calls = register_recording_tool(&state, "workflow_test.crm_write").await;
+    (state, crm_calls)
+}
+
+async fn start_gated_run(app: &axum::Router) -> (String, Value) {
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/workflows/crm_outreach/run")
+                .body(Body::empty())
+                .expect("run request"),
+        )
+        .await
+        .expect("run response");
+    assert_eq!(run_resp.status(), StatusCode::OK);
+    let body = to_bytes(run_resp.into_body(), usize::MAX)
+        .await
+        .expect("run body");
+    let payload: Value = serde_json::from_slice(&body).expect("run json");
+    let run_id = payload["run"]["run_id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    (run_id, payload["run"].clone())
+}
+
+async fn decide_workflow_gate(
+    app: &axum::Router,
+    run_id: &str,
+    decision: &str,
+    source_header: &str,
+) -> (StatusCode, Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/workflows/runs/{run_id}/gate"))
+                .header("content-type", "application/json")
+                .header("x-tandem-request-source", source_header)
+                .body(Body::from(
+                    json!({ "decision": decision, "reason": "smoke check" }).to_string(),
+                ))
+                .expect("gate request"),
+        )
+        .await
+        .expect("gate response");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("gate body");
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn workflow_gate_pauses_run_and_resumes_after_human_approval() {
+    let (state, crm_calls) = gated_workflow_state().await;
+    let app = app_router(state.clone());
+
+    let (run_id, run) = start_gated_run(&app).await;
+    // The dispatcher must pause durably on the gate without executing the
+    // protected CRM write.
+    assert_eq!(run["status"].as_str(), Some("awaiting_approval"));
+    assert_eq!(
+        run["awaiting_gate"]["title"].as_str(),
+        Some("Approve CRM write")
+    );
+    assert!(
+        crm_calls.lock().await.is_empty(),
+        "CRM write ran before approval"
+    );
+
+    // The gate is visible in the cross-subsystem approvals inbox.
+    let pending_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/approvals/pending")
+                .body(Body::empty())
+                .expect("pending request"),
+        )
+        .await
+        .expect("pending response");
+    assert_eq!(pending_resp.status(), StatusCode::OK);
+    let pending_body = to_bytes(pending_resp.into_body(), usize::MAX)
+        .await
+        .expect("pending body");
+    let pending: Value = serde_json::from_slice(&pending_body).expect("pending json");
+    let entry = pending["approvals"]
+        .as_array()
+        .expect("approvals array")
+        .iter()
+        .find(|row| row["run_id"].as_str() == Some(run_id.as_str()))
+        .expect("workflow gate visible in /approvals/pending");
+    assert_eq!(entry["source"].as_str(), Some("workflow"));
+    assert_eq!(
+        entry["surface_payload"]["decide_endpoint"].as_str(),
+        Some(format!("/workflows/runs/{run_id}/gate").as_str())
+    );
+    // The demo gate has no rework_targets, so rework must not be advertised
+    // (the decide endpoint would reject it).
+    let advertised = entry["decisions"]
+        .as_array()
+        .expect("decisions array")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        !advertised.contains(&"rework"),
+        "rework advertised without targets: {advertised:?}"
+    );
+
+    // An agent cannot decide the gate.
+    let (status, body) = decide_workflow_gate(&app, &run_id, "approve", "agent").await;
+    // (header source `agent` without an agent id resolves to a system actor —
+    // still non-human, still denied)
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "non-human decider must be rejected: {body}"
+    );
+
+    // A human (control panel) approves; the dispatcher resumes and the CRM
+    // write executes exactly once.
+    let (status, body) = decide_workflow_gate(&app, &run_id, "approve", "control_panel").await;
+    assert_eq!(status, StatusCode::OK, "gate decide failed: {body}");
+    wait_for_call_count(&crm_calls, 1).await;
+
+    let run = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(run) = state.get_workflow_run(&run_id).await {
+                if run.status == crate::WorkflowRunStatus::Completed {
+                    break run;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("run did not complete after approval");
+    assert_eq!(run.gate_history.len(), 1);
+    assert_eq!(run.gate_history[0].decision, "approve");
+    assert!(run.awaiting_gate.is_none());
+    assert_eq!(crm_calls.lock().await.len(), 1);
+
+    // The shadow automation mirror must reach a terminal state too.
+    let mirror_run_id = run.automation_run_id.clone().expect("mirror run id");
+    let mirror = state
+        .get_automation_v2_run(&mirror_run_id)
+        .await
+        .expect("mirror run");
+    assert_eq!(
+        mirror.status,
+        crate::AutomationRunStatus::Completed,
+        "mirror automation run stuck after gate approval: {:?}",
+        mirror.detail
+    );
+
+    // The decision left a tamper-evident protected audit record.
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(
+        audit.contains("workflow.governance.gate_decided"),
+        "gate decision missing from protected audit log"
+    );
+}
+
+#[tokio::test]
+async fn workflow_gate_cancel_never_runs_protected_action() {
+    let (state, crm_calls) = gated_workflow_state().await;
+    let app = app_router(state.clone());
+
+    let (run_id, run) = start_gated_run(&app).await;
+    assert_eq!(run["status"].as_str(), Some("awaiting_approval"));
+
+    let (status, body) = decide_workflow_gate(&app, &run_id, "cancel", "control_panel").await;
+    assert_eq!(status, StatusCode::OK, "gate cancel failed: {body}");
+
+    let run = state.get_workflow_run(&run_id).await.expect("run");
+    assert_eq!(run.status, crate::WorkflowRunStatus::Cancelled);
+    assert_eq!(run.gate_history.len(), 1);
+    assert_eq!(run.gate_history[0].decision, "cancel");
+    assert!(
+        crm_calls.lock().await.is_empty(),
+        "CRM write ran after cancel"
+    );
+
+    // Cancel must also terminate the shadow automation mirror.
+    let mirror_run_id = run.automation_run_id.clone().expect("mirror run id");
+    let mirror = state
+        .get_automation_v2_run(&mirror_run_id)
+        .await
+        .expect("mirror run");
+    assert_eq!(mirror.status, crate::AutomationRunStatus::Cancelled);
+
+    // A second decision on the settled gate is rejected with the winner.
+    let (status, body) = decide_workflow_gate(&app, &run_id, "approve", "control_panel").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["decidedGate"]["decision"].as_str(), Some("cancel"));
+}
