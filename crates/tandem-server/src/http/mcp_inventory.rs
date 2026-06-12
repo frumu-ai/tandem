@@ -541,10 +541,16 @@ fn parse_mcp_invocation(invoked_tool: &str) -> Option<(&str, &str)> {
     Some((segment, bare_tool))
 }
 
+/// Locate the security descriptor for an invoked `mcp.{server}.{tool}`
+/// name in the live inventory snapshot, mirroring discovery exactly: the
+/// `tool_security` map is keyed by the short tool name and the descriptor
+/// is the entry's inner `security` field. Outer `None` means the invocation
+/// does not name a known MCP tool (built-in tools are not
+/// discovery-filtered); the inner `Option` is the matched tool's descriptor.
 pub(crate) async fn mcp_tool_security_for_invocation(
     state: &AppState,
     invoked_tool: &str,
-) -> Option<(String, Option<Value>)> {
+) -> Option<Option<Value>> {
     let (segment, bare_tool) = parse_mcp_invocation(invoked_tool)?;
     let snapshot = mcp_inventory_snapshot(state).await;
     let servers = snapshot.get("servers")?.as_array()?;
@@ -557,8 +563,9 @@ pub(crate) async fn mcp_tool_security_for_invocation(
             .get("tool_security")
             .and_then(Value::as_object)
             .and_then(|map| map.get(bare_tool))
+            .and_then(|entry| entry.get("security"))
             .cloned();
-        return Some((bare_tool.to_string(), security));
+        return Some(security);
     }
     None
 }

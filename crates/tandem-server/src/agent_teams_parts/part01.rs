@@ -847,13 +847,17 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 .as_ref()
                 .and_then(|verified| verified.strict_projection.as_ref())
             {
-                if let Some((bare_tool, security)) =
+                if let Some(security) =
                     crate::http::mcp_inventory::mcp_tool_security_for_invocation(&state, &tool)
                         .await
                 {
+                    // Authorize the fully namespaced invocation name with the
+                    // inner security descriptor — identical inputs to the
+                    // discovery filter, so a grant that makes a tool visible
+                    // also authorizes its execution.
                     if !crate::http::mcp_inventory::mcp_tool_authorized_for_discovery(
                         Some(strict),
-                        &bare_tool,
+                        &tool,
                         security.as_ref(),
                         crate::now_ms(),
                     ) {
