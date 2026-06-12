@@ -1,7 +1,9 @@
 use crate::{
     stable_graph_hash, ArtifactNode, ContextNodePayload, EdgeKind, Freshness, FreshnessSource,
-    GraphDomain, GraphFact, GraphQueryEnvelope, GraphScope, NodeKind, PolicyDecision, Provenance,
-    ToolCredentialNode, Visibility,
+    GraphAuditDecision, GraphAuditEvent, GraphAuditEventType, GraphAuditTarget, GraphDomain,
+    GraphFact, GraphPartitionKind, GraphQueryEnvelope, GraphRetentionClass, GraphRetentionPolicy,
+    GraphScope, GraphStoragePartition, NodeKind, PolicyDecision, Provenance, ToolCredentialNode,
+    Visibility,
 };
 use serde_json::json;
 
@@ -190,4 +192,96 @@ fn freshness_and_visibility_report_staleness_and_scope() {
         reason: "path_denied".to_string()
     }
     .is_denied());
+}
+
+#[test]
+fn graph_storage_partitions_keep_worktrees_isolated() {
+    let repo_scope = GraphScope {
+        workspace_id: Some("workspace-a".to_string()),
+        ..GraphScope::new("tenant-a", "project-a").with_repo("repo-a")
+    };
+    let worktree_scope = GraphScope {
+        worktree_id: Some("worktree-a".to_string()),
+        ..repo_scope.clone()
+    };
+    let other_tenant_scope = GraphScope {
+        workspace_id: Some("workspace-a".to_string()),
+        ..GraphScope::new("tenant-b", "project-a").with_repo("repo-a")
+    };
+
+    let canonical = GraphStoragePartition::canonical_repo(
+        repo_scope.clone(),
+        "commit:a",
+        GraphRetentionPolicy::durable_project(),
+    );
+    let worktree = GraphStoragePartition::worktree(
+        worktree_scope.clone(),
+        "commit:a+worktree",
+        GraphRetentionPolicy::ephemeral_run(3_600_000),
+    );
+
+    assert_eq!(canonical.kind, GraphPartitionKind::RepoCanonical);
+    assert_eq!(worktree.kind, GraphPartitionKind::RepoWorktree);
+    assert_ne!(canonical.key(), worktree.key());
+    assert!(!canonical.requires_explicit_promotion());
+    assert!(worktree.requires_explicit_promotion());
+    assert!(canonical.is_visible_to(&repo_scope));
+    assert!(worktree.is_visible_to(&worktree_scope));
+    assert!(!worktree.is_visible_to(&repo_scope));
+    assert!(!worktree.is_visible_to(&other_tenant_scope));
+}
+
+#[test]
+fn retention_policies_encode_delete_and_compaction_semantics() {
+    let durable = GraphRetentionPolicy::durable_project();
+    let ephemeral = GraphRetentionPolicy::ephemeral_run(10_000);
+    let audit = GraphRetentionPolicy::audit_retained(86_400_000);
+
+    assert_eq!(durable.class, GraphRetentionClass::Durable);
+    assert_eq!(durable.ttl_ms, None);
+    assert!(durable.delete_on_project_delete);
+    assert!(durable.delete_on_workspace_delete);
+
+    assert_eq!(ephemeral.class, GraphRetentionClass::Ephemeral);
+    assert_eq!(ephemeral.ttl_ms, Some(10_000));
+    assert_eq!(ephemeral.compact_history_after_ms, None);
+
+    assert_eq!(audit.class, GraphRetentionClass::AuditRetained);
+    assert_eq!(audit.ttl_ms, None);
+    assert_eq!(audit.compact_history_after_ms, Some(86_400_000));
+}
+
+#[test]
+fn graph_audit_events_are_scoped_and_display_safe() {
+    let scope = GraphScope::new("tenant-a", "project-a")
+        .with_repo("repo-a")
+        .with_run("run-a");
+    let partition = GraphStoragePartition::canonical_repo(
+        scope.clone(),
+        "commit:a",
+        GraphRetentionPolicy::audit_retained(86_400_000),
+    );
+
+    let event = GraphAuditEvent::new(
+        GraphAuditEventType::QueryDenied,
+        scope,
+        "agent-a",
+        GraphAuditTarget::query("repo.context_bundle", "context_bundle"),
+    )
+    .denied("path_denied")
+    .with_metric_counts(2, 3, 1, 25)
+    .with_safe_detail("partition_key", partition.key());
+    let value = serde_json::to_value(&event).expect("serialize audit event");
+
+    assert_eq!(event.event_type.as_str(), "graph.query.denied");
+    assert_eq!(event.run_id.as_deref(), Some("run-a"));
+    assert_eq!(event.metrics.denied, 1);
+    assert!(matches!(
+        event.decision,
+        GraphAuditDecision::Denied { ref reason } if reason == "path_denied"
+    ));
+    assert_eq!(value["event_type"], json!("graph.query.denied"));
+    assert!(event.safe_details.contains_key("partition_key"));
+    assert!(!event.safe_details.contains_key("token"));
+    assert!(!event.safe_details.contains_key("secret"));
 }

@@ -115,6 +115,32 @@ repo, worktree, and run IDs. Hosted graph queries must fail closed when the
 caller lacks required scope; local repo-only adapters may use explicit local
 scope values while still populating repo/worktree fields.
 
+## Storage Partitions and Retention
+
+`tandem-graph-core::GraphStoragePartition` defines the storage boundary for
+graph facts before a backend such as JSON, SQLite, or hosted storage persists
+them. Partition keys include tenant, project, workspace, repo, worktree, run,
+partition kind, and revision so temporary work cannot silently overwrite durable
+repo facts.
+
+Partition kinds:
+
+- `tenant_project`: shared project-level context that is not specific to one
+  repo, workflow version, or run.
+- `repo_canonical`: durable source-derived repo facts for a committed revision
+  or index revision.
+- `repo_worktree`: temporary repo facts for an isolated worktree. These require
+  explicit promotion before they become canonical.
+- `workflow_version`: compiled workflow graph facts for one template/version.
+- `run_ephemeral`: per-run facts, diagnostics, and intermediate context. These
+  require explicit promotion and should normally expire.
+
+`GraphRetentionPolicy` records whether a partition is durable, ephemeral, or
+audit-retained; optional TTL; project/workspace deletion behavior; and optional
+history compaction timing. Project and workspace deletion must remove matching
+graph partitions. Audit-retained partitions can compact detailed history while
+keeping safe aggregate evidence.
+
 ## Query Envelope
 
 Every agent-facing graph query must carry a `GraphQueryEnvelope` with:
@@ -130,3 +156,23 @@ Adapters validate the envelope before running a query. Tenant, project, repo,
 actor, tool, or readable-path failures are fail-closed. Path filtering may still
 return allowed results while reporting denied counts and reasons, but base
 scope/tool failures return no graph payload.
+
+## Audit Events
+
+Graph reads, writes, denials, fallbacks, and context bundle creation should emit
+`tandem-graph-core::GraphAuditEvent` records. Audit events include:
+
+- event type, such as `graph.index.started`, `graph.query.denied`,
+  `graph.context_bundle.created`, `graph.policy.filtered`, or
+  `graph.index.stale_fallback`
+- graph scope and run id when available
+- actor id
+- target partition, tool, query kind, or artifact reference
+- decision: allowed, denied with reason, or fallback with reason
+- safe metrics such as node count, edge count, denied count, duration, cache hit,
+  and estimated token savings
+- display-safe details only
+
+Audit payloads must not include raw tokens, private file contents, hidden path
+names, or unredacted artifacts. Store opaque refs, hashes, counts, and reasons
+that explain decisions without leaking denied data.

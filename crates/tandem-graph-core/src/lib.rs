@@ -3,13 +3,18 @@
 //! This crate is intentionally dependency-light. Repo, workflow, memory, policy,
 //! and run adapters can share these types without pulling in runtime services.
 
+mod audit;
 mod context_payloads;
 mod hash;
 mod ids;
 mod query_envelope;
+mod storage;
 mod taxonomy;
 mod trust;
 
+pub use audit::{
+    GraphAuditDecision, GraphAuditEvent, GraphAuditEventType, GraphAuditMetrics, GraphAuditTarget,
+};
 pub use context_payloads::{
     ApprovalGateNode, ArtifactNode, ContextNodePayload, DataBoundaryNode, McpServerNode,
     MemoryCollectionNode, MemoryTierNode, MemoryWriteCandidateNode, PolicyBudgetNode,
@@ -20,6 +25,9 @@ pub use hash::{stable_graph_hash, StableGraphHash, StableGraphHashError};
 pub use ids::{EdgeId, GraphSchemaVersion, GraphScope, NodeId};
 pub use query_envelope::{
     GraphQueryAudit, GraphQueryEnvelope, GraphQueryEnvelopeError, GraphQueryOutput,
+};
+pub use storage::{
+    GraphPartitionKind, GraphRetentionClass, GraphRetentionPolicy, GraphStoragePartition,
 };
 pub use taxonomy::{
     EdgeKind, GraphDomain, GraphEdge, GraphFact, GraphNode, GraphPayload, NodeKind,

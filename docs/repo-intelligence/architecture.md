@@ -264,6 +264,42 @@ SQLite/FTS can replace the storage backend later once query volume and schema
 stability justify it. Callers should depend on the public query functions and
 snapshot model rather than the JSON file layout.
 
+Shared graph storage contracts live in `crates/tandem-graph-core` even though
+the first repo store is JSON-only. Durable repo snapshots map to a
+`repo_canonical` partition keyed by tenant, project, workspace, repo, and index
+revision. Worktree scans map to `repo_worktree` partitions and run diagnostics
+map to `run_ephemeral` partitions; both require explicit promotion before they
+can affect canonical repo context.
+
+Retention is part of the graph contract rather than an implementation detail:
+project and workspace deletion must remove associated partitions, run-scoped
+partitions can expire by TTL, and audit-retained partitions may compact detailed
+history while keeping safe aggregate evidence. This gives future hosted storage
+the same deletion and compaction semantics as local snapshots.
+
+## Migration Path to the Shared Context Graph
+
+Repo intelligence remains the first production adapter, but the storage and
+audit contracts are intentionally repo-agnostic:
+
+1. Keep `.tandem/repo-index.json` as the local repo snapshot while graph-core
+   stabilizes.
+2. Attach `GraphStoragePartition` metadata to every persisted repo snapshot and
+   governed query response.
+3. Emit `GraphAuditEvent` records for indexing, context bundles, policy
+   filtering, stale-index fallback, and dirty-node invalidation.
+4. Add compatibility readers that can load existing repo snapshots without
+   partition metadata and assign them a `repo_canonical` partition from the
+   active `GraphScope`.
+5. Reuse the same partition, retention, provenance, and audit types for
+   workflow-version and run graph adapters instead of creating per-domain
+   storage schemas.
+
+The stable agent-facing API remains `repo.context_bundle` for the repo
+intelligence rollout. A future `context.bundle` alias can combine repo,
+workflow, run, memory, and policy graph facts after those adapters share the
+same scope, retention, and audit semantics.
+
 ## Stale Index and Fallback Behavior
 
 The persisted snapshot lives at `.tandem/repo-index.json` under the repo root.
