@@ -52,27 +52,38 @@ directly.
 
 ## Manual trigger with the CLI
 
-Run this from any shell that can see the target repo and the Tandem engine CLI:
+For direct CLI calls, run from the target repo and pass `repo_path` as `.`.
+The standalone `tool` command does not infer a workspace root for absolute
+paths.
 
 ```bash
-tandem-engine tool --json '{"tool":"repo.index","args":{"repo_path":"/path/to/repo"}}'
+cd /path/to/repo
+tandem-engine tool --json '{"tool":"repo.index","args":{"repo_path":"."}}'
 ```
 
 For a local Tandem checkout:
 
 ```bash
-tandem-engine tool --json '{"tool":"repo.index","args":{"repo_path":"/path/to/tandem"}}'
+cd /path/to/tandem
+tandem-engine tool --json '{"tool":"repo.index","args":{"repo_path":"."}}'
 ```
 
 Verify that query tools are reading the stored snapshot:
 
 ```bash
-tandem-engine tool --json '{"tool":"repo.context_bundle","args":{"repo_path":"/path/to/tandem","task":"Explain how repo intelligence is wired into Tandem Agents","limit":8}}'
+tandem-engine tool --json '{"tool":"repo.context_bundle","args":{"repo_path":".","task":"Explain how repo intelligence is wired into Tandem Agents","limit":8}}'
 ```
 
 In the result metadata, `index_source` should be `stored`. If it is
 `ephemeral_scan_after_load_error:...`, Tandem could not load the stored snapshot
 and scanned the repo for that query instead.
+
+If you cannot change directories first, include the same workspace context that
+normal Tandem sessions inject automatically:
+
+```bash
+tandem-engine tool --json '{"tool":"repo.index","args":{"__workspace_root":"/path/to/repo","__effective_cwd":"/path/to/repo","repo_path":"."}}'
+```
 
 ## Manual trigger over HTTP
 
@@ -82,7 +93,7 @@ When the engine is running as a service, call the same tool through
 ```bash
 curl -sS -X POST http://127.0.0.1:39731/tool/execute \
   -H "content-type: application/json" \
-  -d '{"tool":"repo.index","args":{"repo_path":"/path/to/repo"}}'
+  -d '{"tool":"repo.index","args":{"__workspace_root":"/path/to/repo","__effective_cwd":"/path/to/repo","repo_path":"."}}'
 ```
 
 If your engine requires an API token, include the same authorization header you
@@ -94,7 +105,7 @@ After files change, refresh the index before relying on impact analysis or test
 target suggestions:
 
 ```bash
-tandem-engine tool --json '{"tool":"repo.update_changed_files","args":{"repo_path":"/path/to/repo","changed_files":["src/example.ts"]}}'
+tandem-engine tool --json '{"tool":"repo.update_changed_files","args":{"repo_path":".","changed_files":["src/example.ts"]}}'
 ```
 
 The current implementation performs a safe full rescan and records
