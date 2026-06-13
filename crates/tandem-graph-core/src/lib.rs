@@ -14,6 +14,8 @@ mod storage;
 mod taxonomy;
 mod trust;
 mod workflow_graph;
+mod workflow_impact;
+mod workflow_impact_types;
 mod workflow_memory;
 mod workflow_rerun;
 mod workflow_runtime;
@@ -45,6 +47,10 @@ pub use workflow_graph::{
     WorkflowGraph, WorkflowGraphSpec, WorkflowStepDependencySummary, WorkflowStepGraphNode,
     WorkflowTemplateGraphNode, WorkflowVersionGraphNode,
 };
+pub use workflow_impact_types::{
+    WorkflowImpactChange, WorkflowImpactQuery, WorkflowImpactReport, WorkflowImpactRiskGroup,
+    WorkflowImpactRiskHint, WorkflowImpactStep, WorkflowImpactWorkflow,
+};
 pub use workflow_memory::{
     WorkflowMemoryBundle, WorkflowMemoryCandidate, WorkflowMemoryMatch, WorkflowMemoryQuery,
 };
@@ -59,6 +65,8 @@ pub use workflow_runtime::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workflow_impact_tests;
 #[cfg(test)]
 mod workflow_memory_rerun_tests;
 #[cfg(test)]
