@@ -76,6 +76,26 @@ jobs:
       - name: Test browser sidecar
         run: cargo test -p tandem-browser
 
+  # TAN-34 (EAA-09): prove the enterprise-lite build mode actually compiles, so
+  # the cfg-gated `/enterprise/*` route registration in the engine stays
+  # buildable. The public mode is already compiled by engine-checks (no default
+  # features) and the public/lite/full *dependency composition* is validated by
+  # scripts/check-build-modes.sh in the CI workflow. The enterprise-full build
+  # pulls the heavyweight local-embedding stack (fastembed / ort), so it is
+  # validated by composition rather than a full compile here to keep CI lean.
+  enterprise-build-check:
+    name: Enterprise Build Modes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check engine in enterprise-lite mode (registers /enterprise/* routes)
+        run: cargo check -p tandem-ai --no-default-features --features enterprise-server
+
   # TAN-227: one-command end-to-end health check over the governed runtime
   # path (session prompt round-trip, approval gate, policy denial + audit,
   # memory round-trip) against an isolated in-process server with the local
