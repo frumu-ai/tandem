@@ -127,20 +127,20 @@ impl EnterpriseAuthorizationHook for StrictContextAuthorizationHook {
         let Some(strict) = &self.strict else {
             return GrantEvaluation::allow(LOCAL_ALLOW);
         };
-        let permissions = if tool.required_permissions.is_empty() {
-            // A tool with no declared permission requirement still needs to be
-            // visible to a principal with at least View on the resource.
-            vec![AccessPermission::View]
-        } else {
-            tool.required_permissions.clone()
-        };
+        // A tool that declares no permission requirement is not
+        // permission-gated (matches the discovery filter's empty-descriptor
+        // semantics); do not synthesize a `View` requirement, which would
+        // hide unprotected tools from principals holding `Read`/`Admin`.
+        if tool.required_permissions.is_empty() {
+            return GrantEvaluation::allow("tool_no_permission_requirement");
+        }
         let data_classes = if tool.required_data_classes.is_empty() {
             vec![DataClass::Internal]
         } else {
             tool.required_data_classes.clone()
         };
         // Fail closed: every required (permission × data class) must be allowed.
-        for permission in &permissions {
+        for permission in &tool.required_permissions {
             for data_class in &data_classes {
                 let evaluation =
                     strict.evaluate_access(&tool.resource, *permission, *data_class, now_ms);
@@ -320,6 +320,24 @@ mod tests {
         };
         assert_ne!(
             hook.authorize_tool_discovery(&hidden, 5_000).decision,
+            AccessDecision::Allow
+        );
+    }
+
+    #[test]
+    fn tool_with_no_permission_requirement_is_not_gated() {
+        // The fixture principal holds Read+Delegate but NOT View. A tool
+        // declaring no permission requirement must stay visible (empty
+        // requirement = unprotected), not be hidden by a synthesized View
+        // gate — even for a resource outside the granted scope.
+        let hook = StrictContextAuthorizationHook::strict(strict_context());
+        let unprotected = ToolAccessTarget {
+            resource: resource("doc-anywhere"),
+            required_permissions: vec![],
+            required_data_classes: vec![],
+        };
+        assert_eq!(
+            hook.authorize_tool_discovery(&unprotected, 5_000).decision,
             AccessDecision::Allow
         );
     }
