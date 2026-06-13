@@ -28,6 +28,8 @@ pub mod preset_summary;
 pub mod routines;
 pub mod runtime;
 pub mod shared_resources;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod util;
 pub mod webui;
 pub mod workflow_learning_policy;

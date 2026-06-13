@@ -12,6 +12,11 @@ enterprise = []
 browser = ["tandem-browser"]
 local-embeddings = ["tandem-memory/local-embeddings"]
 premium-governance = ["dep:tandem-governance-engine"]
+# Exposes the `test_support` module (test_state / next_event_of_type) so crates
+# that mount routes onto the server (e.g. tandem-enterprise-server) can build a
+# realistic AppState in their own HTTP integration tests. Test-only; not enabled
+# by any production build.
+test-support = []
 
 [dependencies]
 anyhow = "1"

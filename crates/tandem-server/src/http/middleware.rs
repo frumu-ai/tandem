@@ -522,6 +522,9 @@ fn local_request_source(headers: &HeaderMap) -> String {
     })
 }
 
+// Used by the `cfg(not(test/test-support))` resolver and by in-crate
+// middleware_tests; can be dead under `test-support` alone.
+#[allow(dead_code)]
 fn resolve_secure_local_enterprise_request_context(
     headers: &HeaderMap,
 ) -> ResolvedEnterpriseRequestContext {
@@ -533,14 +536,18 @@ fn resolve_secure_local_enterprise_request_context(
     ResolvedEnterpriseRequestContext::local(tenant_context, request_principal)
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn resolve_local_enterprise_request_context(
     headers: &HeaderMap,
 ) -> ResolvedEnterpriseRequestContext {
     resolve_secure_local_enterprise_request_context(headers)
 }
 
-#[cfg(test)]
+// Under `test-support` (a test-only feature) the local resolver trusts raw
+// `x-tandem-*` headers so HTTP integration tests in dependent crates (e.g.
+// tandem-enterprise-server) can drive per-tenant behavior, matching the
+// in-crate `cfg(test)` behavior.
+#[cfg(any(test, feature = "test-support"))]
 fn resolve_local_enterprise_request_context(
     headers: &HeaderMap,
 ) -> ResolvedEnterpriseRequestContext {

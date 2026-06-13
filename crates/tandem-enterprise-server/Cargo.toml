@@ -34,3 +34,8 @@ tandem-server = { path = "../tandem-server", version = "0.5.13", default-feature
 [dev-dependencies]
 serial_test = "3"
 tower = "0.5"
+chrono = { version = "0.4", features = ["serde"] }
+tandem-types = { path = "../tandem-types", version = "0.5.13" }
+# Enables tandem-server's test_support seam for the integration tests below
+# (test-only feature union; not active in normal builds).
+tandem-server = { path = "../tandem-server", version = "0.5.13", default-features = false, features = ["test-support"] }
