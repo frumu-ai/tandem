@@ -241,12 +241,13 @@ fn risk_groups(
 ) -> Vec<WorkflowImpactRiskGroup> {
     let mut groups = BTreeMap::<(String, String), (BTreeSet<String>, BTreeSet<String>)>::new();
     for step in affected_steps {
-        let hint = risk_hint_for_step(step, hints);
-        let key = (hint.authority_level, hint.side_effect_boundary);
-        let entry = groups.entry(key).or_default();
-        entry.0.insert(step.step_id.clone());
-        entry.1.extend(step.checks_to_run.iter().cloned());
-        entry.1.extend(hint.checks_to_run);
+        for hint in risk_hints_for_step(step, hints) {
+            let key = (hint.authority_level, hint.side_effect_boundary);
+            let entry = groups.entry(key).or_default();
+            entry.0.insert(step.step_id.clone());
+            entry.1.extend(step.checks_to_run.iter().cloned());
+            entry.1.extend(hint.checks_to_run);
+        }
     }
     groups
         .into_iter()
@@ -261,21 +262,25 @@ fn risk_groups(
         .collect()
 }
 
-fn risk_hint_for_step(
+fn risk_hints_for_step(
     step: &WorkflowImpactStep,
     hints: &[WorkflowImpactRiskHint],
-) -> WorkflowImpactRiskHint {
-    for target in step
+) -> Vec<WorkflowImpactRiskHint> {
+    let mut matches = step
         .required_tools
         .iter()
         .chain(step.memory_tiers.iter())
         .chain(step.policy_scopes.iter())
         .chain(step.approval_gates.iter())
-    {
-        if let Some(hint) = hints.iter().find(|hint| &hint.target == target) {
-            return hint.clone();
-        }
+        .filter_map(|target| hints.iter().find(|hint| &hint.target == target).cloned())
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        matches.push(default_risk_hint_for_step(step));
     }
+    matches
+}
+
+fn default_risk_hint_for_step(step: &WorkflowImpactStep) -> WorkflowImpactRiskHint {
     WorkflowImpactRiskHint {
         target: step.step_id.clone(),
         authority_level: if step.approval_gates.is_empty() {
@@ -315,7 +320,12 @@ fn affected_workflows(graph: &WorkflowGraph, affected: bool) -> Vec<WorkflowImpa
             .nodes
             .iter()
             .find(|node| node.kind == NodeKind::WorkflowTemplate)
-            .map(|node| node.label.clone()),
+            .map(|node| {
+                node.payload
+                    .get("template_id")
+                    .cloned()
+                    .unwrap_or_else(|| node.id.key.clone())
+            }),
         workflow_version_id: graph
             .nodes
             .iter()

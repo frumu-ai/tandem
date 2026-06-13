@@ -25,6 +25,12 @@ fn workflow_impact_analysis_propagates_tool_changes_downstream() {
     assert!(output.audit.allowed());
     assert_eq!(output.value.affected_workflows.len(), 1);
     assert_eq!(
+        output.value.affected_workflows[0]
+            .workflow_template_id
+            .as_deref(),
+        Some("template-a")
+    );
+    assert_eq!(
         output
             .value
             .affected_steps
@@ -56,6 +62,67 @@ fn workflow_impact_analysis_propagates_tool_changes_downstream() {
         .checks_to_run
         .iter()
         .any(|check| check == "tool_regression"));
+}
+
+#[test]
+fn workflow_impact_analysis_preserves_all_matching_step_risk_hints() {
+    let graph = workflow_graph();
+    let output = graph.workflow_impact_analysis(
+        &envelope(),
+        WorkflowImpactQuery {
+            changes: vec![WorkflowImpactChange::WorkflowTemplateChanged {
+                template_id: Some("template-a".to_string()),
+            }],
+            risk_hints: vec![
+                WorkflowImpactRiskHint {
+                    target: "slack.send".to_string(),
+                    authority_level: "read".to_string(),
+                    side_effect_boundary: "tool_execution".to_string(),
+                    checks_to_run: vec!["tool_contract".to_string()],
+                },
+                WorkflowImpactRiskHint {
+                    target: "human-review".to_string(),
+                    authority_level: "elevated".to_string(),
+                    side_effect_boundary: "human_approval".to_string(),
+                    checks_to_run: vec!["approval_policy_review".to_string()],
+                },
+            ],
+        },
+    );
+
+    assert!(output.audit.allowed());
+    let publish_groups = output
+        .value
+        .risk_groups
+        .iter()
+        .filter(|group| group.affected_steps == vec!["publish".to_string()])
+        .collect::<Vec<_>>();
+    assert!(publish_groups.iter().any(|group| {
+        group.authority_level == "read"
+            && group.side_effect_boundary == "tool_execution"
+            && group
+                .checks_to_run
+                .iter()
+                .any(|check| check == "tool_contract")
+    }));
+    assert!(publish_groups.iter().any(|group| {
+        group.authority_level == "elevated"
+            && group.side_effect_boundary == "human_approval"
+            && group
+                .checks_to_run
+                .iter()
+                .any(|check| check == "approval_policy_review")
+    }));
+    assert!(output
+        .value
+        .checks_to_run
+        .iter()
+        .any(|check| check == "tool_contract"));
+    assert!(output
+        .value
+        .checks_to_run
+        .iter()
+        .any(|check| check == "approval_policy_review"));
 }
 
 #[test]
