@@ -135,42 +135,50 @@ fn detect_regressions(
     push_rate_regression(
         &mut regressions,
         scenario_id,
-        "wrong_tool_call_rate_delta_bps",
-        comparison.wrong_tool_call_rate_delta_bps,
-        thresholds.max_wrong_tool_rate_regression_bps,
-        comparison.baseline_wrong_tool_call_rate_bps,
-        comparison.graph_guided_wrong_tool_call_rate_bps,
-        "graph-guided runs made wrong tool calls more often than baseline",
+        RateRegressionCheck {
+            metric: "wrong_tool_call_rate_delta_bps",
+            delta_bps: comparison.wrong_tool_call_rate_delta_bps,
+            threshold_bps: thresholds.max_wrong_tool_rate_regression_bps,
+            baseline_value_bps: comparison.baseline_wrong_tool_call_rate_bps,
+            graph_guided_value_bps: comparison.graph_guided_wrong_tool_call_rate_bps,
+            detail: "graph-guided runs made wrong tool calls more often than baseline",
+        },
     );
     push_rate_regression(
         &mut regressions,
         scenario_id,
-        "policy_failure_rate_delta_bps",
-        comparison.policy_failure_rate_delta_bps,
-        thresholds.max_policy_failure_rate_regression_bps,
-        comparison.baseline_policy_failure_rate_bps,
-        comparison.graph_guided_policy_failure_rate_bps,
-        "graph-guided runs hit policy failures more often than baseline",
+        RateRegressionCheck {
+            metric: "policy_failure_rate_delta_bps",
+            delta_bps: comparison.policy_failure_rate_delta_bps,
+            threshold_bps: thresholds.max_policy_failure_rate_regression_bps,
+            baseline_value_bps: comparison.baseline_policy_failure_rate_bps,
+            graph_guided_value_bps: comparison.graph_guided_policy_failure_rate_bps,
+            detail: "graph-guided runs hit policy failures more often than baseline",
+        },
     );
     push_rate_regression(
         &mut regressions,
         scenario_id,
-        "preflight_success_rate_delta_bps",
-        comparison.preflight_success_rate_delta_bps,
-        thresholds.max_preflight_success_drop_bps,
-        comparison.baseline_preflight_success_rate_bps,
-        comparison.graph_guided_preflight_success_rate_bps,
-        "graph-guided preflight success rate dropped below baseline",
+        RateRegressionCheck {
+            metric: "preflight_success_rate_delta_bps",
+            delta_bps: comparison.preflight_success_rate_delta_bps,
+            threshold_bps: thresholds.max_preflight_success_drop_bps,
+            baseline_value_bps: comparison.baseline_preflight_success_rate_bps,
+            graph_guided_value_bps: comparison.graph_guided_preflight_success_rate_bps,
+            detail: "graph-guided preflight success rate dropped below baseline",
+        },
     );
     push_rate_regression(
         &mut regressions,
         scenario_id,
-        "rerun_reuse_rate_delta_bps",
-        comparison.rerun_reuse_rate_delta_bps,
-        thresholds.max_rerun_reuse_drop_bps,
-        comparison.baseline_rerun_reuse_rate_bps,
-        comparison.graph_guided_rerun_reuse_rate_bps,
-        "graph-guided reruns reused fewer steps than baseline",
+        RateRegressionCheck {
+            metric: "rerun_reuse_rate_delta_bps",
+            delta_bps: comparison.rerun_reuse_rate_delta_bps,
+            threshold_bps: thresholds.max_rerun_reuse_drop_bps,
+            baseline_value_bps: comparison.baseline_rerun_reuse_rate_bps,
+            graph_guided_value_bps: comparison.graph_guided_rerun_reuse_rate_bps,
+            detail: "graph-guided reruns reused fewer steps than baseline",
+        },
     );
     regressions
 }
@@ -199,24 +207,28 @@ fn push_savings_regression(
 fn push_rate_regression(
     regressions: &mut Vec<WorkflowBenchmarkRegression>,
     scenario_id: Option<&str>,
-    metric: &str,
-    delta_bps: i64,
-    threshold_bps: u32,
-    baseline_value_bps: u32,
-    graph_guided_value_bps: u32,
-    detail: &str,
+    check: RateRegressionCheck<'_>,
 ) {
-    if delta_bps >= -(i64::from(threshold_bps)) {
+    if check.delta_bps >= -(i64::from(check.threshold_bps)) {
         return;
     }
     regressions.push(WorkflowBenchmarkRegression {
         scenario_id: scenario_id.map(str::to_string),
-        metric: metric.to_string(),
-        baseline_value: i64::from(baseline_value_bps),
-        graph_guided_value: i64::from(graph_guided_value_bps),
-        threshold_bps,
-        detail: detail.to_string(),
+        metric: check.metric.to_string(),
+        baseline_value: i64::from(check.baseline_value_bps),
+        graph_guided_value: i64::from(check.graph_guided_value_bps),
+        threshold_bps: check.threshold_bps,
+        detail: check.detail.to_string(),
     });
+}
+
+struct RateRegressionCheck<'a> {
+    metric: &'a str,
+    delta_bps: i64,
+    threshold_bps: u32,
+    baseline_value_bps: u32,
+    graph_guided_value_bps: u32,
+    detail: &'a str,
 }
 
 fn add_observation(

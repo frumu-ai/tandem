@@ -81,7 +81,7 @@ pub struct WorkflowBenchmarkRegression {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowBenchmarkThresholds {
     pub max_token_regression_bps: u32,
     pub max_latency_regression_bps: u32,
@@ -89,19 +89,6 @@ pub struct WorkflowBenchmarkThresholds {
     pub max_policy_failure_rate_regression_bps: u32,
     pub max_preflight_success_drop_bps: u32,
     pub max_rerun_reuse_drop_bps: u32,
-}
-
-impl Default for WorkflowBenchmarkThresholds {
-    fn default() -> Self {
-        Self {
-            max_token_regression_bps: 0,
-            max_latency_regression_bps: 0,
-            max_wrong_tool_rate_regression_bps: 0,
-            max_policy_failure_rate_regression_bps: 0,
-            max_preflight_success_drop_bps: 0,
-            max_rerun_reuse_drop_bps: 0,
-        }
-    }
 }
 
 impl WorkflowBenchmarkObservation {
