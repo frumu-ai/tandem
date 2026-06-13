@@ -40,6 +40,8 @@ CRATES=(
   "crates/tandem-agent-teams"
   "crates/tandem-orchestrator"
   "crates/tandem-memory"
+  "crates/tandem-graph-core"
+  "crates/tandem-repo-intelligence"
   "crates/tandem-tools"
   "crates/tandem-core"
   "crates/tandem-browser"
@@ -205,7 +207,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
   echo "Mode: dry-run" | tee -a "$LOG_FILE"
   echo "Dry-run note: running cargo check before publish." | tee -a "$LOG_FILE"
   echo "Running workspace compile check instead." | tee -a "$LOG_FILE"
-  cargo check -p tandem-ai -p tandem-tui -p tandem-server -p tandem-core -p tandem-tools -p tandem-memory 2>&1 | tee -a "$LOG_FILE"
+  cargo check -p tandem-ai -p tandem-tui -p tandem-server -p tandem-core -p tandem-tools -p tandem-memory -p tandem-graph-core -p tandem-repo-intelligence 2>&1 | tee -a "$LOG_FILE"
 fi
 
 publish_args=()

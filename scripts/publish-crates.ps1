@@ -26,6 +26,8 @@ $crates = @(
     "crates/tandem-agent-teams",
     "crates/tandem-orchestrator",
     "crates/tandem-memory",
+    "crates/tandem-graph-core",
+    "crates/tandem-repo-intelligence",
     "crates/tandem-tools",
     "crates/tandem-core",
     "crates/tandem-browser",
