@@ -606,28 +606,49 @@ mod tests {
     #[test]
     fn store_secret_ref_requires_matching_tenant_context() {
         let suffix = Uuid::new_v4();
+        let security_dir = std::env::temp_dir().join(format!("mcp-auth-test-{suffix}"));
         let secret_id = format!("mcp_header::tenant::{suffix}::authorization");
 
         let current_tenant =
             TenantContext::explicit(format!("tenant-{suffix}"), "workspace", None);
-        tandem_core::set_provider_auth_for_tenant(&current_tenant, &secret_id, "tenant-secret")
-            .expect("store secret");
+        tandem_core::set_provider_auth_for_tenant_in_dir(
+            &security_dir,
+            &current_tenant,
+            &secret_id,
+            "tenant-secret",
+        )
+        .expect("store secret");
         let matching_ref = McpSecretRef::Store {
             secret_id: secret_id.clone(),
             tenant_context: current_tenant.clone(),
         };
         assert_eq!(
-            resolve_secret_ref_value(&matching_ref, &current_tenant).as_deref(),
+            resolve_secret_ref_value_with_loader(&matching_ref, &current_tenant, |tenant_context| {
+                tandem_core::load_provider_auth_for_tenant_in_dir(&security_dir, tenant_context)
+            })
+            .as_deref(),
             Some("tenant-secret")
         );
 
         let mismatched_tenant = TenantContext::explicit("tenant", "other-workspace", None);
         assert!(
-            resolve_secret_ref_value(&matching_ref, &mismatched_tenant).is_none(),
+            resolve_secret_ref_value_with_loader(
+                &matching_ref,
+                &mismatched_tenant,
+                |tenant_context| {
+                    tandem_core::load_provider_auth_for_tenant_in_dir(&security_dir, tenant_context)
+                },
+            )
+            .is_none(),
             "tenant mismatch should block secret lookup"
         );
 
-        let _ = tandem_core::delete_provider_auth_for_tenant(&current_tenant, &secret_id);
+        let _ = tandem_core::delete_provider_auth_for_tenant_in_dir(
+            &security_dir,
+            &current_tenant,
+            &secret_id,
+        );
+        let _ = std::fs::remove_dir_all(security_dir);
     }
 
     #[test]

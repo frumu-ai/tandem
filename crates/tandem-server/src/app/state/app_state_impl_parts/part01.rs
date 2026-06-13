@@ -358,6 +358,7 @@ impl AppState {
             web_ui_enabled: Arc::new(AtomicBool::new(false)),
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
             server_base_url: Arc::new(std::sync::RwLock::new("http://127.0.0.1:39731".to_string())),
+            trust_test_tenant_headers: Arc::new(AtomicBool::new(false)),
             channels_runtime: Arc::new(tokio::sync::Mutex::new(ChannelRuntime::default())),
             host_runtime_context: detect_host_runtime_context(),
             token_cost_per_1k_usd: config::env::resolve_token_cost_per_1k_usd(),
