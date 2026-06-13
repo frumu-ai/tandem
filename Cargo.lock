@@ -7697,10 +7697,13 @@ dependencies = [
 name = "tandem-enterprise-contract"
 version = "0.5.13"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "http 1.4.0",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

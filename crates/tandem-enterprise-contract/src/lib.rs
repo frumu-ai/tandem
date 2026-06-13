@@ -1,10 +1,16 @@
+pub mod approval_receipt;
 pub mod authority;
+pub mod authorization_hook;
 pub mod cross_tenant;
 mod delegation;
 pub use delegation::*;
 pub mod governance;
+pub mod protected_action;
 
+pub use approval_receipt::*;
+pub use authorization_hook::*;
 pub use cross_tenant::*;
+pub use protected_action::*;
 
 use serde::{Deserialize, Serialize};
 

@@ -9,6 +9,8 @@ mod graph_build;
 mod hash;
 mod ids;
 mod query_envelope;
+mod run_failure;
+mod run_failure_types;
 mod run_trace;
 mod storage;
 mod taxonomy;
@@ -16,6 +18,8 @@ mod trust;
 mod workflow_execution_hints;
 mod workflow_execution_hints_types;
 mod workflow_graph;
+mod workflow_impact;
+mod workflow_impact_types;
 mod workflow_memory;
 mod workflow_rerun;
 mod workflow_runtime;
@@ -35,6 +39,10 @@ pub use ids::{EdgeId, GraphSchemaVersion, GraphScope, NodeId};
 pub use query_envelope::{
     GraphQueryAudit, GraphQueryEnvelope, GraphQueryEnvelopeError, GraphQueryOutput,
 };
+pub use run_failure_types::{
+    RunCascadingFailure, RunFailureCausalityReport, RunFailureCause, RunFailureCauseKind,
+    RunRepairContext, RunRepairEvidence,
+};
 pub use run_trace::{RunTraceEvent, RunTraceEventKind, RunTraceGraph, RunTraceGraphSpec};
 pub use storage::{
     GraphPartitionKind, GraphRetentionClass, GraphRetentionPolicy, GraphStoragePartition,
@@ -52,6 +60,10 @@ pub use workflow_graph::{
     WorkflowGraph, WorkflowGraphSpec, WorkflowStepDependencySummary, WorkflowStepGraphNode,
     WorkflowTemplateGraphNode, WorkflowVersionGraphNode,
 };
+pub use workflow_impact_types::{
+    WorkflowImpactChange, WorkflowImpactQuery, WorkflowImpactReport, WorkflowImpactRiskGroup,
+    WorkflowImpactRiskHint, WorkflowImpactStep, WorkflowImpactWorkflow,
+};
 pub use workflow_memory::{
     WorkflowMemoryBundle, WorkflowMemoryCandidate, WorkflowMemoryMatch, WorkflowMemoryQuery,
 };
@@ -65,9 +77,13 @@ pub use workflow_runtime::{
 };
 
 #[cfg(test)]
+mod run_failure_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod workflow_execution_hints_tests;
+#[cfg(test)]
+mod workflow_impact_tests;
 #[cfg(test)]
 mod workflow_memory_rerun_tests;
 #[cfg(test)]
