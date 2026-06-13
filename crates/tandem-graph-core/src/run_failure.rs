@@ -3,7 +3,10 @@ use crate::{
     RunCascadingFailure, RunFailureCausalityReport, RunFailureCause, RunFailureCauseKind,
     RunRepairContext, RunRepairEvidence, RunTraceGraph, WorkflowGraph,
 };
-use std::collections::BTreeSet;
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+};
 
 impl RunTraceGraph {
     pub fn failure_causality_report(
@@ -27,11 +30,8 @@ impl RunTraceGraph {
             .filter_map(TraceFailureEvent::from_node)
             .filter(TraceFailureEvent::is_failure_signal)
             .collect::<Vec<_>>();
-        events.sort_by(|left, right| {
-            left.occurred_at_unix_ms
-                .cmp(&right.occurred_at_unix_ms)
-                .then_with(|| left.event_id.cmp(&right.event_id))
-        });
+        let step_order = workflow_step_order(workflow);
+        events.sort_by(|left, right| compare_failure_events(left, right, &step_order));
 
         let mut root_steps = BTreeSet::new();
         let mut root_causes = Vec::new();
@@ -164,11 +164,12 @@ impl TraceFailureEvent {
     }
 
     fn to_root_cause(&self) -> RunFailureCause {
+        let kind = self.cause_kind();
         RunFailureCause {
             event_id: self.event_id.clone(),
             step_id: self.step_id.clone(),
-            kind: self.cause_kind(),
-            target: self.target(),
+            target: self.target_for_kind(&kind),
+            kind,
             summary: self.safe_summary.clone(),
             evidence: vec![self.evidence()],
         }
@@ -224,13 +225,80 @@ impl TraceFailureEvent {
     }
 
     fn target(&self) -> Option<String> {
-        self.tool_name
-            .clone()
-            .or_else(|| self.memory_tier.clone())
-            .or_else(|| self.policy_scope.clone())
-            .or_else(|| self.artifact_ref.clone())
-            .or_else(|| self.step_id.clone())
+        self.target_for_kind(&self.cause_kind())
     }
+
+    fn target_for_kind(&self, kind: &RunFailureCauseKind) -> Option<String> {
+        match kind {
+            RunFailureCauseKind::PolicyDenied => self
+                .policy_scope
+                .clone()
+                .or_else(|| self.tool_name.clone())
+                .or_else(|| self.step_id.clone()),
+            RunFailureCauseKind::ToolFailure => self
+                .tool_name
+                .clone()
+                .or_else(|| self.policy_scope.clone())
+                .or_else(|| self.step_id.clone()),
+            RunFailureCauseKind::MemoryFailure => {
+                self.memory_tier.clone().or_else(|| self.step_id.clone())
+            }
+            RunFailureCauseKind::ArtifactFailure => {
+                self.artifact_ref.clone().or_else(|| self.step_id.clone())
+            }
+            RunFailureCauseKind::ApprovalInterruption => {
+                self.policy_scope.clone().or_else(|| self.step_id.clone())
+            }
+            RunFailureCauseKind::ModelFailure | RunFailureCauseKind::Error => {
+                self.artifact_ref.clone().or_else(|| self.step_id.clone())
+            }
+        }
+    }
+}
+
+fn compare_failure_events(
+    left: &TraceFailureEvent,
+    right: &TraceFailureEvent,
+    step_order: &BTreeMap<String, usize>,
+) -> Ordering {
+    if let (Some(left_time), Some(right_time)) =
+        (left.occurred_at_unix_ms, right.occurred_at_unix_ms)
+    {
+        let ordering = left_time.cmp(&right_time);
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+
+    step_order_key(left, step_order)
+        .cmp(&step_order_key(right, step_order))
+        .then_with(|| {
+            left.occurred_at_unix_ms
+                .unwrap_or(u64::MAX)
+                .cmp(&right.occurred_at_unix_ms.unwrap_or(u64::MAX))
+        })
+        .then_with(|| left.event_id.cmp(&right.event_id))
+}
+
+fn step_order_key(event: &TraceFailureEvent, step_order: &BTreeMap<String, usize>) -> usize {
+    event
+        .step_id
+        .as_deref()
+        .and_then(|step_id| step_order.get(step_id).copied())
+        .unwrap_or(usize::MAX)
+}
+
+fn workflow_step_order(workflow: Option<&WorkflowGraph>) -> BTreeMap<String, usize> {
+    workflow
+        .map(|workflow| {
+            workflow
+                .step_dependencies
+                .iter()
+                .enumerate()
+                .map(|(index, (step_id, _))| (step_id.clone(), index))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn summary_indicates_failure(summary: &str) -> bool {

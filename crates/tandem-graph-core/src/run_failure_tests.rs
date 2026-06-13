@@ -130,6 +130,118 @@ fn run_failure_causality_report_fails_closed_for_run_scope_mismatch() {
         .any(|reason| reason.contains("run trace partition")));
 }
 
+#[test]
+fn run_failure_causality_report_uses_workflow_order_for_untimed_failures() {
+    let workflow = workflow_graph();
+    let trace = RunTraceGraph::from_spec(
+        RunTraceGraphSpec {
+            scope: GraphScope::new("tenant-a", "project-a"),
+            run_id: "run-a".to_string(),
+            workflow_version_id: Some("version-a".to_string()),
+            events: vec![
+                RunTraceEvent {
+                    event_id: "error-2".to_string(),
+                    kind: RunTraceEventKind::Error,
+                    workflow_step_id: Some("publish".to_string()),
+                    tool_name: None,
+                    memory_tier: None,
+                    policy_scope: None,
+                    artifact_ref: Some("artifact://brief".to_string()),
+                    safe_summary: Some(
+                        "publish failed because collect output was missing".to_string(),
+                    ),
+                    policy_denied: false,
+                    latency_ms: None,
+                    cost_microunits: None,
+                    occurred_at_unix_ms: None,
+                },
+                RunTraceEvent {
+                    event_id: "tool-1".to_string(),
+                    kind: RunTraceEventKind::ToolCall,
+                    workflow_step_id: Some("collect".to_string()),
+                    tool_name: Some("web.search".to_string()),
+                    memory_tier: None,
+                    policy_scope: Some("policy:research".to_string()),
+                    artifact_ref: None,
+                    safe_summary: Some("tool failed with a display-safe timeout".to_string()),
+                    policy_denied: false,
+                    latency_ms: Some(5000),
+                    cost_microunits: None,
+                    occurred_at_unix_ms: Some(10),
+                },
+            ],
+        },
+        "agent-a",
+    )
+    .expect("build run trace graph");
+
+    let output = trace.failure_causality_report(&run_envelope(), Some(&workflow));
+
+    assert_eq!(output.value.root_causes.len(), 1);
+    assert_eq!(
+        output.value.root_causes[0].step_id.as_deref(),
+        Some("collect")
+    );
+    assert_eq!(output.value.cascading_failures.len(), 1);
+    assert_eq!(
+        output.value.cascading_failures[0].step_id.as_deref(),
+        Some("publish")
+    );
+}
+
+#[test]
+fn run_failure_causality_report_targets_policy_denials_at_policy_scope() {
+    let trace = RunTraceGraph::from_spec(
+        RunTraceGraphSpec {
+            scope: GraphScope::new("tenant-a", "project-a"),
+            run_id: "run-a".to_string(),
+            workflow_version_id: Some("version-a".to_string()),
+            events: vec![RunTraceEvent {
+                event_id: "policy-1".to_string(),
+                kind: RunTraceEventKind::ToolCall,
+                workflow_step_id: Some("publish".to_string()),
+                tool_name: Some("slack.send".to_string()),
+                memory_tier: None,
+                policy_scope: Some("policy:external-send".to_string()),
+                artifact_ref: None,
+                safe_summary: Some("policy denied external notification".to_string()),
+                policy_denied: true,
+                latency_ms: None,
+                cost_microunits: None,
+                occurred_at_unix_ms: Some(10),
+            }],
+        },
+        "agent-a",
+    )
+    .expect("build run trace graph");
+
+    let output = trace.failure_causality_report(&run_envelope(), None);
+
+    assert_eq!(output.value.root_causes.len(), 1);
+    assert_eq!(
+        output.value.root_causes[0].kind,
+        RunFailureCauseKind::PolicyDenied
+    );
+    assert_eq!(
+        output.value.root_causes[0].target.as_deref(),
+        Some("policy:external-send")
+    );
+    assert_eq!(
+        output.value.repair_context.policy_scopes,
+        vec!["policy:external-send".to_string()]
+    );
+    assert!(output.value.repair_context.relevant_tools.is_empty());
+}
+
+fn run_envelope() -> GraphQueryEnvelope {
+    let mut envelope = GraphQueryEnvelope::new(
+        GraphScope::new("tenant-a", "project-a").with_run("run-a"),
+        "agent-a",
+    );
+    envelope.readable_paths = vec![".".to_string()];
+    envelope
+}
+
 fn workflow_graph() -> WorkflowGraph {
     WorkflowGraph::from_spec(WorkflowGraphSpec {
         scope: GraphScope::new("tenant-a", "project-a"),
