@@ -45,13 +45,14 @@ A good default is: inspect first, then make the smallest possible edit, then rev
 ## Recommended coding loop
 
 1. Confirm the workspace root and allowed paths.
-2. Read the relevant files before changing anything.
+2. Use the repo intelligence graph for discovery when available, then read the relevant files before changing anything.
 3. Decide whether the task is a small replacement, a rewrite, or a patch.
 4. Make the edit inside the active workspace.
-5. Run the smallest meaningful verification command.
-6. Inspect the diff before you declare success.
-7. Summarize the files changed, the tests run, and any remaining risks.
-8. Commit or hand off only after the change is defensible.
+5. Refresh repo intelligence after edits when using graph impact or test-target hints.
+6. Run the smallest meaningful verification command.
+7. Inspect the diff before you declare success.
+8. Summarize the files changed, the tests run, and any remaining risks.
+9. Commit or hand off only after the change is defensible.
 
 ## Diff and review
 
@@ -110,4 +111,5 @@ Example stage contract:
 - [Agent Workflow And Mission Quickstart](./agent-workflow-mission-quickstart/)
 - [Autonomous Coding Agents with GitHub Projects](./autonomous-coding-agents-github-projects/)
 - [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/)
+- [Repo Intelligence Graph](./repo-intelligence-graph/)
 - [Tools Reference](./reference/tools/)

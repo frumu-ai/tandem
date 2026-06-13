@@ -21,6 +21,22 @@ For coding tasks, agents usually read first, use `edit` for narrow replacements,
 
 - **`grep`**: Regex search in files.
   - Input: `pattern` (string), `path` (string, root directory)
+- **`repo.index`**: Build and persist the deterministic repo intelligence index.
+  - Input: optional `repo_path` (string)
+- **`repo.update_changed_files`**: Refresh the repo intelligence index after edits.
+  - Input: optional `repo_path` (string), `changed_files` (array of strings)
+- **`repo.context_bundle`**: Build a deterministic, budgeted context bundle for a coding task.
+  - Input: `task` (string), optional `repo_path`, `required_files`, `changed_files`, `path_scope`, `budget_chars`, `limit`
+- **`repo.search`**: Search indexed files, symbols, imports, config references, and docs.
+  - Input: `query` (string), optional `repo_path`, `path_scope`, `limit`
+- **`repo.symbol`**: Find indexed symbols by name and optional kind.
+  - Input: `query` (string), optional `repo_path`, `kind`, `path_scope`, `limit`
+- **`repo.neighbors`**: Traverse graph neighbors from a file, symbol, or graph node.
+  - Input: `node_or_path` (string), optional `repo_path`, `relation`, `depth`
+- **`repo.impact`**: Summarize changed-file impact using indexed graph edges.
+  - Input: `changed_files` (array of strings), optional `repo_path`
+- **`repo.test_targets`**: Return likely test targets for changed files.
+  - Input: `changed_files` (array of strings), optional `repo_path`
 - **`websearch`**: Search the web (powered by Exa.ai).
   - Input: `query` (string), `limit` (integer)
 - **`codesearch`**: Semantic code search (if configured).
