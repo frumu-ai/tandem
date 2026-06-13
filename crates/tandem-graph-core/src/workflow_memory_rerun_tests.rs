@@ -59,6 +59,47 @@ fn workflow_memory_bundle_falls_back_when_graph_has_no_memory_link() {
 }
 
 #[test]
+fn workflow_memory_bundle_rejects_memories_from_other_runs() {
+    let graph = workflow_graph();
+    let mut envelope = envelope();
+    envelope.scope = envelope.scope.with_run("run-a");
+    envelope.run_id = Some("run-a".to_string());
+    envelope.allowed_memory_tiers = vec!["private".to_string()];
+
+    let output = graph.workflow_memory_bundle(
+        &envelope,
+        WorkflowMemoryQuery {
+            step_id: "publish".to_string(),
+            step_kind: Some("notification".to_string()),
+            now_unix_ms: None,
+            include_stale: false,
+        },
+        &[
+            memory("same-run", "private", "policy:external-send")
+                .with_scope(GraphScope::new("tenant-a", "project-a").with_run("run-a")),
+            memory("other-run", "private", "policy:external-send")
+                .with_scope(GraphScope::new("tenant-a", "project-a").with_run("run-b")),
+        ],
+    );
+
+    assert!(output.value.blockers.is_empty());
+    assert_eq!(
+        output
+            .value
+            .memories
+            .iter()
+            .map(|memory| memory.memory_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["same-run"]
+    );
+    assert!(output
+        .audit
+        .denied_reasons
+        .iter()
+        .any(|reason| reason.contains("outside the query run scope")));
+}
+
+#[test]
 fn workflow_memory_bundle_preserves_memory_tier_governance() {
     let graph = workflow_graph();
     let mut envelope = envelope();

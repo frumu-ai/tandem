@@ -91,6 +91,13 @@ impl WorkflowGraph {
                 ));
                 continue;
             }
+            if !matches_query_run(candidate, envelope) {
+                audit.deny(format!(
+                    "memory `{}` is outside the query run scope",
+                    candidate.memory_id
+                ));
+                continue;
+            }
             if !envelope.allows_memory_tier(&candidate.tier) {
                 audit.deny(format!(
                     "memory `{}` uses denied tier `{}`",
@@ -160,6 +167,27 @@ fn blocked_memory_bundle(
         },
         audit,
     )
+}
+
+fn matches_query_run(candidate: &WorkflowMemoryCandidate, envelope: &GraphQueryEnvelope) -> bool {
+    let scope_run_id = envelope.scope.run_id.as_deref();
+    let envelope_run_id = envelope.run_id.as_deref();
+    let Some(query_run_id) = scope_run_id.or(envelope_run_id) else {
+        return true;
+    };
+
+    if scope_run_id
+        .zip(envelope_run_id)
+        .is_some_and(|(scope_run_id, envelope_run_id)| scope_run_id != envelope_run_id)
+    {
+        return false;
+    }
+
+    candidate
+        .scope
+        .run_id
+        .as_deref()
+        .is_none_or(|candidate_run_id| candidate_run_id == query_run_id)
 }
 
 fn is_stale(candidate: &WorkflowMemoryCandidate, query: &WorkflowMemoryQuery) -> bool {
