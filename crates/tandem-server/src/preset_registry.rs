@@ -63,17 +63,22 @@ impl PresetRegistry {
     }
 
     pub async fn index(&self) -> anyhow::Result<PresetIndex> {
-        let mut out = PresetIndex {
-            generated_at_ms: crate::now_ms(),
-            ..PresetIndex::default()
-        };
-        self.index_builtin_and_overrides(&mut out)?;
-        self.index_installed_packs(&mut out)?;
-        sort_records(&mut out.skill_modules);
-        sort_records(&mut out.agent_presets);
-        sort_records(&mut out.automation_presets);
-        sort_records(&mut out.pack_presets);
-        Ok(out)
+        let registry = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut out = PresetIndex {
+                generated_at_ms: crate::now_ms(),
+                ..PresetIndex::default()
+            };
+            registry.index_builtin_and_overrides(&mut out)?;
+            registry.index_installed_packs(&mut out)?;
+            sort_records(&mut out.skill_modules);
+            sort_records(&mut out.agent_presets);
+            sort_records(&mut out.automation_presets);
+            sort_records(&mut out.pack_presets);
+            Ok(out)
+        })
+        .await
+        .context("preset index task failed")?
     }
 
     pub async fn fork_to_override(
@@ -82,22 +87,22 @@ impl PresetRegistry {
         source_path: &Path,
         target_id: Option<&str>,
     ) -> anyhow::Result<PathBuf> {
-        let source = std::fs::canonicalize(source_path)
+        let source = tokio::fs::canonicalize(source_path)
+            .await
             .with_context(|| format!("canonicalize {}", source_path.display()))?;
-        let packs_root = self
-            .packs_root
-            .canonicalize()
+        let packs_root = tokio::fs::canonicalize(&self.packs_root)
+            .await
             .unwrap_or_else(|_| self.packs_root.clone());
-        let runtime_root = self
-            .runtime_root
-            .canonicalize()
+        let runtime_root = tokio::fs::canonicalize(&self.runtime_root)
+            .await
             .unwrap_or_else(|_| self.runtime_root.clone());
         if !source.starts_with(&packs_root) && !source.starts_with(&runtime_root) {
             return Err(anyhow::anyhow!(
                 "fork source path must be inside packs/runtime roots"
             ));
         }
-        let content = std::fs::read_to_string(&source)
+        let content = tokio::fs::read_to_string(&source)
+            .await
             .with_context(|| format!("read {}", source.display()))?;
         let id = target_id
             .map(|v| v.trim().to_string())
@@ -134,7 +139,7 @@ impl PresetRegistry {
             .join(OVERRIDES_DIR)
             .join(kind_dir_name(kind)?)
             .join(format!("{id}.yaml"));
-        if path.exists() {
+        if tokio::fs::try_exists(&path).await? {
             tokio::fs::remove_file(&path).await?;
             return Ok(true);
         }
@@ -153,14 +158,20 @@ impl PresetRegistry {
             return Err(anyhow::anyhow!("name and version are required"));
         }
         let overrides_root = self.runtime_root.join(OVERRIDES_DIR);
-        let has_any = [
+        let mut has_any = false;
+        for dir in [
             "skill_modules",
             "agent_presets",
             "automation_presets",
             "pack_presets",
         ]
         .iter()
-        .any(|dir| overrides_root.join(dir).exists());
+        {
+            if tokio::fs::try_exists(overrides_root.join(dir)).await? {
+                has_any = true;
+                break;
+            }
+        }
         if !has_any {
             return Err(anyhow::anyhow!("no overrides found to export"));
         }
@@ -174,6 +185,7 @@ impl PresetRegistry {
         let stage_pack = stage_root.join("pack");
         tokio::fs::create_dir_all(&stage_pack).await?;
 
+        let mut copy_pairs = Vec::new();
         for dir in [
             "skill_modules",
             "agent_presets",
@@ -181,10 +193,18 @@ impl PresetRegistry {
             "pack_presets",
         ] {
             let src = overrides_root.join(dir);
-            if src.exists() {
-                copy_dir_recursive(&src, &stage_pack.join(dir))?;
+            if tokio::fs::try_exists(&src).await? {
+                copy_pairs.push((src, stage_pack.join(dir)));
             }
         }
+        tokio::task::spawn_blocking(move || {
+            for (src, dest) in copy_pairs {
+                copy_dir_recursive(&src, &dest)?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .context("preset export copy task failed")??;
         let manifest = format!(
             "name: {name}\nversion: {version}\ntype: bundle\npack_id: {name}\nmanifest_schema_version: v1\nentrypoints: {{}}\ncapabilities:\n  required: []\n  optional: []\ncontents: {{}}\n"
         );
@@ -205,9 +225,16 @@ impl PresetRegistry {
         if let Some(parent) = output.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        zip_directory(&stage_pack, &output)?;
+        let stage_pack_for_zip = stage_pack.clone();
+        let output_for_zip = output.clone();
+        tokio::task::spawn_blocking(move || zip_directory(&stage_pack_for_zip, &output_for_zip))
+            .await
+            .context("preset export archive task failed")??;
         let bytes = tokio::fs::metadata(&output).await?.len();
-        let sha256 = sha256_file(&output)?;
+        let output_for_hash = output.clone();
+        let sha256 = tokio::task::spawn_blocking(move || sha256_file(&output_for_hash))
+            .await
+            .context("preset export hash task failed")??;
         let _ = tokio::fs::remove_dir_all(stage_root).await;
         Ok(PresetExportResult {
             path: output.to_string_lossy().to_string(),
