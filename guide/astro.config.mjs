@@ -82,6 +82,7 @@ export default defineConfig({
           items: [
             "how-tandem-works",
             "memory-internals",
+            "repo-intelligence-graph",
             "creating-and-running-workflows-and-missions",
             "agent-workflow-operating-manual",
             "mcp-capability-discovery-and-request-flow",
