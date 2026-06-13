@@ -1,19 +1,12 @@
-# Tandem Roadmap (Next 3 Months)
+# Tandem Roadmap
 
-## Month 1 — First outcome & onboarding
+This document is deprecated.
 
-- Guided onboarding wizard (folder → provider → starter pack)
-- Starter Packs UI (install + open + draft first prompt)
-- Starter skills gallery (keep paste SKILL.md as Advanced)
+Tandem's current direction is captured in:
 
-## Month 2 — UX polish & discoverability
+- [NORTHSTAR.md](./NORTHSTAR.md) — strategic product direction
+- [VISION.md](./VISION.md) — concise product vision
+- [docs/ENTERPRISE_READINESS.md](./docs/ENTERPRISE_READINESS.md) — current enterprise capability boundaries
+- [docs/AI_RUNTIME_INFRASTRUCTURE.md](./docs/AI_RUNTIME_INFRASTRUCTURE.md) — runtime architecture framing
 
-- Reduce jargon in UI labels and docs
-- Improve “what happened” visibility (group tool activity, clearer statuses)
-- Expand pack catalog and add “share/export” basics (local-only)
-
-## Month 3 — Trust & hardening
-
-- Track and resolve security backlog (asset protocol scope, CSP, path canonicalization)
-- Improve CI confidence (tighten lint/clippy gradually)
-- Better issue/PR hygiene for contributor scale
+Near-term execution planning should live in Linear or another issue tracker rather than in this static root roadmap file.
