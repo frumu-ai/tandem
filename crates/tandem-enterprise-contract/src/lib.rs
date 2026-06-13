@@ -1,5 +1,7 @@
 pub mod authority;
 pub mod cross_tenant;
+mod delegation;
+pub use delegation::*;
 pub mod governance;
 
 pub use cross_tenant::*;
@@ -1339,6 +1341,11 @@ pub struct StrictTenantContext {
     #[serde(default)]
     pub data_boundary: DataBoundary,
     pub assertion: AssertionMetadata,
+    /// Remaining re-delegation hops when this context was produced by a
+    /// delegation projection (EAA-08). `None` means the context is a root
+    /// (non-delegated) context; `Some(0)` means it cannot delegate further.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_delegation_depth: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1399,7 +1406,13 @@ impl StrictTenantContext {
             grants: Vec::new(),
             data_boundary: DataBoundary::default(),
             assertion,
+            remaining_delegation_depth: None,
         }
+    }
+
+    pub fn with_remaining_delegation_depth(mut self, depth: u32) -> Self {
+        self.remaining_delegation_depth = Some(depth);
+        self
     }
 
     pub fn with_grants(mut self, grants: Vec<ScopedGrant>) -> Self {
