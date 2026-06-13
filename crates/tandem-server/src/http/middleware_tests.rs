@@ -177,6 +177,7 @@ fn verifier_accepts_valid_tandem_context_assertion() {
 
     assert_eq!(verified.issuer, "tandem-web");
     assert_eq!(verified.audience, "tandem-runtime");
+    assert_eq!(verified.assertion_key_id.as_deref(), Some("test-key"));
     assert_eq!(verified.human_actor.actor_id, "user-a");
     assert_eq!(verified.tenant_context.org_id, "org-a");
     assert_eq!(verified.tenant_context.workspace_id, "workspace-a");
@@ -221,6 +222,13 @@ fn verifier_accepts_signed_context_assertion_with_strict_projection() {
     assert_eq!(verified.issuer, "tandem-web");
     assert_eq!(verified.tenant_context.org_id, "org-a");
     assert_eq!(verified.human_actor.actor_id, "user-a");
+    assert_eq!(
+        verified
+            .strict_projection
+            .as_ref()
+            .and_then(|projection| projection.assertion.key_id.as_deref()),
+        Some("test-key")
+    );
 }
 
 #[test]
@@ -451,6 +459,7 @@ fn verifier_accepts_context_assertion_within_tight_future_skew() {
         .expect("assertions inside the skew window should verify");
 
     assert_eq!(verified.assertion_id, "assertion-a");
+    assert_eq!(verified.assertion_key_id.as_deref(), Some("test-key"));
 }
 
 #[test]
@@ -631,6 +640,39 @@ fn parse_context_public_keyring_accepts_metadata_objects() {
     assert_eq!(key.not_before_ms, Some(1));
     assert_eq!(key.not_after_ms, Some(5000));
     assert_eq!(key.status.as_deref(), Some("active"));
+}
+
+#[test]
+fn context_assertion_keyring_summary_excludes_key_material() {
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+    let encoded =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signing_key.verifying_key());
+    let verifier = TenantContextAssertionVerifier {
+        public_keys_by_id: parse_context_public_keyring(&format!(
+            r#"{{
+                "active-key": {{
+                    "publicKey": "{encoded}",
+                    "purpose": "context_assertion",
+                    "status": "active",
+                    "notAfterMs": 5000
+                }}
+            }}"#
+        ))
+        .expect("metadata keyring"),
+        legacy_public_key: None,
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+    };
+
+    let summary = serde_json::to_string(&context_assertion_keyring_summary(&verifier))
+        .expect("summary serializes");
+
+    assert!(summary.contains("active-key"));
+    assert!(summary.contains("active"));
+    assert!(!summary.contains(&encoded));
+    assert!(!summary.contains("publicKey"));
+    assert!(!summary.contains("public_key"));
 }
 
 #[test]

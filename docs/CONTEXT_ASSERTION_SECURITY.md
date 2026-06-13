@@ -35,6 +35,12 @@ Verification is fail-closed and implemented in
 If no key is configured in hosted/enterprise mode, all assertion-bearing
 requests are rejected (`context_assertion_key_not_configured`).
 
+At verifier initialization, the runtime logs a safe summary of configured keys:
+`kid`, status, purpose, lifetime, and tenant/deployment constraints. Public key
+bytes are never logged. Verified assertions retain the selected `kid` as
+assertion metadata so downstream strict projections and audit evidence can show
+which configured verifier key accepted the request.
+
 Example keyset:
 
 ```json

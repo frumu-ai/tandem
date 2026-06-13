@@ -330,6 +330,7 @@ fn verified_audience_context(
         issued_at_ms: now_ms,
         expires_at_ms: now_ms + 86_400_000,
         assertion_id: "ct14-assertion".to_string(),
+        assertion_key_id: None,
     }
 }
 

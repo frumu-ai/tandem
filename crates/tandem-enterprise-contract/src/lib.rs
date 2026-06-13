@@ -999,6 +999,8 @@ pub struct VerifiedTenantContext {
     pub issued_at_ms: u64,
     pub expires_at_ms: u64,
     pub assertion_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assertion_key_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1152,11 +1154,21 @@ impl From<TenantContextAssertionClaims> for VerifiedTenantContext {
             issued_at_ms: claims.issued_at_ms,
             expires_at_ms: claims.expires_at_ms,
             assertion_id: claims.assertion_id,
+            assertion_key_id: None,
         }
     }
 }
 
 impl VerifiedTenantContext {
+    pub fn with_assertion_key_id(mut self, key_id: impl Into<String>) -> Self {
+        let key_id = key_id.into();
+        if let Some(strict_projection) = self.strict_projection.as_mut() {
+            strict_projection.assertion.key_id = Some(key_id.clone());
+        }
+        self.assertion_key_id = Some(key_id);
+        self
+    }
+
     pub fn is_expired_at(&self, now_ms: u64) -> bool {
         self.expires_at_ms <= now_ms
     }
@@ -1330,7 +1342,7 @@ impl From<&VerifiedTenantContext> for AssertionMetadata {
             issued_at_ms: context.issued_at_ms,
             expires_at_ms: context.expires_at_ms,
             assertion_id: context.assertion_id.clone(),
-            key_id: None,
+            key_id: context.assertion_key_id.clone(),
             purpose: Some(SigningKeyPurpose::ContextAssertion),
         }
     }
