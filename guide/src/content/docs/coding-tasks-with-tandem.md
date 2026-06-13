@@ -90,7 +90,7 @@ Example stage contract:
 ```json
 {
   "objective": "Implement the new tenant-scoped audit envelope",
-  "workspace_root": "/home/evan/aca-tandem",
+  "workspace_root": "/workspace/aca-tandem",
   "allowed_paths": ["crates/tandem-server/src/"],
   "expected_outputs": ["updated Rust source", "focused test result", "diff summary"],
   "verification": "cargo test -p tandem-server provider_auth_set_writes_protected_audit_record -- --nocapture"

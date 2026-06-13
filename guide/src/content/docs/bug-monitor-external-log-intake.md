@@ -68,7 +68,7 @@ Minimal example:
         "name": "External demo service",
         "enabled": true,
         "repo": "frumu-ai/tandem",
-        "workspace_root": "/home/evan/tandem",
+        "workspace_root": "/workspace/tandem",
         "log_sources": [
           {
             "source_id": "service-jsonl",
