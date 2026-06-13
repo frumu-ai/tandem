@@ -1,9 +1,11 @@
+pub mod approval_receipt;
 pub mod authority;
 pub mod cross_tenant;
 mod delegation;
 pub use delegation::*;
 pub mod governance;
 
+pub use approval_receipt::*;
 pub use cross_tenant::*;
 
 use serde::{Deserialize, Serialize};
