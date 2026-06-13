@@ -26,9 +26,17 @@ get_diff_ref() {
   if [ -z "${diff_ref}" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${BASE_REF}" ]; then
     diff_ref="origin/${BASE_REF}"
     if ! git rev-parse --verify "${diff_ref}" >/dev/null 2>&1; then
-      git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1 || true
+      git fetch --no-tags --depth=100 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" >/dev/null 2>&1 || true
       if ! git rev-parse --verify "${diff_ref}" >/dev/null 2>&1; then
         diff_ref=""
+      fi
+    fi
+
+    if [ -n "${diff_ref}" ]; then
+      local merge_base
+      merge_base="$(git merge-base "${HEAD_SHA}" "${diff_ref}" 2>/dev/null || true)"
+      if [ -n "${merge_base}" ]; then
+        diff_ref="${merge_base}"
       fi
     fi
   fi
@@ -41,9 +49,14 @@ get_diff_ref() {
 }
 
 # Prefer working-tree or staged changes for local use, then fall back to commit diff.
-touched_files="$(git diff --name-only -- . | grep -E "$CHECK_EXTENSIONS" || true)"
-if [ -z "${touched_files}" ]; then
-  touched_files="$(git diff --name-only --cached -- . | grep -E "$CHECK_EXTENSIONS" || true)"
+# In CI, earlier validation steps may leave generated or tool-touched files in the
+# working tree; PR checks should only gate files touched by the PR diff.
+touched_files=""
+if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+  touched_files="$(git diff --name-only -- . | grep -E "$CHECK_EXTENSIONS" || true)"
+  if [ -z "${touched_files}" ]; then
+    touched_files="$(git diff --name-only --cached -- . | grep -E "$CHECK_EXTENSIONS" || true)"
+  fi
 fi
 
 if [ -z "${touched_files}" ]; then
