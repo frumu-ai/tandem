@@ -397,6 +397,28 @@ fn verifier_rejects_expired_tandem_context_assertion() {
 }
 
 #[test]
+fn expired_signed_context_assertion_denial_keeps_tenant_attribution() {
+    let (signing_key, verifier) = test_signing_key_and_verifier();
+    let assertion =
+        sign_test_context_assertion(&signing_key, "test-key", test_claims(1_000, 2_000));
+    let err = verifier
+        .verify_at(&assertion, 2_000)
+        .expect_err("expired assertion must fail closed");
+
+    let denial = verifier.denial_for_error(&assertion, err);
+
+    assert_eq!(denial.event_type(), "context_assertion.rejected");
+    assert_eq!(
+        denial.reason,
+        TenantContextIngressError::ContextAssertionExpired
+    );
+    assert_eq!(denial.tenant_context.org_id, "org-a");
+    assert_eq!(denial.tenant_context.workspace_id, "workspace-a");
+    assert_eq!(denial.actor.as_deref(), Some("user-a"));
+    assert_eq!(denial.assertion_id.as_deref(), Some("assertion-a"));
+}
+
+#[test]
 fn verifier_rejects_context_assertion_beyond_tight_future_skew() {
     let (signing_key, verifier) = test_signing_key_and_verifier();
     let assertion = sign_test_context_assertion(

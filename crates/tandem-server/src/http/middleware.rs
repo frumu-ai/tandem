@@ -501,7 +501,7 @@ fn resolve_enterprise_request_context_for_mode_with_denial(
                 .map_err(TenantContextIngressDenial::untrusted)?;
             let verified_tenant_context = verifier
                 .verify(&assertion)
-                .map_err(TenantContextIngressDenial::untrusted)?;
+                .map_err(|reason| verifier.denial_for_error(&assertion, reason))?;
             enforce_context_assertion_replay_policy(&assertion, &verified_tenant_context).map_err(
                 |reason| TenantContextIngressDenial::verified(reason, &verified_tenant_context),
             )?;
@@ -671,6 +671,30 @@ impl TenantContextAssertionVerifier {
         assertion: &str,
         now_ms: u64,
     ) -> Result<VerifiedTenantContext, TenantContextIngressError> {
+        let claims = self.verify_signed_claims_at(assertion, now_ms)?;
+        self.validate_claim_time(&claims, now_ms)?;
+        Ok(claims.into())
+    }
+
+    fn denial_for_error(
+        &self,
+        assertion: &str,
+        reason: TenantContextIngressError,
+    ) -> TenantContextIngressDenial {
+        if reason != TenantContextIngressError::ContextAssertionExpired {
+            return TenantContextIngressDenial::untrusted(reason);
+        }
+        self.verify_signed_claims_at(assertion, current_unix_ms())
+            .map(VerifiedTenantContext::from)
+            .map(|verified| TenantContextIngressDenial::verified(reason, &verified))
+            .unwrap_or_else(|_| TenantContextIngressDenial::untrusted(reason))
+    }
+
+    fn verify_signed_claims_at(
+        &self,
+        assertion: &str,
+        now_ms: u64,
+    ) -> Result<TenantContextAssertionClaims, TenantContextIngressError> {
         let assertion = assertion.trim();
         let mut parts = assertion.split('.');
         let encoded_header = parts
@@ -714,9 +738,9 @@ impl TenantContextAssertionVerifier {
 
         let claims: TenantContextAssertionClaims = serde_json::from_slice(&claims_bytes)
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
-        self.validate_claims(&claims, now_ms)?;
+        self.validate_claim_identity(&claims)?;
         validate_context_assertion_key_metadata(key, &claims, now_ms)?;
-        Ok(claims.into())
+        Ok(claims)
     }
 
     fn key_for_kid(&self, kid: &str) -> Option<&ContextAssertionPublicKey> {
@@ -725,19 +749,15 @@ impl TenantContextAssertionVerifier {
             .or(self.legacy_public_key.as_ref())
     }
 
-    fn validate_claims(
+    fn validate_claim_identity(
         &self,
         claims: &TenantContextAssertionClaims,
-        now_ms: u64,
     ) -> Result<(), TenantContextIngressError> {
         if claims.version != "v1" {
             return Err(TenantContextIngressError::ContextAssertionMalformed);
         }
         if claims.issuer != self.issuer || claims.audience != self.audience {
             return Err(TenantContextIngressError::ContextAssertionUntrusted);
-        }
-        if claims.is_expired_at(now_ms) || claims.issued_at_ms > now_ms + self.max_future_skew_ms {
-            return Err(TenantContextIngressError::ContextAssertionExpired);
         }
         if claims.assertion_id.trim().is_empty()
             || claims.human_actor.actor_id.trim().is_empty()
@@ -764,6 +784,17 @@ impl TenantContextAssertionVerifier {
             != Some(claims.human_actor.actor_id.as_str())
         {
             return Err(TenantContextIngressError::ContextAssertionUntrusted);
+        }
+        Ok(())
+    }
+
+    fn validate_claim_time(
+        &self,
+        claims: &TenantContextAssertionClaims,
+        now_ms: u64,
+    ) -> Result<(), TenantContextIngressError> {
+        if claims.is_expired_at(now_ms) || claims.issued_at_ms > now_ms + self.max_future_skew_ms {
+            return Err(TenantContextIngressError::ContextAssertionExpired);
         }
         Ok(())
     }
