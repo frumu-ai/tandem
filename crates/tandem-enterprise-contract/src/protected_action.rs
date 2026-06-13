@@ -167,6 +167,26 @@ impl ProtectedActionDescriptor {
         let value = serde_json::to_value(&self.resource).unwrap_or(serde_json::Value::Null);
         sha256_hex(canonical_json_string(&value).as_bytes())
     }
+
+    /// Whether `payload` describes the *same action* as this descriptor — i.e.
+    /// its action-defining fields (tool, normalized args, resource target, data
+    /// class, tenant, executing principal) were derived from this descriptor.
+    ///
+    /// An approval receipt is bound to a [`ProtectedActionPayload`], not to a
+    /// descriptor, so authorizing a classified action against a separately
+    /// supplied payload is only sound if the payload matches the action being
+    /// classified. Without this check a stale payload (and its still-valid
+    /// receipt) for an earlier action could authorize a different, mutated
+    /// action that happens to be passed alongside it.
+    pub fn matches_payload(&self, payload: &ProtectedActionPayload) -> bool {
+        payload.tool == self.tool
+            && payload.args_hash == self.args_hash()
+            && payload.resource_target_hash == self.resource_target_hash()
+            && payload.data_class == self.data_class
+            && payload.org_id == self.resource.organization_id
+            && payload.workspace_id == self.resource.workspace_id
+            && payload.execution_principal == self.principal
+    }
 }
 
 /// How a normalized action is classified under enterprise authority.
@@ -288,9 +308,14 @@ impl ActionDecision {
 ///
 /// `payload` is the canonical action the receipt must be bound to — its
 /// `action_hash` is recomputed during verification, so a receipt issued for a
-/// different action/tenant/actor cannot authorize this one. Callers gating a
-/// *non-idempotent* protected mutation should additionally consume the receipt
-/// through an [`crate::ApprovalReceiptReplayGuard`].
+/// different action/tenant/actor cannot authorize this one. The payload must
+/// itself describe the *classified* action: this API rejects (fail-closed) any
+/// `payload` whose action-defining fields were not derived from `descriptor`
+/// (see [`ProtectedActionDescriptor::matches_payload`]), so a stale
+/// payload/receipt for an earlier action cannot authorize a mutated one passed
+/// alongside it. Callers gating a *non-idempotent* protected mutation should
+/// additionally consume the receipt through an
+/// [`crate::ApprovalReceiptReplayGuard`].
 #[allow(clippy::too_many_arguments)]
 pub fn authorize_action(
     descriptor: &ProtectedActionDescriptor,
@@ -310,6 +335,15 @@ pub fn authorize_action(
                     reason: "protected_action_missing_approval_receipt".to_string(),
                 };
             };
+            // The receipt is bound to `payload`, not to `descriptor`. Verifying
+            // against a payload that was not derived from the classified action
+            // would let a stale payload/receipt for an earlier action authorize
+            // this (possibly mutated) one. Bind the two before verifying.
+            if !descriptor.matches_payload(payload) {
+                return ActionDecision::Deny {
+                    reason: "approval_payload_descriptor_mismatch".to_string(),
+                };
+            }
             match receipt.verify_for_action(payload, expected_audience, verifying_key, now_ms) {
                 Ok(()) => ActionDecision::Allow {
                     reason: "approval_receipt_verified".to_string(),
@@ -712,6 +746,43 @@ mod tests {
             decision,
             ActionDecision::Deny {
                 reason: "approval_receipt_action_hash_mismatch".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn stale_payload_for_earlier_action_cannot_authorize_a_mutated_one() {
+        // Original $100 action with a perfectly valid payload + receipt.
+        let original = descriptor(
+            "mcp.bank.release_funds",
+            ActionEffect::MoneyMovement,
+            resource(ResourceKind::DataStore, "record-1"),
+            DataClass::FinancialRecord,
+        );
+        let stale_payload = payload_for(&original);
+        let receipt = signed_receipt(&stale_payload);
+
+        // The action actually being classified/executed is a mutated $999 one,
+        // but a buggy integration passes the stale $100 payload + receipt. The
+        // receipt still verifies against the stale payload, so binding must be
+        // enforced at the descriptor↔payload seam, not just the receipt seam.
+        let mut mutated = original.clone();
+        mutated.args = serde_json::json!({ "amount": 999, "currency": "usd" });
+        assert!(!mutated.matches_payload(&stale_payload));
+
+        let decision = authorize_action(
+            &mutated,
+            Some(&strict_context()),
+            &stale_payload,
+            Some(&receipt),
+            "tandem-runtime",
+            Some(&signing_key().verifying_key()),
+            5_000,
+        );
+        assert_eq!(
+            decision,
+            ActionDecision::Deny {
+                reason: "approval_payload_descriptor_mismatch".to_string()
             }
         );
     }
