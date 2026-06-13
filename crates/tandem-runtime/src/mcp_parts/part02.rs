@@ -2,6 +2,16 @@ fn resolve_secret_ref_value(
     secret_ref: &McpSecretRef,
     current_tenant: &TenantContext,
 ) -> Option<String> {
+    resolve_secret_ref_value_with_loader(secret_ref, current_tenant, |tenant_context| {
+        tandem_core::load_provider_auth_for_tenant(tenant_context)
+    })
+}
+
+fn resolve_secret_ref_value_with_loader(
+    secret_ref: &McpSecretRef,
+    current_tenant: &TenantContext,
+    load_provider_auth_for_tenant: impl FnOnce(&TenantContext) -> HashMap<String, String>,
+) -> Option<String> {
     match secret_ref {
         McpSecretRef::Store {
             secret_id,
@@ -17,7 +27,7 @@ fn resolve_secret_ref_value(
             if secret_ref.validate_for_tenant(current_tenant).is_err() {
                 return None;
             }
-            tandem_core::load_provider_auth_for_tenant(current_tenant)
+            load_provider_auth_for_tenant(current_tenant)
                 .get(&secret_id.trim().to_ascii_lowercase())
                 .cloned()
                 .filter(|value| !value.trim().is_empty())
