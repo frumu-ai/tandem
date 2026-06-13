@@ -10,14 +10,13 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use tandem_enterprise_server::apply_routes;
-use tandem_server::build_router_with_extensions;
-use tandem_server::test_support::{next_event_of_type, test_state};
 use tandem_memory::response_cache::ResponseCacheScope;
 use tandem_memory::types::{
     MemoryChunk, MemoryTenantScope, MemoryTier, SourceObjectLifecycleRecord,
     SourceObjectLifecycleState, DEFAULT_EMBEDDING_DIMENSION,
 };
-
+use tandem_server::build_router_with_extensions;
+use tandem_server::test_support::{next_event_of_type, test_state};
 
 mod common;
 use common::{connector_body, connector_credential_ref_body, source_binding_body};
@@ -1916,4 +1915,3 @@ async fn enterprise_source_binding_disable_purges_indexed_source_objects() {
     assert_eq!(source_object.state, SourceObjectLifecycleState::Tombstoned);
     assert!(source_object.tombstoned_at_ms.is_some());
 }
-

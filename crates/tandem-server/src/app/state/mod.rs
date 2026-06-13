@@ -252,6 +252,9 @@ pub struct AppState {
     pub web_ui_enabled: Arc<AtomicBool>,
     pub web_ui_prefix: Arc<std::sync::RwLock<String>>,
     pub server_base_url: Arc<std::sync::RwLock<String>>,
+    /// Test-only opt-in used by `test_support::test_state`; feature flags must
+    /// not make runtime local-mode tenant headers trusted by default.
+    pub(crate) trust_test_tenant_headers: Arc<AtomicBool>,
     pub channels_runtime: Arc<tokio::sync::Mutex<ChannelRuntime>>,
     pub host_runtime_context: HostRuntimeContext,
     pub pack_manager: Arc<PackManager>,

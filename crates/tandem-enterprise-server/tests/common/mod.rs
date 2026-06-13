@@ -54,4 +54,3 @@ pub fn connector_credential_ref_body(credential_id: &str, secret_id: &str) -> St
     })
     .to_string()
 }
-

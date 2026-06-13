@@ -94,4 +94,3 @@ pub(super) fn write_plain_zip_without_marker(path: &std::path::Path) {
     std::io::Write::write_all(&mut zip, b"agent body").expect("write agents file");
     zip.finish().expect("finish zip");
 }
-

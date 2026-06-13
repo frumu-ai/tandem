@@ -11,6 +11,7 @@
 //! actually mounted.
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -129,6 +130,9 @@ pub async fn test_state() -> AppState {
         host_runtime_context.clone(),
     );
     let mut state = AppState::new_starting(Uuid::new_v4().to_string(), false);
+    state
+        .trust_test_tenant_headers
+        .store(true, Ordering::Relaxed);
     state.shared_resources_path = root.join("shared_resources.json");
     state.channel_automation_drafts_path = root.join("channel_automation_drafts.json");
     state.channel_user_capabilities_path = root.join("channel_user_capabilities.json");

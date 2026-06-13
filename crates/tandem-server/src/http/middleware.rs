@@ -10,6 +10,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::Ordering;
 use tandem_types::{
     AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
     NoopRequestAuthorizationHook, OrganizationUnitAccessGrant, OrganizationUnitMembership,
@@ -97,7 +98,11 @@ async fn attach_enterprise_request_context_for_mode(
     mode: RuntimeAuthMode,
 ) -> bool {
     let headers = request.headers();
-    let resolved = match resolve_enterprise_request_context_for_mode_with_denial(headers, mode) {
+    let resolved = match resolve_enterprise_request_context_for_mode_with_denial(
+        headers,
+        mode,
+        state.trust_test_tenant_headers.load(Ordering::Relaxed),
+    ) {
         Ok(context) => context,
         Err(denial) => {
             tracing::warn!(
@@ -355,7 +360,7 @@ impl ResolvedEnterpriseRequestContext {
 }
 
 fn resolve_enterprise_request_context(headers: &HeaderMap) -> ResolvedEnterpriseRequestContext {
-    resolve_local_enterprise_request_context(headers)
+    resolve_local_enterprise_request_context(headers, false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -476,16 +481,20 @@ fn resolve_enterprise_request_context_for_mode(
     headers: &HeaderMap,
     mode: RuntimeAuthMode,
 ) -> Result<ResolvedEnterpriseRequestContext, TenantContextIngressError> {
-    resolve_enterprise_request_context_for_mode_with_denial(headers, mode)
+    resolve_enterprise_request_context_for_mode_with_denial(headers, mode, false)
         .map_err(|denial| denial.reason)
 }
 
 fn resolve_enterprise_request_context_for_mode_with_denial(
     headers: &HeaderMap,
     mode: RuntimeAuthMode,
+    trust_test_tenant_headers: bool,
 ) -> Result<ResolvedEnterpriseRequestContext, TenantContextIngressDenial> {
     match mode {
-        RuntimeAuthMode::LocalSingleTenant => Ok(resolve_local_enterprise_request_context(headers)),
+        RuntimeAuthMode::LocalSingleTenant => Ok(resolve_local_enterprise_request_context(
+            headers,
+            trust_test_tenant_headers,
+        )),
         RuntimeAuthMode::HostedSingleTenant | RuntimeAuthMode::EnterpriseRequired => {
             if has_raw_tenant_context_headers(headers) {
                 return Err(TenantContextIngressDenial::untrusted(
@@ -522,9 +531,6 @@ fn local_request_source(headers: &HeaderMap) -> String {
     })
 }
 
-// Used by the `cfg(not(test/test-support))` resolver and by in-crate
-// middleware_tests; can be dead under `test-support` alone.
-#[allow(dead_code)]
 fn resolve_secure_local_enterprise_request_context(
     headers: &HeaderMap,
 ) -> ResolvedEnterpriseRequestContext {
@@ -536,19 +542,18 @@ fn resolve_secure_local_enterprise_request_context(
     ResolvedEnterpriseRequestContext::local(tenant_context, request_principal)
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
 fn resolve_local_enterprise_request_context(
     headers: &HeaderMap,
+    trust_test_tenant_headers: bool,
 ) -> ResolvedEnterpriseRequestContext {
-    resolve_secure_local_enterprise_request_context(headers)
+    if trust_test_tenant_headers {
+        resolve_test_header_local_enterprise_request_context(headers)
+    } else {
+        resolve_secure_local_enterprise_request_context(headers)
+    }
 }
 
-// Under `test-support` (a test-only feature) the local resolver trusts raw
-// `x-tandem-*` headers so HTTP integration tests in dependent crates (e.g.
-// tandem-enterprise-server) can drive per-tenant behavior, matching the
-// in-crate `cfg(test)` behavior.
-#[cfg(any(test, feature = "test-support"))]
-fn resolve_local_enterprise_request_context(
+fn resolve_test_header_local_enterprise_request_context(
     headers: &HeaderMap,
 ) -> ResolvedEnterpriseRequestContext {
     let resolver = HeaderTenantContextResolver;
