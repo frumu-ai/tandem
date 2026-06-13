@@ -267,7 +267,7 @@ impl WorkflowGraph {
             .collect()
     }
 
-    fn envelope_blockers(&self, envelope: &GraphQueryEnvelope) -> Vec<WorkflowBlocker> {
+    pub(crate) fn envelope_blockers(&self, envelope: &GraphQueryEnvelope) -> Vec<WorkflowBlocker> {
         let mut blockers = Vec::new();
         if let Err(error) = envelope.validate() {
             blockers.push(WorkflowBlocker::new(
@@ -290,7 +290,7 @@ impl WorkflowGraph {
 }
 
 impl WorkflowBlocker {
-    fn new(
+    pub(crate) fn new(
         step_id: impl Into<String>,
         kind: WorkflowBlockerKind,
         target: impl Into<String>,
@@ -304,7 +304,7 @@ impl WorkflowBlocker {
         }
     }
 
-    fn for_step(&self, step_id: impl Into<String>) -> Self {
+    pub(crate) fn for_step(&self, step_id: impl Into<String>) -> Self {
         Self {
             step_id: step_id.into(),
             kind: self.kind.clone(),

@@ -14,6 +14,8 @@ mod storage;
 mod taxonomy;
 mod trust;
 mod workflow_graph;
+mod workflow_memory;
+mod workflow_rerun;
 mod workflow_runtime;
 mod workflow_runtime_topology;
 
@@ -43,6 +45,12 @@ pub use workflow_graph::{
     WorkflowGraph, WorkflowGraphSpec, WorkflowStepDependencySummary, WorkflowStepGraphNode,
     WorkflowTemplateGraphNode, WorkflowVersionGraphNode,
 };
+pub use workflow_memory::{
+    WorkflowMemoryBundle, WorkflowMemoryCandidate, WorkflowMemoryMatch, WorkflowMemoryQuery,
+};
+pub use workflow_rerun::{
+    WorkflowRerunChange, WorkflowRerunPlan, WorkflowRerunStep, WorkflowStepCacheKey,
+};
 pub use workflow_runtime::{
     WorkflowBlockedNode, WorkflowBlocker, WorkflowBlockerKind, WorkflowPreflightReport,
     WorkflowPromptPruningMetrics, WorkflowReadyNode, WorkflowRuntimePlan, WorkflowRuntimeState,
@@ -51,5 +59,7 @@ pub use workflow_runtime::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workflow_memory_rerun_tests;
 #[cfg(test)]
 mod workflow_run_tests;
