@@ -1,5 +1,6 @@
 use super::*;
 use axum::http::HeaderValue;
+use serial_test::serial;
 use tandem_types::{AuthorityChain, HumanActor, OrganizationUnitState, TenantSource};
 
 #[test]
@@ -396,6 +397,85 @@ fn verifier_rejects_expired_tandem_context_assertion() {
 }
 
 #[test]
+fn expired_signed_context_assertion_denial_keeps_tenant_attribution() {
+    let (signing_key, verifier) = test_signing_key_and_verifier();
+    let assertion =
+        sign_test_context_assertion(&signing_key, "test-key", test_claims(1_000, 2_000));
+    let err = verifier
+        .verify_at(&assertion, 2_000)
+        .expect_err("expired assertion must fail closed");
+
+    let denial = verifier.denial_for_error(&assertion, err);
+
+    assert_eq!(denial.event_type(), "context_assertion.rejected");
+    assert_eq!(
+        denial.reason,
+        TenantContextIngressError::ContextAssertionExpired
+    );
+    assert_eq!(denial.tenant_context.org_id, "org-a");
+    assert_eq!(denial.tenant_context.workspace_id, "workspace-a");
+    assert_eq!(denial.actor.as_deref(), Some("user-a"));
+    assert_eq!(denial.assertion_id.as_deref(), Some("assertion-a"));
+}
+
+#[test]
+fn verifier_rejects_context_assertion_beyond_tight_future_skew() {
+    let (signing_key, verifier) = test_signing_key_and_verifier();
+    let assertion = sign_test_context_assertion(
+        &signing_key,
+        "test-key",
+        test_claims(
+            1_000 + DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS + 1,
+            20_000,
+        ),
+    );
+
+    let err = verifier
+        .verify_at(&assertion, 1_000)
+        .expect_err("assertions too far in the future must fail closed");
+
+    assert_eq!(err, TenantContextIngressError::ContextAssertionExpired);
+}
+
+#[test]
+fn verifier_accepts_context_assertion_within_tight_future_skew() {
+    let (signing_key, verifier) = test_signing_key_and_verifier();
+    let assertion = sign_test_context_assertion(
+        &signing_key,
+        "test-key",
+        test_claims(1_000 + DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS, 20_000),
+    );
+
+    let verified = verifier
+        .verify_at(&assertion, 1_000)
+        .expect("assertions inside the skew window should verify");
+
+    assert_eq!(verified.assertion_id, "assertion-a");
+}
+
+#[test]
+#[serial]
+fn context_assertion_future_skew_override_is_clamped() {
+    let _guard = EnvGuard::set("TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS", "120000");
+
+    assert_eq!(
+        resolve_context_assertion_max_future_skew_ms(),
+        MAX_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS
+    );
+}
+
+#[test]
+#[serial]
+fn context_assertion_future_skew_override_defaults_on_invalid_input() {
+    let _guard = EnvGuard::set("TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS", "not-ms");
+
+    assert_eq!(
+        resolve_context_assertion_max_future_skew_ms(),
+        DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS
+    );
+}
+
+#[test]
 fn verifier_rejects_local_implicit_tenant_context_assertion() {
     let (signing_key, verifier) = test_signing_key_and_verifier();
     let mut claims = test_claims(1_000, 2_000);
@@ -456,7 +536,7 @@ fn verifier_selects_context_assertion_key_by_kid() {
         legacy_public_key: None,
         issuer: "tandem-web".to_string(),
         audience: "tandem-runtime".to_string(),
-        max_future_skew_ms: 60_000,
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
     };
     let assertion =
         sign_test_context_assertion(&signing_key, "active-key", test_claims(1_000, 2_000));
@@ -480,7 +560,7 @@ fn verifier_rejects_unknown_context_assertion_kid_when_keyring_is_configured() {
         legacy_public_key: None,
         issuer: "tandem-web".to_string(),
         audience: "tandem-runtime".to_string(),
-        max_future_skew_ms: 60_000,
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
     };
     let assertion =
         sign_test_context_assertion(&signing_key, "active-key", test_claims(1_000, 2_000));
@@ -576,7 +656,7 @@ fn verifier_enforces_context_assertion_key_metadata() {
         legacy_public_key: None,
         issuer: "tandem-web".to_string(),
         audience: "tandem-runtime".to_string(),
-        max_future_skew_ms: 60_000,
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
     };
     let claims = test_claims(1_000, 2_000).with_strict_projection(
         PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-a"),
@@ -613,7 +693,7 @@ fn verifier_rejects_context_assertion_key_with_wrong_purpose() {
         legacy_public_key: None,
         issuer: "tandem-web".to_string(),
         audience: "tandem-runtime".to_string(),
-        max_future_skew_ms: 60_000,
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
     };
     let assertion =
         sign_test_context_assertion(&signing_key, "approval-key", test_claims(1_000, 2_000));
@@ -643,7 +723,7 @@ fn verifier_rejects_context_assertion_outside_key_scope() {
         legacy_public_key: None,
         issuer: "tandem-web".to_string(),
         audience: "tandem-runtime".to_string(),
-        max_future_skew_ms: 60_000,
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
     };
     let claims = test_claims(1_000, 2_000).with_strict_projection(
         PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-a"),
@@ -797,6 +877,32 @@ fn replay_mode_defaults_to_bound() {
     assert_eq!(resolve_assertion_replay_mode(), AssertionReplayMode::Bound);
 }
 
+#[test]
+fn ingress_denial_for_untrusted_assertion_uses_global_audit_scope() {
+    let denial =
+        TenantContextIngressDenial::untrusted(TenantContextIngressError::ContextAssertionUntrusted);
+
+    assert_eq!(denial.event_type(), "context_assertion.rejected");
+    assert!(denial.tenant_context.is_local_implicit());
+    assert_eq!(denial.reason.as_str(), "context_assertion_untrusted");
+    assert!(denial.assertion_id.is_none());
+}
+
+#[test]
+fn ingress_denial_for_verified_replay_is_tenant_attributed() {
+    let verified = VerifiedTenantContext::from(test_claims(1_000, 20_000));
+    let denial = TenantContextIngressDenial::verified(
+        TenantContextIngressError::ContextAssertionReplayed,
+        &verified,
+    );
+
+    assert_eq!(denial.event_type(), "context_assertion.rejected");
+    assert_eq!(denial.tenant_context.org_id, "org-a");
+    assert_eq!(denial.tenant_context.workspace_id, "workspace-a");
+    assert_eq!(denial.actor.as_deref(), Some("user-a"));
+    assert_eq!(denial.assertion_id.as_deref(), Some("assertion-a"));
+}
+
 fn test_signing_key_and_verifier() -> (ed25519_dalek::SigningKey, TenantContextAssertionVerifier) {
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
     let verifier = TenantContextAssertionVerifier {
@@ -806,7 +912,7 @@ fn test_signing_key_and_verifier() -> (ed25519_dalek::SigningKey, TenantContextA
         )),
         issuer: "tandem-web".to_string(),
         audience: "tandem-runtime".to_string(),
-        max_future_skew_ms: 60_000,
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
     };
     (signing_key, verifier)
 }
@@ -849,4 +955,27 @@ fn sign_test_context_assertion(
     let encoded_signature =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
     format!("{signing_input}.{encoded_signature}")
+}
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
 }

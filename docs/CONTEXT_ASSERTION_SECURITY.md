@@ -30,9 +30,44 @@ Verification is fail-closed and implemented in
 | `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY` / `..._FILE` | Legacy single key (no `kid` binding). Prefer the keyset. |
 | `TANDEM_CONTEXT_ASSERTION_ISSUER` | Expected `issuer` claim. Default `tandem-web`. |
 | `TANDEM_CONTEXT_ASSERTION_AUDIENCE` | Expected `audience` claim. Default `tandem-runtime`. |
+| `TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS` | Maximum accepted future `issued_at_ms` skew. Default `10000`; values are clamped to `10000..60000`. |
 
 If no key is configured in hosted/enterprise mode, all assertion-bearing
 requests are rejected (`context_assertion_key_not_configured`).
+
+Example keyset:
+
+```json
+{
+  "ctx-2026-06-primary": {
+    "publicKey": "base64url-ed25519-public-key",
+    "purpose": "context_assertion",
+    "organizationId": "org-a",
+    "deploymentId": "prod-eu",
+    "allowedAudiences": ["tandem-runtime"],
+    "allowedResourceScopePrefixes": ["org/org-a/workspace/workspace-a"],
+    "notBeforeMs": 1781300000000,
+    "notAfterMs": 1783892000000,
+    "status": "active"
+  }
+}
+```
+
+Key lifecycle:
+
+1. Generate Ed25519 key material in the hosted control plane or customer key
+   management boundary. The private key must never be configured on the
+   runtime.
+2. Publish the public key in the runtime keyset with `purpose:
+   context_assertion`, a bounded lifetime, expected audience, and tenant or
+   deployment restrictions.
+3. Introduce the next key as active before rotating issuers. Keep the old key
+   active until all assertions signed by it have expired plus replay retention.
+4. Retire or remove old keys after the overlap window. Do not reuse `kid`
+   values for new key material.
+5. Treat malformed, expired, untrusted, replayed, or missing assertions as
+   protected audit evidence. The runtime records these as
+   `context_assertion.rejected` when an audit path is available.
 
 ## Replay protection
 
@@ -55,8 +90,8 @@ Operational notes:
   swept opportunistically once the cache exceeds 1024 entries; memory use is
   bounded by the number of live assertions.
 - Replay rejections are logged with `assertion_id`, `org_id`, and the active
-  mode. (Structured protected-audit events for denials are tracked
-  separately: TAN-195.)
+  mode, and are written to protected audit as `context_assertion.rejected`
+  when the runtime can attribute them.
 
 ## Choosing assertion lifetimes
 
@@ -67,3 +102,9 @@ keep `expires_at_ms - issued_at_ms` short — minutes, not hours — and rotate
 `assertion_id` on every re-issue. Issuers must never re-sign new claims under
 an existing `assertion_id`; in `bound` mode the runtime will reject the
 refreshed assertion as a substitution.
+
+The runtime allows only a small future-issued window for clock drift. Keep
+control-plane and runtime clocks synchronized with NTP. If an environment
+needs a wider window during migration, `TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS`
+can temporarily raise it up to 60 seconds, but hosted deployments should use
+the 10 second default.
