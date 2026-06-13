@@ -39,7 +39,7 @@ Tandem is not another chat wrapper, and it is not just an agent framework. It is
 
 `Intent -> Authority Projection -> Scoped Execution -> Approval Gates -> Artifacts -> Audit Trail`
 
-**-> [AI runtime infrastructure](docs/AI_RUNTIME_INFRASTRUCTURE.md) | [Enterprise readiness](docs/ENTERPRISE_READINESS.md) | [EU AI Act readiness](docs/EU_AI_ACT_COMPLIANCE.md) | [Compliance starter pack](docs/compliance/README.md) | [Connect an agent via MCP](https://tandem.ac/docs-mcp)**
+**-> [AI runtime infrastructure](docs/AI_RUNTIME_INFRASTRUCTURE.md) | [Enterprise readiness](docs/ENTERPRISE_READINESS.md) | [Runtime trust boundaries](docs/RUNTIME_TRUST_BOUNDARIES.md) | [EU AI Act readiness](docs/EU_AI_ACT_COMPLIANCE.md) | [Compliance starter pack](docs/compliance/README.md) | [Connect an agent via MCP](https://tandem.ac/docs-mcp)**
 
 ## Why Tandem Exists
 

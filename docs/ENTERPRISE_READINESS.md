@@ -63,6 +63,8 @@ This is not a claim that Tandem is production-ready for regulated fintech deploy
 
 - [AI runtime infrastructure](AI_RUNTIME_INFRASTRUCTURE.md)
 - [Enterprise proof walkthrough](ENTERPRISE_PROOF_WALKTHROUGH.md)
+- [Runtime trust boundaries](RUNTIME_TRUST_BOUNDARIES.md)
+- [Context assertion security](CONTEXT_ASSERTION_SECURITY.md)
 - [Cross-tenant grants design](CROSS_TENANT_GRANTS_DESIGN.md)
 - [Default DataBoundary enforcement design](DATA_BOUNDARY_ENFORCEMENT_DESIGN.md)
 - [Memory ciphertext at rest](MEMORY_CIPHERTEXT_AT_REST.md)

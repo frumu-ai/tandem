@@ -7,6 +7,7 @@ use axum::Json;
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use tandem_types::{
@@ -22,6 +23,9 @@ use crate::{AppState, StartupStatus};
 
 use super::ErrorEnvelope;
 use crate::config::env::resolve_runtime_auth_mode;
+
+const DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS: u64 = 10_000;
+const MAX_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS: u64 = 60_000;
 
 pub(super) async fn auth_gate(
     State(state): State<AppState>,
@@ -93,13 +97,16 @@ async fn attach_enterprise_request_context_for_mode(
     mode: RuntimeAuthMode,
 ) -> bool {
     let headers = request.headers();
-    let resolved = match resolve_enterprise_request_context_for_mode(headers, mode) {
+    let resolved = match resolve_enterprise_request_context_for_mode_with_denial(headers, mode) {
         Ok(context) => context,
-        Err(reason) => {
+        Err(denial) => {
             tracing::warn!(
                 "Authorization denied: tenant context ingress rejected - reason={}",
-                reason.as_str()
+                denial.reason.as_str()
             );
+            denial
+                .append_protected_audit_event(state, mode, headers)
+                .await;
             return false;
         }
     };
@@ -111,6 +118,7 @@ async fn attach_enterprise_request_context_for_mode(
             resolved.tenant_context.org_id,
             resolved.request_principal.source
         );
+        append_authorization_denial_audit_event(state, &resolved).await;
         return false;
     }
 
@@ -375,21 +383,128 @@ impl TenantContextIngressError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TenantContextIngressDenial {
+    reason: TenantContextIngressError,
+    tenant_context: TenantContext,
+    actor: Option<String>,
+    assertion_id: Option<String>,
+    issuer: Option<String>,
+    audience: Option<String>,
+}
+
+impl TenantContextIngressDenial {
+    fn untrusted(reason: TenantContextIngressError) -> Self {
+        Self {
+            reason,
+            tenant_context: TenantContext::local_implicit(),
+            actor: None,
+            assertion_id: None,
+            issuer: None,
+            audience: None,
+        }
+    }
+
+    fn verified(reason: TenantContextIngressError, verified: &VerifiedTenantContext) -> Self {
+        Self {
+            reason,
+            tenant_context: verified.tenant_context.clone(),
+            actor: Some(verified.human_actor.actor_id.clone()),
+            assertion_id: Some(verified.assertion_id.clone()),
+            issuer: Some(verified.issuer.clone()),
+            audience: Some(verified.audience.clone()),
+        }
+    }
+
+    fn event_type(&self) -> &'static str {
+        match self.reason {
+            TenantContextIngressError::ContextAssertionKeyNotConfigured
+            | TenantContextIngressError::ContextAssertionMalformed
+            | TenantContextIngressError::ContextAssertionUntrusted
+            | TenantContextIngressError::ContextAssertionExpired
+            | TenantContextIngressError::ContextAssertionReplayed
+            | TenantContextIngressError::MissingVerifiedContext => "context_assertion.rejected",
+            TenantContextIngressError::UnsignedTenantHeaders => "tenant_context.ingress.denied",
+        }
+    }
+
+    async fn append_protected_audit_event(
+        &self,
+        state: &AppState,
+        mode: RuntimeAuthMode,
+        headers: &HeaderMap,
+    ) {
+        let _ = crate::audit::append_protected_audit_event(
+            state,
+            self.event_type(),
+            &self.tenant_context,
+            self.actor.clone(),
+            json!({
+                "reason": self.reason.as_str(),
+                "runtime_auth_mode": format!("{mode:?}"),
+                "request_source": first_header(headers, &["x-tandem-request-source"]),
+                "assertion_present": first_tandem_context_assertion(headers).is_some(),
+                "raw_tenant_headers_present": has_raw_tenant_context_headers(headers),
+                "assertion_id": self.assertion_id,
+                "issuer": self.issuer,
+                "audience": self.audience,
+            }),
+        )
+        .await;
+    }
+}
+
+async fn append_authorization_denial_audit_event(
+    state: &AppState,
+    resolved: &ResolvedEnterpriseRequestContext,
+) {
+    let _ = crate::audit::append_protected_audit_event(
+        state,
+        "tenant_context.authorization.denied",
+        &resolved.tenant_context,
+        resolved.request_principal.actor_id.clone(),
+        json!({
+            "reason": "request_principal_tenant_mismatch",
+            "request_principal": resolved.request_principal,
+            "tenant_context": resolved.tenant_context,
+        }),
+    )
+    .await;
+}
+
 fn resolve_enterprise_request_context_for_mode(
     headers: &HeaderMap,
     mode: RuntimeAuthMode,
 ) -> Result<ResolvedEnterpriseRequestContext, TenantContextIngressError> {
+    resolve_enterprise_request_context_for_mode_with_denial(headers, mode)
+        .map_err(|denial| denial.reason)
+}
+
+fn resolve_enterprise_request_context_for_mode_with_denial(
+    headers: &HeaderMap,
+    mode: RuntimeAuthMode,
+) -> Result<ResolvedEnterpriseRequestContext, TenantContextIngressDenial> {
     match mode {
         RuntimeAuthMode::LocalSingleTenant => Ok(resolve_local_enterprise_request_context(headers)),
         RuntimeAuthMode::HostedSingleTenant | RuntimeAuthMode::EnterpriseRequired => {
             if has_raw_tenant_context_headers(headers) {
-                return Err(TenantContextIngressError::UnsignedTenantHeaders);
+                return Err(TenantContextIngressDenial::untrusted(
+                    TenantContextIngressError::UnsignedTenantHeaders,
+                ));
             }
-            let assertion = first_tandem_context_assertion(headers)
-                .ok_or(TenantContextIngressError::MissingVerifiedContext)?;
-            let verifier = TenantContextAssertionVerifier::from_env()?;
-            let verified_tenant_context = verifier.verify(&assertion)?;
-            enforce_context_assertion_replay_policy(&assertion, &verified_tenant_context)?;
+            let assertion = first_tandem_context_assertion(headers).ok_or_else(|| {
+                TenantContextIngressDenial::untrusted(
+                    TenantContextIngressError::MissingVerifiedContext,
+                )
+            })?;
+            let verifier = TenantContextAssertionVerifier::from_env()
+                .map_err(TenantContextIngressDenial::untrusted)?;
+            let verified_tenant_context = verifier
+                .verify(&assertion)
+                .map_err(TenantContextIngressDenial::untrusted)?;
+            enforce_context_assertion_replay_policy(&assertion, &verified_tenant_context).map_err(
+                |reason| TenantContextIngressDenial::verified(reason, &verified_tenant_context),
+            )?;
             Ok(ResolvedEnterpriseRequestContext::verified(
                 verified_tenant_context,
             ))
@@ -543,7 +658,7 @@ impl TenantContextAssertionVerifier {
             legacy_public_key,
             issuer,
             audience,
-            max_future_skew_ms: 60_000,
+            max_future_skew_ms: resolve_context_assertion_max_future_skew_ms(),
         })
     }
 
@@ -815,6 +930,18 @@ fn enforce_context_assertion_replay_policy(
         );
     }
     result
+}
+
+fn resolve_context_assertion_max_future_skew_ms() -> u64 {
+    std::env::var("TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS)
+        .clamp(
+            DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+            MAX_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+        )
 }
 
 fn read_context_public_keyring_from_env(
