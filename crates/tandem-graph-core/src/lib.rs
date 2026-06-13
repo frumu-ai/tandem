@@ -13,6 +13,8 @@ mod run_trace;
 mod storage;
 mod taxonomy;
 mod trust;
+mod workflow_benchmark;
+mod workflow_benchmark_types;
 mod workflow_graph;
 mod workflow_memory;
 mod workflow_rerun;
@@ -41,6 +43,11 @@ pub use taxonomy::{
     EdgeKind, GraphDomain, GraphEdge, GraphFact, GraphNode, GraphPayload, NodeKind,
 };
 pub use trust::{Freshness, FreshnessSource, PolicyDecision, Provenance, Visibility};
+pub use workflow_benchmark_types::{
+    WorkflowBenchmarkComparison, WorkflowBenchmarkObservation, WorkflowBenchmarkRegression,
+    WorkflowBenchmarkReport, WorkflowBenchmarkScenario, WorkflowBenchmarkScenarioReport,
+    WorkflowBenchmarkSuite, WorkflowBenchmarkThresholds,
+};
 pub use workflow_graph::{
     WorkflowGraph, WorkflowGraphSpec, WorkflowStepDependencySummary, WorkflowStepGraphNode,
     WorkflowTemplateGraphNode, WorkflowVersionGraphNode,
@@ -59,6 +66,8 @@ pub use workflow_runtime::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workflow_benchmark_tests;
 #[cfg(test)]
 mod workflow_memory_rerun_tests;
 #[cfg(test)]
