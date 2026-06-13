@@ -266,8 +266,12 @@ pub fn classify_action(
         };
     };
 
-    let evaluation =
-        context.evaluate_access(&descriptor.resource, permission, descriptor.data_class, now_ms);
+    let evaluation = context.evaluate_access(
+        &descriptor.resource,
+        permission,
+        descriptor.data_class,
+        now_ms,
+    );
     match evaluation.decision {
         AccessDecision::Deny => ActionClassification::Denied {
             reason: format!("access_denied:{}", evaluation.reason),
@@ -399,10 +403,17 @@ mod tests {
             TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-1"),
             principal.clone(),
             AuthorityChain::from_request(RequestPrincipal::authenticated_user(
-                principal.id, "tandem-web",
+                principal.id,
+                "tandem-web",
             )),
             ResourceScope::root(allowed),
-            AssertionMetadata::new("tandem-web", "tandem-runtime", 1_000, 9_999_999_999, "assert-1"),
+            AssertionMetadata::new(
+                "tandem-web",
+                "tandem-runtime",
+                1_000,
+                9_999_999_999,
+                "assert-1",
+            ),
         )
         .with_grants(vec![grant])
     }
