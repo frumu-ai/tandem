@@ -15,6 +15,8 @@ mod run_trace;
 mod storage;
 mod taxonomy;
 mod trust;
+mod workflow_benchmark;
+mod workflow_benchmark_types;
 mod workflow_execution_hints;
 mod workflow_execution_hints_types;
 mod workflow_graph;
@@ -51,6 +53,11 @@ pub use taxonomy::{
     EdgeKind, GraphDomain, GraphEdge, GraphFact, GraphNode, GraphPayload, NodeKind,
 };
 pub use trust::{Freshness, FreshnessSource, PolicyDecision, Provenance, Visibility};
+pub use workflow_benchmark_types::{
+    WorkflowBenchmarkComparison, WorkflowBenchmarkObservation, WorkflowBenchmarkRegression,
+    WorkflowBenchmarkReport, WorkflowBenchmarkScenario, WorkflowBenchmarkScenarioReport,
+    WorkflowBenchmarkSuite, WorkflowBenchmarkThresholds,
+};
 pub use workflow_execution_hints_types::{
     WorkflowApprovalPosture, WorkflowExecutionHintsQuery, WorkflowExecutionHintsReport,
     WorkflowModelTier, WorkflowRiskTier, WorkflowRoutingMetrics, WorkflowStepExecutionHint,
@@ -80,6 +87,8 @@ pub use workflow_runtime::{
 mod run_failure_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workflow_benchmark_tests;
 #[cfg(test)]
 mod workflow_execution_hints_tests;
 #[cfg(test)]
