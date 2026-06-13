@@ -356,7 +356,7 @@ fn decode_signature_bytes(signature: &str) -> Option<[u8; 64]> {
     bytes.try_into().ok()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -366,7 +366,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Canonical JSON string: object keys sorted ascending, arrays in order, no
 /// whitespace. Mirrors the canonicalizer used by `fintech_protected_action_hash`
 /// in tandem-core so action hashes agree across crates.
-fn canonical_json_string(value: &serde_json::Value) -> String {
+pub(crate) fn canonical_json_string(value: &serde_json::Value) -> String {
     use serde_json::Value;
     match value {
         Value::Null => "null".to_string(),
