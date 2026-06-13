@@ -142,6 +142,8 @@ pub enum ApprovalReceiptDenial {
     PolicyMismatch,
     ApprovalMismatch,
     ActionHashMismatch,
+    /// The receipt was already consumed — a replay of a single-use receipt.
+    Replayed,
 }
 
 impl ApprovalReceiptDenial {
@@ -158,6 +160,55 @@ impl ApprovalReceiptDenial {
             Self::PolicyMismatch => "approval_receipt_policy_mismatch",
             Self::ApprovalMismatch => "approval_receipt_approval_mismatch",
             Self::ActionHashMismatch => "approval_receipt_action_hash_mismatch",
+            Self::Replayed => "approval_receipt_replayed",
+        }
+    }
+}
+
+/// One-time-use enforcement for approval receipts. A pure signature/validity
+/// check cannot stop a captured receipt from being submitted again before it
+/// expires, so non-idempotent protected actions (money movement, filings)
+/// must gate execution on single-use consumption. Callers back this with a
+/// durable store (e.g. a `(approval_id, nonce)` table with TTL); the
+/// in-process [`InMemoryReplayGuard`] is a single-process default and a test
+/// double.
+pub trait ApprovalReceiptReplayGuard {
+    /// Atomically record `(approval_id, nonce)` as consumed. Returns `true`
+    /// on first consumption (the caller may proceed), `false` if it was
+    /// already consumed (replay — the caller must block). `expires_at_ms`
+    /// lets implementations prune entries once a receipt can no longer be
+    /// valid. Implementations MUST be atomic against concurrent callers.
+    fn consume(&mut self, approval_id: &str, nonce: &str, expires_at_ms: u64) -> bool;
+}
+
+/// In-process single-use guard. Suitable for a single-replica deployment or
+/// tests; multi-replica deployments need a shared/durable guard.
+#[derive(Debug, Default)]
+pub struct InMemoryReplayGuard {
+    consumed: std::collections::HashMap<(String, String), u64>,
+}
+
+impl InMemoryReplayGuard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drop entries whose receipts have expired at or before `now_ms`.
+    pub fn prune(&mut self, now_ms: u64) {
+        self.consumed
+            .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+    }
+}
+
+impl ApprovalReceiptReplayGuard for InMemoryReplayGuard {
+    fn consume(&mut self, approval_id: &str, nonce: &str, expires_at_ms: u64) -> bool {
+        let key = (approval_id.to_string(), nonce.to_string());
+        match self.consumed.entry(key) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(expires_at_ms);
+                true
+            }
         }
     }
 }
@@ -261,6 +312,33 @@ impl ApprovalReceipt {
         // issuer happened to embed.
         if self.claims.action_hash != action.action_hash() {
             return Err(ApprovalReceiptDenial::ActionHashMismatch);
+        }
+        Ok(())
+    }
+
+    /// Verify *and* atomically consume the receipt for single use. Runs the
+    /// full [`Self::verify_for_action`] check, then consumes
+    /// `(approval_id, nonce)` through `guard`; a second call with the same
+    /// receipt returns `Err(Replayed)`. Use this — not bare
+    /// `verify_for_action` — to gate non-idempotent protected mutations so a
+    /// captured receipt cannot authorize duplicate execution before it
+    /// expires. The guard is only touched after every other check passes, so
+    /// a rejected receipt never burns a nonce.
+    pub fn verify_and_consume<G: ApprovalReceiptReplayGuard>(
+        &self,
+        action: &ProtectedActionPayload,
+        expected_audience: &str,
+        verifying_key: Option<&VerifyingKey>,
+        now_ms: u64,
+        guard: &mut G,
+    ) -> Result<(), ApprovalReceiptDenial> {
+        self.verify_for_action(action, expected_audience, verifying_key, now_ms)?;
+        if !guard.consume(
+            &self.claims.approval_id,
+            &action.nonce,
+            self.claims.expires_at_ms,
+        ) {
+            return Err(ApprovalReceiptDenial::Replayed);
         }
         Ok(())
     }
@@ -553,5 +631,76 @@ mod tests {
             receipt.verify_for_action(&action, "tandem-runtime", Some(&verifying_key()), 5_000),
             Err(ApprovalReceiptDenial::Malformed)
         );
+    }
+
+    #[test]
+    fn single_use_consumption_blocks_replay() {
+        let action = action();
+        let receipt = signed_receipt(&action);
+        let mut guard = InMemoryReplayGuard::new();
+
+        // First use succeeds and consumes the nonce.
+        assert_eq!(
+            receipt.verify_and_consume(
+                &action,
+                "tandem-runtime",
+                Some(&verifying_key()),
+                5_000,
+                &mut guard
+            ),
+            Ok(())
+        );
+        // Replaying the identical valid receipt within its window is blocked.
+        assert_eq!(
+            receipt.verify_and_consume(
+                &action,
+                "tandem-runtime",
+                Some(&verifying_key()),
+                5_000,
+                &mut guard
+            ),
+            Err(ApprovalReceiptDenial::Replayed)
+        );
+    }
+
+    #[test]
+    fn rejected_receipt_does_not_burn_the_nonce() {
+        let action = action();
+        let receipt = signed_receipt(&action);
+        let mut guard = InMemoryReplayGuard::new();
+
+        // A failed verification (wrong audience) must not consume the nonce,
+        // so a later legitimate use still succeeds.
+        assert_eq!(
+            receipt.verify_and_consume(
+                &action,
+                "wrong-audience",
+                Some(&verifying_key()),
+                5_000,
+                &mut guard
+            ),
+            Err(ApprovalReceiptDenial::AudienceMismatch)
+        );
+        assert_eq!(
+            receipt.verify_and_consume(
+                &action,
+                "tandem-runtime",
+                Some(&verifying_key()),
+                5_000,
+                &mut guard
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn replay_guard_prunes_expired_entries() {
+        let mut guard = InMemoryReplayGuard::new();
+        assert!(guard.consume("approval-1", "nonce-1", 9_000));
+        assert!(!guard.consume("approval-1", "nonce-1", 9_000));
+        // After the receipt can no longer be valid, pruning frees the slot;
+        // a fresh receipt reusing the id (new nonce in practice) is unaffected.
+        guard.prune(9_000);
+        assert!(guard.consume("approval-1", "nonce-1", 12_000));
     }
 }
