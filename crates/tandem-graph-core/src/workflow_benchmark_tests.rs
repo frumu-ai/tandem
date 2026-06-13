@@ -83,6 +83,37 @@ fn workflow_benchmark_tracks_graph_guided_regressions() {
 }
 
 #[test]
+fn workflow_benchmark_rejects_mismatched_completed_run_counts() {
+    let mut baseline = observation(2_000, 14_000, 6_000, 20, 4, 8, 1, 4, 0, 10, 4, 2_000, 2_000);
+    baseline.completed_runs = 2;
+    let mut graph_guided = observation(700, 5_000, 2_000, 8, 1, 8, 0, 4, 0, 5, 3, 1_000, 600);
+    graph_guided.completed_runs = 1;
+    let suite = WorkflowBenchmarkSuite {
+        suite_id: "workflow-graph-rollout".to_string(),
+        scenarios: vec![WorkflowBenchmarkScenario {
+            scenario_id: "partial-crash".to_string(),
+            baseline,
+            graph_guided,
+        }],
+    };
+
+    let report = suite.report(WorkflowBenchmarkThresholds::default());
+
+    assert_eq!(report.totals.token_savings, 0);
+    assert_eq!(report.totals.token_savings_rate_bps, 0);
+    assert_eq!(report.totals.runtime_latency_savings_ms, 0);
+    assert!(report.regressions.iter().any(|regression| {
+        regression.metric == "completed_runs"
+            && regression.scenario_id.as_deref() == Some("partial-crash")
+            && regression.baseline_value == 2
+            && regression.graph_guided_value == 1
+    }));
+    assert!(report.regressions.iter().any(
+        |regression| regression.metric == "completed_runs" && regression.scenario_id.is_none()
+    ));
+}
+
+#[test]
 fn workflow_benchmark_aggregates_multiple_scenarios() {
     let suite = WorkflowBenchmarkSuite {
         suite_id: "workflow-graph-rollout".to_string(),

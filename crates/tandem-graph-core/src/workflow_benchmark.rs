@@ -43,6 +43,7 @@ fn compare_observations(
     baseline: &WorkflowBenchmarkObservation,
     graph_guided: &WorkflowBenchmarkObservation,
 ) -> WorkflowBenchmarkComparison {
+    let comparable_run_counts = baseline.completed_runs == graph_guided.completed_runs;
     let baseline_tokens = baseline.total_tokens();
     let graph_guided_tokens = graph_guided.total_tokens();
     let baseline_wrong_tool_call_rate_bps =
@@ -71,7 +72,8 @@ fn compare_observations(
         graph_guided.rerun_steps_reused,
         graph_guided.rerun_steps_considered,
     );
-    let graph_guided_parallel_latency_savings_ms = delta_i64(
+    let graph_guided_parallel_latency_savings_ms = comparable_savings(
+        comparable_run_counts,
         graph_guided.sequential_latency_ms,
         graph_guided.scheduled_latency_ms,
     );
@@ -79,10 +81,23 @@ fn compare_observations(
     WorkflowBenchmarkComparison {
         baseline: baseline.clone(),
         graph_guided: graph_guided.clone(),
-        token_savings: delta_i64(baseline_tokens, graph_guided_tokens),
-        token_savings_rate_bps: savings_rate_bps(baseline_tokens, graph_guided_tokens),
-        runtime_latency_savings_ms: delta_i64(baseline.latency_ms, graph_guided.latency_ms),
-        runtime_latency_savings_rate_bps: savings_rate_bps(
+        token_savings: comparable_savings(
+            comparable_run_counts,
+            baseline_tokens,
+            graph_guided_tokens,
+        ),
+        token_savings_rate_bps: comparable_savings_rate_bps(
+            comparable_run_counts,
+            baseline_tokens,
+            graph_guided_tokens,
+        ),
+        runtime_latency_savings_ms: comparable_savings(
+            comparable_run_counts,
+            baseline.latency_ms,
+            graph_guided.latency_ms,
+        ),
+        runtime_latency_savings_rate_bps: comparable_savings_rate_bps(
+            comparable_run_counts,
             baseline.latency_ms,
             graph_guided.latency_ms,
         ),
@@ -103,7 +118,8 @@ fn compare_observations(
         rerun_reuse_rate_delta_bps: i64::from(graph_guided_rerun_reuse_rate_bps)
             - i64::from(baseline_rerun_reuse_rate_bps),
         graph_guided_parallel_latency_savings_ms,
-        graph_guided_parallel_latency_savings_rate_bps: savings_rate_bps(
+        graph_guided_parallel_latency_savings_rate_bps: comparable_savings_rate_bps(
+            comparable_run_counts,
             graph_guided.sequential_latency_ms,
             graph_guided.scheduled_latency_ms,
         ),
@@ -116,6 +132,7 @@ fn detect_regressions(
     thresholds: WorkflowBenchmarkThresholds,
 ) -> Vec<WorkflowBenchmarkRegression> {
     let mut regressions = Vec::new();
+    push_run_count_regression(&mut regressions, scenario_id, comparison);
     push_savings_regression(
         &mut regressions,
         scenario_id,
@@ -181,6 +198,24 @@ fn detect_regressions(
         },
     );
     regressions
+}
+
+fn push_run_count_regression(
+    regressions: &mut Vec<WorkflowBenchmarkRegression>,
+    scenario_id: Option<&str>,
+    comparison: &WorkflowBenchmarkComparison,
+) {
+    if comparison.baseline.completed_runs == comparison.graph_guided.completed_runs {
+        return;
+    }
+    regressions.push(WorkflowBenchmarkRegression {
+        scenario_id: scenario_id.map(str::to_string),
+        metric: "completed_runs".to_string(),
+        baseline_value: comparison.baseline.completed_runs.min(i64::MAX as u64) as i64,
+        graph_guided_value: comparison.graph_guided.completed_runs.min(i64::MAX as u64) as i64,
+        threshold_bps: 0,
+        detail: "baseline and graph-guided observations completed different run counts; savings metrics were suppressed".to_string(),
+    });
 }
 
 fn push_savings_regression(
@@ -290,6 +325,26 @@ fn savings_rate_bps(baseline: u64, graph_guided: u64) -> i64 {
         .checked_div(i128::from(baseline))
         .unwrap_or(0)
         .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+fn comparable_savings(comparable_run_counts: bool, baseline: u64, graph_guided: u64) -> i64 {
+    if comparable_run_counts {
+        delta_i64(baseline, graph_guided)
+    } else {
+        0
+    }
+}
+
+fn comparable_savings_rate_bps(
+    comparable_run_counts: bool,
+    baseline: u64,
+    graph_guided: u64,
+) -> i64 {
+    if comparable_run_counts {
+        savings_rate_bps(baseline, graph_guided)
+    } else {
+        0
+    }
 }
 
 fn delta_i64(baseline: u64, graph_guided: u64) -> i64 {
