@@ -9,6 +9,8 @@ mod graph_build;
 mod hash;
 mod ids;
 mod query_envelope;
+mod run_failure;
+mod run_failure_types;
 mod run_trace;
 mod storage;
 mod taxonomy;
@@ -32,6 +34,10 @@ pub use hash::{stable_graph_hash, StableGraphHash, StableGraphHashError};
 pub use ids::{EdgeId, GraphSchemaVersion, GraphScope, NodeId};
 pub use query_envelope::{
     GraphQueryAudit, GraphQueryEnvelope, GraphQueryEnvelopeError, GraphQueryOutput,
+};
+pub use run_failure_types::{
+    RunCascadingFailure, RunFailureCausalityReport, RunFailureCause, RunFailureCauseKind,
+    RunRepairContext, RunRepairEvidence,
 };
 pub use run_trace::{RunTraceEvent, RunTraceEventKind, RunTraceGraph, RunTraceGraphSpec};
 pub use storage::{
@@ -57,6 +63,8 @@ pub use workflow_runtime::{
     WorkflowToolCandidate, WorkflowToolSelection,
 };
 
+#[cfg(test)]
+mod run_failure_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
