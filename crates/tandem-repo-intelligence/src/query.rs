@@ -136,11 +136,15 @@ fn search_symbols(
         if !in_scope(&symbol.file_path, path_scope) {
             continue;
         }
-        let Some(score) = best_match(
-            query,
-            &[&symbol.name, &symbol.file_path],
-            TokenMatchMode::AllowPartial,
-        ) else {
+        let name_score = match_text(query, &symbol.name, TokenMatchMode::AllowPartial);
+        let path_score =
+            match_text(query, &symbol.file_path, TokenMatchMode::AllowPartial).map(|mut score| {
+                if name_score.is_none() {
+                    score.tier = score.tier.max(5);
+                }
+                score
+            });
+        let Some(score) = best_score(name_score, path_score) else {
             continue;
         };
         results.push(scored_result(
@@ -321,6 +325,20 @@ fn scored_result(
         result,
         score,
         kind_rank,
+    }
+}
+
+fn best_score(left: Option<MatchScore>, right: Option<MatchScore>) -> Option<MatchScore> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            if compare_match_score(&left, &right).is_le() {
+                Some(left)
+            } else {
+                Some(right)
+            }
+        }
+        (Some(score), None) | (None, Some(score)) => Some(score),
+        (None, None) => None,
     }
 }
 

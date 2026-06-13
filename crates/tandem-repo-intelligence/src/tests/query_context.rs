@@ -100,6 +100,24 @@ fn repo_search_path_scope_matches_path_components() {
 }
 
 #[test]
+fn repo_search_exact_file_path_prefers_file_hit() {
+    let repo = TempDir::new().unwrap();
+    write(
+        repo.path().join("src/lib.rs"),
+        "pub fn indexed() {}\npub fn helper() {}\n",
+    );
+
+    let snapshot = JsonRepoIndexStore::new(repo.path().join("repo-index.json"))
+        .index_repo(repo.path())
+        .unwrap();
+    let results = repo_search(&snapshot, "src/lib.rs", 1, None);
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].file_path, "src/lib.rs");
+    assert_eq!(results[0].kind, "file");
+}
+
+#[test]
 fn graph_edges_can_be_filtered_by_relation() {
     let repo = TempDir::new().unwrap();
     write(
