@@ -22,6 +22,8 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Engine Context Assembly Map](./ENGINE_CONTEXT_ASSEMBLY_MAP.md) - Provider-facing context assembly paths, context-budget telemetry, and Full-context guardrails.
 - [Repo Intelligence Architecture](./repo-intelligence/architecture.md) - Source-derived repo graph, agent workflow, confidence rules, and context-bundle debugging.
 - [Context Graph Taxonomy](./repo-intelligence/context-graph-taxonomy.md) - Shared graph node/edge taxonomy, trust semantics, and versioning rules.
+- [Hybrid GraphRAG Follow-Up](./repo-intelligence/hybrid-graphrag.md) - Chunk-level retrieval, optional vector hooks, trace provenance, and merge rules.
+- [Repo Graph And Governance Memory Semantics](./repo-intelligence/governance-memory-semantics.md) - Scope, provenance, freshness, visibility, and redaction contract across repo graph and memory evidence.
 - [Context Evals](./CONTEXT_EVALS.md) - Long-session context regression evals with provenance assertions.
 - [AI Runtime Infrastructure](./AI_RUNTIME_INFRASTRUCTURE.md) - Engine source-of-truth runtime for long-running context, replay, and guardrails.
 - [Memory Ciphertext At Rest](./MEMORY_CIPHERTEXT_AT_REST.md) - Memory crypto modes, encrypted columns, search-required plaintext residuals, and backup implications.

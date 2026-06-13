@@ -173,6 +173,50 @@ pub struct RepoSearchResult {
     pub label: String,
     pub reason: String,
     pub confidence: Confidence,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<RepoRetrievalTrace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoRetrievalTrace {
+    pub retriever: String,
+    pub matched_term: String,
+    pub edge_path: Vec<String>,
+    pub confidence: Confidence,
+    pub scope: Option<String>,
+    pub ranking: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoChunk {
+    pub id: String,
+    pub file_path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub kind: String,
+    pub label: String,
+    pub sha256: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoContextSpan {
+    pub chunk_id: String,
+    pub file_path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub kind: String,
+    pub label: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoHybridCandidate {
+    pub chunk_id: String,
+    pub file_path: String,
+    pub score: u16,
+    pub retrievers: Vec<String>,
+    pub provenance: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +274,8 @@ pub struct RepoContextBundle {
     pub relevant_symbols: Vec<RepoSearchResult>,
     pub graph_edges: Vec<GraphEdge>,
     pub suggested_first_reads: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first_read_spans: Vec<RepoContextSpan>,
     pub test_targets: Vec<String>,
     pub gaps: Vec<String>,
     pub estimated_chars: usize,

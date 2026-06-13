@@ -191,12 +191,14 @@ pub fn repo_context_bundle_governed(
             relevant_symbols: Vec::new(),
             graph_edges: Vec::new(),
             suggested_first_reads: Vec::new(),
+            first_read_spans: Vec::new(),
             test_targets: Vec::new(),
             gaps: vec!["graph query denied by governance envelope".to_string()],
             estimated_chars: 0,
         }
     };
     filter_bundle(&mut value, envelope, &mut audit);
+    add_audit_gaps(&mut value, &audit);
     GraphQueryOutput::new(value, audit)
 }
 
@@ -287,8 +289,31 @@ fn filter_bundle(
         .suggested_first_reads
         .retain(|path| allow_path(envelope, path, audit));
     bundle
+        .first_read_spans
+        .retain(|span| allow_path(envelope, &span.file_path, audit));
+    bundle
         .test_targets
         .retain(|path| allow_path(envelope, path, audit));
+}
+
+fn add_audit_gaps(bundle: &mut RepoContextBundle, audit: &GraphQueryAudit) {
+    if audit.denied_count == 0 {
+        return;
+    }
+    bundle.gaps.push(format!(
+        "governance denied {} candidate(s); denied paths are redacted; reasons: {}",
+        audit.denied_count,
+        audit.denied_reasons.join(", ")
+    ));
+    if audit
+        .denied_reasons
+        .iter()
+        .any(|reason| reason.contains("readable_paths"))
+    {
+        bundle.gaps.push(
+            "add path_scope:\".\" or readable_paths:[\".\"] for local CLI repo queries".to_string(),
+        );
+    }
 }
 
 fn narrowest_readable_scope(envelope: &GraphQueryEnvelope) -> Option<String> {

@@ -97,6 +97,11 @@ fn workflow_memory_bundle_rejects_memories_from_other_runs() {
         .denied_reasons
         .iter()
         .any(|reason| reason.contains("outside the query run scope")));
+    assert!(!output
+        .audit
+        .denied_reasons
+        .iter()
+        .any(|reason| reason.contains("other-run")));
 }
 
 #[test]

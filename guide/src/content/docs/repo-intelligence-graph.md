@@ -71,7 +71,7 @@ tandem-engine tool --json '{"tool":"repo.index","args":{"repo_path":"."}}'
 Verify that query tools are reading the stored snapshot:
 
 ```bash
-tandem-engine tool --json '{"tool":"repo.context_bundle","args":{"repo_path":".","task":"Explain how repo intelligence is wired into Tandem Agents","limit":8}}'
+tandem-engine tool --json '{"tool":"repo.context_bundle","args":{"repo_path":".","path_scope":".","task":"Explain how repo intelligence is wired into Tandem Agents","limit":8}}'
 ```
 
 In the result metadata, `index_source` should be `stored`. If it is
@@ -171,3 +171,6 @@ Look for `repo.index`, `repo.context_bundle`, and the other `repo.*` tools.
 - If query results are stale after edits, call `repo.update_changed_files`.
 - If a query reports `ephemeral_scan_after_load_error`, recreate the stored
   snapshot with `repo.index`.
+- If `repo.context_bundle` returns `invalid_envelope:readable_paths`, pass
+  `path_scope:"."` for local whole-repo reads or a narrower readable path for a
+  scoped task.

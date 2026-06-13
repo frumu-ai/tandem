@@ -85,24 +85,15 @@ impl WorkflowGraph {
         let mut memories = Vec::new();
         for candidate in candidates {
             if !self.partition.is_visible_to(&candidate.scope) {
-                audit.deny(format!(
-                    "memory `{}` is outside the workflow partition scope",
-                    candidate.memory_id
-                ));
+                audit.deny("memory outside the workflow partition scope");
                 continue;
             }
             if !matches_query_run(candidate, envelope) {
-                audit.deny(format!(
-                    "memory `{}` is outside the query run scope",
-                    candidate.memory_id
-                ));
+                audit.deny("memory outside the query run scope");
                 continue;
             }
             if !envelope.allows_memory_tier(&candidate.tier) {
-                audit.deny(format!(
-                    "memory `{}` uses denied tier `{}`",
-                    candidate.memory_id, candidate.tier
-                ));
+                audit.deny("memory uses denied tier");
                 continue;
             }
             if !summary
@@ -113,7 +104,7 @@ impl WorkflowGraph {
                 continue;
             }
             if is_stale(candidate, &query) {
-                audit.deny(format!("memory `{}` is stale", candidate.memory_id));
+                audit.deny("memory is stale");
                 continue;
             }
             let Some(reason) = memory_reason(candidate, summary, &query) else {

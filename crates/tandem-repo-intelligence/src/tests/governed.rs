@@ -125,6 +125,40 @@ fn governed_context_bundle_does_not_leak_denied_required_files() {
     assert!(output.audit.denied_count > 0);
 }
 
+#[test]
+fn governed_context_bundle_reports_denied_scope_without_leaking_paths() {
+    let snapshot = fixture_snapshot();
+    let envelope = envelope_for(&snapshot, "repo.context_bundle", &[]);
+
+    let output = repo_context_bundle_governed(
+        &envelope,
+        &snapshot,
+        "login flow private plan",
+        RepoContextBundleOptions {
+            required_files: vec!["private/plan.md".to_string()],
+            result_limit: 10,
+            ..RepoContextBundleOptions::default()
+        },
+    );
+
+    assert!(output.value.suggested_first_reads.is_empty());
+    assert!(output
+        .value
+        .gaps
+        .iter()
+        .any(|gap| gap.contains("readable_paths")));
+    assert!(output
+        .value
+        .gaps
+        .iter()
+        .any(|gap| gap.contains("path_scope:\".\"")));
+    assert!(!output
+        .value
+        .gaps
+        .iter()
+        .any(|gap| gap.contains("private/plan.md")));
+}
+
 fn envelope_for(
     snapshot: &RepoIndexSnapshot,
     tool: &str,
