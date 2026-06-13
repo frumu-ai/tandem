@@ -51,7 +51,7 @@ Last updated: 2026-02-13 (engine-backed workspace-first session scope + explicit
 ### `GET /session` (workspace scope)
 
 ```http
-GET /session?scope=workspace&workspace=C:\Users\evang\work\frumu
+GET /session?scope=workspace&workspace=C:\Users\example\work\frumu
 ```
 
 ```json
@@ -59,8 +59,8 @@ GET /session?scope=workspace&workspace=C:\Users\evang\work\frumu
   {
     "id": "ses_123",
     "title": "Chat",
-    "directory": "C:\\Users\\evang\\work\\frumu",
-    "workspaceRoot": "C:\\Users\\evang\\work\\frumu"
+    "directory": "C:\\Users\\example\\work\\frumu",
+    "workspaceRoot": "C:\\Users\\example\\work\\frumu"
   }
 ]
 ```
@@ -69,7 +69,7 @@ GET /session?scope=workspace&workspace=C:\Users\evang\work\frumu
 
 ```json
 {
-  "target_workspace": "C:\\Users\\evang\\work\\tandem",
+  "target_workspace": "C:\\Users\\example\\work\\tandem",
   "reason_tag": "manual_attach"
 }
 ```
@@ -77,10 +77,10 @@ GET /session?scope=workspace&workspace=C:\Users\evang\work\frumu
 ```json
 {
   "id": "ses_123",
-  "workspaceRoot": "C:\\Users\\evang\\work\\tandem",
-  "originWorkspaceRoot": "C:\\Users\\evang\\work\\frumu",
-  "attachedFromWorkspace": "C:\\Users\\evang\\work\\frumu",
-  "attachedToWorkspace": "C:\\Users\\evang\\work\\tandem",
+  "workspaceRoot": "C:\\Users\\example\\work\\tandem",
+  "originWorkspaceRoot": "C:\\Users\\example\\work\\frumu",
+  "attachedFromWorkspace": "C:\\Users\\example\\work\\frumu",
+  "attachedToWorkspace": "C:\\Users\\example\\work\\tandem",
   "attachTimestampMs": 1770940000000,
   "attachReason": "manual_attach"
 }

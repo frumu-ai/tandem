@@ -58,16 +58,16 @@ Run this from any shell that can see the target repo and the Tandem engine CLI:
 tandem-engine tool --json '{"tool":"repo.index","args":{"repo_path":"/path/to/repo"}}'
 ```
 
-For the Tandem repo itself:
+For a local Tandem checkout:
 
 ```bash
-tandem-engine tool --json '{"tool":"repo.index","args":{"repo_path":"/home/evan/tandem"}}'
+tandem-engine tool --json '{"tool":"repo.index","args":{"repo_path":"/path/to/tandem"}}'
 ```
 
 Verify that query tools are reading the stored snapshot:
 
 ```bash
-tandem-engine tool --json '{"tool":"repo.context_bundle","args":{"repo_path":"/home/evan/tandem","task":"Explain how repo intelligence is wired into Tandem Agents","limit":8}}'
+tandem-engine tool --json '{"tool":"repo.context_bundle","args":{"repo_path":"/path/to/tandem","task":"Explain how repo intelligence is wired into Tandem Agents","limit":8}}'
 ```
 
 In the result metadata, `index_source` should be `stored`. If it is
@@ -124,7 +124,7 @@ engine your agents are actually using.
 For a local source checkout:
 
 ```bash
-cd /home/evan/tandem
+cd /path/to/tandem
 git checkout main
 git pull --ff-only origin main
 cargo build -p tandem-ai
@@ -135,7 +135,7 @@ using a Tandem release or local package that contains the repo intelligence
 tools, then rebuild/restart the stack:
 
 ```bash
-cd /home/evan/tandem-agents
+cd /path/to/tandem-agents
 ./scripts/build-containers.sh --build
 ./scripts/build-containers.sh --up
 ./scripts/run.sh --check-engine
