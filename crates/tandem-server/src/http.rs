@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path as FsPath;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -402,9 +402,15 @@ pub async fn serve_with_route_extensions(
     ));
     let global_memory_ingestor =
         tokio::spawn(run_global_memory_ingestor(global_memory_ingestor_state));
-    let approval_outbound = tokio::spawn(run_approval_outbound(approval_outbound_state));
+    let approval_outbound_cancel = Arc::new(AtomicBool::new(false));
+    let approval_outbound_cancel_for_task = approval_outbound_cancel.clone();
+    let mut approval_outbound = tokio::spawn(run_approval_outbound(
+        approval_outbound_state,
+        approval_outbound_cancel_for_task,
+    ));
     let shutdown_state = state.clone();
     let shutdown_timeout_secs = crate::config::env::resolve_scheduler_shutdown_timeout_secs();
+    let approval_outbound_cancel_for_shutdown = approval_outbound_cancel.clone();
 
     // --- Memory hygiene background task (runs every 12 hours) ---
     // Opens a fresh connection to memory.sqlite each cycle â€” safe because WAL
@@ -536,6 +542,7 @@ pub async fn serve_with_route_extensions(
             if tokio::signal::ctrl_c().await.is_err() {
                 futures::future::pending::<()>().await;
             }
+            approval_outbound_cancel_for_shutdown.store(true, Ordering::Relaxed);
             shutdown_state.set_automation_scheduler_stopping(true);
             tokio::time::sleep(Duration::from_secs(shutdown_timeout_secs)).await;
             let failed = shutdown_state
@@ -565,7 +572,15 @@ pub async fn serve_with_route_extensions(
     bug_monitor_log_watcher.abort();
     bug_monitor_recovery_sweep.abort();
     global_memory_ingestor.abort();
-    approval_outbound.abort();
+    approval_outbound_cancel.store(true, Ordering::Relaxed);
+    let approval_outbound_shutdown_timeout =
+        crate::app::approval_outbound::DEFAULT_POLL_INTERVAL + Duration::from_secs(1);
+    if tokio::time::timeout(approval_outbound_shutdown_timeout, &mut approval_outbound)
+        .await
+        .is_err()
+    {
+        approval_outbound.abort();
+    }
     hygiene_task.abort();
     automation_governance_health_checker.abort();
     result?;
@@ -583,7 +598,7 @@ impl crate::app::approval_outbound::PendingApprovalsSource for AppStatePendingAp
     }
 }
 
-async fn run_approval_outbound(state: AppState) {
+async fn run_approval_outbound(state: AppState, cancel: Arc<AtomicBool>) {
     if !state.wait_until_ready_or_failed(120, 250).await {
         let startup = state.startup_snapshot().await;
         tracing::warn!(
@@ -748,7 +763,7 @@ async fn run_approval_outbound(state: AppState) {
         Arc::new(notifiers),
         ApprovalListFilter::default(),
         crate::app::approval_outbound::DEFAULT_POLL_INTERVAL,
-        Arc::new(AtomicBool::new(false)),
+        cancel,
     )
     .await;
 }

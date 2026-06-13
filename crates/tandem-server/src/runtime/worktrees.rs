@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -146,7 +147,7 @@ pub async fn ensure_managed_worktree(
         &branch,
     );
     if let Some(existing) = state.managed_worktrees.read().await.get(&key).cloned() {
-        if worktree_is_registered(&input.repo_root, &existing.path)? {
+        if worktree_is_registered_async(input.repo_root.clone(), existing.path.clone()).await? {
             return Ok(ManagedWorktreeEnsureResult {
                 record: existing,
                 reused: true,
@@ -154,13 +155,15 @@ pub async fn ensure_managed_worktree(
         }
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
     }
-    if path.exists() && !worktree_is_registered(&input.repo_root, &path_string)? {
+    if tokio::fs::try_exists(&path).await?
+        && !worktree_is_registered_async(input.repo_root.clone(), path_string.clone()).await?
+    {
         anyhow::bail!("managed worktree path conflict: {path_string}");
     }
     let now = crate::now_ms();
-    if worktree_is_registered(&input.repo_root, &path_string)? {
+    if worktree_is_registered_async(input.repo_root.clone(), path_string.clone()).await? {
         let record = ManagedWorktreeRecord {
             key: key.clone(),
             repo_root: input.repo_root.clone(),
@@ -188,25 +191,13 @@ pub async fn ensure_managed_worktree(
     if input.base.trim_start().starts_with('-') {
         anyhow::bail!("git worktree base ref cannot start with '-'");
     }
-    let output = std::process::Command::new("git")
-        .args([
-            "-C",
-            &input.repo_root,
-            "worktree",
-            "add",
-            "-b",
-            &branch,
-            &path.to_string_lossy(),
-            "--",
-            &input.base,
-        ])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "git worktree add failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    add_git_worktree_async(
+        input.repo_root.clone(),
+        branch.clone(),
+        path.clone(),
+        input.base.clone(),
+    )
+    .await?;
     let record = ManagedWorktreeRecord {
         key: key.clone(),
         repo_root: input.repo_root,
@@ -236,26 +227,9 @@ pub async fn delete_managed_worktree(
     state: &crate::AppState,
     record: &ManagedWorktreeRecord,
 ) -> anyhow::Result<()> {
-    let output = std::process::Command::new("git")
-        .args([
-            "-C",
-            &record.repo_root,
-            "worktree",
-            "remove",
-            "--force",
-            &record.path,
-        ])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "git worktree remove failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    remove_git_worktree_async(record.repo_root.clone(), record.path.clone()).await?;
     if record.cleanup_branch {
-        let _ = std::process::Command::new("git")
-            .args(["-C", &record.repo_root, "branch", "-D", &record.branch])
-            .output();
+        let _ = delete_git_branch_async(record.repo_root.clone(), record.branch.clone()).await;
     }
     state
         .managed_worktrees
@@ -281,4 +255,71 @@ fn worktree_is_registered(repo_root: &str, path: &str) -> anyhow::Result<bool> {
         }
     }
     Ok(false)
+}
+
+async fn worktree_is_registered_async(repo_root: String, path: String) -> anyhow::Result<bool> {
+    tokio::task::spawn_blocking(move || worktree_is_registered(&repo_root, &path))
+        .await
+        .context("git worktree list task failed")?
+}
+
+async fn add_git_worktree_async(
+    repo_root: String,
+    branch: String,
+    path: PathBuf,
+    base: String,
+) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("git")
+            .args([
+                "-C",
+                &repo_root,
+                "worktree",
+                "add",
+                "-b",
+                &branch,
+                &path.to_string_lossy(),
+                "--",
+                &base,
+            ])
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git worktree add failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    })
+    .await
+    .context("git worktree add task failed")?
+}
+
+async fn remove_git_worktree_async(repo_root: String, path: String) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("git")
+            .args(["-C", &repo_root, "worktree", "remove", "--force", &path])
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git worktree remove failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    })
+    .await
+    .context("git worktree remove task failed")?
+}
+
+async fn delete_git_branch_async(repo_root: String, branch: String) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new("git")
+            .args(["-C", &repo_root, "branch", "-D", &branch])
+            .output()
+            .map(|_| ())
+            .map_err(Into::into)
+    })
+    .await
+    .context("git branch delete task failed")?
 }

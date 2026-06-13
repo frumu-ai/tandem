@@ -263,7 +263,10 @@ pub async fn run_polling_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    };
     use tandem_types::{ApprovalDecision, ApprovalSourceKind, ApprovalTenantRef};
 
     fn fake_request(request_id: &str) -> ApprovalRequest {
@@ -357,6 +360,48 @@ mod tests {
         async fn list_pending(&self, _filter: &ApprovalListFilter) -> Vec<ApprovalRequest> {
             self.requests.lock().unwrap().clone()
         }
+    }
+
+    #[tokio::test]
+    async fn polling_loop_exits_when_cancel_already_set() {
+        let source = VecSource::new(vec![fake_request("a")]);
+        let notifiers: Arc<Vec<Arc<dyn ApprovalNotifier>>> = Arc::new(Vec::new());
+        let cancel = Arc::new(AtomicBool::new(true));
+
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            run_polling_loop(
+                source,
+                notifiers,
+                ApprovalListFilter::default(),
+                Duration::from_millis(1),
+                cancel,
+            ),
+        )
+        .await
+        .expect("polling loop should exit promptly when already canceled");
+    }
+
+    #[tokio::test]
+    async fn polling_loop_exits_after_cancel_between_ticks() {
+        let source = VecSource::new(vec![]);
+        let notifiers: Arc<Vec<Arc<dyn ApprovalNotifier>>> = Arc::new(Vec::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(run_polling_loop(
+            source,
+            notifiers,
+            ApprovalListFilter::default(),
+            Duration::from_millis(5),
+            cancel.clone(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        cancel.store(true, Ordering::Relaxed);
+
+        tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .expect("polling loop should exit after cancellation")
+            .expect("polling loop task should not panic");
     }
 
     #[tokio::test]
