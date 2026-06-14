@@ -1343,17 +1343,25 @@ mod tests {
 
     #[tokio::test]
     async fn write_tool_rejects_empty_content_by_default() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-write-guard-{}", uuid_like(now_ms_u64())));
+        std::fs::create_dir_all(&root).expect("create root");
+        let target = root.join("target").join("write_guard_test.txt");
         let tool = WriteTool;
         let result = tool
             .execute(json!({
                 "path":"target/write_guard_test.txt",
-                "content":""
+                "content":"",
+                "__workspace_root": root.to_string_lossy().to_string(),
+                "__effective_cwd": root.to_string_lossy().to_string()
             }))
             .await
             .expect("write tool should return ToolResult");
         assert!(result.output.contains("non-empty `content`"));
         assert_eq!(result.metadata["reason"], json!("empty_content"));
-        assert!(!Path::new("target/write_guard_test.txt").exists());
+        assert!(!target.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
