@@ -133,6 +133,10 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
     router = super::routes_coder::apply(router);
     router = super::routes_context::apply(router);
     router = super::routes_sessions::apply(router);
+    router = router.route(
+        "/runs/{run_id}/events",
+        axum::routing::get(super::runtime_events::get_run_events),
+    );
     router = super::routes_bug_monitor::apply(router);
     router = super::routes_external_actions::apply(router);
     router = super::routes_goal_capability_learning::apply(router);

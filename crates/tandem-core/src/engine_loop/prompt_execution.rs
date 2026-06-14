@@ -28,11 +28,25 @@ impl EngineLoop {
             )
             })?;
         let correlation_ref = correlation_id.as_deref();
+        let observability_tenant = session_record
+            .as_ref()
+            .map(|session| &session.tenant_context);
+        let observability_org_id = observability_tenant.map(|tenant| tenant.org_id.as_str());
+        let observability_workspace_id =
+            observability_tenant.map(|tenant| tenant.workspace_id.as_str());
+        let emit_provider_event = |level, event| {
+            emit_event_with_tenant(
+                level,
+                ProcessKind::Engine,
+                event,
+                observability_org_id,
+                observability_workspace_id,
+            )
+        };
         let model_id = Some(model_id_value.as_str());
         let cancel = self.cancellations.create(&session_id).await;
-        emit_event(
+        emit_provider_event(
             Level::INFO,
-            ProcessKind::Engine,
             ObservabilityEvent {
                 event: "provider.call.start",
                 component: "engine.loop",
@@ -610,9 +624,8 @@ impl EngineLoop {
                 }
                 if let Err(validation_err) = validate_tool_schemas(&tool_schemas) {
                     let detail = validation_err.to_string();
-                    emit_event(
+                    emit_provider_event(
                         Level::ERROR,
-                        ProcessKind::Engine,
                         ObservabilityEvent {
                             event: "provider.call.error",
                             component: "engine.loop",
@@ -799,9 +812,8 @@ impl EngineLoop {
                                 "FULL_CONTEXT_HARD_BUDGET_EXCEEDED: estimated prompt size {} chars exceeds hard budget {} chars; set TANDEM_FULL_CONTEXT_HARD_BUDGET_OVERRIDE=1 to send anyway or use a bounded context mode",
                                 estimated_total_chars, hard_budget_chars
                             );
-                            emit_event(
+                            emit_provider_event(
                                 Level::ERROR,
-                                ProcessKind::Engine,
                                 ObservabilityEvent {
                                     event: "provider.call.error",
                                     component: "engine.loop",
@@ -893,9 +905,8 @@ impl EngineLoop {
                             }
                             let error_code = provider_error_code(&error_text);
                             let detail = truncate_text(&error_text, 500);
-                            emit_event(
+                            emit_provider_event(
                                 Level::ERROR,
-                                ProcessKind::Engine,
                                 ObservabilityEvent {
                                     event: "provider.call.error",
                                     component: "engine.loop",
@@ -1013,9 +1024,8 @@ impl EngineLoop {
                                 }
                                 let error_code = provider_error_code(&stream_error_text);
                                 let detail = truncate_text(&stream_error_text, 500);
-                                emit_event(
+                                emit_provider_event(
                                     Level::ERROR,
-                                    ProcessKind::Engine,
                                     ObservabilityEvent {
                                         event: "provider.call.error",
                                         component: "engine.loop",
@@ -1052,9 +1062,8 @@ impl EngineLoop {
                                     continue;
                                 }
                                 if completion.is_empty() {
-                                    emit_event(
+                                    emit_provider_event(
                                         Level::INFO,
-                                        ProcessKind::Engine,
                                         ObservabilityEvent {
                                             event: "provider.call.first_byte",
                                             component: "engine.loop",
@@ -1269,9 +1278,8 @@ impl EngineLoop {
                 let detail = format!(
                     "Prompt execution exhausted the configured iteration budget ({max_iteration_budget}) before the model produced a terminal response."
                 );
-                emit_event(
+                emit_provider_event(
                     Level::WARN,
-                    ProcessKind::Engine,
                     ObservabilityEvent {
                         event: "provider.call.iteration.budget_exhausted",
                         component: "engine.loop",
@@ -1432,9 +1440,8 @@ impl EngineLoop {
             completion = strip_model_control_markers(&completion);
             truncate_text(&completion, 16_000)
         };
-        emit_event(
+        emit_provider_event(
             Level::INFO,
-            ProcessKind::Engine,
             ObservabilityEvent {
                 event: "provider.call.finish",
                 component: "engine.loop",

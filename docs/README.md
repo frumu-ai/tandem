@@ -17,6 +17,7 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Compliance Starter Pack](./compliance/README.md) - Public EU AI Act starter docs for deployers, CISOs, and compliance teams.
 - [Enterprise Readiness](./ENTERPRISE_READINESS.md) - Current enterprise capabilities, in-progress work, and roadmap boundaries.
 - [Runtime Trust Boundaries](./RUNTIME_TRUST_BOUNDARIES.md) - Hosted vs self-hosted trust boundaries, auth modes, and protected audit evidence.
+- [Runtime Events](./RUNTIME_EVENTS.md) - Canonical event schema, durable replay log, and tenant-scoped query contract.
 - [Context Assertion Security](./CONTEXT_ASSERTION_SECURITY.md) - Signed tenant assertion keysets, replay behavior, clock skew, and rotation runbook.
 - [Cross-Tenant Grants Design](./CROSS_TENANT_GRANTS_DESIGN.md) - Signed grant envelope, inbound lookup, trust root, and enforcement design for governed tenant-to-tenant sharing.
 - [Default DataBoundary Enforcement Design](./DATA_BOUNDARY_ENFORCEMENT_DESIGN.md) - Default data-class boundary policy and trigger for governed reads.

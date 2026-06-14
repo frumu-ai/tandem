@@ -12,6 +12,9 @@ use crate::http::context_runs::{
 };
 use crate::http::context_types::{ContextRunEventAppendInput, ContextRunStatus};
 use crate::routines::types::{RoutineHistoryEvent, RoutineRunStatus};
+use crate::runtime_event_log::{
+    append_runtime_event_log_row, prune_runtime_event_log, RuntimeEventLogRow,
+};
 use crate::util::time::now_ms;
 
 async fn wait_for_runtime_ready_or_exit(state: &AppState, component: &str) -> bool {
@@ -630,6 +633,64 @@ pub async fn run_session_context_run_journaler(state: AppState) {
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
+    }
+}
+
+pub async fn run_runtime_event_log_persister(state: AppState) {
+    if !wait_for_runtime_ready_or_exit(&state, "runtime_event_log_persister").await {
+        return;
+    }
+
+    let retention_days = std::env::var("TANDEM_RUNTIME_EVENT_LOG_RETENTION_DAYS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(30);
+    if retention_days > 0 {
+        let retention_ms = retention_days.saturating_mul(24 * 60 * 60 * 1_000);
+        match prune_runtime_event_log(&state.runtime_events_path, retention_ms, now_ms()).await {
+            Ok(pruned) if pruned > 0 => {
+                tracing::info!(
+                    pruned,
+                    retention_days,
+                    "runtime event log persister pruned stale events"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "runtime event log persister could not prune stale events"
+                );
+            }
+        }
+    }
+
+    let mut rx = state.event_bus.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                let Some(row) = RuntimeEventLogRow::from_engine_event(&event) else {
+                    continue;
+                };
+                if let Err(error) =
+                    append_runtime_event_log_row(&state.runtime_events_path, &row).await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        event_id = row.event_id(),
+                        seq = row.seq(),
+                        "runtime event log persister failed to append event"
+                    );
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                tracing::warn!(
+                    dropped_events = count,
+                    "runtime event log persister lagged; sequence gaps may be visible in the log"
+                );
+            }
         }
     }
 }

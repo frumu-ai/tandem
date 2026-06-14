@@ -312,6 +312,7 @@ impl AppState {
             automation_v2_runs_path: config::paths::resolve_automation_v2_runs_path(),
             automation_v2_runs_archive_path: config::paths::resolve_automation_v2_runs_archive_path(
             ),
+            runtime_events_path: config::paths::resolve_runtime_events_path(),
             optimization_campaigns_path: config::paths::resolve_optimization_campaigns_path(),
             optimization_experiments_path: config::paths::resolve_optimization_experiments_path(),
             bug_monitor_config_path: config::paths::resolve_bug_monitor_config_path(),

@@ -17,6 +17,8 @@ Each JSONL line is one structured tracing event.
 - `fields.correlation_id` (optional)
 - `fields.session_id` (optional)
 - `fields.run_id` (optional)
+- `fields.org_id` (optional)
+- `fields.workspace_id` (optional)
 - `fields.message_id` (optional)
 - `fields.provider_id` (optional)
 - `fields.model_id` (optional)
@@ -43,6 +45,8 @@ Each JSONL line is one structured tracing event.
     "event": "provider.call.start",
     "correlation_id": "2c8...",
     "session_id": "abc...",
+    "org_id": "org_123",
+    "workspace_id": "wrk_123",
     "provider_id": "openrouter",
     "model_id": "google/gemini-2.5-flash",
     "status": "start"

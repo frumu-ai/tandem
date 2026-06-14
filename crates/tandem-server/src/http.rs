@@ -119,6 +119,7 @@ mod routes_task_intake;
 mod routes_workflow_planner;
 mod routes_workflows;
 pub(crate) mod routines_automations;
+mod runtime_events;
 mod session_kb_grounding;
 mod session_source;
 mod sessions;
@@ -331,6 +332,7 @@ pub async fn serve_with_route_extensions(
     let reaper_state = state.clone();
     let session_part_persister_state = state.clone();
     let session_context_run_journaler_state = state.clone();
+    let runtime_event_log_persister_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
     let routine_executor_state = state.clone();
@@ -391,6 +393,9 @@ pub async fn serve_with_route_extensions(
     ));
     let session_context_run_journaler = tokio::spawn(crate::run_session_context_run_journaler(
         session_context_run_journaler_state,
+    ));
+    let runtime_event_log_persister = tokio::spawn(crate::run_runtime_event_log_persister(
+        runtime_event_log_persister_state,
     ));
     let status_indexer = tokio::spawn(crate::run_status_indexer(status_indexer_state));
     let routine_scheduler = tokio::spawn(crate::run_routine_scheduler(routine_scheduler_state));
@@ -576,6 +581,7 @@ pub async fn serve_with_route_extensions(
     reaper.abort();
     session_part_persister.abort();
     session_context_run_journaler.abort();
+    runtime_event_log_persister.abort();
     status_indexer.abort();
     routine_scheduler.abort();
     routine_executor.abort();
