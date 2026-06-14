@@ -549,7 +549,15 @@ fn prompt_memory_access_keeps_local_client_subject_fallback() {
     );
 
     match access {
-        PromptMemoryAccess::Local { user_id } => assert_eq!(user_id, "client-local"),
+        PromptMemoryAccess::Local { user_id, audit } => {
+            assert_eq!(user_id, "client-local");
+            assert_eq!(audit.selected_subject.as_deref(), Some("client-local"));
+            assert_eq!(audit.requested_client_id.as_deref(), Some("client-local"));
+            assert_eq!(
+                audit.policy_mode,
+                crate::memory::subject::MemorySubjectPolicyMode::LocalFallback
+            );
+        }
         other => panic!("expected local prompt memory access, got {other:?}"),
     }
 }
@@ -671,6 +679,41 @@ fn prompt_memory_access_uses_verified_actor_not_client_id() {
             assert_eq!(tenant_context.org_id, "org-a");
             assert_eq!(tenant_context.workspace_id, "workspace-a");
             assert_eq!(subject, "user-a");
+        }
+        other => panic!("expected governed prompt memory access, got {other:?}"),
+    }
+}
+
+#[test]
+fn prompt_memory_access_uses_strict_agent_tenant_actor_and_audits_delegate() {
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    let mut verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", true);
+    verified
+        .strict_projection
+        .as_mut()
+        .expect("strict projection")
+        .principal = PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-a");
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified);
+
+    let access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&session),
+        Some("forged-client"),
+        2_000,
+    );
+
+    match access {
+        PromptMemoryAccess::Governed { subject, audit, .. } => {
+            assert_eq!(subject, "user-a");
+            assert_eq!(audit.selected_subject.as_deref(), Some("user-a"));
+            assert_eq!(audit.verified_actor.as_deref(), Some("user-a"));
+            assert_eq!(audit.requested_client_id.as_deref(), Some("forged-client"));
+            assert_eq!(audit.delegated_subject.as_deref(), Some("agent-platform"));
+            assert_eq!(
+                audit.policy_mode,
+                crate::memory::subject::MemorySubjectPolicyMode::EnterpriseStrictPrincipal
+            );
         }
         other => panic!("expected governed prompt memory access, got {other:?}"),
     }

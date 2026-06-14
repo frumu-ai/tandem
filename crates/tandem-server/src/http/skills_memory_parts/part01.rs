@@ -1173,11 +1173,7 @@ pub(super) enum RunMemoryCapabilityPolicy {
 }
 
 pub(super) fn run_memory_subject(subject_hint: Option<&str>) -> String {
-    subject_hint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("default")
-        .to_string()
+    crate::memory::subject::normalize_memory_subject(subject_hint)
 }
 
 pub(super) fn issue_run_memory_capability(
@@ -1302,6 +1298,7 @@ fn workflow_learning_candidate_memory_content(
 struct GovernedDistillationWriter {
     state: AppState,
     tenant_context: TenantContext,
+    verified_tenant_context: Option<VerifiedTenantContext>,
     partition: tandem_memory::MemoryPartition,
     capability: MemoryCapabilityToken,
     run_id: String,
@@ -1484,9 +1481,10 @@ impl GovernedDistillationWriter {
                 "fact_id": fact.id,
             })),
         };
-        let response = memory_put_impl(
+        let response = memory_put_impl_with_verified(
             &self.state,
             &self.tenant_context,
+            self.verified_tenant_context.as_ref(),
             request,
             Some(self.capability.clone()),
         )
