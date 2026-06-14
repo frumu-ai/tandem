@@ -162,6 +162,10 @@ pub fn set_strict_tenant_enforcement_default(enabled: bool) {
     MCP_STRICT_TENANT_ENFORCEMENT_DEFAULT.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
+pub fn strict_tenant_enforcement_default() -> bool {
+    MCP_STRICT_TENANT_ENFORCEMENT_DEFAULT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 impl McpRegistry {
     pub fn new() -> Self {
         Self::new_with_state_file(resolve_state_file())
@@ -1198,8 +1202,7 @@ impl McpRegistry {
             &self.oauth_security_dir,
             &oauth.provider_id,
         )
-        .or_else(|| tandem_core::load_provider_oauth_credential(&oauth.provider_id))
-        else {
+        .or_else(|| tandem_core::load_provider_oauth_credential(&oauth.provider_id)) else {
             return Ok(false);
         };
 

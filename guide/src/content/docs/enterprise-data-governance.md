@@ -65,6 +65,17 @@ admin-style role such as `admin`, `owner`, `reconfigure`, or
 `enterprise:admin`. Local/default installs can still use the local operator
 token for development.
 
+Local/default installs are the only mode where flat local-global memory is an
+intended behavior. When the runtime is hosted, enterprise-required, configured
+with tenant context verifier keys, or connected to hosted control-plane
+settings, Tandem activates strict memory/context policy before prompt assembly:
+agents receive memory through tenant-scoped reads and missing verified context
+blocks governed memory injection instead of falling back to local-global
+memory. Operators can confirm the effective mode through `/global/health` or
+the `memory_context_policy` check on `/enterprise/readiness`; these surfaces
+report key/config presence and strict-enforcement status without exposing
+secret material.
+
 ## Governance model
 
 Enterprise data enters memory through a source binding:

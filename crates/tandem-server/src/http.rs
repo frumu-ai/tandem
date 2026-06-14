@@ -291,18 +291,35 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
 /// McpRegistry instances inherit at construction; the registry instance held
 /// by RuntimeState is flipped in `bootstrap_mcp_servers_when_ready` once the
 /// runtime is initialized.
-fn apply_strict_tenant_enforcement_defaults() {
+fn apply_strict_tenant_enforcement_defaults(
+) -> anyhow::Result<crate::memory::policy_status::MemoryContextPolicyStatus> {
     let mode = crate::config::env::resolve_runtime_auth_mode();
-    let strict = mode != tandem_types::RuntimeAuthMode::LocalSingleTenant;
+    let strict = crate::memory::policy_status::enterprise_memory_policy_required(
+        mode,
+        crate::config::env::context_assertion_verifier_configured(),
+        crate::config::env::hosted_control_plane_configured(),
+    );
     if strict {
         tandem_memory::db::set_strict_tenant_enforcement_default(true);
         tandem_runtime::mcp::set_strict_tenant_enforcement_default(true);
         tandem_tools::set_strict_tenant_enforcement_default(true);
-        tracing::info!(
-            auth_mode = ?mode,
-            "strict tenant enforcement enabled for memory, MCP, and tool data layers"
-        );
     }
+    let status = crate::memory::policy_status::current_memory_context_policy_status();
+    status.ensure_startup_ready()?;
+    tracing::info!(
+        auth_mode = %status.runtime_auth_mode.as_str(),
+        effective_memory_auth_mode = %status.effective_memory_auth_mode.as_str(),
+        memory_policy_mode = ?status.memory_policy_mode,
+        strict_required = status.strict_required,
+        context_assertion_verifier_configured = status.context_assertion_verifier_configured,
+        hosted_control_plane_configured = status.hosted_control_plane_configured,
+        cross_tenant_grant_signing_key_configured = status.cross_tenant_grant_signing_key_configured,
+        strict_memory = status.strict_memory_enforcement,
+        strict_mcp = status.strict_mcp_enforcement,
+        strict_tools = status.strict_tool_enforcement,
+        "memory/context tenant policy resolved"
+    );
+    Ok(status)
 }
 
 pub async fn serve_with_route_extensions(
@@ -310,7 +327,7 @@ pub async fn serve_with_route_extensions(
     state: AppState,
     route_extensions: &[RouteRegistrar],
 ) -> anyhow::Result<()> {
-    apply_strict_tenant_enforcement_defaults();
+    apply_strict_tenant_enforcement_defaults()?;
     let reaper_state = state.clone();
     let session_part_persister_state = state.clone();
     let session_context_run_journaler_state = state.clone();

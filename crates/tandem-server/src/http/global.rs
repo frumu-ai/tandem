@@ -30,6 +30,8 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
         None => String::new(),
     };
     let browser = state.browser_health_summary().await;
+    let memory_context_policy =
+        crate::memory::policy_status::current_memory_context_policy_status();
     Json(json!({
         "healthy": true,
         "ready": state.is_ready(),
@@ -47,6 +49,7 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
         "leaseCount": lease_count,
         "workspace_root": workspace_root,
         "environment": environment,
+        "memory_context_policy": memory_context_policy,
         "browser": browser
     }))
 }

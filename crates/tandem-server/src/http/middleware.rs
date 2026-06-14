@@ -23,7 +23,7 @@ use tandem_types::{
 use crate::{AppState, StartupStatus};
 
 use super::ErrorEnvelope;
-use crate::config::env::resolve_runtime_auth_mode;
+use crate::memory::policy_status::resolve_memory_context_runtime_auth_mode;
 
 const DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS: u64 = 10_000;
 const MAX_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS: u64 = 60_000;
@@ -43,7 +43,7 @@ pub(super) async fn auth_gate(
     if path == "/global/health" {
         return next.run(request).await;
     }
-    let runtime_auth_mode = resolve_runtime_auth_mode();
+    let runtime_auth_mode = resolve_memory_context_runtime_auth_mode();
     if path == "/bug-monitor/intake/report" || path == "/failure-reporter/intake/report" {
         if !runtime_auth_mode_requires_transport_token(runtime_auth_mode)
             && !attach_enterprise_request_context_for_mode(&state, &mut request, runtime_auth_mode)

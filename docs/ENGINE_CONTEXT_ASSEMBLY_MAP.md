@@ -143,6 +143,7 @@ Injected sources:
 - Memory hits from the global memory record store:
   - local/no-verified sessions use the legacy `search_global_memory` subject derived from the active local client id.
   - verified or enterprise sessions use `search_global_memory_for_tenant` with the verified tenant, verified actor, and strict projection filter.
+  - if hosted/enterprise mode, context assertion verifier keys, or hosted control-plane settings are configured, the prompt hook treats missing verified context as governed and blocks memory injection instead of falling back to local-global memory.
 
 Timing:
 
