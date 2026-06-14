@@ -42,7 +42,8 @@ fn memory_promote_metadata(
     let next_trust_label = if memory_review_has_evidence(&request.review) {
         tandem_memory::MemoryTrustLabel::HumanApproved
     } else {
-        memory_record_trust_label(metadata).unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated)
+        memory_record_trust_label(metadata)
+            .unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated)
     };
     apply_memory_trust_metadata(&mut obj, next_trust_label, "promotion");
     Some(Value::Object(obj))
@@ -428,7 +429,9 @@ fn memory_record_trust_label(metadata: Option<&Value>) -> Option<tandem_memory::
         .and_then(|row| row.get("label"))
         .and_then(Value::as_str)
     {
-        Some("external_user_supplied") => Some(tandem_memory::MemoryTrustLabel::ExternalUserSupplied),
+        Some("external_user_supplied") => {
+            Some(tandem_memory::MemoryTrustLabel::ExternalUserSupplied)
+        }
         Some("connector_sourced") => Some(tandem_memory::MemoryTrustLabel::ConnectorSourced),
         Some("verified") => Some(tandem_memory::MemoryTrustLabel::Verified),
         Some("human_approved") => Some(tandem_memory::MemoryTrustLabel::HumanApproved),
@@ -1187,10 +1190,17 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
 pub(super) async fn memory_put(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<MemoryPutInput>,
 ) -> Result<Json<MemoryPutResponse>, StatusCode> {
-    let response =
-        memory_put_impl(&state, &tenant_context, input.request, input.capability).await?;
+    let response = memory_put_impl_with_verified(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        input.request,
+        input.capability,
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -1837,9 +1847,24 @@ pub(crate) async fn memory_put_impl(
     request: MemoryPutRequest,
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryPutResponse, StatusCode> {
-    let capability =
-        validate_memory_put_capability_with_guardrail(state, tenant_context, &request, capability)
-            .await?;
+    memory_put_impl_with_verified(state, tenant_context, None, request, capability).await
+}
+
+async fn memory_put_impl_with_verified(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    request: MemoryPutRequest,
+    capability: Option<MemoryCapabilityToken>,
+) -> Result<MemoryPutResponse, StatusCode> {
+    let capability = validate_memory_put_capability_with_guardrail(
+        state,
+        tenant_context,
+        verified_tenant_context,
+        &request,
+        capability,
+    )
+    .await?;
     if !capability
         .memory
         .write_tiers

@@ -36,31 +36,30 @@ pub(super) async fn workflow_learning_candidate_promote(
         &candidate,
         tandem_memory::GovernedMemoryTier::Project,
     );
-    let make_authority_job_context = |
-        partition: &tandem_memory::MemoryPartition,
-        operation: tandem_memory::MemoryAuthorityOperation,
-        source_memory_ids: Vec<String>,
-    | {
-        tandem_memory::MemoryAuthorityJobContext {
-            org_id: tenant_context.org_id.clone(),
-            workspace_id: tenant_context.workspace_id.clone(),
-            deployment_id: tenant_context.deployment_id.clone(),
-            project_id: partition.project_id.clone(),
-            actor_id: capability.subject.clone(),
-            run_id: run_id.clone(),
-            node_id: candidate.node_id.clone(),
-            task_id: Some(candidate.candidate_id.clone()),
-            purpose: "promote approved workflow learning candidate".to_string(),
-            source_binding_id: Some(format!("workflow:{}", candidate.workflow_id)),
-            data_class: Some(tandem_types::DataClass::Internal),
-            classification: tandem_memory::MemoryClassification::Internal,
-            operation,
-            source_memory_ids,
-            artifact_refs: candidate.artifact_refs.clone(),
-            policy_decision_id: input.approval_id.clone(),
-            grant_decision_id: input.approval_id.clone(),
-        }
-    };
+    let make_authority_job_context =
+        |partition: &tandem_memory::MemoryPartition,
+         operation: tandem_memory::MemoryAuthorityOperation,
+         source_memory_ids: Vec<String>| {
+            tandem_memory::MemoryAuthorityJobContext {
+                org_id: tenant_context.org_id.clone(),
+                workspace_id: tenant_context.workspace_id.clone(),
+                deployment_id: tenant_context.deployment_id.clone(),
+                project_id: partition.project_id.clone(),
+                actor_id: capability.subject.clone(),
+                run_id: run_id.clone(),
+                node_id: candidate.node_id.clone(),
+                task_id: Some(candidate.candidate_id.clone()),
+                purpose: "promote approved workflow learning candidate".to_string(),
+                source_binding_id: Some(format!("workflow:{}", candidate.workflow_id)),
+                data_class: Some(tandem_types::DataClass::Internal),
+                classification: tandem_memory::MemoryClassification::Internal,
+                operation,
+                source_memory_ids,
+                artifact_refs: candidate.artifact_refs.clone(),
+                policy_decision_id: input.approval_id.clone(),
+                grant_decision_id: input.approval_id.clone(),
+            }
+        };
     let source_memory_id = if let Some(memory_id) = candidate.source_memory_id.clone() {
         memory_id
     } else {
@@ -359,17 +358,39 @@ pub(super) async fn memory_list(
     let q = query.q.unwrap_or_default();
     let limit = query.limit.unwrap_or(100).clamp(1, 1000);
     let offset = query.offset.unwrap_or(0);
-    let user_id = match (query.user_id.as_deref(), tenant_context.actor_id.as_deref()) {
-        (Some(requested), Some(actor)) if requested != actor => {
-            return Err(StatusCode::FORBIDDEN);
+    let verified_tenant_context = verified_tenant_context.as_deref();
+    let user_id = if crate::memory::subject::local_memory_subjects_are_unrestricted(
+        &tenant_context,
+        verified_tenant_context,
+    ) {
+        query
+            .user_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|requested| !requested.is_empty())
+            .unwrap_or("default")
+            .to_string()
+    } else {
+        let resolution = crate::memory::subject::request_memory_subject(
+            &tenant_context,
+            verified_tenant_context,
+            None,
+        )
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+        if let Some(requested) = query
+            .user_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|requested| !requested.is_empty())
+        {
+            if requested != resolution.subject {
+                return Err(StatusCode::FORBIDDEN);
+            }
         }
-        (Some(requested), _) => requested.to_string(),
-        (None, Some(actor)) => actor.to_string(),
-        (None, None) => "default".to_string(),
+        resolution.subject
     };
     let page = if let Some(db) = open_global_memory_db_for_state(&state).await {
         let source_access_filter = verified_tenant_context
-            .as_ref()
             .and_then(|context| context.strict_projection.clone())
             .map(|strict_context| MemoryAccessFilter::strict(strict_context, crate::now_ms()));
         db.list_global_memory_for_tenant(

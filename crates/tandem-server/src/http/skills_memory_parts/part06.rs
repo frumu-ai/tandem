@@ -1,13 +1,21 @@
 fn validate_memory_capability_guardrail_context(
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     run_id: &str,
     partition: &tandem_memory::MemoryPartition,
     capability: Option<MemoryCapabilityToken>,
     subject_mode: MemoryCapabilitySubjectMode,
 ) -> Result<MemoryCapabilityToken, (String, &'static str, StatusCode)> {
-    let cap = capability.unwrap_or_else(|| {
-        default_memory_capability_for_request(run_id, partition, tenant_context)
-    });
+    let cap = match capability {
+        Some(cap) => cap,
+        None => default_memory_capability_for_request(
+            run_id,
+            partition,
+            tenant_context,
+            verified_tenant_context,
+        )
+        .map_err(|detail| ("".to_string(), detail, StatusCode::FORBIDDEN))?,
+    };
     if cap.run_id != run_id
         || cap.org_id != partition.org_id
         || cap.workspace_id != partition.workspace_id
@@ -26,7 +34,13 @@ fn validate_memory_capability_guardrail_context(
             StatusCode::UNAUTHORIZED,
         ));
     }
-    if !memory_capability_subject_matches_request_actor(tenant_context, &cap.subject, subject_mode)
+    if !memory_capability_subject_matches_request_actor(
+        tenant_context,
+        verified_tenant_context,
+        &cap.subject,
+        subject_mode,
+    )
+    .map_err(|detail| (cap.subject.clone(), detail, StatusCode::FORBIDDEN))?
     {
         return Err((
             cap.subject.clone(),
@@ -47,32 +61,44 @@ fn default_memory_capability_for_request(
     run_id: &str,
     partition: &tandem_memory::MemoryPartition,
     tenant_context: &TenantContext,
-) -> MemoryCapabilityToken {
-    issue_run_memory_capability(
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+) -> Result<MemoryCapabilityToken, &'static str> {
+    let resolution = crate::memory::subject::request_memory_subject(
+        tenant_context,
+        verified_tenant_context,
+        None,
+    )
+    .map_err(|error| error.as_str())?;
+    Ok(issue_run_memory_capability(
         run_id,
-        tenant_context.actor_id.as_deref(),
+        Some(resolution.subject.as_str()),
         partition,
         RunMemoryCapabilityPolicy::Default,
-    )
+    ))
 }
 
 fn memory_capability_subject_matches_request_actor(
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     subject: &str,
     subject_mode: MemoryCapabilitySubjectMode,
-) -> bool {
-    let Some(actor) = tenant_context
-        .actor_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|actor| !actor.is_empty())
-    else {
-        return true;
-    };
+) -> Result<bool, &'static str> {
+    if crate::memory::subject::local_memory_subjects_are_unrestricted(
+        tenant_context,
+        verified_tenant_context,
+    ) {
+        return Ok(true);
+    }
+    let resolution = crate::memory::subject::request_memory_subject(
+        tenant_context,
+        verified_tenant_context,
+        None,
+    )
+    .map_err(|error| error.as_str())?;
     let subject = subject.trim();
-    subject == actor
+    Ok(subject == resolution.subject
         || (subject_mode == MemoryCapabilitySubjectMode::ActorOrChannel
-            && subject.starts_with("channel:"))
+            && subject.starts_with("channel:")))
 }
 
 struct MemoryAuthorityRequestValidation<'a> {
@@ -133,11 +159,13 @@ fn validate_memory_authority_job_context_for_request(
 async fn validate_memory_put_capability_with_guardrail(
     state: &AppState,
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     request: &MemoryPutRequest,
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryCapabilityToken, StatusCode> {
     let cap = match validate_memory_capability_guardrail_context(
         tenant_context,
+        verified_tenant_context,
         &request.run_id,
         &request.partition,
         capability,
@@ -189,11 +217,13 @@ async fn validate_memory_put_capability_with_guardrail(
 async fn validate_memory_promote_capability_with_guardrail(
     state: &AppState,
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     request: &MemoryPromoteRequest,
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryCapabilityToken, StatusCode> {
     let cap = match validate_memory_capability_guardrail_context(
         tenant_context,
+        verified_tenant_context,
         &request.run_id,
         &request.partition,
         capability,
@@ -245,11 +275,13 @@ async fn validate_memory_promote_capability_with_guardrail(
 async fn validate_memory_search_capability_with_guardrail(
     state: &AppState,
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     request: &MemorySearchRequest,
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryCapabilityToken, StatusCode> {
     let cap = match validate_memory_capability_guardrail_context(
         tenant_context,
+        verified_tenant_context,
         &request.run_id,
         &request.partition,
         capability,
@@ -266,9 +298,10 @@ async fn validate_memory_search_capability_with_guardrail(
                     &request.run_id,
                     &request.partition,
                     tenant_context,
+                    verified_tenant_context,
                 )
-                .memory
-                .read_tiers
+                .map(|capability| capability.memory.read_tiers)
+                .unwrap_or_default()
             } else {
                 request.read_scopes.clone()
             };

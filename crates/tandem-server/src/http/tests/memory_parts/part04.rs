@@ -620,29 +620,34 @@ async fn memory_list_uses_capability_subject_and_rejects_mismatched_user() {
 }
 
 #[tokio::test]
-async fn memory_put_without_capability_defaults_to_connected_actor() {
+async fn memory_put_without_capability_ignores_client_id_and_defaults_to_connected_actor() {
     let state = test_state().await;
     let app = app_router(state.clone());
 
-    let put_req = tenant_memory_request(
-        "POST",
-        "/memory/put",
-        "acme",
-        "north",
-        "user-a",
-        Some(json!({
-            "run_id": "actor-default-memory-run",
-            "partition": {
-                "org_id": "acme",
-                "workspace_id": "north",
-                "project_id": "proj-a",
-                "tier": "session"
-            },
-            "kind": "fact",
-            "content": "actor default memory should belong to user a",
-            "classification": "internal"
-        })),
-    );
+    let put_req = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "acme")
+        .header("x-tandem-workspace-id", "north")
+        .header("x-tandem-actor-id", "user-a")
+        .header("x-tandem-client-id", "forged-client")
+        .body(Body::from(
+            json!({
+                "run_id": "actor-default-memory-run",
+                "partition": {
+                    "org_id": "acme",
+                    "workspace_id": "north",
+                    "project_id": "proj-a",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": "actor default memory should belong to user a",
+                "classification": "internal"
+            })
+            .to_string(),
+        ))
+        .expect("put request");
     let put_resp = app.clone().oneshot(put_req).await.expect("put response");
     assert_eq!(put_resp.status(), StatusCode::OK);
 
@@ -670,6 +675,32 @@ async fn memory_put_without_capability_defaults_to_connected_actor() {
             })
         });
     assert!(found, "default memory capability should use request actor");
+
+    let forged_list_req = tenant_memory_request(
+        "GET",
+        "/memory?limit=20&user_id=forged-client&project_id=proj-a",
+        "acme",
+        "north",
+        "forged-client",
+        None,
+    );
+    let forged_list_resp = app
+        .clone()
+        .oneshot(forged_list_req)
+        .await
+        .expect("forged client list response");
+    assert_eq!(forged_list_resp.status(), StatusCode::OK);
+    let forged_list_body = to_bytes(forged_list_resp.into_body(), usize::MAX)
+        .await
+        .expect("forged list body");
+    let forged_list_payload: Value =
+        serde_json::from_slice(&forged_list_body).expect("forged list json");
+    let forged_serialized =
+        serde_json::to_string(&forged_list_payload).expect("forged list payload");
+    assert!(
+        !forged_serialized.contains("actor default memory should belong to user a"),
+        "client id should not become the memory subject"
+    );
 }
 
 #[tokio::test]

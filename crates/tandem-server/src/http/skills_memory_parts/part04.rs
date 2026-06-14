@@ -1,10 +1,17 @@
 pub(super) async fn memory_promote(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<MemoryPromoteInput>,
 ) -> Result<Json<MemoryPromoteResponse>, StatusCode> {
-    let response =
-        memory_promote_impl(&state, &tenant_context, input.request, input.capability).await?;
+    let response = memory_promote_impl_with_verified(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        input.request,
+        input.capability,
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -14,10 +21,21 @@ pub(crate) async fn memory_promote_impl(
     request: MemoryPromoteRequest,
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryPromoteResponse, StatusCode> {
+    memory_promote_impl_with_verified(state, tenant_context, None, request, capability).await
+}
+
+async fn memory_promote_impl_with_verified(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    request: MemoryPromoteRequest,
+    capability: Option<MemoryCapabilityToken>,
+) -> Result<MemoryPromoteResponse, StatusCode> {
     let source_memory_id = request.source_memory_id.clone();
     let capability = validate_memory_promote_capability_with_guardrail(
         state,
         tenant_context,
+        verified_tenant_context,
         &request,
         capability,
     )
@@ -219,7 +237,9 @@ pub(crate) async fn memory_promote_impl(
     }
     let source_trust_label = memory_record_trust_label(source.metadata.as_ref())
         .unwrap_or(tandem_memory::MemoryTrustLabel::SystemGenerated);
-    if !source_trust_label.is_trusted_for_promotion() && !memory_review_has_evidence(&request.review) {
+    if !source_trust_label.is_trusted_for_promotion()
+        && !memory_review_has_evidence(&request.review)
+    {
         emit_blocked_memory_promote_guardrail(
             state,
             tenant_context,
@@ -263,16 +283,13 @@ pub(crate) async fn memory_promote_impl(
                 partition_key: partition_key.clone(),
                 actor: capability.subject,
                 status: "blocked".to_string(),
-                detail: scrub_report
-                    .block_reason
-                    .as_ref()
-                    .map(|detail| {
-                        format!(
-                            "{detail} policy_decision_id={}{}",
-                            policy_decision_id.clone().unwrap_or_default(),
-                            memory_linkage_detail(&linkage)
-                        )
-                    }),
+                detail: scrub_report.block_reason.as_ref().map(|detail| {
+                    format!(
+                        "{detail} policy_decision_id={}{}",
+                        policy_decision_id.clone().unwrap_or_default(),
+                        memory_linkage_detail(&linkage)
+                    )
+                }),
                 created_at_ms: now,
             },
         )
@@ -329,7 +346,8 @@ pub(crate) async fn memory_promote_impl(
         scrub_report: scrub_report.clone(),
         source_outcome: source_outcome.clone(),
     };
-    let next_metadata = memory_promote_metadata(source.metadata.as_ref(), &request, now, &governance);
+    let next_metadata =
+        memory_promote_metadata(source.metadata.as_ref(), &request, now, &governance);
     let next_provenance = memory_promote_provenance(
         source.provenance.as_ref(),
         &request,
@@ -566,6 +584,7 @@ pub(super) async fn memory_search(
     let capability = validate_memory_search_capability_with_guardrail(
         &state,
         &tenant_context,
+        verified_tenant_context.as_deref(),
         &request,
         input.capability,
     )
@@ -669,7 +688,10 @@ pub(super) async fn memory_search(
             apply_memory_retrieval_gateway_result_budgets(&request, filtered, limit);
         let (filtered, window_budget_exhausted) =
             apply_memory_retrieval_gateway_window_budgets(&state, &request, filtered).await;
-        (filtered, response_budget_exhausted || window_budget_exhausted)
+        (
+            filtered,
+            response_budget_exhausted || window_budget_exhausted,
+        )
     };
     let results = hits
         .into_iter()
@@ -849,7 +871,13 @@ fn suspicious_memory_retrieval_query_reason(query: &str) -> Option<&'static str>
     {
         return Some("retrieval query pattern blocked: broad export");
     }
-    let starts = ["list all", "show all", "give me all", "print all", "return all"];
+    let starts = [
+        "list all",
+        "show all",
+        "give me all",
+        "print all",
+        "return all",
+    ];
     if starts.iter().any(|term| lowered.starts_with(term)) {
         return Some("retrieval query pattern blocked: broad enumeration");
     }
@@ -864,7 +892,10 @@ async fn validate_memory_retrieval_gateway_for_search(
 ) -> Result<i64, (StatusCode, &'static str)> {
     let Some(gateway) = request.retrieval_gateway.as_ref() else {
         if capability.subject.starts_with("channel:") {
-            return Err((StatusCode::FORBIDDEN, "channel memory search requires retrieval gateway"));
+            return Err((
+                StatusCode::FORBIDDEN,
+                "channel memory search requires retrieval gateway",
+            ));
         }
         return Ok(100);
     };
@@ -879,7 +910,9 @@ async fn validate_memory_retrieval_gateway_for_search(
     if grant.subject != capability.subject {
         return Err((StatusCode::FORBIDDEN, "retrieval grant subject mismatch"));
     }
-    if grant.org_id != request.partition.org_id || grant.workspace_id != request.partition.workspace_id {
+    if grant.org_id != request.partition.org_id
+        || grant.workspace_id != request.partition.workspace_id
+    {
         return Err((StatusCode::FORBIDDEN, "retrieval grant tenant mismatch"));
     }
     if !grant.project_ids.is_empty()
@@ -914,7 +947,10 @@ async fn validate_memory_retrieval_gateway_for_search(
             window.char_count = 0;
         }
         if window.query_count >= max_queries {
-            return Err((StatusCode::TOO_MANY_REQUESTS, "retrieval grant query budget exhausted"));
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "retrieval grant query budget exhausted",
+            ));
         }
         window.query_count = window.query_count.saturating_add(1);
     }
@@ -940,30 +976,39 @@ fn memory_retrieval_gateway_allows_record(
     };
     let grant = &gateway.grant;
     if !grant.project_ids.is_empty()
-        && !record
-            .project_tag
-            .as_ref()
-            .is_some_and(|project_id| grant.project_ids.iter().any(|allowed| allowed == project_id))
+        && !record.project_tag.as_ref().is_some_and(|project_id| {
+            grant
+                .project_ids
+                .iter()
+                .any(|allowed| allowed == project_id)
+        })
     {
         return false;
     }
     let target = MemorySourceAccessTarget::from_metadata(record.metadata.as_ref());
     if !grant.source_binding_ids.is_empty()
-        && !target.as_ref().and_then(|target| target.source_binding_id.as_ref()).is_some_and(
-            |binding_id| grant.source_binding_ids.iter().any(|allowed| allowed == binding_id),
-        )
+        && !target
+            .as_ref()
+            .and_then(|target| target.source_binding_id.as_ref())
+            .is_some_and(|binding_id| {
+                grant
+                    .source_binding_ids
+                    .iter()
+                    .any(|allowed| allowed == binding_id)
+            })
     {
         return false;
     }
     if !grant.source_object_ids.is_empty()
-        && !target.as_ref().and_then(|target| target.source_object_id.as_ref()).is_some_and(
-            |source_object_id| {
+        && !target
+            .as_ref()
+            .and_then(|target| target.source_object_id.as_ref())
+            .is_some_and(|source_object_id| {
                 grant
                     .source_object_ids
                     .iter()
                     .any(|allowed| allowed == source_object_id)
-            },
-        )
+            })
     {
         return false;
     }
@@ -1057,15 +1102,16 @@ async fn apply_memory_retrieval_gateway_window_budgets(
     let window_ms = gateway.grant.budgets.window_ms.unwrap_or(60_000).max(1);
     let budget_key = memory_retrieval_budget_key(gateway);
     let mut windows = state.memory_retrieval_budget_windows.write().await;
-    let window = windows.entry(budget_key).or_insert_with(|| {
-        tandem_memory::MemoryRetrievalBudgetWindow {
-            started_at_ms: now,
-            query_count: 0,
-            result_count: 0,
-            token_count: 0,
-            char_count: 0,
-        }
-    });
+    let window =
+        windows
+            .entry(budget_key)
+            .or_insert_with(|| tandem_memory::MemoryRetrievalBudgetWindow {
+                started_at_ms: now,
+                query_count: 0,
+                result_count: 0,
+                token_count: 0,
+                char_count: 0,
+            });
     if now.saturating_sub(window.started_at_ms) >= window_ms {
         window.started_at_ms = now;
         window.query_count = 0;
@@ -1311,6 +1357,7 @@ pub(super) async fn context_generate_layers(
 pub(super) async fn context_distill(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<ContextDistillRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let runtime_state = state.runtime.wait();
@@ -1324,12 +1371,16 @@ pub(super) async fn context_distill(
         .clone()
         .or_else(|| input.workflow_id.clone())
         .unwrap_or_else(|| input.session_id.clone());
-    let subject = run_memory_subject(
+    let subject = crate::memory::subject::request_memory_subject(
+        &tenant_context,
+        verified_tenant_context.as_deref(),
         input
             .subject
             .as_deref()
             .or(tenant_context.actor_id.as_deref()),
-    );
+    )
+    .map_err(|_| StatusCode::FORBIDDEN)?
+    .subject;
     let partition = tandem_memory::MemoryPartition {
         org_id: tenant_context.org_id.clone(),
         workspace_id: tenant_context.workspace_id.clone(),

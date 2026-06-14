@@ -1173,11 +1173,7 @@ pub(super) enum RunMemoryCapabilityPolicy {
 }
 
 pub(super) fn run_memory_subject(subject_hint: Option<&str>) -> String {
-    subject_hint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("default")
-        .to_string()
+    crate::memory::subject::normalize_memory_subject(subject_hint)
 }
 
 pub(super) fn issue_run_memory_capability(

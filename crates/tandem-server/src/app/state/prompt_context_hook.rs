@@ -1,4 +1,7 @@
 use super::*;
+use crate::memory::subject::{
+    blocked_memory_subject_audit, local_memory_subject, verified_memory_subject, MemorySubjectAudit,
+};
 use tandem_memory::types::MemoryAccessFilter;
 use tandem_types::{RuntimeAuthMode, Session};
 
@@ -19,15 +22,18 @@ pub(super) const SOURCE_GLOBAL_MEMORY: &str = "globalMemory";
 pub(super) enum PromptMemoryAccess {
     Local {
         user_id: String,
+        audit: MemorySubjectAudit,
     },
     Governed {
         tenant_context: TenantContext,
         subject: String,
         access_filter: MemoryAccessFilter,
+        audit: MemorySubjectAudit,
     },
     Blocked {
         reason: &'static str,
         tenant_context: Option<TenantContext>,
+        audit: MemorySubjectAudit,
     },
 }
 
@@ -38,6 +44,38 @@ impl PromptMemoryAccess {
             Self::Governed { .. } => "governed",
             Self::Blocked { .. } => "blocked",
         }
+    }
+
+    fn audit(&self) -> &MemorySubjectAudit {
+        match self {
+            Self::Local { audit, .. }
+            | Self::Governed { audit, .. }
+            | Self::Blocked { audit, .. } => audit,
+        }
+    }
+
+    fn subject_policy_mode(&self) -> &'static str {
+        self.audit().policy_mode.as_str()
+    }
+
+    fn selected_subject(&self) -> Option<&str> {
+        self.audit().selected_subject.as_deref()
+    }
+
+    fn requested_client_id(&self) -> Option<&str> {
+        self.audit().requested_client_id.as_deref()
+    }
+
+    fn verified_actor(&self) -> Option<&str> {
+        self.audit().verified_actor.as_deref()
+    }
+
+    fn delegated_subject(&self) -> Option<&str> {
+        self.audit().delegated_subject.as_deref()
+    }
+
+    fn tenant_scope(&self) -> Option<&str> {
+        self.audit().tenant_scope.as_deref()
     }
 }
 
@@ -188,14 +226,6 @@ impl ServerPromptContextHook {
         access_filter.allows_source_target(&target)
     }
 
-    fn run_client_memory_subject(run_client_id: Option<&str>) -> String {
-        run_client_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("default")
-            .to_string()
-    }
-
     pub(super) fn resolve_prompt_memory_access(
         runtime_auth_mode: RuntimeAuthMode,
         session: Option<&Session>,
@@ -204,13 +234,16 @@ impl ServerPromptContextHook {
     ) -> PromptMemoryAccess {
         let Some(session) = session else {
             return if runtime_auth_mode == RuntimeAuthMode::LocalSingleTenant {
+                let resolution = local_memory_subject(run_client_id);
                 PromptMemoryAccess::Local {
-                    user_id: Self::run_client_memory_subject(run_client_id),
+                    user_id: resolution.subject,
+                    audit: resolution.audit,
                 }
             } else {
                 PromptMemoryAccess::Blocked {
                     reason: "missing_session",
                     tenant_context: None,
+                    audit: blocked_memory_subject_audit(None, None, run_client_id),
                 }
             };
         };
@@ -222,61 +255,82 @@ impl ServerPromptContextHook {
             || verified.is_some()
             || !tenant_context.is_local_implicit();
         if !governed {
+            let resolution = local_memory_subject(run_client_id);
             return PromptMemoryAccess::Local {
-                user_id: Self::run_client_memory_subject(run_client_id),
+                user_id: resolution.subject,
+                audit: resolution.audit,
             };
         }
         let Some(verified) = verified else {
             return PromptMemoryAccess::Blocked {
                 reason: "missing_verified_tenant_context",
+                audit: blocked_memory_subject_audit(Some(&tenant_context), None, run_client_id),
                 tenant_context: Some(tenant_context),
             };
         };
         if verified.is_expired_at(now_ms) {
             return PromptMemoryAccess::Blocked {
                 reason: "expired_verified_tenant_context",
+                audit: blocked_memory_subject_audit(
+                    Some(&verified.tenant_context),
+                    Some(verified),
+                    run_client_id,
+                ),
                 tenant_context: Some(verified.tenant_context.clone()),
             };
         }
         if verified.tenant_context.is_local_implicit() {
             return PromptMemoryAccess::Blocked {
                 reason: "local_implicit_tenant_context",
+                audit: blocked_memory_subject_audit(
+                    Some(&verified.tenant_context),
+                    Some(verified),
+                    run_client_id,
+                ),
                 tenant_context: Some(verified.tenant_context.clone()),
             };
         }
         let Some(strict_projection) = verified.strict_projection.clone() else {
             return PromptMemoryAccess::Blocked {
                 reason: "missing_strict_projection",
+                audit: blocked_memory_subject_audit(
+                    Some(&verified.tenant_context),
+                    Some(verified),
+                    run_client_id,
+                ),
                 tenant_context: Some(verified.tenant_context.clone()),
             };
         };
         if strict_projection.is_expired_at(now_ms) {
             return PromptMemoryAccess::Blocked {
                 reason: "expired_strict_projection",
+                audit: blocked_memory_subject_audit(
+                    Some(&verified.tenant_context),
+                    Some(verified),
+                    run_client_id,
+                ),
                 tenant_context: Some(verified.tenant_context.clone()),
             };
         }
-        let Some(subject) = verified
-            .tenant_context
-            .actor_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .or_else(|| {
-                let human_actor = verified.human_actor.actor_id.trim();
-                (!human_actor.is_empty()).then_some(human_actor)
-            })
-            .map(ToString::to_string)
-        else {
-            return PromptMemoryAccess::Blocked {
-                reason: "missing_actor_id",
-                tenant_context: Some(verified.tenant_context.clone()),
-            };
+        let resolution = match verified_memory_subject(verified, run_client_id) {
+            Ok(resolution) => resolution,
+            Err(_) => {
+                return PromptMemoryAccess::Blocked {
+                    reason: "missing_actor_id",
+                    audit: blocked_memory_subject_audit(
+                        Some(&verified.tenant_context),
+                        Some(verified),
+                        run_client_id,
+                    ),
+                    tenant_context: Some(verified.tenant_context.clone()),
+                };
+            }
         };
         PromptMemoryAccess::Governed {
             tenant_context: verified.tenant_context.clone(),
-            subject,
+            subject: resolution.subject,
             access_filter: MemoryAccessFilter::strict(strict_projection, now_ms),
+            audit: resolution.audit,
         }
     }
 
@@ -382,7 +436,7 @@ impl ServerPromptContextHook {
         Vec<tandem_memory::types::GlobalMemorySearchHit>,
     ) {
         match memory_access {
-            PromptMemoryAccess::Local { user_id } => {
+            PromptMemoryAccess::Local { user_id, .. } => {
                 let project_hits = if let Some(project_id) = project_id {
                     db.search_global_memory(user_id, query, 8, Some(project_id), None, None)
                         .await
@@ -408,6 +462,7 @@ impl ServerPromptContextHook {
                 tenant_context,
                 subject,
                 access_filter,
+                ..
             } => {
                 let project_hits = if let Some(project_id) = project_id {
                     db.search_global_memory_for_tenant(
@@ -674,6 +729,7 @@ impl PromptContextHook for ServerPromptContextHook {
             if let PromptMemoryAccess::Blocked {
                 reason,
                 tenant_context,
+                ..
             } = &memory_access
             {
                 this.state.event_bus.publish(EngineEvent::new(
@@ -688,6 +744,12 @@ impl PromptContextHook for ServerPromptContextHook {
                         "reason": reason,
                         "source": SOURCE_GLOBAL_MEMORY,
                         "policyMode": memory_access.mode(),
+                        "subjectPolicyMode": memory_access.subject_policy_mode(),
+                        "selectedSubject": memory_access.selected_subject(),
+                        "requestedClientID": memory_access.requested_client_id(),
+                        "verifiedActor": memory_access.verified_actor(),
+                        "delegatedSubject": memory_access.delegated_subject(),
+                        "tenantScope": memory_access.tenant_scope(),
                         "runtimeAuthMode": runtime_auth_mode.as_str(),
                         "tenantOrgID": tenant_context.as_ref().map(|tenant| tenant.org_id.clone()),
                         "tenantWorkspaceID": tenant_context.as_ref().map(|tenant| tenant.workspace_id.clone()),
@@ -729,6 +791,12 @@ impl PromptContextHook for ServerPromptContextHook {
                     "scores": scores,
                     "latencyMs": latency_ms,
                     "policyMode": memory_access.mode(),
+                    "subjectPolicyMode": memory_access.subject_policy_mode(),
+                    "selectedSubject": memory_access.selected_subject(),
+                    "requestedClientID": memory_access.requested_client_id(),
+                    "verifiedActor": memory_access.verified_actor(),
+                    "delegatedSubject": memory_access.delegated_subject(),
+                    "tenantScope": memory_access.tenant_scope(),
                     "sources": hits.iter().map(|h| h.record.source_type.clone()).collect::<Vec<_>>(),
                 }),
             ));
@@ -775,6 +843,13 @@ impl PromptContextHook for ServerPromptContextHook {
                     "sourceBudgetChars": memory_budget,
                     "charSize": memory_block.content.len(),
                     "tokenSizeApprox": memory_block.content.split_whitespace().count(),
+                    "policyMode": memory_access.mode(),
+                    "subjectPolicyMode": memory_access.subject_policy_mode(),
+                    "selectedSubject": memory_access.selected_subject(),
+                    "requestedClientID": memory_access.requested_client_id(),
+                    "verifiedActor": memory_access.verified_actor(),
+                    "delegatedSubject": memory_access.delegated_subject(),
+                    "tenantScope": memory_access.tenant_scope(),
                 }),
             ));
             Ok(PromptContextHookResult::new(messages, budget.finish()))
