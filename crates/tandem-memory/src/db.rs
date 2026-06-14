@@ -54,7 +54,7 @@ pub fn set_strict_tenant_enforcement_default(enabled: bool) {
     STRICT_TENANT_ENFORCEMENT_DEFAULT.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
-pub(crate) fn strict_tenant_enforcement_default() -> bool {
+pub fn strict_tenant_enforcement_default() -> bool {
     STRICT_TENANT_ENFORCEMENT_DEFAULT.load(std::sync::atomic::Ordering::SeqCst)
 }
 

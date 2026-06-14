@@ -99,6 +99,10 @@ pub fn set_strict_tenant_enforcement_default(enabled: bool) {
     TOOLS_STRICT_TENANT_ENFORCEMENT_DEFAULT.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
+pub fn strict_tenant_enforcement_default() -> bool {
+    TOOLS_STRICT_TENANT_ENFORCEMENT_DEFAULT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// External-effect tools must carry an explicit tenant in hosted/enterprise
 /// mode: their effects (network egress, shared memory, browser sessions)
 /// escape the workspace, so attribution and scoping cannot be reconstructed
@@ -142,7 +146,10 @@ impl ToolRegistry {
             "repo.context_bundle".to_string(),
             Arc::new(RepoContextBundleTool),
         );
-        map.insert("repo.test_targets".to_string(), Arc::new(RepoTestTargetsTool));
+        map.insert(
+            "repo.test_targets".to_string(),
+            Arc::new(RepoTestTargetsTool),
+        );
         let todo_tool: Arc<dyn Tool> = Arc::new(TodoWriteTool);
         map.insert("todo_write".to_string(), todo_tool.clone());
         map.insert("todowrite".to_string(), todo_tool.clone());

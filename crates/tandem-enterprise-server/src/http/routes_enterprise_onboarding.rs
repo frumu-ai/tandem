@@ -328,6 +328,10 @@ async fn get_enterprise_readiness(
         .iter()
         .filter(|binding| binding.state == SourceBindingState::Enabled)
         .count();
+    let memory_context_policy =
+        tandem_server::memory::policy_status::current_memory_context_policy_status();
+    let memory_policy_details = serde_json::to_string(&memory_context_policy)
+        .unwrap_or_else(|_| "{\"startup_ready\":false}".to_string());
 
     let checks = vec![
         readiness_check(
@@ -401,6 +405,18 @@ async fn get_enterprise_readiness(
             },
             format!("{} governance approvals are pending", pending_approvals),
             Some("resolve pending approval requests before go-live"),
+        ),
+        readiness_check(
+            "memory_context_policy",
+            if memory_context_policy.startup_ready {
+                "ready"
+            } else {
+                "blocked"
+            },
+            memory_policy_details,
+            Some(
+                "enterprise or hosted memory requires strict tenant enforcement before serving prompts",
+            ),
         ),
     ];
     let overall_status = if checks.iter().any(|check| check.status == "blocked") {

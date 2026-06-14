@@ -55,6 +55,16 @@ mod tests {
     }
 
     #[test]
+    fn enterprise_mode_missing_assertion_builds_fail_closed_filter() {
+        let filter =
+            governed_memory_read_filter(RuntimeAuthMode::EnterpriseRequired, None, false, 2_000)
+                .expect("enterprise reads are governed");
+
+        assert_eq!(filter.mode, GovernedReadMode::GovernedStrict);
+        assert!(filter.strict_context.is_none());
+    }
+
+    #[test]
     fn local_mode_without_enterprise_context_keeps_noop_filter() {
         let filter =
             governed_memory_read_filter(RuntimeAuthMode::LocalSingleTenant, None, false, 2_000);

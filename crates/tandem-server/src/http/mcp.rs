@@ -81,11 +81,16 @@ pub(super) async fn bootstrap_mcp_servers_when_ready(state: AppState) {
         // The registry held by RuntimeState was constructed by the host before
         // serve() could set the crate-level strict default, so flip the live
         // instance here once the runtime is ready.
-        if crate::config::env::resolve_runtime_auth_mode()
-            != tandem_types::RuntimeAuthMode::LocalSingleTenant
-        {
+        let memory_context_policy =
+            crate::memory::policy_status::current_memory_context_policy_status();
+        if memory_context_policy.strict_required {
             state.mcp.set_strict_tenant_enforcement(true);
             state.tools.set_strict_tenant_enforcement(true);
+            tracing::info!(
+                auth_mode = %memory_context_policy.runtime_auth_mode.as_str(),
+                effective_memory_auth_mode = %memory_context_policy.effective_memory_auth_mode.as_str(),
+                "strict tenant enforcement enabled for live MCP and tool registries"
+            );
         }
         bootstrap_mcp_servers(&state).await;
     } else {

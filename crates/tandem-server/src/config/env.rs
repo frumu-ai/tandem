@@ -47,6 +47,44 @@ pub(crate) fn resolve_runtime_auth_mode() -> RuntimeAuthMode {
         .unwrap_or_default()
 }
 
+fn env_value_present(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+pub(crate) fn context_assertion_verifier_configured() -> bool {
+    [
+        "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+        "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE",
+        "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY",
+        "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE",
+    ]
+    .iter()
+    .any(|name| env_value_present(name))
+}
+
+pub(crate) fn hosted_control_plane_configured() -> bool {
+    [
+        "HOSTED_CONTROL_PANEL_PUBLIC_URL",
+        "HOSTED_PUBLIC_URL",
+        "TANDEM_HOSTED_CONTROL_PLANE_URL",
+        "TANDEM_ENTERPRISE_CONTROL_PLANE_URL",
+    ]
+    .iter()
+    .any(|name| env_value_present(name))
+}
+
+pub(crate) fn cross_tenant_grant_signing_key_configured() -> bool {
+    [
+        "TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY",
+        "TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY_FILE",
+    ]
+    .iter()
+    .any(|name| env_value_present(name))
+}
+
 pub(crate) fn resolve_automation_execute_node_timeout_ms() -> u64 {
     std::env::var("TANDEM_AUTOMATION_EXECUTE_NODE_TIMEOUT_MS")
         .ok()

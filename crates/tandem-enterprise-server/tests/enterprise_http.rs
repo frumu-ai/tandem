@@ -556,6 +556,22 @@ async fn enterprise_readiness_returns_onboarding_counts_without_mutation() {
         .is_some_and(|checks| checks
             .iter()
             .any(|check| check.get("id").and_then(Value::as_str) == Some("governance_skeleton"))));
+    let checks = payload
+        .get("checks")
+        .and_then(Value::as_array)
+        .expect("checks");
+    let memory_policy = checks
+        .iter()
+        .find(|check| check.get("id").and_then(Value::as_str) == Some("memory_context_policy"))
+        .expect("memory policy readiness check");
+    assert_eq!(
+        memory_policy.get("status").and_then(Value::as_str),
+        Some("ready")
+    );
+    assert!(memory_policy
+        .get("summary")
+        .and_then(Value::as_str)
+        .is_some_and(|details| details.contains("memory_policy_mode")));
     assert_eq!(state.enterprise.org_units.read().await.len(), 0);
 }
 

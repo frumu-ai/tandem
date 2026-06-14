@@ -716,7 +716,8 @@ impl PromptContextHook for ServerPromptContextHook {
             }
 
             let started = now_ms();
-            let runtime_auth_mode = crate::config::env::resolve_runtime_auth_mode();
+            let runtime_auth_mode =
+                crate::memory::policy_status::resolve_memory_context_runtime_auth_mode();
             let memory_access = Self::resolve_prompt_memory_access(
                 runtime_auth_mode,
                 session.as_ref(),
