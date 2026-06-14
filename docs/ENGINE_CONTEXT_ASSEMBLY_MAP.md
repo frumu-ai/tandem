@@ -140,13 +140,16 @@ Injected sources:
 - Memory scope block for session, project, and workspace.
 - Required KB grounding block when the session has a KB grounding policy.
 - Embedded guide/docs search hits from `search_embedded_docs`.
-- Global memory hits from `MemoryManager::search_global_memory`, filtered by governance visibility.
+- Memory hits from the global memory record store:
+  - local/no-verified sessions use the legacy `search_global_memory` subject derived from the active local client id.
+  - verified or enterprise sessions use `search_global_memory_for_tenant` with the verified tenant, verified actor, and strict projection filter.
 
 Timing:
 
 - Runs after the core system prompt and any follow-up context are in the message vector.
 - Appends extra system messages.
 - Fails open if runtime state is not ready, the run registry has no active run, the query is empty, or memory injection is skipped.
+- Fails closed for governed memory injection when enterprise/verified context is missing a session, verified tenant context, strict projection, or actor id.
 
 Raw artifact preservation:
 

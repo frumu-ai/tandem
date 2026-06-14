@@ -1,4 +1,6 @@
 use super::*;
+use tandem_memory::types::MemoryAccessFilter;
+use tandem_types::{RuntimeAuthMode, Session};
 
 #[derive(Clone)]
 pub(super) struct ServerPromptContextHook {
@@ -12,6 +14,32 @@ pub(super) const SOURCE_MEMORY_SCOPE: &str = "memoryScope";
 pub(super) const SOURCE_KB_GROUNDING: &str = "kbGrounding";
 pub(super) const SOURCE_DOCS: &str = "docs";
 pub(super) const SOURCE_GLOBAL_MEMORY: &str = "globalMemory";
+
+#[derive(Debug, Clone)]
+pub(super) enum PromptMemoryAccess {
+    Local {
+        user_id: String,
+    },
+    Governed {
+        tenant_context: TenantContext,
+        subject: String,
+        access_filter: MemoryAccessFilter,
+    },
+    Blocked {
+        reason: &'static str,
+        tenant_context: Option<TenantContext>,
+    },
+}
+
+impl PromptMemoryAccess {
+    fn mode(&self) -> &'static str {
+        match self {
+            Self::Local { .. } => "local",
+            Self::Governed { .. } => "governed",
+            Self::Blocked { .. } => "blocked",
+        }
+    }
+}
 
 pub(super) struct PromptHookBudget {
     pub(super) stats: PromptContextHookStats,
@@ -150,6 +178,108 @@ impl ServerPromptContextHook {
         MemorySourceAccessTarget::from_metadata(record.metadata.as_ref()).is_none()
     }
 
+    pub(super) fn governed_memory_visible_with_access_filter(
+        record: &tandem_memory::types::GlobalMemoryRecord,
+        access_filter: &MemoryAccessFilter,
+    ) -> bool {
+        let Some(target) = MemorySourceAccessTarget::from_metadata(record.metadata.as_ref()) else {
+            return true;
+        };
+        access_filter.allows_source_target(&target)
+    }
+
+    fn run_client_memory_subject(run_client_id: Option<&str>) -> String {
+        run_client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("default")
+            .to_string()
+    }
+
+    pub(super) fn resolve_prompt_memory_access(
+        runtime_auth_mode: RuntimeAuthMode,
+        session: Option<&Session>,
+        run_client_id: Option<&str>,
+        now_ms: u64,
+    ) -> PromptMemoryAccess {
+        let Some(session) = session else {
+            return if runtime_auth_mode == RuntimeAuthMode::LocalSingleTenant {
+                PromptMemoryAccess::Local {
+                    user_id: Self::run_client_memory_subject(run_client_id),
+                }
+            } else {
+                PromptMemoryAccess::Blocked {
+                    reason: "missing_session",
+                    tenant_context: None,
+                }
+            };
+        };
+        let verified = session.verified_tenant_context.as_ref();
+        let tenant_context = verified
+            .map(|context| context.tenant_context.clone())
+            .unwrap_or_else(|| session.tenant_context.clone());
+        let governed = runtime_auth_mode != RuntimeAuthMode::LocalSingleTenant
+            || verified.is_some()
+            || !tenant_context.is_local_implicit();
+        if !governed {
+            return PromptMemoryAccess::Local {
+                user_id: Self::run_client_memory_subject(run_client_id),
+            };
+        }
+        let Some(verified) = verified else {
+            return PromptMemoryAccess::Blocked {
+                reason: "missing_verified_tenant_context",
+                tenant_context: Some(tenant_context),
+            };
+        };
+        if verified.is_expired_at(now_ms) {
+            return PromptMemoryAccess::Blocked {
+                reason: "expired_verified_tenant_context",
+                tenant_context: Some(verified.tenant_context.clone()),
+            };
+        }
+        if verified.tenant_context.is_local_implicit() {
+            return PromptMemoryAccess::Blocked {
+                reason: "local_implicit_tenant_context",
+                tenant_context: Some(verified.tenant_context.clone()),
+            };
+        }
+        let Some(strict_projection) = verified.strict_projection.clone() else {
+            return PromptMemoryAccess::Blocked {
+                reason: "missing_strict_projection",
+                tenant_context: Some(verified.tenant_context.clone()),
+            };
+        };
+        if strict_projection.is_expired_at(now_ms) {
+            return PromptMemoryAccess::Blocked {
+                reason: "expired_strict_projection",
+                tenant_context: Some(verified.tenant_context.clone()),
+            };
+        }
+        let Some(subject) = verified
+            .tenant_context
+            .actor_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                let human_actor = verified.human_actor.actor_id.trim();
+                (!human_actor.is_empty()).then_some(human_actor)
+            })
+            .map(ToString::to_string)
+        else {
+            return PromptMemoryAccess::Blocked {
+                reason: "missing_actor_id",
+                tenant_context: Some(verified.tenant_context.clone()),
+            };
+        };
+        PromptMemoryAccess::Governed {
+            tenant_context: verified.tenant_context.clone(),
+            subject,
+            access_filter: MemoryAccessFilter::strict(strict_projection, now_ms),
+        }
+    }
+
     fn extract_docs_source_url(chunk: &tandem_memory::types::MemoryChunk) -> Option<String> {
         chunk
             .metadata
@@ -240,6 +370,90 @@ impl ServerPromptContextHook {
             .filter(|hit| hit.chunk.source.starts_with("guide_docs:"))
             .take(limit)
             .collect()
+    }
+
+    pub(super) async fn search_prompt_global_memory(
+        db: &MemoryDatabase,
+        memory_access: &PromptMemoryAccess,
+        query: &str,
+        project_id: Option<&str>,
+    ) -> (
+        Vec<tandem_memory::types::GlobalMemorySearchHit>,
+        Vec<tandem_memory::types::GlobalMemorySearchHit>,
+    ) {
+        match memory_access {
+            PromptMemoryAccess::Local { user_id } => {
+                let project_hits = if let Some(project_id) = project_id {
+                    db.search_global_memory(user_id, query, 8, Some(project_id), None, None)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|hit| {
+                            Self::governed_memory_visible_without_source_grant(&hit.record)
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let global_hits = db
+                    .search_global_memory(user_id, query, 8, None, None, None)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
+                    .collect::<Vec<_>>();
+                (project_hits, global_hits)
+            }
+            PromptMemoryAccess::Governed {
+                tenant_context,
+                subject,
+                access_filter,
+            } => {
+                let project_hits = if let Some(project_id) = project_id {
+                    db.search_global_memory_for_tenant(
+                        &tenant_context.org_id,
+                        &tenant_context.workspace_id,
+                        tenant_context.deployment_id.as_deref(),
+                        subject,
+                        query,
+                        8,
+                        Some(project_id),
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|hit| {
+                        Self::governed_memory_visible_with_access_filter(&hit.record, access_filter)
+                    })
+                    .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let global_hits = db
+                    .search_global_memory_for_tenant(
+                        &tenant_context.org_id,
+                        &tenant_context.workspace_id,
+                        tenant_context.deployment_id.as_deref(),
+                        subject,
+                        query,
+                        8,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|hit| {
+                        Self::governed_memory_visible_with_access_filter(&hit.record, access_filter)
+                    })
+                    .collect::<Vec<_>>();
+                (project_hits, global_hits)
+            }
+            PromptMemoryAccess::Blocked { .. } => (Vec::new(), Vec::new()),
+        }
     }
 
     fn dedupe_global_memory_hits(
@@ -359,7 +573,7 @@ impl PromptContextHook for ServerPromptContextHook {
                 );
             }
             let run_id = run.run_id;
-            let user_id = run.client_id.unwrap_or_else(|| "default".to_string());
+            let run_client_id = run.client_id.clone();
             let query = messages
                 .iter()
                 .rev()
@@ -449,27 +663,49 @@ impl PromptContextHook for ServerPromptContextHook {
                 ));
             }
 
+            let started = now_ms();
+            let runtime_auth_mode = crate::config::env::resolve_runtime_auth_mode();
+            let memory_access = Self::resolve_prompt_memory_access(
+                runtime_auth_mode,
+                session.as_ref(),
+                run_client_id.as_deref(),
+                started,
+            );
+            if let PromptMemoryAccess::Blocked {
+                reason,
+                tenant_context,
+            } = &memory_access
+            {
+                this.state.event_bus.publish(EngineEvent::new(
+                    "memory.context.blocked",
+                    json!({
+                        "runID": run_id,
+                        "sessionID": ctx.session_id,
+                        "messageID": ctx.message_id,
+                        "providerID": ctx.provider_id,
+                        "modelID": ctx.model_id,
+                        "iteration": ctx.iteration,
+                        "reason": reason,
+                        "source": SOURCE_GLOBAL_MEMORY,
+                        "policyMode": memory_access.mode(),
+                        "runtimeAuthMode": runtime_auth_mode.as_str(),
+                        "tenantOrgID": tenant_context.as_ref().map(|tenant| tenant.org_id.clone()),
+                        "tenantWorkspaceID": tenant_context.as_ref().map(|tenant| tenant.workspace_id.clone()),
+                        "tenantDeploymentID": tenant_context.as_ref().and_then(|tenant| tenant.deployment_id.clone()),
+                    }),
+                ));
+                return Ok(PromptContextHookResult::new(messages, budget.finish()));
+            }
             let Some(db) = this.open_memory_db().await else {
                 return Ok(PromptContextHookResult::new(messages, budget.finish()));
             };
-            let started = now_ms();
-            let project_hits = if let Some(project_id) = project_id.as_deref() {
-                db.search_global_memory(&user_id, &query, 8, Some(project_id), None, None)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let global_hits = db
-                .search_global_memory(&user_id, &query, 8, None, None, None)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
-                .collect::<Vec<_>>();
+            let (project_hits, global_hits) = Self::search_prompt_global_memory(
+                &db,
+                &memory_access,
+                &query,
+                project_id.as_deref(),
+            )
+            .await;
             let (hits, deferred_global_hits, project_scope_used) =
                 Self::select_memory_hits_for_context(project_hits, global_hits);
             let latency_ms = now_ms().saturating_sub(started);
@@ -492,6 +728,7 @@ impl PromptContextHook for ServerPromptContextHook {
                     "scoreMax": scores.iter().copied().reduce(f64::max),
                     "scores": scores,
                     "latencyMs": latency_ms,
+                    "policyMode": memory_access.mode(),
                     "sources": hits.iter().map(|h| h.record.source_type.clone()).collect::<Vec<_>>(),
                 }),
             ));
