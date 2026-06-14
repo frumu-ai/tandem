@@ -285,6 +285,14 @@ pub trait MemoryDekUnwrapProvider {
     fn unwrap_dek(&self, ticket: &MemoryDekUnwrapTicket) -> MemoryResult<Vec<u8>>;
 }
 
+pub type MemoryDekUnwrapProviderBox = Box<dyn MemoryDekUnwrapProvider + Send + Sync>;
+
+impl MemoryDecryptBrokerConfig {
+    pub fn build_dek_unwrap_provider(&self) -> MemoryResult<Option<MemoryDekUnwrapProviderBox>> {
+        crate::kms_providers::memory_dek_unwrap_provider_from_config(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryDecryptAuditOutcome {
