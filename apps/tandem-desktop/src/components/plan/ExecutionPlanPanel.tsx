@@ -12,6 +12,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { DiffViewer } from "./DiffViewer";
+import { AIGeneratedBadge } from "@/components/ui";
 import { type StagedOperation } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
@@ -104,6 +105,7 @@ export function ExecutionPlanPanel({
         <div className="flex items-center gap-2">
           <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
           <h3 className="font-semibold text-text">Execution Plan</h3>
+          <AIGeneratedBadge />
           <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded-full">
             {operations.length} {operations.length === 1 ? "change" : "changes"}
           </span>

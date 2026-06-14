@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, ExternalLink } from "lucide-react";
-import { Button, Card, CardContent } from "@/components/ui";
+import { AIGeneratedBadge, Button, Card, CardContent } from "@/components/ui";
 import type {
   AutomationV2RunRecord,
   Blackboard,
@@ -277,6 +277,8 @@ export function CoderRunDetailCard({
                     {selectedCoderRun.automation.name || "Untitled coder run"}
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-subtle">
+                    <AIGeneratedBadge />
+                    <span aria-hidden>·</span>
                     <span className="capitalize">
                       {selectedCoderRun.coderMetadata.workflow_kind.replace(/_/g, " ")}
                     </span>
