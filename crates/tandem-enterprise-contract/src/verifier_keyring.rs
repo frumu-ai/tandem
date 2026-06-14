@@ -406,12 +406,16 @@ mod tests {
     }
 
     fn scoped_entry() -> VerifierKeyEntry {
-        VerifierKeyEntry::new("key-1", SigningKeyPurpose::ApprovalReceipt, public_b64(&signing_key(7)))
-            .with_organization_id("org-a")
-            .with_deployment_id("deploy-1")
-            .with_allowed_audiences(vec!["tandem-runtime".to_string()])
-            .with_allowed_resource_scope_prefixes(vec!["org-a/workspace-a".to_string()])
-            .with_validity_window(1_000, 9_000)
+        VerifierKeyEntry::new(
+            "key-1",
+            SigningKeyPurpose::ApprovalReceipt,
+            public_b64(&signing_key(7)),
+        )
+        .with_organization_id("org-a")
+        .with_deployment_id("deploy-1")
+        .with_allowed_audiences(vec!["tandem-runtime".to_string()])
+        .with_allowed_resource_scope_prefixes(vec!["org-a/workspace-a".to_string()])
+        .with_validity_window(1_000, 9_000)
     }
 
     #[test]
@@ -427,7 +431,12 @@ mod tests {
     fn unknown_kid_is_denied() {
         let keyring = VerifierKeyring::from_entries([scoped_entry()]);
         assert_eq!(
-            keyring.resolve_verifying_key("nope", SigningKeyPurpose::ApprovalReceipt, &usage(), 5_000),
+            keyring.resolve_verifying_key(
+                "nope",
+                SigningKeyPurpose::ApprovalReceipt,
+                &usage(),
+                5_000
+            ),
             Err(KeyringDenial::UnknownKid)
         );
     }
@@ -443,7 +452,12 @@ mod tests {
         );
         let keyring = VerifierKeyring::from_entries([entry]);
         assert_eq!(
-            keyring.resolve_verifying_key("key-1", SigningKeyPurpose::ApprovalReceipt, &usage(), 5_000),
+            keyring.resolve_verifying_key(
+                "key-1",
+                SigningKeyPurpose::ApprovalReceipt,
+                &usage(),
+                5_000
+            ),
             Err(KeyringDenial::WrongPurpose)
         );
     }
@@ -476,11 +490,21 @@ mod tests {
     fn validity_window_is_enforced() {
         let keyring = VerifierKeyring::from_entries([scoped_entry()]);
         assert_eq!(
-            keyring.resolve_verifying_key("key-1", SigningKeyPurpose::ApprovalReceipt, &usage(), 500),
+            keyring.resolve_verifying_key(
+                "key-1",
+                SigningKeyPurpose::ApprovalReceipt,
+                &usage(),
+                500
+            ),
             Err(KeyringDenial::NotYetValid)
         );
         assert_eq!(
-            keyring.resolve_verifying_key("key-1", SigningKeyPurpose::ApprovalReceipt, &usage(), 9_000),
+            keyring.resolve_verifying_key(
+                "key-1",
+                SigningKeyPurpose::ApprovalReceipt,
+                &usage(),
+                9_000
+            ),
             Err(KeyringDenial::Expired)
         );
     }
@@ -493,28 +517,48 @@ mod tests {
         let mut wrong_org = base.clone();
         wrong_org.organization_id = Some("org-b".to_string());
         assert_eq!(
-            keyring.resolve_verifying_key("key-1", SigningKeyPurpose::ApprovalReceipt, &wrong_org, 5_000),
+            keyring.resolve_verifying_key(
+                "key-1",
+                SigningKeyPurpose::ApprovalReceipt,
+                &wrong_org,
+                5_000
+            ),
             Err(KeyringDenial::OrganizationMismatch)
         );
 
         let mut wrong_deploy = base.clone();
         wrong_deploy.deployment_id = Some("deploy-2".to_string());
         assert_eq!(
-            keyring.resolve_verifying_key("key-1", SigningKeyPurpose::ApprovalReceipt, &wrong_deploy, 5_000),
+            keyring.resolve_verifying_key(
+                "key-1",
+                SigningKeyPurpose::ApprovalReceipt,
+                &wrong_deploy,
+                5_000
+            ),
             Err(KeyringDenial::DeploymentMismatch)
         );
 
         let mut wrong_aud = base.clone();
         wrong_aud.audience = Some("other-service".to_string());
         assert_eq!(
-            keyring.resolve_verifying_key("key-1", SigningKeyPurpose::ApprovalReceipt, &wrong_aud, 5_000),
+            keyring.resolve_verifying_key(
+                "key-1",
+                SigningKeyPurpose::ApprovalReceipt,
+                &wrong_aud,
+                5_000
+            ),
             Err(KeyringDenial::AudienceNotAllowed)
         );
 
         let mut wrong_scope = base.clone();
         wrong_scope.resource_scope = Some("org-a/workspace-b/doc-9".to_string());
         assert_eq!(
-            keyring.resolve_verifying_key("key-1", SigningKeyPurpose::ApprovalReceipt, &wrong_scope, 5_000),
+            keyring.resolve_verifying_key(
+                "key-1",
+                SigningKeyPurpose::ApprovalReceipt,
+                &wrong_scope,
+                5_000
+            ),
             Err(KeyringDenial::ResourceScopeNotAllowed)
         );
     }
@@ -537,7 +581,11 @@ mod tests {
         }
 
         // A sibling that merely shares the textual prefix must be rejected.
-        for scope in ["org-a/workspace-a2", "org-a/workspace-a2/doc-9", "org-a/workspace-abc"] {
+        for scope in [
+            "org-a/workspace-a2",
+            "org-a/workspace-a2/doc-9",
+            "org-a/workspace-abc",
+        ] {
             let usage = usage().with_resource_scope(scope);
             assert_eq!(
                 keyring.resolve_verifying_key("key-1", allowed_purpose, &usage, 5_000),
@@ -565,7 +613,8 @@ mod tests {
 
     #[test]
     fn malformed_public_key_fails_closed() {
-        let entry = VerifierKeyEntry::new("bad", SigningKeyPurpose::ContextAssertion, "not-base64!!");
+        let entry =
+            VerifierKeyEntry::new("bad", SigningKeyPurpose::ContextAssertion, "not-base64!!");
         let keyring = VerifierKeyring::from_entries([entry]);
         assert_eq!(
             keyring.resolve_verifying_key(
@@ -638,8 +687,11 @@ mod tests {
             expires_at_ms: 9_000,
             issued_by: PrincipalRef::human_user("approver-1"),
         };
-        let mut receipt =
-            ApprovalReceipt::new(ApprovalReceiptHeader::ed25519("key-1"), claims, String::new());
+        let mut receipt = ApprovalReceipt::new(
+            ApprovalReceiptHeader::ed25519("key-1"),
+            claims,
+            String::new(),
+        );
         let signing_input = receipt.signing_input().expect("signing input");
         receipt.signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(signer.sign(signing_input.as_bytes()).to_bytes());
@@ -653,7 +705,12 @@ mod tests {
 
         // The keyring resolves the right key by the receipt's kid + purpose...
         let key = keyring
-            .resolve_verifying_key(&receipt.header.kid, SigningKeyPurpose::ApprovalReceipt, &usage, 5_000)
+            .resolve_verifying_key(
+                &receipt.header.kid,
+                SigningKeyPurpose::ApprovalReceipt,
+                &usage,
+                5_000,
+            )
             .expect("resolve");
         // ...and that key verifies the receipt end-to-end.
         assert_eq!(
