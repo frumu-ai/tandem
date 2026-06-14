@@ -275,11 +275,13 @@ fn decode_wrapped_dek(raw: &str) -> MemoryResult<Vec<u8>> {
 
 fn decode_dek_bytes(raw: &str) -> MemoryResult<Vec<u8>> {
     let trimmed = raw.trim();
+    if let Some(decoded) = decode_hex(trimmed) {
+        return Ok(decoded);
+    }
     base64::engine::general_purpose::STANDARD
         .decode(trimmed)
         .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(trimmed))
         .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(trimmed))
-        .or_else(|_| decode_hex(trimmed).ok_or(base64::DecodeError::InvalidLength(0)))
         .map_err(|_| MemoryError::InvalidConfig("memory DEK encoding is invalid".to_string()))
 }
 
@@ -362,6 +364,16 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct HexWrappedDekGoogleKmsClient;
+
+    impl GoogleCloudKmsDecryptClient for HexWrappedDekGoogleKmsClient {
+        fn decrypt(&self, request: &GoogleCloudKmsDecryptRequest) -> MemoryResult<Vec<u8>> {
+            assert_eq!(request.ciphertext, vec![0xaau8; MEMORY_DEK_LEN]);
+            Ok(vec![8u8; MEMORY_DEK_LEN])
+        }
+    }
+
     fn ticket() -> MemoryDekUnwrapTicket {
         MemoryDekUnwrapTicket {
             provider: "google_cloud_kms".to_string(),
@@ -392,6 +404,21 @@ mod tests {
         assert_eq!(
             provider.unwrap_dek(&ticket()).unwrap(),
             vec![7u8; MEMORY_DEK_LEN]
+        );
+    }
+
+    #[test]
+    fn google_kms_provider_decodes_ambiguous_hex_wrapped_dek_as_hex() {
+        let provider = GoogleCloudKmsDekUnwrapProvider::new(
+            HexWrappedDekGoogleKmsClient,
+            "runtime-memory-decryptor",
+        )
+        .expect("provider");
+        let mut ticket = ticket();
+        ticket.wrapped_dek = "aa".repeat(MEMORY_DEK_LEN);
+        assert_eq!(
+            provider.unwrap_dek(&ticket).unwrap(),
+            vec![8u8; MEMORY_DEK_LEN]
         );
     }
 
@@ -467,6 +494,15 @@ mod tests {
         assert_eq!(
             decode_plaintext_dek_output(out.as_bytes()).unwrap(),
             vec![9u8; MEMORY_DEK_LEN]
+        );
+    }
+
+    #[test]
+    fn command_output_decodes_ambiguous_hex_plaintext_as_hex() {
+        let out = "aa".repeat(MEMORY_DEK_LEN);
+        assert_eq!(
+            decode_plaintext_dek_output(out.as_bytes()).unwrap(),
+            vec![0xaau8; MEMORY_DEK_LEN]
         );
     }
 }
