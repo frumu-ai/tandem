@@ -522,17 +522,17 @@ async fn record_enterprise_ingestion_job(
     state: &AppState,
     job: IngestionJob,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    let mut registry = state.enterprise_ingestion_jobs.write().await;
+    let mut registry = state.enterprise.ingestion_jobs.write().await;
     let key = enterprise_ingestion_job_key(&job);
     registry.insert(key, job);
-    persist_enterprise_ingestion_jobs(&state.enterprise_ingestion_jobs_path, &registry).await
+    persist_enterprise_ingestion_jobs(&state.enterprise.ingestion_jobs_path, &registry).await
 }
 
 async fn record_enterprise_ingestion_quarantine(
     state: &AppState,
     quarantine: IngestionQuarantine,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    let mut registry = state.enterprise_ingestion_quarantines.write().await;
+    let mut registry = state.enterprise.ingestion_quarantines.write().await;
     let deployment = quarantine
         .tenant_context
         .deployment_id
@@ -547,7 +547,7 @@ async fn record_enterprise_ingestion_quarantine(
     );
     registry.insert(key, quarantine);
     persist_enterprise_ingestion_quarantines(
-        &state.enterprise_ingestion_quarantines_path,
+        &state.enterprise.ingestion_quarantines_path,
         &registry,
     )
     .await

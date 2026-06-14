@@ -149,14 +149,16 @@ async fn enrich_verified_context_with_org_unit_grants(
         return;
     }
     let memberships = state
-        .enterprise_org_unit_memberships
+        .enterprise
+        .org_unit_memberships
         .read()
         .await
         .values()
         .cloned()
         .collect::<Vec<_>>();
     let access_grants = state
-        .enterprise_org_unit_access_grants
+        .enterprise
+        .org_unit_access_grants
         .read()
         .await
         .values()

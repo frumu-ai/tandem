@@ -237,35 +237,7 @@ impl AppState {
                 .unwrap_or_else(|_| std::path::PathBuf::from("memory.sqlite")),
             memory_audit_path: config::paths::resolve_memory_audit_path(),
             protected_audit_path: config::paths::resolve_protected_audit_path(),
-            enterprise_org_units: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            enterprise_org_units_path: config::paths::resolve_enterprise_org_units_path(),
-            enterprise_org_unit_memberships: Arc::new(
-                RwLock::new(std::collections::HashMap::new()),
-            ),
-            enterprise_org_unit_memberships_path:
-                config::paths::resolve_enterprise_org_unit_memberships_path(),
-            enterprise_org_unit_access_grants: Arc::new(RwLock::new(
-                std::collections::HashMap::new(),
-            )),
-            enterprise_org_unit_access_grants_path:
-                config::paths::resolve_enterprise_org_unit_access_grants_path(),
-            enterprise_cross_tenant_grants: Arc::new(RwLock::new(
-                std::collections::HashMap::new(),
-            )),
-            enterprise_cross_tenant_grants_path:
-                config::paths::resolve_enterprise_cross_tenant_grants_path(),
-            enterprise_source_bindings: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            enterprise_source_bindings_path: config::paths::resolve_enterprise_source_bindings_path(
-            ),
-            enterprise_connectors: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            enterprise_connectors_path: config::paths::resolve_enterprise_connectors_path(),
-            enterprise_ingestion_jobs: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            enterprise_ingestion_jobs_path: config::paths::resolve_enterprise_ingestion_jobs_path(),
-            enterprise_ingestion_quarantines: Arc::new(RwLock::new(
-                std::collections::HashMap::new(),
-            )),
-            enterprise_ingestion_quarantines_path:
-                config::paths::resolve_enterprise_ingestion_quarantines_path(),
+            enterprise: crate::app::state::EnterpriseState::new(),
             missions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources_path: config::paths::resolve_shared_resources_path(),
@@ -570,110 +542,110 @@ impl AppState {
     }
 
     pub async fn load_enterprise_org_units(&self) -> anyhow::Result<()> {
-        if !self.enterprise_org_units_path.exists() {
+        if !self.enterprise.org_units_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.enterprise_org_units_path);
-        let bytes = fs::read(&self.enterprise_org_units_path).await?;
+        check_file_permissions(&self.enterprise.org_units_path);
+        let bytes = fs::read(&self.enterprise.org_units_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::OrganizationUnit,
         > = serde_json::from_slice(&bytes)?;
-        *self.enterprise_org_units.write().await = registry;
+        *self.enterprise.org_units.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_org_unit_memberships(&self) -> anyhow::Result<()> {
-        if !self.enterprise_org_unit_memberships_path.exists() {
+        if !self.enterprise.org_unit_memberships_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.enterprise_org_unit_memberships_path);
-        let bytes = fs::read(&self.enterprise_org_unit_memberships_path).await?;
+        check_file_permissions(&self.enterprise.org_unit_memberships_path);
+        let bytes = fs::read(&self.enterprise.org_unit_memberships_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::OrganizationUnitMembership,
         > = serde_json::from_slice(&bytes)?;
-        *self.enterprise_org_unit_memberships.write().await = registry;
+        *self.enterprise.org_unit_memberships.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_org_unit_access_grants(&self) -> anyhow::Result<()> {
-        if !self.enterprise_org_unit_access_grants_path.exists() {
+        if !self.enterprise.org_unit_access_grants_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.enterprise_org_unit_access_grants_path);
-        let bytes = fs::read(&self.enterprise_org_unit_access_grants_path).await?;
+        check_file_permissions(&self.enterprise.org_unit_access_grants_path);
+        let bytes = fs::read(&self.enterprise.org_unit_access_grants_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::OrganizationUnitAccessGrant,
         > = serde_json::from_slice(&bytes)?;
-        *self.enterprise_org_unit_access_grants.write().await = registry;
+        *self.enterprise.org_unit_access_grants.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_cross_tenant_grants(&self) -> anyhow::Result<()> {
-        if !self.enterprise_cross_tenant_grants_path.exists() {
+        if !self.enterprise.cross_tenant_grants_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.enterprise_cross_tenant_grants_path);
-        let bytes = fs::read(&self.enterprise_cross_tenant_grants_path).await?;
+        check_file_permissions(&self.enterprise.cross_tenant_grants_path);
+        let bytes = fs::read(&self.enterprise.cross_tenant_grants_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::CrossTenantGrantRecord,
         > = serde_json::from_slice(&bytes)?;
-        *self.enterprise_cross_tenant_grants.write().await = registry;
+        *self.enterprise.cross_tenant_grants.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_source_bindings(&self) -> anyhow::Result<()> {
-        if !self.enterprise_source_bindings_path.exists() {
+        if !self.enterprise.source_bindings_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.enterprise_source_bindings_path);
-        let bytes = fs::read(&self.enterprise_source_bindings_path).await?;
+        check_file_permissions(&self.enterprise.source_bindings_path);
+        let bytes = fs::read(&self.enterprise.source_bindings_path).await?;
         let registry: std::collections::HashMap<String, tandem_enterprise_contract::SourceBinding> =
             serde_json::from_slice(&bytes)?;
-        *self.enterprise_source_bindings.write().await = registry;
+        *self.enterprise.source_bindings.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_connectors(&self) -> anyhow::Result<()> {
-        if !self.enterprise_connectors_path.exists() {
+        if !self.enterprise.connectors_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.enterprise_connectors_path);
-        let bytes = fs::read(&self.enterprise_connectors_path).await?;
+        check_file_permissions(&self.enterprise.connectors_path);
+        let bytes = fs::read(&self.enterprise.connectors_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::ConnectorInstance,
         > = serde_json::from_slice(&bytes)?;
-        *self.enterprise_connectors.write().await = registry;
+        *self.enterprise.connectors.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_ingestion_jobs(&self) -> anyhow::Result<()> {
-        if !self.enterprise_ingestion_jobs_path.exists() {
+        if !self.enterprise.ingestion_jobs_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.enterprise_ingestion_jobs_path);
-        let bytes = fs::read(&self.enterprise_ingestion_jobs_path).await?;
+        check_file_permissions(&self.enterprise.ingestion_jobs_path);
+        let bytes = fs::read(&self.enterprise.ingestion_jobs_path).await?;
         let registry: std::collections::HashMap<String, tandem_enterprise_contract::IngestionJob> =
             serde_json::from_slice(&bytes)?;
-        *self.enterprise_ingestion_jobs.write().await = registry;
+        *self.enterprise.ingestion_jobs.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_ingestion_quarantines(&self) -> anyhow::Result<()> {
-        if !self.enterprise_ingestion_quarantines_path.exists() {
+        if !self.enterprise.ingestion_quarantines_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.enterprise_ingestion_quarantines_path);
-        let bytes = fs::read(&self.enterprise_ingestion_quarantines_path).await?;
+        check_file_permissions(&self.enterprise.ingestion_quarantines_path);
+        let bytes = fs::read(&self.enterprise.ingestion_quarantines_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::IngestionQuarantine,
         > = serde_json::from_slice(&bytes)?;
-        *self.enterprise_ingestion_quarantines.write().await = registry;
+        *self.enterprise.ingestion_quarantines.write().await = registry;
         Ok(())
     }
 

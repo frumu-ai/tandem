@@ -79,10 +79,12 @@ use crate::{
 
 pub mod approval_message_map;
 pub mod channel_user_capabilities;
+pub mod enterprise_state;
 mod prompt_context_blocks;
 mod prompt_context_hook;
 mod prompt_memory_context;
 
+pub use enterprise_state::EnterpriseState;
 use prompt_context_hook::*;
 
 #[derive(Clone)]
@@ -100,30 +102,9 @@ pub struct AppState {
     pub memory_db_path: PathBuf,
     pub memory_audit_path: PathBuf,
     pub protected_audit_path: PathBuf,
-    pub enterprise_org_units:
-        Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnit>>>,
-    pub enterprise_org_units_path: PathBuf,
-    pub enterprise_org_unit_memberships:
-        Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnitMembership>>>,
-    pub enterprise_org_unit_memberships_path: PathBuf,
-    pub enterprise_org_unit_access_grants:
-        Arc<RwLock<std::collections::HashMap<String, EnterpriseOrganizationUnitAccessGrant>>>,
-    pub enterprise_org_unit_access_grants_path: PathBuf,
-    pub enterprise_cross_tenant_grants:
-        Arc<RwLock<std::collections::HashMap<String, EnterpriseCrossTenantGrantRecord>>>,
-    pub enterprise_cross_tenant_grants_path: PathBuf,
-    pub enterprise_source_bindings:
-        Arc<RwLock<std::collections::HashMap<String, EnterpriseSourceBinding>>>,
-    pub enterprise_source_bindings_path: PathBuf,
-    pub enterprise_connectors:
-        Arc<RwLock<std::collections::HashMap<String, EnterpriseConnectorInstance>>>,
-    pub enterprise_connectors_path: PathBuf,
-    pub enterprise_ingestion_jobs:
-        Arc<RwLock<std::collections::HashMap<String, EnterpriseIngestionJob>>>,
-    pub enterprise_ingestion_jobs_path: PathBuf,
-    pub enterprise_ingestion_quarantines:
-        Arc<RwLock<std::collections::HashMap<String, EnterpriseIngestionQuarantine>>>,
-    pub enterprise_ingestion_quarantines_path: PathBuf,
+    /// EAA-12 (TAN-37): enterprise registries + persistence paths, owned as one
+    /// wrapper instead of scattered across `AppState` (see [`EnterpriseState`]).
+    pub enterprise: EnterpriseState,
     pub missions: Arc<RwLock<std::collections::HashMap<String, MissionState>>>,
     pub shared_resources: Arc<RwLock<std::collections::HashMap<String, SharedResourceRecord>>>,
     pub shared_resources_path: PathBuf,

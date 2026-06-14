@@ -699,7 +699,7 @@ impl AppState {
         direct_grants: Vec<ScopedGrant>,
     ) -> IntraTenantAuthorityGraph {
         let units = self
-            .enterprise_org_units
+            .enterprise.org_units
             .read()
             .await
             .values()
@@ -707,7 +707,7 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         let memberships = self
-            .enterprise_org_unit_memberships
+            .enterprise.org_unit_memberships
             .read()
             .await
             .values()
@@ -717,7 +717,7 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         let unit_access_grants = self
-            .enterprise_org_unit_access_grants
+            .enterprise.org_unit_access_grants
             .read()
             .await
             .values()

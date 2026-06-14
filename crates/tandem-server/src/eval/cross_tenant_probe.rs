@@ -137,7 +137,8 @@ impl Tool for EvalCrossTenantGrantProbeTool {
         }
 
         self.state
-            .enterprise_cross_tenant_grants
+            .enterprise
+            .cross_tenant_grants
             .write()
             .await
             .insert(format!("eval::{grant_id}"), record.clone());

@@ -175,7 +175,8 @@ pub(super) async fn list_org_units(
     Extension(request_principal): Extension<RequestPrincipal>,
 ) -> Json<EnterpriseOrgUnitsResponse> {
     let mut org_units: Vec<_> = state
-        .enterprise_org_units
+        .enterprise
+        .org_units
         .read()
         .await
         .values()
@@ -201,7 +202,8 @@ pub(super) async fn list_org_unit_memberships(
     Extension(request_principal): Extension<RequestPrincipal>,
 ) -> Json<EnterpriseOrgUnitMembershipsResponse> {
     let mut memberships: Vec<_> = state
-        .enterprise_org_unit_memberships
+        .enterprise
+        .org_unit_memberships
         .read()
         .await
         .values()
@@ -229,7 +231,8 @@ pub(super) async fn list_org_unit_access_grants(
     Extension(request_principal): Extension<RequestPrincipal>,
 ) -> Json<EnterpriseOrgUnitAccessGrantsResponse> {
     let mut access_grants: Vec<_> = state
-        .enterprise_org_unit_access_grants
+        .enterprise
+        .org_unit_access_grants
         .read()
         .await
         .values()
@@ -261,7 +264,8 @@ pub(super) async fn list_effective_org_unit_grants(
     let member = PrincipalRef::new(query.member_kind, member_id);
     let now = now_ms();
     let memberships: Vec<_> = state
-        .enterprise_org_unit_memberships
+        .enterprise
+        .org_unit_memberships
         .read()
         .await
         .values()
@@ -274,7 +278,8 @@ pub(super) async fn list_effective_org_unit_grants(
         .collect();
     let mut grants = Vec::new();
     for access_grant in state
-        .enterprise_org_unit_access_grants
+        .enterprise
+        .org_unit_access_grants
         .read()
         .await
         .values()
@@ -350,9 +355,9 @@ pub(super) async fn create_org_unit(
     unit.labels = labels;
 
     {
-        let mut registry = state.enterprise_org_units.write().await;
+        let mut registry = state.enterprise.org_units.write().await;
         registry.insert(enterprise_org_unit_key(&unit), unit);
-        persist_enterprise_org_units(&state.enterprise_org_units_path, &registry).await?;
+        persist_enterprise_org_units(&state.enterprise.org_units_path, &registry).await?;
     }
 
     Ok(Json(EnterpriseAdminResponseBase {
@@ -403,13 +408,13 @@ pub(super) async fn create_org_unit_membership(
     membership.expires_at_ms = input.expires_at_ms;
 
     {
-        let mut registry = state.enterprise_org_unit_memberships.write().await;
+        let mut registry = state.enterprise.org_unit_memberships.write().await;
         registry.insert(
             enterprise_org_unit_membership_key(&membership),
             membership.clone(),
         );
         persist_enterprise_org_unit_memberships(
-            &state.enterprise_org_unit_memberships_path,
+            &state.enterprise.org_unit_memberships_path,
             &registry,
         )
         .await?;
@@ -483,10 +488,10 @@ pub(super) async fn create_org_unit_access_grant(
     grant.expires_at_ms = input.expires_at_ms;
 
     {
-        let mut registry = state.enterprise_org_unit_access_grants.write().await;
+        let mut registry = state.enterprise.org_unit_access_grants.write().await;
         registry.insert(enterprise_org_unit_access_grant_key(&grant), grant.clone());
         persist_enterprise_org_unit_access_grants(
-            &state.enterprise_org_unit_access_grants_path,
+            &state.enterprise.org_unit_access_grants_path,
             &registry,
         )
         .await?;
@@ -510,7 +515,7 @@ pub(super) async fn update_org_unit_membership(
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let membership_id = validate_enterprise_id("membership_id", &membership_id)?;
     let updated = {
-        let mut registry = state.enterprise_org_unit_memberships.write().await;
+        let mut registry = state.enterprise.org_unit_memberships.write().await;
         let Some(membership) = registry.values_mut().find(|membership| {
             membership.membership_id == membership_id
                 && org_unit_membership_tenant_matches(membership, &tenant_context)
@@ -523,7 +528,7 @@ pub(super) async fn update_org_unit_membership(
         membership.expires_at_ms = input.expires_at_ms;
         let updated = membership.clone();
         persist_enterprise_org_unit_memberships(
-            &state.enterprise_org_unit_memberships_path,
+            &state.enterprise.org_unit_memberships_path,
             &registry,
         )
         .await?;
@@ -548,7 +553,7 @@ pub(super) async fn update_org_unit_access_grant(
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let grant_id = validate_enterprise_id("grant_id", &grant_id)?;
     let updated = {
-        let mut registry = state.enterprise_org_unit_access_grants.write().await;
+        let mut registry = state.enterprise.org_unit_access_grants.write().await;
         let Some(grant) = registry.values_mut().find(|grant| {
             grant.grant_id == grant_id
                 && org_unit_access_grant_tenant_matches(grant, &tenant_context)
@@ -562,7 +567,7 @@ pub(super) async fn update_org_unit_access_grant(
         grant.updated_at_ms = now_ms();
         let updated = grant.clone();
         persist_enterprise_org_unit_access_grants(
-            &state.enterprise_org_unit_access_grants_path,
+            &state.enterprise.org_unit_access_grants_path,
             &registry,
         )
         .await?;
@@ -610,7 +615,8 @@ async fn ensure_org_unit_for_tenant(
     unit_id: &str,
 ) -> Result<(), (StatusCode, Json<Value>)> {
     if state
-        .enterprise_org_units
+        .enterprise
+        .org_units
         .read()
         .await
         .values()

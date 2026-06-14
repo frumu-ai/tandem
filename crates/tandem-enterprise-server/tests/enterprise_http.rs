@@ -119,7 +119,7 @@ async fn enterprise_org_units_storage_threads_request_tenant() {
 #[tokio::test]
 async fn enterprise_org_units_create_persists_under_request_tenant() {
     let state = test_state().await;
-    let storage_path = state.enterprise_org_units_path.clone();
+    let storage_path = state.enterprise.org_units_path.clone();
     let app = build_router_with_extensions(state, &[apply_routes]);
     let req = Request::builder()
         .method("POST")
@@ -215,7 +215,7 @@ async fn enterprise_org_units_do_not_cross_tenant_boundaries() {
 #[tokio::test]
 async fn enterprise_org_unit_memberships_create_update_and_filter_by_tenant() {
     let state = test_state().await;
-    let storage_path = state.enterprise_org_unit_memberships_path.clone();
+    let storage_path = state.enterprise.org_unit_memberships_path.clone();
     let app = build_router_with_extensions(state, &[apply_routes]);
 
     let req = Request::builder()
@@ -360,7 +360,7 @@ async fn enterprise_org_unit_memberships_require_existing_unit() {
 #[tokio::test]
 async fn enterprise_org_unit_access_grants_project_effective_scoped_grants() {
     let state = test_state().await;
-    let storage_path = state.enterprise_org_unit_access_grants_path.clone();
+    let storage_path = state.enterprise.org_unit_access_grants_path.clone();
     let app = build_router_with_extensions(state, &[apply_routes]);
 
     let req = Request::builder()
@@ -556,7 +556,7 @@ async fn enterprise_readiness_returns_onboarding_counts_without_mutation() {
         .is_some_and(|checks| checks
             .iter()
             .any(|check| check.get("id").and_then(Value::as_str) == Some("governance_skeleton"))));
-    assert_eq!(state.enterprise_org_units.read().await.len(), 0);
+    assert_eq!(state.enterprise.org_units.read().await.len(), 0);
 }
 
 #[tokio::test]
@@ -586,8 +586,8 @@ async fn enterprise_readiness_rejects_hosted_member_without_admin_role() {
 #[tokio::test]
 async fn enterprise_onboarding_preview_returns_operations_and_does_not_persist() {
     let state = test_state().await;
-    let org_units_path = state.enterprise_org_units_path.clone();
-    let connectors_path = state.enterprise_connectors_path.clone();
+    let org_units_path = state.enterprise.org_units_path.clone();
+    let connectors_path = state.enterprise.connectors_path.clone();
     let app = build_router_with_extensions(state.clone(), &[apply_routes]);
 
     let req = Request::builder()
@@ -665,8 +665,8 @@ async fn enterprise_onboarding_preview_returns_operations_and_does_not_persist()
                 == Some("source_binding")
                 && op.get("status").and_then(Value::as_str) == Some("would_create"))
         ));
-    assert_eq!(state.enterprise_org_units.read().await.len(), 0);
-    assert_eq!(state.enterprise_connectors.read().await.len(), 0);
+    assert_eq!(state.enterprise.org_units.read().await.len(), 0);
+    assert_eq!(state.enterprise.connectors.read().await.len(), 0);
     assert!(!org_units_path.exists());
     assert!(!connectors_path.exists());
 }
@@ -727,8 +727,8 @@ async fn enterprise_onboarding_preview_blocks_raw_credentials_and_destructive_ac
         .iter()
         .any(|error| error.get("code").and_then(Value::as_str)
             == Some("ENTERPRISE_PREVIEW_DESTRUCTIVE_ACTION_NOT_ALLOWED")));
-    assert_eq!(state.enterprise_org_units.read().await.len(), 0);
-    assert_eq!(state.enterprise_connectors.read().await.len(), 0);
+    assert_eq!(state.enterprise.org_units.read().await.len(), 0);
+    assert_eq!(state.enterprise.connectors.read().await.len(), 0);
 }
 
 #[tokio::test]
@@ -802,7 +802,7 @@ async fn enterprise_connectors_reject_hosted_member_without_admin_role() {
 #[tokio::test]
 async fn enterprise_connectors_create_and_update_persist_under_request_tenant() {
     let state = test_state().await;
-    let storage_path = state.enterprise_connectors_path.clone();
+    let storage_path = state.enterprise.connectors_path.clone();
     let mut rx = state.event_bus.subscribe();
     let app = build_router_with_extensions(state, &[apply_routes]);
 
@@ -1139,7 +1139,7 @@ async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
     .await
     .expect("seed source object");
 
-    state.enterprise_ingestion_jobs.write().await.insert(
+    state.enterprise.ingestion_jobs.write().await.insert(
         "acme::finance::local::job-impact".to_string(),
         tandem_enterprise_contract::IngestionJob {
             job_id: "job-impact".to_string(),
@@ -1153,7 +1153,7 @@ async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
             quarantine_id: None,
         },
     );
-    state.enterprise_ingestion_quarantines.write().await.insert(
+    state.enterprise.ingestion_quarantines.write().await.insert(
         "acme::finance::local::quarantine-impact".to_string(),
         tandem_enterprise_contract::IngestionQuarantine {
             quarantine_id: "quarantine-impact".to_string(),
@@ -1253,7 +1253,7 @@ async fn enterprise_connector_impact_summarizes_revoke_rotate_scope() {
 #[tokio::test]
 async fn enterprise_source_bindings_create_and_update_persist_under_request_tenant() {
     let state = test_state().await;
-    let storage_path = state.enterprise_source_bindings_path.clone();
+    let storage_path = state.enterprise.source_bindings_path.clone();
     let mut rx = state.event_bus.subscribe();
     let app = build_router_with_extensions(state.clone(), &[apply_routes]);
     let req = Request::builder()

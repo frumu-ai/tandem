@@ -1554,7 +1554,7 @@ async fn resolve_memory_import_source_binding(
     {
         return Ok(Some(default_local_manual_source_binding(tenant_context)));
     }
-    let registry = state.enterprise_source_bindings.read().await;
+    let registry = state.enterprise.source_bindings.read().await;
     let Some(binding) = registry.values().find(|binding| {
         binding.binding_id == source_binding_id && binding.tenant_matches(tenant_context)
     }) else {
@@ -1569,7 +1569,7 @@ async fn resolve_memory_import_source_binding(
             "source binding does not allow memory import indexing",
         ));
     }
-    let registry = state.enterprise_connectors.read().await;
+    let registry = state.enterprise.connectors.read().await;
     let Some(connector) = registry.values().find(|connector| {
         connector.connector_id == binding.connector_id && connector.tenant_matches(tenant_context)
     }) else {
@@ -1627,21 +1627,21 @@ async fn record_enterprise_ingestion_job(
     state: &AppState,
     job: IngestionJob,
 ) -> Result<(), std::io::Error> {
-    let mut registry = state.enterprise_ingestion_jobs.write().await;
+    let mut registry = state.enterprise.ingestion_jobs.write().await;
     let key = enterprise_ingestion_job_key(&job);
     registry.insert(key, job);
-    persist_enterprise_ingestion_jobs(&state.enterprise_ingestion_jobs_path, &registry).await
+    persist_enterprise_ingestion_jobs(&state.enterprise.ingestion_jobs_path, &registry).await
 }
 
 async fn record_enterprise_ingestion_quarantine(
     state: &AppState,
     quarantine: IngestionQuarantine,
 ) -> Result<(), std::io::Error> {
-    let mut registry = state.enterprise_ingestion_quarantines.write().await;
+    let mut registry = state.enterprise.ingestion_quarantines.write().await;
     let key = enterprise_ingestion_quarantine_key(&quarantine);
     registry.insert(key, quarantine);
     persist_enterprise_ingestion_quarantines(
-        &state.enterprise_ingestion_quarantines_path,
+        &state.enterprise.ingestion_quarantines_path,
         &registry,
     )
     .await

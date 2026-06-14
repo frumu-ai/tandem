@@ -11,19 +11,19 @@ use tandem_enterprise_contract::{
 async fn seed_acme_authority(state: &AppState) -> fixtures::AcmeAuthorityFixture {
     let fixture = fixtures::acme_company();
     {
-        let mut units = state.enterprise_org_units.write().await;
+        let mut units = state.enterprise.org_units.write().await;
         for unit in &fixture.graph.units {
             units.insert(unit_key(unit), unit.clone());
         }
     }
     {
-        let mut memberships = state.enterprise_org_unit_memberships.write().await;
+        let mut memberships = state.enterprise.org_unit_memberships.write().await;
         for membership in &fixture.graph.memberships {
             memberships.insert(membership_key(membership), membership.clone());
         }
     }
     {
-        let mut grants = state.enterprise_org_unit_access_grants.write().await;
+        let mut grants = state.enterprise.org_unit_access_grants.write().await;
         for grant in &fixture.graph.unit_access_grants {
             grants.insert(grant_key(grant), grant.clone());
         }

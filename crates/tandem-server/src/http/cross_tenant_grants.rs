@@ -15,7 +15,8 @@ pub(crate) async fn enrich_verified_context_with_inbound_cross_tenant_grants(
 
     let now = crate::now_ms();
     let records = state
-        .enterprise_cross_tenant_grants
+        .enterprise
+        .cross_tenant_grants
         .read()
         .await
         .values()
@@ -209,7 +210,7 @@ mod tests {
         );
         let header = CrossTenantGrantHeader::ed25519("grant-key");
         let signature = sign_test_grant(&header, &claims, &signing_key);
-        state.enterprise_cross_tenant_grants.write().await.insert(
+        state.enterprise.cross_tenant_grants.write().await.insert(
             "org-a::workspace-a::local::grant-finance".to_string(),
             CrossTenantGrantRecord::active(CrossTenantGrant::new(header, claims, signature), 1),
         );
