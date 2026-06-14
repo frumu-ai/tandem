@@ -139,15 +139,15 @@ pub async fn test_state() -> AppState {
     state.memory_db_path = tandem_home.join("memory.sqlite");
     state.memory_audit_path = root.join("memory").join("audit.log.jsonl");
     state.protected_audit_path = root.join("audit").join("protected_events.log.jsonl");
-    state.enterprise_org_units_path = root.join("enterprise_org_units.json");
-    state.enterprise_org_unit_memberships_path = root.join("enterprise_org_unit_memberships.json");
-    state.enterprise_org_unit_access_grants_path =
+    state.enterprise.org_units_path = root.join("enterprise_org_units.json");
+    state.enterprise.org_unit_memberships_path = root.join("enterprise_org_unit_memberships.json");
+    state.enterprise.org_unit_access_grants_path =
         root.join("enterprise_org_unit_access_grants.json");
-    state.enterprise_cross_tenant_grants_path = root.join("enterprise_cross_tenant_grants.json");
-    state.enterprise_source_bindings_path = root.join("enterprise_source_bindings.json");
-    state.enterprise_connectors_path = root.join("enterprise_connectors.json");
-    state.enterprise_ingestion_jobs_path = root.join("enterprise_ingestion_jobs.json");
-    state.enterprise_ingestion_quarantines_path =
+    state.enterprise.cross_tenant_grants_path = root.join("enterprise_cross_tenant_grants.json");
+    state.enterprise.source_bindings_path = root.join("enterprise_source_bindings.json");
+    state.enterprise.connectors_path = root.join("enterprise_connectors.json");
+    state.enterprise.ingestion_jobs_path = root.join("enterprise_ingestion_jobs.json");
+    state.enterprise.ingestion_quarantines_path =
         root.join("enterprise_ingestion_quarantines.json");
     state.routines_path = root.join("routines.json");
     state.routine_history_path = root.join("routine_history.json");

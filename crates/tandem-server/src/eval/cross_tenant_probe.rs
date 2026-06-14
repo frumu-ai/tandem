@@ -137,7 +137,8 @@ impl Tool for EvalCrossTenantGrantProbeTool {
         }
 
         self.state
-            .enterprise_cross_tenant_grants
+            .enterprise
+            .cross_tenant_grants
             .write()
             .await
             .insert(format!("eval::{grant_id}"), record.clone());
@@ -330,6 +331,7 @@ fn verified_audience_context(
         issued_at_ms: now_ms,
         expires_at_ms: now_ms + 86_400_000,
         assertion_id: "ct14-assertion".to_string(),
+        assertion_key_id: None,
     }
 }
 

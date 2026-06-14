@@ -87,7 +87,8 @@ async fn list_issued_cross_tenant_grants(
 ) -> EnterpriseResult<EnterpriseCrossTenantGrantsResponse> {
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let mut grants = state
-        .enterprise_cross_tenant_grants
+        .enterprise
+        .cross_tenant_grants
         .read()
         .await
         .values()
@@ -116,7 +117,8 @@ async fn list_inbound_cross_tenant_grants(
 ) -> EnterpriseResult<EnterpriseCrossTenantGrantsResponse> {
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let mut grants = state
-        .enterprise_cross_tenant_grants
+        .enterprise
+        .cross_tenant_grants
         .read()
         .await
         .values()
@@ -199,12 +201,12 @@ async fn issue_cross_tenant_grant(
         CrossTenantGrantRecord::active(CrossTenantGrant::new(header, claims, signature), now);
     let storage_key = cross_tenant_grant_key(&record);
     {
-        let mut registry = state.enterprise_cross_tenant_grants.write().await;
+        let mut registry = state.enterprise.cross_tenant_grants.write().await;
         if registry.contains_key(&storage_key) {
             return Err(bad_request("ENTERPRISE_CROSS_TENANT_GRANT_ALREADY_EXISTS"));
         }
         registry.insert(storage_key, record.clone());
-        persist_cross_tenant_grants(&state.enterprise_cross_tenant_grants_path, &registry).await?;
+        persist_cross_tenant_grants(&state.enterprise.cross_tenant_grants_path, &registry).await?;
     }
     append_cross_tenant_grant_audit(
         &state,
@@ -233,7 +235,7 @@ async fn revoke_cross_tenant_grant(
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let grant_id = validate_enterprise_id("cross_tenant_grant_id", &grant_id)?;
     let updated = {
-        let mut registry = state.enterprise_cross_tenant_grants.write().await;
+        let mut registry = state.enterprise.cross_tenant_grants.write().await;
         let Some(record) = registry.values_mut().find(|record| {
             record.grant.claims.grant_id == grant_id
                 && record
@@ -254,7 +256,7 @@ async fn revoke_cross_tenant_grant(
             input.source_audit_event_id,
         );
         let updated = record.clone();
-        persist_cross_tenant_grants(&state.enterprise_cross_tenant_grants_path, &registry).await?;
+        persist_cross_tenant_grants(&state.enterprise.cross_tenant_grants_path, &registry).await?;
         updated
     };
     append_cross_tenant_grant_audit(

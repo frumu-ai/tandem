@@ -166,6 +166,7 @@ fn verified_reviewer_context(
         issued_at_ms: 1_000,
         expires_at_ms: 9_999_999_999_999,
         assertion_id: "assertion-reviewer".to_string(),
+        assertion_key_id: None,
     }
 }
 

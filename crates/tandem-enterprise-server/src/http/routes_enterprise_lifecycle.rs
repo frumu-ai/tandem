@@ -102,7 +102,8 @@ pub(super) async fn list_ingestion_jobs(
         .as_deref()
         .and_then(|value| validate_enterprise_id("connector_id", value).ok());
     let mut ingestion_jobs: Vec<_> = state
-        .enterprise_ingestion_jobs
+        .enterprise
+        .ingestion_jobs
         .read()
         .await
         .values()
@@ -151,7 +152,8 @@ pub(super) async fn list_ingestion_quarantines(
         .as_deref()
         .and_then(|value| validate_enterprise_id("connector_id", value).ok());
     let mut quarantines: Vec<_> = state
-        .enterprise_ingestion_quarantines
+        .enterprise
+        .ingestion_quarantines
         .read()
         .await
         .values()
@@ -197,7 +199,7 @@ pub(super) async fn review_ingestion_quarantine(
         .clone()
         .unwrap_or_else(|| request_principal.source.clone());
     let reviewed = {
-        let mut registry = state.enterprise_ingestion_quarantines.write().await;
+        let mut registry = state.enterprise.ingestion_quarantines.write().await;
         let Some(quarantine) = registry.values_mut().find(|quarantine| {
             quarantine.quarantine_id == quarantine_id
                 && ingestion_quarantine_tenant_matches(quarantine, &tenant_context)
@@ -209,7 +211,7 @@ pub(super) async fn review_ingestion_quarantine(
         quarantine.reviewed_at_ms = Some(now_ms());
         let reviewed = quarantine.clone();
         persist_enterprise_ingestion_quarantines(
-            &state.enterprise_ingestion_quarantines_path,
+            &state.enterprise.ingestion_quarantines_path,
             &registry,
         )
         .await?;
@@ -425,7 +427,7 @@ async fn update_ingestion_job_after_quarantine_review(
     tenant_context: &TenantContext,
     quarantine: &IngestionQuarantine,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    let mut registry = state.enterprise_ingestion_jobs.write().await;
+    let mut registry = state.enterprise.ingestion_jobs.write().await;
     if let Some(job) = registry.values_mut().find(|job| {
         ingestion_job_tenant_matches(job, tenant_context)
             && job.quarantine_id.as_deref() == Some(quarantine.quarantine_id.as_str())
@@ -437,7 +439,7 @@ async fn update_ingestion_job_after_quarantine_review(
             None => job.state,
         };
         job.finished_at_ms = Some(now_ms());
-        persist_enterprise_ingestion_jobs(&state.enterprise_ingestion_jobs_path, &registry).await?;
+        persist_enterprise_ingestion_jobs(&state.enterprise.ingestion_jobs_path, &registry).await?;
     }
     Ok(())
 }

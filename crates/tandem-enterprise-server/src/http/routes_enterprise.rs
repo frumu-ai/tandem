@@ -263,7 +263,8 @@ async fn list_source_bindings(
     Extension(request_principal): Extension<RequestPrincipal>,
 ) -> Json<EnterpriseSourceBindingsResponse> {
     let mut source_bindings: Vec<_> = state
-        .enterprise_source_bindings
+        .enterprise
+        .source_bindings
         .read()
         .await
         .values()
@@ -326,9 +327,9 @@ async fn create_source_binding(
     }
 
     {
-        let mut registry = state.enterprise_source_bindings.write().await;
+        let mut registry = state.enterprise.source_bindings.write().await;
         registry.insert(enterprise_source_binding_key(&binding), binding);
-        persist_enterprise_source_bindings(&state.enterprise_source_bindings_path, &registry)
+        persist_enterprise_source_bindings(&state.enterprise.source_bindings_path, &registry)
             .await?;
     }
     emit_source_binding_cache_invalidation_required(
@@ -353,7 +354,8 @@ async fn list_connectors(
     Extension(request_principal): Extension<RequestPrincipal>,
 ) -> Json<EnterpriseConnectorsResponse> {
     let mut connectors: Vec<_> = state
-        .enterprise_connectors
+        .enterprise
+        .connectors
         .read()
         .await
         .values()
@@ -421,9 +423,9 @@ async fn create_connector(
     connector.display_name = normalized_optional_label(input.display_name);
 
     {
-        let mut registry = state.enterprise_connectors.write().await;
+        let mut registry = state.enterprise.connectors.write().await;
         registry.insert(enterprise_connector_key(&connector), connector);
-        persist_enterprise_connectors(&state.enterprise_connectors_path, &registry).await?;
+        persist_enterprise_connectors(&state.enterprise.connectors_path, &registry).await?;
     }
     emit_connector_invalidation_required(
         &state,
@@ -450,7 +452,7 @@ async fn update_connector(
     let connector_id = validate_enterprise_id("connector_id", &connector_id)?;
 
     let updated_connector = {
-        let mut registry = state.enterprise_connectors.write().await;
+        let mut registry = state.enterprise.connectors.write().await;
         let Some(connector) = registry.values_mut().find(|connector| {
             connector.connector_id == connector_id && connector.tenant_matches(&tenant_context)
         }) else {
@@ -464,7 +466,7 @@ async fn update_connector(
         }
         connector.updated_at_ms = now_ms();
         let updated_connector = connector.clone();
-        persist_enterprise_connectors(&state.enterprise_connectors_path, &registry).await?;
+        persist_enterprise_connectors(&state.enterprise.connectors_path, &registry).await?;
         updated_connector
     };
     emit_connector_invalidation_required(
@@ -505,7 +507,7 @@ async fn create_connector_credential_ref(
     }
 
     let updated_connector = {
-        let mut registry = state.enterprise_connectors.write().await;
+        let mut registry = state.enterprise.connectors.write().await;
         let Some(connector) = registry.values_mut().find(|connector| {
             connector.connector_id == connector_id && connector.tenant_matches(&tenant_context)
         }) else {
@@ -544,7 +546,7 @@ async fn create_connector_credential_ref(
         connector.credential_refs.push(credential_ref);
         connector.updated_at_ms = now;
         let updated_connector = connector.clone();
-        persist_enterprise_connectors(&state.enterprise_connectors_path, &registry).await?;
+        persist_enterprise_connectors(&state.enterprise.connectors_path, &registry).await?;
         updated_connector
     };
     emit_connector_invalidation_required(
@@ -583,7 +585,7 @@ async fn rotate_connector_credential_ref(
     let secret_ref = normalize_secret_ref_for_tenant(&input.secret_ref, &tenant_context)?;
 
     let updated_connector = {
-        let mut registry = state.enterprise_connectors.write().await;
+        let mut registry = state.enterprise.connectors.write().await;
         let Some(connector) = registry.values_mut().find(|connector| {
             connector.connector_id == connector_id && connector.tenant_matches(&tenant_context)
         }) else {
@@ -605,7 +607,7 @@ async fn rotate_connector_credential_ref(
             .map_err(|_| bad_request("ENTERPRISE_CONNECTOR_CREDENTIAL_TENANT_MISMATCH"))?;
         connector.updated_at_ms = now;
         let updated_connector = connector.clone();
-        persist_enterprise_connectors(&state.enterprise_connectors_path, &registry).await?;
+        persist_enterprise_connectors(&state.enterprise.connectors_path, &registry).await?;
         updated_connector
     };
     emit_connector_invalidation_required(
@@ -640,7 +642,7 @@ async fn update_source_binding(
     let binding_id = validate_enterprise_id("binding_id", &binding_id)?;
 
     let updated_binding = {
-        let mut registry = state.enterprise_source_bindings.write().await;
+        let mut registry = state.enterprise.source_bindings.write().await;
         let Some(binding) = registry.values_mut().find(|binding| {
             binding.binding_id == binding_id && binding.tenant_matches(&tenant_context)
         }) else {
@@ -663,7 +665,7 @@ async fn update_source_binding(
         }
         binding.updated_at_ms = now_ms();
         let updated_binding = binding.clone();
-        persist_enterprise_source_bindings(&state.enterprise_source_bindings_path, &registry)
+        persist_enterprise_source_bindings(&state.enterprise.source_bindings_path, &registry)
             .await?;
         updated_binding
     };
@@ -747,7 +749,8 @@ async fn invalidate_response_cache_for_connector(
     connector_id: &str,
 ) -> Result<usize, (StatusCode, Json<Value>)> {
     let binding_ids: Vec<String> = state
-        .enterprise_source_bindings
+        .enterprise
+        .source_bindings
         .read()
         .await
         .values()
@@ -910,7 +913,8 @@ pub(super) async fn connector_for_tenant(
     connector_id: &str,
 ) -> Result<ConnectorInstance, (StatusCode, Json<Value>)> {
     state
-        .enterprise_connectors
+        .enterprise
+        .connectors
         .read()
         .await
         .values()
@@ -927,7 +931,8 @@ pub(super) async fn source_binding_for_tenant(
     binding_id: &str,
 ) -> Result<SourceBinding, (StatusCode, Json<Value>)> {
     state
-        .enterprise_source_bindings
+        .enterprise
+        .source_bindings
         .read()
         .await
         .values()
@@ -941,7 +946,7 @@ async fn ensure_connector_exists_for_tenant(
     tenant_context: &TenantContext,
     connector_id: &str,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    let registry = state.enterprise_connectors.read().await;
+    let registry = state.enterprise.connectors.read().await;
     if registry.values().any(|connector| {
         connector.connector_id == connector_id && connector.tenant_matches(tenant_context)
     }) {
@@ -957,7 +962,8 @@ async fn build_connector_impact(
     connector_id: &str,
 ) -> Result<ConnectorImpact, (StatusCode, Json<Value>)> {
     let mut affected_bindings: Vec<_> = state
-        .enterprise_source_bindings
+        .enterprise
+        .source_bindings
         .read()
         .await
         .values()
@@ -985,7 +991,8 @@ async fn build_connector_impact(
     });
 
     let mut affected_ingestion_jobs: Vec<_> = state
-        .enterprise_ingestion_jobs
+        .enterprise
+        .ingestion_jobs
         .read()
         .await
         .values()
@@ -1002,7 +1009,8 @@ async fn build_connector_impact(
     });
 
     let mut affected_quarantines: Vec<_> = state
-        .enterprise_ingestion_quarantines
+        .enterprise
+        .ingestion_quarantines
         .read()
         .await
         .values()
@@ -1086,7 +1094,8 @@ async fn ensure_source_binding_for_tenant(
     binding_id: &str,
 ) -> Result<SourceBinding, (StatusCode, Json<Value>)> {
     state
-        .enterprise_source_bindings
+        .enterprise
+        .source_bindings
         .read()
         .await
         .values()
@@ -1477,6 +1486,7 @@ mod tests {
             issued_at_ms: 1_000,
             expires_at_ms: 2_000,
             assertion_id: "assertion-a".to_string(),
+            assertion_key_id: None,
         }
     }
 

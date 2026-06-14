@@ -149,14 +149,16 @@ async fn enrich_verified_context_with_org_unit_grants(
         return;
     }
     let memberships = state
-        .enterprise_org_unit_memberships
+        .enterprise
+        .org_unit_memberships
         .read()
         .await
         .values()
         .cloned()
         .collect::<Vec<_>>();
     let access_grants = state
-        .enterprise_org_unit_access_grants
+        .enterprise
+        .org_unit_access_grants
         .read()
         .await
         .values()
@@ -618,6 +620,11 @@ struct TenantContextAssertionVerifier {
     max_future_skew_ms: u64,
 }
 
+struct SignedTenantContextAssertion {
+    claims: TenantContextAssertionClaims,
+    key_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContextAssertionPublicKey {
     public_key: [u8; 32],
@@ -647,6 +654,52 @@ impl ContextAssertionPublicKey {
     }
 }
 
+fn context_assertion_keyring_summary(
+    verifier: &TenantContextAssertionVerifier,
+) -> Vec<serde_json::Value> {
+    let mut rows = verifier
+        .public_keys_by_id
+        .iter()
+        .map(|(kid, key)| {
+            json!({
+                "kid": kid,
+                "status": key.status.as_deref().unwrap_or("unspecified"),
+                "purpose": key.purpose.map(|purpose| purpose.as_str()),
+                "not_before_ms": key.not_before_ms,
+                "not_after_ms": key.not_after_ms,
+                "organization_id": key.organization_id.as_deref(),
+                "deployment_id": key.deployment_id.as_deref(),
+                "allowed_audiences": key.allowed_audiences.clone(),
+                "allowed_resource_scope_prefixes": key.allowed_resource_scope_prefixes.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some(key) = verifier.legacy_public_key.as_ref() {
+        rows.push(json!({
+            "kid": "legacy",
+            "status": key.status.as_deref().unwrap_or("unspecified"),
+            "purpose": key.purpose.map(|purpose| purpose.as_str()),
+            "not_before_ms": key.not_before_ms,
+            "not_after_ms": key.not_after_ms,
+            "legacy": true,
+        }));
+    }
+    rows
+}
+
+fn log_context_assertion_keyring_summary_once(verifier: &TenantContextAssertionVerifier) {
+    static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    let _ = LOGGED.get_or_init(|| {
+        let keyring = context_assertion_keyring_summary(verifier);
+        tracing::info!(
+            key_count = keyring.len(),
+            max_future_skew_ms = verifier.max_future_skew_ms,
+            keys = ?keyring,
+            "loaded context assertion verification keys"
+        );
+    });
+}
+
 impl TenantContextAssertionVerifier {
     fn from_env() -> Result<Self, TenantContextIngressError> {
         let public_keys_by_id = read_context_public_keyring_from_env()?;
@@ -665,13 +718,15 @@ impl TenantContextAssertionVerifier {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "tandem-runtime".to_string());
 
-        Ok(Self {
+        let verifier = Self {
             public_keys_by_id,
             legacy_public_key,
             issuer,
             audience,
             max_future_skew_ms: resolve_context_assertion_max_future_skew_ms(),
-        })
+        };
+        log_context_assertion_keyring_summary_once(&verifier);
+        Ok(verifier)
     }
 
     fn verify(&self, assertion: &str) -> Result<VerifiedTenantContext, TenantContextIngressError> {
@@ -683,9 +738,9 @@ impl TenantContextAssertionVerifier {
         assertion: &str,
         now_ms: u64,
     ) -> Result<VerifiedTenantContext, TenantContextIngressError> {
-        let claims = self.verify_signed_claims_at(assertion, now_ms)?;
-        self.validate_claim_time(&claims, now_ms)?;
-        Ok(claims.into())
+        let signed = self.verify_signed_claims_at(assertion, now_ms)?;
+        self.validate_claim_time(&signed.claims, now_ms)?;
+        Ok(VerifiedTenantContext::from(signed.claims).with_assertion_key_id(signed.key_id))
     }
 
     fn denial_for_error(
@@ -697,7 +752,9 @@ impl TenantContextAssertionVerifier {
             return TenantContextIngressDenial::untrusted(reason);
         }
         self.verify_signed_claims_at(assertion, current_unix_ms())
-            .map(VerifiedTenantContext::from)
+            .map(|signed| {
+                VerifiedTenantContext::from(signed.claims).with_assertion_key_id(signed.key_id)
+            })
             .map(|verified| TenantContextIngressDenial::verified(reason, &verified))
             .unwrap_or_else(|_| TenantContextIngressDenial::untrusted(reason))
     }
@@ -706,7 +763,7 @@ impl TenantContextAssertionVerifier {
         &self,
         assertion: &str,
         now_ms: u64,
-    ) -> Result<TenantContextAssertionClaims, TenantContextIngressError> {
+    ) -> Result<SignedTenantContextAssertion, TenantContextIngressError> {
         let assertion = assertion.trim();
         let mut parts = assertion.split('.');
         let encoded_header = parts
@@ -737,8 +794,8 @@ impl TenantContextAssertionVerifier {
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
         validate_context_assertion_header(&header)?;
 
-        let key = self
-            .key_for_kid(&header.kid)
+        let (key, key_id) = self
+            .key_for_header_kid(&header.kid)
             .ok_or(TenantContextIngressError::ContextAssertionUntrusted)?;
         let verifying_key = VerifyingKey::from_bytes(&key.public_key)
             .map_err(|_| TenantContextIngressError::ContextAssertionKeyNotConfigured)?;
@@ -752,13 +809,18 @@ impl TenantContextAssertionVerifier {
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
         self.validate_claim_identity(&claims)?;
         validate_context_assertion_key_metadata(key, &claims, now_ms)?;
-        Ok(claims)
+        Ok(SignedTenantContextAssertion { claims, key_id })
     }
 
-    fn key_for_kid(&self, kid: &str) -> Option<&ContextAssertionPublicKey> {
+    fn key_for_header_kid(&self, kid: &str) -> Option<(&ContextAssertionPublicKey, String)> {
         self.public_keys_by_id
             .get(kid)
-            .or(self.legacy_public_key.as_ref())
+            .map(|key| (key, kid.to_string()))
+            .or_else(|| {
+                self.legacy_public_key
+                    .as_ref()
+                    .map(|key| (key, "legacy".to_string()))
+            })
     }
 
     fn validate_claim_identity(

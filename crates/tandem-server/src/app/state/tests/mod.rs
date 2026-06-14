@@ -516,6 +516,7 @@ fn test_verified_context(
         issued_at_ms: 1_000,
         expires_at_ms: 999_999_999_999,
         assertion_id: format!("assertion-{project_id}"),
+        assertion_key_id: None,
     }
 }
 

@@ -221,7 +221,8 @@ async fn get_enterprise_readiness(
     require_enterprise_read_access(&request_principal, verified_tenant_context.as_deref())?;
 
     let org_units = state
-        .enterprise_org_units
+        .enterprise
+        .org_units
         .read()
         .await
         .values()
@@ -233,7 +234,8 @@ async fn get_enterprise_readiness(
         .cloned()
         .collect::<Vec<_>>();
     let memberships = state
-        .enterprise_org_unit_memberships
+        .enterprise
+        .org_unit_memberships
         .read()
         .await
         .values()
@@ -245,7 +247,8 @@ async fn get_enterprise_readiness(
         .cloned()
         .collect::<Vec<_>>();
     let grants = state
-        .enterprise_org_unit_access_grants
+        .enterprise
+        .org_unit_access_grants
         .read()
         .await
         .values()
@@ -257,7 +260,8 @@ async fn get_enterprise_readiness(
         .cloned()
         .collect::<Vec<_>>();
     let connectors = state
-        .enterprise_connectors
+        .enterprise
+        .connectors
         .read()
         .await
         .values()
@@ -265,7 +269,8 @@ async fn get_enterprise_readiness(
         .cloned()
         .collect::<Vec<_>>();
     let source_bindings = state
-        .enterprise_source_bindings
+        .enterprise
+        .source_bindings
         .read()
         .await
         .values()
@@ -273,7 +278,8 @@ async fn get_enterprise_readiness(
         .cloned()
         .collect::<Vec<_>>();
     let pending_quarantines = state
-        .enterprise_ingestion_quarantines
+        .enterprise
+        .ingestion_quarantines
         .read()
         .await
         .values()
@@ -970,7 +976,8 @@ async fn enterprise_org_unit_exists(
     unit_id: &str,
 ) -> bool {
     state
-        .enterprise_org_units
+        .enterprise
+        .org_units
         .read()
         .await
         .values()
@@ -989,7 +996,8 @@ async fn enterprise_membership_exists(
     membership_id: &str,
 ) -> bool {
     state
-        .enterprise_org_unit_memberships
+        .enterprise
+        .org_unit_memberships
         .read()
         .await
         .values()
@@ -1007,7 +1015,8 @@ async fn enterprise_grant_exists(
     grant_id: &str,
 ) -> bool {
     state
-        .enterprise_org_unit_access_grants
+        .enterprise
+        .org_unit_access_grants
         .read()
         .await
         .values()
@@ -1025,7 +1034,8 @@ async fn connector_exists_for_tenant(
     connector_id: &str,
 ) -> bool {
     state
-        .enterprise_connectors
+        .enterprise
+        .connectors
         .read()
         .await
         .values()
@@ -1041,7 +1051,8 @@ async fn connector_credential_exists_for_tenant(
     credential_id: &str,
 ) -> bool {
     state
-        .enterprise_connectors
+        .enterprise
+        .connectors
         .read()
         .await
         .values()
@@ -1062,7 +1073,8 @@ async fn source_binding_exists_for_tenant(
     binding_id: &str,
 ) -> bool {
     state
-        .enterprise_source_bindings
+        .enterprise
+        .source_bindings
         .read()
         .await
         .values()

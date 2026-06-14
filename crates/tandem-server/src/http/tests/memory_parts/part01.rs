@@ -99,7 +99,7 @@ async fn memory_import_rejects_disabled_source_binding() {
     )
     .with_state(tandem_enterprise_contract::SourceBindingState::Disabled, 2);
     state
-        .enterprise_source_bindings
+        .enterprise.source_bindings
         .write()
         .await
         .insert("local::local::local::disabled-binding".to_string(), binding);
@@ -167,11 +167,11 @@ async fn memory_import_rejects_inactive_source_binding_connector() {
         1,
     );
     state
-        .enterprise_connectors
+        .enterprise.connectors
         .write()
         .await
         .insert("local::local::local::manual_upload".to_string(), connector);
-    state.enterprise_source_bindings.write().await.insert(
+    state.enterprise.source_bindings.write().await.insert(
         "local::local::local::paused-connector-binding".to_string(),
         binding,
     );
@@ -270,7 +270,7 @@ async fn memory_import_can_use_default_local_manual_source_binding_projection() 
 #[tokio::test]
 async fn memory_import_records_enterprise_ingestion_job_audit() {
     let state = test_state().await;
-    let storage_path = state.enterprise_ingestion_jobs_path.clone();
+    let storage_path = state.enterprise.ingestion_jobs_path.clone();
     let import_root = state
         .memory_audit_path
         .parent()
@@ -307,12 +307,12 @@ async fn memory_import_records_enterprise_ingestion_job_audit() {
         1,
     );
     state
-        .enterprise_connectors
+        .enterprise.connectors
         .write()
         .await
         .insert("local::local::local::manual_upload".to_string(), connector);
     state
-        .enterprise_source_bindings
+        .enterprise.source_bindings
         .write()
         .await
         .insert("local::local::local::audited-binding".to_string(), binding);
@@ -443,12 +443,12 @@ async fn memory_import_quarantines_review_required_source_binding() {
         max_depth: None,
     });
     state
-        .enterprise_connectors
+        .enterprise.connectors
         .write()
         .await
         .insert("local::local::local::manual_upload".to_string(), connector);
     state
-        .enterprise_source_bindings
+        .enterprise.source_bindings
         .write()
         .await
         .insert("local::local::local::review-binding".to_string(), binding);

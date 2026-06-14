@@ -73,6 +73,7 @@ mod tests {
             issued_at_ms: 100,
             expires_at_ms: 200,
             assertion_id: "assertion-1".to_string(),
+            assertion_key_id: None,
         };
 
         assert!(!verified.is_expired_at(199));
@@ -636,6 +637,7 @@ mod tests {
             issued_at_ms: 1_000,
             expires_at_ms: 2_000,
             assertion_id: "assertion-123".to_string(),
+            assertion_key_id: Some("ctx-key-1".to_string()),
         };
 
         let metadata = AssertionMetadata::from(&verified);
@@ -643,6 +645,7 @@ mod tests {
         assert_eq!(metadata.issuer, "tandem-web");
         assert_eq!(metadata.audience, "tandem-runtime");
         assert_eq!(metadata.assertion_id, "assertion-123");
+        assert_eq!(metadata.key_id.as_deref(), Some("ctx-key-1"));
         assert_eq!(metadata.purpose, Some(SigningKeyPurpose::ContextAssertion));
         assert!(!metadata.is_expired_at(1_999));
         assert!(metadata.is_expired_at(2_000));
