@@ -50,3 +50,38 @@ The v1 surface remains `telegram`, `discord`, and `slack` in config under `chann
   - required for startup: `bot_token`, `channel_id`
   - optional: `allowed_users`, `mention_only`, `model_provider_id`, `model_id`, `security_profile`
   - env fallback: `TANDEM_SLACK_BOT_TOKEN`, `TANDEM_SLACK_CHANNEL_ID`
+
+## Public demo security profile
+
+The older public-channel security-profile board is superseded by the shipped
+`security_profile: "public_demo"` runtime profile. Use it for open or lightly
+trusted channel demos where the bot can answer, keep public channel-scoped memory,
+and manage that user's demo session without exposing operator controls.
+
+`public_demo` enforces a narrow command allowlist:
+
+- Available: `/new`, `/sessions`, `/resume`, `/rename`, `/status`, `/run`, `/cancel`, `/memory`, and `/help`.
+- Disabled: approval and gate control (`/answer`, `/approve`, `/deny`, `/pending`, `/rework`), internal queue visibility (`/todos`, `/requests`), model/provider changes, workspace/file access, MCP connector controls, tool-scope overrides, pack install/inspection, runtime config, workflow planning, automation control, and run administration.
+
+The profile also constrains new channel sessions to public/channel-scoped memory
+and web search. It omits workspace directories, shell/file permissions, browser
+controls, MCP tools, and normal trusted project/global memory. `/help` and topic
+help such as `/help workspace`, `/help mcp`, and `/help config` explain that those
+capabilities exist for trusted/operator channels but are intentionally blocked in
+the public integration.
+
+Example:
+
+```json
+{
+  "channels": {
+    "slack": {
+      "bot_token": "...",
+      "channel_id": "C0123456789",
+      "allowed_users": ["*"],
+      "mention_only": true,
+      "security_profile": "public_demo"
+    }
+  }
+}
+```
