@@ -7,6 +7,7 @@ mod delegation;
 pub use delegation::*;
 pub mod governance;
 pub mod protected_action;
+pub mod source_acl;
 pub mod verifier_keyring;
 
 pub use aca_request_auth::*;
@@ -14,6 +15,7 @@ pub use approval_receipt::*;
 pub use authorization_hook::*;
 pub use cross_tenant::*;
 pub use protected_action::*;
+pub use source_acl::*;
 pub use verifier_keyring::*;
 
 use serde::{Deserialize, Serialize};

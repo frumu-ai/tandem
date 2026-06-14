@@ -4,7 +4,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_enterprise_contract::{
-    IngestionJob, IngestionJobState, IngestionQuarantine, RequestPrincipal, SourceBinding,
+    evaluate_ingestion_admission, provider_acl_sync_mode, IngestionDenyReason, IngestionJob,
+    IngestionJobState, IngestionQuarantine, IngestionReviewReason, RequestPrincipal, SourceBinding,
     TenantContext, VerifiedTenantContext,
 };
 use tandem_memory::import_files;
@@ -212,11 +213,17 @@ async fn run_google_drive_import_operation(
 
     let binding = source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
     let connector = connector_for_tenant(&state, &tenant_context, &binding.connector_id).await?;
-    if !binding.ingestion_policy.allow_indexing {
-        return Err(bad_request(
-            "ENTERPRISE_GOOGLE_DRIVE_IMPORT_INDEXING_DISABLED",
-        ));
+    // EAA-14 (TAN-39): fail-closed admission. Providers without reliable ACL
+    // sync require an explicit admin label; high-risk data classes (and bindings
+    // whose policy requires review) are held for review/quarantine before they
+    // become retrievable.
+    let acl_mode = provider_acl_sync_mode(&connector.provider);
+    let admission = evaluate_ingestion_admission(&binding, &connector, acl_mode);
+    if let Some(reason) = admission.denied() {
+        return Err(bad_request(google_drive_import_deny_code(reason)));
     }
+    let review_reason = admission.review_reason();
+    let must_review = admission.requires_review();
 
     let resolver = EnvSecretResolver;
     let drive_client = GoogleDriveClient::new_from_env();
@@ -377,7 +384,7 @@ async fn run_google_drive_import_operation(
         .iter()
         .map(|record| record.source_object_id.clone())
         .collect::<Vec<_>>();
-    let quarantine_id = if binding.ingestion_policy.require_review {
+    let quarantine_id = if must_review {
         let quarantine_id = format!("quarantine-{job_started_at_ms}-{}", uuid::Uuid::new_v4());
         quarantine_source_bound_import(
             &memory_manager,
@@ -396,7 +403,10 @@ async fn run_google_drive_import_operation(
                 connector_id: binding.connector_id.clone(),
                 binding_id: binding.binding_id.clone(),
                 source_object_ids: source_object_ids.clone(),
-                reason: "source binding requires ingestion review".to_string(),
+                reason: review_reason
+                    .unwrap_or(IngestionReviewReason::PolicyRequiresReview)
+                    .as_str()
+                    .to_string(),
                 created_at_ms: now_ms(),
                 reviewed_by: None,
                 reviewed_at_ms: None,
@@ -413,7 +423,7 @@ async fn run_google_drive_import_operation(
         tenant_context: tenant_context.clone(),
         connector_id: binding.connector_id.clone(),
         binding_id: binding.binding_id.clone(),
-        state: if binding.ingestion_policy.require_review {
+        state: if must_review {
             IngestionJobState::Quarantined
         } else if stats.errors > 0 {
             IngestionJobState::Failed
@@ -446,6 +456,22 @@ async fn run_google_drive_import_operation(
         drive_files_fetched: fetched_files.len(),
         drive_files_skipped: fetched.skipped_files,
     }))
+}
+
+/// Stable client error code for an ingestion admission denial.
+fn google_drive_import_deny_code(reason: IngestionDenyReason) -> &'static str {
+    match reason {
+        IngestionDenyReason::IndexingDisabled => "ENTERPRISE_GOOGLE_DRIVE_IMPORT_INDEXING_DISABLED",
+        IngestionDenyReason::ProviderAclUnsupported => {
+            "ENTERPRISE_GOOGLE_DRIVE_IMPORT_PROVIDER_ACL_UNSUPPORTED"
+        }
+        IngestionDenyReason::AdminLabelRequired => {
+            "ENTERPRISE_GOOGLE_DRIVE_IMPORT_ADMIN_LABEL_REQUIRED"
+        }
+        IngestionDenyReason::ConnectorMismatch
+        | IngestionDenyReason::ConnectorNotActive
+        | IngestionDenyReason::BindingNotEnabled => "ENTERPRISE_GOOGLE_DRIVE_IMPORT_POLICY_FAILED",
+    }
 }
 
 fn map_google_drive_preflight_error(error: GoogleDriveIngestionError) -> (StatusCode, Json<Value>) {
