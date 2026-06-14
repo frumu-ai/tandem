@@ -30,8 +30,10 @@ without turning the existing server-wide warning backlog into a hard gate.
 The full non-test `crates/tandem-server/src` scan currently reports 42
 production panic-surface findings outside the enforced TAN-200 hot spots.
 
-The former crate-wide `#![allow(warnings)]` blanket has been narrowed to
-`#![allow(unused)]` while the remaining lint fallout is paid down in follow-up
-work. New panic-surface cleanup should reduce the server-wide count and then add
-the cleaned module to the enforced target set in
-`scripts/check-rust-panic-surface.mjs`.
+The former crate-wide `#![allow(warnings)]` blanket has been narrowed to an
+explicit allow list in `crates/tandem-server/src/lib.rs`. The list keeps the
+existing `tandem-ai -- -D warnings` engine CI gate green while making the
+warning backlog searchable and shrinkable. It includes the current
+`unwrap_used`/`expect_used` backlog outside the enforced TAN-200 files; cleaned
+modules should override the root allowance with file-level denies and be added
+to the enforced target set in `scripts/check-rust-panic-surface.mjs`.

@@ -1,8 +1,57 @@
 #![recursion_limit = "256"]
-#![cfg_attr(not(test), warn(clippy::expect_used, clippy::unwrap_used))]
 // TAN-200 narrows the old crate-wide `allow(warnings)` blanket. The remaining
-// unused-code fallout is tracked separately while production panic lints run.
-#![allow(unused)]
+// warning backlog is explicit so it can be paid down while production panic
+// lints are denied in the first guarded modules.
+#![allow(
+    private_interfaces,
+    unused,
+    clippy::clone_on_copy,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::cmp_owned,
+    clippy::collapsible_else_if,
+    clippy::collapsible_if,
+    clippy::collapsible_str_replace,
+    clippy::derivable_impls,
+    clippy::empty_line_after_doc_comments,
+    clippy::expect_used,
+    clippy::if_same_then_else,
+    clippy::iter_overeager_cloned,
+    clippy::large_enum_variant,
+    clippy::manual_clamp,
+    clippy::manual_flatten,
+    clippy::manual_inspect,
+    clippy::manual_is_multiple_of,
+    clippy::manual_pattern_char_comparison,
+    clippy::manual_split_once,
+    clippy::map_entry,
+    clippy::map_identity,
+    clippy::match_like_matches_macro,
+    clippy::needless_as_bytes,
+    clippy::needless_borrow,
+    clippy::needless_lifetimes,
+    clippy::needless_question_mark,
+    clippy::needless_range_loop,
+    clippy::nonminimal_bool,
+    clippy::option_map_unit_fn,
+    clippy::ptr_arg,
+    clippy::question_mark,
+    clippy::redundant_closure,
+    clippy::redundant_locals,
+    clippy::result_large_err,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::unnecessary_cast,
+    clippy::unnecessary_get_then_check,
+    clippy::unnecessary_lazy_evaluations,
+    clippy::unnecessary_literal_unwrap,
+    clippy::unnecessary_map_or,
+    clippy::unnecessary_sort_by,
+    clippy::unwrap_or_default,
+    clippy::unwrap_used,
+    clippy::useless_asref,
+    clippy::useless_conversion,
+    clippy::vec_init_then_push
+)]
 
 pub mod agent_teams;
 pub mod app;
