@@ -33,6 +33,13 @@ pub enum ProviderAclSyncMode {
     /// access grants (the "admin-labeled fallback"). A binding with no admin
     /// label is denied ingestion.
     AdminLabeled,
+    /// First-party, operator-curated source (e.g. manual uploads). The data is
+    /// supplied directly by an admin/operator rather than pulled from an
+    /// external provider, so there is no external ACL to sync and no separate
+    /// admin label is required — access is governed entirely by the binding's
+    /// resource scope, data class, and grants. Review/data-class gating still
+    /// applies.
+    OperatorManaged,
     /// Provider is unknown/unsupported. Fail closed: no ingestion.
     Unsupported,
 }
@@ -42,6 +49,7 @@ impl ProviderAclSyncMode {
         match self {
             Self::Synced => "synced",
             Self::AdminLabeled => "admin_labeled",
+            Self::OperatorManaged => "operator_managed",
             Self::Unsupported => "unsupported",
         }
     }
@@ -59,6 +67,8 @@ pub fn provider_acl_sync_mode(provider: &str) -> ProviderAclSyncMode {
         // No provider currently has proven reliable ACL sync; reliable
         // providers are added here as their sync is implemented and verified.
         "google_drive" | "google-drive" | "googledrive" => ProviderAclSyncMode::AdminLabeled,
+        // First-party, admin-curated uploads — no external provider ACL.
+        "manual_upload" | "manual" | "local_manual_upload" => ProviderAclSyncMode::OperatorManaged,
         _ => ProviderAclSyncMode::Unsupported,
     }
 }
@@ -177,10 +187,17 @@ fn has_admin_label(binding: &SourceBinding) -> bool {
 /// binding's indexing policy, provider ACL trust (admin-label fallback for
 /// providers without reliable ACL sync), and finally review gating for
 /// policy-flagged or high-risk-data-class bindings.
+///
+/// `review_acknowledged` lets an admin-reviewed reingestion pass the review
+/// gate: when `true` (e.g. a reindex after an admin released the binding's
+/// quarantine), policy/high-risk content is admitted and kept rather than
+/// re-quarantined. It never relaxes the deny checks — an unlabeled or
+/// unsupported binding is denied regardless of acknowledgement.
 pub fn evaluate_ingestion_admission(
     binding: &SourceBinding,
     connector: &ConnectorInstance,
     acl_mode: ProviderAclSyncMode,
+    review_acknowledged: bool,
 ) -> IngestionAdmission {
     if binding.connector_id != connector.connector_id
         || !connector.tenant_matches(&binding.tenant_context)
@@ -218,7 +235,15 @@ pub fn evaluate_ingestion_admission(
                 };
             }
         }
-        ProviderAclSyncMode::Synced => {}
+        // Synced (provider ACLs trusted) and OperatorManaged (admin supplies
+        // the data directly) both need no separate admin-label gate.
+        ProviderAclSyncMode::Synced | ProviderAclSyncMode::OperatorManaged => {}
+    }
+
+    // An admin who has reviewed and released this binding's quarantine may
+    // reingest its content without it being held again.
+    if review_acknowledged {
+        return IngestionAdmission::Admit;
     }
 
     if binding.ingestion_policy.require_review {
@@ -311,6 +336,40 @@ mod tests {
         assert_eq!(provider_acl_sync_mode(""), ProviderAclSyncMode::Unsupported);
     }
 
+    #[test]
+    fn manual_upload_is_operator_managed() {
+        assert_eq!(
+            provider_acl_sync_mode("manual_upload"),
+            ProviderAclSyncMode::OperatorManaged
+        );
+    }
+
+    #[test]
+    fn operator_managed_admits_low_risk_without_admin_label() {
+        // First-party manual uploads need no admin label.
+        let admission = evaluate_ingestion_admission(
+            &binding(DataClass::Internal),
+            &connector(),
+            ProviderAclSyncMode::OperatorManaged,
+            false,
+        );
+        assert_eq!(admission, IngestionAdmission::Admit);
+    }
+
+    #[test]
+    fn operator_managed_still_quarantines_high_risk() {
+        let admission = evaluate_ingestion_admission(
+            &binding(DataClass::Regulated),
+            &connector(),
+            ProviderAclSyncMode::OperatorManaged,
+            false,
+        );
+        assert_eq!(
+            admission.review_reason(),
+            Some(IngestionReviewReason::HighRiskDataClass)
+        );
+    }
+
     // ── high-risk data classes ────────────────────────────────────────────────
 
     #[test]
@@ -351,6 +410,7 @@ mod tests {
             &labeled_binding(DataClass::Internal),
             &connector,
             provider_acl_sync_mode(&connector.provider),
+            false,
         );
         assert_eq!(
             admission.denied(),
@@ -365,6 +425,7 @@ mod tests {
             &binding(DataClass::Internal),
             &connector(),
             ProviderAclSyncMode::AdminLabeled,
+            false,
         );
         assert_eq!(
             admission.denied(),
@@ -376,8 +437,12 @@ mod tests {
     fn blank_admin_label_does_not_satisfy_requirement() {
         let mut b = binding(DataClass::Internal);
         b.source_root_label = Some("   ".to_string());
-        let admission =
-            evaluate_ingestion_admission(&b, &connector(), ProviderAclSyncMode::AdminLabeled);
+        let admission = evaluate_ingestion_admission(
+            &b,
+            &connector(),
+            ProviderAclSyncMode::AdminLabeled,
+            false,
+        );
         assert_eq!(
             admission.denied(),
             Some(IngestionDenyReason::AdminLabelRequired)
@@ -388,8 +453,12 @@ mod tests {
     fn disabled_binding_is_denied() {
         let b =
             labeled_binding(DataClass::Internal).with_state(SourceBindingState::Disabled, 2_000);
-        let admission =
-            evaluate_ingestion_admission(&b, &connector(), ProviderAclSyncMode::AdminLabeled);
+        let admission = evaluate_ingestion_admission(
+            &b,
+            &connector(),
+            ProviderAclSyncMode::AdminLabeled,
+            false,
+        );
         assert_eq!(
             admission.denied(),
             Some(IngestionDenyReason::BindingNotEnabled)
@@ -403,6 +472,7 @@ mod tests {
             &labeled_binding(DataClass::Internal),
             &connector,
             ProviderAclSyncMode::AdminLabeled,
+            false,
         );
         assert_eq!(
             admission.denied(),
@@ -416,8 +486,12 @@ mod tests {
             allow_indexing: false,
             ..IngestionPolicy::default()
         });
-        let admission =
-            evaluate_ingestion_admission(&b, &connector(), ProviderAclSyncMode::AdminLabeled);
+        let admission = evaluate_ingestion_admission(
+            &b,
+            &connector(),
+            ProviderAclSyncMode::AdminLabeled,
+            false,
+        );
         assert_eq!(
             admission.denied(),
             Some(IngestionDenyReason::IndexingDisabled)
@@ -428,11 +502,31 @@ mod tests {
     fn connector_mismatch_is_denied() {
         let mut b = labeled_binding(DataClass::Internal);
         b.connector_id = "other-connector".to_string();
-        let admission =
-            evaluate_ingestion_admission(&b, &connector(), ProviderAclSyncMode::AdminLabeled);
+        let admission = evaluate_ingestion_admission(
+            &b,
+            &connector(),
+            ProviderAclSyncMode::AdminLabeled,
+            false,
+        );
         assert_eq!(
             admission.denied(),
             Some(IngestionDenyReason::ConnectorMismatch)
+        );
+    }
+
+    #[test]
+    fn acknowledged_review_never_bypasses_deny() {
+        // Even with review acknowledged, an unlabeled admin-labeled binding is
+        // denied — acknowledgement only relaxes review gating, never deny.
+        let admission = evaluate_ingestion_admission(
+            &binding(DataClass::Regulated),
+            &connector(),
+            ProviderAclSyncMode::AdminLabeled,
+            true,
+        );
+        assert_eq!(
+            admission.denied(),
+            Some(IngestionDenyReason::AdminLabelRequired)
         );
     }
 
@@ -444,6 +538,7 @@ mod tests {
             &labeled_binding(DataClass::Regulated),
             &connector(),
             ProviderAclSyncMode::AdminLabeled,
+            false,
         );
         assert!(admission.requires_review());
         assert_eq!(
@@ -458,8 +553,12 @@ mod tests {
             require_review: true,
             ..IngestionPolicy::default()
         });
-        let admission =
-            evaluate_ingestion_admission(&b, &connector(), ProviderAclSyncMode::AdminLabeled);
+        let admission = evaluate_ingestion_admission(
+            &b,
+            &connector(),
+            ProviderAclSyncMode::AdminLabeled,
+            false,
+        );
         assert_eq!(
             admission.review_reason(),
             Some(IngestionReviewReason::PolicyRequiresReview)
@@ -474,6 +573,7 @@ mod tests {
             &labeled_binding(DataClass::Internal),
             &connector(),
             ProviderAclSyncMode::AdminLabeled,
+            false,
         );
         assert_eq!(admission, IngestionAdmission::Admit);
     }
@@ -485,6 +585,7 @@ mod tests {
             &binding(DataClass::Internal),
             &connector(),
             ProviderAclSyncMode::Synced,
+            false,
         );
         assert_eq!(admission, IngestionAdmission::Admit);
     }
@@ -495,10 +596,35 @@ mod tests {
             &binding(DataClass::Credential),
             &connector(),
             ProviderAclSyncMode::Synced,
+            false,
         );
         assert_eq!(
             admission.review_reason(),
             Some(IngestionReviewReason::HighRiskDataClass)
         );
+    }
+
+    #[test]
+    fn acknowledged_review_admits_high_risk_binding() {
+        // After an admin reviews/releases the quarantine, a reindex with review
+        // acknowledged admits and keeps the high-risk content.
+        let admission = evaluate_ingestion_admission(
+            &labeled_binding(DataClass::Regulated),
+            &connector(),
+            ProviderAclSyncMode::AdminLabeled,
+            true,
+        );
+        assert_eq!(admission, IngestionAdmission::Admit);
+    }
+
+    #[test]
+    fn acknowledged_review_admits_require_review_policy_binding() {
+        let b = labeled_binding(DataClass::Internal).with_ingestion_policy(IngestionPolicy {
+            require_review: true,
+            ..IngestionPolicy::default()
+        });
+        let admission =
+            evaluate_ingestion_admission(&b, &connector(), ProviderAclSyncMode::AdminLabeled, true);
+        assert_eq!(admission, IngestionAdmission::Admit);
     }
 }

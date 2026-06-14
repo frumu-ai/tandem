@@ -13,11 +13,17 @@ sync modes (`provider_acl_sync_mode`, in `tandem-enterprise-contract`):
 | --- | --- | --- |
 | `synced` | Provider exposes reliable per-object ACLs that Tandem syncs and enforces. | Indexing may proceed on provider ACLs (still subject to review/data-class gating). |
 | `admin_labeled` | Provider ACLs are absent/incomplete/unsafe to rely on. | The source binding must carry an explicit admin label, and access is governed by admin-created access grants. |
+| `operator_managed` | First-party, admin-curated source (e.g. manual uploads) — no external provider ACL. | No admin label needed; access is governed by the binding's resource scope, data class, and grants. |
 | `unsupported` | Provider is unknown / not yet classified. | Ingestion is denied (fail closed). |
 
 Only providers with proven, reliable ACL fidelity are classified `synced`. No
 provider has that classification today. **Google Drive is `admin_labeled`** (its
 ACLs are not synced — `not_synced_v1`), so its bindings require an admin label.
+**Manual uploads are `operator_managed`** (the admin supplies the data directly).
+
+The same admission applies to both connector ingestion (e.g. the Google Drive
+import/reindex routes) and the manual `/memory/import` flow, so neither path can
+bypass the admin-label requirement or high-risk-data-class review.
 
 ## Admin-labeled fallback
 
@@ -64,6 +70,19 @@ but immediately holds it (chunks removed, source objects marked `quarantined`,
 an `IngestionQuarantine` opened) until an admin reviews it via
 `PATCH /enterprise/ingestion-quarantines/{id}/review` and sets a disposition
 (`release`, `delete`, or `reindex`). `Admit` indexes and keeps the data.
+
+### Releasing reviewed high-risk content
+
+High-risk (and policy-`require_review`) bindings quarantine on every import, so
+an admin must take an explicit step to make reviewed content retrievable:
+
+1. Review the quarantine and set disposition `release` (or `reindex`).
+2. Re-run the connector reindex with `acknowledge_review: true`.
+
+The reindex honors `acknowledge_review` only when the binding has a reviewed,
+released quarantine — so review cannot be skipped on first ingestion, and a
+blind acknowledgement on an unreviewed binding still quarantines. Acknowledgement
+never relaxes a `Deny` (an unlabeled or unsupported binding stays denied).
 
 ## Adding a new connector provider
 

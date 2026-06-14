@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_enterprise_contract::{
     evaluate_ingestion_admission, provider_acl_sync_mode, IngestionDenyReason, IngestionJob,
-    IngestionJobState, IngestionQuarantine, IngestionReviewReason, RequestPrincipal, SourceBinding,
-    TenantContext, VerifiedTenantContext,
+    IngestionJobState, IngestionQuarantine, IngestionReviewReason, QuarantineDisposition,
+    RequestPrincipal, SourceBinding, TenantContext, VerifiedTenantContext,
 };
 use tandem_memory::import_files;
 use tandem_memory::types::{
@@ -75,6 +75,12 @@ pub(super) struct EnterpriseGoogleDriveReindexRequest {
     sync_deletes: bool,
     #[serde(default)]
     source_object_id: Option<String>,
+    /// EAA-14 (TAN-39): admin acknowledgement that this binding's ingestion
+    /// review has been completed. Only honored when the binding has a reviewed,
+    /// released quarantine; lets reviewed high-risk/require-review content be
+    /// reindexed and kept instead of re-quarantined.
+    #[serde(default)]
+    acknowledge_review: bool,
 }
 
 fn default_enterprise_connector_import_tier() -> MemoryTier {
@@ -128,6 +134,9 @@ pub(super) async fn import_google_drive_source_binding(
         session_id: input.session_id,
         sync_deletes: input.sync_deletes,
         source_object_id: None,
+        // First-time imports always go through review; only an explicit reviewed
+        // reindex can acknowledge review.
+        acknowledge_review: false,
         job_kind: "import",
         empty_job_state: IngestionJobState::Completed,
         completion_reason: "google_drive_import_completed",
@@ -161,6 +170,7 @@ pub(super) async fn reindex_google_drive_source_binding(
         session_id: input.session_id,
         sync_deletes: input.sync_deletes,
         source_object_id,
+        acknowledge_review: input.acknowledge_review,
         job_kind: "reindex",
         empty_job_state: IngestionJobState::Skipped,
         completion_reason: "google_drive_reindex_completed",
@@ -182,6 +192,7 @@ struct GoogleDriveImportOperationInput {
     session_id: Option<String>,
     sync_deletes: bool,
     source_object_id: Option<String>,
+    acknowledge_review: bool,
     job_kind: &'static str,
     empty_job_state: IngestionJobState,
     completion_reason: &'static str,
@@ -218,7 +229,12 @@ async fn run_google_drive_import_operation(
     // whose policy requires review) are held for review/quarantine before they
     // become retrievable.
     let acl_mode = provider_acl_sync_mode(&connector.provider);
-    let admission = evaluate_ingestion_admission(&binding, &connector, acl_mode);
+    // An admin acknowledgement is only honored when the binding has a reviewed,
+    // released quarantine — so review cannot be skipped on first ingestion.
+    let review_acknowledged = input.acknowledge_review
+        && binding_has_released_quarantine(&state, &tenant_context, &binding.binding_id).await;
+    let admission =
+        evaluate_ingestion_admission(&binding, &connector, acl_mode, review_acknowledged);
     if let Some(reason) = admission.denied() {
         return Err(bad_request(google_drive_import_deny_code(reason)));
     }
@@ -577,6 +593,33 @@ async fn record_enterprise_ingestion_quarantine(
         &registry,
     )
     .await
+}
+
+/// Whether the binding has at least one quarantine an admin has reviewed and
+/// released (disposition `Release` or `Reindex`). This is the gate that makes an
+/// admin's `acknowledge_review` reindex meaningful: review must actually have
+/// happened before high-risk/require-review content can be reingested and kept.
+async fn binding_has_released_quarantine(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    binding_id: &str,
+) -> bool {
+    state
+        .enterprise
+        .ingestion_quarantines
+        .read()
+        .await
+        .values()
+        .any(|quarantine| {
+            quarantine.binding_id == binding_id
+                && quarantine.tenant_context.org_id == tenant_context.org_id
+                && quarantine.tenant_context.workspace_id == tenant_context.workspace_id
+                && quarantine.tenant_context.deployment_id == tenant_context.deployment_id
+                && matches!(
+                    quarantine.disposition,
+                    Some(QuarantineDisposition::Release) | Some(QuarantineDisposition::Reindex)
+                )
+        })
 }
 
 async fn source_objects_seen_since(
