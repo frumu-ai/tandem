@@ -1372,6 +1372,9 @@ mod tests {
                 "raw_payload": "protected audit secret"
             }),
             created_at_ms: 36,
+            seq: 0,
+            prev_hash: None,
+            record_hash: String::new(),
         }];
 
         let package = governance_evidence_package_for_records(

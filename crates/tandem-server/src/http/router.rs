@@ -111,6 +111,14 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
         axum::routing::get(super::audit_stream::audit_stream),
     );
     router = router.route(
+        "/audit/ledger/manifest",
+        axum::routing::get(super::audit_stream::audit_ledger_manifest),
+    );
+    router = router.route(
+        "/audit/ledger/export",
+        axum::routing::get(super::audit_stream::audit_ledger_export),
+    );
+    router = router.route(
         "/channels/enroll",
         axum::routing::post(super::channel_enrollment::channel_enroll),
     );

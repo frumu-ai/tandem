@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { cn } from "@/lib/utils";
+import { AIGeneratedBadge } from "@/components/ui";
 import {
   User,
   FileText,
@@ -564,6 +565,7 @@ function MessageComponent({
               Processing
             </span>
           )}
+          {!isUser && !isSystem && <AIGeneratedBadge />}
           {!isUser && !isSystem && memoryRetrieval && (
             <>
               <span
