@@ -1,5 +1,8 @@
 #![recursion_limit = "256"]
-#![allow(warnings)]
+#![cfg_attr(not(test), warn(clippy::expect_used, clippy::unwrap_used))]
+// TAN-200 narrows the old crate-wide `allow(warnings)` blanket. The remaining
+// unused-code fallout is tracked separately while production panic lints run.
+#![allow(unused)]
 
 pub mod agent_teams;
 pub mod app;

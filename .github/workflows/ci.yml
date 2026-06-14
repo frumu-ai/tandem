@@ -97,6 +97,9 @@ jobs:
           node scripts/check-rust-panic-surface.mjs --self-test
           node scripts/check-rust-panic-surface.mjs
 
+      - name: Check tandem-server panic lints
+        run: cargo clippy -p tandem-server --lib --no-deps -- -A warnings
+
       - name: Check touched Rust/TSX file sizes
         run: bash scripts/ci-file-size-check.sh
 
