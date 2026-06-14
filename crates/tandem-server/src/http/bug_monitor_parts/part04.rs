@@ -807,6 +807,8 @@ mod bug_monitor_triage_spec_tests {
             ts_ms,
             event_type: event_type.to_string(),
             payload: json!({}),
+            prev_hash: None,
+            record_hash: String::new(),
         }
     }
 

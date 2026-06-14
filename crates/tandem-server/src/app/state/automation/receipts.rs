@@ -1,14 +1,16 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::util::time::now_ms;
 
-const RECEIPT_SCHEMA_VERSION: u32 = 1;
+const RECEIPT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct AutomationAttemptReceiptRecord {
@@ -21,6 +23,46 @@ pub(crate) struct AutomationAttemptReceiptRecord {
     pub(crate) ts_ms: u64,
     pub(crate) event_type: String,
     pub(crate) payload: Value,
+    // Hash-chain fields (version >= 2). Default-deserialized so pre-v2
+    // records round-trip cleanly: prev_hash is None, record_hash is "".
+    #[serde(default)]
+    pub(crate) prev_hash: Option<String>,
+    #[serde(default)]
+    pub(crate) record_hash: String,
+}
+
+/// Canonical form for hashing: mirrors every `AutomationAttemptReceiptRecord`
+/// field except `record_hash` (which is being computed).
+#[derive(Serialize)]
+struct ReceiptForHashing<'a> {
+    version: u32,
+    run_id: &'a str,
+    node_id: &'a str,
+    attempt: u32,
+    session_id: &'a str,
+    seq: u64,
+    ts_ms: u64,
+    event_type: &'a str,
+    payload: &'a Value,
+    prev_hash: &'a Option<String>,
+}
+
+pub(crate) fn compute_receipt_record_hash(record: &AutomationAttemptReceiptRecord) -> String {
+    let for_hashing = ReceiptForHashing {
+        version: record.version,
+        run_id: &record.run_id,
+        node_id: &record.node_id,
+        attempt: record.attempt,
+        session_id: &record.session_id,
+        seq: record.seq,
+        ts_ms: record.ts_ms,
+        event_type: &record.event_type,
+        payload: &record.payload,
+        prev_hash: &record.prev_hash,
+    };
+    let json = serde_json::to_string(&for_hashing)
+        .expect("receipt hash serialization is infallible");
+    format!("{:x}", Sha256::digest(json.as_bytes()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -142,6 +184,14 @@ async fn read_last_seq(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+async fn read_last_receipt_record(path: &Path) -> Option<AutomationAttemptReceiptRecord> {
+    let content = tokio::fs::read_to_string(path).await.ok()?;
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<AutomationAttemptReceiptRecord>(line).ok())
+        .max_by_key(|record| record.seq)
+}
+
 async fn receipt_ledger_lock_for(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<
         tokio::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -187,9 +237,15 @@ pub(crate) async fn append_automation_attempt_receipts(
     let receipt_lock = receipt_ledger_lock_for(&path).await;
     let _receipt_guard = receipt_lock.lock().await;
 
-    let mut next_seq = read_last_seq(&path).await.saturating_add(1);
+    let last = read_last_receipt_record(&path).await;
+    let mut next_seq = last.as_ref().map(|r| r.seq).unwrap_or(0).saturating_add(1);
+    // Only chain from previous records that are themselves hashed (version >= 2).
+    let mut prev_chain_hash: Option<String> = last
+        .filter(|r| !r.record_hash.is_empty())
+        .map(|r| r.record_hash);
+
     for event in events {
-        let record = AutomationAttemptReceiptRecord {
+        let mut record = AutomationAttemptReceiptRecord {
             version: RECEIPT_SCHEMA_VERSION,
             run_id: run_id.to_string(),
             node_id: node_id.to_string(),
@@ -199,7 +255,12 @@ pub(crate) async fn append_automation_attempt_receipts(
             ts_ms: now_ms() as u64,
             event_type: event.event_type.trim().to_string(),
             payload: event.payload.clone(),
+            prev_hash: prev_chain_hash.clone(),
+            record_hash: String::new(),
         };
+        record.record_hash = compute_receipt_record_hash(&record);
+        prev_chain_hash = Some(record.record_hash.clone());
+
         let line = serde_json::to_string(&record)?;
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -263,6 +324,171 @@ pub(crate) async fn persist_automation_attempt_forensic_record(
     let serialized = serde_json::to_string_pretty(payload)?;
     tokio::fs::write(&path, serialized).await?;
     Ok(path)
+}
+
+// ── Verification ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ReceiptChainViolationKind {
+    RecordHashMismatch { expected: String },
+    ChainBreak { expected_prev: String },
+    SeqGap { expected_seq: u64 },
+    SeqReplay { seen_seq: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ReceiptChainViolation {
+    pub(crate) seq: u64,
+    pub(crate) kind: ReceiptChainViolationKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ReceiptLedgerVerificationResult {
+    pub(crate) valid: bool,
+    pub(crate) record_count: u64,
+    pub(crate) hashed_record_count: u64,
+    pub(crate) root_hash: Option<String>,
+    pub(crate) schema_version: u32,
+    pub(crate) violation: Option<ReceiptChainViolation>,
+}
+
+pub(crate) async fn verify_receipt_ledger(path: &Path) -> ReceiptLedgerVerificationResult {
+    let mut records = match read_automation_attempt_receipt_records(path).await {
+        Ok(r) => r,
+        Err(_) => {
+            return ReceiptLedgerVerificationResult {
+                valid: false,
+                record_count: 0,
+                hashed_record_count: 0,
+                root_hash: None,
+                schema_version: 0,
+                violation: None,
+            }
+        }
+    };
+    records.sort_by_key(|r| r.seq);
+
+    let record_count = records.len() as u64;
+    let schema_version = records
+        .iter()
+        .find(|r| !r.record_hash.is_empty())
+        .map(|_| RECEIPT_SCHEMA_VERSION)
+        .unwrap_or(1);
+
+    // Seq monotonicity: every seq must be exactly one more than the last.
+    // Starts from the first record's seq (not necessarily 1, for sub-ledgers).
+    if !records.is_empty() {
+        let mut expected = records[0].seq;
+        let mut seen: HashSet<u64> = HashSet::new();
+        for record in &records {
+            if !seen.insert(record.seq) {
+                return ReceiptLedgerVerificationResult {
+                    valid: false,
+                    record_count,
+                    hashed_record_count: 0,
+                    root_hash: None,
+                    schema_version,
+                    violation: Some(ReceiptChainViolation {
+                        seq: record.seq,
+                        kind: ReceiptChainViolationKind::SeqReplay { seen_seq: record.seq },
+                    }),
+                };
+            }
+            if record.seq > expected {
+                return ReceiptLedgerVerificationResult {
+                    valid: false,
+                    record_count,
+                    hashed_record_count: 0,
+                    root_hash: None,
+                    schema_version,
+                    violation: Some(ReceiptChainViolation {
+                        seq: expected,
+                        kind: ReceiptChainViolationKind::SeqGap { expected_seq: expected },
+                    }),
+                };
+            }
+            expected = expected.saturating_add(1);
+        }
+    }
+
+    // Hash-chain integrity for v2+ records.
+    let hashed: Vec<_> = records
+        .iter()
+        .filter(|r| !r.record_hash.is_empty())
+        .collect();
+    let hashed_record_count = hashed.len() as u64;
+    let mut prev_hash: Option<String> = None;
+
+    for record in &hashed {
+        let expected_hash = compute_receipt_record_hash(record);
+        if expected_hash != record.record_hash {
+            return ReceiptLedgerVerificationResult {
+                valid: false,
+                record_count,
+                hashed_record_count,
+                root_hash: None,
+                schema_version,
+                violation: Some(ReceiptChainViolation {
+                    seq: record.seq,
+                    kind: ReceiptChainViolationKind::RecordHashMismatch { expected: expected_hash },
+                }),
+            };
+        }
+        if let Some(ref expected) = prev_hash {
+            if record.prev_hash.as_deref() != Some(expected.as_str()) {
+                return ReceiptLedgerVerificationResult {
+                    valid: false,
+                    record_count,
+                    hashed_record_count,
+                    root_hash: None,
+                    schema_version,
+                    violation: Some(ReceiptChainViolation {
+                        seq: record.seq,
+                        kind: ReceiptChainViolationKind::ChainBreak {
+                            expected_prev: expected.clone(),
+                        },
+                    }),
+                };
+            }
+        }
+        prev_hash = Some(record.record_hash.clone());
+    }
+
+    ReceiptLedgerVerificationResult {
+        valid: true,
+        record_count,
+        hashed_record_count,
+        root_hash: prev_hash,
+        schema_version,
+        violation: None,
+    }
+}
+
+// ── Export manifest ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ReceiptLedgerManifest {
+    pub(crate) ledger_path: String,
+    pub(crate) schema_version: u32,
+    pub(crate) record_count: u64,
+    pub(crate) last_seq: u64,
+    pub(crate) root_hash: Option<String>,
+    pub(crate) generated_at_ms: u64,
+}
+
+pub(crate) async fn generate_receipt_ledger_manifest(
+    path: &Path,
+) -> anyhow::Result<ReceiptLedgerManifest> {
+    let result = verify_receipt_ledger(path).await;
+    let last_seq = read_last_seq(path).await;
+    Ok(ReceiptLedgerManifest {
+        ledger_path: path.to_string_lossy().into_owned(),
+        schema_version: result.schema_version,
+        record_count: result.record_count,
+        last_seq,
+        root_hash: result.root_hash,
+        generated_at_ms: now_ms() as u64,
+    })
 }
 
 pub(crate) async fn reconcile_automation_attempt_receipts(
@@ -557,6 +783,248 @@ mod tests {
         assert!(!summary.found);
         assert_eq!(summary.last_seq, 0);
         assert!(summary.attempts > 0);
+    }
+
+    // ── Hash-chain tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn receipt_hash_chain_appended_records_have_valid_hashes() {
+        let root = std::env::temp_dir()
+            .join(format!("tandem-receipt-hash-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.expect("create root");
+
+        append_automation_attempt_receipts(
+            &root,
+            "run-hash-1",
+            "node-a",
+            1,
+            "sess-hash",
+            &[
+                AutomationAttemptReceiptEventInput {
+                    event_type: "attempt_summary".to_string(),
+                    payload: json!({"ok": true}),
+                },
+                AutomationAttemptReceiptEventInput {
+                    event_type: "validation_summary".to_string(),
+                    payload: json!({"status": "completed"}),
+                },
+            ],
+        )
+        .await
+        .expect("append");
+
+        let path = automation_attempt_receipts_path(&root, "run-hash-1", "node-a");
+        let records = read_automation_attempt_receipt_records(&path)
+            .await
+            .expect("read");
+        assert_eq!(records.len(), 2);
+
+        // First record: no prev_hash, record_hash is set.
+        assert!(records[0].prev_hash.is_none());
+        assert!(!records[0].record_hash.is_empty());
+        assert_eq!(
+            records[0].record_hash,
+            compute_receipt_record_hash(&records[0])
+        );
+
+        // Second record chains from first.
+        assert_eq!(records[1].prev_hash.as_deref(), Some(records[0].record_hash.as_str()));
+        assert!(!records[1].record_hash.is_empty());
+        assert_eq!(
+            records[1].record_hash,
+            compute_receipt_record_hash(&records[1])
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_receipt_ledger_passes_valid_chain() {
+        let root = std::env::temp_dir()
+            .join(format!("tandem-receipt-verify-ok-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.expect("create root");
+
+        for i in 0..3u32 {
+            append_automation_attempt_receipts(
+                &root,
+                "run-verify-ok",
+                "node-b",
+                i,
+                "sess-v",
+                &[AutomationAttemptReceiptEventInput {
+                    event_type: "attempt_summary".to_string(),
+                    payload: json!({"attempt": i}),
+                }],
+            )
+            .await
+            .expect("append");
+        }
+
+        let path = automation_attempt_receipts_path(&root, "run-verify-ok", "node-b");
+        let result = verify_receipt_ledger(&path).await;
+        assert!(result.valid, "expected valid chain: {:?}", result.violation);
+        assert_eq!(result.record_count, 3);
+        assert_eq!(result.hashed_record_count, 3);
+        assert!(result.root_hash.is_some());
+    }
+
+    #[tokio::test]
+    async fn verify_receipt_ledger_detects_record_hash_mutation() {
+        let root = std::env::temp_dir()
+            .join(format!("tandem-receipt-verify-mutate-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.expect("create root");
+
+        append_automation_attempt_receipts(
+            &root,
+            "run-mutate",
+            "node-c",
+            1,
+            "sess-m",
+            &[
+                AutomationAttemptReceiptEventInput {
+                    event_type: "attempt_summary".to_string(),
+                    payload: json!({"ok": true}),
+                },
+                AutomationAttemptReceiptEventInput {
+                    event_type: "validation_summary".to_string(),
+                    payload: json!({"status": "completed"}),
+                },
+            ],
+        )
+        .await
+        .expect("append");
+
+        let path = automation_attempt_receipts_path(&root, "run-mutate", "node-c");
+        // Tamper: replace payload of first record in the JSONL.
+        let content = tokio::fs::read_to_string(&path).await.expect("read");
+        let tampered = content.replacen(r#""ok":true"#, r#""ok":false"#, 1);
+        tokio::fs::write(&path, tampered).await.expect("write tampered");
+
+        let result = verify_receipt_ledger(&path).await;
+        assert!(!result.valid);
+        assert!(matches!(
+            result.violation,
+            Some(ReceiptChainViolation {
+                kind: ReceiptChainViolationKind::RecordHashMismatch { .. },
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_receipt_ledger_detects_truncation() {
+        let root = std::env::temp_dir()
+            .join(format!("tandem-receipt-verify-trunc-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.expect("create root");
+
+        append_automation_attempt_receipts(
+            &root,
+            "run-trunc",
+            "node-d",
+            1,
+            "sess-t",
+            &[
+                AutomationAttemptReceiptEventInput {
+                    event_type: "attempt_summary".to_string(),
+                    payload: json!({"ok": true}),
+                },
+                AutomationAttemptReceiptEventInput {
+                    event_type: "validation_summary".to_string(),
+                    payload: json!({"status": "completed"}),
+                },
+                AutomationAttemptReceiptEventInput {
+                    event_type: "tool_effect".to_string(),
+                    payload: json!({"tool": "write_file"}),
+                },
+            ],
+        )
+        .await
+        .expect("append");
+
+        let path = automation_attempt_receipts_path(&root, "run-trunc", "node-d");
+        // Remove the second line (middle record).
+        let content = tokio::fs::read_to_string(&path).await.expect("read");
+        let mut lines: Vec<&str> = content.lines().collect();
+        lines.remove(1); // drop record with seq=2
+        tokio::fs::write(&path, lines.join("\n") + "\n")
+            .await
+            .expect("write truncated");
+
+        let result = verify_receipt_ledger(&path).await;
+        assert!(!result.valid);
+        // A gap or chain break is expected.
+        assert!(matches!(
+            result.violation,
+            Some(ReceiptChainViolation {
+                kind: ReceiptChainViolationKind::SeqGap { .. }
+                    | ReceiptChainViolationKind::ChainBreak { .. },
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_receipt_ledger_allows_pre_v2_records_without_hashes() {
+        let root = std::env::temp_dir()
+            .join(format!("tandem-receipt-verify-v1-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.expect("create root");
+        let path = automation_attempt_receipts_path(&root, "run-v1", "node-e");
+        if let Some(p) = path.parent() {
+            tokio::fs::create_dir_all(p).await.expect("parent");
+        }
+        // Write two pre-v2 records (no hash fields).
+        let old_record = |seq: u64| {
+            serde_json::json!({
+                "version": 1,
+                "run_id": "run-v1",
+                "node_id": "node-e",
+                "attempt": 1,
+                "session_id": "sess-old",
+                "seq": seq,
+                "ts_ms": 1_000_000u64,
+                "event_type": "attempt_summary",
+                "payload": {"ok": true}
+            })
+        };
+        let content = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&old_record(1)).unwrap(),
+            serde_json::to_string(&old_record(2)).unwrap()
+        );
+        tokio::fs::write(&path, content).await.expect("write v1");
+
+        let result = verify_receipt_ledger(&path).await;
+        // Pre-v2 records have empty record_hash so the hash chain is skipped.
+        assert!(result.valid, "pre-v2 records should be considered valid: {:?}", result.violation);
+        assert_eq!(result.hashed_record_count, 0);
+    }
+
+    #[tokio::test]
+    async fn generate_receipt_ledger_manifest_returns_root_hash() {
+        let root = std::env::temp_dir()
+            .join(format!("tandem-receipt-manifest-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.expect("create root");
+
+        append_automation_attempt_receipts(
+            &root,
+            "run-manifest",
+            "node-f",
+            1,
+            "sess-mf",
+            &[AutomationAttemptReceiptEventInput {
+                event_type: "attempt_summary".to_string(),
+                payload: json!({"ok": true}),
+            }],
+        )
+        .await
+        .expect("append");
+
+        let path = automation_attempt_receipts_path(&root, "run-manifest", "node-f");
+        let manifest = generate_receipt_ledger_manifest(&path)
+            .await
+            .expect("manifest");
+        assert_eq!(manifest.record_count, 1);
+        assert_eq!(manifest.last_seq, 1);
+        assert_eq!(manifest.schema_version, RECEIPT_SCHEMA_VERSION);
+        assert!(manifest.root_hash.is_some());
     }
 
     #[tokio::test]
