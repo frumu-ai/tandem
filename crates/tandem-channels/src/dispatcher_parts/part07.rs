@@ -673,7 +673,52 @@ mod tests {
         assert!(help.contains("Disabled in this public channel for security"));
         assert!(help.contains("/workspace"));
         assert!(help.contains("/memory"));
+        assert!(help.contains("/answer, /approve, /deny, /pending, /rework"));
+        assert!(help.contains("/todos, /requests"));
         assert!(help.contains("real Tandem capabilities"));
+    }
+
+    #[test]
+    fn public_demo_help_matches_runtime_command_gates() {
+        for raw in [
+            "/new",
+            "/rename public-demo",
+            "/status",
+            "/run",
+            "/cancel",
+            "/memory",
+            "/help",
+        ] {
+            let cmd = parse_slash_command(raw).expect("public demo command should parse");
+            assert!(
+                blocked_command_reason(&cmd, ChannelSecurityProfile::PublicDemo).is_none(),
+                "{raw} should be available in public demo channels"
+            );
+        }
+
+        for raw in [
+            "/todos",
+            "/requests",
+            "/answer q1 yes",
+            "/approve tool-1",
+            "/deny tool-1",
+            "/pending",
+            "/rework run-1 please retry",
+            "/workspace",
+            "/tools",
+            "/mcp",
+            "/packs",
+            "/config",
+            "/schedule",
+            "/automations",
+            "/runs",
+        ] {
+            let cmd = parse_slash_command(raw).expect("disabled command should parse");
+            assert!(
+                blocked_command_reason(&cmd, ChannelSecurityProfile::PublicDemo).is_some(),
+                "{raw} should be disabled in public demo channels"
+            );
+        }
     }
 
     #[test]

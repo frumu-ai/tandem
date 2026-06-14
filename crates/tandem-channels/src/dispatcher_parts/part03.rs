@@ -1038,7 +1038,9 @@ fn blocked_command_reason(
     };
     if !capability.enabled_for(security_profile) {
         capability.public_demo_reason
-    } else if !command_allowed_by_tier(*capability, security_profile) {
+    } else if security_profile != ChannelSecurityProfile::PublicDemo
+        && !command_allowed_by_tier(*capability, security_profile)
+    {
         Some("This command requires a higher channel capability tier.")
     } else {
         None
@@ -1302,6 +1304,8 @@ Available here:\n\
 /help — show this message\n\
 \n\
 Disabled in this public channel for security:\n\
+/todos, /requests — internal queue visibility\n\
+/answer, /approve, /deny, /pending, /rework — approval and gate control\n\
 /providers, /models, /model — runtime and model reconfiguration\n\
 /workspace — file and repo access\n\
 /mcp — external connector access\n\
