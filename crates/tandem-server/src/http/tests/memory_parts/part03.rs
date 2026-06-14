@@ -1402,6 +1402,7 @@ fn verified_delegate_context(
         issued_at_ms: 1_000,
         expires_at_ms: 9_999_999_999_999,
         assertion_id: "delegate-assertion".to_string(),
+        assertion_key_id: None,
     }
 }
 

@@ -248,6 +248,7 @@ mod tests {
             issued_at_ms: 1_000,
             expires_at_ms: 10_000,
             assertion_id: "assertion-a".to_string(),
+            assertion_key_id: None,
         }
     }
 
