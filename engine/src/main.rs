@@ -112,6 +112,12 @@ const TOKEN_EXAMPLES: &str = r#"Examples:
   tandem-engine token generate
 "#;
 
+const CONFIG_EXAMPLES: &str = r#"Examples:
+  tandem-engine config check
+  tandem-engine config check --json
+  tandem-engine config reference
+"#;
+
 const BROWSER_EXAMPLES: &str = r#"Examples:
   tandem-engine browser status
   tandem-engine browser status --hostname 127.0.0.1 --port 39731
@@ -169,6 +175,12 @@ enum Command {
             help = "Port to check."
         )]
         port: u16,
+    },
+    #[command(about = "Inspect and validate Tandem engine configuration.")]
+    #[command(after_help = CONFIG_EXAMPLES)]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
     },
     #[command(
         about = "Start the HTTP/SSE engine server (recommended for desktop/TUI integration)."
@@ -367,6 +379,17 @@ enum TokenCommand {
     #[command(about = "Generate a random API token string.")]
     #[command(after_help = TOKEN_EXAMPLES)]
     Generate,
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCommand {
+    #[command(about = "Validate startup environment and print masked effective configuration.")]
+    Check {
+        #[arg(long, default_value_t = false, help = "Print machine-readable JSON.")]
+        json: bool,
+    },
+    #[command(about = "Print the generated configuration reference as Markdown.")]
+    Reference,
 }
 
 #[derive(Subcommand, Debug)]
@@ -570,6 +593,20 @@ async fn main() -> anyhow::Result<()> {
                 println!("{body}");
             }
         }
+        Command::Config { command } => match command {
+            ConfigCommand::Check { json } => {
+                let report = tandem_server::EngineConfigReport::from_env(Default::default());
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report.masked_json())?);
+                } else {
+                    println!("{}", report.human_summary());
+                }
+                report.ensure_valid()?;
+            }
+            ConfigCommand::Reference => {
+                print!("{}", tandem_server::config_reference_markdown());
+            }
+        },
         Command::Serve {
             hostname,
             port,
@@ -585,6 +622,17 @@ async fn main() -> anyhow::Result<()> {
             web_ui_prefix,
             disable_embeddings,
         } => {
+            let startup_config =
+                tandem_server::EngineConfigReport::from_env(tandem_server::EngineConfigOptions {
+                    cli_transport_token_configured: api_token
+                        .as_ref()
+                        .is_some_and(|token| !token.trim().is_empty()),
+                    unsafe_no_api_token,
+                });
+            for warning in &startup_config.warnings {
+                eprintln!("warning: {warning}");
+            }
+            startup_config.ensure_valid()?;
             if disable_embeddings {
                 std::env::set_var("TANDEM_DISABLE_EMBEDDINGS", "1");
                 info!("semantic embeddings disabled by CLI/env flag");
