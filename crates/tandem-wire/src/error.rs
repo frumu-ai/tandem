@@ -58,6 +58,7 @@ impl ErrorCode {
         matches!(
             self,
             Self::RateLimited
+                | Self::SessionRunConflict
                 | Self::PromptTimeout
                 | Self::EngineStarting
                 | Self::McpRefreshFailed
@@ -117,5 +118,15 @@ mod tests {
                 "retryable": true
             })
         );
+    }
+
+    #[test]
+    fn session_run_conflict_is_retryable() {
+        let envelope = ErrorEnvelope::new(
+            "session already has an active run",
+            ErrorCode::SessionRunConflict,
+        );
+        assert!(envelope.retryable);
+        assert!(ErrorCode::SessionRunConflict.retryable());
     }
 }
