@@ -3,7 +3,13 @@ async fn retrieval_gateway_blocks_broad_export_query_pattern() {
     let state = test_state().await;
     let app = app_router(state.clone());
     let subject = "channel:slack:U789";
-    let capability = memory_capability("gateway-query-pattern-run", subject, "org-1", "ws-1", "proj-1");
+    let capability = memory_capability(
+        "gateway-query-pattern-run",
+        subject,
+        "org-1",
+        "ws-1",
+        "proj-1",
+    );
     let gateway = json!({
         "grant": {
             "grant_id": "grant-query-pattern",
@@ -83,7 +89,13 @@ async fn retrieval_gateway_allows_specific_export_policy_query() {
     let state = test_state().await;
     let app = app_router(state.clone());
     let subject = "channel:slack:U791";
-    let capability = memory_capability("gateway-export-policy-run", subject, "org-1", "ws-1", "proj-1");
+    let capability = memory_capability(
+        "gateway-export-policy-run",
+        subject,
+        "org-1",
+        "ws-1",
+        "proj-1",
+    );
     let gateway = json!({
         "grant": {
             "grant_id": "grant-export-policy",
@@ -605,4 +617,203 @@ async fn memory_list_uses_capability_subject_and_rejects_mismatched_user() {
         .await
         .expect("forbidden list response");
     assert_eq!(forbidden_resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn memory_put_without_capability_defaults_to_connected_actor() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let put_req = tenant_memory_request(
+        "POST",
+        "/memory/put",
+        "acme",
+        "north",
+        "user-a",
+        Some(json!({
+            "run_id": "actor-default-memory-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "proj-a",
+                "tier": "session"
+            },
+            "kind": "fact",
+            "content": "actor default memory should belong to user a",
+            "classification": "internal"
+        })),
+    );
+    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let list_req = tenant_memory_request(
+        "GET",
+        "/memory?limit=20&user_id=user-a&project_id=proj-a",
+        "acme",
+        "north",
+        "user-a",
+        None,
+    );
+    let list_resp = app.clone().oneshot(list_req).await.expect("list response");
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_body = to_bytes(list_resp.into_body(), usize::MAX)
+        .await
+        .expect("list body");
+    let list_payload: Value = serde_json::from_slice(&list_body).expect("list json");
+    let found = list_payload
+        .get("items")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter().any(|row| {
+                row.get("run_id").and_then(Value::as_str) == Some("actor-default-memory-run")
+                    && row.get("user_id").and_then(Value::as_str) == Some("user-a")
+            })
+        });
+    assert!(found, "default memory capability should use request actor");
+}
+
+#[tokio::test]
+async fn memory_put_rejects_capability_subject_actor_mismatch() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let put_req = tenant_memory_request(
+        "POST",
+        "/memory/put",
+        "acme",
+        "north",
+        "user-a",
+        Some(json!({
+            "run_id": "forged-subject-put-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "proj-a",
+                "tier": "session"
+            },
+            "kind": "fact",
+            "content": "forged subject write should be blocked",
+            "classification": "internal",
+            "capability": memory_capability(
+                "forged-subject-put-run",
+                "user-b",
+                "acme",
+                "north",
+                "proj-a"
+            )
+        })),
+    );
+    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::FORBIDDEN);
+
+    let list_req = tenant_memory_request(
+        "GET",
+        "/memory?limit=20&user_id=user-b&project_id=proj-a",
+        "acme",
+        "north",
+        "user-b",
+        None,
+    );
+    let list_resp = app.clone().oneshot(list_req).await.expect("list response");
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_body = to_bytes(list_resp.into_body(), usize::MAX)
+        .await
+        .expect("list body");
+    let list_payload: Value = serde_json::from_slice(&list_body).expect("list json");
+    let serialized = serde_json::to_string(&list_payload).expect("list payload");
+    assert!(!serialized.contains("forged subject write should be blocked"));
+}
+
+#[tokio::test]
+async fn memory_search_rejects_capability_subject_actor_mismatch() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let put_b = tenant_memory_request(
+        "POST",
+        "/memory/put",
+        "acme",
+        "north",
+        "user-b",
+        Some(json!({
+            "run_id": "subject-b-memory-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "proj-a",
+                "tier": "session"
+            },
+            "kind": "fact",
+            "content": "forged subject private memory phrase",
+            "classification": "internal",
+            "capability": memory_capability(
+                "subject-b-memory-run",
+                "user-b",
+                "acme",
+                "north",
+                "proj-a"
+            )
+        })),
+    );
+    let put_b_resp = app.clone().oneshot(put_b).await.expect("put b response");
+    assert_eq!(put_b_resp.status(), StatusCode::OK);
+
+    let forged_search = tenant_memory_request(
+        "POST",
+        "/memory/search",
+        "acme",
+        "north",
+        "user-a",
+        Some(json!({
+            "run_id": "forged-subject-search-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "proj-a",
+                "tier": "session"
+            },
+            "query": "forged subject private memory phrase",
+            "read_scopes": ["session", "project"],
+            "limit": 10,
+            "capability": memory_capability(
+                "forged-subject-search-run",
+                "user-b",
+                "acme",
+                "north",
+                "proj-a"
+            )
+        })),
+    );
+    let search_resp = app
+        .clone()
+        .oneshot(forged_search)
+        .await
+        .expect("forged search response");
+    assert_eq!(search_resp.status(), StatusCode::FORBIDDEN);
+
+    let audit_req = tenant_memory_request(
+        "GET",
+        "/memory/audit?run_id=forged-subject-search-run",
+        "acme",
+        "north",
+        "user-a",
+        None,
+    );
+    let audit_resp = app.oneshot(audit_req).await.expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    assert!(audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|row| {
+            row.get("action").and_then(Value::as_str) == Some("memory_search")
+                && row.get("status").and_then(Value::as_str) == Some("blocked")
+                && row
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .is_some_and(|detail| detail.contains("capability subject actor mismatch"))
+        })));
 }
