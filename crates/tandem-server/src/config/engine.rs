@@ -54,6 +54,11 @@ impl EngineConfigReport {
         let mut warnings = unknown_tandem_env_warnings();
         let runtime_auth_mode = parse_runtime_auth_mode(&mut errors);
         validate_context_assertion_public_keys(&mut errors);
+        let unsafe_no_api_token = options.unsafe_no_api_token
+            || parse_bool_env("TANDEM_UNSAFE_NO_API_TOKEN", false, &mut errors);
+        let transport_token_configured = options.cli_transport_token_configured
+            || env_value_present("TANDEM_API_TOKEN")
+            || api_token_file_configured(&mut errors);
 
         let config = EngineConfig {
             runtime_auth_mode,
@@ -110,10 +115,8 @@ impl EngineConfigReport {
             hosted_control_plane_configured: super::env::hosted_control_plane_configured(),
             cross_tenant_grant_signing_key_configured:
                 super::env::cross_tenant_grant_signing_key_configured(),
-            transport_token_configured: options.cli_transport_token_configured
-                || env_value_present("TANDEM_API_TOKEN")
-                || env_value_present("TANDEM_API_TOKEN_FILE"),
-            unsafe_no_api_token: options.unsafe_no_api_token,
+            transport_token_configured,
+            unsafe_no_api_token,
         };
 
         validate_security_invariants(&config, &mut errors);
@@ -333,6 +336,31 @@ fn parse_non_negative_f64_env(name: &str, default: f64, errors: &mut Vec<String>
             }
         },
         _ => default,
+    }
+}
+
+fn api_token_file_configured(errors: &mut Vec<String>) -> bool {
+    let Ok(path) = std::env::var("TANDEM_API_TOKEN_FILE") else {
+        return false;
+    };
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    match std::fs::read_to_string(PathBuf::from(trimmed)) {
+        Ok(value) if !value.trim().is_empty() => true,
+        Ok(_) => {
+            errors.push(format!(
+                "TANDEM_API_TOKEN_FILE points to an empty file: {trimmed}"
+            ));
+            false
+        }
+        Err(error) => {
+            errors.push(format!(
+                "TANDEM_API_TOKEN_FILE could not be read ({trimmed}): {error}"
+            ));
+            false
+        }
     }
 }
 
@@ -675,6 +703,59 @@ mod tests {
 
     #[test]
     #[serial]
+    fn hosted_mode_rejects_unsafe_no_api_token_from_env() {
+        with_env(
+            &[
+                ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+                    Some("main=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+                ),
+                ("TANDEM_API_TOKEN", Some("secret")),
+                ("TANDEM_UNSAFE_NO_API_TOKEN", Some("1")),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                assert!(report
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("cannot use TANDEM_UNSAFE_NO_API_TOKEN")));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn hosted_mode_rejects_missing_api_token_file() {
+        with_env(
+            &[
+                ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+                    Some("main=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+                ),
+                ("TANDEM_API_TOKEN", None),
+                (
+                    "TANDEM_API_TOKEN_FILE",
+                    Some("target/does-not-exist/tandem-token"),
+                ),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                assert!(report
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("TANDEM_API_TOKEN_FILE could not be read")));
+                assert!(report
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("requires TANDEM_API_TOKEN")));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
     fn malformed_context_key_fails_validation() {
         with_env(
             &[("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY", Some("not-a-key"))],
@@ -719,6 +800,8 @@ mod tests {
             }
         }
         std::env::remove_var("TANDEM_TYPOED_SETTING");
+        std::env::remove_var("TANDEM_API_TOKEN_FILE");
+        std::env::remove_var("TANDEM_UNSAFE_NO_API_TOKEN");
         std::env::remove_var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE");
         std::env::remove_var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE");
     }
