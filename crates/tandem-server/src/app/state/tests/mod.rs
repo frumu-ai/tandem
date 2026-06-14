@@ -8,7 +8,12 @@ use tandem_core::{
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::ToolRegistry;
-use tandem_types::TenantContext;
+use tandem_types::{
+    AccessPermission, AssertionMetadata, AuthorityChain, DataBoundary, DataClass, GrantSource,
+    HumanActor, PrincipalRef, RequestPrincipal, ResourceKind, ResourceRef, ResourceScope,
+    RuntimeAuthMode, ScopedGrant, Session, StrictTenantContext, TenantContext,
+    VerifiedTenantContext,
+};
 
 #[allow(dead_code)]
 pub(crate) struct AutomationNodeBuilder {
@@ -458,6 +463,247 @@ fn prompt_context_hook_hides_source_bound_governed_memory_without_grant() {
 
     record.metadata = None;
     assert!(ServerPromptContextHook::governed_memory_visible_without_source_grant(&record));
+}
+
+fn test_verified_context(
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+    project_id: &str,
+    include_strict_projection: bool,
+) -> VerifiedTenantContext {
+    let tenant_context =
+        TenantContext::explicit_user_workspace(org_id, workspace_id, None, actor_id);
+    let request_principal = RequestPrincipal::authenticated_user(actor_id, "tandem-web");
+    let principal = PrincipalRef::human_user(actor_id).with_tenant_actor_id(actor_id);
+    let project = ResourceRef::new(org_id, workspace_id, ResourceKind::Project, project_id);
+    let strict_projection = include_strict_projection.then(|| {
+        let grant = ScopedGrant::new(
+            format!("grant-{project_id}-read"),
+            principal.clone(),
+            project.clone(),
+            GrantSource::Direct,
+        )
+        .with_permissions(vec![AccessPermission::Read, AccessPermission::View])
+        .with_data_classes(vec![DataClass::Internal]);
+        StrictTenantContext::new(
+            tenant_context.clone(),
+            principal,
+            AuthorityChain::from_request(request_principal.clone()),
+            ResourceScope::root(project),
+            AssertionMetadata::new(
+                "tandem-web",
+                "tandem-runtime",
+                1_000,
+                999_999_999_999,
+                format!("assertion-{project_id}"),
+            ),
+        )
+        .with_grants(vec![grant])
+        .with_data_boundary(DataBoundary::allow(vec![DataClass::Internal]))
+    });
+    VerifiedTenantContext {
+        tenant_context,
+        human_actor: HumanActor::tandem_user(actor_id),
+        authority_chain: AuthorityChain::from_request(request_principal),
+        roles: vec!["member".to_string()],
+        org_units: Vec::new(),
+        capabilities: Vec::new(),
+        policy_version: None,
+        strict_projection,
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1_000,
+        expires_at_ms: 999_999_999_999,
+        assertion_id: format!("assertion-{project_id}"),
+    }
+}
+
+fn prompt_memory_record_for_tenant(
+    id: &str,
+    tenant_context: &TenantContext,
+    user_id: &str,
+    content: &str,
+    project_id: Option<&str>,
+) -> tandem_memory::types::GlobalMemoryRecord {
+    let mut record = prompt_memory_record("verified", content);
+    record.id = id.to_string();
+    record.user_id = user_id.to_string();
+    record.content_hash = format!("hash-{id}");
+    record.run_id = format!("run-{id}");
+    record.project_tag = project_id.map(ToString::to_string);
+    record.provenance = Some(json!({
+        "tenant_context": tenant_context,
+    }));
+    record
+}
+
+#[test]
+fn prompt_memory_access_keeps_local_client_subject_fallback() {
+    let access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        None,
+        Some("client-local"),
+        2_000,
+    );
+
+    match access {
+        PromptMemoryAccess::Local { user_id } => assert_eq!(user_id, "client-local"),
+        other => panic!("expected local prompt memory access, got {other:?}"),
+    }
+}
+
+#[test]
+fn prompt_memory_access_blocks_enterprise_without_verified_context() {
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    session.tenant_context =
+        TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
+
+    let access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::EnterpriseRequired,
+        Some(&session),
+        Some("client-user-a"),
+        2_000,
+    );
+
+    match access {
+        PromptMemoryAccess::Blocked { reason, .. } => {
+            assert_eq!(reason, "missing_verified_tenant_context")
+        }
+        other => panic!("expected blocked prompt memory access, got {other:?}"),
+    }
+}
+
+#[test]
+fn prompt_memory_access_blocks_verified_context_without_strict_projection() {
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    let verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", false);
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified);
+
+    let access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&session),
+        Some("client-user-a"),
+        2_000,
+    );
+
+    match access {
+        PromptMemoryAccess::Blocked { reason, .. } => {
+            assert_eq!(reason, "missing_strict_projection")
+        }
+        other => panic!("expected blocked prompt memory access, got {other:?}"),
+    }
+}
+
+#[test]
+fn prompt_memory_access_uses_verified_actor_not_client_id() {
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    let verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", true);
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified);
+
+    let access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&session),
+        Some("forged-client"),
+        2_000,
+    );
+
+    match access {
+        PromptMemoryAccess::Governed {
+            tenant_context,
+            subject,
+            ..
+        } => {
+            assert_eq!(tenant_context.org_id, "org-a");
+            assert_eq!(tenant_context.workspace_id, "workspace-a");
+            assert_eq!(subject, "user-a");
+        }
+        other => panic!("expected governed prompt memory access, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn prompt_hook_enterprise_memory_is_tenant_and_verified_actor_scoped() {
+    let project_id = "project-a";
+    let verified_a = test_verified_context("org-a", "workspace-a", "user-a", project_id, true);
+    let tenant_a = verified_a.tenant_context.clone();
+    let tenant_b = TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "user-a");
+
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    session.project_id = Some(project_id.to_string());
+    session.tenant_context = tenant_a.clone();
+    session.verified_tenant_context = Some(verified_a);
+    let memory_access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&session),
+        Some("shared-client-id"),
+        2_000,
+    );
+
+    let db_path = std::env::temp_dir().join(format!(
+        "tandem-prompt-memory-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let db = MemoryDatabase::new(&db_path).await.expect("memory db");
+    db.put_global_memory_record(&prompt_memory_record_for_tenant(
+        "allowed-tenant-memory",
+        &tenant_a,
+        "user-a",
+        "orbit-alpha tenant memory should be injected",
+        Some(project_id),
+    ))
+    .await
+    .expect("store allowed tenant memory");
+    db.put_global_memory_record(&prompt_memory_record_for_tenant(
+        "other-tenant-memory",
+        &tenant_b,
+        "user-a",
+        "orbit-beta other tenant memory must not leak",
+        Some(project_id),
+    ))
+    .await
+    .expect("store other tenant memory");
+    db.put_global_memory_record(&prompt_memory_record_for_tenant(
+        "client-id-memory",
+        &tenant_a,
+        "shared-client-id",
+        "orbit-client forged client memory must not leak",
+        Some(project_id),
+    ))
+    .await
+    .expect("store client id memory");
+
+    let (project_hits, global_hits) = ServerPromptContextHook::search_prompt_global_memory(
+        &db,
+        &memory_access,
+        "orbit",
+        Some(project_id),
+    )
+    .await;
+    let (selected, deferred, project_scope_used) =
+        ServerPromptContextHook::select_memory_hits_for_context(project_hits, global_hits);
+    let rendered = prompt_memory_context::build_memory_block_with_budget(
+        &selected,
+        DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    )
+    .content;
+
+    assert!(project_scope_used);
+    assert!(deferred.is_empty());
+    assert!(
+        rendered.contains("orbit-alpha tenant memory should be injected"),
+        "verified tenant memory should be injected:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("orbit-beta other tenant memory must not leak"),
+        "other tenant memory leaked into prompt:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("orbit-client forged client memory must not leak"),
+        "client-supplied memory subject leaked into enterprise prompt:\n{rendered}"
+    );
 }
 
 #[test]
