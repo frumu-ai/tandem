@@ -40,11 +40,12 @@ bearer tokens.**
   `secret_id`), **not** the secret. The runtime resolves it through a
   `SecretResolver` into a transient `ResolvedBearerToken` (redacted `Debug`, no
   persistence) only for the duration of a provider request.
-- `env://` is the local/dev resolver. Hosted deployments use a
-  KMS/secret-manager-backed resolver (the reserved `google_kms` provider): the
-  control plane performs the OAuth dance, stores refresh/access tokens in
-  KMS/secret manager, and the runtime fetches only short-lived access tokens by
-  reference.
+- `env://` is the only resolver wired into the current runtime import path.
+  Hosted deployments should treat a KMS/secret-manager-backed resolver (the
+  reserved `google_kms` provider) as follow-up implementation work: the control
+  plane will perform the OAuth dance, store refresh/access tokens in KMS/secret
+  manager, and the runtime will fetch only short-lived access tokens by
+  reference once that resolver is wired.
 - The runtime never persists OAuth tokens. Rotation/expiry are tracked on
   `ConnectorCredentialRef` (`rotated_at_ms` / `expires_at_ms`) and driven by the
   control plane.
@@ -81,14 +82,14 @@ opt-in, off by default, and content-free.**
 
 ## D5 — Where source objects are stored
 
-**Decision: source-object *lifecycle metadata* lives in the runtime's per-tenant
-memory store; *raw provider content* is transient and never persisted as a
+**Decision: source-object _lifecycle metadata_ lives in the runtime's per-tenant
+memory store; _raw provider content_ is transient and never persisted as a
 second copy; derived chunks live in the memory store scoped by source binding,
 resource ref, and data class.**
 
 - `SourceObjectLifecycleRecord` (tandem-memory DB) tracks per-tenant lifecycle
-  (active / quarantined / tombstoned / deleted / rescoped) keyed by tenant scope
-  + binding + native object id.
+  (active / quarantined / tombstoned / deleted / rescoped) keyed by tenant
+  scope, binding, and native object id.
 - Raw bytes are fetched to a temp dir during ingestion, indexed, then removed
   (current Google Drive path), so Tandem does not become a second
   system-of-record for provider content.
@@ -101,7 +102,8 @@ resource ref, and data class.**
 With the above resolved, each new connector (Notion, GitHub, Slack, Gmail —
 EAA-15 / TAN-40) is a uniform unit of work:
 
-1. Control-plane OAuth integration + a KMS-backed `SecretResolver` provider.
+1. Control-plane OAuth integration + wiring a KMS-backed `SecretResolver`
+   provider such as the reserved `google_kms` provider.
 2. A per-tenant `ConnectorCredentialRef` (least-privilege, `ReadOnly` for
    ingestion), optionally `source_bound_resource`-narrowed.
 3. An ACL classification in `provider_acl_sync_mode` — `Synced` only if the
