@@ -124,7 +124,8 @@ pub(super) async fn coder_run_get(
             | CoderWorkflowMode::PrReview
             | CoderWorkflowMode::MergeRecommendation
     ) {
-        collect_coder_memory_hits(&state, &record, &memory_query, 8).await?
+        collect_coder_memory_hits(&state, &record, Some(&run.tenant_context), &memory_query, 8)
+            .await?
     } else {
         Vec::new()
     };

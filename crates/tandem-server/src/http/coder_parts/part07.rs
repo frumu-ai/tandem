@@ -678,35 +678,6 @@ pub(super) async fn coder_run_artifacts(
     })))
 }
 
-pub(super) async fn coder_memory_hits_get(
-    State(state): State<AppState>,
-    axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
-    Path(id): Path<String>,
-    Query(query): Query<CoderMemoryHitsQuery>,
-) -> Result<Json<Value>, StatusCode> {
-    let (record, _run) =
-        load_coder_run_with_context_for_tenant(&state, &id, &tenant_context).await?;
-    let search_query = query
-        .q
-        .as_deref()
-        .map(str::trim)
-        .filter(|row| !row.is_empty())
-        .map(ToString::to_string)
-        .unwrap_or_else(|| default_coder_memory_query(&record));
-    let hits =
-        collect_coder_memory_hits(&state, &record, &search_query, query.limit.unwrap_or(8)).await?;
-    Ok(Json(json!({
-        "coder_run_id": record.coder_run_id,
-        "query": search_query,
-        "retrieval_policy": coder_memory_retrieval_policy(
-            &record,
-            &search_query,
-            query.limit.unwrap_or(8),
-        ),
-        "hits": hits,
-    })))
-}
-
 pub(super) async fn coder_memory_candidate_list(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
@@ -778,9 +749,13 @@ pub(super) async fn coder_memory_candidate_promote(
         build_governed_memory_content(&candidate_payload).ok_or(StatusCode::BAD_REQUEST)?;
     let to_tier = input.to_tier.unwrap_or(GovernedMemoryTier::Project);
     let session_partition = coder_memory_partition(&record, GovernedMemoryTier::Session);
+    let run_tenant_context = run.tenant_context.clone();
     let capability = super::skills_memory::issue_run_memory_capability(
         &record.linked_context_run_id,
-        record.source_client.as_deref(),
+        run_tenant_context
+            .actor_id
+            .as_deref()
+            .or(record.source_client.as_deref()),
         &session_partition,
         super::skills_memory::RunMemoryCapabilityPolicy::CoderWorkflow,
     );
@@ -788,7 +763,7 @@ pub(super) async fn coder_memory_candidate_promote(
         "context_run:{}/coder_memory/{}.json",
         record.linked_context_run_id, candidate_id
     )];
-    let tenant_context = run.tenant_context.clone();
+    let tenant_context = run_tenant_context;
     let authority_context = CoderMemoryAuthorityJobContextBase {
         tenant_context: &tenant_context,
         capability: &capability,

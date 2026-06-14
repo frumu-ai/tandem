@@ -1,9 +1,13 @@
 fn validate_memory_capability_guardrail_context(
+    tenant_context: &TenantContext,
     run_id: &str,
     partition: &tandem_memory::MemoryPartition,
     capability: Option<MemoryCapabilityToken>,
+    subject_mode: MemoryCapabilitySubjectMode,
 ) -> Result<MemoryCapabilityToken, (String, &'static str, StatusCode)> {
-    let cap = capability.unwrap_or_else(|| default_memory_capability_for(run_id, partition));
+    let cap = capability.unwrap_or_else(|| {
+        default_memory_capability_for_request(run_id, partition, tenant_context)
+    });
     if cap.run_id != run_id
         || cap.org_id != partition.org_id
         || cap.workspace_id != partition.workspace_id
@@ -22,7 +26,53 @@ fn validate_memory_capability_guardrail_context(
             StatusCode::UNAUTHORIZED,
         ));
     }
+    if !memory_capability_subject_matches_request_actor(tenant_context, &cap.subject, subject_mode)
+    {
+        return Err((
+            cap.subject.clone(),
+            "capability subject actor mismatch",
+            StatusCode::FORBIDDEN,
+        ));
+    }
     Ok(cap)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryCapabilitySubjectMode {
+    ActorOnly,
+    ActorOrChannel,
+}
+
+fn default_memory_capability_for_request(
+    run_id: &str,
+    partition: &tandem_memory::MemoryPartition,
+    tenant_context: &TenantContext,
+) -> MemoryCapabilityToken {
+    issue_run_memory_capability(
+        run_id,
+        tenant_context.actor_id.as_deref(),
+        partition,
+        RunMemoryCapabilityPolicy::Default,
+    )
+}
+
+fn memory_capability_subject_matches_request_actor(
+    tenant_context: &TenantContext,
+    subject: &str,
+    subject_mode: MemoryCapabilitySubjectMode,
+) -> bool {
+    let Some(actor) = tenant_context
+        .actor_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|actor| !actor.is_empty())
+    else {
+        return true;
+    };
+    let subject = subject.trim();
+    subject == actor
+        || (subject_mode == MemoryCapabilitySubjectMode::ActorOrChannel
+            && subject.starts_with("channel:"))
 }
 
 struct MemoryAuthorityRequestValidation<'a> {
@@ -62,19 +112,21 @@ fn validate_memory_authority_job_context_for_request(
             tenant_context.deployment_id.as_deref(),
         )
     };
-    tandem_memory::validate_memory_authority_job_context(tandem_memory::MemoryAuthorityJobValidation {
-        context: authority_job_context,
-        require_context: false,
-        org_id,
-        workspace_id,
-        deployment_id,
-        actor_id: Some(capability.subject.as_str()),
-        run_id,
-        partition,
-        operation,
-        classification,
-        source_memory_id,
-    })
+    tandem_memory::validate_memory_authority_job_context(
+        tandem_memory::MemoryAuthorityJobValidation {
+            context: authority_job_context,
+            require_context: false,
+            org_id,
+            workspace_id,
+            deployment_id,
+            actor_id: Some(capability.subject.as_str()),
+            run_id,
+            partition,
+            operation,
+            classification,
+            source_memory_id,
+        },
+    )
     .map_err(|error| error.as_str())
 }
 
@@ -85,9 +137,11 @@ async fn validate_memory_put_capability_with_guardrail(
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryCapabilityToken, StatusCode> {
     let cap = match validate_memory_capability_guardrail_context(
+        tenant_context,
         &request.run_id,
         &request.partition,
         capability,
+        MemoryCapabilitySubjectMode::ActorOnly,
     ) {
         Ok(cap) => cap,
         Err((actor, detail, status)) => {
@@ -139,9 +193,11 @@ async fn validate_memory_promote_capability_with_guardrail(
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryCapabilityToken, StatusCode> {
     let cap = match validate_memory_capability_guardrail_context(
+        tenant_context,
         &request.run_id,
         &request.partition,
         capability,
+        MemoryCapabilitySubjectMode::ActorOnly,
     ) {
         Ok(cap) => cap,
         Err((actor, detail, status)) => {
@@ -193,16 +249,26 @@ async fn validate_memory_search_capability_with_guardrail(
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryCapabilityToken, StatusCode> {
     let cap = match validate_memory_capability_guardrail_context(
+        tenant_context,
         &request.run_id,
         &request.partition,
         capability,
+        if request.retrieval_gateway.is_some() {
+            MemoryCapabilitySubjectMode::ActorOrChannel
+        } else {
+            MemoryCapabilitySubjectMode::ActorOnly
+        },
     ) {
         Ok(cap) => cap,
         Err((actor, detail, status)) => {
             let requested_scopes = if request.read_scopes.is_empty() {
-                default_memory_capability_for(&request.run_id, &request.partition)
-                    .memory
-                    .read_tiers
+                default_memory_capability_for_request(
+                    &request.run_id,
+                    &request.partition,
+                    tenant_context,
+                )
+                .memory
+                .read_tiers
             } else {
                 request.read_scopes.clone()
             };

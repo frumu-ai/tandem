@@ -1811,7 +1811,17 @@ async fn seed_issue_triage_tasks(
         coder_run.repo_binding.repo_slug,
         issue_number.unwrap_or_default()
     );
-    let memory_hits = collect_coder_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
+    let tenant_context = load_context_run_state(&state, &run_id)
+        .await?
+        .tenant_context;
+    let memory_hits = collect_coder_memory_hits(
+        &state,
+        coder_run,
+        Some(&tenant_context),
+        &retrieval_query,
+        6,
+    )
+    .await?;
     let duplicate_candidates = derive_failure_pattern_duplicate_matches(&memory_hits, None, 3);
     let tasks = vec![
         ContextTaskCreateInput {
@@ -1922,9 +1932,6 @@ async fn seed_issue_triage_tasks(
             max_attempts: Some(1),
         },
     ];
-    let tenant_context = load_context_run_state(&state, &run_id)
-        .await?
-        .tenant_context;
     context_run_tasks_create(
         State(state),
         Extension(tenant_context),

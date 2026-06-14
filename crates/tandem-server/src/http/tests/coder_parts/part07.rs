@@ -589,30 +589,47 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         .await
         .expect("refresh builtin bindings");
     let app = app_router(state.clone());
+    let hosted_json_request = |method: &str, uri: &str, body: Value| -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-tandem-org-id", "ws-tandem")
+            .header("x-tandem-workspace-id", "ws-tandem")
+            .header("x-tandem-actor-id", "coder-user")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("hosted json request")
+    };
+    let hosted_empty_request = |method: &str, uri: &str| -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-tandem-org-id", "ws-tandem")
+            .header("x-tandem-workspace-id", "ws-tandem")
+            .header("x-tandem-actor-id", "coder-user")
+            .body(Body::empty())
+            .expect("hosted empty request")
+    };
 
-    let create_req = Request::builder()
-        .method("POST")
-        .uri("/coder/runs")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "coder_run_id": "coder-run-promote",
-                "workflow_mode": "issue_triage",
-                "repo_binding": {
-                    "project_id": "proj-engine",
-                    "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
-                    "repo_slug": "user123/tandem"
-                },
-                "github_ref": {
-                    "kind": "issue",
-                    "number": 333
-                },
-                "source_client": "desktop_developer_mode"
-            })
-            .to_string(),
-        ))
-        .expect("create request");
+    let create_req = hosted_json_request(
+        "POST",
+        "/coder/runs",
+        json!({
+            "coder_run_id": "coder-run-promote",
+            "workflow_mode": "issue_triage",
+            "repo_binding": {
+                "project_id": "proj-engine",
+                "workspace_id": "ws-tandem",
+                "workspace_root": "/tmp/tandem-repo",
+                "repo_slug": "user123/tandem"
+            },
+            "github_ref": {
+                "kind": "issue",
+                "number": 333
+            },
+            "source_client": "desktop_developer_mode"
+        }),
+    );
     let create_resp = app
         .clone()
         .oneshot(create_req)
@@ -620,18 +637,14 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         .expect("create response");
     assert_eq!(create_resp.status(), StatusCode::OK);
 
-    let summary_req = Request::builder()
-        .method("POST")
-        .uri("/coder/runs/coder-run-promote/triage-summary")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "summary": "Capability readiness drift already explained this failure",
-                "confidence": "high"
-            })
-            .to_string(),
-        ))
-        .expect("summary request");
+    let summary_req = hosted_json_request(
+        "POST",
+        "/coder/runs/coder-run-promote/triage-summary",
+        json!({
+            "summary": "Capability readiness drift already explained this failure",
+            "confidence": "high"
+        }),
+    );
     let summary_resp = app
         .clone()
         .oneshot(summary_req)
@@ -656,22 +669,18 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         })
         .expect("triage candidate id");
 
-    let promote_req = Request::builder()
-        .method("POST")
-        .uri(format!(
-            "/coder/runs/coder-run-promote/memory-candidates/{triage_candidate_id}/promote"
-        ))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "to_tier": "project",
-                "reviewer_id": "reviewer-1",
-                "approval_id": "approval-1",
-                "reason": "approved reusable triage memory"
-            })
-            .to_string(),
-        ))
-        .expect("promote request");
+    let promote_uri =
+        format!("/coder/runs/coder-run-promote/memory-candidates/{triage_candidate_id}/promote");
+    let promote_req = hosted_json_request(
+        "POST",
+        &promote_uri,
+        json!({
+            "to_tier": "project",
+            "reviewer_id": "reviewer-1",
+            "approval_id": "approval-1",
+            "reason": "approved reusable triage memory"
+        }),
+    );
     let promote_resp = app
         .clone()
         .oneshot(promote_req)
@@ -686,12 +695,25 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         promote_payload.get("promoted").and_then(Value::as_bool),
         Some(true)
     );
+    let db = super::super::skills_memory::open_global_memory_db()
+        .await
+        .expect("global memory db");
+    let promoted_record = db
+        .get_global_memory(
+            promote_payload
+                .get("memory_id")
+                .and_then(Value::as_str)
+                .expect("memory id"),
+        )
+        .await
+        .expect("load governed memory")
+        .expect("governed memory record");
+    assert_eq!(promoted_record.user_id, "coder-user");
 
-    let hits_req = Request::builder()
-        .method("GET")
-        .uri("/coder/runs/coder-run-promote/memory-hits?q=capability%20readiness")
-        .body(Body::empty())
-        .expect("hits request");
+    let hits_req = hosted_empty_request(
+        "GET",
+        "/coder/runs/coder-run-promote/memory-hits?q=capability%20readiness",
+    );
     let hits_resp = app.clone().oneshot(hits_req).await.expect("hits response");
     assert_eq!(hits_resp.status(), StatusCode::OK);
     let hits_body = to_bytes(hits_resp.into_body(), usize::MAX)
@@ -711,29 +733,25 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         .unwrap_or(false);
     assert!(has_promoted_hit);
 
-    let create_fix_req = Request::builder()
-        .method("POST")
-        .uri("/coder/runs")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "coder_run_id": "coder-run-promote-fix",
-                "workflow_mode": "issue_fix",
-                "repo_binding": {
-                    "project_id": "proj-engine",
-                    "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
-                    "repo_slug": "user123/tandem"
-                },
-                "github_ref": {
-                    "kind": "issue",
-                    "number": 334
-                },
-                "source_client": "desktop_developer_mode"
-            })
-            .to_string(),
-        ))
-        .expect("create fix request");
+    let create_fix_req = hosted_json_request(
+        "POST",
+        "/coder/runs",
+        json!({
+            "coder_run_id": "coder-run-promote-fix",
+            "workflow_mode": "issue_fix",
+            "repo_binding": {
+                "project_id": "proj-engine",
+                "workspace_id": "ws-tandem",
+                "workspace_root": "/tmp/tandem-repo",
+                "repo_slug": "user123/tandem"
+            },
+            "github_ref": {
+                "kind": "issue",
+                "number": 334
+            },
+            "source_client": "desktop_developer_mode"
+        }),
+    );
     let create_fix_resp = app
         .clone()
         .oneshot(create_fix_req)
@@ -741,20 +759,16 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         .expect("create fix response");
     assert_eq!(create_fix_resp.status(), StatusCode::OK);
 
-    let fix_summary_req = Request::builder()
-        .method("POST")
-        .uri("/coder/runs/coder-run-promote-fix/issue-fix-summary")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "summary": "Add the missing startup fallback guard and validate recovery behavior.",
-                "root_cause": "Startup recovery skipped the nil-config fallback path.",
-                "fix_strategy": "add startup fallback guard",
-                "changed_files": ["crates/tandem-server/src/http/coder.rs"]
-            })
-            .to_string(),
-        ))
-        .expect("fix summary request");
+    let fix_summary_req = hosted_json_request(
+        "POST",
+        "/coder/runs/coder-run-promote-fix/issue-fix-summary",
+        json!({
+            "summary": "Add the missing startup fallback guard and validate recovery behavior.",
+            "root_cause": "Startup recovery skipped the nil-config fallback path.",
+            "fix_strategy": "add startup fallback guard",
+            "changed_files": ["crates/tandem-server/src/http/coder.rs"]
+        }),
+    );
     let fix_summary_resp = app
         .clone()
         .oneshot(fix_summary_req)
@@ -781,22 +795,19 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         })
         .expect("fix pattern candidate id");
 
-    let promote_fix_req = Request::builder()
-        .method("POST")
-        .uri(format!(
-            "/coder/runs/coder-run-promote-fix/memory-candidates/{fix_pattern_candidate_id}/promote"
-        ))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "to_tier": "project",
-                "reviewer_id": "reviewer-1",
-                "approval_id": "approval-1",
-                "reason": "approved reusable fix pattern"
-            })
-            .to_string(),
-        ))
-        .expect("promote fix request");
+    let promote_fix_uri = format!(
+        "/coder/runs/coder-run-promote-fix/memory-candidates/{fix_pattern_candidate_id}/promote"
+    );
+    let promote_fix_req = hosted_json_request(
+        "POST",
+        &promote_fix_uri,
+        json!({
+            "to_tier": "project",
+            "reviewer_id": "reviewer-1",
+            "approval_id": "approval-1",
+            "reason": "approved reusable fix pattern"
+        }),
+    );
     let promote_fix_resp = app
         .clone()
         .oneshot(promote_fix_req)
@@ -814,11 +825,10 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         Some(true)
     );
 
-    let fix_hits_req = Request::builder()
-        .method("GET")
-        .uri("/coder/runs/coder-run-promote-fix/memory-hits?q=startup%20fallback%20guard")
-        .body(Body::empty())
-        .expect("fix hits request");
+    let fix_hits_req = hosted_empty_request(
+        "GET",
+        "/coder/runs/coder-run-promote-fix/memory-hits?q=startup%20fallback%20guard",
+    );
     let fix_hits_resp = app
         .clone()
         .oneshot(fix_hits_req)
@@ -849,9 +859,6 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         .unwrap_or(false);
     assert!(has_promoted_fix_hit);
 
-    let db = super::super::skills_memory::open_global_memory_db()
-        .await
-        .expect("global memory db");
     let promoted_fix_record = db
         .get_global_memory(
             promote_fix_payload
@@ -862,6 +869,7 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
         .await
         .expect("load fix governed memory")
         .expect("fix governed memory record");
+    assert_eq!(promoted_fix_record.user_id, "coder-user");
     assert_eq!(promoted_fix_record.source_type, "solution_capsule");
     assert_eq!(
         promoted_fix_record.project_tag.as_deref(),
