@@ -336,6 +336,15 @@ pub fn validate_registry(registry: &WorkflowRegistry) -> Vec<WorkflowValidationM
             });
         }
         for step in &workflow.steps {
+            if step.step_id.trim().is_empty() {
+                messages.push(WorkflowValidationMessage {
+                    severity: WorkflowValidationSeverity::Error,
+                    message: format!(
+                        "workflow `{}` has step with empty step_id",
+                        workflow.workflow_id
+                    ),
+                });
+            }
             if step.action.trim().is_empty() {
                 messages.push(WorkflowValidationMessage {
                     severity: WorkflowValidationSeverity::Error,
@@ -586,6 +595,21 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn workspace_source(root: &Path) -> WorkflowLoadSource {
+        WorkflowLoadSource {
+            root: root.to_path_buf(),
+            kind: WorkflowSourceKind::Workspace,
+            pack_id: None,
+        }
+    }
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("mkdir");
+        }
+        fs::write(path, contents).expect("write");
+    }
+
     #[test]
     fn loads_workflow_with_embedded_hooks() {
         let dir = tempdir().expect("dir");
@@ -621,5 +645,340 @@ workflow:
         assert_eq!(workflow.steps.len(), 2);
         assert_eq!(registry.hooks.len(), 1);
         assert_eq!(registry.hooks[0].actions.len(), 2);
+    }
+
+    #[test]
+    fn workflow_spec_yaml_round_trips() {
+        let spec = WorkflowSpec {
+            workflow_id: "triage".to_string(),
+            name: "Triage".to_string(),
+            description: Some("Route incoming work".to_string()),
+            enabled: true,
+            knowledge: KnowledgeBinding::default(),
+            steps: vec![WorkflowStepSpec {
+                step_id: "classify".to_string(),
+                action: "classifier.run".to_string(),
+                with: Some(serde_json::json!({"mode": "strict"})),
+                knowledge: KnowledgeBinding::default(),
+            }],
+            hooks: vec![WorkflowHookBinding {
+                binding_id: "triage.task_created".to_string(),
+                workflow_id: "triage".to_string(),
+                event: "task_created".to_string(),
+                enabled: true,
+                actions: vec![WorkflowActionSpec {
+                    action: "kanban.update".to_string(),
+                    with: None,
+                }],
+                source: None,
+            }],
+            source: Some(WorkflowSourceRef {
+                kind: WorkflowSourceKind::Pack,
+                pack_id: Some("ops".to_string()),
+                path: Some("packs/ops/workflows/triage.yaml".to_string()),
+            }),
+        };
+
+        let encoded = serde_yaml::to_string(&spec).expect("serialize");
+        let decoded: WorkflowSpec = serde_yaml::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded, spec);
+    }
+
+    #[test]
+    fn string_steps_get_stable_generated_step_ids() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/generated.yaml"),
+            r#"
+workflow:
+  id: generated
+  name: Generated Steps
+  steps:
+    - planner
+    - verifier.run
+"#,
+        );
+
+        let registry = load_registry(&[workspace_source(dir.path())]).expect("registry");
+        let workflow = registry.workflows.get("generated").expect("workflow");
+        let step_ids = workflow
+            .steps
+            .iter()
+            .map(|step| step.step_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(step_ids, vec!["step_1", "step_2"]);
+    }
+
+    #[test]
+    fn validate_registry_reports_empty_step_id() {
+        let registry = WorkflowRegistry {
+            workflows: HashMap::from([(
+                "bad".to_string(),
+                WorkflowSpec {
+                    workflow_id: "bad".to_string(),
+                    name: "Bad".to_string(),
+                    description: None,
+                    enabled: true,
+                    knowledge: KnowledgeBinding::default(),
+                    steps: vec![WorkflowStepSpec {
+                        step_id: " ".to_string(),
+                        action: "planner".to_string(),
+                        with: None,
+                        knowledge: KnowledgeBinding::default(),
+                    }],
+                    hooks: Vec::new(),
+                    source: None,
+                },
+            )]),
+            hooks: Vec::new(),
+        };
+
+        let messages = validate_registry(&registry);
+        assert!(messages.iter().any(|message| {
+            message.severity == WorkflowValidationSeverity::Error
+                && message.message.contains("empty step_id")
+        }));
+    }
+
+    #[test]
+    fn validate_registry_reports_empty_step_action() {
+        let registry = WorkflowRegistry {
+            workflows: HashMap::from([(
+                "bad".to_string(),
+                WorkflowSpec {
+                    workflow_id: "bad".to_string(),
+                    name: "Bad".to_string(),
+                    description: None,
+                    enabled: true,
+                    knowledge: KnowledgeBinding::default(),
+                    steps: vec![WorkflowStepSpec {
+                        step_id: "empty_action".to_string(),
+                        action: " ".to_string(),
+                        with: None,
+                        knowledge: KnowledgeBinding::default(),
+                    }],
+                    hooks: Vec::new(),
+                    source: None,
+                },
+            )]),
+            hooks: Vec::new(),
+        };
+
+        let messages = validate_registry(&registry);
+        assert!(messages.iter().any(|message| {
+            message.severity == WorkflowValidationSeverity::Error
+                && message.message.contains("empty action")
+        }));
+    }
+
+    #[test]
+    fn validate_registry_reports_dangling_hook_reference() {
+        let registry = WorkflowRegistry {
+            workflows: HashMap::new(),
+            hooks: vec![WorkflowHookBinding {
+                binding_id: "missing.task_created".to_string(),
+                workflow_id: "missing".to_string(),
+                event: "task_created".to_string(),
+                enabled: true,
+                actions: vec![WorkflowActionSpec {
+                    action: "planner".to_string(),
+                    with: None,
+                }],
+                source: None,
+            }],
+        };
+
+        let messages = validate_registry(&registry);
+        assert!(messages.iter().any(|message| {
+            message.severity == WorkflowValidationSeverity::Error
+                && message.message.contains("unknown workflow `missing`")
+        }));
+    }
+
+    #[test]
+    fn validate_registry_warns_for_empty_hook_actions() {
+        let registry = WorkflowRegistry {
+            workflows: HashMap::from([(
+                "demo".to_string(),
+                WorkflowSpec {
+                    workflow_id: "demo".to_string(),
+                    name: "Demo".to_string(),
+                    description: None,
+                    enabled: true,
+                    knowledge: KnowledgeBinding::default(),
+                    steps: vec![WorkflowStepSpec {
+                        step_id: "plan".to_string(),
+                        action: "planner".to_string(),
+                        with: None,
+                        knowledge: KnowledgeBinding::default(),
+                    }],
+                    hooks: Vec::new(),
+                    source: None,
+                },
+            )]),
+            hooks: vec![WorkflowHookBinding {
+                binding_id: "demo.task_created".to_string(),
+                workflow_id: "demo".to_string(),
+                event: "task_created".to_string(),
+                enabled: true,
+                actions: Vec::new(),
+                source: None,
+            }],
+        };
+
+        let messages = validate_registry(&registry);
+        assert!(messages.iter().any(|message| {
+            message.severity == WorkflowValidationSeverity::Warning
+                && message.message.contains("has no actions")
+        }));
+    }
+
+    #[test]
+    fn flat_and_explicit_embedded_hook_formats_parse_equivalently() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/flat.yaml"),
+            r#"
+workflow:
+  id: flat
+  name: Flat
+  steps:
+    - planner
+  hooks:
+    task_created:
+      - kanban.update
+      - action: slack.notify
+        with:
+          channel: engineering
+"#,
+        );
+        write_file(
+            &dir.path().join("workflows/list.yaml"),
+            r#"
+workflow:
+  id: list
+  name: List
+  steps:
+    - planner
+  hooks:
+    - event: task_created
+      actions:
+        - kanban.update
+        - action: slack.notify
+          with:
+            channel: engineering
+"#,
+        );
+
+        let registry = load_registry(&[workspace_source(dir.path())]).expect("registry");
+        let flat = registry
+            .hooks
+            .iter()
+            .find(|hook| hook.workflow_id == "flat")
+            .expect("flat hook");
+        let list = registry
+            .hooks
+            .iter()
+            .find(|hook| hook.workflow_id == "list")
+            .expect("list hook");
+        assert_eq!(flat.event, list.event);
+        assert_eq!(flat.enabled, list.enabled);
+        assert_eq!(flat.actions, list.actions);
+    }
+
+    #[test]
+    fn recursive_directory_loading_discovers_nested_workflows_and_hooks() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/nested/demo.yaml"),
+            r#"
+workflow:
+  id: nested_demo
+  name: Nested Demo
+  steps:
+    - planner
+"#,
+        );
+        write_file(
+            &dir.path().join("hooks/deep/events.yaml"),
+            r#"
+hooks:
+  - workflow: nested_demo
+    event: task_created
+    actions:
+      - verifier.run
+"#,
+        );
+
+        let registry = load_registry(&[workspace_source(dir.path())]).expect("registry");
+        assert!(registry.workflows.contains_key("nested_demo"));
+        assert!(registry.hooks.iter().any(|hook| {
+            hook.workflow_id == "nested_demo"
+                && hook.event == "task_created"
+                && hook.actions[0].action == "verifier.run"
+        }));
+    }
+
+    #[test]
+    fn malformed_nested_yaml_fails_loudly() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/nested/broken.yaml"),
+            "workflow: [not: valid: yaml",
+        );
+
+        let error = load_registry(&[workspace_source(dir.path())]).expect_err("parse error");
+        let message = format!("{error:#}");
+        assert!(message.contains("parse workflow yaml"));
+        assert!(message.contains("broken.yaml"));
+    }
+
+    #[test]
+    fn workflow_file_missing_workflow_key_fails_loudly() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/missing.yaml"),
+            r#"
+hooks:
+  task_created:
+    - planner
+"#,
+        );
+
+        let error = load_registry(&[workspace_source(dir.path())]).expect_err("missing workflow");
+        assert!(format!("{error:#}").contains("missing `workflow` key"));
+    }
+
+    #[test]
+    fn source_ref_preserves_pack_id_and_path() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/pack/demo.yaml"),
+            r#"
+workflow:
+  id: packed
+  name: Packed
+  steps:
+    - planner
+"#,
+        );
+
+        let registry = load_registry(&[WorkflowLoadSource {
+            root: dir.path().to_path_buf(),
+            kind: WorkflowSourceKind::Pack,
+            pack_id: Some("starter-pack".to_string()),
+        }])
+        .expect("registry");
+        let source = registry
+            .workflows
+            .get("packed")
+            .and_then(|workflow| workflow.source.as_ref())
+            .expect("source");
+        assert_eq!(source.kind, WorkflowSourceKind::Pack);
+        assert_eq!(source.pack_id.as_deref(), Some("starter-pack"));
+        assert!(source
+            .path
+            .as_deref()
+            .is_some_and(|value| value.ends_with("demo.yaml")));
     }
 }
