@@ -1,5 +1,6 @@
 use super::*;
 use axum::http::HeaderValue;
+use serde_json::Value;
 use serial_test::serial;
 use tandem_types::{AuthorityChain, HumanActor, OrganizationUnitState, TenantSource};
 
@@ -415,7 +416,7 @@ fn expired_signed_context_assertion_denial_keeps_tenant_attribution() {
 
     let denial = verifier.denial_for_error(&assertion, err);
 
-    assert_eq!(denial.event_type(), "context_assertion.rejected");
+    assert_eq!(denial.event_type(), "context.assertion_rejected");
     assert_eq!(
         denial.reason,
         TenantContextIngressError::ContextAssertionExpired
@@ -964,7 +965,7 @@ fn ingress_denial_for_untrusted_assertion_uses_global_audit_scope() {
     let denial =
         TenantContextIngressDenial::untrusted(TenantContextIngressError::ContextAssertionUntrusted);
 
-    assert_eq!(denial.event_type(), "context_assertion.rejected");
+    assert_eq!(denial.event_type(), "context.assertion_rejected");
     assert!(denial.tenant_context.is_local_implicit());
     assert_eq!(denial.reason.as_str(), "context_assertion_untrusted");
     assert!(denial.assertion_id.is_none());
@@ -978,11 +979,65 @@ fn ingress_denial_for_verified_replay_is_tenant_attributed() {
         &verified,
     );
 
-    assert_eq!(denial.event_type(), "context_assertion.rejected");
+    assert_eq!(denial.event_type(), "context.assertion_rejected");
     assert_eq!(denial.tenant_context.org_id, "org-a");
     assert_eq!(denial.tenant_context.workspace_id, "workspace-a");
     assert_eq!(denial.actor.as_deref(), Some("user-a"));
     assert_eq!(denial.assertion_id.as_deref(), Some("assertion-a"));
+}
+
+#[test]
+fn untrusted_context_assertion_denial_keeps_safe_claim_preview() {
+    let (signing_key, verifier) = test_signing_key_and_verifier();
+    let assertion =
+        sign_test_context_assertion(&signing_key, "test-key", test_claims(1_000, 20_000));
+    let err = verifier
+        .verify_at(&format!("{assertion}tampered"), 1_500)
+        .expect_err("tampered assertion must be rejected");
+
+    let denial = verifier.denial_for_error(&assertion, err);
+
+    assert_eq!(denial.event_type(), "context.assertion_rejected");
+    assert_eq!(denial.assertion_key_id.as_deref(), Some("test-key"));
+    assert_eq!(denial.issuer.as_deref(), Some("tandem-web"));
+    assert_eq!(denial.org_claim.as_deref(), Some("org-a"));
+    assert_eq!(denial.workspace_claim.as_deref(), Some("workspace-a"));
+}
+
+#[tokio::test]
+async fn authorization_denial_writes_authority_cross_tenant_audit_event() {
+    let state = crate::test_support::test_state().await;
+    let tenant_context = TenantContext::explicit_user_workspace(
+        "org-a",
+        "workspace-a",
+        Some("deployment-a".to_string()),
+        "user-a",
+    );
+    let resolved = ResolvedEnterpriseRequestContext::local(
+        tenant_context.clone(),
+        RequestPrincipal::authenticated_user("user-b", "api_token"),
+    );
+
+    append_authorization_denial_audit_event(&state, &resolved).await;
+
+    let events =
+        crate::audit::load_protected_audit_events_for_tenant(&state, &tenant_context).await;
+    let event = events
+        .iter()
+        .find(|event| event.event_type == "authority.cross_tenant_denied")
+        .expect("authority denial audit event");
+    assert_eq!(
+        event.payload.get("reason").and_then(Value::as_str),
+        Some("request_principal_tenant_mismatch")
+    );
+    assert_eq!(
+        event
+            .payload
+            .pointer("/resource_ref/kind")
+            .and_then(Value::as_str),
+        Some("tenant_context")
+    );
+    assert_eq!(event.actor.as_deref(), Some("user-b"));
 }
 
 fn test_signing_key_and_verifier() -> (ed25519_dalek::SigningKey, TenantContextAssertionVerifier) {

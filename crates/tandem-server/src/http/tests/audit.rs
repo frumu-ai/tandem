@@ -256,6 +256,62 @@ async fn protected_audit_query_filters_by_tenant_context() {
 }
 
 #[tokio::test]
+async fn protected_audit_query_filters_by_denial_event_type() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let tenant = tandem_types::TenantContext::explicit(
+        "org-denial",
+        "workspace-denial",
+        Some("audit-admin".to_string()),
+    );
+
+    crate::audit::append_protected_audit_event(
+        &state,
+        "mcp.secret_tenant_mismatch",
+        &tenant,
+        Some("audit-admin".to_string()),
+        json!({
+            "reason": "store_secret_tenant_mismatch",
+            "server_name": "tenant-mcp",
+            "tool_name": "get_me",
+        }),
+    )
+    .await
+    .expect("mcp denial audit");
+    crate::audit::append_protected_audit_event(
+        &state,
+        "authority.cross_tenant_denied",
+        &tenant,
+        Some("audit-admin".to_string()),
+        json!({
+            "reason": "cross_tenant_receipt_replay",
+        }),
+    )
+    .await
+    .expect("authority denial audit");
+
+    let resp = app
+        .oneshot(protected_audit_request(
+            "/audit/protected?event_type=mcp.secret_tenant_mismatch",
+            "org-denial",
+            "workspace-denial",
+        ))
+        .await
+        .expect("protected audit response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("protected audit body");
+    let payload: Value = serde_json::from_slice(&body).expect("protected audit json");
+
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        payload["events"][0]["event_type"].as_str(),
+        Some("mcp.secret_tenant_mismatch")
+    );
+}
+
+#[tokio::test]
 async fn recover_in_flight_runs_records_attributed_protected_audit() {
     let state = test_state().await;
     let tenant = tandem_types::TenantContext::explicit(

@@ -396,8 +396,11 @@ struct TenantContextIngressDenial {
     tenant_context: TenantContext,
     actor: Option<String>,
     assertion_id: Option<String>,
+    assertion_key_id: Option<String>,
     issuer: Option<String>,
-    audience: Option<String>,
+    org_claim: Option<String>,
+    workspace_claim: Option<String>,
+    deployment_claim: Option<String>,
 }
 
 impl TenantContextIngressDenial {
@@ -407,8 +410,29 @@ impl TenantContextIngressDenial {
             tenant_context: TenantContext::local_implicit(),
             actor: None,
             assertion_id: None,
+            assertion_key_id: None,
             issuer: None,
-            audience: None,
+            org_claim: None,
+            workspace_claim: None,
+            deployment_claim: None,
+        }
+    }
+
+    fn from_assertion(reason: TenantContextIngressError, assertion: &str) -> Self {
+        let Some((key_id, claims)) = preview_context_assertion_for_audit(assertion) else {
+            return Self::untrusted(reason);
+        };
+        let tenant_context = claims.tenant_context;
+        Self {
+            reason,
+            tenant_context: TenantContext::local_implicit(),
+            actor: None,
+            assertion_id: Some(claims.assertion_id),
+            assertion_key_id: Some(key_id),
+            issuer: Some(claims.issuer),
+            org_claim: Some(tenant_context.org_id),
+            workspace_claim: Some(tenant_context.workspace_id),
+            deployment_claim: tenant_context.deployment_id,
         }
     }
 
@@ -418,8 +442,11 @@ impl TenantContextIngressDenial {
             tenant_context: verified.tenant_context.clone(),
             actor: Some(verified.human_actor.actor_id.clone()),
             assertion_id: Some(verified.assertion_id.clone()),
+            assertion_key_id: verified.assertion_key_id.clone(),
             issuer: Some(verified.issuer.clone()),
-            audience: Some(verified.audience.clone()),
+            org_claim: Some(verified.tenant_context.org_id.clone()),
+            workspace_claim: Some(verified.tenant_context.workspace_id.clone()),
+            deployment_claim: verified.tenant_context.deployment_id.clone(),
         }
     }
 
@@ -430,7 +457,7 @@ impl TenantContextIngressDenial {
             | TenantContextIngressError::ContextAssertionUntrusted
             | TenantContextIngressError::ContextAssertionExpired
             | TenantContextIngressError::ContextAssertionReplayed
-            | TenantContextIngressError::MissingVerifiedContext => "context_assertion.rejected",
+            | TenantContextIngressError::MissingVerifiedContext => "context.assertion_rejected",
             TenantContextIngressError::UnsignedTenantHeaders => "tenant_context.ingress.denied",
         }
     }
@@ -453,12 +480,29 @@ impl TenantContextIngressDenial {
                 "assertion_present": first_tandem_context_assertion(headers).is_some(),
                 "raw_tenant_headers_present": has_raw_tenant_context_headers(headers),
                 "assertion_id": self.assertion_id,
+                "kid": self.assertion_key_id,
                 "issuer": self.issuer,
-                "audience": self.audience,
+                "org_claim": self.org_claim,
+                "workspace_claim": self.workspace_claim,
+                "deployment_claim": self.deployment_claim,
             }),
         )
         .await;
     }
+}
+fn preview_context_assertion_for_audit(
+    assertion: &str,
+) -> Option<(String, TenantContextAssertionClaims)> {
+    let mut parts = assertion.trim().split('.');
+    let header = decode_base64url(parts.next()?)?;
+    let claims = decode_base64url(parts.next()?)?;
+    let _signature = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let header: TenantContextAssertionHeader = serde_json::from_slice(&header).ok()?;
+    let claims: TenantContextAssertionClaims = serde_json::from_slice(&claims).ok()?;
+    Some((header.kid, claims))
 }
 
 async fn append_authorization_denial_audit_event(
@@ -467,12 +511,19 @@ async fn append_authorization_denial_audit_event(
 ) {
     let _ = crate::audit::append_protected_audit_event(
         state,
-        "tenant_context.authorization.denied",
+        "authority.cross_tenant_denied",
         &resolved.tenant_context,
         resolved.request_principal.actor_id.clone(),
         json!({
             "reason": "request_principal_tenant_mismatch",
-            "request_principal": resolved.request_principal,
+            "principal_actor": resolved.request_principal.actor_id,
+            "principal_source": resolved.request_principal.source,
+            "resource_ref": {
+                "kind": "tenant_context",
+                "org_id": resolved.tenant_context.org_id,
+                "workspace_id": resolved.tenant_context.workspace_id,
+                "deployment_id": resolved.tenant_context.deployment_id,
+            },
             "tenant_context": resolved.tenant_context,
         }),
     )
@@ -509,7 +560,7 @@ fn resolve_enterprise_request_context_for_mode_with_denial(
                 )
             })?;
             let verifier = TenantContextAssertionVerifier::from_env()
-                .map_err(TenantContextIngressDenial::untrusted)?;
+                .map_err(|reason| TenantContextIngressDenial::from_assertion(reason, &assertion))?;
             let verified_tenant_context = verifier
                 .verify(&assertion)
                 .map_err(|reason| verifier.denial_for_error(&assertion, reason))?;
@@ -749,7 +800,7 @@ impl TenantContextAssertionVerifier {
         reason: TenantContextIngressError,
     ) -> TenantContextIngressDenial {
         if reason != TenantContextIngressError::ContextAssertionExpired {
-            return TenantContextIngressDenial::untrusted(reason);
+            return TenantContextIngressDenial::from_assertion(reason, assertion);
         }
         self.verify_signed_claims_at(assertion, current_unix_ms())
             .map(|signed| {

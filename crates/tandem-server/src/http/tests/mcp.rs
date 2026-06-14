@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 fn mcp_env_lock() -> &'static Mutex<()> {
@@ -191,6 +192,127 @@ async fn bootstrap_mcp_servers_installs_builtin_tandem_docs_server() {
         .any(|tool| tool.tool_name == "notion_search"));
 
     server.abort();
+}
+
+#[tokio::test]
+async fn mcp_secret_tenant_mismatch_writes_sanitized_protected_audit() {
+    let state = test_state().await;
+    let tenant_a = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "workspace-a",
+        Some("deployment-a".to_string()),
+        "user-a",
+    );
+    let tenant_b = tandem_types::TenantContext::explicit_user_workspace(
+        "org-b",
+        "workspace-b",
+        Some("deployment-b".to_string()),
+        "user-b",
+    );
+    state
+        .mcp
+        .add_or_update_with_secret_refs(
+            "tenant-server".to_string(),
+            "http://127.0.0.1:9/mcp".to_string(),
+            HashMap::new(),
+            HashMap::from([(
+                "Authorization".to_string(),
+                tandem_runtime::McpSecretRef::Store {
+                    secret_id: "super-secret-canary".to_string(),
+                    tenant_context: tenant_a,
+                },
+            )]),
+            &tenant_b,
+            true,
+        )
+        .await;
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+        &state,
+        "tenant-server",
+        "get_me",
+        json!({}),
+        &tenant_b,
+    )
+    .await
+    .expect_err("tenant B cannot use tenant A's store-backed secret");
+    assert!(err.contains("ToolDenied { reason: TenantScope }"));
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"mcp.secret_tenant_mismatch\""));
+    assert!(audit.contains("\"Authorization\""));
+    assert!(audit.contains("\"server_name\":\"tenant-server\""));
+    assert!(
+        !audit.contains("super-secret-canary"),
+        "secret identifiers must not be written to protected audit payloads"
+    );
+
+    let events = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant_b).await;
+    let event = events
+        .iter()
+        .find(|event| event.event_type == "mcp.secret_tenant_mismatch")
+        .expect("mcp secret tenant mismatch audit event");
+    assert_eq!(event.actor.as_deref(), Some("user-b"));
+    assert_eq!(
+        event.payload["header_names"]
+            .as_array()
+            .and_then(|headers| headers.first())
+            .and_then(Value::as_str),
+        Some("Authorization")
+    );
+}
+
+#[tokio::test]
+async fn disabled_mcp_server_with_foreign_secret_does_not_emit_mismatch_audit() {
+    let state = test_state().await;
+    let tenant_a = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "workspace-a",
+        Some("deployment-a".to_string()),
+        "user-a",
+    );
+    let tenant_b = tandem_types::TenantContext::explicit_user_workspace(
+        "org-b",
+        "workspace-b",
+        Some("deployment-b".to_string()),
+        "user-b",
+    );
+    state
+        .mcp
+        .add_or_update_with_secret_refs(
+            "disabled-tenant-server".to_string(),
+            "http://127.0.0.1:9/mcp".to_string(),
+            HashMap::new(),
+            HashMap::from([(
+                "Authorization".to_string(),
+                tandem_runtime::McpSecretRef::Store {
+                    secret_id: "super-secret-canary".to_string(),
+                    tenant_context: tenant_a,
+                },
+            )]),
+            &tenant_b,
+            false,
+        )
+        .await;
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+        &state,
+        "disabled-tenant-server",
+        "get_me",
+        json!({}),
+        &tenant_b,
+    )
+    .await
+    .expect_err("disabled server should fail before tenant secret validation");
+    assert!(err.contains("is disabled"));
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .unwrap_or_default();
+    assert!(!audit.contains("mcp.secret_tenant_mismatch"));
+    assert!(!audit.contains("super-secret-canary"));
 }
 
 #[cfg(not(feature = "premium-governance"))]

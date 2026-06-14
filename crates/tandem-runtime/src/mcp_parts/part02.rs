@@ -48,6 +48,35 @@ fn resolve_secret_ref_value_with_loader(
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSecretTenantMismatchAudit {
+    pub server_name: String,
+    pub tool_name: String,
+    pub header_names: Vec<String>,
+    pub tenant_context: TenantContext,
+}
+
+impl McpRegistry {
+    pub async fn secret_tenant_mismatch_audit(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        current_tenant: &TenantContext,
+    ) -> Option<McpSecretTenantMismatchAudit> {
+        let server = self.servers.read().await.get(server_name).cloned()?;
+        let header_names = mismatched_store_secret_headers(&server.secret_headers, current_tenant);
+        if header_names.is_empty() {
+            return None;
+        }
+        Some(McpSecretTenantMismatchAudit {
+            server_name: server_name.to_string(),
+            tool_name: tool_name.to_string(),
+            header_names,
+            tenant_context: current_tenant.clone(),
+        })
+    }
+}
+
 fn mismatched_store_secret_headers(
     secret_headers: &HashMap<String, McpSecretRef>,
     current_tenant: &TenantContext,
