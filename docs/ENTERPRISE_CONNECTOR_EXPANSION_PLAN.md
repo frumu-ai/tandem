@@ -50,20 +50,22 @@ enforced by the shared path — all true today:
 
 Until resource/data-class authorization **and** audit posture are complete for a
 provider, a connector MUST NOT offer a "import the whole workspace / drive /
-account" binding. Concretely, a source binding is rejected at creation/import
-when **either**:
+account" binding. Imports must be scoped to a concrete subtree — a folder, a
+repository (optionally a path subtree), a database, a channel, a label/query.
+This is the intended posture for Drive (folder-scoped, never "all of Drive") and
+is the policy that keeps every connector below least-privilege.
 
-- its `resource_ref.resource_kind` is a tenant-wide root
-  (`Organization`, `Workspace`, `OrganizationUnit`, `Department`), **or**
-- its `native_source_id` denotes a provider-wide root (entire Drive, whole
-  Notion workspace, all repos, all channels, full mailbox).
-
-Imports must be scoped to a concrete subtree — a folder, a repository (optionally
-a path subtree), a database, a channel, a label/query. This is the same posture
-Drive enforces (folder-scoped, never "all of Drive") and is the gate that keeps
-every connector below least-privilege. A broad-root binding fails closed with a
-stable deny code; lifting the gate per provider requires a deliberate follow-up
-once that provider's grants and audit are proven.
+> **Not yet enforced by the runtime.** The source-binding creation path
+> (`routes_enterprise.rs` ~line 292) only validates IDs, tenant match, and
+> connector policy shape; the Google Drive ingestion validator
+> (`google_drive_ingestion.rs` ~line 284) checks tenant/connector/source
+> type/state. Neither rejects a binding whose `resource_ref.resource_kind` is a
+> tenant-wide root (`Organization`, `Workspace`, `OrganizationUnit`, `Department`)
+> or whose `native_source_id` denotes a provider-wide root. **Enforcing this gate
+> is required work before each new connector ships** — add a validation step at
+> binding creation and at ingestion admission that denies these cases with a stable
+> error code. Until that guard is implemented and tested, do not document the
+> constraint as fail-closed enforcement.
 
 ## Per-connector plans
 
@@ -88,8 +90,8 @@ per TAN-38).
 - **Data class:** default `Confidential`; pages an admin tags as `Credential`,
   `Regulated`, `FinancialRecord`, or `Restricted` go high-risk → quarantined for
   review on every import until released.
-- **Scope guard:** deny bindings whose `native_source_id` is the workspace root;
-  require a teamspace, database, or page subtree.
+- **Scope guard (to implement):** reject bindings whose `native_source_id` is the
+  Notion workspace root; require a teamspace, database, or page subtree.
 - **Credential:** `ReadOnly` Notion integration token via `ConnectorCredentialRef`,
   optionally `source_bound_resource`-narrowed to the bound teamspace/database.
 
@@ -112,8 +114,8 @@ per TAN-38).
   high-risk, so a code repo admits by default; but bindings that include secrets
   scanning hits, `.env`-style files, or admin-tagged `Credential`/`Restricted`
   paths must set `data_class` accordingly and are then quarantined for review.
-- **Scope guard:** deny org-level ("all repos") bindings; require a single
-  repository, optionally narrowed by `branch_id` and `path_prefix`.
+- **Scope guard (to implement):** reject org-level ("all repos") bindings; require
+  a single repository, optionally narrowed by `branch_id` and `path_prefix`.
 - **Credential:** `ReadOnly` GitHub App installation / fine-grained PAT, scoped
   to the single repository; `source_bound_resource` narrows to the repo subtree.
 
@@ -135,7 +137,7 @@ per TAN-38).
   - Default `data_class` `Confidential`; DMs and HR/finance channels are
     admin-tagged `Restricted`/`Regulated`/`FinancialRecord` → high-risk →
     always quarantined.
-- **Scope guard:** deny "all channels" bindings; require a single channel.
+- **Scope guard (to implement):** reject "all channels" bindings; require a single channel.
 - **Credential:** `ReadOnly` Slack app token scoped to the bound channel(s).
 
 ### 4. Gmail (review/quarantine + down-scoped posture)
@@ -154,7 +156,7 @@ per TAN-38).
     explicit reviewed-release + `acknowledge_review` reindex path.
   - No prompt-context use until reviewed (`allow_prompt_context = false` until
     release).
-- **Scope guard:** deny whole-mailbox bindings; require a label or query subtree.
+- **Scope guard (to implement):** reject whole-mailbox bindings; require a label or query subtree.
 - **Credential:** `ReadOnly`, least-privilege Gmail scope (read-only),
   `source_bound_resource`-narrowed to the label/query.
 
@@ -182,7 +184,10 @@ For each connector, the uniform unit of work (from TAN-38 §"Implications"):
 3. An ACL classification added to `provider_acl_sync_mode` — `Synced` only with
    proven reliable per-object ACLs (none qualify today), otherwise `AdminLabeled`.
 4. Source bindings mapped to the `ResourceRef`/`ResourceKind` above, routed
-   through `evaluate_ingestion_admission`, with the broad-root scope guard.
+   through `evaluate_ingestion_admission`. **The broad-root scope guard (rejecting
+   tenant-wide resource kinds and provider-wide native source IDs) must be
+   implemented at binding creation and at ingestion** — it is not yet enforced by
+   the current runtime (see §"Hard constraint" above).
 5. Provider fetch that writes transient bytes, indexes, and removes them; per
    object a `SourceObjectLifecycleRecord` in the per-tenant memory store.
 6. Review/quarantine wired for high-risk and `require_review` bindings, with the
