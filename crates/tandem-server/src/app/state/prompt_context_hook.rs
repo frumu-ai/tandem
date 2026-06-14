@@ -232,6 +232,12 @@ impl ServerPromptContextHook {
                 tenant_context: Some(tenant_context),
             };
         };
+        if verified.is_expired_at(now_ms) {
+            return PromptMemoryAccess::Blocked {
+                reason: "expired_verified_tenant_context",
+                tenant_context: Some(verified.tenant_context.clone()),
+            };
+        }
         if verified.tenant_context.is_local_implicit() {
             return PromptMemoryAccess::Blocked {
                 reason: "local_implicit_tenant_context",
@@ -244,6 +250,12 @@ impl ServerPromptContextHook {
                 tenant_context: Some(verified.tenant_context.clone()),
             };
         };
+        if strict_projection.is_expired_at(now_ms) {
+            return PromptMemoryAccess::Blocked {
+                reason: "expired_strict_projection",
+                tenant_context: Some(verified.tenant_context.clone()),
+            };
+        }
         let Some(subject) = verified
             .tenant_context
             .actor_id

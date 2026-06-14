@@ -597,6 +597,57 @@ fn prompt_memory_access_blocks_verified_context_without_strict_projection() {
 }
 
 #[test]
+fn prompt_memory_access_blocks_expired_verified_context() {
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    let mut verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", true);
+    verified.expires_at_ms = 1_999;
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified);
+
+    let access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&session),
+        Some("client-user-a"),
+        2_000,
+    );
+
+    match access {
+        PromptMemoryAccess::Blocked { reason, .. } => {
+            assert_eq!(reason, "expired_verified_tenant_context")
+        }
+        other => panic!("expected blocked prompt memory access, got {other:?}"),
+    }
+}
+
+#[test]
+fn prompt_memory_access_blocks_expired_strict_projection() {
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    let mut verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", true);
+    verified
+        .strict_projection
+        .as_mut()
+        .expect("strict projection")
+        .assertion
+        .expires_at_ms = 1_999;
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified);
+
+    let access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&session),
+        Some("client-user-a"),
+        2_000,
+    );
+
+    match access {
+        PromptMemoryAccess::Blocked { reason, .. } => {
+            assert_eq!(reason, "expired_strict_projection")
+        }
+        other => panic!("expected blocked prompt memory access, got {other:?}"),
+    }
+}
+
+#[test]
 fn prompt_memory_access_uses_verified_actor_not_client_id() {
     let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
     let verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", true);
