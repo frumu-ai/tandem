@@ -22,7 +22,7 @@ use tandem_types::{
 
 use crate::{AppState, StartupStatus};
 
-use super::ErrorEnvelope;
+use super::{ErrorCode, ErrorEnvelope};
 use crate::memory::policy_status::resolve_memory_context_runtime_auth_mode;
 
 const DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS: u64 = 10_000;
@@ -51,10 +51,10 @@ pub(super) async fn auth_gate(
         {
             return (
                 StatusCode::FORBIDDEN,
-                Json(ErrorEnvelope {
-                    error: "Unauthorized: tenant context denied".to_string(),
-                    code: Some("TENANT_CONTEXT_DENIED".to_string()),
-                }),
+                Json(ErrorEnvelope::new(
+                    "Unauthorized: tenant context denied",
+                    ErrorCode::TenantContextDenied,
+                )),
             )
                 .into_response();
         }
@@ -71,10 +71,10 @@ pub(super) async fn auth_gate(
     ) {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(ErrorEnvelope {
-                error: "Unauthorized: missing or invalid API token".to_string(),
-                code: Some("AUTH_REQUIRED".to_string()),
-            }),
+            Json(ErrorEnvelope::new(
+                "Unauthorized: missing or invalid API token",
+                ErrorCode::AuthRequired,
+            )),
         )
             .into_response();
     }
@@ -82,10 +82,10 @@ pub(super) async fn auth_gate(
     if !attach_enterprise_request_context_for_mode(&state, &mut request, runtime_auth_mode).await {
         return (
             StatusCode::FORBIDDEN,
-            Json(ErrorEnvelope {
-                error: "Unauthorized: tenant context denied".to_string(),
-                code: Some("TENANT_CONTEXT_DENIED".to_string()),
-            }),
+            Json(ErrorEnvelope::new(
+                "Unauthorized: tenant context denied",
+                ErrorCode::TenantContextDenied,
+            )),
         )
             .into_response();
     }
@@ -1570,10 +1570,6 @@ pub(super) async fn startup_gate(
         StartupStatus::Ready => "ready",
         StartupStatus::Failed => "failed",
     };
-    let code = match snapshot.status {
-        StartupStatus::Failed => "ENGINE_STARTUP_FAILED",
-        _ => "ENGINE_STARTING",
-    };
     let error = format!(
         "Engine {}: phase={} attempt_id={} elapsed_ms={}{}",
         status_text,
@@ -1588,10 +1584,13 @@ pub(super) async fn startup_gate(
     );
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(ErrorEnvelope {
+        Json(ErrorEnvelope::new(
             error,
-            code: Some(code.to_string()),
-        }),
+            match snapshot.status {
+                StartupStatus::Failed => ErrorCode::EngineStartupFailed,
+                _ => ErrorCode::EngineStarting,
+            },
+        )),
     )
         .into_response()
 }

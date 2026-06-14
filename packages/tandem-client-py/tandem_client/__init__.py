@@ -87,6 +87,8 @@ from .types import (
     DefinitionListResponse,
     EngineEvent,
     EngineMessage,
+    ErrorCode,
+    ErrorEnvelope,
     MemoryAuditEntry,
     MemoryAuditResponse,
     MemoryItem,
@@ -167,6 +169,8 @@ __all__ = [
     "PromptPartInput",
     "PromptTextPartInput",
     "PromptFilePartInput",
+    "ErrorCode",
+    "ErrorEnvelope",
     # Health
     "SystemHealth",
     "BrowserBlockingIssue",

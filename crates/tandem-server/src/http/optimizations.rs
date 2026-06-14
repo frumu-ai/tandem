@@ -15,7 +15,7 @@ use crate::{
     OptimizationFrozenArtifacts, OptimizationTargetKind,
 };
 
-use super::ErrorEnvelope;
+use super::{ErrorCode, ErrorEnvelope};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct OptimizationCreateInput {
@@ -46,13 +46,14 @@ fn optimization_error(
     status: StatusCode,
     error: impl Into<String>,
 ) -> (StatusCode, Json<ErrorEnvelope>) {
-    (
-        status,
-        Json(ErrorEnvelope {
-            error: error.into(),
-            code: None,
-        }),
-    )
+    let code = match status {
+        StatusCode::BAD_REQUEST => ErrorCode::OptimizationValidationFailed,
+        StatusCode::NOT_FOUND => ErrorCode::OptimizationNotFound,
+        StatusCode::CONFLICT => ErrorCode::OptimizationConflict,
+        StatusCode::INTERNAL_SERVER_ERROR => ErrorCode::InternalError,
+        _ => ErrorCode::OptimizationValidationFailed,
+    };
+    (status, Json(ErrorEnvelope::new(error.into(), code)))
 }
 
 async fn optimization_payload(state: &AppState, campaign: &OptimizationCampaignRecord) -> Value {

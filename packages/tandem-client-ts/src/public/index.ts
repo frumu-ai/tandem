@@ -14,6 +14,38 @@ export type RoutineStatus = "enabled" | "disabled" | "paused" | "unknown";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "unknown";
 export type ChannelName = "telegram" | "discord" | "slack";
 
+export type ErrorCode =
+  | "AUTH_REQUIRED"
+  | "TENANT_CONTEXT_DENIED"
+  | "TENANT_SCOPE_DENIED"
+  | "VALIDATION_FAILED"
+  | "SESSION_NOT_FOUND"
+  | "SESSION_RUN_CONFLICT"
+  | "RATE_LIMITED"
+  | "PROMPT_TIMEOUT"
+  | "ENGINE_STARTING"
+  | "ENGINE_STARTUP_FAILED"
+  | "APPROVAL_REPLY_INVALID"
+  | "APPROVAL_REQUEST_NOT_FOUND"
+  | "APPROVAL_PERSISTENCE_FAILED"
+  | "MCP_REQUEST_DENIED"
+  | "MCP_STDIO_TRANSPORT_DENIED"
+  | "MCP_REFRESH_FAILED"
+  | "MCP_OAUTH_FAILED"
+  | "SKILLS_ERROR"
+  | "OPTIMIZATION_VALIDATION_FAILED"
+  | "OPTIMIZATION_NOT_FOUND"
+  | "OPTIMIZATION_CONFLICT"
+  | "PERSISTENCE_FAILED"
+  | "INTERNAL_ERROR";
+
+export interface ErrorEnvelope {
+  error: string;
+  code?: ErrorCode;
+  retryable: boolean;
+  [key: string]: unknown;
+}
+
 export interface TandemClientOptions {
   baseUrl: string;
   token: string;
