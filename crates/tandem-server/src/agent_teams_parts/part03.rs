@@ -850,6 +850,7 @@ mod fintech_policy_tests {
             issued_at_ms,
             expires_at_ms,
             assertion_id: "assertion-test".to_string(),
+            assertion_key_id: None,
         }
     }
 

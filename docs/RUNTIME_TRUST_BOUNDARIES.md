@@ -64,3 +64,14 @@ raw tenant headers are not accepted in hosted/enterprise modes.
 Local desktop remains intentionally simpler: the local engine is trusted as the
 single-user runtime for that machine, and stronger hosted tenant assertions are
 not required unless the deployment mode is changed.
+
+## Threat Table
+
+| Threat | Current mitigation | Remaining gap |
+| --- | --- | --- |
+| Forged context assertion | Hosted and enterprise modes verify Ed25519 signatures, issuer, audience, key status, key purpose, tenant/deployment constraints, and resource scope prefixes before accepting tenant context. | Audit coverage should continue to expand for every denial class; see TAN-195. |
+| Replayed context assertion | Replay mode defaults to `bound`, rejecting assertion-id substitution and allowing identical assertion reuse only until expiry. `one_shot` is available when issuers can mint per-request assertions. | Multi-replica deployments need shared replay state or sticky routing; see `docs/CONTEXT_ASSERTION_SECURITY.md`. |
+| Stolen transport token | Hosted/enterprise requests still need a signed tenant assertion in addition to the transport token. Local mode ignores raw hosted tenant headers. | Rotate transport tokens and keep TLS termination inside the trusted boundary. |
+| Malicious or confused MCP server | Runtime-owned MCP secret refs validate tenant context before resolution, and env-backed MCP secrets are local-only. | MCP tenant-scope denials should emit protected audit evidence from the server boundary; see TAN-195. |
+| Compromised channel webhook | Channel adapters verify provider-specific webhook signatures before injecting channel sessions and may attach signed context assertions for hosted runtime calls. | Real-workspace channel approval E2E remains a validation track; see TAN-74. |
+| Misconfigured assertion key rotation | Key metadata supports `kid`, purpose, status, lifetime, audience, organization, deployment, and resource-scope restrictions, and startup logs summarize configured keys without public key material. | Operators must keep the runtime keyset and issuer rotation windows aligned; see `docs/CONTEXT_ASSERTION_SECURITY.md`. |

@@ -243,6 +243,7 @@ mod tests {
             issued_at_ms: 1,
             expires_at_ms: u64::MAX,
             assertion_id: "assertion-b".to_string(),
+            assertion_key_id: None,
         };
 
         enrich_verified_context_with_inbound_cross_tenant_grants(&state, &mut verified).await;
