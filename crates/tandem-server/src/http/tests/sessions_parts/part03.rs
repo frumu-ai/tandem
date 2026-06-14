@@ -279,7 +279,11 @@ async fn approve_route_returns_error_envelope_for_unknown_request() {
     let payload: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(
         payload.get("code").and_then(|v| v.as_str()),
-        Some("permission_request_not_found")
+        Some("APPROVAL_REQUEST_NOT_FOUND")
+    );
+    assert_eq!(
+        payload.get("retryable").and_then(|v| v.as_bool()),
+        Some(false)
     );
     assert!(payload.get("error").and_then(|v| v.as_str()).is_some());
 }
