@@ -220,10 +220,7 @@ impl ServerPromptContextHook {
         record: &tandem_memory::types::GlobalMemoryRecord,
         access_filter: &MemoryAccessFilter,
     ) -> bool {
-        let Some(target) = MemorySourceAccessTarget::from_metadata(record.metadata.as_ref()) else {
-            return true;
-        };
-        access_filter.allows_source_target(&target)
+        access_filter.allows_global_record(record)
     }
 
     pub(super) fn resolve_prompt_memory_access(

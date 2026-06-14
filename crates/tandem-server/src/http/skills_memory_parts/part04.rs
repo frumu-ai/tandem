@@ -641,10 +641,12 @@ pub(super) async fn memory_search(
     } else {
         limit
     };
-    let source_access_filter = verified_tenant_context
-        .as_ref()
-        .and_then(|context| context.strict_projection.clone())
-        .map(|strict_context| MemoryAccessFilter::strict(strict_context, crate::now_ms()));
+    let source_access_filter = crate::memory::read_policy::governed_memory_read_filter(
+        crate::config::env::resolve_runtime_auth_mode(),
+        verified_tenant_context.as_deref(),
+        request.retrieval_gateway.is_some(),
+        crate::now_ms(),
+    );
     let strict_source_projection_active = source_access_filter.is_some();
     let (hits, gateway_budget_exhausted) = if scopes_used.is_empty() {
         (Vec::new(), false)
@@ -1144,12 +1146,11 @@ fn global_memory_record_visible_to_access_filter(
     record: &GlobalMemoryRecord,
     access_filter: Option<&MemoryAccessFilter>,
 ) -> bool {
-    let Some(target) = MemorySourceAccessTarget::from_metadata(record.metadata.as_ref()) else {
-        return true;
-    };
     access_filter
-        .map(|filter| filter.allows_source_target(&target))
-        .unwrap_or(false)
+        .map(|filter| filter.allows_global_record(record))
+        .unwrap_or_else(|| {
+            MemorySourceAccessTarget::from_metadata(record.metadata.as_ref()).is_none()
+        })
 }
 
 pub(super) async fn memory_demote(

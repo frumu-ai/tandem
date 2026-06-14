@@ -390,9 +390,12 @@ pub(super) async fn memory_list(
         resolution.subject
     };
     let page = if let Some(db) = open_global_memory_db_for_state(&state).await {
-        let source_access_filter = verified_tenant_context
-            .and_then(|context| context.strict_projection.clone())
-            .map(|strict_context| MemoryAccessFilter::strict(strict_context, crate::now_ms()));
+        let source_access_filter = crate::memory::read_policy::governed_memory_read_filter(
+            crate::config::env::resolve_runtime_auth_mode(),
+            verified_tenant_context,
+            false,
+            crate::now_ms(),
+        );
         db.list_global_memory_for_tenant(
             &tenant_context.org_id,
             &tenant_context.workspace_id,

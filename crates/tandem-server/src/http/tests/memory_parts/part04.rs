@@ -147,6 +147,123 @@ async fn retrieval_gateway_allows_specific_export_policy_query() {
 }
 
 #[tokio::test]
+async fn retrieval_gateway_without_strict_projection_does_not_expose_source_bound_memory() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let subject = "channel:slack:U792";
+    let capability = memory_capability(
+        "gateway-missing-strict-run",
+        subject,
+        "org-1",
+        "ws-1",
+        "proj-1",
+    );
+
+    let put_req = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "gateway-missing-strict-run",
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": "gateway strict projection sentinel payroll note",
+                "classification": "internal",
+                "metadata": {
+                    "enterprise_source_binding": {
+                        "binding_id": "binding-missing-strict",
+                        "connector_id": "manual-upload",
+                        "resource_ref": {
+                            "organization_id": "org-1",
+                            "workspace_id": "ws-1",
+                            "resource_kind": "document_collection",
+                            "resource_id": "binding-missing-strict"
+                        },
+                        "data_class": "internal",
+                        "source_object_id": "source-missing-strict",
+                        "native_object_id": "/imports/missing-strict.md",
+                        "content_hash": "hash-missing-strict"
+                    }
+                },
+                "capability": capability
+            })
+            .to_string(),
+        ))
+        .expect("missing strict put request");
+    let put_resp = app.clone().oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let gateway = json!({
+        "grant": {
+            "grant_id": "grant-missing-strict",
+            "subject": subject,
+            "org_id": "org-1",
+            "workspace_id": "ws-1",
+            "project_ids": ["proj-1"],
+            "source_binding_ids": ["binding-missing-strict"],
+            "source_object_ids": ["source-missing-strict"],
+            "data_classes": ["internal"],
+            "budgets": {
+                "max_queries_per_window": 10,
+                "window_ms": 60000,
+                "max_top_k": 5,
+                "max_tokens": 200,
+                "max_chars": 1000
+            }
+        },
+        "session_id": "kb-session-missing-strict",
+        "channel": "slack",
+        "user_id": "U792"
+    });
+    let search_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "gateway-missing-strict-run",
+                "query": "gateway strict projection sentinel payroll note",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "capability": capability,
+                "retrieval_gateway": gateway,
+                "limit": 10
+            })
+            .to_string(),
+        ))
+        .expect("missing strict search request");
+    let search_resp = app
+        .oneshot(search_req)
+        .await
+        .expect("missing strict search response");
+    assert_eq!(search_resp.status(), StatusCode::OK);
+    let search_body = to_bytes(search_resp.into_body(), usize::MAX)
+        .await
+        .expect("missing strict search body");
+    let payload: Value = serde_json::from_slice(&search_body).expect("missing strict search json");
+
+    assert_eq!(
+        payload
+            .get("results")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "retrieval gateway must not bypass missing strict projection"
+    );
+}
+
+#[tokio::test]
 async fn retrieval_gateway_enforces_cumulative_result_window() {
     let state = test_state().await;
     let app = app_router(state.clone());
@@ -221,10 +338,18 @@ async fn retrieval_gateway_enforces_cumulative_result_window() {
         "channel": "slack",
         "user_id": "U790"
     });
+    let verified = verified_source_bound_memory_context(
+        "org-1",
+        "ws-1",
+        subject,
+        &["binding-volume"],
+        vec![tandem_types::DataClass::Internal],
+    );
     let search_req = Request::builder()
         .method("POST")
         .uri("/memory/search")
         .header("content-type", "application/json")
+        .extension(verified)
         .body(Body::from(
             json!({
                 "run_id": "gateway-volume-run",
