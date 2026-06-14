@@ -279,7 +279,7 @@ impl VerifierKeyEntry {
             let allowed = usage.resource_scope.as_ref().is_some_and(|scope| {
                 self.allowed_resource_scope_prefixes
                     .iter()
-                    .any(|prefix| scope.starts_with(prefix))
+                    .any(|prefix| scope_within_prefix(scope, prefix))
             });
             if !allowed {
                 return Err(KeyringDenial::ResourceScopeNotAllowed);
@@ -357,6 +357,21 @@ impl VerifierKeyring {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self.keys)
     }
+}
+
+/// Whether `scope` falls within `prefix`, respecting `/` segment boundaries so
+/// a prefix like `org-a/workspace-a` matches `org-a/workspace-a` and
+/// `org-a/workspace-a/doc-1` but NOT a sibling such as `org-a/workspace-a2/...`.
+fn scope_within_prefix(scope: &str, prefix: &str) -> bool {
+    if prefix.is_empty() || scope == prefix {
+        return true;
+    }
+    let boundary = if prefix.ends_with('/') {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/")
+    };
+    scope.starts_with(&boundary)
 }
 
 /// Decode a base64 (url-safe no-pad, then standard) 32-byte Ed25519 public key.
@@ -502,6 +517,34 @@ mod tests {
             keyring.resolve_verifying_key("key-1", SigningKeyPurpose::ApprovalReceipt, &wrong_scope, 5_000),
             Err(KeyringDenial::ResourceScopeNotAllowed)
         );
+    }
+
+    #[test]
+    fn resource_scope_prefix_respects_segment_boundaries() {
+        // Key scoped to `org-a/workspace-a`.
+        let keyring = VerifierKeyring::from_entries([scoped_entry()]);
+        let allowed_purpose = SigningKeyPurpose::ApprovalReceipt;
+
+        // Exact match and a true child are allowed.
+        for scope in ["org-a/workspace-a", "org-a/workspace-a/doc-1"] {
+            let usage = usage().with_resource_scope(scope);
+            assert!(
+                keyring
+                    .resolve_verifying_key("key-1", allowed_purpose, &usage, 5_000)
+                    .is_ok(),
+                "expected {scope} to be in scope"
+            );
+        }
+
+        // A sibling that merely shares the textual prefix must be rejected.
+        for scope in ["org-a/workspace-a2", "org-a/workspace-a2/doc-9", "org-a/workspace-abc"] {
+            let usage = usage().with_resource_scope(scope);
+            assert_eq!(
+                keyring.resolve_verifying_key("key-1", allowed_purpose, &usage, 5_000),
+                Err(KeyringDenial::ResourceScopeNotAllowed),
+                "expected {scope} to be rejected at the segment boundary"
+            );
+        }
     }
 
     #[test]
