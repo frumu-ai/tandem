@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tandem_types::TenantContext;
+use tandem_types::{TenantContext, TenantSource};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -52,6 +52,8 @@ struct AuditEnvelopeForHashing<'a> {
     tenant_org_id: &'a str,
     tenant_workspace_id: &'a str,
     tenant_deployment_id: &'a Option<String>,
+    tenant_actor_id: &'a Option<String>,
+    tenant_source: &'a TenantSource,
     actor: &'a Option<String>,
     payload: &'a Value,
     created_at_ms: u64,
@@ -74,21 +76,22 @@ pub(crate) fn compute_audit_envelope_hash(envelope: &ProtectedAuditEnvelope) -> 
         tenant_org_id: &envelope.tenant_context.org_id,
         tenant_workspace_id: &envelope.tenant_context.workspace_id,
         tenant_deployment_id: &envelope.tenant_context.deployment_id,
+        tenant_actor_id: &envelope.tenant_context.actor_id,
+        tenant_source: &envelope.tenant_context.source,
         actor: &envelope.actor,
         payload: &envelope.payload,
         created_at_ms: envelope.created_at_ms,
         seq: envelope.seq,
         prev_hash: &envelope.prev_hash,
     };
-    let json =
-        serde_json::to_string(&for_hashing).expect("audit envelope hash serialization is infallible");
+    let json = serde_json::to_string(&for_hashing)
+        .expect("audit envelope hash serialization is infallible");
     format!("{:x}", Sha256::digest(json.as_bytes()))
 }
 
 async fn protected_audit_lock_for(path: &std::path::Path) -> Arc<tokio::sync::Mutex<()>> {
-    static LOCKS: OnceLock<
-        tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    > = OnceLock::new();
+    static LOCKS: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        OnceLock::new();
     let map = LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
     let mut guard = map.lock().await;
     guard
@@ -251,7 +254,7 @@ pub async fn verify_protected_audit_ledger(
     // Seq monotonicity check across all records (skip seq=0 pre-v2 records).
     let seq_records: Vec<_> = records.iter().filter(|e| e.seq > 0).collect();
     if !seq_records.is_empty() {
-        let mut expected = seq_records[0].seq;
+        let mut expected = 1u64;
         for record in &seq_records {
             if record.seq < expected {
                 return AuditLedgerVerificationResult {
@@ -262,7 +265,9 @@ pub async fn verify_protected_audit_ledger(
                     schema_version,
                     violation: Some(AuditChainViolation {
                         seq: record.seq,
-                        kind: AuditChainViolationKind::SeqReplay { seen_seq: record.seq },
+                        kind: AuditChainViolationKind::SeqReplay {
+                            seen_seq: record.seq,
+                        },
                     }),
                 };
             }
@@ -275,7 +280,9 @@ pub async fn verify_protected_audit_ledger(
                     schema_version,
                     violation: Some(AuditChainViolation {
                         seq: expected,
-                        kind: AuditChainViolationKind::SeqGap { expected_seq: expected },
+                        kind: AuditChainViolationKind::SeqGap {
+                            expected_seq: expected,
+                        },
                     }),
                 };
             }
@@ -353,7 +360,10 @@ pub async fn generate_audit_ledger_manifest(
     path: &std::path::Path,
 ) -> anyhow::Result<AuditLedgerManifest> {
     let result = verify_protected_audit_ledger(path).await;
-    let last_seq = result.record_count;
+    let last_seq = read_last_protected_audit_record(path)
+        .await
+        .map(|e| e.seq)
+        .unwrap_or(0);
     Ok(AuditLedgerManifest {
         ledger_path: path.to_string_lossy().into_owned(),
         schema_version: result.schema_version,

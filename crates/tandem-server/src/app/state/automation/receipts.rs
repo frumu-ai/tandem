@@ -60,8 +60,8 @@ pub(crate) fn compute_receipt_record_hash(record: &AutomationAttemptReceiptRecor
         payload: &record.payload,
         prev_hash: &record.prev_hash,
     };
-    let json = serde_json::to_string(&for_hashing)
-        .expect("receipt hash serialization is infallible");
+    let json =
+        serde_json::to_string(&for_hashing).expect("receipt hash serialization is infallible");
     format!("{:x}", Sha256::digest(json.as_bytes()))
 }
 
@@ -376,9 +376,9 @@ pub(crate) async fn verify_receipt_ledger(path: &Path) -> ReceiptLedgerVerificat
         .unwrap_or(1);
 
     // Seq monotonicity: every seq must be exactly one more than the last.
-    // Starts from the first record's seq (not necessarily 1, for sub-ledgers).
+    // Always starts from 1 so prefix truncation is detected.
     if !records.is_empty() {
-        let mut expected = records[0].seq;
+        let mut expected = 1u64;
         let mut seen: HashSet<u64> = HashSet::new();
         for record in &records {
             if !seen.insert(record.seq) {
@@ -390,7 +390,9 @@ pub(crate) async fn verify_receipt_ledger(path: &Path) -> ReceiptLedgerVerificat
                     schema_version,
                     violation: Some(ReceiptChainViolation {
                         seq: record.seq,
-                        kind: ReceiptChainViolationKind::SeqReplay { seen_seq: record.seq },
+                        kind: ReceiptChainViolationKind::SeqReplay {
+                            seen_seq: record.seq,
+                        },
                     }),
                 };
             }
@@ -403,7 +405,9 @@ pub(crate) async fn verify_receipt_ledger(path: &Path) -> ReceiptLedgerVerificat
                     schema_version,
                     violation: Some(ReceiptChainViolation {
                         seq: expected,
-                        kind: ReceiptChainViolationKind::SeqGap { expected_seq: expected },
+                        kind: ReceiptChainViolationKind::SeqGap {
+                            expected_seq: expected,
+                        },
                     }),
                 };
             }
@@ -430,7 +434,9 @@ pub(crate) async fn verify_receipt_ledger(path: &Path) -> ReceiptLedgerVerificat
                 schema_version,
                 violation: Some(ReceiptChainViolation {
                     seq: record.seq,
-                    kind: ReceiptChainViolationKind::RecordHashMismatch { expected: expected_hash },
+                    kind: ReceiptChainViolationKind::RecordHashMismatch {
+                        expected: expected_hash,
+                    },
                 }),
             };
         }
@@ -789,8 +795,8 @@ mod tests {
 
     #[tokio::test]
     async fn receipt_hash_chain_appended_records_have_valid_hashes() {
-        let root = std::env::temp_dir()
-            .join(format!("tandem-receipt-hash-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("tandem-receipt-hash-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&root).await.expect("create root");
 
         append_automation_attempt_receipts(
@@ -828,7 +834,10 @@ mod tests {
         );
 
         // Second record chains from first.
-        assert_eq!(records[1].prev_hash.as_deref(), Some(records[0].record_hash.as_str()));
+        assert_eq!(
+            records[1].prev_hash.as_deref(),
+            Some(records[0].record_hash.as_str())
+        );
         assert!(!records[1].record_hash.is_empty());
         assert_eq!(
             records[1].record_hash,
@@ -838,8 +847,8 @@ mod tests {
 
     #[tokio::test]
     async fn verify_receipt_ledger_passes_valid_chain() {
-        let root = std::env::temp_dir()
-            .join(format!("tandem-receipt-verify-ok-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("tandem-receipt-verify-ok-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&root).await.expect("create root");
 
         for i in 0..3u32 {
@@ -868,8 +877,10 @@ mod tests {
 
     #[tokio::test]
     async fn verify_receipt_ledger_detects_record_hash_mutation() {
-        let root = std::env::temp_dir()
-            .join(format!("tandem-receipt-verify-mutate-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "tandem-receipt-verify-mutate-{}",
+            uuid::Uuid::new_v4()
+        ));
         tokio::fs::create_dir_all(&root).await.expect("create root");
 
         append_automation_attempt_receipts(
@@ -896,7 +907,9 @@ mod tests {
         // Tamper: replace payload of first record in the JSONL.
         let content = tokio::fs::read_to_string(&path).await.expect("read");
         let tampered = content.replacen(r#""ok":true"#, r#""ok":false"#, 1);
-        tokio::fs::write(&path, tampered).await.expect("write tampered");
+        tokio::fs::write(&path, tampered)
+            .await
+            .expect("write tampered");
 
         let result = verify_receipt_ledger(&path).await;
         assert!(!result.valid);
@@ -911,8 +924,10 @@ mod tests {
 
     #[tokio::test]
     async fn verify_receipt_ledger_detects_truncation() {
-        let root = std::env::temp_dir()
-            .join(format!("tandem-receipt-verify-trunc-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "tandem-receipt-verify-trunc-{}",
+            uuid::Uuid::new_v4()
+        ));
         tokio::fs::create_dir_all(&root).await.expect("create root");
 
         append_automation_attempt_receipts(
@@ -963,8 +978,8 @@ mod tests {
 
     #[tokio::test]
     async fn verify_receipt_ledger_allows_pre_v2_records_without_hashes() {
-        let root = std::env::temp_dir()
-            .join(format!("tandem-receipt-verify-v1-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("tandem-receipt-verify-v1-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&root).await.expect("create root");
         let path = automation_attempt_receipts_path(&root, "run-v1", "node-e");
         if let Some(p) = path.parent() {
@@ -993,14 +1008,18 @@ mod tests {
 
         let result = verify_receipt_ledger(&path).await;
         // Pre-v2 records have empty record_hash so the hash chain is skipped.
-        assert!(result.valid, "pre-v2 records should be considered valid: {:?}", result.violation);
+        assert!(
+            result.valid,
+            "pre-v2 records should be considered valid: {:?}",
+            result.violation
+        );
         assert_eq!(result.hashed_record_count, 0);
     }
 
     #[tokio::test]
     async fn generate_receipt_ledger_manifest_returns_root_hash() {
-        let root = std::env::temp_dir()
-            .join(format!("tandem-receipt-manifest-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("tandem-receipt-manifest-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&root).await.expect("create root");
 
         append_automation_attempt_receipts(
