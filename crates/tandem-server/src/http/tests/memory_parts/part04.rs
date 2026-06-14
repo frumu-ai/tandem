@@ -791,6 +791,72 @@ async fn memory_put_rejects_channel_capability_subject_actor_mismatch() {
 }
 
 #[tokio::test]
+async fn verified_delegate_memory_put_accepts_delegate_subject() {
+    let state = test_state().await;
+    let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
+        "acme",
+        "north",
+        Some("dep-a".to_string()),
+        "user-a",
+    );
+    let verified = verified_delegate_context(tenant_context.clone(), "a2a-worker-1");
+    let partition = tandem_memory::MemoryPartition {
+        org_id: "acme".to_string(),
+        workspace_id: "north".to_string(),
+        project_id: "proj-a".to_string(),
+        tier: tandem_memory::GovernedMemoryTier::Session,
+    };
+    let capability = tandem_memory::MemoryCapabilityToken {
+        run_id: "delegate-memory-put-run".to_string(),
+        subject: "a2a-worker-1".to_string(),
+        org_id: "acme".to_string(),
+        workspace_id: "north".to_string(),
+        project_id: "proj-a".to_string(),
+        memory: tandem_memory::MemoryCapabilities::default(),
+        expires_at: 9_999_999_999_999,
+    };
+
+    let response = super::super::skills_memory::memory_put_impl_with_verified(
+        &state,
+        &tenant_context,
+        Some(&verified),
+        tandem_memory::MemoryPutRequest {
+            run_id: "delegate-memory-put-run".to_string(),
+            partition: partition.clone(),
+            kind: tandem_memory::MemoryContentKind::Fact,
+            content: "delegate scoped memory should store".to_string(),
+            artifact_refs: Vec::new(),
+            classification: tandem_memory::MemoryClassification::Internal,
+            authority_job_context: None,
+            metadata: None,
+        },
+        Some(capability),
+    )
+    .await
+    .expect("verified delegate subject should be accepted");
+
+    assert!(response.stored);
+    let db = super::super::skills_memory::open_global_memory_db_for_state(&state)
+        .await
+        .expect("memory db");
+    let rows = db
+        .list_global_memory_for_tenant(
+            "acme",
+            "north",
+            Some("dep-a"),
+            "a2a-worker-1",
+            Some("delegate scoped memory"),
+            Some("proj-a"),
+            None,
+            20,
+            0,
+        )
+        .await
+        .expect("list delegate memory");
+    assert_eq!(rows.len(), 1);
+}
+
+#[tokio::test]
 async fn memory_search_rejects_capability_subject_actor_mismatch() {
     let state = test_state().await;
     let app = app_router(state.clone());

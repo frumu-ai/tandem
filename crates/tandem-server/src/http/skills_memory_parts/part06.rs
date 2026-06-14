@@ -394,7 +394,7 @@ pub(crate) async fn memory_put_impl(
     memory_put_impl_with_verified(state, tenant_context, None, request, capability).await
 }
 
-async fn memory_put_impl_with_verified(
+pub(super) async fn memory_put_impl_with_verified(
     state: &AppState,
     tenant_context: &TenantContext,
     verified_tenant_context: Option<&VerifiedTenantContext>,

@@ -1298,6 +1298,7 @@ fn workflow_learning_candidate_memory_content(
 struct GovernedDistillationWriter {
     state: AppState,
     tenant_context: TenantContext,
+    verified_tenant_context: Option<VerifiedTenantContext>,
     partition: tandem_memory::MemoryPartition,
     capability: MemoryCapabilityToken,
     run_id: String,
@@ -1480,9 +1481,10 @@ impl GovernedDistillationWriter {
                 "fact_id": fact.id,
             })),
         };
-        let response = memory_put_impl(
+        let response = memory_put_impl_with_verified(
             &self.state,
             &self.tenant_context,
+            self.verified_tenant_context.as_ref(),
             request,
             Some(self.capability.clone()),
         )

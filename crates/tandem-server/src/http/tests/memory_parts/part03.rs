@@ -1361,6 +1361,50 @@ fn memory_capability(
     })
 }
 
+fn verified_delegate_context(
+    tenant_context: tandem_types::TenantContext,
+    delegate_id: &str,
+) -> tandem_types::VerifiedTenantContext {
+    let principal = tandem_types::RequestPrincipal::authenticated_user("user-a", "tandem-web");
+    let authority_chain = tandem_types::AuthorityChain::from_request(principal);
+    let strict_projection = tandem_types::StrictTenantContext::new(
+        tenant_context.clone(),
+        tandem_types::PrincipalRef::new(tandem_types::PrincipalKind::ExternalDelegate, delegate_id),
+        authority_chain.clone(),
+        tandem_types::ResourceScope::root(tandem_types::ResourceRef::new(
+            "acme",
+            "north",
+            tandem_types::ResourceKind::Project,
+            "proj-a",
+        )),
+        tandem_types::AssertionMetadata::new(
+            "tandem-web",
+            "tandem-runtime",
+            1_000,
+            9_999_999_999_999,
+            "delegate-assertion",
+        ),
+    )
+    .with_data_boundary(tandem_types::DataBoundary::allow(vec![
+        tandem_types::DataClass::Internal,
+    ]));
+    tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user("user-a"),
+        authority_chain,
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: Vec::new(),
+        policy_version: None,
+        strict_projection: Some(strict_projection),
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1_000,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: "delegate-assertion".to_string(),
+    }
+}
+
 #[tokio::test]
 async fn channel_memory_search_requires_retrieval_gateway() {
     let state = test_state().await;
@@ -1587,7 +1631,11 @@ async fn retrieval_gateway_filters_source_classification_and_query_budget() {
         .uri("/memory/audit?run_id=gateway-filter-run")
         .body(Body::empty())
         .expect("audit request");
-    let audit_resp = app.clone().oneshot(audit_req).await.expect("audit response");
+    let audit_resp = app
+        .clone()
+        .oneshot(audit_req)
+        .await
+        .expect("audit response");
     assert_eq!(audit_resp.status(), StatusCode::OK);
     let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
         .await

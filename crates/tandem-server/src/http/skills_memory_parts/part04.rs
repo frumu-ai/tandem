@@ -1396,6 +1396,7 @@ pub(super) async fn context_distill(
     let writer = GovernedDistillationWriter {
         state: state.clone(),
         tenant_context: tenant_context.clone(),
+        verified_tenant_context: verified_tenant_context.as_deref().cloned(),
         partition,
         capability,
         run_id,
