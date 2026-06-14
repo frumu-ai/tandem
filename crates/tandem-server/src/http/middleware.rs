@@ -792,8 +792,8 @@ impl TenantContextAssertionVerifier {
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
         validate_context_assertion_header(&header)?;
 
-        let key = self
-            .key_for_kid(&header.kid)
+        let (key, key_id) = self
+            .key_for_header_kid(&header.kid)
             .ok_or(TenantContextIngressError::ContextAssertionUntrusted)?;
         let verifying_key = VerifyingKey::from_bytes(&key.public_key)
             .map_err(|_| TenantContextIngressError::ContextAssertionKeyNotConfigured)?;
@@ -807,16 +807,18 @@ impl TenantContextAssertionVerifier {
             .map_err(|_| TenantContextIngressError::ContextAssertionMalformed)?;
         self.validate_claim_identity(&claims)?;
         validate_context_assertion_key_metadata(key, &claims, now_ms)?;
-        Ok(SignedTenantContextAssertion {
-            claims,
-            key_id: header.kid,
-        })
+        Ok(SignedTenantContextAssertion { claims, key_id })
     }
 
-    fn key_for_kid(&self, kid: &str) -> Option<&ContextAssertionPublicKey> {
+    fn key_for_header_kid(&self, kid: &str) -> Option<(&ContextAssertionPublicKey, String)> {
         self.public_keys_by_id
             .get(kid)
-            .or(self.legacy_public_key.as_ref())
+            .map(|key| (key, kid.to_string()))
+            .or_else(|| {
+                self.legacy_public_key
+                    .as_ref()
+                    .map(|key| (key, "legacy".to_string()))
+            })
     }
 
     fn validate_claim_identity(

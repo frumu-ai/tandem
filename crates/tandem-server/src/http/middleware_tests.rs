@@ -177,7 +177,7 @@ fn verifier_accepts_valid_tandem_context_assertion() {
 
     assert_eq!(verified.issuer, "tandem-web");
     assert_eq!(verified.audience, "tandem-runtime");
-    assert_eq!(verified.assertion_key_id.as_deref(), Some("test-key"));
+    assert_eq!(verified.assertion_key_id.as_deref(), Some("legacy"));
     assert_eq!(verified.human_actor.actor_id, "user-a");
     assert_eq!(verified.tenant_context.org_id, "org-a");
     assert_eq!(verified.tenant_context.workspace_id, "workspace-a");
@@ -227,7 +227,7 @@ fn verifier_accepts_signed_context_assertion_with_strict_projection() {
             .strict_projection
             .as_ref()
             .and_then(|projection| projection.assertion.key_id.as_deref()),
-        Some("test-key")
+        Some("legacy")
     );
 }
 
@@ -459,7 +459,7 @@ fn verifier_accepts_context_assertion_within_tight_future_skew() {
         .expect("assertions inside the skew window should verify");
 
     assert_eq!(verified.assertion_id, "assertion-a");
-    assert_eq!(verified.assertion_key_id.as_deref(), Some("test-key"));
+    assert_eq!(verified.assertion_key_id.as_deref(), Some("legacy"));
 }
 
 #[test]
@@ -555,6 +555,46 @@ fn verifier_selects_context_assertion_key_by_kid() {
         .expect("kid-selected key should verify");
 
     assert_eq!(verified.assertion_id, "assertion-a");
+    assert_eq!(verified.assertion_key_id.as_deref(), Some("active-key"));
+}
+
+#[test]
+fn verifier_reports_legacy_key_identity_for_legacy_single_key() {
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+    let verifier = TenantContextAssertionVerifier {
+        public_keys_by_id: BTreeMap::new(),
+        legacy_public_key: Some(ContextAssertionPublicKey::legacy(
+            signing_key.verifying_key().to_bytes(),
+        )),
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+    };
+    let claims = test_claims(1_000, 2_000).with_strict_projection(
+        PrincipalRef::agent_worker("agent-platform").with_tenant_actor_id("user-a"),
+        ResourceScope::root(ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            ResourceKind::Project,
+            "platform",
+        )),
+        Vec::new(),
+        DataBoundary::allow(vec![DataClass::SourceCode]),
+    );
+    let assertion = sign_test_context_assertion(&signing_key, "unconfigured-header-kid", claims);
+
+    let verified = verifier
+        .verify_at(&assertion, 1_500)
+        .expect("legacy key should verify signed assertion");
+
+    assert_eq!(verified.assertion_key_id.as_deref(), Some("legacy"));
+    assert_eq!(
+        verified
+            .strict_projection
+            .as_ref()
+            .and_then(|projection| projection.assertion.key_id.as_deref()),
+        Some("legacy")
+    );
 }
 
 #[test]
