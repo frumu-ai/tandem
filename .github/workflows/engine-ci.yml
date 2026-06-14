@@ -44,6 +44,7 @@ jobs:
       # until 2026-06; this step keeps these crates from going dark again.
       - name: Cargo test governance-critical crates
         run: |
+          cargo test -p tandem-tools --lib
           cargo test -p tandem-memory --lib
           cargo test -p tandem-runtime --lib
           cargo test -p tandem-core --lib provider_auth_store::

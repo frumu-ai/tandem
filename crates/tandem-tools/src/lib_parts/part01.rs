@@ -1050,15 +1050,36 @@ fn normalize_existing_or_lexical(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| normalize_path_for_compare(path))
 }
 
+fn normalize_existing_prefix_or_lexical(path: &Path) -> PathBuf {
+    if path.exists() {
+        return normalize_existing_or_lexical(path);
+    }
+
+    let mut cursor = path;
+    let mut missing = Vec::new();
+    while !cursor.exists() {
+        if let Some(name) = cursor.file_name() {
+            missing.push(name.to_os_string());
+        }
+        let Some(parent) = cursor.parent() else {
+            return normalize_path_for_compare(path);
+        };
+        if parent == cursor {
+            return normalize_path_for_compare(path);
+        }
+        cursor = parent;
+    }
+
+    let mut normalized = normalize_existing_or_lexical(cursor);
+    for component in missing.iter().rev() {
+        normalized.push(component);
+    }
+    normalized
+}
+
 fn is_within_workspace_root(path: &Path, workspace_root: &Path) -> bool {
-    let root = normalize_existing_or_lexical(workspace_root);
-    let candidate = if path.exists() {
-        normalize_existing_or_lexical(path)
-    } else if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
-        normalize_existing_or_lexical(parent).join(name)
-    } else {
-        normalize_path_for_compare(path)
-    };
+    let root = normalize_existing_prefix_or_lexical(workspace_root);
+    let candidate = normalize_existing_prefix_or_lexical(path);
     candidate == root || candidate.starts_with(&root)
 }
 
@@ -1067,12 +1088,12 @@ fn resolve_tool_path(path: &str, args: &Value) -> Option<PathBuf> {
     if trimmed.is_empty() {
         return None;
     }
+    let workspace_root = workspace_root_from_args(args)?;
+
     if trimmed == "." || trimmed == "./" || trimmed == ".\\" {
         let cwd = effective_cwd_from_args(args);
-        if let Some(workspace_root) = workspace_root_from_args(args) {
-            if !is_within_workspace_root(&cwd, &workspace_root) {
-                return None;
-            }
+        if !is_within_workspace_root(&cwd, &workspace_root) {
+            return None;
         }
         return Some(cwd);
     }
@@ -1094,11 +1115,7 @@ fn resolve_tool_path(path: &str, args: &Value) -> Option<PathBuf> {
         effective_cwd_from_args(args).join(raw)
     };
 
-    if let Some(workspace_root) = workspace_root_from_args(args) {
-        if !is_within_workspace_root(&resolved, &workspace_root) {
-            return None;
-        }
-    } else if raw.is_absolute() {
+    if !is_within_workspace_root(&resolved, &workspace_root) {
         return None;
     }
 

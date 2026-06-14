@@ -223,14 +223,14 @@ mod sandbox_and_resolution_tests {
     }
 
     #[test]
-    fn resolve_tool_path_without_workspace_root_rejects_absolutes() {
-        // Policy (TAN-216 decision): with no `__workspace_root`, absolute
-        // paths fail closed; relative paths resolve against the effective
-        // cwd only. This pins the existing fail-closed behavior so a
-        // regression to "absolute allowed" is caught.
+    fn resolve_tool_path_without_workspace_root_fails_closed() {
+        // Policy (TAN-216 decision): filesystem tools require an explicit
+        // workspace root, so missing workspace context fails closed for both
+        // absolute and relative path tokens.
         let args = serde_json::json!({});
         assert!(resolve_tool_path("/etc/passwd", &args).is_none());
-        assert!(resolve_tool_path("relative.txt", &args).is_some());
+        assert!(resolve_tool_path("relative.txt", &args).is_none());
+        assert!(resolve_tool_path(".", &args).is_none());
     }
 
     #[test]
@@ -279,6 +279,26 @@ mod sandbox_and_resolution_tests {
         assert!(
             resolve_tool_path("file_link", &args).is_none(),
             "escaping file symlink must not resolve"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_tool_path_allows_new_files_under_symlinked_workspace_root() {
+        let real_workspace = tempfile::tempdir().expect("real workspace");
+        let link_parent = tempfile::tempdir().expect("link parent");
+        let link_workspace = link_parent.path().join("workspace-link");
+        std::os::unix::fs::symlink(real_workspace.path(), &link_workspace)
+            .expect("workspace symlink");
+
+        let args = serde_json::json!({
+            "__workspace_root": link_workspace.to_string_lossy(),
+            "__effective_cwd": link_workspace.to_string_lossy(),
+        });
+
+        assert!(
+            resolve_tool_path("new-dir/new-file.txt", &args).is_some(),
+            "new paths under a symlinked workspace root must remain inside the canonical root"
         );
     }
 
