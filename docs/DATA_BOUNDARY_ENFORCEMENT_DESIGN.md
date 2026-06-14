@@ -1,6 +1,7 @@
 # Default DataBoundary Enforcement Design
 
-Status: proposed design for TAN-17 / CT-12.
+Status: partially implemented for TAN-267 memory read policy; broader TAN-17 /
+CT-12 coverage remains design guidance.
 
 This document defines the default data-class boundary policy for governed reads.
 It complements the cross-tenant grant design by making data classes apply even
@@ -22,7 +23,9 @@ projection. Local single-tenant behavior remains unchanged.
 
 ## Non-Goals
 
-- This design does not implement the helper types or update the memory filters.
+- This design does not fully complete every artifact/export or provider-context
+  hook. TAN-267 implements the governed memory read helper and wires prompt
+  global memory plus HTTP memory search/list filtering.
 - This design does not change `DataClass` taxonomy.
 - This design does not make local desktop memory require enterprise assertions.
 - This design does not replace cross-tenant grants; it defines the data-boundary
@@ -219,6 +222,11 @@ search, increase the candidate limit while filtering so authorized results are
 not starved by unauthorized results.
 
 ## Memory Implementation Hooks
+
+TAN-267 adds `DataBoundary::governed_default()`,
+`GovernedReadMode`, and `MemoryAccessFilter` target normalization for vector
+chunks and global memory rows. Server HTTP memory search/list and prompt memory
+injection now resolve `LocalNoop` vs `GovernedStrict` through the shared helper.
 
 Primary hooks for CT-12:
 

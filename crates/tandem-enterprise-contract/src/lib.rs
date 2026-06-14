@@ -1202,11 +1202,19 @@ impl DataBoundary {
         }
     }
 
+    pub fn governed_default() -> Self {
+        Self::allow(vec![DataClass::Public, DataClass::Internal])
+    }
+
     pub fn allow(data_classes: Vec<DataClass>) -> Self {
         Self {
             allowed_data_classes: data_classes,
             denied_data_classes: Vec::new(),
         }
+    }
+
+    pub fn is_unrestricted(&self) -> bool {
+        self.allowed_data_classes.is_empty() && self.denied_data_classes.is_empty()
     }
 
     pub fn allows(&self, data_class: DataClass) -> bool {

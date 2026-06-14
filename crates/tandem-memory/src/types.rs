@@ -4,7 +4,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tandem_enterprise_contract::{
-    AccessDecision, AccessPermission, DataClass, ResourceRef, StrictTenantContext,
+    AccessDecision, AccessEffect, AccessPermission, DataBoundary, DataClass, ResourceKind,
+    ResourceRef, StrictTenantContext,
 };
 use tandem_orchestrator::{KnowledgeScope, KnowledgeTrustLevel};
 use thiserror::Error;
@@ -101,38 +102,198 @@ pub struct MemorySearchResult {
     pub similarity: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernedReadMode {
+    LocalNoop,
+    GovernedStrict,
+}
+
+impl GovernedReadMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalNoop => "local_noop",
+            Self::GovernedStrict => "governed_strict",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GovernedReadDecision {
+    pub allowed: bool,
+    pub reason: Option<String>,
+}
+
+impl GovernedReadDecision {
+    pub fn allow(reason: impl Into<String>) -> Self {
+        Self {
+            allowed: true,
+            reason: Some(reason.into()),
+        }
+    }
+
+    pub fn deny(reason: impl Into<String>) -> Self {
+        Self {
+            allowed: false,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GovernedReadEvidence {
+    SourceBinding,
+    TenantLocalMemory,
+}
+
+impl GovernedReadEvidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceBinding => "source_binding",
+            Self::TenantLocalMemory => "tenant_local_memory",
+        }
+    }
+
+    fn requires_grant(self) -> bool {
+        matches!(self, Self::SourceBinding)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GovernedReadTarget {
+    pub resource_ref: ResourceRef,
+    pub data_class: DataClass,
+    pub source_binding_id: Option<String>,
+    pub source_object_id: Option<String>,
+    pub evidence: GovernedReadEvidence,
+}
+
 /// Optional enterprise access projection applied before memory ranking.
 #[derive(Debug, Clone)]
 pub struct MemoryAccessFilter {
-    pub strict_context: StrictTenantContext,
+    pub strict_context: Option<StrictTenantContext>,
     pub now_ms: u64,
+    pub mode: GovernedReadMode,
 }
 
 impl MemoryAccessFilter {
     pub fn strict(strict_context: StrictTenantContext, now_ms: u64) -> Self {
+        Self::governed(Some(strict_context), now_ms)
+    }
+
+    pub fn governed(strict_context: Option<StrictTenantContext>, now_ms: u64) -> Self {
         Self {
             strict_context,
             now_ms,
+            mode: GovernedReadMode::GovernedStrict,
+        }
+    }
+
+    pub fn local_noop(now_ms: u64) -> Self {
+        Self {
+            strict_context: None,
+            now_ms,
+            mode: GovernedReadMode::LocalNoop,
         }
     }
 
     pub fn allows_chunk(&self, chunk: &MemoryChunk) -> bool {
-        let Some(target) = MemorySourceAccessTarget::from_chunk(chunk) else {
-            return true;
-        };
-        self.allows_source_target(&target)
+        self.decision_for_chunk(chunk).allowed
     }
 
     pub fn allows_source_target(&self, target: &MemorySourceAccessTarget) -> bool {
-        self.strict_context
+        self.decision_for_source_target(target).allowed
+    }
+
+    pub fn allows_global_record(&self, record: &GlobalMemoryRecord) -> bool {
+        self.decision_for_global_record(record).allowed
+    }
+
+    pub fn decision_for_chunk(&self, chunk: &MemoryChunk) -> GovernedReadDecision {
+        match governed_read_target_from_chunk(chunk) {
+            Ok(target) => self.decision_for_target(&target),
+            Err(reason) => self.decision_for_missing_target(reason),
+        }
+    }
+
+    pub fn decision_for_global_record(&self, record: &GlobalMemoryRecord) -> GovernedReadDecision {
+        match governed_read_target_from_global_record(record, self.strict_context.as_ref()) {
+            Ok(target) => self.decision_for_target(&target),
+            Err(reason) => self.decision_for_missing_target(reason),
+        }
+    }
+
+    pub fn decision_for_source_target(
+        &self,
+        target: &MemorySourceAccessTarget,
+    ) -> GovernedReadDecision {
+        self.decision_for_target(&GovernedReadTarget {
+            resource_ref: target.resource_ref.clone(),
+            data_class: target.data_class,
+            source_binding_id: target.source_binding_id.clone(),
+            source_object_id: target.source_object_id.clone(),
+            evidence: GovernedReadEvidence::SourceBinding,
+        })
+    }
+
+    fn decision_for_missing_target(&self, reason: &'static str) -> GovernedReadDecision {
+        if self.mode == GovernedReadMode::LocalNoop {
+            GovernedReadDecision::allow("local_noop")
+        } else {
+            GovernedReadDecision::deny(reason)
+        }
+    }
+
+    fn decision_for_target(&self, target: &GovernedReadTarget) -> GovernedReadDecision {
+        if self.mode == GovernedReadMode::LocalNoop {
+            return GovernedReadDecision::allow("local_noop");
+        }
+
+        let Some(strict_context) = self.strict_context.as_ref() else {
+            return GovernedReadDecision::deny("missing_strict_projection");
+        };
+
+        let effective_boundary = effective_data_boundary_for_governed_read(strict_context);
+        if !effective_boundary.allows(target.data_class) {
+            return GovernedReadDecision::deny("data_class_denied_by_boundary");
+        }
+
+        if strict_context.is_expired_at(self.now_ms) {
+            return GovernedReadDecision::deny("context_expired");
+        }
+
+        if !target.evidence.requires_grant() {
+            if target.resource_ref.organization_id != strict_context.tenant_context.org_id
+                || target.resource_ref.workspace_id != strict_context.tenant_context.workspace_id
+            {
+                return GovernedReadDecision::deny("tenant_scope_mismatch");
+            }
+            if strict_context
+                .resource_scope
+                .explicitly_denies(&target.resource_ref)
+            {
+                return GovernedReadDecision::deny("resource_explicitly_denied_by_scope");
+            }
+            if !strict_context.resource_scope.contains(&target.resource_ref) {
+                return GovernedReadDecision::deny("resource_outside_projected_scope");
+            }
+            return GovernedReadDecision::allow("tenant_local_memory_allowed");
+        }
+
+        let evaluation = strict_context
+            .clone()
+            .with_data_boundary(effective_boundary)
             .evaluate_access(
                 &target.resource_ref,
                 AccessPermission::Read,
                 target.data_class,
                 self.now_ms,
-            )
-            .decision
-            == AccessDecision::Allow
+            );
+        if evaluation.decision == AccessDecision::Allow {
+            GovernedReadDecision::allow(evaluation.reason)
+        } else {
+            GovernedReadDecision::deny(evaluation.reason)
+        }
     }
 }
 
@@ -168,74 +329,191 @@ impl MemorySourceAccessTarget {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tandem_enterprise_contract::{
-        AccessPermission, AssertionMetadata, AuthorityChain, CrossTenantGrant,
-        CrossTenantGrantClaims, CrossTenantGrantHeader, CrossTenantGrantParty,
-        CrossTenantGrantRecord, DataBoundary, PrincipalRef, RequestPrincipal, ResourceKind,
-        ResourceScope, TenantContext,
+pub fn effective_data_boundary_for_governed_read(
+    strict_context: &StrictTenantContext,
+) -> DataBoundary {
+    if strict_context.data_boundary.is_unrestricted() {
+        let mut grant_data_classes = Vec::new();
+        for grant in strict_context
+            .grants
+            .iter()
+            .filter(|grant| grant.effect == AccessEffect::Allow)
+        {
+            for data_class in &grant.data_classes {
+                if !grant_data_classes.contains(data_class) {
+                    grant_data_classes.push(*data_class);
+                }
+            }
+        }
+        if grant_data_classes.is_empty() {
+            DataBoundary::governed_default()
+        } else {
+            DataBoundary::allow(grant_data_classes)
+        }
+    } else {
+        strict_context.data_boundary.clone()
+    }
+}
+
+fn governed_read_target_from_chunk(
+    chunk: &MemoryChunk,
+) -> Result<GovernedReadTarget, &'static str> {
+    if let Some(target) = source_binding_target_from_metadata(chunk.metadata.as_ref())? {
+        return Ok(target);
+    }
+
+    let mut resource_ref = ResourceRef::new(
+        chunk.tenant_scope.org_id.clone(),
+        chunk.tenant_scope.workspace_id.clone(),
+        ResourceKind::MemorySpace,
+        memory_chunk_resource_id(chunk),
+    );
+    if let Some(project_id) = chunk.project_id.as_ref() {
+        resource_ref = resource_ref.with_project_id(project_id.clone());
+    }
+
+    Ok(GovernedReadTarget {
+        resource_ref,
+        data_class: data_class_from_metadata(chunk.metadata.as_ref())
+            .unwrap_or(DataClass::Internal),
+        source_binding_id: None,
+        source_object_id: None,
+        evidence: GovernedReadEvidence::TenantLocalMemory,
+    })
+}
+
+fn governed_read_target_from_global_record(
+    record: &GlobalMemoryRecord,
+    strict_context: Option<&StrictTenantContext>,
+) -> Result<GovernedReadTarget, &'static str> {
+    if let Some(target) = source_binding_target_from_metadata(record.metadata.as_ref())? {
+        return Ok(target);
+    }
+
+    let Some(strict_context) = strict_context else {
+        return Err("missing_strict_projection");
     };
 
-    #[test]
-    fn memory_access_filter_allows_active_cross_tenant_projection() {
-        let issuer =
-            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "admin-a");
-        let audience =
-            TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "user-b");
-        let subject = PrincipalRef::human_user("user-b");
-        let resource = ResourceRef::new(
-            "org-a",
-            "workspace-a",
-            ResourceKind::DocumentCollection,
-            "finance-drive",
-        );
-        let claims = CrossTenantGrantClaims::new_v1(
-            "grant-finance",
-            CrossTenantGrantParty::from_tenant_context(&issuer),
-            CrossTenantGrantParty::from_tenant_context(&audience),
-            subject.clone(),
-            ResourceScope::root(resource.clone()),
-            vec![AccessPermission::Read],
-            vec![DataClass::FinancialRecord],
-            1_000,
-            5_000,
-            PrincipalRef::human_user("admin-a"),
-        );
-        let record = CrossTenantGrantRecord::active(
-            CrossTenantGrant::new(
-                CrossTenantGrantHeader::ed25519("grant-key"),
-                claims,
-                "signature-bytes",
-            ),
-            1_000,
-        );
-        let request_principal = RequestPrincipal::authenticated_user("user-b", "test");
-        let mut strict = tandem_enterprise_contract::StrictTenantContext::new(
-            audience,
-            subject,
-            AuthorityChain::from_request(request_principal),
-            ResourceScope::root(ResourceRef::new(
-                "org-b",
-                "workspace-b",
-                ResourceKind::Workspace,
-                "workspace-b",
-            )),
-            AssertionMetadata::new("issuer", "runtime", 1_000, 5_000, "assertion-b"),
-        )
-        .with_data_boundary(DataBoundary::allow(vec![DataClass::FinancialRecord]));
+    let mut resource_ref = ResourceRef::new(
+        strict_context.tenant_context.org_id.clone(),
+        strict_context.tenant_context.workspace_id.clone(),
+        ResourceKind::MemorySpace,
+        global_memory_record_resource_id(record),
+    );
+    if let Some(project_id) = record.project_tag.as_ref() {
+        resource_ref = resource_ref.with_project_id(project_id.clone());
+    }
 
-        assert!(record.project_into_strict_context(&mut strict, 2_000));
-        let filter = MemoryAccessFilter::strict(strict, 2_000);
-        let target = MemorySourceAccessTarget {
-            resource_ref: resource,
-            data_class: DataClass::FinancialRecord,
-            source_binding_id: Some("finance-drive".to_string()),
-            source_object_id: Some("statement-q4".to_string()),
+    Ok(GovernedReadTarget {
+        resource_ref,
+        data_class: data_class_from_metadata(record.metadata.as_ref())
+            .unwrap_or(DataClass::Internal),
+        source_binding_id: None,
+        source_object_id: None,
+        evidence: GovernedReadEvidence::TenantLocalMemory,
+    })
+}
+
+fn source_binding_target_from_metadata(
+    metadata: Option<&serde_json::Value>,
+) -> Result<Option<GovernedReadTarget>, &'static str> {
+    let Some(metadata) = metadata else {
+        return Ok(None);
+    };
+    let Some(binding) = metadata.get("enterprise_source_binding") else {
+        return if memory_metadata_is_connector_sourced(Some(metadata)) {
+            Err("missing_resource_ref")
+        } else {
+            Ok(None)
         };
+    };
 
-        assert!(filter.allows_source_target(&target));
+    let resource_value = binding.get("resource_ref").ok_or("missing_resource_ref")?;
+    let data_class_value = binding.get("data_class").ok_or("missing_data_class")?;
+    let resource_ref =
+        serde_json::from_value(resource_value.clone()).map_err(|_| "missing_resource_ref")?;
+    let data_class =
+        serde_json::from_value(data_class_value.clone()).map_err(|_| "missing_data_class")?;
+
+    Ok(Some(GovernedReadTarget {
+        resource_ref,
+        data_class,
+        source_binding_id: binding
+            .get("binding_id")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        source_object_id: binding
+            .get("source_object_id")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        evidence: GovernedReadEvidence::SourceBinding,
+    }))
+}
+
+fn memory_metadata_is_connector_sourced(metadata: Option<&serde_json::Value>) -> bool {
+    metadata
+        .and_then(|value| value.get("memory_trust"))
+        .and_then(|value| value.get("label"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|label| label == "connector_sourced")
+}
+
+fn data_class_from_metadata(metadata: Option<&serde_json::Value>) -> Option<DataClass> {
+    metadata
+        .and_then(|value| value.get("classification"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(data_class_from_label)
+}
+
+fn data_class_from_label(label: &str) -> Option<DataClass> {
+    match label.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "public" => Some(DataClass::Public),
+        "internal" => Some(DataClass::Internal),
+        "confidential" => Some(DataClass::Confidential),
+        "restricted" => Some(DataClass::Restricted),
+        "executive" => Some(DataClass::Executive),
+        "credential" => Some(DataClass::Credential),
+        "regulated" => Some(DataClass::Regulated),
+        "customer_data" | "customer" => Some(DataClass::CustomerData),
+        "source_code" | "code" => Some(DataClass::SourceCode),
+        "financial_record" | "financial" | "finance" => Some(DataClass::FinancialRecord),
+        _ => None,
+    }
+}
+
+fn memory_chunk_resource_id(chunk: &MemoryChunk) -> String {
+    match chunk.tier {
+        MemoryTier::Session => chunk
+            .session_id
+            .as_ref()
+            .map(|session_id| format!("session:{session_id}"))
+            .unwrap_or_else(|| "session:default".to_string()),
+        MemoryTier::Project => chunk
+            .project_id
+            .as_ref()
+            .map(|project_id| format!("project:{project_id}"))
+            .unwrap_or_else(|| "project:default".to_string()),
+        MemoryTier::Global => chunk
+            .project_id
+            .as_ref()
+            .map(|project_id| format!("global:{project_id}"))
+            .unwrap_or_else(|| "global".to_string()),
+    }
+}
+
+fn global_memory_record_resource_id(record: &GlobalMemoryRecord) -> String {
+    if record.visibility.eq_ignore_ascii_case("shared") {
+        record
+            .project_tag
+            .as_ref()
+            .map(|project_id| format!("project:{project_id}"))
+            .unwrap_or_else(|| "project:default".to_string())
+    } else {
+        record
+            .session_id
+            .as_ref()
+            .map(|session_id| format!("session:{session_id}"))
+            .unwrap_or_else(|| "global".to_string())
     }
 }
 

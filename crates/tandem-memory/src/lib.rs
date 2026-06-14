@@ -8,6 +8,8 @@ pub mod distillation;
 pub mod embeddings;
 pub mod envelope;
 pub mod governance;
+#[cfg(test)]
+mod governed_read_tests;
 pub mod importer;
 pub mod key_lifecycle;
 pub mod kms_providers;
