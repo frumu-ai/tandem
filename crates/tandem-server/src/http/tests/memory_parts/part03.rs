@@ -1406,6 +1406,76 @@ fn verified_delegate_context(
     }
 }
 
+fn verified_source_bound_memory_context(
+    org_id: &str,
+    workspace_id: &str,
+    subject: &str,
+    source_binding_ids: &[&str],
+    data_classes: Vec<tandem_types::DataClass>,
+) -> tandem_types::VerifiedTenantContext {
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace(org_id, workspace_id, None, subject);
+    let principal = tandem_types::PrincipalRef::human_user(subject);
+    let request_principal =
+        tandem_types::RequestPrincipal::authenticated_user(subject, "tandem-web");
+    let authority_chain = tandem_types::AuthorityChain::from_request(request_principal);
+    let grants = source_binding_ids
+        .iter()
+        .map(|binding_id| {
+            let resource_ref = tandem_types::ResourceRef::new(
+                org_id,
+                workspace_id,
+                tandem_types::ResourceKind::DocumentCollection,
+                *binding_id,
+            );
+            tandem_types::ScopedGrant::new(
+                format!("grant-read-{binding_id}"),
+                principal.clone(),
+                resource_ref,
+                tandem_types::GrantSource::Delegation,
+            )
+            .with_permissions(vec![tandem_types::AccessPermission::Read])
+            .with_data_classes(data_classes.clone())
+        })
+        .collect();
+    let strict_projection = tandem_types::StrictTenantContext::new(
+        tenant_context.clone(),
+        principal,
+        authority_chain.clone(),
+        tandem_types::ResourceScope::root(tandem_types::ResourceRef::new(
+            org_id,
+            workspace_id,
+            tandem_types::ResourceKind::Workspace,
+            workspace_id,
+        )),
+        tandem_types::AssertionMetadata::new(
+            "tandem-web",
+            "tandem-runtime",
+            1_000,
+            9_999_999_999_999,
+            "source-memory-read-assertion",
+        ),
+    )
+    .with_grants(grants)
+    .with_data_boundary(tandem_types::DataBoundary::allow(data_classes));
+    tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(subject),
+        authority_chain,
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: Vec::new(),
+        policy_version: None,
+        strict_projection: Some(strict_projection),
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1_000,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: "source-memory-read-assertion".to_string(),
+        assertion_key_id: None,
+    }
+}
+
 #[tokio::test]
 async fn channel_memory_search_requires_retrieval_gateway() {
     let state = test_state().await;
@@ -1555,6 +1625,13 @@ async fn retrieval_gateway_filters_source_classification_and_query_budget() {
         "channel": "slack",
         "user_id": "U456"
     });
+    let verified = verified_source_bound_memory_context(
+        "org-1",
+        "ws-1",
+        subject,
+        &["binding-product"],
+        vec![tandem_types::DataClass::Internal],
+    );
 
     let search_body = json!({
         "run_id": "gateway-filter-run",
@@ -1574,6 +1651,7 @@ async fn retrieval_gateway_filters_source_classification_and_query_budget() {
         .method("POST")
         .uri("/memory/search")
         .header("content-type", "application/json")
+        .extension(verified.clone())
         .body(Body::from(search_body.to_string()))
         .expect("gateway search request");
     let search_resp = app
@@ -1602,6 +1680,7 @@ async fn retrieval_gateway_filters_source_classification_and_query_budget() {
         .method("POST")
         .uri("/memory/search")
         .header("content-type", "application/json")
+        .extension(verified)
         .body(Body::from(
             json!({
                 "run_id": "gateway-filter-run",

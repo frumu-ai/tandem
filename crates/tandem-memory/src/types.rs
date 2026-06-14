@@ -253,7 +253,8 @@ impl MemoryAccessFilter {
             return GovernedReadDecision::deny("missing_strict_projection");
         };
 
-        let effective_boundary = effective_data_boundary_for_governed_read(strict_context);
+        let effective_boundary =
+            effective_data_boundary_for_governed_read(strict_context, self.now_ms);
         if !effective_boundary.allows(target.data_class) {
             return GovernedReadDecision::deny("data_class_denied_by_boundary");
         }
@@ -331,14 +332,15 @@ impl MemorySourceAccessTarget {
 
 pub fn effective_data_boundary_for_governed_read(
     strict_context: &StrictTenantContext,
+    now_ms: u64,
 ) -> DataBoundary {
     if strict_context.data_boundary.is_unrestricted() {
         let mut grant_data_classes = Vec::new();
-        for grant in strict_context
-            .grants
-            .iter()
-            .filter(|grant| grant.effect == AccessEffect::Allow)
-        {
+        for grant in strict_context.grants.iter().filter(|grant| {
+            grant.effect == AccessEffect::Allow
+                && !grant.is_expired_at(now_ms)
+                && grant.has_permission(AccessPermission::Read)
+        }) {
             for data_class in &grant.data_classes {
                 if !grant_data_classes.contains(data_class) {
                     grant_data_classes.push(*data_class);

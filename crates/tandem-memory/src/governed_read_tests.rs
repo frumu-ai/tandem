@@ -161,6 +161,35 @@ fn governed_read_filter_derives_boundary_from_allow_grants() {
 }
 
 #[test]
+fn governed_read_filter_ignores_expired_grants_when_deriving_boundary() {
+    let grant = ScopedGrant::new(
+        "grant-finance-expired",
+        PrincipalRef::human_user("user-a"),
+        ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            ResourceKind::Workspace,
+            "workspace-a",
+        ),
+        GrantSource::Direct,
+    )
+    .with_permissions(vec![AccessPermission::Read])
+    .with_data_classes(vec![DataClass::FinancialRecord])
+    .with_expires_at_ms(1_500);
+    let strict = tenant_strict(DataBoundary::unrestricted()).with_grants(vec![grant]);
+    let filter = MemoryAccessFilter::strict(strict, 2_000);
+    let decision = filter.decision_for_global_record(&global_record(Some(serde_json::json!({
+        "classification": "financial_record"
+    }))));
+
+    assert!(!decision.allowed);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("data_class_denied_by_boundary")
+    );
+}
+
+#[test]
 fn governed_read_filter_denies_connector_sourced_memory_without_resource_metadata() {
     let filter = MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000);
     let decision = filter.decision_for_global_record(&global_record(Some(serde_json::json!({

@@ -120,18 +120,19 @@ For a strict projection, resolve the effective boundary in this order:
 This keeps local constructors compatible while preventing hosted or grant-backed
 reads from treating absent boundary metadata as unrestricted access.
 
-Implementation should add a helper such as:
+Implementation uses a time-aware helper:
 
 ```rust
 pub fn effective_data_boundary_for_governed_read(
     strict_context: &StrictTenantContext,
-    mode: GovernedReadMode,
+    now_ms: u64,
 ) -> DataBoundary
 ```
 
-The helper should return the strict context boundary in local/no-op mode and the
-governed default when strict context carries an unrestricted boundary in
-governed mode.
+The helper returns the strict context boundary when it is explicit. If the
+strict context carries an unrestricted boundary, it derives the read boundary
+only from active allow grants that include `AccessPermission::Read` at `now_ms`;
+when no such grant applies, it falls back to the governed default.
 
 ## Target Normalization
 

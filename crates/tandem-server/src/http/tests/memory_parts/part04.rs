@@ -338,10 +338,18 @@ async fn retrieval_gateway_enforces_cumulative_result_window() {
         "channel": "slack",
         "user_id": "U790"
     });
+    let verified = verified_source_bound_memory_context(
+        "org-1",
+        "ws-1",
+        subject,
+        &["binding-volume"],
+        vec![tandem_types::DataClass::Internal],
+    );
     let search_req = Request::builder()
         .method("POST")
         .uri("/memory/search")
         .header("content-type", "application/json")
+        .extension(verified)
         .body(Body::from(
             json!({
                 "run_id": "gateway-volume-run",
