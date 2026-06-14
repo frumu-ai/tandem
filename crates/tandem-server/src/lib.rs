@@ -3,6 +3,7 @@
 // warning backlog is explicit so it can be paid down while production panic
 // lints are denied in the first guarded modules.
 #![allow(
+    unknown_lints,
     private_interfaces,
     unused,
     clippy::clone_on_copy,
@@ -10,10 +11,12 @@
     clippy::cmp_owned,
     clippy::collapsible_else_if,
     clippy::collapsible_if,
+    clippy::collapsible_match,
     clippy::collapsible_str_replace,
     clippy::derivable_impls,
     clippy::empty_line_after_doc_comments,
     clippy::expect_used,
+    clippy::explicit_counter_loop,
     clippy::if_same_then_else,
     clippy::iter_overeager_cloned,
     clippy::large_enum_variant,
@@ -21,6 +24,7 @@
     clippy::manual_flatten,
     clippy::manual_inspect,
     clippy::manual_is_multiple_of,
+    clippy::manual_option_zip,
     clippy::manual_pattern_char_comparison,
     clippy::manual_split_once,
     clippy::map_entry,
