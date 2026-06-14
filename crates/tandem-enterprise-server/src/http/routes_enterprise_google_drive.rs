@@ -4,8 +4,9 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_enterprise_contract::{
-    IngestionJob, IngestionJobState, IngestionQuarantine, RequestPrincipal, SourceBinding,
-    TenantContext, VerifiedTenantContext,
+    evaluate_ingestion_admission, provider_acl_sync_mode, IngestionDenyReason, IngestionJob,
+    IngestionJobState, IngestionQuarantine, IngestionReviewReason, QuarantineDisposition,
+    RequestPrincipal, SourceBinding, TenantContext, VerifiedTenantContext,
 };
 use tandem_memory::import_files;
 use tandem_memory::types::{
@@ -74,6 +75,12 @@ pub(super) struct EnterpriseGoogleDriveReindexRequest {
     sync_deletes: bool,
     #[serde(default)]
     source_object_id: Option<String>,
+    /// EAA-14 (TAN-39): admin acknowledgement that this binding's ingestion
+    /// review has been completed. Only honored when the binding has a reviewed,
+    /// released quarantine; lets reviewed high-risk/require-review content be
+    /// reindexed and kept instead of re-quarantined.
+    #[serde(default)]
+    acknowledge_review: bool,
 }
 
 fn default_enterprise_connector_import_tier() -> MemoryTier {
@@ -127,6 +134,9 @@ pub(super) async fn import_google_drive_source_binding(
         session_id: input.session_id,
         sync_deletes: input.sync_deletes,
         source_object_id: None,
+        // First-time imports always go through review; only an explicit reviewed
+        // reindex can acknowledge review.
+        acknowledge_review: false,
         job_kind: "import",
         empty_job_state: IngestionJobState::Completed,
         completion_reason: "google_drive_import_completed",
@@ -160,6 +170,7 @@ pub(super) async fn reindex_google_drive_source_binding(
         session_id: input.session_id,
         sync_deletes: input.sync_deletes,
         source_object_id,
+        acknowledge_review: input.acknowledge_review,
         job_kind: "reindex",
         empty_job_state: IngestionJobState::Skipped,
         completion_reason: "google_drive_reindex_completed",
@@ -181,6 +192,7 @@ struct GoogleDriveImportOperationInput {
     session_id: Option<String>,
     sync_deletes: bool,
     source_object_id: Option<String>,
+    acknowledge_review: bool,
     job_kind: &'static str,
     empty_job_state: IngestionJobState,
     completion_reason: &'static str,
@@ -212,11 +224,22 @@ async fn run_google_drive_import_operation(
 
     let binding = source_binding_for_tenant(&state, &tenant_context, &binding_id).await?;
     let connector = connector_for_tenant(&state, &tenant_context, &binding.connector_id).await?;
-    if !binding.ingestion_policy.allow_indexing {
-        return Err(bad_request(
-            "ENTERPRISE_GOOGLE_DRIVE_IMPORT_INDEXING_DISABLED",
-        ));
+    // EAA-14 (TAN-39): fail-closed admission. Providers without reliable ACL
+    // sync require an explicit admin label; high-risk data classes (and bindings
+    // whose policy requires review) are held for review/quarantine before they
+    // become retrievable.
+    let acl_mode = provider_acl_sync_mode(&connector.provider);
+    // An admin acknowledgement is only honored when the binding has a reviewed,
+    // released quarantine — so review cannot be skipped on first ingestion.
+    let review_acknowledged = input.acknowledge_review
+        && binding_has_released_quarantine(&state, &tenant_context, &binding.binding_id).await;
+    let admission =
+        evaluate_ingestion_admission(&binding, &connector, acl_mode, review_acknowledged);
+    if let Some(reason) = admission.denied() {
+        return Err(bad_request(google_drive_import_deny_code(reason)));
     }
+    let review_reason = admission.review_reason();
+    let must_review = admission.requires_review();
 
     let resolver = EnvSecretResolver;
     let drive_client = GoogleDriveClient::new_from_env();
@@ -377,7 +400,7 @@ async fn run_google_drive_import_operation(
         .iter()
         .map(|record| record.source_object_id.clone())
         .collect::<Vec<_>>();
-    let quarantine_id = if binding.ingestion_policy.require_review {
+    let quarantine_id = if must_review {
         let quarantine_id = format!("quarantine-{job_started_at_ms}-{}", uuid::Uuid::new_v4());
         quarantine_source_bound_import(
             &memory_manager,
@@ -396,7 +419,10 @@ async fn run_google_drive_import_operation(
                 connector_id: binding.connector_id.clone(),
                 binding_id: binding.binding_id.clone(),
                 source_object_ids: source_object_ids.clone(),
-                reason: "source binding requires ingestion review".to_string(),
+                reason: review_reason
+                    .unwrap_or(IngestionReviewReason::PolicyRequiresReview)
+                    .as_str()
+                    .to_string(),
                 created_at_ms: now_ms(),
                 reviewed_by: None,
                 reviewed_at_ms: None,
@@ -413,7 +439,7 @@ async fn run_google_drive_import_operation(
         tenant_context: tenant_context.clone(),
         connector_id: binding.connector_id.clone(),
         binding_id: binding.binding_id.clone(),
-        state: if binding.ingestion_policy.require_review {
+        state: if must_review {
             IngestionJobState::Quarantined
         } else if stats.errors > 0 {
             IngestionJobState::Failed
@@ -446,6 +472,22 @@ async fn run_google_drive_import_operation(
         drive_files_fetched: fetched_files.len(),
         drive_files_skipped: fetched.skipped_files,
     }))
+}
+
+/// Stable client error code for an ingestion admission denial.
+fn google_drive_import_deny_code(reason: IngestionDenyReason) -> &'static str {
+    match reason {
+        IngestionDenyReason::IndexingDisabled => "ENTERPRISE_GOOGLE_DRIVE_IMPORT_INDEXING_DISABLED",
+        IngestionDenyReason::ProviderAclUnsupported => {
+            "ENTERPRISE_GOOGLE_DRIVE_IMPORT_PROVIDER_ACL_UNSUPPORTED"
+        }
+        IngestionDenyReason::AdminLabelRequired => {
+            "ENTERPRISE_GOOGLE_DRIVE_IMPORT_ADMIN_LABEL_REQUIRED"
+        }
+        IngestionDenyReason::ConnectorMismatch
+        | IngestionDenyReason::ConnectorNotActive
+        | IngestionDenyReason::BindingNotEnabled => "ENTERPRISE_GOOGLE_DRIVE_IMPORT_POLICY_FAILED",
+    }
 }
 
 fn map_google_drive_preflight_error(error: GoogleDriveIngestionError) -> (StatusCode, Json<Value>) {
@@ -551,6 +593,33 @@ async fn record_enterprise_ingestion_quarantine(
         &registry,
     )
     .await
+}
+
+/// Whether the binding has at least one quarantine an admin has reviewed and
+/// released (disposition `Release` or `Reindex`). This is the gate that makes an
+/// admin's `acknowledge_review` reindex meaningful: review must actually have
+/// happened before high-risk/require-review content can be reingested and kept.
+async fn binding_has_released_quarantine(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    binding_id: &str,
+) -> bool {
+    state
+        .enterprise
+        .ingestion_quarantines
+        .read()
+        .await
+        .values()
+        .any(|quarantine| {
+            quarantine.binding_id == binding_id
+                && quarantine.tenant_context.org_id == tenant_context.org_id
+                && quarantine.tenant_context.workspace_id == tenant_context.workspace_id
+                && quarantine.tenant_context.deployment_id == tenant_context.deployment_id
+                && matches!(
+                    quarantine.disposition,
+                    Some(QuarantineDisposition::Release) | Some(QuarantineDisposition::Reindex)
+                )
+        })
 }
 
 async fn source_objects_seen_since(

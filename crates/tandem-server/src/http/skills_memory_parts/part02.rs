@@ -1580,6 +1580,23 @@ async fn resolve_memory_import_source_binding(
             ),
         ));
     }
+    // EAA-14 (TAN-39): apply the same fail-closed ingestion admission as the
+    // connector import path so a manual `/memory/import` cannot bypass the
+    // admin-label requirement or high-risk-data-class review. Manual imports
+    // have no admin acknowledgement path, so review is never pre-acknowledged.
+    let admission = tandem_enterprise_contract::evaluate_ingestion_admission(
+        binding,
+        connector,
+        tandem_enterprise_contract::provider_acl_sync_mode(&connector.provider),
+        false,
+    );
+    if let Some(reason) = admission.denied() {
+        return Err(skill_error(
+            StatusCode::BAD_REQUEST,
+            format!("source binding ingestion denied: {}", reason.as_str()),
+        ));
+    }
+    let require_review = admission.requires_review();
     Ok(Some(MemoryImportSourceBinding {
         binding_id: binding.binding_id.clone(),
         connector_id: binding.connector_id.clone(),
@@ -1593,7 +1610,7 @@ async fn resolve_memory_import_source_binding(
             .ok()
             .and_then(|value| value.as_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| format!("{:?}", binding.data_class)),
-        require_review: binding.ingestion_policy.require_review,
+        require_review,
     }))
 }
 
