@@ -725,6 +725,41 @@ async fn memory_put_rejects_capability_subject_actor_mismatch() {
 }
 
 #[tokio::test]
+async fn memory_put_rejects_channel_capability_subject_actor_mismatch() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let put_req = tenant_memory_request(
+        "POST",
+        "/memory/put",
+        "acme",
+        "north",
+        "user-a",
+        Some(json!({
+            "run_id": "forged-channel-subject-put-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "proj-a",
+                "tier": "session"
+            },
+            "kind": "fact",
+            "content": "forged channel subject write should be blocked",
+            "classification": "internal",
+            "capability": memory_capability(
+                "forged-channel-subject-put-run",
+                "channel:slack:U999",
+                "acme",
+                "north",
+                "proj-a"
+            )
+        })),
+    );
+    let put_resp = app.oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn memory_search_rejects_capability_subject_actor_mismatch() {
     let state = test_state().await;
     let app = app_router(state.clone());

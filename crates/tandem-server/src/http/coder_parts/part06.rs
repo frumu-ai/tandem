@@ -1264,7 +1264,7 @@ async fn coder_run_create_inner(
     let created =
         super::context_runs::context_run_create_impl(state.clone(), tenant_context, create_input)
             .await?;
-    let _context_run: ContextRunState =
+    let context_run: ContextRunState =
         serde_json::from_value(created.0.get("run").cloned().unwrap_or_default())
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -1314,7 +1314,14 @@ async fn coder_run_create_inner(
                     .map(|row| row.number)
                     .unwrap_or_default()
             );
-            let memory_hits = collect_coder_memory_hits(&state, &record, &memory_query, 8).await?;
+            let memory_hits = collect_coder_memory_hits(
+                &state,
+                &record,
+                Some(&context_run.tenant_context),
+                &memory_query,
+                8,
+            )
+            .await?;
             let duplicate_matches = derive_failure_pattern_duplicate_matches(&memory_hits, None, 3);
             let artifact_id = format!("memory-hits-{}", Uuid::new_v4().simple());
             let payload = json!({
@@ -1383,7 +1390,14 @@ async fn coder_run_create_inner(
         CoderWorkflowMode::IssueFix => {
             seed_issue_fix_tasks(state.clone(), &record).await?;
             let memory_query = default_coder_memory_query(&record);
-            let memory_hits = collect_coder_memory_hits(&state, &record, &memory_query, 8).await?;
+            let memory_hits = collect_coder_memory_hits(
+                &state,
+                &record,
+                Some(&context_run.tenant_context),
+                &memory_query,
+                8,
+            )
+            .await?;
             let artifact = write_coder_artifact(
                 &state,
                 &record.linked_context_run_id,
@@ -1422,7 +1436,14 @@ async fn coder_run_create_inner(
         CoderWorkflowMode::PrReview => {
             seed_pr_review_tasks(state.clone(), &record).await?;
             let memory_query = default_coder_memory_query(&record);
-            let memory_hits = collect_coder_memory_hits(&state, &record, &memory_query, 8).await?;
+            let memory_hits = collect_coder_memory_hits(
+                &state,
+                &record,
+                Some(&context_run.tenant_context),
+                &memory_query,
+                8,
+            )
+            .await?;
             let artifact = write_coder_artifact(
                 &state,
                 &record.linked_context_run_id,
@@ -1461,7 +1482,14 @@ async fn coder_run_create_inner(
         CoderWorkflowMode::MergeRecommendation => {
             seed_merge_recommendation_tasks(state.clone(), &record).await?;
             let memory_query = default_coder_memory_query(&record);
-            let memory_hits = collect_coder_memory_hits(&state, &record, &memory_query, 8).await?;
+            let memory_hits = collect_coder_memory_hits(
+                &state,
+                &record,
+                Some(&context_run.tenant_context),
+                &memory_query,
+                8,
+            )
+            .await?;
             let artifact = write_coder_artifact(
                 &state,
                 &record.linked_context_run_id,

@@ -5,7 +5,17 @@ async fn seed_pr_review_tasks(
     let run_id = coder_run.linked_context_run_id.clone();
     let workflow_id = "coder_pr_review".to_string();
     let retrieval_query = default_coder_memory_query(coder_run);
-    let memory_hits = collect_coder_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
+    let tenant_context = load_context_run_state(&state, &run_id)
+        .await?
+        .tenant_context;
+    let memory_hits = collect_coder_memory_hits(
+        &state,
+        coder_run,
+        Some(&tenant_context),
+        &retrieval_query,
+        6,
+    )
+    .await?;
     let tasks = vec![
         ContextTaskCreateInput {
             command_id: Some(format!("coder:{run_id}:inspect_pull_request")),
@@ -91,9 +101,6 @@ async fn seed_pr_review_tasks(
             max_attempts: Some(2),
         },
     ];
-    let tenant_context = load_context_run_state(&state, &run_id)
-        .await?
-        .tenant_context;
     context_run_tasks_create(
         State(state),
         Extension(tenant_context),
@@ -111,7 +118,17 @@ async fn seed_issue_fix_tasks(
     let run_id = coder_run.linked_context_run_id.clone();
     let workflow_id = "coder_issue_fix".to_string();
     let retrieval_query = default_coder_memory_query(coder_run);
-    let memory_hits = collect_coder_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
+    let tenant_context = load_context_run_state(&state, &run_id)
+        .await?
+        .tenant_context;
+    let memory_hits = collect_coder_memory_hits(
+        &state,
+        coder_run,
+        Some(&tenant_context),
+        &retrieval_query,
+        6,
+    )
+    .await?;
     let issue_number = coder_run.github_ref.as_ref().map(|row| row.number);
     let tasks = vec![
         ContextTaskCreateInput {
@@ -223,9 +240,6 @@ async fn seed_issue_fix_tasks(
             max_attempts: Some(2),
         },
     ];
-    let tenant_context = load_context_run_state(&state, &run_id)
-        .await?
-        .tenant_context;
     context_run_tasks_create(
         State(state),
         Extension(tenant_context),
@@ -243,7 +257,17 @@ async fn seed_merge_recommendation_tasks(
     let run_id = coder_run.linked_context_run_id.clone();
     let workflow_id = "coder_merge_recommendation".to_string();
     let retrieval_query = default_coder_memory_query(coder_run);
-    let memory_hits = collect_coder_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
+    let tenant_context = load_context_run_state(&state, &run_id)
+        .await?
+        .tenant_context;
+    let memory_hits = collect_coder_memory_hits(
+        &state,
+        coder_run,
+        Some(&tenant_context),
+        &retrieval_query,
+        6,
+    )
+    .await?;
     let tasks = vec![
         ContextTaskCreateInput {
             command_id: Some(format!("coder:{run_id}:inspect_pull_request")),
@@ -329,9 +353,6 @@ async fn seed_merge_recommendation_tasks(
             max_attempts: Some(2),
         },
     ];
-    let tenant_context = load_context_run_state(&state, &run_id)
-        .await?
-        .tenant_context;
     context_run_tasks_create(
         State(state),
         Extension(tenant_context),

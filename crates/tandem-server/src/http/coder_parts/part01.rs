@@ -1692,8 +1692,18 @@ async fn list_project_memory_hits(
         .collect::<Vec<_>>()
 }
 
-fn governed_memory_subjects(record: &CoderRunRecord) -> Vec<String> {
+fn governed_memory_subjects(
+    record: &CoderRunRecord,
+    tenant_context: Option<&tandem_types::TenantContext>,
+) -> Vec<String> {
     let mut subjects = Vec::new();
+    if let Some(actor_id) = tenant_context
+        .and_then(|context| context.actor_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        subjects.push(actor_id.to_string());
+    }
     if let Some(source_client) = record
         .source_client
         .as_deref()
@@ -1725,6 +1735,7 @@ fn candidate_linked_numbers(candidate_payload: &Value, key: &str) -> Vec<u64> {
 async fn list_governed_memory_hits(
     state: &AppState,
     record: &CoderRunRecord,
+    tenant_context: Option<&tandem_types::TenantContext>,
     query: &str,
     limit: usize,
 ) -> Vec<Value> {
@@ -1733,7 +1744,7 @@ async fn list_governed_memory_hits(
     };
     let mut hits = Vec::<Value>::new();
     let mut seen_ids = HashSet::<String>::new();
-    for subject in governed_memory_subjects(record) {
+    for subject in governed_memory_subjects(record, tenant_context) {
         let Ok(results) = db
             .search_global_memory(
                 &subject,
@@ -1861,6 +1872,7 @@ fn coder_memory_retrieval_policy(record: &CoderRunRecord, query: &str, limit: us
 async fn collect_coder_memory_hits(
     state: &AppState,
     record: &CoderRunRecord,
+    tenant_context: Option<&tandem_types::TenantContext>,
     query: &str,
     limit: usize,
 ) -> Result<Vec<Value>, StatusCode> {
@@ -1873,7 +1885,8 @@ async fn collect_coder_memory_hits(
     .await?;
     let mut project_hits =
         list_project_memory_hits(state, &record.repo_binding, query, limit).await;
-    let mut governed_hits = list_governed_memory_hits(state, record, query, limit).await;
+    let mut governed_hits =
+        list_governed_memory_hits(state, record, tenant_context, query, limit).await;
     hits.append(&mut project_hits);
     hits.append(&mut governed_hits);
     hits.sort_by(|a, b| compare_coder_memory_hits(record, a, b));
