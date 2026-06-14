@@ -1124,15 +1124,14 @@ pub(super) async fn execute_run(
                     "max_documents": 3,
                 });
                 for server_name in &policy.server_names {
-                    match state
-                        .mcp
-                        .call_tool_for_tenant(
-                            server_name,
-                            &tool_name,
-                            args.clone(),
-                            &tenant_context,
-                        )
-                        .await
+                    match super::mcp::call_mcp_tool_for_tenant_with_audit(
+                        &state,
+                        server_name,
+                        &tool_name,
+                        args.clone(),
+                        &tenant_context,
+                    )
+                    .await
                     {
                         Ok(result) => {
                             let output = result

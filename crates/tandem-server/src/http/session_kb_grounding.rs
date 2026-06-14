@@ -511,10 +511,14 @@ async fn fetch_kb_full_document(
     let mut last_error = None;
     let mut result = None;
     for server_name in mcp_server_name_candidates(&document_ref.server_name) {
-        match state
-            .mcp
-            .call_tool_for_tenant(&server_name, "get_document", args.clone(), tenant_context)
-            .await
+        match super::mcp::call_mcp_tool_for_tenant_with_audit(
+            state,
+            &server_name,
+            "get_document",
+            args.clone(),
+            tenant_context,
+        )
+        .await
         {
             Ok(value) => {
                 result = Some(value);
