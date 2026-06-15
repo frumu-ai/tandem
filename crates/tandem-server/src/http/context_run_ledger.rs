@@ -391,13 +391,15 @@ fn governance_evidence_package_for_records(
         .iter()
         .map(governance_evidence_protected_audit_row)
         .collect::<Vec<_>>();
+    let node_approval_ids = governance_evidence_node_approval_ids(policy_decisions);
     let (artifacts, artifact_limitations) = automation_run
-        .map(governance_evidence_artifacts)
+        .map(|run| governance_evidence_artifacts(run, &node_approval_ids))
         .unwrap_or_else(|| (Vec::new(), Vec::new()));
 
     json!({
         "schema_version": 1,
         "package_type": "tandem_run_governance_evidence",
+        "provenance": governance_evidence_provenance(context_run, automation_run),
         "run": {
             "run_id": automation_run
                 .map(|run| run.run_id.as_str())
@@ -464,6 +466,111 @@ fn governance_evidence_package_for_records(
             "policy_metadata_and_protected_audit_payloads": "hashed_shape_only",
         },
     })
+}
+
+/// Article 50 transparency notice surfaced alongside exported generated content.
+/// Mirrors the desktop `AIGeneratedBadge` tooltip so the same wording follows the
+/// artifact out of the product and into audit packets (EUAI-04/EUAI-05).
+const ARTICLE_50_NOTICE: &str =
+    "This content was produced or materially transformed by an AI system. Review before relying on it.";
+
+/// Derive the reviewer/approval state for a single generated artifact from the run's
+/// gate decision history, aligned with the `AIGeneratedBadge` states:
+/// `draft` (no recorded human decision), `reviewed` (a decision exists but is not an
+/// approval), or `approved` (a recorded approval). Returns the state, the matching
+/// transparency label, and a redacted-free review summary when a decision exists.
+fn artifact_reviewer_state(
+    node_id: &str,
+    gate_history: &[crate::AutomationGateDecisionRecord],
+) -> (&'static str, &'static str, Option<Value>) {
+    let latest = gate_history
+        .iter()
+        .filter(|record| record.node_id == node_id)
+        .max_by_key(|record| record.decided_at_ms);
+    match latest {
+        Some(record) if record.decision.to_ascii_lowercase().starts_with("approv") => (
+            "approved",
+            "AI-Generated, approved",
+            Some(json!({
+                "decision": record.decision,
+                "decided_by": record.decided_by,
+                "decided_at_ms": record.decided_at_ms,
+            })),
+        ),
+        Some(record) => (
+            "reviewed",
+            "AI-Generated, reviewed",
+            Some(json!({
+                "decision": record.decision,
+                "decided_by": record.decided_by,
+                "decided_at_ms": record.decided_at_ms,
+            })),
+        ),
+        None => ("draft", "AI-Generated", None),
+    }
+}
+
+/// Build the top-level provenance block for the evidence package. Captures generation
+/// status, transparency label, run/automation identifiers, model/provider metadata, and
+/// an overall reviewer state derived from the run's gate history (EUAI-05/TAN-246).
+fn governance_evidence_provenance(
+    context_run: &ContextRunState,
+    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
+) -> Value {
+    let empty_history: &[crate::AutomationGateDecisionRecord] = &[];
+    let gate_history = automation_run
+        .map(|run| run.checkpoint.gate_history.as_slice())
+        .unwrap_or(empty_history);
+    let awaiting = automation_run
+        .and_then(|run| run.checkpoint.awaiting_gate.as_ref())
+        .is_some();
+    let any_approved = gate_history
+        .iter()
+        .any(|record| record.decision.to_ascii_lowercase().starts_with("approv"));
+    let any_decided = !gate_history.is_empty();
+    let (reviewer_state, transparency_label) = if any_approved && !awaiting {
+        ("approved", "AI-Generated, approved")
+    } else if any_decided {
+        ("reviewed", "AI-Generated, reviewed")
+    } else {
+        ("draft", "AI-Generated")
+    };
+
+    json!({
+        "generation": "ai_generated",
+        "transparency_label": transparency_label,
+        "article_50_notice": ARTICLE_50_NOTICE,
+        "reviewer_state": reviewer_state,
+        "run_id": automation_run
+            .map(|run| run.run_id.as_str())
+            .unwrap_or(context_run.run_id.as_str()),
+        "context_run_id": context_run.run_id,
+        "automation_v2_run_id": automation_run.map(|run| run.run_id.clone()),
+        "automation_id": automation_run.map(|run| run.automation_id.clone()),
+        "model_provider": context_run.model_provider,
+        "model_id": context_run.model_id,
+        "mcp_servers": context_run.mcp_servers,
+        "source_client": context_run.source_client,
+        "generated_at_ms": context_run.started_at_ms.unwrap_or(context_run.created_at_ms),
+        "run_created_at_ms": context_run.created_at_ms,
+    })
+}
+
+/// Map each node that produced an artifact to its approval id (where a policy decision
+/// recorded one), so per-artifact provenance can link to the approval that gated it.
+fn governance_evidence_node_approval_ids(
+    policy_decisions: &[PolicyDecisionRecord],
+) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for decision in policy_decisions {
+        if let (Some(node_id), Some(approval_id)) =
+            (decision.node_id.as_ref(), decision.approval_id.as_ref())
+        {
+            map.entry(node_id.clone())
+                .or_insert_with(|| approval_id.clone());
+        }
+    }
+    map
 }
 
 fn governance_evidence_tool_call(row: &ContextRunLedgerEventView) -> Value {
@@ -582,6 +689,7 @@ fn governance_evidence_approvals(
 
 fn governance_evidence_artifacts(
     run: &crate::automation_v2::types::AutomationV2RunRecord,
+    node_approval_ids: &BTreeMap<String, String>,
 ) -> (Vec<Value>, Vec<String>) {
     let mut limitations = Vec::new();
     let mut rows = run
@@ -594,6 +702,8 @@ fn governance_evidence_artifacts(
                     "artifact_payload_redacted_scoped_resource:{node_id}"
                 ));
             }
+            let (reviewer_state, transparency_label, review) =
+                artifact_reviewer_state(node_id, &run.checkpoint.gate_history);
             json!({
                 "node_id": node_id,
                 "artifact_id": first_string_field(output, &["artifact_id", "artifactID", "id"]),
@@ -611,6 +721,14 @@ fn governance_evidence_artifacts(
                     .pointer("/artifact_validation/validation_outcome")
                     .or_else(|| output.pointer("/artifactValidation/validationOutcome"))
                     .cloned(),
+                "provenance": {
+                    "generation": "ai_generated",
+                    "transparency_label": transparency_label,
+                    "reviewer_state": reviewer_state,
+                    "review": review,
+                    "approval_id": node_approval_ids.get(node_id.as_str()),
+                    "generated_at_ms": run.created_at_ms,
+                },
                 "output": redacted_value_ref(output),
             })
         })
@@ -1424,6 +1542,109 @@ mod tests {
         assert!(serialized.contains("protected-audit-1"));
         assert!(serialized.contains("sha256"));
         assert_eq!(stable_json_sha256(&package), stable_json_sha256(&package));
+    }
+
+    #[test]
+    fn governance_evidence_package_includes_article_50_provenance() {
+        let mut run = fintech_audit_fixture_run();
+        run.status = crate::AutomationRunStatus::Completed;
+        run.finished_at_ms = Some(60);
+        // An approved gate decision for the artifact-producing node should surface
+        // the `approved` reviewer state and `AI-Generated, approved` label.
+        run.checkpoint
+            .gate_history
+            .push(crate::AutomationGateDecisionRecord {
+                node_id: "draft_compliance_brief".to_string(),
+                decision: "approved".to_string(),
+                reason: None,
+                decided_at_ms: 55,
+                decided_by: None,
+                metadata: None,
+            });
+        run.checkpoint.node_outputs.insert(
+            "draft_compliance_brief".to_string(),
+            json!({
+                "artifact_id": "compliance-brief-1",
+                "summary": "generated brief body",
+            }),
+        );
+
+        let mut context_run = governance_evidence_context_run(&run);
+        context_run.model_provider = Some("anthropic".to_string());
+        context_run.model_id = Some("test-model".to_string());
+
+        let policy_decisions = vec![tandem_types::PolicyDecisionRecord {
+            decision_id: "decision-1".to_string(),
+            tenant_context: run.tenant_context.clone(),
+            actor_id: Some("finance-user".to_string()),
+            session_id: None,
+            message_id: None,
+            run_id: Some(run.run_id.clone()),
+            automation_id: Some(run.automation_id.clone()),
+            node_id: Some("draft_compliance_brief".to_string()),
+            tool: None,
+            resource: None,
+            data_classes: vec![tandem_types::DataClass::Internal],
+            risk_tier: None,
+            decision: tandem_types::PolicyDecisionEffect::ApprovalRequired,
+            reason_code: "approval_required".to_string(),
+            reason: "approval required".to_string(),
+            policy_id: None,
+            grant_id: None,
+            approval_id: Some("approval-brief-1".to_string()),
+            audit_event_id: None,
+            created_at_ms: 50,
+            metadata: json!({}),
+        }];
+
+        let package = governance_evidence_package_for_records(
+            &context_run,
+            Some(&run),
+            &[],
+            &policy_decisions,
+            &[],
+            &[],
+        );
+
+        // Top-level provenance block.
+        let provenance = &package["provenance"];
+        assert_eq!(provenance["generation"].as_str(), Some("ai_generated"));
+        assert_eq!(
+            provenance["transparency_label"].as_str(),
+            Some("AI-Generated, approved")
+        );
+        assert_eq!(provenance["reviewer_state"].as_str(), Some("approved"));
+        assert_eq!(provenance["model_provider"].as_str(), Some("anthropic"));
+        assert_eq!(provenance["model_id"].as_str(), Some("test-model"));
+        assert!(provenance["article_50_notice"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("AI system"));
+
+        // Per-artifact provenance with reviewer state and approval linkage.
+        let artifact = package["artifacts"]
+            .as_array()
+            .expect("artifacts")
+            .iter()
+            .find(|row| row["node_id"].as_str() == Some("draft_compliance_brief"))
+            .expect("brief artifact present");
+        let artifact_provenance = &artifact["provenance"];
+        assert_eq!(
+            artifact_provenance["reviewer_state"].as_str(),
+            Some("approved")
+        );
+        assert_eq!(
+            artifact_provenance["transparency_label"].as_str(),
+            Some("AI-Generated, approved")
+        );
+        assert_eq!(
+            artifact_provenance["approval_id"].as_str(),
+            Some("approval-brief-1")
+        );
+        assert_eq!(
+            artifact_provenance["review"]["decision"].as_str(),
+            Some("approved")
+        );
     }
 
     #[test]
