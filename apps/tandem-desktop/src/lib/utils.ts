@@ -1,6 +1,42 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
+/**
+ * O(N) utility to find the maximum element in an array based on a projection function.
+ * This avoids the O(N log N) overhead and memory allocations of [...arr].sort(...)[0]
+ */
+export function maxBy<T>(array: readonly T[], fn: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let max = array[0];
+  let maxVal = fn(max);
+  for (let i = 1; i < array.length; i++) {
+    const val = fn(array[i]);
+    if (val > maxVal) {
+      maxVal = val;
+      max = array[i];
+    }
+  }
+  return max;
+}
+
+/**
+ * O(N) utility to find the minimum element in an array based on a projection function.
+ * This avoids the O(N log N) overhead and memory allocations of [...arr].sort(...)[0]
+ */
+export function minBy<T>(array: readonly T[], fn: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let min = array[0];
+  let minVal = fn(min);
+  for (let i = 1; i < array.length; i++) {
+    const val = fn(array[i]);
+    if (val < minVal) {
+      minVal = val;
+      min = array[i];
+    }
+  }
+  return min;
+}
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
