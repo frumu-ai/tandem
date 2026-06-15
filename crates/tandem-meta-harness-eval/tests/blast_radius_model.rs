@@ -50,7 +50,8 @@ fn mh04_required_attack_classes_are_present() {
     assert!(scenarios.iter().any(|scenario| {
         scenario.identity.attack_class == AttackClass::PoisonedMemoryAuthorityExpansion
             && scenario.actor == ActorRole::PoisonedMemoryEntry
-            && scenario.requested_operation.kind == RequestedOperationKind::AuthorityWideningInstruction
+            && scenario.requested_operation.kind
+                == RequestedOperationKind::AuthorityWideningInstruction
     }));
 }
 
