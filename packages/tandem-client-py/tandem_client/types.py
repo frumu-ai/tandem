@@ -6,6 +6,31 @@ from pydantic import BaseModel, ConfigDict, Field, AliasChoices
 
 # ─── Enums & Core ──────────────────────────────────────────────────────────────
 
+ErrorCode = Literal[
+    "AUTH_REQUIRED",
+    "TENANT_CONTEXT_DENIED",
+    "TENANT_SCOPE_DENIED",
+    "VALIDATION_FAILED",
+    "SESSION_NOT_FOUND",
+    "SESSION_RUN_CONFLICT",
+    "RATE_LIMITED",
+    "PROMPT_TIMEOUT",
+    "ENGINE_STARTING",
+    "ENGINE_STARTUP_FAILED",
+    "APPROVAL_REPLY_INVALID",
+    "APPROVAL_REQUEST_NOT_FOUND",
+    "APPROVAL_PERSISTENCE_FAILED",
+    "MCP_REQUEST_DENIED",
+    "MCP_STDIO_TRANSPORT_DENIED",
+    "MCP_REFRESH_FAILED",
+    "MCP_OAUTH_FAILED",
+    "SKILLS_ERROR",
+    "OPTIMIZATION_VALIDATION_FAILED",
+    "OPTIMIZATION_NOT_FOUND",
+    "OPTIMIZATION_CONFLICT",
+    "PERSISTENCE_FAILED",
+    "INTERNAL_ERROR",
+]
 RunStatus = Literal["queued", "running", "succeeded", "failed", "canceled", "unknown"]
 RoutineStatus = Literal["enabled", "disabled", "paused", "unknown"]
 ApprovalStatus = Literal["pending", "approved", "rejected", "unknown"]
@@ -21,6 +46,13 @@ class SystemHealth(BaseModel):
     model_config = ConfigDict(extra="ignore")
     ready: Optional[bool] = None
     phase: Optional[str] = None
+
+
+class ErrorEnvelope(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    error: str
+    code: Optional[ErrorCode] = None
+    retryable: bool = False
 
 
 # ─── Browser ──────────────────────────────────────────────────────────────────

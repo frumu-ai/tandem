@@ -287,10 +287,7 @@ pub(super) fn skill_error(
 ) -> (StatusCode, Json<ErrorEnvelope>) {
     (
         status,
-        Json(ErrorEnvelope {
-            error: message.into(),
-            code: Some("skills_error".to_string()),
-        }),
+        Json(ErrorEnvelope::new(message.into(), ErrorCode::SkillsError)),
     )
 }
 

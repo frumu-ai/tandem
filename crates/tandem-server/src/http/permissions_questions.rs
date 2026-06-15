@@ -35,20 +35,20 @@ pub(super) async fn reply_permission(
     if !accepted {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorEnvelope {
-                error: "reply must be one of once|always|reject|allow|deny".to_string(),
-                code: Some("invalid_permission_reply".to_string()),
-            }),
+            Json(ErrorEnvelope::new(
+                "reply must be one of once|always|reject|allow|deny",
+                ErrorCode::ApprovalReplyInvalid,
+            )),
         ));
     }
     let ok = state.permissions.reply(&id, &input.reply).await;
     if !ok {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorEnvelope {
-                error: "Permission request not found".to_string(),
-                code: Some("permission_request_not_found".to_string()),
-            }),
+            Json(ErrorEnvelope::new(
+                "Permission request not found",
+                ErrorCode::ApprovalRequestNotFound,
+            )),
         ));
     }
     Ok(Json(json!({
@@ -68,10 +68,10 @@ pub(super) async fn approve_tool_by_call(
     if !ok {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorEnvelope {
-                error: "Permission request not found".to_string(),
-                code: Some("permission_request_not_found".to_string()),
-            }),
+            Json(ErrorEnvelope::new(
+                "Permission request not found",
+                ErrorCode::ApprovalRequestNotFound,
+            )),
         ));
     }
     let _ = crate::audit::append_protected_audit_event(
@@ -97,10 +97,10 @@ pub(super) async fn deny_tool_by_call(
     if !ok {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorEnvelope {
-                error: "Permission request not found".to_string(),
-                code: Some("permission_request_not_found".to_string()),
-            }),
+            Json(ErrorEnvelope::new(
+                "Permission request not found",
+                ErrorCode::ApprovalRequestNotFound,
+            )),
         ));
     }
     let _ = crate::audit::append_protected_audit_event(
@@ -171,19 +171,19 @@ pub(super) async fn answer_question(
         .map_err(|_| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorEnvelope {
-                    error: "Failed to answer question".to_string(),
-                    code: Some("question_answer_failed".to_string()),
-                }),
+                Json(ErrorEnvelope::new(
+                    "Failed to answer question",
+                    ErrorCode::ApprovalPersistenceFailed,
+                )),
             )
         })?;
     if !ok {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorEnvelope {
-                error: "Question request not found".to_string(),
-                code: Some("question_not_found".to_string()),
-            }),
+            Json(ErrorEnvelope::new(
+                "Question request not found",
+                ErrorCode::ApprovalRequestNotFound,
+            )),
         ));
     }
     if ok {

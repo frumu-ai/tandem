@@ -796,13 +796,14 @@ pub(super) async fn prompt_async(
     Query(query): Query<PromptAsyncQuery>,
     headers: HeaderMap,
     Json(req): Json<SendMessageRequest>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, HttpError> {
     let session = state
         .storage
         .get_session(&id)
         .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+        .ok_or_else(session_not_found_error)?;
+    ensure_same_tenant(&tenant_context, &session.tenant_context)
+        .map_err(|_| session_not_found_error())?;
     let session_id = id.clone();
     let correlation_id = headers
         .get("x-tandem-correlation-id")
@@ -813,8 +814,9 @@ pub(super) async fn prompt_async(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
     let run_id = Uuid::new_v4().to_string();
-    let linked_context_run_id =
-        super::context_runs::ensure_session_context_run(&state, &session).await?;
+    let linked_context_run_id = super::context_runs::ensure_session_context_run(&state, &session)
+        .await
+        .map_err(|_| persistence_error("Failed to create linked context run"))?;
 
     let active_run = match state
         .run_registry
@@ -908,13 +910,14 @@ pub(super) async fn prompt_sync(
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(req): Json<SendMessageRequest>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, HttpError> {
     let session = state
         .storage
         .get_session(&id)
         .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&request_tenant_context, &session.tenant_context)?;
+        .ok_or_else(session_not_found_error)?;
+    ensure_same_tenant(&request_tenant_context, &session.tenant_context)
+        .map_err(|_| session_not_found_error())?;
     if session.source_kind.as_deref() == Some("channel") {
         if let Some(key) =
             channel_rate_limit_key_from_session_metadata(session.source_metadata.as_ref())
@@ -928,7 +931,14 @@ pub(super) async fn prompt_sync(
                 )
                 .await;
             if !decision.allowed {
-                let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+                let mut response = (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(ErrorEnvelope::new(
+                        "Prompt rate limit exceeded",
+                        ErrorCode::RateLimited,
+                    )),
+                )
+                    .into_response();
                 if let Ok(value) =
                     HeaderValue::from_str(&retry_after_duration(decision).as_secs().to_string())
                 {
@@ -1045,13 +1055,17 @@ pub(super) async fn prompt_sync(
     .await
     {
         let _ = state.cancellations.cancel(&id).await;
-        return Ok(StatusCode::GATEWAY_TIMEOUT.into_response());
+        return Err(http_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "Prompt run timed out",
+            ErrorCode::PromptTimeout,
+        ));
     }
     let session = state
         .storage
         .get_session(&id)
         .await
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or_else(session_not_found_error)?;
     let messages = session
         .messages
         .iter()
@@ -1497,7 +1511,9 @@ pub(super) fn sse_run_stream(
 
 pub(super) fn conflict_payload(session_id: &str, active: &ActiveRun) -> Value {
     json!({
-        "code": "SESSION_RUN_CONFLICT",
+        "error": "Session already has an active run",
+        "code": ErrorCode::SessionRunConflict,
+        "retryable": true,
         "sessionID": session_id,
         "activeRun": {
             "runID": active.run_id,

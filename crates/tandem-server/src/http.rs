@@ -37,6 +37,7 @@ use tandem_types::{
     MessagePartInput, MessageRole, SendMessageRequest, Session, TenantContext, TodoItem,
     ToolResult, ToolSchema,
 };
+pub(crate) use tandem_wire::{ErrorCode, ErrorEnvelope};
 use tandem_wire::{WireSession, WireSessionMessage};
 
 use crate::ResourceStoreError;
@@ -271,15 +272,29 @@ struct LogInput {
     context: Option<Value>,
 }
 
-#[derive(Debug, Serialize)]
-struct ErrorEnvelope {
-    error: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<String>,
-}
-
 pub type ServerRouter = Router<AppState>;
 pub type RouteRegistrar = fn(ServerRouter) -> ServerRouter;
+type HttpError = (StatusCode, Json<ErrorEnvelope>);
+
+fn http_error(status: StatusCode, error: impl Into<String>, code: ErrorCode) -> HttpError {
+    (status, Json(ErrorEnvelope::new(error.into(), code)))
+}
+
+fn session_not_found_error() -> HttpError {
+    http_error(
+        StatusCode::NOT_FOUND,
+        "Session not found",
+        ErrorCode::SessionNotFound,
+    )
+}
+
+fn persistence_error(error: impl Into<String>) -> HttpError {
+    http_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        error,
+        ErrorCode::PersistenceFailed,
+    )
+}
 
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     serve_with_route_extensions(addr, state, &[]).await
