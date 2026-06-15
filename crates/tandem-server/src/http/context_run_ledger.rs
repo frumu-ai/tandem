@@ -3,12 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::*;
 use crate::audit::ProtectedAuditEnvelope;
 use tandem_core::{
-    build_fintech_audit_package, connector_proof_from_tool_record, ToolEffectLedgerRecord,
-    ToolEffectLedgerStatus,
+    build_fintech_audit_package, classify_fintech_tool, connector_proof_from_tool_record,
+    ToolEffectLedgerPhase, ToolEffectLedgerRecord, ToolEffectLedgerStatus,
 };
 use tandem_types::{
-    AccessDecision, AccessPermission, DataClass, PolicyDecisionRecord, ResourceRef,
-    StrictTenantContext, TenantContext,
+    AccessDecision, AccessPermission, DataClass, PolicyDecisionEffect, PolicyDecisionRecord,
+    ResourceRef, StrictTenantContext, TenantContext,
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -145,6 +145,25 @@ pub(super) async fn context_run_governance_evidence_export(
                 .unwrap_or(context_run.run_id.as_str())
         )
     );
+
+    // EUAI-09 (TAN-250): record an audit-health event whenever the exported packet
+    // is not fully complete, so an incomplete evidence export is itself auditable.
+    let export_run_id = automation_run
+        .as_ref()
+        .map(|run| run.run_id.as_str())
+        .unwrap_or(context_run.run_id.as_str());
+    let export_principal = verified_tenant_context
+        .as_ref()
+        .and_then(|verified| verified.0.strict_projection.as_ref())
+        .map(|strict| strict.principal.id.clone());
+    emit_completeness_health_event(
+        &state,
+        &tenant_context,
+        export_run_id,
+        export_principal,
+        &package["audit_completeness"],
+    )
+    .await;
 
     Ok(Json(json!({
         "evidence_package": package,
@@ -451,6 +470,13 @@ fn governance_evidence_package_for_records(
             "audit_event_ids": audit_event_ids,
             "protected_events": protected_audit_rows,
         },
+        "audit_completeness": governance_evidence_completeness(
+            context_run,
+            automation_run,
+            records,
+            policy_decisions,
+            protected_audit,
+        ),
         "memory_promotions": memory_promotion_rows,
         "memory_audit": memory_audit_rows,
         "artifacts": artifacts,
@@ -469,6 +495,7 @@ fn governance_evidence_package_for_records(
 }
 
 include!("context_run_ledger_parts/provenance.rs");
+include!("context_run_ledger_parts/completeness.rs");
 
 fn governance_evidence_tool_call(row: &ContextRunLedgerEventView) -> Value {
     json!({
@@ -1796,6 +1823,8 @@ mod tests {
         .with_grants(vec![grant])
         .with_data_boundary(tandem_types::DataBoundary::allow(vec![data_class]))
     }
+
+    include!("context_run_ledger_parts/completeness_tests.rs");
 }
 
 #[cfg(test)]

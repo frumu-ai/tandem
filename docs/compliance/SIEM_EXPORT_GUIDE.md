@@ -281,6 +281,86 @@ For scheduled exports:
 
 ---
 
+## Log Completeness Checks (Article 12)
+
+The hash-chain verification above proves the protected audit ledger has not been
+tampered with. A separate **completeness** check proves that each protected action is
+backed by the full set of records the EU AI Act Article 12 record-keeping expectation
+requires: a policy decision, an approval, a tool-effect ledger entry, and a protected
+audit event.
+
+The governance evidence export
+(`GET /context/runs/{run_id}/governance-evidence`) carries an `audit_completeness`
+block alongside the run evidence:
+
+```json
+{
+  "audit_completeness": {
+    "schema_version": 1,
+    "status": "incomplete",
+    "checked_at_ms": 1718400000000,
+    "event_taxonomy": [
+      "approval_granted", "approval_denied", "approval_reworked",
+      "approval_cancelled", "protected_tool_call", "policy_decision",
+      "evidence_export", "incident_failure"
+    ],
+    "counts": {
+      "protected_actions_checked": 3,
+      "approval_decisions_checked": 2,
+      "policy_decisions": 2,
+      "gate_decisions": 1,
+      "protected_audit_events": 4,
+      "tool_effect_records": 6,
+      "findings": 1,
+      "errors": 1,
+      "warnings": 0
+    },
+    "findings": [
+      {
+        "severity": "error",
+        "kind": "missing_approval_evidence",
+        "detail": "approval-required policy decision has no approval id and no recorded approve gate decision",
+        "subject": { "policy_decision_id": "decision-1", "node_id": "release_funds" }
+      }
+    ]
+  }
+}
+```
+
+### Status values
+
+| `status` | Meaning |
+|----------|---------|
+| `complete` | Every protected action has matching policy, approval, tool-effect, and audit records. |
+| `complete_with_warnings` | No hard gaps, but advisory findings exist (e.g. a legacy approval without recorded decider attribution). |
+| `incomplete` | At least one `error`-severity finding — do not rely on the packet as complete evidence until resolved. |
+
+### Finding kinds
+
+| `kind` | Severity | Meaning |
+|--------|----------|---------|
+| `missing_policy_decision` | error | A protected (approval-required) tool call succeeded with no linked, present policy decision. |
+| `missing_approval_evidence` | error | An approval-required policy decision has neither an approval id nor a recorded approve gate decision. |
+| `missing_protected_audit_event` | error | A policy decision references an audit event that is absent from the packet. |
+| `expired_approval` | error | A protected action executed after its approval expiry. |
+| `tenant_mismatch` | error | A policy decision or protected audit event carries a different tenant than the run. |
+| `sequence_gap` | error | The protected audit hash chain is broken or a sequence number is replayed between adjacent records. |
+| `missing_tool_effect_evidence` | warning | An approval-required decision has no linked tool-effect record (expected when a gate was reworked or cancelled before execution). |
+| `unattributed_approval` | warning | A gate decision has no recorded decider (legacy record predating attribution enforcement). |
+
+### Audit-health event
+
+When an export is generated and its status is not `complete`, Tandem appends a protected
+audit event `audit.health.completeness_incomplete` carrying the run id, status, counts,
+and the distinct finding kinds (no redacted detail). This makes the act of exporting an
+incomplete packet itself auditable. Monitor for this event type in your SIEM to detect
+runs whose evidence is incomplete.
+
+The completeness check is a pure function over the same records the packet is built from,
+so it can also be re-run offline against an exported bundle.
+
+---
+
 ## Residual Gaps
 
 The following are not yet implemented and are tracked as follow-up issues:
