@@ -31,6 +31,13 @@ impl EventBus {
         self.tx.subscribe()
     }
 
+    /// Number of live broadcast subscribers. Useful for diagnostics and for tests
+    /// that must wait until a spawned consumer has subscribed before publishing
+    /// (the broadcast channel drops events sent before a receiver exists).
+    pub fn receiver_count(&self) -> usize {
+        self.tx.receiver_count()
+    }
+
     pub fn take_session_part_receiver(&self) -> Option<mpsc::UnboundedReceiver<EngineEvent>> {
         self.session_part_rx.lock().ok()?.take()
     }

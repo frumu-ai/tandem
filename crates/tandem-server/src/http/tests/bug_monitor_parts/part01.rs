@@ -212,6 +212,24 @@ async fn write_ready_bug_monitor_triage_summary(app: axum::Router, draft_id: &st
     serde_json::from_slice(&summary_body).expect("triage summary json")
 }
 
+/// Spawn the bug monitor and wait until it has subscribed to the event bus before
+/// returning. `run_bug_monitor` only subscribes after its startup-readiness check,
+/// and the broadcast channel drops events published before a receiver exists, so
+/// publishing on a fixed sleep races under load. Waiting on `receiver_count` makes
+/// the "publish then expect an incident" tests deterministic.
+async fn spawn_bug_monitor_ready(state: &AppState) -> tokio::task::JoinHandle<()> {
+    let baseline = state.event_bus.receiver_count();
+    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.event_bus.receiver_count() <= baseline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("bug monitor did not subscribe to the event bus in time");
+    task
+}
+
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_runtime_creates_incident_and_draft_from_failure_event() {
@@ -227,8 +245,7 @@ async fn bug_monitor_runtime_creates_incident_and_draft_from_failure_event() {
         .await
         .expect("config");
 
-    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let task = spawn_bug_monitor_ready(&state).await;
     state.event_bus.publish(EngineEvent::new(
         "session.error",
         json!({
@@ -292,8 +309,7 @@ async fn paused_bug_monitor_runtime_ignores_failure_events() {
         .await
         .expect("config");
 
-    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let task = spawn_bug_monitor_ready(&state).await;
     state.event_bus.publish(EngineEvent::new(
         "session.error",
         json!({
@@ -322,8 +338,7 @@ async fn bug_monitor_runtime_detects_real_context_task_failures() {
         .await
         .expect("config");
 
-    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let task = spawn_bug_monitor_ready(&state).await;
     state.event_bus.publish(EngineEvent::new(
         "context.task.failed",
         json!({
@@ -1055,8 +1070,7 @@ async fn bug_monitor_runtime_suppresses_duplicate_failure_patterns() {
         .expect("candidate response");
     assert_eq!(candidate_resp.status(), StatusCode::OK);
 
-    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let task = spawn_bug_monitor_ready(&state).await;
     state.event_bus.publish(EngineEvent::new(
         "session.error",
         json!({
