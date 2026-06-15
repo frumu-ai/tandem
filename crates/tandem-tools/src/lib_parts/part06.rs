@@ -51,6 +51,11 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn memory_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     fn clear_search_env() {
         let test_settings_path = std::env::temp_dir().join(format!(
             "tandem-search-settings-test-{}.env",
@@ -874,23 +879,33 @@ mod tests {
 
     #[test]
     fn memory_db_path_ignores_public_db_path_arg() {
+        let _guard = memory_env_lock().lock().expect("env lock");
+        let previous = std::env::var("TANDEM_MEMORY_DB_PATH").ok();
         std::env::set_var("TANDEM_MEMORY_DB_PATH", "/tmp/global-memory.sqlite");
         let resolved = resolve_memory_db_path(&json!({
             "db_path": "/home/user123/tandem"
         }));
+        match previous {
+            Some(value) => std::env::set_var("TANDEM_MEMORY_DB_PATH", value),
+            None => std::env::remove_var("TANDEM_MEMORY_DB_PATH"),
+        }
         assert_eq!(resolved, PathBuf::from("/tmp/global-memory.sqlite"));
-        std::env::remove_var("TANDEM_MEMORY_DB_PATH");
     }
 
     #[test]
     fn memory_db_path_accepts_hidden_override() {
+        let _guard = memory_env_lock().lock().expect("env lock");
+        let previous = std::env::var("TANDEM_MEMORY_DB_PATH").ok();
         std::env::set_var("TANDEM_MEMORY_DB_PATH", "/tmp/global-memory.sqlite");
         let resolved = resolve_memory_db_path(&json!({
             "__memory_db_path": "/tmp/internal-memory.sqlite",
             "db_path": "/home/user123/tandem"
         }));
+        match previous {
+            Some(value) => std::env::set_var("TANDEM_MEMORY_DB_PATH", value),
+            None => std::env::remove_var("TANDEM_MEMORY_DB_PATH"),
+        }
         assert_eq!(resolved, PathBuf::from("/tmp/internal-memory.sqlite"));
-        std::env::remove_var("TANDEM_MEMORY_DB_PATH");
     }
 
     #[tokio::test]

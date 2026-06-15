@@ -37,6 +37,7 @@ use tandem_types::{
     MessagePartInput, MessageRole, SendMessageRequest, Session, TenantContext, TodoItem,
     ToolResult, ToolSchema,
 };
+pub(crate) use tandem_wire::{ErrorCode, ErrorEnvelope};
 use tandem_wire::{WireSession, WireSessionMessage};
 
 use crate::ResourceStoreError;
@@ -119,6 +120,7 @@ mod routes_task_intake;
 mod routes_workflow_planner;
 mod routes_workflows;
 pub(crate) mod routines_automations;
+mod runtime_events;
 mod session_kb_grounding;
 mod session_source;
 mod sessions;
@@ -271,15 +273,29 @@ struct LogInput {
     context: Option<Value>,
 }
 
-#[derive(Debug, Serialize)]
-struct ErrorEnvelope {
-    error: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<String>,
-}
-
 pub type ServerRouter = Router<AppState>;
 pub type RouteRegistrar = fn(ServerRouter) -> ServerRouter;
+type HttpError = (StatusCode, Json<ErrorEnvelope>);
+
+fn http_error(status: StatusCode, error: impl Into<String>, code: ErrorCode) -> HttpError {
+    (status, Json(ErrorEnvelope::new(error.into(), code)))
+}
+
+fn session_not_found_error() -> HttpError {
+    http_error(
+        StatusCode::NOT_FOUND,
+        "Session not found",
+        ErrorCode::SessionNotFound,
+    )
+}
+
+fn persistence_error(error: impl Into<String>) -> HttpError {
+    http_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        error,
+        ErrorCode::PersistenceFailed,
+    )
+}
 
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     serve_with_route_extensions(addr, state, &[]).await
@@ -331,6 +347,7 @@ pub async fn serve_with_route_extensions(
     let reaper_state = state.clone();
     let session_part_persister_state = state.clone();
     let session_context_run_journaler_state = state.clone();
+    let runtime_event_log_persister_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
     let routine_executor_state = state.clone();
@@ -391,6 +408,9 @@ pub async fn serve_with_route_extensions(
     ));
     let session_context_run_journaler = tokio::spawn(crate::run_session_context_run_journaler(
         session_context_run_journaler_state,
+    ));
+    let runtime_event_log_persister = tokio::spawn(crate::run_runtime_event_log_persister(
+        runtime_event_log_persister_state,
     ));
     let status_indexer = tokio::spawn(crate::run_status_indexer(status_indexer_state));
     let routine_scheduler = tokio::spawn(crate::run_routine_scheduler(routine_scheduler_state));
@@ -576,6 +596,7 @@ pub async fn serve_with_route_extensions(
     reaper.abort();
     session_part_persister.abort();
     session_context_run_journaler.abort();
+    runtime_event_log_persister.abort();
     status_indexer.abort();
     routine_scheduler.abort();
     routine_executor.abort();

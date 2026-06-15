@@ -59,9 +59,68 @@ Deployers should:
 - Train reviewers not to treat generated drafts as final decisions.
 - Record when a generated draft is approved for external communication or system-of-record update.
 
+## Provenance In Exports
+
+Visible UI labeling stops at the product boundary. Once generated content leaves Tandem
+in an export, the transparency signal must travel with it. The governance evidence export
+(`GET /context/runs/{run_id}/governance-evidence`) preserves provenance in two places.
+
+### Package-level provenance
+
+Every governance evidence package carries a top-level `provenance` block:
+
+| Field | Meaning |
+| ----- | ------- |
+| `generation` | `ai_generated` — the run's output was produced by an AI system. |
+| `transparency_label` | The Article 50 label for the run as a whole (`AI-Generated`, `AI-Generated, reviewed`, or `AI-Generated, approved`), mirroring the desktop `AIGeneratedBadge`. |
+| `article_50_notice` | The same notice text shown in the badge tooltip, so the wording follows the export. |
+| `reviewer_state` | `draft` / `reviewed` / `approved`, derived from the run's gate decision history. `approved` requires a recorded approval and no still-pending gate. |
+| `run_id`, `context_run_id`, `automation_v2_run_id`, `automation_id` | Run and automation linkage. |
+| `model_provider`, `model_id` | Model/provider metadata where recorded on the run (omitted/`null` when not captured). |
+| `mcp_servers`, `source_client` | Connected tool and originating client metadata where recorded. |
+| `generated_at_ms`, `run_created_at_ms` | Generation timing. |
+
+### Artifact-level provenance
+
+Each entry under `artifacts[]` carries its own `provenance` block:
+
+| Field | Meaning |
+| ----- | ------- |
+| `generation` | `ai_generated`. |
+| `transparency_label` | The label for that specific artifact based on its node's review state. |
+| `reviewer_state` | `draft` / `reviewed` / `approved` for the node that produced the artifact. |
+| `review` | The latest gate decision (`decision`, `decided_by`, `decided_at_ms`) when one exists; `null` for an unreviewed draft. |
+| `approval_id` | The approval that gated the artifact, when a policy decision recorded one. |
+| `generated_at_ms` | Generation timestamp. |
+
+Reviewer states are derived only from recorded human decisions: an artifact is never
+labeled `approved` unless an approval is present in the gate history. This preserves the
+rule that the UI/export must not imply human approval that did not occur.
+
+### Format limitations
+
+- The JSON governance evidence package is the supported provenance-preserving export. Its
+  provenance and artifact metadata are machine-readable and independently verifiable
+  alongside the hash-chained audit ledger (see `SIEM_EXPORT_GUIDE.md`).
+- Artifact **payloads** are redacted to shape + SHA-256 references in the package; the
+  provenance metadata is preserved even when the body is redacted for scope or secrecy.
+- Plain-text or binary artifact exports that have no metadata channel (e.g. a raw `.txt`
+  download) cannot embed structured provenance. For those, provenance is preserved in the
+  governance evidence package that references the artifact by `artifact_id`, not in the
+  file itself. Deployers who export such files should keep them associated with the
+  evidence package or add a document header per their own policy.
+
+## When A Generated Draft Becomes A Human-Owned Final Record
+
+A generated draft remains `AI-Generated` until a deployer-defined human decision is
+recorded against it. Once an approval is recorded (gate decision or policy approval), the
+export reflects `AI-Generated, approved` and links the `approval_id`. Deployers decide,
+per their own policy, when an approved draft is incorporated into a human-owned final
+record in their system of record — at which point the deployer's recordkeeping system
+owns provenance. Until then, Tandem keeps the content labeled and the provenance attached.
+
 ## Planned Tandem Work
 
-- Add a reusable `AI-Generated` badge component for desktop and web panel surfaces.
-- Apply it to generated text, proposed plans, plan previews, artifacts, summaries, briefs, and handoffs.
+- Apply the `AI-Generated` badge to any remaining generated-content surfaces (BlackboardPanel, DeveloperRunViewer artifact/diff views).
 - Add visual and accessibility tests for the main generated-content surfaces.
-- Preserve generation provenance in exported artifacts where practical.
+- Embed provenance headers directly into document-format exports (PDF/DOCX) where the format supports metadata.

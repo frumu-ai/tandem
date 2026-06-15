@@ -111,6 +111,14 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
         axum::routing::get(super::audit_stream::audit_stream),
     );
     router = router.route(
+        "/audit/ledger/manifest",
+        axum::routing::get(super::audit_stream::audit_ledger_manifest),
+    );
+    router = router.route(
+        "/audit/ledger/export",
+        axum::routing::get(super::audit_stream::audit_ledger_export),
+    );
+    router = router.route(
         "/channels/enroll",
         axum::routing::post(super::channel_enrollment::channel_enroll),
     );
@@ -133,6 +141,10 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
     router = super::routes_coder::apply(router);
     router = super::routes_context::apply(router);
     router = super::routes_sessions::apply(router);
+    router = router.route(
+        "/runs/{run_id}/events",
+        axum::routing::get(super::runtime_events::get_run_events),
+    );
     router = super::routes_bug_monitor::apply(router);
     router = super::routes_external_actions::apply(router);
     router = super::routes_goal_capability_learning::apply(router);

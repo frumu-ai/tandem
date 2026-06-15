@@ -55,6 +55,36 @@ events into the typed `RuntimeEvent` via `RuntimeEvent::from_engine_event`.
 }
 ```
 
+## Durable event log
+
+The server persists canonical runtime events that have a `run_id` or
+`session_id` to a JSONL ledger at `runtime/events.jsonl` under Tandem's
+canonical data root. Each row is the flat `RuntimeEvent` shape above, including
+`seq`, `event_id`, `occurred_at_ms`, and optional `tenant_context`.
+
+Retention is controlled by `TANDEM_RUNTIME_EVENT_LOG_RETENTION_DAYS` and
+defaults to 30 days. Set it to `0` to disable startup cleanup.
+
+Tenant-scoped replay is available via:
+
+```text
+GET /runs/{run_id}/events?after_seq=<seq>&limit=<n>
+```
+
+The response includes:
+
+- `events`: canonical runtime event rows visible to the request tenant.
+- `last_seq`: the last returned bus sequence, suitable for the next
+  `after_seq` query.
+- `sequence_scope`: currently `runtime_event_bus`, meaning `seq` is global to
+  the event bus process. Missing sequence numbers between returned rows can
+  indicate filtered tenants, other runs, or a broadcast gap logged by the
+  persister.
+
+Explicit tenant requests only see rows whose `tenant_context` exactly matches
+their `org_id`, `workspace_id`, and `deployment_id`. Local implicit requests
+retain local single-tenant behavior and can read all rows.
+
 ## Schema policy
 
 - **Closed vocabulary.** `RuntimeEventType` is a closed enum; `parse()`

@@ -83,6 +83,7 @@ pub mod preset_registry;
 pub mod preset_summary;
 pub mod routines;
 pub mod runtime;
+pub mod runtime_event_log;
 pub mod shared_resources;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -94,6 +95,7 @@ pub mod workflows;
 pub use app::startup::*;
 pub use app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata;
 pub use app::state::*;
+pub use app::tasks::run_runtime_event_log_persister;
 pub use app::tasks::run_session_context_run_journaler;
 pub use automation_v2::execution_profile::{
     aggregate_human_dispositions_by_class, augment_output_with_profile_relaxation,

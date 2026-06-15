@@ -492,7 +492,8 @@ pub(super) async fn add_mcp(
         return Json(json!({
             "ok": false,
             "error": "stdio MCP transports cannot be registered through the HTTP API",
-            "code": "MCP_STDIO_TRANSPORT_DENIED"
+            "code": ErrorCode::McpStdioTransportDenied,
+            "retryable": false
         }));
     }
     let auth_kind = normalize_mcp_auth_kind(input.auth_kind.as_deref().unwrap_or_default());
@@ -1592,6 +1593,8 @@ pub(super) async fn refresh_mcp(
             Json(json!({
                 "ok": false,
                 "error": error,
+                "code": ErrorCode::McpRefreshFailed,
+                "retryable": ErrorCode::McpRefreshFailed.retryable(),
                 "pendingAuth": auth_challenge.is_some(),
                 "lastAuthChallenge": auth_challenge,
                 "authorizationUrl": auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()),
@@ -1750,6 +1753,8 @@ pub(super) async fn authenticate_mcp(
                 "lastAuthChallenge": auth_challenge,
                 "authorizationUrl": auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()),
                 "error": error,
+                "code": ErrorCode::McpOauthFailed,
+                "retryable": false,
             }))
         }
     }

@@ -337,7 +337,7 @@ async fn automation_attempt_receipt_append_uses_jsonl_path_and_skips_malformed_l
     let last_line = lines.last().expect("appended line");
     let appended: AutomationAttemptReceiptRecord =
         serde_json::from_str(last_line).expect("parse appended receipt");
-    assert_eq!(appended.version, 1);
+    assert_eq!(appended.version, 2); // schema version bumped for hash-chain support
     assert_eq!(appended.run_id, run_id);
     assert_eq!(appended.node_id, node_id);
     assert_eq!(appended.attempt, 2);
@@ -345,6 +345,10 @@ async fn automation_attempt_receipt_append_uses_jsonl_path_and_skips_malformed_l
     assert_eq!(appended.seq, 8);
     assert_eq!(appended.event_type, "completed");
     assert_eq!(appended.payload, serde_json::json!({"ok": true}));
+    // Hash-chain: first v2 record after a v1 seed has no prev_hash (unhashed
+    // v1 records cannot be chained from), and always has a non-empty record_hash.
+    assert!(appended.prev_hash.is_none());
+    assert!(!appended.record_hash.is_empty());
 
     let _ = std::fs::remove_dir_all(&state_dir);
 }

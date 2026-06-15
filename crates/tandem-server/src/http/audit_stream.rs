@@ -19,6 +19,12 @@ pub(crate) struct ProtectedAuditQuery {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct AuditExportQuery {
+    since_ms: Option<u64>,
+    until_ms: Option<u64>,
+}
+
 pub(crate) async fn protected_audit_events(
     State(state): State<AppState>,
     Extension(principal): Extension<RequestPrincipal>,
@@ -277,6 +283,148 @@ fn fintech_protected_action_record(event: &EngineEvent) -> Option<Value> {
             "approval": event.properties.get("approval"),
         }),
     ))
+}
+
+/// GET /audit/ledger/manifest
+///
+/// Returns the `AuditLedgerManifest` for the protected audit ledger: schema version,
+/// record count, last seq, ledger root hash, and generation timestamp. Callers can use
+/// this to verify that the ledger has not been truncated or tampered with since it was
+/// last exported.
+pub(crate) async fn audit_ledger_manifest(
+    State(state): State<AppState>,
+    Extension(principal): Extension<RequestPrincipal>,
+    Extension(_tenant_context): Extension<TenantContext>,
+) -> Response {
+    if !audit_admin_allowed(&principal) {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": "Admin capability required",
+                "code": "AUDIT_ADMIN_REQUIRED"
+            })),
+        )
+            .into_response();
+    }
+    match crate::audit::generate_audit_ledger_manifest(&state.protected_audit_path).await {
+        Ok(manifest) => axum::Json(manifest).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({
+                "error": err.to_string(),
+                "code": "AUDIT_MANIFEST_ERROR"
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /audit/ledger/export
+///
+/// Produces a deterministic NDJSON bundle of protected audit events for the requesting
+/// tenant, followed by a `bundle_manifest` trailer record. The bundle is independently
+/// verifiable: each record carries `seq`, `prev_hash`, and `record_hash` fields that
+/// can be re-hashed to confirm chain integrity. Query params:
+///
+/// - `since_ms` (optional): include only records with `created_at_ms >= since_ms`
+/// - `until_ms` (optional): include only records with `created_at_ms <= until_ms`
+pub(crate) async fn audit_ledger_export(
+    State(state): State<AppState>,
+    Extension(principal): Extension<RequestPrincipal>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Query(query): Query<AuditExportQuery>,
+) -> Response {
+    if !audit_admin_allowed(&principal) {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": "Admin capability required",
+                "code": "AUDIT_ADMIN_REQUIRED"
+            })),
+        )
+            .into_response();
+    }
+
+    let mut records =
+        crate::audit::load_protected_audit_events_for_tenant(&state, &tenant_context).await;
+
+    // Sort by seq for stable chain ordering in the export.
+    records.sort_by_key(|e| e.seq);
+
+    // Apply optional time-range filter.
+    let filtered: Vec<_> = records
+        .into_iter()
+        .filter(|e| {
+            query
+                .since_ms
+                .map(|ms| e.created_at_ms >= ms)
+                .unwrap_or(true)
+        })
+        .filter(|e| {
+            query
+                .until_ms
+                .map(|ms| e.created_at_ms <= ms)
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let record_count = filtered.len() as u64;
+    let last_seq = filtered.iter().map(|e| e.seq).max().unwrap_or(0);
+    let root_hash = filtered
+        .iter()
+        .rev()
+        .find(|e| !e.record_hash.is_empty())
+        .map(|e| e.record_hash.clone());
+
+    // Build NDJSON body.
+    let mut body = String::new();
+    for record in &filtered {
+        match serde_json::to_string(record) {
+            Ok(line) => {
+                body.push_str(&line);
+                body.push('\n');
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({
+                        "error": err.to_string(),
+                        "code": "AUDIT_EXPORT_SERIALIZE_ERROR"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Append bundle manifest trailer as the final NDJSON record.
+    let trailer = json!({
+        "type": "bundle_manifest",
+        "schema_version": 2u32,
+        "record_count": record_count,
+        "last_seq": last_seq,
+        "root_hash": root_hash,
+        "tenant_org_id": &tenant_context.org_id,
+        "tenant_workspace_id": &tenant_context.workspace_id,
+        "since_ms": query.since_ms,
+        "until_ms": query.until_ms,
+        "exported_at_ms": crate::now_ms(),
+    });
+    if let Ok(line) = serde_json::to_string(&trailer) {
+        body.push_str(&line);
+        body.push('\n');
+    }
+
+    let mut response = Body::from(body).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/x-ndjson"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"audit-ledger-export.ndjson\""),
+    );
+    response
 }
 
 #[cfg(test)]

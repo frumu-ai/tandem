@@ -15,7 +15,7 @@ import {
   Sparkles,
   ScrollText,
 } from "lucide-react";
-import { Button } from "@/components/ui";
+import { AIGeneratedBadge, Button } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { BudgetMeter } from "./BudgetMeter";
 import { TaskBoard } from "./TaskBoard";
@@ -1014,6 +1014,7 @@ export function OrchestratorPanel({
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
             <h3 className="font-semibold text-text">Orchestrator</h3>
+            <AIGeneratedBadge />
             <span className="rounded border border-border bg-surface-elevated px-1.5 py-0.5 text-[10px] text-text-muted">
               Model: {activeModelLabel}
             </span>

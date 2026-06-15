@@ -36,7 +36,11 @@ async fn permission_reply_route_rejects_invalid_reply() {
     let payload: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(
         payload.get("code").and_then(|v| v.as_str()),
-        Some("invalid_permission_reply")
+        Some("APPROVAL_REPLY_INVALID")
+    );
+    assert_eq!(
+        payload.get("retryable").and_then(|v| v.as_bool()),
+        Some(false)
     );
 }
 
@@ -56,7 +60,11 @@ async fn permission_reply_route_returns_not_found_for_unknown_request() {
     let payload: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(
         payload.get("code").and_then(|v| v.as_str()),
-        Some("permission_request_not_found")
+        Some("APPROVAL_REQUEST_NOT_FOUND")
+    );
+    assert_eq!(
+        payload.get("retryable").and_then(|v| v.as_bool()),
+        Some(false)
     );
 }
 

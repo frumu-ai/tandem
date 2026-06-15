@@ -5,7 +5,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
+use tandem_observability::{emit_event_with_tenant, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
 use tandem_tools::{validate_tool_schemas, ToolRegistry};
 use tandem_types::{

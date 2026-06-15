@@ -184,6 +184,10 @@ pub(crate) fn resolve_optimization_experiments_path() -> PathBuf {
     resolve_canonical_data_file_path("optimization_experiments.json")
 }
 
+pub(crate) fn resolve_runtime_events_path() -> PathBuf {
+    resolve_canonical_data_file_path("runtime/events.jsonl")
+}
+
 pub(crate) fn resolve_automation_attempt_receipts_dir() -> PathBuf {
     resolve_canonical_data_file_path("automation_attempt_receipts")
 }
