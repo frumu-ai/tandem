@@ -15,7 +15,7 @@ import {
   Copy,
 } from "lucide-react";
 import { ConsoleTab } from "./ConsoleTab";
-import { cn } from "@/lib/utils";
+import { cn, maxBy } from "@/lib/utils";
 import {
   listAppLogFiles,
   onLogStreamEvent,
@@ -221,8 +221,7 @@ function useMeasuredHeight() {
 
 function pickNewest(files: LogFileInfo[]): string | null {
   if (!files || files.length === 0) return null;
-  const sorted = [...files].sort((a, b) => b.modified_ms - a.modified_ms);
-  return sorted[0]?.name ?? null;
+  return maxBy(files, (a) => a.modified_ms)?.name ?? null;
 }
 
 export function LogsDrawer({
