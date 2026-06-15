@@ -337,11 +337,18 @@ block alongside the run evidence:
 
 ### Finding kinds
 
+Checks anchor on **executed protected actions** — a protected tool call that actually
+succeeded (classified protected by tool name, or by a linked policy decision that gated
+it). The runtime records a successful protected execution as a `PolicyDecisionEffect::Allow`
+(`matching_approval_receipt`) decision with the approval id attached, appending the
+protected audit event separately, so the checker resolves each succeeded tool-effect to its
+linked decision and verifies the full chain.
+
 | `kind` | Severity | Meaning |
 |--------|----------|---------|
-| `missing_policy_decision` | error | A protected (approval-required) tool call succeeded with no linked, present policy decision. |
-| `missing_approval_evidence` | error | An approval-required policy decision has neither an approval id nor a recorded approve gate decision. |
-| `missing_protected_audit_event` | error | A policy decision references an audit event that is absent from the packet. |
+| `missing_policy_decision` | error | A protected tool call succeeded with no linked (or no present) policy decision. |
+| `missing_approval_evidence` | error | An executed protected action's decision has neither an approval id nor a recorded approve gate decision. |
+| `missing_protected_audit_event` | error | No protected audit event attests an executed protected action (matched by `audit_event_id`, or by the decision/approval id appearing in an event payload). |
 | `expired_approval` | error | A protected action executed after its approval expiry. |
 | `tenant_mismatch` | error | A policy decision or protected audit event carries a different tenant than the run. |
 | `sequence_gap` | error | The protected audit hash chain is broken or a sequence number is replayed between adjacent records. |

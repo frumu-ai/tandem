@@ -74,10 +74,71 @@ fn completeness_finding(severity: &str, kind: &str, detail: String, subject: Val
 }
 
 /// Returns `true` when a tool requires approval under the fintech protected-action
-/// classification (i.e. is not `Safe`). Used to decide which executed tool calls
-/// must carry full policy/approval/audit evidence.
+/// classification (i.e. is not `Safe`).
 fn tool_is_protected(tool: &str) -> bool {
     !classify_fintech_tool(tool).allowed_without_approval()
+}
+
+/// Whether a policy decision marks an action the policy engine treated as protected:
+/// an explicit approval gate (`ApprovalRequired`), or an `Allow` granted on the basis
+/// of an approval (the `matching_approval_receipt` execution path sets `approval_id`).
+fn decision_is_protected_action(decision: &PolicyDecisionRecord) -> bool {
+    match decision.decision {
+        PolicyDecisionEffect::ApprovalRequired => true,
+        PolicyDecisionEffect::Allow => {
+            decision.approval_id.is_some()
+                || decision.reason_code.to_ascii_lowercase().contains("approval")
+        }
+        PolicyDecisionEffect::Deny => false,
+    }
+}
+
+/// Whether a policy decision carries approval evidence: an explicit approval id, or a
+/// recorded approve gate decision for the decision's node.
+fn decision_evidences_approval(
+    decision: &PolicyDecisionRecord,
+    gate_history: &[crate::AutomationGateDecisionRecord],
+) -> bool {
+    if decision.approval_id.is_some() {
+        return true;
+    }
+    decision
+        .node_id
+        .as_deref()
+        .map(|node_id| {
+            gate_history.iter().any(|gate| {
+                gate.node_id == node_id
+                    && gate.decision.to_ascii_lowercase().starts_with("approv")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Whether a protected audit event in the packet attests to a decision — either an
+/// explicit `audit_event_id` match, or an event whose payload references the decision
+/// id or its approval id. Protected audit events are recorded separately from the
+/// policy decision (recorders set `audit_event_id: None` and append the audit event
+/// independently), so payload linkage is the normal case.
+fn protected_audit_attests_decision(
+    decision: &PolicyDecisionRecord,
+    protected_audit: &[ProtectedAuditEnvelope],
+) -> bool {
+    if let Some(audit_event_id) = decision.audit_event_id.as_deref() {
+        if protected_audit
+            .iter()
+            .any(|event| event.event_id == audit_event_id)
+        {
+            return true;
+        }
+    }
+    let mut needles: BTreeSet<String> = BTreeSet::new();
+    needles.insert(decision.decision_id.clone());
+    if let Some(approval_id) = decision.approval_id.as_ref() {
+        needles.insert(approval_id.clone());
+    }
+    protected_audit
+        .iter()
+        .any(|event| value_contains_any_string(&event.payload, &needles))
 }
 
 /// Build the `audit_completeness` block for the governance evidence package.
@@ -100,15 +161,10 @@ fn governance_evidence_completeness(
         .map(|run| run.checkpoint.gate_history.as_slice())
         .unwrap_or(empty_history);
 
-    let audit_event_ids: BTreeSet<&str> = protected_audit
-        .iter()
-        .map(|event| event.event_id.as_str())
-        .collect();
-
     let mut protected_action_count = 0usize;
     let mut approval_decision_count = 0usize;
 
-    // ---- Policy decisions: tenant, approval, tool-effect, audit, expiry ----
+    // ---- Tenant scope: every policy decision must match the run tenant ----
     for decision in policy_decisions {
         if decision.tenant_context != *run_tenant {
             findings.push(completeness_finding(
@@ -118,129 +174,134 @@ fn governance_evidence_completeness(
                 json!({ "policy_decision_id": decision.decision_id }),
             ));
         }
+    }
 
+    // ---- Approval-required gate requests: count and tool-effect presence ----
+    for decision in policy_decisions {
         if !matches!(decision.decision, PolicyDecisionEffect::ApprovalRequired) {
             continue;
         }
         approval_decision_count += 1;
-        protected_action_count += 1;
-
-        // Approval evidence: an approval id on the decision, or an approve gate
-        // decision recorded for the decision's node.
-        let has_approval_id = decision.approval_id.is_some();
-        let has_gate_approval = decision
-            .node_id
-            .as_deref()
-            .map(|node_id| {
-                gate_history.iter().any(|gate| {
-                    gate.node_id == node_id
-                        && gate.decision.to_ascii_lowercase().starts_with("approv")
-                })
-            })
-            .unwrap_or(false);
-        if !has_approval_id && !has_gate_approval {
-            findings.push(completeness_finding(
-                COMPLETENESS_SEVERITY_ERROR,
-                "missing_approval_evidence",
-                "approval-required policy decision has no approval id and no recorded approve gate decision".to_string(),
-                json!({ "policy_decision_id": decision.decision_id, "node_id": decision.node_id }),
-            ));
-        }
-
-        // Tool-effect evidence: an outcome ledger record linked by decision id.
-        let linked_effects: Vec<&ContextRunLedgerEventView> = records
-            .iter()
-            .filter(|row| {
-                row.record.policy_decision_id.as_deref() == Some(decision.decision_id.as_str())
-            })
-            .collect();
-        if linked_effects.is_empty() {
-            // Warning rather than error: the gated action may have been reworked or
-            // cancelled before execution, in which case no tool-effect is expected.
+        // The gated action may have been reworked or cancelled before execution, in
+        // which case no tool-effect is expected — so a missing one is advisory here.
+        // Strict approval/audit/expiry evidence is enforced on the executed action below.
+        let has_linked_effect = records.iter().any(|row| {
+            row.record.policy_decision_id.as_deref() == Some(decision.decision_id.as_str())
+        });
+        if !has_linked_effect {
             findings.push(completeness_finding(
                 COMPLETENESS_SEVERITY_WARNING,
                 "missing_tool_effect_evidence",
-                "approval-required policy decision has no linked tool-effect ledger record".to_string(),
+                "approval-required policy decision has no linked tool-effect ledger record"
+                    .to_string(),
                 json!({ "policy_decision_id": decision.decision_id }),
             ));
         }
+    }
 
-        // Protected audit linkage: a referenced audit event must be present.
-        if let Some(audit_event_id) = decision.audit_event_id.as_deref() {
-            if !audit_event_ids.contains(audit_event_id) {
+    // ---- Executed protected actions need the full four-record evidence chain ----
+    //
+    // A protected tool call that actually succeeded is the case Article 12 most cares
+    // about. In fintech strict mode the runtime records the execution as a
+    // `PolicyDecisionEffect::Allow` (`matching_approval_receipt`) decision with the
+    // approval id attached, appending the protected audit event separately. Anchoring on
+    // the succeeded tool-effect and resolving its linked decision covers both the
+    // `ApprovalRequired` gate path and the `Allow` execution path. A tool is in scope if
+    // it is fintech-protected by name, or its linked decision marks it protected (the
+    // risk-tier action-gate path, where the tool name alone may not classify).
+    for row in records {
+        if !matches!(row.record.phase, ToolEffectLedgerPhase::Outcome)
+            || !matches!(row.record.status, ToolEffectLedgerStatus::Succeeded)
+        {
+            continue;
+        }
+        let linked_decision = row
+            .record
+            .policy_decision_id
+            .as_deref()
+            .and_then(|id| policy_decisions.iter().find(|d| d.decision_id == id));
+        let decision_marks_protected = linked_decision
+            .map(decision_is_protected_action)
+            .unwrap_or(false);
+        if !tool_is_protected(&row.record.tool) && !decision_marks_protected {
+            continue;
+        }
+        protected_action_count += 1;
+
+        let decision = match (row.record.policy_decision_id.as_deref(), linked_decision) {
+            (None, _) => {
                 findings.push(completeness_finding(
                     COMPLETENESS_SEVERITY_ERROR,
-                    "missing_protected_audit_event",
-                    "policy decision references an audit event that is not present in the packet"
+                    "missing_policy_decision",
+                    "protected tool call succeeded without a linked policy decision".to_string(),
+                    json!({ "tool": row.record.tool, "event_id": row.event_id }),
+                ));
+                continue;
+            }
+            (Some(decision_id), None) => {
+                findings.push(completeness_finding(
+                    COMPLETENESS_SEVERITY_ERROR,
+                    "missing_policy_decision",
+                    "protected tool call references a policy decision that is not present in the packet"
                         .to_string(),
                     json!({
-                        "policy_decision_id": decision.decision_id,
-                        "audit_event_id": audit_event_id,
+                        "tool": row.record.tool,
+                        "event_id": row.event_id,
+                        "policy_decision_id": decision_id,
                     }),
                 ));
+                continue;
             }
+            (Some(_), Some(decision)) => decision,
+        };
+
+        // Approval evidence.
+        if !decision_evidences_approval(decision, gate_history) {
+            findings.push(completeness_finding(
+                COMPLETENESS_SEVERITY_ERROR,
+                "missing_approval_evidence",
+                "protected tool call succeeded without an approval id or recorded approve gate decision"
+                    .to_string(),
+                json!({
+                    "policy_decision_id": decision.decision_id,
+                    "tool": row.record.tool,
+                    "node_id": decision.node_id,
+                }),
+            ));
         }
 
-        // Expiry: a linked protected action executed after the approval expired.
+        // Protected audit evidence (recorded separately; matched by id or payload).
+        if !protected_audit_attests_decision(decision, protected_audit) {
+            findings.push(completeness_finding(
+                COMPLETENESS_SEVERITY_ERROR,
+                "missing_protected_audit_event",
+                "protected tool call succeeded without a protected audit event attesting the action"
+                    .to_string(),
+                json!({
+                    "policy_decision_id": decision.decision_id,
+                    "tool": row.record.tool,
+                }),
+            ));
+        }
+
+        // Expiry: the action executed after its approval expired.
         if let Some(expires_at_ms) = decision
             .metadata
             .get("expires_at_ms")
             .and_then(Value::as_u64)
         {
-            for row in linked_effects.iter().filter(|row| {
-                matches!(row.record.status, ToolEffectLedgerStatus::Succeeded)
-                    && matches!(row.record.phase, ToolEffectLedgerPhase::Outcome)
-            }) {
-                if row.ts_ms > expires_at_ms {
-                    findings.push(completeness_finding(
-                        COMPLETENESS_SEVERITY_ERROR,
-                        "expired_approval",
-                        "protected action executed after its approval expired".to_string(),
-                        json!({
-                            "policy_decision_id": decision.decision_id,
-                            "expires_at_ms": expires_at_ms,
-                            "executed_at_ms": row.ts_ms,
-                            "tool": row.record.tool,
-                        }),
-                    ));
-                }
-            }
-        }
-    }
-
-    // ---- Executed protected tool calls must carry a policy decision ----
-    for row in records {
-        if !matches!(row.record.phase, ToolEffectLedgerPhase::Outcome)
-            || !matches!(row.record.status, ToolEffectLedgerStatus::Succeeded)
-            || !tool_is_protected(&row.record.tool)
-        {
-            continue;
-        }
-        protected_action_count += 1;
-        match row.record.policy_decision_id.as_deref() {
-            None => findings.push(completeness_finding(
-                COMPLETENESS_SEVERITY_ERROR,
-                "missing_policy_decision",
-                "protected tool call succeeded without a linked policy decision".to_string(),
-                json!({ "tool": row.record.tool, "event_id": row.event_id }),
-            )),
-            Some(decision_id) => {
-                if !policy_decisions
-                    .iter()
-                    .any(|decision| decision.decision_id == decision_id)
-                {
-                    findings.push(completeness_finding(
-                        COMPLETENESS_SEVERITY_ERROR,
-                        "missing_policy_decision",
-                        "protected tool call references a policy decision that is not present in the packet"
-                            .to_string(),
-                        json!({
-                            "tool": row.record.tool,
-                            "event_id": row.event_id,
-                            "policy_decision_id": decision_id,
-                        }),
-                    ));
-                }
+            if row.ts_ms > expires_at_ms {
+                findings.push(completeness_finding(
+                    COMPLETENESS_SEVERITY_ERROR,
+                    "expired_approval",
+                    "protected action executed after its approval expired".to_string(),
+                    json!({
+                        "policy_decision_id": decision.decision_id,
+                        "expires_at_ms": expires_at_ms,
+                        "executed_at_ms": row.ts_ms,
+                        "tool": row.record.tool,
+                    }),
+                ));
             }
         }
     }
