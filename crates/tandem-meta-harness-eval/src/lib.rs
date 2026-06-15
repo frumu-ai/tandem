@@ -14,6 +14,7 @@
 //! for this roadmap item is ignored here because Linear is the superseding
 //! tracking source.
 
+pub mod blast_radius;
 pub mod scoring;
 pub mod trace;
 
