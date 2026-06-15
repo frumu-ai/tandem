@@ -68,6 +68,16 @@ pub fn short_hash(input: &str) -> String {
 }
 
 pub fn emit_event(level: Level, process: ProcessKind, event: ObservabilityEvent<'_>) {
+    emit_event_with_tenant(level, process, event, None, None);
+}
+
+pub fn emit_event_with_tenant(
+    level: Level,
+    process: ProcessKind,
+    event: ObservabilityEvent<'_>,
+    org_id: Option<&str>,
+    workspace_id: Option<&str>,
+) {
     match level {
         Level::ERROR => tracing::error!(
             target: "tandem.obs",
@@ -77,6 +87,8 @@ pub fn emit_event(level: Level, process: ProcessKind, event: ObservabilityEvent<
             correlation_id = event.correlation_id.unwrap_or(""),
             session_id = event.session_id.unwrap_or(""),
             run_id = event.run_id.unwrap_or(""),
+            org_id = org_id.unwrap_or(""),
+            workspace_id = workspace_id.unwrap_or(""),
             message_id = event.message_id.unwrap_or(""),
             provider_id = event.provider_id.unwrap_or(""),
             model_id = event.model_id.unwrap_or(""),
@@ -93,6 +105,8 @@ pub fn emit_event(level: Level, process: ProcessKind, event: ObservabilityEvent<
             correlation_id = event.correlation_id.unwrap_or(""),
             session_id = event.session_id.unwrap_or(""),
             run_id = event.run_id.unwrap_or(""),
+            org_id = org_id.unwrap_or(""),
+            workspace_id = workspace_id.unwrap_or(""),
             message_id = event.message_id.unwrap_or(""),
             provider_id = event.provider_id.unwrap_or(""),
             model_id = event.model_id.unwrap_or(""),
@@ -109,6 +123,8 @@ pub fn emit_event(level: Level, process: ProcessKind, event: ObservabilityEvent<
             correlation_id = event.correlation_id.unwrap_or(""),
             session_id = event.session_id.unwrap_or(""),
             run_id = event.run_id.unwrap_or(""),
+            org_id = org_id.unwrap_or(""),
+            workspace_id = workspace_id.unwrap_or(""),
             message_id = event.message_id.unwrap_or(""),
             provider_id = event.provider_id.unwrap_or(""),
             model_id = event.model_id.unwrap_or(""),

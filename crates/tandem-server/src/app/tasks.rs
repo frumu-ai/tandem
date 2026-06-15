@@ -1,7 +1,7 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use serde_json::Value;
-use tandem_types::{EngineEvent, MessagePartInput, SendMessageRequest, Session};
+use tandem_types::{EngineEvent, MessagePartInput, SendMessageRequest, Session, TenantContext};
 
 use crate::app::state::{
     derive_status_index_update, extract_persistable_tool_part, truncate_text, AppState,
@@ -12,6 +12,9 @@ use crate::http::context_runs::{
 };
 use crate::http::context_types::{ContextRunEventAppendInput, ContextRunStatus};
 use crate::routines::types::{RoutineHistoryEvent, RoutineRunStatus};
+use crate::runtime_event_log::{
+    append_runtime_event_log_row, prune_runtime_event_log, RuntimeEventLogRow,
+};
 use crate::util::time::now_ms;
 
 async fn wait_for_runtime_ready_or_exit(state: &AppState, component: &str) -> bool {
@@ -65,6 +68,17 @@ fn extract_event_correlation_id(properties: &Value) -> Option<String> {
 
 const CONTEXT_TOOL_EVENT_STRING_LIMIT: usize = 2_000;
 
+#[derive(Debug, Default)]
+struct RuntimeEventLogContextCache {
+    sessions: HashMap<String, RuntimeEventLogSessionContext>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeEventLogSessionContext {
+    run_id: Option<String>,
+    tenant_context: Option<TenantContext>,
+}
+
 fn is_running_tool_args_delta(properties: &Value) -> bool {
     let Some(part) = properties.get("part") else {
         return false;
@@ -116,6 +130,74 @@ fn compact_context_tool_value(value: Option<&Value>) -> Value {
     let mut compacted = value.cloned().unwrap_or(Value::Null);
     compact_large_context_event_strings(&mut compacted);
     compacted
+}
+
+async fn enrich_runtime_event_log_row(
+    state: &AppState,
+    row: RuntimeEventLogRow,
+    context_cache: &mut RuntimeEventLogContextCache,
+) -> RuntimeEventLogRow {
+    let Some(session_id) = row.session_id().map(str::to_string) else {
+        return row;
+    };
+
+    if row.run_id().is_none() {
+        if let Some(active_run) = state.run_registry.get(&session_id).await {
+            context_cache
+                .sessions
+                .entry(session_id.clone())
+                .or_default()
+                .run_id = Some(active_run.run_id);
+        }
+    }
+
+    let session = if row.tenant_context().is_none() {
+        state.storage.get_session(&session_id).await
+    } else {
+        None
+    };
+
+    enrich_runtime_event_log_row_from_session(row, session.as_ref(), context_cache)
+}
+
+fn enrich_runtime_event_log_row_from_session(
+    mut row: RuntimeEventLogRow,
+    session: Option<&Session>,
+    context_cache: &mut RuntimeEventLogContextCache,
+) -> RuntimeEventLogRow {
+    let Some(session_id) = row.session_id().map(str::to_string) else {
+        return row;
+    };
+
+    let run_id = row.run_id().map(str::to_string);
+    let tenant_context = row
+        .tenant_context()
+        .cloned()
+        .or_else(|| session.map(|session| session.tenant_context.clone()));
+
+    if run_id.is_some() || tenant_context.is_some() {
+        let context = context_cache
+            .sessions
+            .entry(session_id.clone())
+            .or_default();
+        if let Some(run_id) = run_id {
+            context.run_id = Some(run_id);
+        }
+        if let Some(tenant_context) = tenant_context {
+            context.tenant_context = Some(tenant_context);
+        }
+    }
+
+    if let Some(context) = context_cache.sessions.get(&session_id) {
+        if row.event.envelope.run_id.is_none() {
+            row.event.envelope.run_id = context.run_id.clone();
+        }
+        if row.event.envelope.tenant_context.is_none() {
+            row.event.envelope.tenant_context = context.tenant_context.clone();
+        }
+    }
+
+    row
 }
 
 async fn apply_provider_usage_to_routine_run(
@@ -376,6 +458,11 @@ fn session_context_run_event_input(event: &EngineEvent) -> Option<ContextRunEven
 mod tests {
     use super::*;
 
+    fn runtime_event(event_type: &str, properties: Value, seq: u64) -> EngineEvent {
+        let envelope = tandem_types::RuntimeEventEnvelope::derive(seq, 1_000 + seq, &properties);
+        EngineEvent::new(event_type, properties).with_envelope(envelope)
+    }
+
     #[tokio::test]
     async fn routine_background_tasks_exit_without_runtime_when_startup_failed() {
         let state = AppState::new_starting("routine-startup-guard-test".to_string(), true);
@@ -528,6 +615,87 @@ mod tests {
             Some(1)
         );
     }
+
+    #[tokio::test]
+    async fn runtime_event_log_enrichment_maps_session_only_events_to_run_and_tenant() {
+        let path = std::env::temp_dir().join(format!(
+            "runtime-events-persister-enrichment-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let tenant_context =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
+        let mut session = Session::new(Some("Session A".to_string()), Some(".".to_string()));
+        session.id = "session-a".to_string();
+        session.tenant_context = tenant_context.clone();
+        let mut context_cache = RuntimeEventLogContextCache::default();
+
+        let started = runtime_event(
+            "session.run.started",
+            serde_json::json!({
+                "sessionID": "session-a",
+                "runID": "run-a",
+                "tenantContext": tenant_context.clone(),
+            }),
+            1,
+        );
+        let started_row = RuntimeEventLogRow::from_engine_event(&started).expect("started row");
+        let started_row = enrich_runtime_event_log_row_from_session(
+            started_row,
+            Some(&session),
+            &mut context_cache,
+        );
+        append_runtime_event_log_row(&path, &started_row)
+            .await
+            .expect("append started");
+
+        let provider_iteration = runtime_event(
+            "provider.call.iteration.start",
+            serde_json::json!({
+                "sessionID": "session-a",
+                "provider": "openai",
+            }),
+            2,
+        );
+        let provider_row =
+            RuntimeEventLogRow::from_engine_event(&provider_iteration).expect("provider row");
+        assert_eq!(provider_row.run_id(), None);
+        assert_eq!(provider_row.tenant_context(), None);
+
+        let provider_row = enrich_runtime_event_log_row_from_session(
+            provider_row,
+            Some(&session),
+            &mut context_cache,
+        );
+        append_runtime_event_log_row(&path, &provider_row)
+            .await
+            .expect("append provider");
+
+        let rows = crate::runtime_event_log::query_runtime_event_log(
+            &path,
+            &session.tenant_context,
+            crate::runtime_event_log::RuntimeEventLogQuery {
+                run_id: "run-a",
+                after_seq: Some(1),
+                limit: None,
+            },
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].seq(), 2);
+        assert_eq!(rows[0].run_id(), Some("run-a"));
+        assert_eq!(
+            rows[0]
+                .tenant_context()
+                .map(|tenant| tenant.org_id.as_str()),
+            Some("org-a")
+        );
+        assert_eq!(
+            rows[0].event.event_type.as_str(),
+            "provider.call.iteration.start"
+        );
+
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }
 
 pub async fn run_session_part_persister(state: AppState) {
@@ -630,6 +798,66 @@ pub async fn run_session_context_run_journaler(state: AppState) {
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
+    }
+}
+
+pub async fn run_runtime_event_log_persister(state: AppState) {
+    if !wait_for_runtime_ready_or_exit(&state, "runtime_event_log_persister").await {
+        return;
+    }
+
+    let retention_days = std::env::var("TANDEM_RUNTIME_EVENT_LOG_RETENTION_DAYS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(30);
+    if retention_days > 0 {
+        let retention_ms = retention_days.saturating_mul(24 * 60 * 60 * 1_000);
+        match prune_runtime_event_log(&state.runtime_events_path, retention_ms, now_ms()).await {
+            Ok(pruned) if pruned > 0 => {
+                tracing::info!(
+                    pruned,
+                    retention_days,
+                    "runtime event log persister pruned stale events"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "runtime event log persister could not prune stale events"
+                );
+            }
+        }
+    }
+
+    let mut context_cache = RuntimeEventLogContextCache::default();
+    let mut rx = state.event_bus.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                let Some(row) = RuntimeEventLogRow::from_engine_event(&event) else {
+                    continue;
+                };
+                let row = enrich_runtime_event_log_row(&state, row, &mut context_cache).await;
+                if let Err(error) =
+                    append_runtime_event_log_row(&state.runtime_events_path, &row).await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        event_id = row.event_id(),
+                        seq = row.seq(),
+                        "runtime event log persister failed to append event"
+                    );
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                tracing::warn!(
+                    dropped_events = count,
+                    "runtime event log persister lagged; sequence gaps may be visible in the log"
+                );
+            }
         }
     }
 }
