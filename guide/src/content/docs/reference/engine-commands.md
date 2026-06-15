@@ -10,6 +10,7 @@ The `tandem-engine` binary supports several subcommands for running the server a
 flowchart TD
   ROOT[tandem-engine] --> SERVE[serve]
   ROOT --> STATUS[status]
+  ROOT --> CONFIG[config]
   ROOT --> RUN[run]
   ROOT --> PAR[parallel]
   ROOT --> TOOL[tool]
@@ -23,6 +24,7 @@ flowchart TD
 
   SERVE --> API[HTTP + SSE runtime]
   STATUS --> HEALTH[Health check]
+  CONFIG --> CFG[Startup config validation]
   RUN --> ONE[Single prompt]
   PAR --> MANY[Concurrent prompt batch]
   TOOL --> DIRECT[Direct tool execution]
@@ -68,6 +70,34 @@ tandem-engine status [OPTIONS]
 
 - `--hostname <HOSTNAME>` / `--host <HOSTNAME>`: Hostname or IP to check (default: `127.0.0.1`, env: `TANDEM_ENGINE_HOST`).
 - `--port <PORT>`: Port to check (default: `39731`, env: `TANDEM_ENGINE_PORT`).
+
+## `config`
+
+Inspect and validate startup environment before the engine binds.
+
+```bash
+tandem-engine config check
+tandem-engine config check --json
+tandem-engine config reference
+```
+
+### `config check`
+
+Prints a masked effective-config summary and exits non-zero when startup settings are invalid.
+
+Validated fail-fast invariants include:
+
+- hosted or enterprise auth mode requires context assertion public keys
+- hosted or enterprise auth mode requires an explicit transport token from `TANDEM_API_TOKEN`, `TANDEM_API_TOKEN_FILE`, or `--api-token`
+- hosted or enterprise auth mode rejects `TANDEM_UNSAFE_NO_API_TOKEN`
+- malformed key material, invalid booleans, invalid modes, and out-of-range numeric settings fail validation
+- unknown `TANDEM_*` environment variables are reported as warnings
+
+Use `--json` for CI and deployment automation.
+
+### `config reference`
+
+Prints the generated Markdown configuration reference used by `docs/ENGINE_CONFIGURATION.md`.
 
 ## `smoke`
 

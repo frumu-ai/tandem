@@ -111,6 +111,7 @@ pub use automation_v2::types::*;
 pub use browser::*;
 pub use bug_monitor::types::*;
 pub use config::channels::*;
+pub use config::engine::{config_reference_markdown, EngineConfigOptions, EngineConfigReport};
 pub use eval::dataset::{
     ArtifactStatus, EvalDataset, EvalExpectedOutput, EvalTestCase, MetricTolerance,
 };
