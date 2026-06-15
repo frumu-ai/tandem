@@ -479,13 +479,29 @@ const ARTICLE_50_NOTICE: &str =
 /// `draft` (no recorded human decision), `reviewed` (a decision exists but is not an
 /// approval), or `approved` (a recorded approval). Returns the state, the matching
 /// transparency label, and a redacted-free review summary when a decision exists.
-fn artifact_reviewer_state(
+/// Derives the reviewer state for an artifact node.
+///
+/// Gate decisions are recorded for the gate node itself, not for upstream artifact nodes.
+/// `gate_coverage` maps artifact node_id → gate node_ids that review it (from the automation
+/// spec's `depends_on` lists), so decisions on a covering gate are also considered.
+///
+/// Returns `(reviewer_state, transparency_label, review_json, matched_gate_node_id)`.
+/// `matched_gate_node_id` is the node_id of the gate decision that determined state — used
+/// by the caller to look up the correct `approval_id` from the policy decisions map.
+fn artifact_reviewer_state<'a>(
     node_id: &str,
-    gate_history: &[crate::AutomationGateDecisionRecord],
-) -> (&'static str, &'static str, Option<Value>) {
+    gate_history: &'a [crate::AutomationGateDecisionRecord],
+    gate_coverage: &BTreeMap<String, Vec<String>>,
+) -> (&'static str, &'static str, Option<Value>, Option<String>) {
+    let covering_gate_ids: &[String] = gate_coverage
+        .get(node_id)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let latest = gate_history
         .iter()
-        .filter(|record| record.node_id == node_id)
+        .filter(|record| {
+            record.node_id == node_id || covering_gate_ids.iter().any(|gid| gid == &record.node_id)
+        })
         .max_by_key(|record| record.decided_at_ms);
     match latest {
         Some(record) if record.decision.to_ascii_lowercase().starts_with("approv") => (
@@ -496,6 +512,7 @@ fn artifact_reviewer_state(
                 "decided_by": record.decided_by,
                 "decided_at_ms": record.decided_at_ms,
             })),
+            Some(record.node_id.clone()),
         ),
         Some(record) => (
             "reviewed",
@@ -505,8 +522,9 @@ fn artifact_reviewer_state(
                 "decided_by": record.decided_by,
                 "decided_at_ms": record.decided_at_ms,
             })),
+            Some(record.node_id.clone()),
         ),
-        None => ("draft", "AI-Generated", None),
+        None => ("draft", "AI-Generated", None, None),
     }
 }
 
@@ -558,6 +576,9 @@ fn governance_evidence_provenance(
 
 /// Map each node that produced an artifact to its approval id (where a policy decision
 /// recorded one), so per-artifact provenance can link to the approval that gated it.
+/// Policy decisions are loaded ascending by `created_at_ms`, so later inserts overwrite
+/// earlier ones — keeping the most-recent approval_id for each node (important when a gate
+/// is sent back for rework and later re-approved).
 fn governance_evidence_node_approval_ids(
     policy_decisions: &[PolicyDecisionRecord],
 ) -> BTreeMap<String, String> {
@@ -566,8 +587,26 @@ fn governance_evidence_node_approval_ids(
         if let (Some(node_id), Some(approval_id)) =
             (decision.node_id.as_ref(), decision.approval_id.as_ref())
         {
-            map.entry(node_id.clone())
-                .or_insert_with(|| approval_id.clone());
+            map.insert(node_id.clone(), approval_id.clone());
+        }
+    }
+    map
+}
+
+/// Build a map from artifact node_id → list of gate node_ids that review it, derived from
+/// gate nodes' `depends_on` lists in the automation spec. Used to find gate decisions that
+/// cover an artifact even though the decision is recorded for the gate node, not the artifact.
+fn build_artifact_gate_coverage(
+    automation: &crate::automation_v2::types::AutomationV2Spec,
+) -> BTreeMap<String, Vec<String>> {
+    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for node in &automation.flow.nodes {
+        if node.gate.is_some() {
+            for upstream_id in &node.depends_on {
+                map.entry(upstream_id.clone())
+                    .or_default()
+                    .push(node.node_id.clone());
+            }
         }
     }
     map
@@ -691,6 +730,11 @@ fn governance_evidence_artifacts(
     run: &crate::automation_v2::types::AutomationV2RunRecord,
     node_approval_ids: &BTreeMap<String, String>,
 ) -> (Vec<Value>, Vec<String>) {
+    let artifact_gate_coverage: BTreeMap<String, Vec<String>> = run
+        .automation_snapshot
+        .as_ref()
+        .map(|spec| build_artifact_gate_coverage(spec))
+        .unwrap_or_default();
     let mut limitations = Vec::new();
     let mut rows = run
         .checkpoint
@@ -702,8 +746,18 @@ fn governance_evidence_artifacts(
                     "artifact_payload_redacted_scoped_resource:{node_id}"
                 ));
             }
-            let (reviewer_state, transparency_label, review) =
-                artifact_reviewer_state(node_id, &run.checkpoint.gate_history);
+            let (reviewer_state, transparency_label, review, matched_gate_id) =
+                artifact_reviewer_state(
+                    node_id,
+                    &run.checkpoint.gate_history,
+                    &artifact_gate_coverage,
+                );
+            // Prefer the approval_id from the gate that reviewed this artifact; fall back to
+            // a direct policy decision keyed on the artifact's own node_id.
+            let approval_id = matched_gate_id
+                .as_deref()
+                .and_then(|gid| node_approval_ids.get(gid))
+                .or_else(|| node_approval_ids.get(node_id.as_str()));
             json!({
                 "node_id": node_id,
                 "artifact_id": first_string_field(output, &["artifact_id", "artifactID", "id"]),
@@ -726,7 +780,7 @@ fn governance_evidence_artifacts(
                     "transparency_label": transparency_label,
                     "reviewer_state": reviewer_state,
                     "review": review,
-                    "approval_id": node_approval_ids.get(node_id.as_str()),
+                    "approval_id": approval_id,
                     "generated_at_ms": run.created_at_ms,
                 },
                 "output": redacted_value_ref(output),
@@ -1549,12 +1603,92 @@ mod tests {
         let mut run = fintech_audit_fixture_run();
         run.status = crate::AutomationRunStatus::Completed;
         run.finished_at_ms = Some(60);
-        // An approved gate decision for the artifact-producing node should surface
-        // the `approved` reviewer state and `AI-Generated, approved` label.
+
+        // In the normal approval-gate flow the decision is recorded for the gate node
+        // ("brief_approval_gate"), not the artifact node ("draft_compliance_brief").
+        // The gate node's `depends_on` in the automation spec links it to the artifact.
+        run.automation_snapshot = Some(crate::automation_v2::types::AutomationV2Spec {
+            automation_id: run.automation_id.clone(),
+            name: "compliance-automation".to_string(),
+            description: None,
+            knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+            status: crate::automation_v2::types::AutomationV2Status::Active,
+            schedule: crate::automation_v2::types::AutomationV2Schedule {
+                schedule_type: crate::automation_v2::types::AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: crate::RoutineMisfirePolicy::Skip,
+            },
+            agents: Vec::new(),
+            flow: crate::automation_v2::types::AutomationFlowSpec {
+                nodes: vec![
+                    crate::automation_v2::types::AutomationFlowNode {
+                        node_id: "draft_compliance_brief".to_string(),
+                        agent_id: "writer".to_string(),
+                        objective: "Write brief".to_string(),
+                        depends_on: Vec::new(),
+                        input_refs: Vec::new(),
+                        output_contract: None,
+                        tool_policy: None,
+                        mcp_policy: None,
+                        retry_policy: None,
+                        timeout_ms: None,
+                        max_tool_calls: None,
+                        stage_kind: None,
+                        gate: None,
+                        metadata: None,
+                        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+                    },
+                    crate::automation_v2::types::AutomationFlowNode {
+                        node_id: "brief_approval_gate".to_string(),
+                        agent_id: "gate".to_string(),
+                        objective: "Approve brief".to_string(),
+                        depends_on: vec!["draft_compliance_brief".to_string()],
+                        input_refs: Vec::new(),
+                        output_contract: None,
+                        tool_policy: None,
+                        mcp_policy: None,
+                        retry_policy: None,
+                        timeout_ms: None,
+                        max_tool_calls: None,
+                        stage_kind: None,
+                        gate: Some(crate::automation_v2::types::AutomationApprovalGate {
+                            required: true,
+                            decisions: vec!["approve".to_string(), "rework".to_string()],
+                            rework_targets: Vec::new(),
+                            instructions: None,
+                        }),
+                        metadata: None,
+                        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+                    },
+                ],
+            },
+            execution: crate::automation_v2::types::AutomationExecutionPolicy {
+                profile: None,
+                max_parallel_agents: None,
+                max_total_runtime_ms: None,
+                max_total_tool_calls: None,
+                max_total_tokens: None,
+                max_total_cost_usd: None,
+            },
+            output_targets: Vec::new(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            creator_id: "tests".to_string(),
+            workspace_root: None,
+            metadata: None,
+            next_fire_at_ms: None,
+            last_fired_at_ms: None,
+            scope_policy: None,
+            watch_conditions: Vec::new(),
+            handoff_config: None,
+        });
+        // Gate decision recorded for the gate node; the artifact derives its state via coverage.
         run.checkpoint
             .gate_history
             .push(crate::AutomationGateDecisionRecord {
-                node_id: "draft_compliance_brief".to_string(),
+                node_id: "brief_approval_gate".to_string(),
                 decision: "approved".to_string(),
                 reason: None,
                 decided_at_ms: 55,
@@ -1573,6 +1707,7 @@ mod tests {
         context_run.model_provider = Some("anthropic".to_string());
         context_run.model_id = Some("test-model".to_string());
 
+        // Policy decision is keyed on the gate node_id, not the artifact node_id.
         let policy_decisions = vec![tandem_types::PolicyDecisionRecord {
             decision_id: "decision-1".to_string(),
             tenant_context: run.tenant_context.clone(),
@@ -1581,7 +1716,7 @@ mod tests {
             message_id: None,
             run_id: Some(run.run_id.clone()),
             automation_id: Some(run.automation_id.clone()),
-            node_id: Some("draft_compliance_brief".to_string()),
+            node_id: Some("brief_approval_gate".to_string()),
             tool: None,
             resource: None,
             data_classes: vec![tandem_types::DataClass::Internal],
