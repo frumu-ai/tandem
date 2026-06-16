@@ -132,7 +132,7 @@ export function SessionSidebar({
   projectSwitcherLoading = false,
 }: SessionSidebarProps) {
   const { t } = useTranslation(["common", "chat"]);
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [expandedProjects, setExpandedProjects] = useState<string[]>([]);
   const [sessionToDelete, setSessionToDelete] = useState<DisplayItem | null>(null);
   const runningChatIdsSet = useMemo(() => new Set(activeChatSessionIds), [activeChatSessionIds]);
 
@@ -253,18 +253,14 @@ export function SessionSidebar({
   }, [currentSessionId, currentRunId, currentCommandCenterRunId, sessions, runs, activeProject]);
 
   const isProjectExpanded = (projectId: string) =>
-    expandedProjects.has(projectId) || autoExpandedProjectIds.has(projectId);
+    expandedProjects.includes(projectId) || autoExpandedProjectIds.has(projectId);
 
+  // Bolt Optimization: Avoiding intermediate `new Set(prev)` allocations inside functional updaters
+  // provides better readability and saves GC overhead for toggles, as outlined in codebase guidelines.
   const toggleProject = (projectId: string) => {
-    setExpandedProjects((prev) => {
-      const next = new Set(prev);
-      if (next.has(projectId)) {
-        next.delete(projectId);
-      } else {
-        next.add(projectId);
-      }
-      return next;
-    });
+    setExpandedProjects((prev) =>
+      prev.includes(projectId) ? prev.filter((id) => id !== projectId) : [...prev, projectId]
+    );
   };
 
   const formatTime = (timestamp: number) => {

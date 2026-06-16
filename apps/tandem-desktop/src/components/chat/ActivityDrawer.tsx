@@ -35,7 +35,7 @@ interface ActivityDrawerProps {
 
 export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [expandedItems, setExpandedItems] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const hasRunning = activities.some((a) => a.status === "running");
@@ -52,16 +52,12 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
   const runningCount = activities.filter((a) => a.status === "running").length;
   const recentActivities = activities.slice(-20); // Show last 20 activities
 
+  // Bolt Optimization: Avoiding intermediate `new Set(prev)` allocations inside functional updaters
+  // provides better readability and saves GC overhead for toggles, as outlined in codebase guidelines.
   const toggleItem = (id: string) => {
-    setExpandedItems((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
+    setExpandedItems((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
   };
 
   const getIcon = (type: ActivityItem["type"], tool?: string) => {
@@ -222,12 +218,12 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
                           onClick={() => toggleItem(activity.id)}
                           className="text-xs text-primary hover:underline mt-1"
                         >
-                          {expandedItems.has(activity.id) ? "Hide result" : "Show result"}
+                          {expandedItems.includes(activity.id) ? "Hide result" : "Show result"}
                         </button>
                       )}
 
                       <AnimatePresence>
-                        {expandedItems.has(activity.id) && activity.result && (
+                        {expandedItems.includes(activity.id) && activity.result && (
                           <motion.pre
                             initial={{ height: 0, opacity: 0 }}
                             animate={{ height: "auto", opacity: 1 }}

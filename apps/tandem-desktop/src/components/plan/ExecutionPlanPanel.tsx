@@ -31,19 +31,15 @@ export function ExecutionPlanPanel({
   onClear,
   isExecuting,
 }: ExecutionPlanPanelProps) {
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [expandedIds, setExpandedIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Bolt Optimization: Avoiding intermediate `new Set(prev)` allocations inside functional updaters
+  // provides better readability and saves GC overhead for toggles, as outlined in codebase guidelines.
   const toggleExpanded = (id: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
+    setExpandedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
   };
 
   const handleExecute = async () => {
@@ -135,7 +131,7 @@ export function ExecutionPlanPanel({
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
         <AnimatePresence>
           {operations.map((op) => {
-            const isExpanded = expandedIds.has(op.id);
+            const isExpanded = expandedIds.includes(op.id);
             const canShowDiff = op.tool === "write" && op.before_snapshot && op.proposed_content;
 
             return (

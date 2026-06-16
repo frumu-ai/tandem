@@ -19,7 +19,7 @@ export function PlanSelector({
   onNewPlan,
   isLoading = false,
 }: PlanSelectorProps) {
-  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
+  const [expandedSessions, setExpandedSessions] = useState<string[]>([]);
 
   // Group plans by session
   const plansBySession = plans.reduce(
@@ -35,16 +35,12 @@ export function PlanSelector({
 
   const sessionNames = Object.keys(plansBySession).sort();
 
+  // Bolt Optimization: Avoiding intermediate `new Set(prev)` allocations inside functional updaters
+  // provides better readability and saves GC overhead for toggles, as outlined in codebase guidelines.
   const toggleSession = (sessionName: string) => {
-    setExpandedSessions((prev) => {
-      const next = new Set(prev);
-      if (next.has(sessionName)) {
-        next.delete(sessionName);
-      } else {
-        next.add(sessionName);
-      }
-      return next;
-    });
+    setExpandedSessions((prev) =>
+      prev.includes(sessionName) ? prev.filter((s) => s !== sessionName) : [...prev, sessionName]
+    );
   };
 
   if (isLoading) {
@@ -66,7 +62,7 @@ export function PlanSelector({
     <div className="flex flex-col gap-1">
       {sessionNames.map((sessionName) => {
         const sessionPlans = plansBySession[sessionName];
-        const isExpanded = expandedSessions.has(sessionName);
+        const isExpanded = expandedSessions.includes(sessionName);
 
         return (
           <div key={sessionName}>

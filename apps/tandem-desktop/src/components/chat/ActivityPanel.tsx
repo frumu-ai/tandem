@@ -37,7 +37,7 @@ interface ActivityPanelProps {
 }
 
 export function ActivityPanel({ activities, isVisible, onToggle }: ActivityPanelProps) {
-  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [expandedItems, setExpandedItems] = useState<string[]>([]);
   const [isExpanded, setIsExpanded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -48,16 +48,12 @@ export function ActivityPanel({ activities, isVisible, onToggle }: ActivityPanel
     }
   }, [activities]);
 
+  // Bolt Optimization: Avoiding intermediate `new Set(prev)` allocations inside functional updaters
+  // provides better readability and saves GC overhead for toggles, as outlined in codebase guidelines.
   const toggleItem = (id: string) => {
-    setExpandedItems((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
+    setExpandedItems((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
   };
 
   const getIcon = (type: ActivityItem["type"], tool?: string) => {
@@ -273,7 +269,7 @@ export function ActivityPanel({ activities, isVisible, onToggle }: ActivityPanel
                     {/* Expand Icon */}
                     {(activity.args || activity.result) && (
                       <div className="text-text-muted">
-                        {expandedItems.has(activity.id) ? (
+                        {expandedItems.includes(activity.id) ? (
                           <ChevronDown className="h-4 w-4" />
                         ) : (
                           <ChevronRight className="h-4 w-4" />
@@ -285,7 +281,7 @@ export function ActivityPanel({ activities, isVisible, onToggle }: ActivityPanel
 
                 {/* Expanded Details */}
                 <AnimatePresence>
-                  {expandedItems.has(activity.id) && (activity.args || activity.result) && (
+                  {expandedItems.includes(activity.id) && (activity.args || activity.result) && (
                     <motion.div
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: "auto", opacity: 1 }}

@@ -28,20 +28,17 @@ export function TaskSidebar({
   onExecutePending,
   isExecuting,
 }: TaskSidebarProps) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(["pending", "in_progress"])
-  );
+  const [expandedSections, setExpandedSections] = useState<string[]>([
+    "pending",
+    "in_progress"
+  ]);
 
+  // Bolt Optimization: Avoiding intermediate `new Set(prev)` allocations inside functional updaters
+  // provides better readability and saves GC overhead for toggles, as outlined in codebase guidelines.
   const toggleSection = (section: string) => {
-    setExpandedSections((prev) => {
-      const next = new Set(prev);
-      if (next.has(section)) {
-        next.delete(section);
-      } else {
-        next.add(section);
-      }
-      return next;
-    });
+    setExpandedSections((prev) =>
+      prev.includes(section) ? prev.filter((s) => s !== section) : [...prev, section]
+    );
   };
 
   const sections = [
@@ -125,7 +122,7 @@ export function TaskSidebar({
             ) : (
               <div className="p-4 space-y-4">
                 {sections.map((section) => {
-                  const isExpanded = expandedSections.has(section.id);
+                  const isExpanded = expandedSections.includes(section.id);
                   const hasItems = section.items.length > 0;
 
                   if (!hasItems) return null;
