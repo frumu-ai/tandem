@@ -40,3 +40,30 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+export function maxBy<T>(array: readonly T[], selector: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let max = array[0];
+  let maxVal = selector(max);
+  for (let i = 1; i < array.length; i++) {
+    const val = selector(array[i]);
+    if (val > maxVal) {
+      max = array[i];
+      maxVal = val;
+    }
+  }
+  return max;
+}
+
+export function minBy<T>(array: readonly T[], selector: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let min = array[0];
+  let minVal = selector(min);
+  for (let i = 1; i < array.length; i++) {
+    const val = selector(array[i]);
+    if (val < minVal) {
+      min = array[i];
+      minVal = val;
+    }
+  }
+  return min;
+}
