@@ -36,6 +36,7 @@ const jsonFiles = [
 
 const cargoFiles = [
   "apps/tandem-desktop/src-tauri/Cargo.toml",
+  "apps/tandem-desktop/src-tauri/Cargo.lock",
   "engine/Cargo.toml",
   "Cargo.lock",
   "crates/tandem-agent-teams/Cargo.toml",

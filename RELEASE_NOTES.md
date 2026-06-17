@@ -2,14 +2,14 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.5.14 (Unreleased)
+## v0.6.0 (Unreleased)
 
-Tandem 0.5.14 is a security- and assurance-focused release that lays the
+Tandem 0.6.0 is a security- and assurance-focused release that lays the
 foundation for cross-tenant data governance, governed runtime decisions, and
 goal-driven capability composition. It adds eval-backed, CI-enforced proof that
 tenant boundaries hold at runtime, tenant-scopes approval/audit/provider paths,
 hardens MCP and memory egress, and gives operators better ACA cockpit and
-feedback surfaces. The later 0.5.14 hardening work also adds an Action
+feedback surfaces. The later 0.6.0 hardening work also adds an Action
 Firewall eval suite, explicit memory ciphertext-at-rest modes, tenant-scoped
 protected audit evidence, context-budget/provenance guardrails, EU AI Act
 export evidence, repo-intelligence graph queries, runtime observability, and
@@ -302,7 +302,7 @@ the first meta-harness evaluation models for scoring workflow candidates.
 
 ### Per-Role Sampling Parameters
 
-- The engine runtime and the `tandem-client` Python SDK (now `0.5.14`) accept
+- The engine runtime and the `tandem-client` Python SDK (now `0.6.0`) accept
   per-role sampling parameters — `temperature`, `top_p`, and `max_tokens`.
   Callers set a session-level default on `sessions.create(...)` and may override
   it per prompt on `prompt_async(...)`; the per-prompt value takes precedence
@@ -338,7 +338,7 @@ the first meta-harness evaluation models for scoring workflow candidates.
 - Added a source-verified Rust runtime security analysis covering command
   execution, HTTP API exposure, secrets/crypto, permission/governance defaults,
   and external integration risks. The report records source-location-backed
-  remediation findings that informed the 0.5.14 hardening work.
+  remediation findings that informed the 0.6.0 hardening work.
 
 ## v0.5.13 (2026-06-02)
 

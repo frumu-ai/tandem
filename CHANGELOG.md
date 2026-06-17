@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.14] - Unreleased
+## [0.6.0] - Unreleased
 
 ### Added
 
@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of fabricating pass rates.
 
 - Added per-role sampling parameters (`temperature`, `top_p`, `max_tokens`) to
-  the engine runtime and the `tandem-client` Python SDK (bumped to `0.5.14`).
+  the engine runtime and the `tandem-client` Python SDK (bumped to `0.6.0`).
   Callers can set a session-level default on `sessions.create(...)` and override
   it per prompt on `prompt_async(...)`; the per-prompt value wins field by field.
   Values are mapped per provider (OpenAI-compatible, OpenAI Responses, Anthropic)
